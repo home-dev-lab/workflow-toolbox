@@ -10,6 +10,7 @@ import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularF
 import { completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
+import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -40,13 +41,13 @@ const PLAN_SHAPE = Object.freeze({
   gatesHeading: 'Gates',
   acceptanceHeading: 'Acceptance',
 })
-export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, and a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every card \`## Definition of done\` bullet byte-identically with a following \`Proof:\` line naming a task, test, or e2e`
+export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, and a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every folded card Definition-of-done criterion exactly with a following \`Proof:\` line naming a task, test, e2e, test file, or gate`
 
 function planSection(content, heading) {
   return new RegExp(`(?:^|\\n)## ${heading}\\b[\\s\\S]*?(?=\\n## |$)`, 'i').exec(content)?.[0] ?? ''
 }
 function acceptanceSection(content) {
-  return /(?:^|\n)## Acceptance[ \t]*\r?\n[\s\S]*?(?=\r?\n## |$)/i.exec(content)?.[0] ?? ''
+  return /(?:^|\n)## Acceptance[ \t]*\r?\n[\s\S]*?(?=\r?\n#{1,6}(?:[ \t]+|$)|$)/i.exec(content)?.[0] ?? ''
 }
 
 function containsPlanShape(content, requireAcceptance) {
@@ -78,59 +79,69 @@ function containsPlanShape(content, requireAcceptance) {
     (!requireAcceptance || Boolean(acceptanceSection(content)))
   )
 }
-function cardDodBullets(content) {
-  const section = /(?:^|\n)## Definition of done\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)?.[1]
-  if (section === undefined) return null
-  return section.split(/\r?\n/).map((line) => /^\s*-\s+(.*?)\s*$/.exec(line)?.[1]).filter((line) => line !== undefined)
-}
 function acceptanceEntries(content) {
   const section = acceptanceSection(content)
   const lines = section.split(/\r?\n/)
   const entries = new Map()
-  for (let index = 1; index < lines.length; index += 1) {
-    const match = /^\s*-\s+(.*?)\s*$/.exec(lines[index])
-    if (!match) continue
-    let end = index + 1
-    while (end < lines.length && !/^\s*-\s+/.test(lines[end])) end += 1
-    const matching = entries.get(match[1]) ?? []
-    matching.push(lines.slice(index + 1, end))
-    entries.set(match[1], matching)
-    index = end - 1
+  let entry = null
+  const finish = () => {
+    if (!entry) return
+    const criterion = entry.criterion.join(' ')
+    const matching = entries.get(criterion) ?? []
+    matching.push(entry.details)
+    entries.set(criterion, matching)
+    entry = null
   }
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index]
+    const topLevel = /^-\s+(.*?)\s*$/.exec(line)
+    if (topLevel && !/^(?:Proof|Outcome):/i.test(topLevel[1])) {
+      finish()
+      entry = { criterion: [topLevel[1]], details: [], detail: -1 }
+      continue
+    }
+    if (!entry) continue
+    const folded = line.trim()
+    const detail = folded.replace(/^-\s+/, '')
+    if (!folded) continue
+    if (/^(?:Proof|Outcome):/i.test(detail)) {
+      entry.details.push(detail)
+      entry.detail = entry.details.length - 1
+    } else if (/^[ \t]+/.test(line) && entry.detail >= 0) {
+      entry.details[entry.detail] += ` ${folded}`
+    } else if (/^[ \t]+/.test(line)) {
+      entry.criterion.push(folded)
+    }
+  }
+  finish()
   return entries
 }
-function planAcceptanceProblem(content, dodBullets) {
-  if (dodBullets === null) return 'card has no ## Definition of done section'
-  if (dodBullets.length === 0) return 'card ## Definition of done section has no bullets'
+function acceptanceProblem(content, dodBullets, validDetail, expectedDetail, exampleDetail) {
   const entries = acceptanceEntries(content)
   const used = new Map()
   for (const bullet of dodBullets) {
     const index = used.get(bullet) ?? 0
     const lines = entries.get(bullet)?.[index]
-    if (!lines) return `card DoD bullet "${bullet}"`
+    if (!lines) return `expected \`- ${bullet}\` followed by ${expectedDetail}; example: \`- ${bullet}\` then ${exampleDetail}`
     used.set(bullet, index + 1)
-    if (!lines.some((line) => /^\s*Proof:\s*.*\b(?:task|test|e2e)\b/i.test(line))) {
-      return `Proof line naming a task, test, or e2e for card DoD bullet "${bullet}"`
-    }
+    if (!lines.some(validDetail)) return `expected ${expectedDetail} after \`- ${bullet}\`; example: \`- ${bullet}\` then ${exampleDetail}`
   }
   return null
 }
-function reportAcceptanceProblem(content, dodBullets) {
-  if (dodBullets === null) return 'card has no ## Definition of done section'
-  if (dodBullets.length === 0) return 'card ## Definition of done section has no bullets'
-  const entries = acceptanceEntries(content)
-  const used = new Map()
-  for (const bullet of dodBullets) {
-    const index = used.get(bullet) ?? 0
-    const lines = entries.get(bullet)?.[index]
-    if (!lines) return `card DoD bullet "${bullet}"`
-    used.set(bullet, index + 1)
-    if (!lines.some((line) => /^\s*(?:Outcome:\s*)?(?:proven(?:\s*[:—–-]\s*\S.*)?|not done:\s*\S.*|deferred:\s*\S.*)\s*$/i.test(line))) {
-      return `outcome proven, not done: <reason>, or deferred: <reason> for card DoD bullet "${bullet}"`
-    }
-  }
-  return null
-}
+const planAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
+  content,
+  dodBullets,
+  (line) => /^Proof:\s*\S/i.test(line) && /\b(?:tasks?|tests?|e2e|typecheck|lint)\b|(?:^|[/\\])\S+\.(?:test|spec)\.[A-Za-z0-9]+/i.test(line),
+  '`Proof: <task, test, e2e, test file, or gate>`',
+  '`Proof: tests/unit.test.ts`',
+)
+const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
+  content,
+  dodBullets,
+  (line) => /^Outcome:\s*(?:proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?|not done:\s*\S.*|deferred:\s*\S.*)\s*$/i.test(line),
+  '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`',
+  '`Outcome: proven by tests/unit.test.ts`',
+)
 function changelogSkillBody(file) {
   let content
   try { content = fs.readFileSync(file, 'utf8') } catch (error) { throw new Error(`changelog skill unavailable at ${file}: ${error instanceof Error ? error.message : String(error)}`) }
@@ -202,7 +213,7 @@ export function createLifecycleStateMachine({
     throw new Error('lifecycle cardId must match [A-Za-z0-9._-]+')
   }
   const root = fs.realpathSync(worktree)
-  const dodBullets = typeof cardText === 'string' ? cardDodBullets(cardText) : undefined
+  const dodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText) : undefined
   const activeRules = rules ?? loadRules({ projectRoot: root })
   let constructionBase = 'HEAD'
   try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
@@ -231,7 +242,7 @@ export function createLifecycleStateMachine({
     const cardPath = path.join(laneDir, 'card.md')
     const existingCard = readRegularFile(cardPath)
     if (existingCard === null) writeRegularFile(cardPath, cardText, { flag: 'wx' })
-    else if (existingCard !== cardText) throw new Error(`lifecycle card snapshot differs: ${cardPath}`)
+    else if (existingCard !== cardText) throw new Error(`lifecycle card snapshot ${JSON.stringify(existingCard)} differs from runner card text ${JSON.stringify(cardText)}; remove ${cardPath} to restart the lifecycle on the new card`)
   }
   fs.mkdirSync(path.join(root, '.claude', 'reports'), { recursive: true })
   assertLaneDir(true)
@@ -397,8 +408,6 @@ export function createLifecycleStateMachine({
     } else if (state.phase === 'plan') {
       const plan = path.join(laneDir, 'plan.md')
       const planContent = readRegularFile(plan)
-      if (dodBullets === null) return refusal('plan->critic', 'card has no ## Definition of done section', plan)
-      if (dodBullets?.length === 0) return refusal('plan->critic', 'card ## Definition of done section has no bullets', plan)
       if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
         return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
       if (dodBullets !== undefined) {

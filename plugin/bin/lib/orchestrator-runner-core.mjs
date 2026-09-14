@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto'
 import { treeSignature } from './gate-evidence.mjs'
 import { createSdkJudge } from './orchestrator-judge.mjs'
 import { createWaveServer } from './wave-lifecycle-server.mjs'
+import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 
 const DEFAULTS = { concurrency: 1, base: 'develop', pilotTimeout: 5400, maxCards: Infinity, maxMinutes: Infinity, missionLabels: [], hard: [] }
 const ELIGIBLE_LISTS = new Set(['Backlog', 'Next', 'In Progress'])
@@ -264,6 +265,9 @@ export async function runOrchestrator(input, dependencies = {}) {
     }
     const moreThanLimit = candidates.length > options.maxCards
     candidates = candidates.slice(0, options.maxCards)
+    for (const card of candidates) {
+      if (cardDefinitionOfDone(cardText(card)).length === 0) throw new Error(`orchestrator preflight failed: ask the owner to add a Definition of done to card ${card.id}`)
+    }
     for (const card of candidates) {
       const id = String(card.id)
       const branch = `card/${id}-wave-${waveId}`

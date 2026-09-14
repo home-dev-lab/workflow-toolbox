@@ -150,6 +150,15 @@ describe('SDK pilot runner', () => {
 
   })
 
+  it('refuses a card with no DoD criterion before query starts', async () => {
+    const f = fixture(); writeFileSync(f.cardFile, 'Route: LITE\n## Notes\n- no acceptance here\n')
+    let queried = false
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
+      query: () => { queried = true; return (async function* () {})() }, resolvePilotModels: models,
+    })).rejects.toThrow('add a Definition of done to the card')
+    expect(queried).toBe(false)
+  })
+
   it('freezes the selected executor family and role models once in route.json', async () => {
     const f = fixture(); let resolutions = 0
     const query = () => (async function* () { yield initMessage() })()
@@ -622,6 +631,15 @@ describe('SDK pilot runner', () => {
     await expect(runPilot({ card: '1', cardFile: missing.cardFile, dir: missing.dir, contract: missing.contract, mailbox: join(missing.root, 'none'), timeout: 1, hard: false, pluginDirs: [omitted] }, {
       query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models,
     })).rejects.toThrow(new RegExp(`absentPlugins.*${omitted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+  })
+
+  it('matches configured plugins to receipt paths through symlinks and trailing separators', async () => {
+    const f = fixture(); const target = join(f.root, 'plugin-target'); const linked = join(f.root, 'plugin-link')
+    mkdirSync(target); symlinkSync(target, linked)
+    const query = ({ options }: { options: { plugins: Array<{ path: string }> } }) => (async function* () {
+      yield { ...initMessage(), plugins: [options.plugins[0], { path: `${realpathSync(target)}/` }] }
+    })()
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, pluginDirs: [linked] }, { query, resolvePilotModels: models })).resolves.toBeDefined()
   })
 
   it('runs the SDK pilot on the SDK pilot keys, never the harness pilot keys (harness hard = fable, SDK hard = opus)', async () => {

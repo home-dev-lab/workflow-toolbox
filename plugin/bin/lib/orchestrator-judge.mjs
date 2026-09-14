@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { confinedToWorktree } from './pilot-runner-core.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
+import { absentPluginPaths } from './plugin-receipt.mjs'
 
 const MAX_UNPRODUCTIVE_TURNS = 3
 const WAVE_TOOLS = new Set([
@@ -58,6 +59,8 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
   let exhausted = false
   let consecutiveWithoutProgress = 0
   let completedTurnPending = false
+  let initReceiptSeen = false
+  let failure = null
 
   const prompt = async function* () {
     for (;;) {
@@ -105,6 +108,15 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
     consumePromise = (async () => {
       try {
         for await (const message of stream) {
+          if (!initReceiptSeen && !(message.type === 'system' && message.subtype === 'init')) {
+            throw new Error(`SDK judge initialization receipt never arrived: the first message was ${message.type}/${message.subtype ?? 'none'}`)
+          }
+          if (message.type === 'system' && message.subtype === 'init') {
+            initReceiptSeen = true
+            const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
+            const absent = absentPluginPaths(pluginDirs, initPlugins)
+            if (absent.length > 0) throw new Error(`SDK judge initialization receipt is missing configured plugins: ${JSON.stringify({ absentPlugins: absent, plugins: initPlugins })}`)
+          }
           if (settleProgress()) {
             if (message.type !== 'result') completedTurnPending = true
             continue
@@ -118,7 +130,16 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
           queue.push(active.continuation)
           if (consecutiveWithoutProgress === MAX_UNPRODUCTIVE_TURNS) stopIncomplete()
         }
+      } catch (error) {
+        failure = error
+        exhausted = true
+        remainingUndecided()
+        const pending = active
+        active = null
+        pending?.reject(error)
+        queue.close()
       } finally {
+        if (failure) return
         if (active) stopIncomplete()
         else if (!waveServer.state().judgmentWritten) {
           exhausted = true
@@ -129,9 +150,10 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
     })()
   }
   const request = (content, continuation, complete) => {
+    if (failure) return Promise.reject(failure)
     if (exhausted) return Promise.resolve(false)
     if (active) throw new Error('wave judge request already active')
-    const result = new Promise((resolve) => { active = { complete, continuation, resolve } })
+    const result = new Promise((resolve, reject) => { active = { complete, continuation, resolve, reject } })
     start()
     queue.push(content)
     return result

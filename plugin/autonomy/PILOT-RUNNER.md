@@ -25,8 +25,10 @@ addition to their normal confined trees.
 
 The runner derives and freezes the route from the card before `query()`. An exact `Route: LITE` or
 `Route: FULL` line wins, including a `- Route:` bullet. Otherwise effort M or greater, type
-`feature`, a risk word, more than three named files, or a missing `DoD:` / `Definition of done:`
-field selects FULL; all signals clear selects LITE. The reasons are recorded with the route.
+`feature`, a risk word, more than three named files, or no Definition-of-done criterion selects FULL;
+all signals clear selects LITE. A criterion is an item under `## DoD` / `## Definition of done` or the
+value of an inline `DoD:` / `Definition of done:` field. No criterion makes both runners refuse before
+starting the SDK query. The reasons are recorded with the route.
 `.lane/route.json` is an audit record, not an input to routing.
 
 The installed plugin's version-1 `rules-manifest.json` maps exact sections under `plugin/rules`; an
@@ -40,13 +42,13 @@ form and Node path APIs for resolution and real-path containment on each host.
 | Edge | Required evidence |
 | --- | --- |
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
-| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every card Definition-of-done bullet byte-identically with a following `Proof:` naming a task, test, or e2e. A missing/reworded bullet or a card without that section is refused. |
+| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing/reworded criterion is refused with an example. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. A fourth changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd or harden -> verify | Attested lane receipt and non-empty report. On FULL, `tdd-brief.md` has the plan `## Tasks` block byte-identically. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
 | review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
 | refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
-| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every card DoD bullet with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`, plus `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
+| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`, plus `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.

@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
+import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
+import { absentPluginPaths } from './plugin-receipt.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
@@ -164,6 +166,7 @@ export async function runPilot(options, dependencies) {
   const systemPrompt = composeStandingPrompt(contract, rules)
   if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
   const cardText = readFile(options.cardFile, 'utf8')
+  if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
   const routing = deriveRoute(cardText)
   const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
   log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} executor=${executorProfile.executor}`)
@@ -278,7 +281,7 @@ export async function runPilot(options, dependencies) {
       const initTools = Array.isArray(message.tools) ? message.tools : []
       const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
       const missing = ['transition', 'write_artifact', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
-      const absent = pluginPaths.filter((path) => !initPlugins.some((plugin) => plugin.path === path))
+      const absent = absentPluginPaths(pluginPaths, initPlugins)
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
       }
