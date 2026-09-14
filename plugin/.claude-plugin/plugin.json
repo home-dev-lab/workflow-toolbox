@@ -22,6 +22,53 @@
       "default": false,
       "required": false,
       "description": "Account consent is the ceiling and project settings may only narrow it."
+    },
+    "lane_skills": {
+      "type": "string",
+      "title": "Executor lane skills",
+      "default": "",
+      "required": false,
+      "description": "Comma- or newline-separated Claude skill names allowed in external OpenCode lanes."
+    },
+    "lane_models": {
+      "type": "string",
+      "title": "Executor lane models",
+      "default": "openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-astra",
+      "required": false,
+      "description": "Comma- or newline-separated exact provider/model allow-list for external OpenCode lanes."
+    },
+    "artifact_server": {
+      "type": "boolean",
+      "title": "Enable artifact server",
+      "default": true,
+      "required": false,
+      "description": "Start or attach the per-session artifact-server monitor."
+    },
+    "artifact_server_roots": {
+      "type": "string",
+      "title": "Artifact server roots",
+      "required": false,
+      "description": "Comma- or newline-separated name=path or bare-path roots; unset uses project-local defaults."
+    },
+    "artifact_server_port": {
+      "type": "number",
+      "title": "Artifact server port",
+      "required": false,
+      "description": "First candidate port; unset derives a stable per-user port from 48000-48999."
+    },
+    "artifact_server_idle_grace_s": {
+      "type": "number",
+      "title": "Artifact server idle grace",
+      "default": 600,
+      "required": false,
+      "description": "Seconds to retain dead-session registrations before shutdown."
+    },
+    "artifact_server_deny": {
+      "type": "string",
+      "title": "Additional artifact deny patterns",
+      "default": "",
+      "required": false,
+      "description": "Comma- or newline-separated basename glob patterns added to the security deny list."
     }
   },
   "hooks": {

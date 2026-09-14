@@ -38,7 +38,7 @@ exit 0
   spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-data-dir.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
@@ -85,6 +85,24 @@ describe('adopted wt-lane consent resolver', () => {
     })
   }
 
+  it('preflights the shared plugin-option resolver derived from the adopted loader', () => {
+    const f = fixture(undefined, false)
+    const missing = join(f.root, 'plugin', 'bin', 'lib', 'plugin-options.mjs')
+    rmSync(missing)
+
+    const result = spawnSync(
+      process.execPath,
+      [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')],
+      { encoding: 'utf8', env: f.env },
+    )
+
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}${result.stderr}`).toBe(
+      `adopt: wt-lane.mjs runtime module is missing from the resolved plugin root: ${missing} — update or reinstall workflow-toolbox, then retry.\n`,
+    )
+    expect(existsSync(f.installed)).toBe(false)
+  })
+
   it('installs and starts the adopted launcher when the resolved plugin root has every runtime module', () => {
     const f = fixture(undefined, false)
     const install = spawnSync(
@@ -105,6 +123,15 @@ describe('adopted wt-lane consent resolver', () => {
     const refused = launch(f, 'google/gemini-3.6-flash')
     expect(refused.status).toBe(1)
     expect(refused.stderr).toContain('is not in the lane model allow-list')
+  })
+
+  it('uses the plugin model option before the env fallback in the adopted launcher', () => {
+    const f = fixture()
+    f.env.WT_LANE_MODELS = 'env/model'
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({
+      pluginConfigs: { 'workflow-toolbox@fixture': { options: { executor_lane_consent: true, lane_models: 'openai/gpt-5.6-luna' } } },
+    }))
+    expect(launch(f).status).toBe(0)
   })
 
   it('uses the real resolver for account and project consent fixtures', () => {

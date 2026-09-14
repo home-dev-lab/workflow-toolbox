@@ -5,6 +5,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- Lane model/skill allow-lists and user-facing artifact-server settings are now Claude Code plugin
+  options, resolved consistently before their existing environment fallbacks. String lists use
+  comma/newline syntax in plugin settings; test-only artifact-server knobs remain env-only.
+
 ### Added
 - External OpenCode lanes now allow only `openai/gpt-5.6-luna`, `openai/gpt-5.6-terra`,
   `openai/gpt-5.6-sol`, and `openai/gpt-6-astra` by default. Set the comma- or
