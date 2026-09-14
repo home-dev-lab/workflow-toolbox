@@ -8,6 +8,7 @@ import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
 import { completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
+import { composeRules, loadRules } from './rules-manifest.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -115,6 +116,7 @@ export function createLifecycleStateMachine({
   git = execFileSync,
   copy = fs.cpSync,
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
+  rules = null,
 }) {
   if (!path.isAbsolute(worktree)) {
     throw new Error('lifecycle worktree must be absolute')
@@ -123,6 +125,7 @@ export function createLifecycleStateMachine({
     throw new Error('lifecycle cardId must match [A-Za-z0-9._-]+')
   }
   const root = fs.realpathSync(worktree)
+  const activeRules = rules ?? loadRules({ projectRoot: root })
   let constructionBase = 'HEAD'
   try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
   const laneDir = path.join(root, '.lane')
@@ -191,8 +194,9 @@ export function createLifecycleStateMachine({
   const laneBriefContexts = new Map()
   let serial = Promise.resolve()
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
+    const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
     if (!INDEPENDENT_ROLES.has(phase)) {
-      const content = `${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
+      const content = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n## Pilot instructions\n\n` : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
       return snapshotDir
         ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; do not rely on background processes surviving the lane.\n` }
         : content
@@ -237,7 +241,7 @@ export function createLifecycleStateMachine({
       canonicalArtifacts.push('.lane/discovery.md')
       artifacts.push(snapshotDir ? snapshotFile('discovery.md', discovery) : canonicalArtifacts.at(-1))
     }
-    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [] }
+    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [], rules: roleRules }
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
@@ -441,7 +445,15 @@ export function createLifecycleStateMachine({
     }
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
     state.phase = next
-    const result = next === 'awaiting_fidelity' ? AWAITING_FIDELITY_RESULT : `accepted phase=${next}${resultDetail}`
+    const phaseRules = next === 'awaiting_fidelity'
+      ? ''
+      : composeRules(activeRules, {
+          recipient: 'pilot',
+          triggers: [`phase:${next}`, ...(next === 'critic' && state.priorCriticRounds.length > 0 ? ['critic-round>=2'] : [])],
+        })
+    const result = next === 'awaiting_fidelity'
+      ? AWAITING_FIDELITY_RESULT
+      : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}`
     state.handled.set(event.tool_use_id, { shape, result })
     return result
   }

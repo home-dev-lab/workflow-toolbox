@@ -310,6 +310,8 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), sleep: async () => {},
     })
     expect(typeof seen.systemPrompt).toBe('string'); expect(String(seen.systemPrompt)).toContain('lifecycle')
+    expect(String(seen.systemPrompt)).toContain('## Standing rules (authoritative)')
+    expect(String(seen.systemPrompt)).toContain('## Understand before coding')
     expect(result.summary.completed).toBe(false)
   })
 

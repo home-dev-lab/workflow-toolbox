@@ -11,6 +11,10 @@ complete allow-list and worktree confinement on every tool request, plus Read ac
 index's directory; all other tools are denied. Read that index before discovery when present, then open
 the fiches that bear on the card. They are read-only; an explicit absence is not an error.
 
+After this contract, the system prompt carries the exact standing sections selected by the shipped
+`rules-manifest.json` plus optional project `.claude/wt-rules-manifest.json`. Transition receipts carry
+exact pilot rules for the new phase. Missing mapped sources or headings refuse startup.
+
 ## Lifecycle tools
 
 Use `write_artifact` only for its phase-bound kinds: `plan` (plan), `critic-brief` (critic), `brief`
@@ -22,6 +26,8 @@ the allow-listed receipt/log names.
 
 Every lane phase follows the same order: write its brief, run the lane, then transition. At launch the server
 exclusively recreates canonical pilot-readable copies and launches from a read-only runner-owned snapshot outside the worktree, so later disk modifications cannot replace launch inputs.
+Each brief places exact mapped role rules under `## Rules that apply to this role (authoritative)` before
+pilot context; those rules are authoritative, not part of the untrusted context fence.
 
 For a critic, review, or refutation lane, `content` is context only. The server writes the
 authoritative independent-review instructions first, names the evidence to judge, fences your text

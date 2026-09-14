@@ -7,6 +7,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 - Added the `sdk-pilot` skill to expose detached evaluation of the not-yet-supported SDK pilot runner.
+- Added a versioned SDK-role rules manifest with strict source/heading validation, additive project
+  manifests, and exact standing, phase-entry, and lane-brief delivery.
 
 ### Changed
 - SDK pilot critics now receive the server-recorded discovery intake alongside the plan, and SDK

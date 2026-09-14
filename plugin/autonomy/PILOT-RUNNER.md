@@ -29,6 +29,14 @@ The runner derives and freezes the route from the card before `query()`. An exac
 field selects FULL; all signals clear selects LITE. The reasons are recorded with the route.
 `.lane/route.json` is an audit record, not an input to routing.
 
+The installed plugin's version-1 `rules-manifest.json` maps exact sections under `plugin/rules`; an
+optional `<project>/.claude/wt-rules-manifest.json` uses the same schema and adds project-root sources.
+The runner validates every role, lifecycle trigger, source path, and exact heading before composition.
+It appends standing pilot sections to the contract system prompt, returns phase sections in the
+transition result for the new phase, and composes role sections into lane briefs before pilot context.
+Missing files/headings and malformed manifests fail closed. Manifest paths use `/` as a portable stored
+form and Node path APIs for resolution and real-path containment on each host.
+
 | Edge | Required evidence |
 | --- | --- |
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
@@ -68,6 +76,10 @@ that lane. Glob and Grep
 patterns with separators are confined by real-path checking their non-glob prefix, including through
 relative symlinks. The `measures wildcard-first Glob and Grep matches through an in-worktree symlink with a real SDK query` lock (`WT_REAL_SDK_LOCKS=1`) measured wildcard-first matches not to escape the worktree through an in-worktree symlink. Lifecycle implementation, receipts/launch, and report-edge transaction code live
 in separate modules behind the unchanged public server export.
+
+TDD and harden briefs, and independent critic/review/refutation briefs, put mapped exact rule sections
+under `## Rules that apply to this role (authoritative)`. Both executor families receive the same
+runner-owned snapshot brief: only the launcher selected at `lifecycle-launch.mjs` differs.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or

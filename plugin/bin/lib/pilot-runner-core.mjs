@@ -7,6 +7,7 @@ import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-mac
 import { deriveRoute } from './route-from-card.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
+import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -149,6 +150,10 @@ export async function runPilot(options, dependencies) {
   const mailboxPath = options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt')
   options = { ...options, contract: contractPath, mailbox: mailboxPath }
   const contract = readFile(options.contract, 'utf8')
+  // The project manifest lives with the project, not in each generated card worktree: resolve it
+  // from the same project root the knowledge-base index uses.
+  const rules = dependencies.rules ?? loadRules({ projectRoot: options.knowledgeBaseProjectRoot ?? options.dir })
+  const systemPrompt = composeStandingPrompt(contract, rules)
   if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
   const cardText = readFile(options.cardFile, 'utf8')
   const routing = deriveRoute(cardText)
@@ -195,7 +200,7 @@ export async function runPilot(options, dependencies) {
   for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
   }
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, models: executorProfile.models, cardId: options.card, sessionTag: `${options.card}-${started}`, ...lifecycleOptions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, models: executorProfile.models, cardId: options.card, sessionTag: `${options.card}-${started}`, rules, ...lifecycleOptions })
 
   async function* prompt() {
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
@@ -240,7 +245,7 @@ export async function runPilot(options, dependencies) {
 
   const stream = query({ prompt: prompt(), options: {
     model: model.value,
-    systemPrompt: contract,
+    systemPrompt,
     settingSources: [],
     maxTurns: 120,
     cwd: options.dir,
