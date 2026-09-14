@@ -5,6 +5,16 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.174.0] - 2026-09-14
+
+> **Not supported in this release:** the SDK pilot runner (`wt-pilot-runner`), the SDK orchestrator
+> (`wt-run-orchestrator`), the Claude SDK executor and the SDK lifecycle server are present in the tree
+> but not yet supported: no skill exposes them, a full end-to-end run is not yet proven, and their
+> interface may change.
+>
+> **Default change:** without settings, the harness pilot now runs on Opus (Fable for hard cards) and the
+> harness orchestrator on Opus (previously Sonnet for both).
+
 ### Changed
 - The prompt-cache keepalive monitor is now on by default; set `WT_CACHE_KEEPALIVE_ENABLED=false` to disable
   it. It still acts only on a session idle past its provider threshold.
