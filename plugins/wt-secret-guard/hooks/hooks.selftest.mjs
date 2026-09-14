@@ -50,6 +50,21 @@ await test('detection table in the store carries tokens, kinds and salted hashes
 await test('persistent store never carries a value; tokens only under the detections key', async () => { const writes = calls.filter((call) => call.capability === 'store.set'); assert(writes.length >= 3); for (const value of [github, aws, "file-secret value with ' quote", 'second-file-secret', 'read-result-secret', 'mcp-result-secret']) assert(writes.every((call) => !JSON.stringify(call.value).includes(value))); assert(writes.filter((call) => call.key !== 'detections').every((call) => !JSON.stringify(call.value).includes('secret:'))); });
 await test('op resolver runs the configured binary and logs a counts-only line when it fails', async () => { const { configure } = await import('./hooks.js'); configure({ opBinary: 'op.exe' }); const before = calls.length; await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw2' }, async () => ({ text: 'x' })); const run = calls.slice(before).find((call) => call.capability === 'process.run'); assert(run && run.argv[0] === 'op.exe'); const failing = { ...$, process: { run: async () => { const e = new Error('spawn op ENOENT'); e.code = 'ENOENT'; throw e; } } }; const r = await resolveReference(failing, 'op://v/i/f'); assert.equal(r.token, null); assert(logs.some((line) => line.includes('op resolve failed to start (ENOENT)'))); assert(logs.every((line) => !line.includes('op-fake-value'))); configure({}); });
 await test('op resolver returns a token, never its value', async () => { const result = await resolveReference($, 'op://vault/item/field'); assert.match(result.token, /^secret:onepassword#/); assert(!JSON.stringify(result).includes('op-fake-value')); assert.equal(testState().get(result.token).value, 'op-fake-value'); });
+await test('a scrubbed prompt carries the redaction note as context and keeps its text free of the note', async () => {
+  const value = 'pass' + 'word=' + 'Zq81' + 'wLx9' + 'Pm42';
+  let received;
+  await prompt($, { text: `login with ${value}`, source: 'user' }, async (event) => { received = event; return {}; });
+  assert(!received.text.includes(value));
+  assert(!received.text.includes('REDACTION TOKEN'));
+  assert.deepEqual(received.context, [(await import('./hooks.js')).REDACTION_NOTE]);
+});
+await test('a scrubbed tool result explains its tokens; an untouched one gets no note', async () => {
+  const value = 'tok' + 'en=' + 'Hy72' + 'kQp1' + 'Vn38';
+  const scrubbed = await call('x', `out ${value}`);
+  assert.match(scrubbed.text, /REDACTION TOKEN/);
+  const clean = await call('x', 'nothing sensitive here');
+  assert.doesNotMatch(clean.text, /REDACTION TOKEN/);
+});
 await test('plain prompt reaches next exactly once and preserves its outcome', async () => {
   const input = { text: 'continue', source: 'user' };
   const outcome = { context: ['downstream context'] };
