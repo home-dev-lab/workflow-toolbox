@@ -59,7 +59,7 @@ describe('installed OpenCode Claude-skill fence', () => {
       const launcher = path.join(ROOT, 'plugin', 'bin', 'wt-lane.mjs')
       expect(existsSync(launcher), `the launcher is not at ${launcher}`).toBe(true)
       writeFileSync(path.join(lane, 'brief.md'), '# brief\n')
-      const refused = spawnSync(process.execPath, [launcher, '--dir', lane, '--model', 'test/model', '--brief', path.join(lane, 'brief.md'), '--allow-no-git'], {
+      const refused = spawnSync(process.execPath, [launcher, '--dir', lane, '--model', 'openai/gpt-5.6-luna', '--brief', path.join(lane, 'brief.md'), '--allow-no-git'], {
         encoding: 'utf8', env: { ...env, WT_LANE_SKILLS: `${allowed},save-memory` },
       })
       expect(refused.status).toBe(1); expect(refused.stderr).toContain('save-memory is a single-writer')

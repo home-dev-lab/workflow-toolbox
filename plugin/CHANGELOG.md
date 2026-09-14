@@ -6,6 +6,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- External OpenCode lanes now allow only `openai/gpt-5.6-luna`, `openai/gpt-5.6-terra`,
+  `openai/gpt-5.6-sol`, and `openai/gpt-6-astra` by default. Set the comma- or
+  whitespace-separated `WT_LANE_MODELS` allow-list to replace that default; model matching is exact.
 - External OpenCode lanes can declare a comma- or whitespace-separated `WT_LANE_SKILLS` allow-list.
   Approved Claude skills are copied into lane-local OpenCode configuration while the Claude-skill fence
   remains forced; `save-memory`, `planka-tracking`, and `what-next` remain unconditionally refused as

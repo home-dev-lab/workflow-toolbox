@@ -56,7 +56,7 @@ function runHook(project: string, env: NodeJS.ProcessEnv, command: string) {
 }
 
 function runLane(dir: string, brief: string, env: NodeJS.ProcessEnv, extra: string[] = []) {
-  return spawnSync(process.execPath, [LANE_LAUNCHER, '--dir', dir, '--model', 'test/model', '--brief', brief, ...extra], {
+  return spawnSync(process.execPath, [LANE_LAUNCHER, '--dir', dir, '--model', 'openai/gpt-5.6-luna', '--brief', brief, ...extra], {
     encoding: 'utf8',
     env,
   })

@@ -18,7 +18,7 @@ function run(markdown: string, env: Record<string, string> = {}, args: string[] 
   writeFileSync(report, markdown)
   const result = spawnSync(process.execPath, [SCRIPT, ...args, report], {
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: { ...process.env, WT_FINDINGS_DISPOSITION_NOW: '2026-09-13', ...env },
   })
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
