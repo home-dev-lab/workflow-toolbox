@@ -41,7 +41,11 @@ function records(project) {
     try { names = readdirSync(dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch {}
     if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
     for (const name of names) {
-      try { out.push(JSON.parse(readFileSync(path.join(dir, name), 'utf8'))) } catch {}
+      try {
+        const record = JSON.parse(readFileSync(path.join(dir, name), 'utf8'))
+        Object.defineProperty(record, '__recordWorktree', { value: worktree })
+        out.push(record)
+      } catch {}
     }
   }
   return out
@@ -58,6 +62,7 @@ async function main() {
   const dataDir = path.join(resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const notified = new Set()
   const journaled = new Set()
+  const episodeStarts = new Map()
   const notice = (key, message) => {
     process.stdout.write(`${message}\n`)
     notified.add(key)
@@ -99,21 +104,25 @@ async function main() {
         const activity = latestWorktreeWrite(record.worktree)
         if (activity.status === 'known' && activity.at && Date.now() - activity.at >= stallMinutes * 60_000) {
           const evidence = { lastWriteAt: new Date(activity.at).toISOString(), activityBounded: activity.bounded, logTail: readLogTail(record.log), process: 'running' }
-          if (!journaled.has(stalledKey) && journal({ event: 'stalled', runId: record.runId, pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })) journaled.add(stalledKey)
+          const episodeStartedAt = episodeStarts.get(stalledKey) ?? new Date().toISOString(); episodeStarts.set(stalledKey, episodeStartedAt)
+          if (!journaled.has(stalledKey) && journal({ event: 'stalled', runId: record.runId, episodeStartedAt, pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })) journaled.add(stalledKey)
           if (ownsNotice && !notified.has(stalledKey)) notice(stalledKey, `LANE stalled: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${evidence.lastWriteAt} process=running log-tail=${JSON.stringify(evidence.logTail)}; inspect or nudge; timeout decisions are extend or abandon; no process was killed`)
         } else {
           journaled.delete(stalledKey)
           notified.delete(stalledKey)
+          episodeStarts.delete(stalledKey)
         }
       } else {
         journaled.delete(stalledKey)
         notified.delete(stalledKey)
+        episodeStarts.delete(stalledKey)
       }
       const cleanKey = `${record.runId}:would-clean`
       const cleanupCandidate = verdict.status === 'worker-gone-child-alive' && ['exited', 'abandoned'].includes(record.state) && processRecord
       if (!cleanupCandidate) {
         journaled.delete(cleanKey)
         notified.delete(cleanKey)
+        episodeStarts.delete(cleanKey)
         if (verdict.status === 'worker-gone-child-alive') {
           const orphanKey = `${record.runId}:worker-gone-child-alive`
           if (!journaled.has(orphanKey) && journal({ event: 'worker-gone-child-alive', runId: record.runId, pid: record.childPid, argv: argvSummary(processRecord?.argv ?? record.childArgv ?? []), worktree: record.worktree, owner: record.owner, reason: verdict.reason })) journaled.add(orphanKey)
@@ -122,12 +131,13 @@ async function main() {
         continue
       }
       const evidence = { recordState: record.state, launcherAlive: false, childPid: record.childPid, childArgv: record.childArgv, childCwd: processRecord.cwd, workerPid: record.workerPid }
+      const episodeStartedAt = episodeStarts.get(cleanKey) ?? new Date().toISOString(); episodeStarts.set(cleanKey, episodeStartedAt)
       if (cleanupMode === 'observe') {
-        if (!journaled.has(cleanKey) && journal({ event: 'would-clean', runId: record.runId, pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: verdict.reason, evidence })) journaled.add(cleanKey)
+        if (!journaled.has(cleanKey) && journal({ event: 'would-clean', runId: record.runId, episodeStartedAt, pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: verdict.reason, evidence })) journaled.add(cleanKey)
         if (ownsNotice && !notified.has(cleanKey)) notice(cleanKey, `LANE would-clean: worktree=${record.worktree} pid=${record.childPid} reason=${verdict.reason}; lane_orphan_cleanup=observe, no process was killed`)
         continue
       }
-      const result = terminateLane(record, { journal, source: 'watcher' })
+      const result = terminateLane(record, { journal, source: 'watcher', recordWorktree: record.__recordWorktree })
       journal({ event: result.killed ? 'cleaned' : 'cleanup-refused', runId: record.runId, pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: result.killed ? verdict.reason : result.reason, evidence }, { killed: result.killed })
     }
     const table = listProcessTable()

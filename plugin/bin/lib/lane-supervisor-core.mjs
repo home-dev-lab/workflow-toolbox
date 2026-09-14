@@ -6,18 +6,26 @@ const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 export function sameIdentity(expected, actual) {
   return Boolean(actual
     && expected.pid === actual.pid
+    && Number.isFinite(expected.startTime)
+    && expected.startTime === actual.startTime
     && JSON.stringify(expected.argv) === JSON.stringify(actual.argv)
     && (!expected.cwd || expected.cwd === actual.cwd))
 }
 
-function identityStatus(expected, { inspect, platform, procRoot }) {
+function processExists(pid, { procRoot = '/proc' } = {}) {
+  return existsSync(path.join(procRoot, String(pid)))
+}
+
+function identityStatus(expected, { inspect, platform, procRoot, processExists: exists }) {
   if (platform !== 'linux') return 'unknown'
-  if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv)) return 'unknown'
+  if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv) || !Number.isFinite(expected.startTime)) return 'unknown'
   const actual = inspect(expected.pid, { platform, procRoot })
-  if (actual) return sameIdentity(expected, actual) ? 'running' : 'gone'
-  if (inspect !== inspectProcess) return 'gone'
+  if (actual) {
+    if (actual.startTime !== expected.startTime) return 'gone'
+    return sameIdentity(expected, actual) ? 'running' : 'unknown'
+  }
   const processDir = path.join(procRoot, String(expected.pid))
-  if (!existsSync(processDir)) return 'gone'
+  if (!exists(expected.pid, { platform, procRoot })) return 'gone'
   try {
     const stat = readFileSync(path.join(processDir, 'stat'), 'utf8')
     if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] === 'Z') return 'gone'
@@ -25,14 +33,18 @@ function identityStatus(expected, { inspect, platform, procRoot }) {
   return 'unknown'
 }
 
-export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc' } = {}) {
+export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc', processExists: exists = processExists } = {}) {
   if (!record || typeof record !== 'object' || typeof record.runId !== 'string') {
     return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
-  if (platform !== 'linux') return { status: 'unknown', reason: `identity-unavailable-${platform}`, worker: 'unknown', child: 'unknown' }
   if (record.state === 'launch-failed') return { status: 'terminal', reason: 'launch-failed', worker: 'gone', child: 'gone' }
-  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv }, { inspect, platform, procRoot })
-  const child = identityStatus({ pid: record.childPid, argv: record.childArgv }, { inspect, platform, procRoot })
+  if (platform !== 'linux') return { status: 'unknown', reason: `identity-unavailable-${platform}`, worker: 'unknown', child: 'unknown' }
+  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, { inspect, platform, procRoot, processExists: exists })
+  const child = record.childPid === null && record.childArgv === null
+    ? 'not-spawned'
+    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, { inspect, platform, procRoot, processExists: exists })
+  if (worker === 'gone' && child === 'not-spawned') return { status: 'gone', reason: 'worker-gone-no-child', worker, child: 'gone' }
+  if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
   if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
   if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
   if (worker === 'unknown' || child === 'unknown') return { status: 'unknown', reason: 'identity-unreadable', worker, child }
@@ -43,7 +55,25 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
   return { status: 'unknown', reason: 'inconsistent-record', worker, child }
 }
 
-export function terminateLane(record, { inspect = inspectProcess, kill = process.kill, graceMs = 1000, platform = process.platform, journal = () => {}, source = 'unknown', markTerminal = null } = {}) {
+export function terminateLane(record, { inspect = inspectProcess, kill = process.kill, graceMs = 1000, platform = process.platform, journal = () => {}, source = 'unknown', markTerminal = null, ownedChild = null, recordWorktree = null } = {}) {
+  const event = { event: 'termination-signaled', runId: record.runId, source, workerPid: record.workerPid, childPid: record.childPid, pid: record.childPid, argv: argvSummary(record.childArgv ?? []), worktree: record.worktree, owner: record.owner ?? null, reason: 'verified lane process group' }
+  // The worker owns this ChildProcess handle and its detached group. This path deliberately does
+  // not consult /proc and never sends SIGKILL to the group leader (itself).
+  if (source === 'worker' && ownedChild?.pid === record.childPid) {
+    journal(event)
+    if (markTerminal) markTerminal('terminating')
+    try {
+      if (platform === 'win32') ownedChild.kill('SIGTERM')
+      else kill(-record.workerPid, 'SIGTERM')
+    } catch (error) {
+      if (error?.code !== 'ESRCH') return { killed: false, reason: `signal-${error?.code ?? 'failed'}`, verdict: { status: 'unknown' } }
+    }
+    if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
+    try { kill(record.childPid, 0); ownedChild.kill('SIGKILL') } catch (error) { if (error?.code !== 'ESRCH') return { killed: false, reason: `signal-${error?.code ?? 'failed'}`, verdict: { status: 'unknown' } } }
+    if (markTerminal) markTerminal('terminal')
+    journal({ ...event, event: 'terminated', reason: 'terminated' })
+    return { killed: true, reason: 'terminated', verdict: { status: 'gone', reason: 'worker-owned-child-ended' } }
+  }
   const verdict = classifyLane(record, { inspect, platform })
   if (verdict.status === 'gone') return { killed: false, reason: 'already-gone', verdict }
   if (!['running', 'decision-needed', 'terminal', 'worker-gone-child-alive'].includes(verdict.status)) {
@@ -51,14 +81,23 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
   }
   const worker = inspect(record.workerPid, { platform })
   const child = inspect(record.childPid, { platform })
-  if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv }, worker))
-    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv }, child))) {
+  const refuse = (reason) => {
+    journal({ ...event, event: 'termination-refused', reason })
+    return { killed: false, reason, verdict }
+  }
+  if (['control', 'watcher'].includes(source)) {
+    if (typeof record.worktree !== 'string' || typeof recordWorktree !== 'string' || path.resolve(record.worktree) !== path.resolve(recordWorktree)) return refuse('record-worktree-mismatch')
+    const relative = child?.cwd ? path.relative(path.resolve(record.worktree), path.resolve(child.cwd)) : null
+    if (child && (relative === null || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) return refuse('child-cwd-outside-worktree')
+    if (child && !child.cwd) return refuse('child-cwd-unreadable')
+  }
+  if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, worker))
+    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, child))) {
     return { killed: false, reason: 'identity-changed', verdict }
   }
   if ((worker?.groupId && worker.groupId !== record.workerPid) || (child?.groupId && child.groupId !== record.workerPid)) {
     return { killed: false, reason: 'process-group-changed', verdict }
   }
-  const event = { event: 'termination-signaled', runId: record.runId, source, workerPid: record.workerPid, childPid: record.childPid, pid: record.childPid, argv: argvSummary(record.childArgv ?? []), worktree: record.worktree, owner: record.owner ?? null, reason: 'verified lane process group' }
   journal(event)
   if (markTerminal) markTerminal('terminating')
   const signal = (name) => {
@@ -101,14 +140,14 @@ export function inspectProcess(pid, { procRoot = '/proc', platform = process.pla
     const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
     const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
     if (rest[0] === 'Z') return null
-    return { pid: Number(pid), argv, cwd, groupId: Number(rest[2]) }
+    return { pid: Number(pid), argv, cwd, groupId: Number(rest[2]), startTime: Number(rest[19]) }
   } catch {
     try {
       const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
       const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
       const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
       if (rest[0] === 'Z') return null
-      return { pid: Number(pid), argv, cwd: null, groupId: Number(rest[2]) }
+      return { pid: Number(pid), argv, cwd: null, groupId: Number(rest[2]), startTime: Number(rest[19]) }
     } catch { return null }
   }
 }

@@ -37,14 +37,14 @@ function main() {
     : Boolean(state.ownerToken && options.ownerToken === state.ownerToken)
   if (!ownsLane) { process.stderr.write('wt-lane-control: refused: caller is not the recorded owner\n'); return 1 }
   const verdict = classifyLane(state)
-  if (!['decision-needed', 'worker-gone-child-alive'].includes(verdict.status) || !state.timeoutAt) { process.stderr.write(`wt-lane-control: refused: no current decision point (${verdict.status})\n`); return 1 }
+  if (!['decision-needed', 'worker-gone-child-alive'].includes(verdict.status) || (verdict.status === 'decision-needed' && !state.timeoutAt)) { process.stderr.write(`wt-lane-control: refused: no current decision point (${verdict.status})\n`); return 1 }
   if (options.decision === 'abandon') {
     const stateFile = supervisionPaths(options.dir, state.runId).record
     const abandoned = { ...state, state: 'abandoned', decision: 'abandon', decisionSource: 'owner', decidedAt: new Date().toISOString() }
     const dataDir = path.join(resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
     const journal = (event) => { try { appendSupervisorJournal(dataDir, event) } catch {} }
     journal({ event: 'decision', runId: state.runId, decision: 'abandon', source: 'owner', pid: state.childPid, worktree: state.worktree, owner: state.owner, reason: options.reason ?? null })
-    const result = terminateLane(state, { source: 'control', journal, markTerminal: (stage) => writeJsonAtomic(stateFile, stage === 'terminal' ? abandoned : { ...state, state: 'terminating', decision: 'abandon', decisionSource: 'owner', decidedAt: abandoned.decidedAt }) })
+    const result = terminateLane(state, { source: 'control', journal, recordWorktree: options.dir, markTerminal: (stage) => writeJsonAtomic(stateFile, stage === 'terminal' ? abandoned : { ...state, state: 'terminating', decision: 'abandon', decisionSource: 'owner', decidedAt: abandoned.decidedAt }) })
     if (!result.killed && result.reason !== 'already-gone') { process.stderr.write(`wt-lane-control: refused: ${result.reason}\n`); return 1 }
     process.stdout.write(`decision=abandon\nrun=${state.runId}\n`)
     return 0

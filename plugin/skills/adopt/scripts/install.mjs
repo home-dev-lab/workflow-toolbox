@@ -605,8 +605,13 @@ function itemContent(set, item, root) {
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
   const content = fs.readFileSync(src, 'utf8')
   if (set.kind !== 'scripts') return content
+  const replaceExactlyOnce = (body, fragment, replacement) => {
+    const count = body.split(fragment).length - 1
+    if (count !== 1) fail(`${item.file === 'wt-lane-wait.mjs' ? 'waiter' : 'launcher'} transformation expected exactly one occurrence in ${src}: ${fragment.slice(0, 60)}`)
+    return body.replace(fragment, replacement)
+  }
   if (item.file === 'wt-lane-wait.mjs') {
-    return content.replace("import { classifyLane, readCurrentSupervision } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
+    return replaceExactlyOnce(content, "import { classifyLane, readCurrentSupervision } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
 import { pathToFileURL } from 'node:url'
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude')
 let runtimeRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.WT_PLUGIN_ROOT || null
@@ -625,13 +630,6 @@ const { classifyLane, readCurrentSupervision } = await import(pathToFileURL(path
   if (item.file !== 'wt-lane.mjs') return content
   // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
   // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
-  const replaceExactlyOnce = (body, fragment, replacement) => {
-    const count = body.split(fragment).length - 1
-    if (count !== 1) {
-      fail(`launcher transformation expected exactly one occurrence in ${src}: ${fragment.slice(0, 60)}`)
-    }
-    return body.replace(fragment, replacement)
-  }
   let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'\nimport { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'\nimport { laneModelRefusal } from './lib/lane-model-allowlist.mjs'\nimport { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'\nimport { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'", `
 function pluginRoot(env = process.env) {
   for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
@@ -669,7 +667,7 @@ async function loadAdoptedConsentModules() {
   }
 }`)
   adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
-  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, mkdirSync, openSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
+  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, mkdirSync, openSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
   const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
   if (relativeRuntimeImport) {
     fail(`launcher transformation left a relative runtime import in ${src}: ${relativeRuntimeImport.slice(0, 60)}`)

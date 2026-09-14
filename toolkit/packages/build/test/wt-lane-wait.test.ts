@@ -25,10 +25,10 @@ function fixture(script: string) {
   worker.unref()
   writeFileSync(join(lane, 'pid'), String(worker.pid))
   const runId = `${worker.pid}-1`
-  const identity = inspectProcess(worker.pid!) ?? { argv: ['sh', '-c', script] }
+  const identity = inspectProcess(worker.pid!) ?? { argv: ['sh', '-c', script], startTime: 0 }
   const supervision = join(lane, 'supervision')
   mkdirSync(supervision)
-  writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: worker.pid, workerArgv: identity.argv, childPid: worker.pid, childArgv: identity.argv, worktree: root }))
+  writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: worker.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: worker.pid, childArgv: identity.argv, childStartTime: identity.startTime, worktree: root }))
   writeFileSync(join(supervision, 'current.json'), JSON.stringify({ runId }))
   return { root, lane, pid: worker.pid! }
 }

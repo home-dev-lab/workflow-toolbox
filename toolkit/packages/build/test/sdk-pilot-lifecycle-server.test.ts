@@ -1075,9 +1075,10 @@ printf 'report\n' > "$report"
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) })
-function killIdentity(expected: { pid: number, argv: string[], cwd?: string | null } | null, signal: NodeJS.Signals) {
+function killIdentity(expected: { pid: number, argv: string[], startTime?: number, cwd?: string | null } | null, signal: NodeJS.Signals) {
   if (!expected) throw new Error('expected test process identity is gone')
-  expect(sameIdentity(expected, inspectProcess(expected.pid))).toBe(true)
+  const actual = inspectProcess(expected.pid)
+  expect(sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, actual)).toBe(true)
   process.kill(expected.pid, signal)
 }
 function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null, options: Record<string, unknown> = {}) {
@@ -1112,6 +1113,7 @@ function realGitLifecycle() {
 }
 function text(result: Promise<{ content: Array<{ text: string }> }>) { return result.then((value) => value.content[0]!.text) }
 function launcher(source: string) {
+  if (source.includes("runId='995-1'")) source += `; const { readFileSync: readIdentityFile } = await import('node:fs'); const identity = (pid) => { const stat = readIdentityFile('/proc/'+pid+'/stat','utf8'); return { argv: readIdentityFile('/proc/'+pid+'/cmdline').toString().split('\\0').filter(Boolean), startTime: Number(stat.slice(stat.lastIndexOf(')')+2).split(' ')[19]) } }; const workerIdentity=identity(process.pid),childIdentity=identity(child.pid),recordFile=join(dir,runId+'.json'),record=JSON.parse(readIdentityFile(recordFile,'utf8')); writeFileSync(recordFile,JSON.stringify({ ...record, workerArgv: workerIdentity.argv, workerStartTime: workerIdentity.startTime, childArgv: childIdentity.argv, childStartTime: childIdentity.startTime }))`
   return rawLauncher(`process.stdout.write('pid='+process.pid+'\\n');${source}`)
 }
 function rawLauncher(source: string) {

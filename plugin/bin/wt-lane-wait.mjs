@@ -69,6 +69,10 @@ function main() {
   const opts = parse(process.argv.slice(2))
   if (opts.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (opts.error) { process.stderr.write(`wt-lane-wait: ${opts.error}\n${usage()}\n`); return 2 }
+  if (typeof classifyLane !== 'function' || typeof readCurrentSupervision !== 'function') {
+    process.stderr.write('wt-lane-wait: Refused: the installed workflow-toolbox plugin is too old for this adopted waiter; update the plugin and re-adopt wt-lane-wait.mjs.\n')
+    return 1
+  }
   const lane = path.join(opts.dir, '.lane')
   const pid = opts.pid === null ? pidFromFile(path.join(lane, 'pid')) : Number(opts.pid)
   if (!pid) { process.stderr.write('wt-lane-wait: no valid lane pid; pass --pid or provide .lane/pid\n'); return 2 }

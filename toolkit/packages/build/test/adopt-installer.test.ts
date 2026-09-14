@@ -606,6 +606,7 @@ describe('adopt installer — scripts set', () => {
     expect(out).toContain('wt-lane-wait.mjs: WROTE')
     expect(readFileSync(installed, 'utf8').split('\n')[1]).toMatch(/^\/\/ installed from workflow-toolbox v\d+\.\d+\.\d+/)
     expect(readFileSync(installedWait, 'utf8')).not.toContain("from './lib/lane-supervisor-core.mjs'")
+    expect(readFileSync(installedWait, 'utf8')).toContain('plugin is too old for this adopted waiter')
     expect(run(['--set', 'scripts', '--check'], d)).toContain('wt-lane.mjs: UP-TO-DATE')
     const help = spawnSync(process.execPath, [installed, '--help'], { encoding: 'utf8' })
     expect(help.status, help.stderr).toBe(0)

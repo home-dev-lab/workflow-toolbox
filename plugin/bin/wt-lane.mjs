@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // wt-lane.mjs -- detached, one-command external opencode lane launcher.
 
-import { appendFileSync, mkdirSync, openSync, existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, openSync, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { readFileSync as readLaneLog } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
@@ -18,6 +18,7 @@ const GRACE_MS = 250
 const DEFAULT_DECISION_GRACE = 300
 const DEFAULT_MAX_EXTENSIONS = 3
 const DECISION_TRANSITION_BOUND_MS = 5_000
+const LAUNCH_LOCK_MAX_AGE_MS = 120_000
 
 async function loadConsentModules() {
   return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
@@ -105,6 +106,20 @@ async function main() {
   const opts = parse(process.argv.slice(worker ? 3 : 2))
   if (opts.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (opts.error) { process.stderr.write(`wt-lane: ${opts.error}\n${usage()}\n`); return 2 }
+  let workerSpawnedChild = false
+  if (worker && opts.runId && opts.dir) process.once('beforeExit', () => {
+    if (workerSpawnedChild) return
+    const stateFile = path.join(opts.dir, '.lane', 'supervision', `${opts.runId}.json`)
+    let current = null
+    try { current = JSON.parse(readFileSync(stateFile, 'utf8')) } catch {}
+    if (current && current.state !== 'launching') return
+    try {
+      mkdirSync(path.dirname(stateFile), { recursive: true })
+      const temporary = `${stateFile}.${process.pid}.${Date.now()}.tmp`
+      writeFileSync(temporary, `${JSON.stringify({ ...current, version: 1, runId: opts.runId, state: 'launch-failed', worktree: opts.dir, reason: 'worker returned before spawning opencode' }, null, 2)}\n`, { mode: 0o600 })
+      renameSync(temporary, stateFile)
+    } catch {}
+  })
   if (!existsSync(opts.dir) || !statSync(opts.dir).isDirectory()) { process.stderr.write(`wt-lane: --dir is not a directory: ${opts.dir}\n`); return 2 }
   if (!existsSync(opts.brief)) { process.stderr.write(`wt-lane: --brief does not exist: ${opts.brief}\n`); return 2 }
   if (!opts.allowNoGit && !checkGitWorktree(opts.dir)) return 2
@@ -121,6 +136,83 @@ async function main() {
   if (typeof consentModules.writeJsonAtomic !== 'function' || typeof consentModules.classifyLane !== 'function' || typeof consentModules.terminateLane !== 'function') {
     process.stderr.write('wt-lane: Refused: the installed workflow-toolbox plugin is too old for this adopted launcher; update the plugin and re-adopt wt-lane.mjs.\n')
     return 1
+  }
+  let launchLock = null
+  let releaseLaunchLock = () => {}
+  if (!worker) {
+    const runId = opts.runId ?? `${process.pid}-${Date.now()}`
+    opts.runId = runId
+    const paths = consentModules.supervisionPaths(opts.dir, runId)
+    launchLock = path.join(paths.dir, 'launch.lock')
+    mkdirSync(paths.dir, { recursive: true })
+    const lockOwner = () => {
+      const identity = consentModules.inspectProcess(process.pid) ?? { argv: process.argv, startTime: performance.timeOrigin }
+      return { pid: process.pid, argv: identity.argv, startTime: identity.startTime, createdAt: new Date().toISOString() }
+    }
+    const lockIsStale = () => {
+      let owner = null
+      try { owner = JSON.parse(readFileSync(path.join(launchLock, 'owner.json'), 'utf8')) } catch {}
+      let age
+      try { age = Date.now() - statSync(launchLock).mtimeMs } catch (error) { if (error?.code === 'ENOENT') return { retry: true }; throw error }
+      if (age > LAUNCH_LOCK_MAX_AGE_MS) return { stale: true, owner, reason: `older than ${LAUNCH_LOCK_MAX_AGE_MS}ms` }
+      if (!owner || !Number.isSafeInteger(owner.pid)) return { stale: false, owner, reason: 'owner record is not ready' }
+      try { process.kill(owner.pid, 0) } catch (error) { if (error?.code === 'ESRCH') return { stale: true, owner, reason: 'owner process is gone' } }
+      const actual = consentModules.inspectProcess(owner.pid)
+      if (actual && Number.isFinite(owner.startTime) && actual.startTime !== owner.startTime) return { stale: true, owner, reason: 'owner pid was reused' }
+      return { stale: false, owner, reason: 'owner process is still running' }
+    }
+    const acquire = () => {
+      try {
+        mkdirSync(launchLock)
+        writeFileSync(path.join(launchLock, 'owner.json'), `${JSON.stringify(lockOwner(), null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+        return true
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error
+        const status = lockIsStale()
+        if (status.retry) return acquire()
+        if (!status.stale) {
+          process.stderr.write(`wt-lane: Refused: another lane launch is in progress (${status.reason}); retry this launch after its owner exits; locks older than ${LAUNCH_LOCK_MAX_AGE_MS / 1000}s recover automatically\n`)
+          return false
+        }
+        const quarantine = `${launchLock}.stale.${process.pid}.${Date.now()}`
+        try { renameSync(launchLock, quarantine) } catch { return acquire() }
+        rmSync(quarantine, { recursive: true, force: true })
+        try {
+          const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
+          consentModules.appendSupervisorJournal(dataDir, { event: 'launch-lock-recovered', runId, pid: status.owner?.pid ?? null, argv: consentModules.argvSummary(status.owner?.argv ?? []), worktree: opts.dir, owner: null, reason: status.reason })
+        } catch {}
+        return acquire()
+      }
+    }
+    if (!acquire()) return 1
+    let released = false
+    releaseLaunchLock = () => { if (!released) { released = true; rmSync(launchLock, { recursive: true, force: true }) } }
+    process.once('exit', releaseLaunchLock)
+    const current = consentModules.readCurrentSupervision(opts.dir)
+    if (!current && existsSync(paths.pointer)) {
+      process.stderr.write(`wt-lane: Refused: current lane supervision is unreadable; after verifying no lane process is live, remove ${consentModules.shellQuote(paths.pointer)} and retry\n`)
+      return 1
+    }
+    if (current) {
+      const verdict = consentModules.classifyLane(current)
+      const hardBound = consentModules.laneHardBoundAt(current)
+      if (verdict.status === 'unknown' && hardBound !== null && Date.now() > hardBound) {
+        try {
+          const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
+          consentModules.appendSupervisorJournal(dataDir, { event: 'superseded', runId: current.runId, pid: current.childPid, argv: consentModules.argvSummary(current.childArgv ?? []), worktree: opts.dir, owner: current.owner ?? null, reason: `unknown beyond hard bound ${new Date(hardBound).toISOString()}` })
+        } catch {}
+      } else if (!['terminal', 'gone'].includes(verdict.status)) {
+        const token = current.ownerToken ? ` --owner-token ${consentModules.shellQuote(current.ownerToken)}` : ''
+        const control = `node ${consentModules.shellQuote(path.join(path.dirname(process.argv[1]), 'wt-lane-control.mjs'))} --dir ${consentModules.shellQuote(opts.dir)} --decision abandon${token}`
+        const remedy = ['decision-needed', 'worker-gone-child-alive'].includes(verdict.status)
+          ? `abandon with ${control}`
+          : verdict.status === 'unknown'
+            ? `retry after the recorded hard bound${hardBound === null ? ' can be established from a readable record' : ` at ${new Date(hardBound).toISOString()}`}`
+            : `wait until the lane reaches decision-needed, then abandon with ${control}`
+        process.stderr.write(`wt-lane: Refused: current lane ${current.runId} is ${verdict.status}; ${remedy}\n`)
+        return 1
+      }
+    }
   }
   const modelRefusal = consentModules.laneModelRefusal(opts.model, { env: process.env })
   if (modelRefusal) { process.stderr.write(`${modelRefusal}\n`); return 1 }
@@ -163,45 +255,20 @@ async function main() {
 
   if (!worker) {
     mkdirSync(path.join(opts.dir, '.lane'), { recursive: true })
-    const runId = opts.runId ?? `${process.pid}-${Date.now()}`
+    const runId = opts.runId
     const paths = consentModules.supervisionPaths(opts.dir, runId)
-    const lock = path.join(paths.dir, 'launch.lock')
-    mkdirSync(paths.dir, { recursive: true })
-    try { mkdirSync(lock) } catch {
-      process.stderr.write(`wt-lane: Refused: another lane launch is in progress; abandon with node ${consentModules.shellQuote(path.join(path.dirname(process.argv[1]), 'wt-lane-control.mjs'))} --dir ${consentModules.shellQuote(opts.dir)} --decision abandon\n`)
-      return 1
-    }
     try {
-      const current = consentModules.readCurrentSupervision(opts.dir)
-      if (!current && existsSync(paths.pointer)) {
-        process.stderr.write(`wt-lane: Refused: current lane supervision is unknown; abandon with node ${consentModules.shellQuote(path.join(path.dirname(process.argv[1]), 'wt-lane-control.mjs'))} --dir ${consentModules.shellQuote(opts.dir)} --decision abandon\n`)
-        return 1
-      }
-      if (current) {
-        const verdict = consentModules.classifyLane(current)
-        const hardBound = consentModules.laneHardBoundAt(current)
-        if (verdict.status === 'unknown' && hardBound !== null && Date.now() > hardBound) {
-          try {
-            const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
-            consentModules.appendSupervisorJournal(dataDir, { event: 'superseded', runId: current.runId, pid: current.childPid, argv: consentModules.argvSummary(current.childArgv ?? []), worktree: opts.dir, owner: current.owner ?? null, reason: `unknown beyond hard bound ${new Date(hardBound).toISOString()}` })
-          } catch { /* a stale unknown lane may still be superseded when the audit sink is unavailable */ }
-        } else if (!['terminal', 'gone'].includes(verdict.status)) {
-          const token = current.ownerToken ? ` --owner-token ${consentModules.shellQuote(current.ownerToken)}` : ''
-          process.stderr.write(`wt-lane: Refused: current lane ${current.runId} is ${verdict.status}; abandon with node ${consentModules.shellQuote(path.join(path.dirname(process.argv[1]), 'wt-lane-control.mjs'))} --dir ${consentModules.shellQuote(opts.dir)} --decision abandon${token}\n`)
-          return 1
-        }
-      }
       const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', opts.brief, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
-      const identity = consentModules.inspectProcess(child.pid) ?? { argv: [process.execPath, ...workerArgs] }
+      const identity = consentModules.inspectProcess(child.pid) ?? { argv: [process.execPath, ...workerArgs], startTime: performance.timeOrigin }
       const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
-      consentModules.writeJsonAtomic(paths.record, { version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity.argv, childPid: null, childArgv: null, worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 })
+      try { writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: null, childArgv: null, childStartTime: null, worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 }) } catch (error) { if (error?.code !== 'EEXIST') throw error }
       consentModules.writeJsonAtomic(paths.pointer, { version: 1, runId })
       child.unref()
       writeFileSync(path.join(opts.dir, '.lane', 'pid'), `${child.pid}\n`)
       process.stdout.write(`pid=${child.pid}\nrun=${runId}\nlog=${opts.log}\n`)
       return 0
-    } finally { rmSync(lock, { recursive: true, force: true }) }
+    } finally { releaseLaunchLock() }
   }
 
   const runId = opts.runId ?? `${process.pid}-${Date.now()}`
@@ -229,6 +296,7 @@ async function main() {
       child.once('spawn', resolve)
       child.once('error', reject)
     })
+    workerSpawnedChild = true
   } catch (error) {
     const reason = `opencode spawn failed: ${error instanceof Error ? error.message : String(error)}`
     consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', worktree: opts.dir, reason })
@@ -238,12 +306,12 @@ async function main() {
   const decisionFile = statePaths.decision
   const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const journal = (event) => { try { consentModules.appendSupervisorJournal(dataDir, event) } catch { /* supervision must remain bounded when its audit sink is unavailable */ } }
-  const childIdentity = consentModules.inspectProcess(child.pid) ?? { argv: ['opencode', ...args], cwd: opts.dir }
-  const workerIdentity = consentModules.inspectProcess(process.pid) ?? { argv: process.argv }
-  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity.argv, childPid: child.pid, childArgv: childIdentity.argv, worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
+  const childIdentity = consentModules.inspectProcess(child.pid) ?? { argv: ['opencode', ...args], cwd: opts.dir, startTime: performance.timeOrigin }
+  const workerIdentity = consentModules.inspectProcess(process.pid) ?? { argv: process.argv, startTime: performance.timeOrigin }
+  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity.argv, workerStartTime: workerIdentity.startTime, childPid: child.pid, childArgv: childIdentity.argv, childStartTime: childIdentity.startTime, worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
   let currentState = baseState
   const writeState = (extra) => {
-    currentState = { ...baseState, ...extra }
+    currentState = { ...currentState, ...extra }
     consentModules.writeJsonAtomic(stateFile, currentState)
     return true
   }
@@ -272,9 +340,14 @@ async function main() {
     if (writeReceipt) finish(code)
     process.removeAllListeners('SIGTERM'); process.removeAllListeners('SIGINT')
     process.on('SIGTERM', () => {}); process.on('SIGINT', () => {})
-    consentModules.terminateLane(currentState, { graceMs: GRACE_MS, journal, source: 'worker', ...(terminal ? { markTerminal: (stage) => writeState(stage === 'terminal' ? terminal : { ...terminal, state: 'terminating' }) } : {}) })
+    consentModules.terminateLane(currentState, { graceMs: GRACE_MS, journal, source: 'worker', ownedChild: child, ...(terminal ? { markTerminal: (stage) => writeState(stage === 'terminal' ? terminal : { ...terminal, state: 'terminating' }) } : {}) })
   }
-  terminateWorker = (code) => { clearTimeout(timer); clearTimeout(graceTimer); cleanupBrief(); endGroup(code, { terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'signal', decidedAt: new Date().toISOString() } }) }
+  terminateWorker = (code) => {
+    clearTimeout(timer); clearTimeout(graceTimer); cleanupBrief()
+    let ownerDecision = false
+    try { const recorded = JSON.parse(readFileSync(stateFile, 'utf8')); ownerDecision = ['terminating', 'abandoned'].includes(recorded.state) && recorded.decisionSource === 'owner' } catch {}
+    endGroup(code, { terminal: ownerDecision ? null : { state: 'abandoned', decision: 'abandon', decisionSource: 'signal', decidedAt: new Date().toISOString() } })
+  }
   const cleanupBrief = () => {
     if (opts.briefCleanupDir && opts.brief.startsWith(`${opts.briefCleanupDir}${path.sep}`)) rmSync(opts.briefCleanupDir, { recursive: true, force: true })
   }
