@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
-import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, processAlive, readLogTail, supervisionUnavailableMessage, terminateVerified } from './lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, processAlive, readLogTail, supervisionPaths, supervisionUnavailableMessage, terminateVerified } from './lib/lane-supervisor-core.mjs'
 import { registeredWorktrees, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
@@ -26,8 +26,15 @@ function records(project) {
   const worktrees = new Set([project, ...(git.status === 'known' ? git.worktrees : []), ...(umbrella.status === 'known' ? umbrella.worktrees : [])])
   const out = []
   for (const worktree of worktrees) {
-    const file = path.join(worktree, '.lane', 'supervision.json')
-    try { out.push(JSON.parse(readFileSync(file, 'utf8'))) } catch {}
+    const dir = supervisionPaths(worktree).dir
+    let currentRunId = null
+    try { currentRunId = JSON.parse(readFileSync(supervisionPaths(worktree).pointer, 'utf8')).runId } catch {}
+    let names = []
+    try { names = readdirSync(dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch {}
+    if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
+    for (const name of names) {
+      try { out.push(JSON.parse(readFileSync(path.join(dir, name), 'utf8'))) } catch {}
+    }
   }
   return out
 }
@@ -42,6 +49,20 @@ async function main() {
   if (!['observe', 'enforce'].includes(cleanupMode)) { process.stderr.write('wt-lane-orphan-watch: lane_orphan_cleanup must be observe or enforce\n'); return 2 }
   const dataDir = path.join(resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const notified = new Set()
+  let journalFailureReported = false
+  const journal = (event, { killed = false } = {}) => {
+    try {
+      appendSupervisorJournal(dataDir, event)
+      journalFailureReported = false
+      return true
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error)
+      if (killed) process.stdout.write(`LANE kill journal failed: pid=${event.pid} event=${event.event}; process outcome=${event.reason}; audit error=${detail}\n`)
+      else if (!journalFailureReported) process.stderr.write(`wt-lane-orphan-watch: journal write failed; will retry: ${detail}\n`)
+      journalFailureReported = true
+      return false
+    }
+  }
   if (process.platform !== 'linux') process.stdout.write(`${supervisionUnavailableMessage()}\n`)
   const sweep = () => {
     const known = records(options.project)
@@ -58,21 +79,25 @@ async function main() {
       if (record.state === 'running' && !notified.has(`${record.runId}:stalled`)) {
         const activity = latestWorktreeWrite(record.worktree)
         if (activity.status === 'known' && activity.at && Date.now() - activity.at >= stallMinutes * 60_000) {
-          notified.add(`${record.runId}:stalled`)
           const evidence = { lastWriteAt: new Date(activity.at).toISOString(), activityBounded: activity.bounded, logTail: readLogTail(record.log), process: 'running' }
-          if (ownsNotice) process.stdout.write(`LANE stalled: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${evidence.lastWriteAt} process=running log-tail=${JSON.stringify(evidence.logTail)}; inspect, nudge, extend, relaunch, or abandon; no process was killed\n`)
-          appendSupervisorJournal(dataDir, { event: 'stalled', pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })
+          if (journal({ event: 'stalled', pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })) {
+            notified.add(`${record.runId}:stalled`)
+            if (ownsNotice) process.stdout.write(`LANE stalled: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${evidence.lastWriteAt} process=running log-tail=${JSON.stringify(evidence.logTail)}; inspect, nudge, extend, relaunch, or abandon; no process was killed\n`)
+          }
         }
       }
       if (verdict.action !== 'clean') continue
       const evidence = { recordState: record.state, launcherAlive: false, childPid: record.childPid, childArgv: record.childArgv, childCwd: processRecord.cwd, workerPid: record.workerPid }
       if (cleanupMode === 'observe') {
-        process.stdout.write(`LANE would-clean: worktree=${record.worktree} pid=${record.childPid} reason=${verdict.reason}; lane_orphan_cleanup=observe, no process was killed\n`)
-        appendSupervisorJournal(dataDir, { event: 'would-clean', pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: verdict.reason, evidence })
+        const key = `${record.runId}:would-clean`
+        if (!notified.has(key) && journal({ event: 'would-clean', pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: verdict.reason, evidence })) {
+          notified.add(key)
+          if (ownsNotice) process.stdout.write(`LANE would-clean: worktree=${record.worktree} pid=${record.childPid} reason=${verdict.reason}; lane_orphan_cleanup=observe, no process was killed\n`)
+        }
         continue
       }
       const result = terminateVerified(processRecord)
-      appendSupervisorJournal(dataDir, { event: result.killed ? 'cleaned' : 'cleanup-refused', pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: result.killed ? verdict.reason : result.reason, evidence })
+      journal({ event: result.killed ? 'cleaned' : 'cleanup-refused', pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: result.killed ? verdict.reason : result.reason, evidence }, { killed: result.killed })
     }
     const table = listProcessTable()
     const attributed = new Set(known.map((record) => record.childPid))
@@ -80,16 +105,16 @@ async function main() {
       if (!/(?:^|[\\/\s])opencode(?:\s|$)/i.test(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
       const unknown = inspectProcess(item.pid)
       if (!unknown?.cwd || (unknown.cwd !== options.project && !unknown.cwd.startsWith(`${options.project}${path.sep}`))) continue
-      notified.add(`unknown:${item.pid}`)
-      process.stdout.write(`WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed\n`)
-      appendSupervisorJournal(dataDir, { event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
+      if (journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })) {
+        notified.add(`unknown:${item.pid}`)
+        process.stdout.write(`WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed\n`)
+      }
     }
     const brokers = listBrokers()
     if (brokers.supported) for (const pid of brokers.pids) {
       if (notified.has(`broker:${pid}`)) continue
-      notified.add(`broker:${pid}`)
       const broker = inspectProcess(pid)
-      appendSupervisorJournal(dataDir, { event: 'broker-observed', pid, argv: broker ? argvSummary(broker.argv) : '', worktree: null, owner: 'broker', reason: 'broker idleness detection is not implemented' })
+      if (journal({ event: 'broker-observed', pid, argv: broker ? argvSummary(broker.argv) : '', worktree: null, owner: 'broker', reason: 'broker idleness detection is not implemented' })) notified.add(`broker:${pid}`)
     }
   }
   let failureReported = false

@@ -52,6 +52,11 @@ export function inspectProcess(pid, { procRoot = '/proc', platform = process.pla
   }
 }
 
+export function processEvidenceStatus(pid, { platform = process.platform, inspect = inspectProcess } = {}) {
+  if (platform !== 'linux') return 'unknown'
+  return inspect(pid, { platform }) ? 'running' : 'gone'
+}
+
 export function processAlive(pid, { kill = process.kill } = {}) {
   try { kill(pid, 0); return true } catch (error) { return error?.code === 'EPERM' }
 }
@@ -83,7 +88,7 @@ export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
     for (const entry of entries) {
       if (++visited > maxEntries) return { at: null, bounded: true, status: 'unknown' }
-      if (skipped.has(entry.name) || (dir === path.join(root, '.lane') && entry.name === 'supervision.json')) continue
+      if (skipped.has(entry.name) || (dir === path.join(root, '.lane') && entry.name === 'supervision')) continue
       const full = path.join(dir, entry.name)
       try {
         const stat = statSync(full)
@@ -110,9 +115,30 @@ export function appendSupervisorJournal(dataDir, event) {
 }
 
 export function writeJsonAtomic(file, value) {
+  mkdirSync(path.dirname(file), { recursive: true })
   const temporary = `${file}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
   renameSync(temporary, file)
+}
+
+export function supervisionPaths(root, runId = null) {
+  const dir = path.join(root, '.lane', 'supervision')
+  return {
+    dir,
+    pointer: path.join(dir, 'current.json'),
+    record: runId ? path.join(dir, `${runId}.json`) : null,
+    decision: runId ? path.join(dir, `${runId}.decision.json`) : null,
+    handoff: runId ? path.join(dir, `${runId}.handoff.json`) : null,
+  }
+}
+
+export function readCurrentSupervision(root) {
+  try {
+    const paths = supervisionPaths(root)
+    const pointer = JSON.parse(readFileSync(paths.pointer, 'utf8'))
+    if (typeof pointer.runId !== 'string' || !/^\d+-\d+$/.test(pointer.runId)) return null
+    return JSON.parse(readFileSync(supervisionPaths(root, pointer.runId).record, 'utf8'))
+  } catch { return null }
 }
 
 export function supervisionUnavailableMessage(platform = process.platform) {

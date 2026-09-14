@@ -28,9 +28,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - Lane supervision now defaults to warn-only `would-clean` evidence, derives orphanhood only from a
-  terminal supervision record plus a gone launcher, bounds default extensions, verifies relaunch
-  startup before ending the old group, enforces owner identity, rotates its journal, and retries
-  watcher failures. Promote cleanup to `enforce` only after at least 100 audited `would-clean`
+  terminal supervision record plus a gone launcher, bounds default extensions, stores immutable
+  per-run records behind an atomic pointer, and waits for a replacement's own bounded-preflight
+  outcome before ending the old group. Pilot lanes refuse relaunch because their lifecycle can no
+  longer attest its receipt. The watcher owner-filters attributable output, guards each audit write,
+  reports unjournaled kills, rotates its journal, and retries failures. Promote cleanup to `enforce`
+  only after at least 100 audited `would-clean`
   firings show zero live victims. Codex brokers remain observed only because idleness detection is not
   implemented. Existing adopted launchers must be re-adopted after this change.
 - The open-work Stop gate now detects project-scoped detached pilot/lane runners and fresh

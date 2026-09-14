@@ -40,8 +40,9 @@ is journaled and retried; it never produces a wake or terminates the monitor set
 
 `lane-orphan-watch` is registered with `when: always`. It reports still-running lanes after 10
 minutes without a worktree write (`lane_stall_minutes` or `WT_LANE_STALL_MINUTES`) and reports each
-launcher decision point with evidence; neither condition kills live work. Notices are restricted to
-the recorded owning session. The default `lane_orphan_cleanup=observe` (env fallback
+launcher decision point with evidence; neither condition kills live work. Attributable decision,
+stall, and `would-clean` notices are restricted to the recorded owning session; unattributable
+warnings remain project-scoped. The default `lane_orphan_cleanup=observe` (env fallback
 `WT_LANE_ORPHAN_CLEANUP`) journals `would-clean` and signals nothing. Promote to `enforce` only after
 at least 100 audited firings show zero live victims. Enforcement requires an exact attributed child,
 an `exited` or `abandoned` supervision record, a gone launcher, and immediate argv/cwd identity
@@ -52,6 +53,11 @@ The append-only version-1 JSONL journal is
 `<plugin-data-dir>/lane-supervisor/lane-supervisor.jsonl`; path resolution follows
 `plugin/bin/lib/plugin-data-dir.mjs`. Session-owned events are delivered on monitor stdout. A pilot
 receives its own lane event synchronously from the lifecycle result instead.
+
+Supervision uses one `.lane/supervision/<runId>.json` record per run and an atomic
+`.lane/supervision/current.json` pointer. Control ownership is an accident guard, not authentication.
+Pilot-owned timeout decisions offer `extend` and `abandon`, but not `relaunch`, because the lifecycle
+call that owned the receipt has already returned.
 
 The journal rotates at 10 MiB and keeps one previous file. Sweep output/journal failures are reported
 once per failing streak and retried. Linux provides the full watcher/control contract; other platforms

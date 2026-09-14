@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { appendSupervisorJournal, classifyLane, latestWorktreeWrite, processAlive, supervisionUnavailableMessage, terminateVerified } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, classifyLane, latestWorktreeWrite, processAlive, processEvidenceStatus, supervisionUnavailableMessage, terminateVerified } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 describe('lane supervisor safety core', () => {
   it('never authorizes an unattributed process', () => {
@@ -56,6 +56,7 @@ describe('lane supervisor safety core', () => {
   it('names a bounded worktree scan unknown and reports non-Linux availability', () => {
     expect(latestWorktreeWrite('/unused', { maxEntries: -1 })).toMatchObject({ at: null, bounded: true, status: 'unknown' })
     expect(supervisionUnavailableMessage('darwin')).toBe('lane supervision unavailable on darwin')
+    expect(processEvidenceStatus(77, { platform: 'darwin' })).toBe('unknown')
   })
 
   it('rotates the 10 MiB journal and keeps one previous file', () => {

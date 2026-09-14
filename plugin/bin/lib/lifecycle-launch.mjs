@@ -7,9 +7,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { launchProcess, launchProcessWithOutput, terminateProcessGroup, waitForLaneReceipt } from './lifecycle-receipts.mjs'
+import { supervisionPaths } from './lane-supervisor-core.mjs'
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
+const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
+const LANE_TIMEOUT_GRACE_MS = 1_000
 
 function terminalExit(content) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(content)?.[1] ?? null
@@ -229,7 +232,7 @@ export function createLifecycleLaunch({
         }
         const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
         if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return refusal(`${state.phase}->next`, 'launcher pid', log)
-        const logEntry = await waitForLaneReceipt({
+        let logEntry = await waitForLaneReceipt({
           log,
           nonce,
           timeoutMs: laneWaitMs ?? timeout * 1000,
@@ -239,28 +242,46 @@ export function createLifecycleLaunch({
           readRegularFile,
         })
         if (!logEntry) {
-          const supervisionFile = path.join(root, '.lane', 'supervision.json')
-          let status = readRegularFile(supervisionFile)
-          // The worker's timeout starts after launcher preflight, so its owner record can land a
-          // fraction after the lifecycle's same nominal wait bound. Wait only for the shipped
-          // launcher; injected test/custom launchers have no supervision contract to await.
-          if (!laneLauncher) {
-            const deadline = Date.now() + 1_000
-            while (!status && Date.now() < deadline) {
+          const runId = /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null
+          const supervisionFile = runId ? supervisionPaths(root, runId).record : null
+          const supervisionPointer = runId ? supervisionPaths(root).pointer : null
+          let status = supervisionFile ? readRegularFile(supervisionFile) : null
+          if (runId) {
+            let pointerRunId = null
+            try { pointerRunId = JSON.parse(readRegularFile(supervisionPointer)).runId } catch {}
+            const preflightDeadline = Date.now() + LANE_PREFLIGHT_BOUND_MS
+            while ((!status || pointerRunId !== runId) && Date.now() < preflightDeadline) {
               await new Promise((resolve) => setTimeout(resolve, 25))
+              try { pointerRunId = JSON.parse(readRegularFile(supervisionPointer)).runId } catch {}
               status = readRegularFile(supervisionFile)
             }
           }
+          let parsed = null
           try {
-            const parsed = JSON.parse(status)
-            if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'decision-needed') {
+            parsed = JSON.parse(status)
+            if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'running' && Date.parse(parsed.timeoutAt)) {
+              logEntry = await waitForLaneReceipt({
+                log,
+                nonce,
+                timeoutMs: Math.max(0, Date.parse(parsed.timeoutAt) - Date.now()) + LANE_TIMEOUT_GRACE_MS,
+                launchedAt,
+                pollMs: lanePollMs,
+                readAttestation,
+                readRegularFile,
+              })
+              status = readRegularFile(supervisionFile)
+              parsed = JSON.parse(status)
+            }
+            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'decision-needed') {
               const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; use wt-lane-control extend|relaunch|abandon --owner-token ${nonce}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
               snapshot = null
               return `lane ${phase} TIMEOUT: ${detail}`
             }
           } catch {}
-          group = await terminateProcessGroup(workerPid)
-          return `lane ${phase} EXIT=missing`
+          if (!logEntry) {
+            group = await terminateProcessGroup(workerPid)
+            return `lane ${phase} EXIT=missing`
+          }
         }
         group = await terminateProcessGroup(workerPid)
         const reportStat = regularFile(report)

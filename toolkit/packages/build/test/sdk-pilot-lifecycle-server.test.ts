@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { deriveRoute } from '../../../../plugin/bin/lib/route-from-card.mjs'
@@ -150,7 +151,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('keeps the launch snapshot for a genuine pilot decision timeout', async () => {
-    const timeoutLauncher = launcher("import { mkdirSync, writeFileSync } from 'node:fs'; import { dirname, join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const brief=args[args.indexOf('--brief')+1]; writeFileSync(join(root,'.lane','snapshot-path'),brief); mkdirSync(dirname(join(root,'.lane','supervision.json')),{recursive:true}); writeFileSync(join(root,'.lane','supervision.json'),JSON.stringify({state:'decision-needed',workerPid:process.pid,owner:'pilot',defaultDecision:'extend',decisionDueAt:'later',evidence:{}}))")
+    const timeoutLauncher = launcher("import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const brief=args[args.indexOf('--brief')+1]; const runId='999-1'; const dir=join(root,'.lane','supervision'); writeFileSync(join(root,'.lane','snapshot-path'),brief); mkdirSync(dir,{recursive:true}); writeFileSync(join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,owner:'pilot',defaultDecision:'extend',decisionDueAt:'later',evidence:{}})); writeFileSync(join(dir,'current.json'),JSON.stringify({runId})); process.stdout.write('run='+runId+'\\n')")
     const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('TIMEOUT')
@@ -158,6 +159,18 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(existsSync(snapshot)).toBe(true)
     expect(readFileSync(snapshot, 'utf8')).toContain('resume from the existing worktree state')
   })
+
+  it('derives the lifecycle wait from a real worker timeout recorded after delayed preflight', async () => {
+    const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
+    const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+process.env.PATH,CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
+    const lifecycle = testLifecycle('LITE', [], wrapper, 30, { executor: 'gpt-lane' })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
+    const pointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
+    const supervision = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', `${pointer.runId}.json`), 'utf8'))
+    process.kill(-supervision.workerPid, 'SIGTERM')
+    expect(result).toContain('TIMEOUT')
+  }, 15_000)
 
   it('terminates the launcher group when a missing receipt has no decision-needed record', async () => {
     const pidFileName = '.lane/missing-worker-pid'

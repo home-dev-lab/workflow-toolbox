@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,7 +10,7 @@ const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
 const CONTROL = join(ROOT, 'plugin/bin/wt-lane-control.mjs')
 const WATCHER = join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) })
 
 function fixture(script: string) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lane-launcher-')); roots.push(root)
@@ -20,7 +20,7 @@ function fixture(script: string) {
   writeFileSync(join(bin, 'opencode'), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
 if [ "$1" = "--pure" ]; then if [ "$IGNORE_FENCE" = "1" ]; then printf '[{"name":"workflow-toolbox-fence-sentinel"}]\n'; elif [ "$INVISIBLE_ALLOW" = "1" ]; then printf '[]\n'; else printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; fi; exit 0; fi
-if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then if [ -n "$IDENTITY_RECORD" ]; then printf 'probe|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$IDENTITY_RECORD"; fi; printf '%s\n' "\${EFFECTIVE_SKILLS:-[]}"; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then if [ -n "$IDENTITY_RECORD" ]; then printf 'probe|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$IDENTITY_RECORD"; fi; if [ -n "$SLOW_PREFLIGHT_AT_COUNT" ]; then count=0; [ -f "$PWD/.lane/preflight-count" ] && count=$(cat "$PWD/.lane/preflight-count"); count=$((count + 1)); printf '%s' "$count" > "$PWD/.lane/preflight-count"; [ "$count" = "$SLOW_PREFLIGHT_AT_COUNT" ] && sleep 6; fi; printf '%s\n' "\${EFFECTIVE_SKILLS:-[]}"; exit 0; fi
 ${script}\n`)
   spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
@@ -44,6 +44,16 @@ function waitForContent(file: string, pattern: RegExp, ms = 5000) {
     if (existsSync(file) && pattern.test(readFileSync(file, 'utf8'))) return
     spawnSync('sleep', ['0.05'])
   }
+}
+function currentStateFile(dir: string, ms = 3000) {
+  const pointer = join(dir, '.lane', 'supervision', 'current.json')
+  waitForFile(pointer, ms)
+  const runId = JSON.parse(readFileSync(pointer, 'utf8')).runId
+  return join(dir, '.lane', 'supervision', `${runId}.json`)
+}
+function currentDecisionFile(dir: string) {
+  const runId = JSON.parse(readFileSync(join(dir, '.lane', 'supervision', 'current.json'), 'utf8')).runId
+  return join(dir, '.lane', 'supervision', `${runId}.decision.json`)
 }
 
 describe('wt-lane detached launcher', () => {
@@ -71,7 +81,7 @@ describe('wt-lane detached launcher', () => {
   it('returns immediately, leaves the worker alive, closes stdin, and writes EXIT=0', () => {
     const f = fixture('IFS= read -r x; test -z "$x"; sleep 0.2; echo done')
     const res = run(f); const log = join(f.dir, '.lane', 'run.log')
-    expect(res.status).toBe(0); expect(res.stdout).toMatch(/pid=\d+\nlog=/)
+    expect(res.status).toBe(0); expect(res.stdout).toMatch(/pid=\d+\nrun=\d+-\d+\nlog=/)
      const pid = Number(/pid=(\d+)/.exec(res.stdout)?.[1]); expect(() => process.kill(pid, 0)).not.toThrow()
      expect(readFileSync(join(f.dir, '.lane', 'pid'), 'utf8').trim()).toBe(String(pid))
     waitFor(log); expect(readFileSync(log, 'utf8')).toMatch(/EXIT=0\n$/)
@@ -80,12 +90,26 @@ describe('wt-lane detached launcher', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '1']); expect(res.status).toBe(0)
     const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
-    const status = join(f.dir, '.lane', 'supervision.json'); waitForFile(status, 3000)
+    const status = currentStateFile(f.dir)
     const until = Date.now() + 3000
     while (Date.now() < until && !readFileSync(status, 'utf8').includes('decision-needed')) spawnSync('sleep', ['0.05'])
     expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ state: 'decision-needed', defaultDecision: 'extend' })
     expect(() => process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0)).not.toThrow()
     expect(existsSync(join(f.dir, '.lane', 'run.log')) ? readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8') : '').not.toMatch(/EXIT=/)
+    const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1])
+    process.kill(worker, 'SIGTERM')
+    const cleanupUntil = Date.now() + 4000
+    while (Date.now() < cleanupUntil) { try { process.kill(worker, 0); spawnSync('sleep', ['0.05']) } catch { break } }
+  })
+  it('keeps one immutable supervision record per run behind an atomic current pointer', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '1']); expect(res.status).toBe(0)
+    waitForFile(join(f.dir, '.lane', 'supervision', 'current.json'))
+    const pointer = JSON.parse(readFileSync(join(f.dir, '.lane', 'supervision', 'current.json'), 'utf8'))
+    const recordFile = join(f.dir, '.lane', 'supervision', `${pointer.runId}.json`)
+    waitForContent(recordFile, /decision-needed/)
+    expect(JSON.parse(readFileSync(recordFile, 'utf8'))).toMatchObject({ runId: pointer.runId, state: 'decision-needed' })
+    expect(readdirSync(join(f.dir, '.lane', 'supervision')).filter((name) => /^\d+-\d+\.json$/.test(name))).toContain(`${pointer.runId}.json`)
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
   })
   it('records the stated extend default when the decision grace expires and still keeps work alive', () => {
@@ -112,9 +136,9 @@ describe('wt-lane detached launcher', () => {
     const f = fixture('if [ ! -f "$PWD/progress" ]; then printf kept > "$PWD/progress"; echo $$ > "$PWD/first.pid"; sleep 30; else sleep 0.5; printf resumed > "$PWD/resumed"; fi')
     f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
     const res = run(f, ['--timeout', '1', '--decision-grace', '10']); expect(res.status).toBe(0)
-    const status = join(f.dir, '.lane', 'supervision.json')
+    const status = currentStateFile(f.dir)
     waitForContent(status, /decision-needed/)
-    writeFileSync(join(f.dir, '.lane', 'decision.json'), JSON.stringify({ runId: 'stale', timeoutAt: 'stale', decision: 'abandon' }))
+    writeFileSync(currentDecisionFile(f.dir), JSON.stringify({ runId: 'stale', timeoutAt: 'stale', decision: 'abandon' }))
     const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'relaunch', '--reason', 'e2e stalled fixture'], { encoding: 'utf8', env: f.env })
     expect(control.status, control.stderr).toBe(0)
     waitForFile(join(f.dir, 'resumed'), 5000)
@@ -126,6 +150,27 @@ describe('wt-lane detached launcher', () => {
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     waitForContent(journal, /"decision":"relaunch"/)
     expect(readFileSync(journal, 'utf8')).toContain('"decision":"relaunch"')
+    expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ state: 'relaunched', relaunchOutcome: 'started' })
+  })
+  it('waits for a replacement whose own preflight exceeds the old fixed handoff wait', () => {
+    const f = fixture('if [ ! -f "$PWD/progress" ]; then printf kept > "$PWD/progress"; echo $$ > "$PWD/first.pid"; sleep 30; else printf resumed > "$PWD/resumed"; fi')
+    f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'; f.env.SLOW_PREFLIGHT_AT_COUNT = '4'
+    const res = run(f, ['--timeout', '1', '--decision-grace', '20']); expect(res.status).toBe(0)
+    waitForContent(currentStateFile(f.dir), /decision-needed/)
+    const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'relaunch'], { encoding: 'utf8', env: f.env, timeout: 20_000 })
+    expect(control.status, control.stderr).toBe(0)
+    expect(control.stdout).toMatch(/replacement=\d+-\d+/)
+    waitForFile(join(f.dir, 'resumed'), 5000)
+  }, 30_000)
+  it('refuses a late replacement before opencode starts when the predecessor outcome won', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    const runId = '999-2'
+    const supervision = join(f.dir, '.lane', 'supervision'); mkdirSync(supervision)
+    writeFileSync(join(supervision, `${runId}.handoff.json`), JSON.stringify({ version: 1, runId, outcome: 'failed', reason: 'predecessor bound elapsed' }))
+    const result = spawnSync(process.execPath, [LAUNCHER, '--worker', '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--timeout', '1', '--owner', 'session', '--run-id', runId, '--replaces-run', '999-1', '--allow-no-git'], { encoding: 'utf8', env: f.env })
+    expect(result.status).toBe(1)
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+    expect(JSON.parse(readFileSync(join(supervision, `${runId}.handoff.json`), 'utf8'))).toMatchObject({ outcome: 'failed', reason: 'predecessor bound elapsed' })
   })
   it('does not treat an old EXIT marker as an orphan while the current launcher is alive', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
@@ -134,6 +179,7 @@ describe('wt-lane detached launcher', () => {
     const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
     expect(watcher.status, watcher.stderr).toBe(0)
+    expect(watcher.stdout).not.toContain('would-clean')
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     const pid = Number(readFileSync(pidFile, 'utf8').trim())
     expect(() => process.kill(pid, 0)).not.toThrow()
@@ -145,7 +191,7 @@ describe('wt-lane detached launcher', () => {
   it('observe mode journals would-clean but kills nothing', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
-    const status = join(f.dir, '.lane', 'supervision.json'); const pidFile = join(f.dir, 'opencode.pid')
+    const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForFile(status); waitForFile(pidFile)
     const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1]); process.kill(worker, 'SIGKILL')
     const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
@@ -160,7 +206,7 @@ describe('wt-lane detached launcher', () => {
   it('enforce mode escalates and journals cleaned only after the orphan is gone', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
-    const status = join(f.dir, '.lane', 'supervision.json'); const pidFile = join(f.dir, 'opencode.pid')
+    const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForFile(status); waitForFile(pidFile)
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGKILL')
     const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
@@ -173,7 +219,7 @@ describe('wt-lane detached launcher', () => {
   it('keeps polling after a journal write failure', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
-    const status = join(f.dir, '.lane', 'supervision.json'); const pidFile = join(f.dir, 'opencode.pid')
+    const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForFile(status); waitForFile(pidFile)
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGKILL')
     const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
@@ -184,10 +230,21 @@ describe('wt-lane detached launcher', () => {
     process.kill(watcher.pid!, 'SIGTERM')
     process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 'SIGKILL')
   })
+  it('reports a failed enforce kill journal on stdout', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
+    waitForFile(status); waitForFile(pidFile)
+    process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGKILL')
+    const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
+    const blocked = join(f.root, 'blocked-state'); writeFileSync(blocked, 'not a directory')
+    const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: { ...f.env, XDG_STATE_HOME: blocked, WT_LANE_ORPHAN_CLEANUP: 'enforce' }, timeout: 5000 })
+    expect(watcher.stdout).toContain('kill journal failed')
+  })
   it('refuses control from a session other than the recorded owner', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30'); f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
     const res = run(f, ['--timeout', '1', '--decision-grace', '10']); expect(res.status).toBe(0)
-    waitForContent(join(f.dir, '.lane', 'supervision.json'), /decision-needed/)
+    waitForContent(currentStateFile(f.dir), /decision-needed/)
     const quietWatcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: { ...f.env, CLAUDE_CODE_SESSION_ID: 'other-session' } })
     expect(quietWatcher.stdout).not.toContain('LANE decision-needed')
     const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'extend'], { encoding: 'utf8', env: { ...f.env, CLAUDE_CODE_SESSION_ID: 'other-session' } })
@@ -197,13 +254,38 @@ describe('wt-lane detached launcher', () => {
   it('journals relaunch-failed and leaves the old lane running when its brief disappeared', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30'); f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
     const res = run(f, ['--timeout', '1', '--decision-grace', '10']); expect(res.status).toBe(0)
-    waitForContent(join(f.dir, '.lane', 'supervision.json'), /decision-needed/); rmSync(join(f.dir, 'brief.md'))
+    waitForContent(currentStateFile(f.dir), /decision-needed/); rmSync(join(f.dir, 'brief.md'))
     const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'relaunch'], { encoding: 'utf8', env: f.env })
     expect(control.status).toBe(1); expect(control.stderr).toContain('relaunch-failed')
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     waitForContent(journal, /relaunch-failed/, 4000)
     expect(() => process.kill(Number(readFileSync(join(f.dir, 'opencode.pid'), 'utf8').trim()), 0)).not.toThrow()
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
+  })
+  it('ties a later relaunch result to its replacement instead of a stale failed reason', () => {
+    const f = fixture('if [ ! -f "$PWD/progress" ]; then printf kept > "$PWD/progress"; echo $$ > "$PWD/opencode.pid"; sleep 30; else printf resumed > "$PWD/resumed"; fi')
+    f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
+    const res = run(f, ['--timeout', '1', '--decision-grace', '20']); expect(res.status).toBe(0)
+    const original = currentStateFile(f.dir); waitForContent(original, /decision-needed/); rmSync(join(f.dir, 'brief.md'))
+    const failed = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'relaunch'], { encoding: 'utf8', env: f.env })
+    expect(failed.status).toBe(1); expect(failed.stderr).toContain('relaunch-failed for replacement')
+    writeFileSync(join(f.dir, 'brief.md'), '# brief\n')
+    const second = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'relaunch'], { encoding: 'utf8', env: f.env, timeout: 15_000 })
+    expect(second.status, second.stderr).toBe(0)
+    expect(second.stdout).toMatch(/replacement=\d+-\d+/)
+    waitForFile(join(f.dir, 'resumed'))
+  })
+  it('refuses relaunch for pilot-owned lanes because the lifecycle cannot consume its receipt', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '1', '--decision-grace', '10', '--owner', 'pilot', '--owner-token', 'pilot-token']); expect(res.status).toBe(0)
+    waitForContent(currentStateFile(f.dir), /decision-needed/)
+    const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'relaunch', '--owner-token', 'pilot-token'], { encoding: 'utf8', env: f.env })
+    expect(control.status).toBe(1)
+    expect(control.stderr).toContain('pilot-owned lanes do not offer relaunch')
+    const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1])
+    process.kill(worker, 'SIGTERM')
+    const until = Date.now() + 4000
+    while (Date.now() < until) { try { process.kill(worker, 0); spawnSync('sleep', ['0.05']) } catch { break } }
   })
   it('a SIGTERM to the worker takes the opencode process with it and writes EXIT=143 (a killed launcher used to leave the lane running)', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
