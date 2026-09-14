@@ -25,8 +25,8 @@ ${script}\n`)
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state') }
   return { root, dir, config, env }
 }
-function run(f: ReturnType<typeof fixture>, extra: string[] = []) {
-  return spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'test/model', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: f.env })
+function run(f: ReturnType<typeof fixture>, extra: string[] = [], model = 'openai/gpt-5.6-luna') {
+  return spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', model, '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: f.env })
 }
 function waitFor(log: string, ms = 3000) {
   const until = Date.now() + ms
@@ -38,6 +38,27 @@ function waitForFile(file: string, ms = 3000) {
 }
 
 describe('wt-lane detached launcher', () => {
+  it('launches a model in the default lane model allow-list', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    expect(run(f).status).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
+  })
+  it.each(['google/gemini-3.6-flash', 'openai/gpt-5.6-sol-fast'])('refuses unlisted model %s before spawn', (model) => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    const res = run(f, [], model)
+    expect(res.status).toBe(1)
+    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-astra); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+  })
+  it('honours a comma- or whitespace-separated WT_LANE_MODELS override with exact matching', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    f.env.WT_LANE_MODELS = 'test/one, google/gemini-3.6-flash\ntest/two'
+    expect(run(f, [], 'openai/gpt-5.6-luna').status).toBe(1)
+    expect(run(f, [], 'google/gemini-3.6-flash').status).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
+  })
   it('returns immediately, leaves the worker alive, closes stdin, and writes EXIT=0', () => {
     const f = fixture('IFS= read -r x; test -z "$x"; sleep 0.2; echo done')
     const res = run(f); const log = join(f.dir, '.lane', 'run.log')
@@ -97,7 +118,7 @@ describe('wt-lane detached launcher', () => {
       '--dir',
       f.dir,
       '--model',
-      'test/model',
+      'openai/gpt-5.6-luna',
       '--variant',
       'high',
       '',

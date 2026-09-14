@@ -355,7 +355,10 @@ describe('runner-hosted SDK pilot lifecycle', () => {
       : args[0] === 'diff' && args.includes('--binary')
         ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
         : ''
-    const lifecycle = testLifecycle('FULL', [], new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url).pathname, 3000, { git })
+    const lifecycle = testLifecycle('FULL', [], new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url).pathname, 3000, {
+      git,
+      models: { lane: 'openai/gpt-5.6-luna', review: 'openai/gpt-5.6-luna' },
+    })
     try {
       await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
       const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'

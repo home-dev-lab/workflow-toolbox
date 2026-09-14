@@ -41,7 +41,7 @@ async function run(env: Record<string, string>) {
   return { result, cache: readFileSync(join(config, '.quota-cache.json'), 'utf8') }
 }
 
-describe('wt-quota-watch proxy route', () => {
+describe.sequential('wt-quota-watch proxy route', () => {
   it('relay sessions print the skip line and leave the config state untouched', async () => {
     const config = mkdtempSync(join(tmpdir(), 'wt-quota-relay-'))
     roots.push(config)

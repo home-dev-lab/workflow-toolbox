@@ -9,12 +9,13 @@ import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
 import { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'
+import { laneModelRefusal } from './lib/lane-model-allowlist.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal }
 }
 
 function usage() {
@@ -101,6 +102,8 @@ async function main() {
     process.stderr.write(`wt-lane: Refused: ${error instanceof Error ? error.message : String(error)}; refusing to launch.\n`)
     return 1
   }
+  const modelRefusal = consentModules.laneModelRefusal(opts.model, { env: process.env })
+  if (modelRefusal) { process.stderr.write(`${modelRefusal}\n`); return 1 }
   const consent = consentModules.evaluateConsentGate(
     { tool_input: { command: 'opencode run' }, cwd: opts.dir },
     { resolveConsentImpl: consentModules.resolveConsent },

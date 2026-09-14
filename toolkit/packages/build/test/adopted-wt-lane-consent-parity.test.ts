@@ -38,7 +38,7 @@ exit 0
   spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'plugin-data-dir.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-data-dir.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
@@ -58,17 +58,17 @@ exit 0
   return { root, config, project, installed, env, installer: join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs') }
 }
 
-function launch(f: ReturnType<typeof fixture>) {
+function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna') {
   const brief = join(f.project, 'brief.md')
   writeFileSync(brief, '# brief\n')
-  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', 'test/model', '--brief', brief, '--allow-no-git'], { encoding: 'utf8', env: f.env })
+  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git'], { encoding: 'utf8', env: f.env })
 }
 
 describe('adopted wt-lane consent resolver', () => {
   for (const mode of ['--check', '--install']) {
     it(`${mode} refuses when the resolved plugin root is missing a launcher runtime module`, () => {
       const f = fixture(undefined, false)
-      const missing = join(f.root, 'plugin', 'bin', 'lib', 'opencode-skill-fence.mjs')
+      const missing = join(f.root, 'plugin', 'bin', 'lib', 'lane-model-allowlist.mjs')
       rmSync(missing)
 
       const result = spawnSync(
@@ -97,6 +97,14 @@ describe('adopted wt-lane consent resolver', () => {
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const started = launch(f)
     expect(started.status, started.stderr).toBe(0)
+  })
+
+  it('refuses an unlisted model through the plugin runtime before the adopted launcher spawns', () => {
+    const f = fixture()
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const refused = launch(f, 'google/gemini-3.6-flash')
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain('is not in the lane model allow-list')
   })
 
   it('uses the real resolver for account and project consent fixtures', () => {
