@@ -19,11 +19,17 @@ const roots: string[] = []
 beforeAll(async () => {
   // Every request is recorded: three full-suite failures on 2026-09-14 showed a probe answered by an
   // exhausted queue (empty body) with no way to tell which client sent the extra request. A failing
-  // assertion now prints who called (see `requestTrail`).
+  // assertion now prints each request: order, peer port, the session/model the client sent, what it got.
   server = createServer((request, res) => {
-    const body = responses.shift() ?? responses.at(-1)
-    requests.push(`${new Date().toISOString()} ${request.method} ${request.url} ua=${request.headers['user-agent'] ?? '-'} session=${request.headers['x-claude-code-session-id'] ?? request.headers['x-session-id'] ?? '-'} remaining=${responses.length} body=${body === undefined ? 'EMPTY' : 'reading'}`)
-    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(body))
+    let raw = ''
+    request.on('data', (chunk) => { raw += chunk })
+    request.on('end', () => {
+      const body = responses.shift() ?? responses.at(-1)
+      let sent = '-'
+      try { const parsed = JSON.parse(raw); sent = `session=${parsed.session_id ?? parsed.sessionId ?? '-'} model=${parsed.model ?? '-'}` } catch { sent = `raw=${raw.slice(0, 80) || '(empty)'}` }
+      requests.push(`#${requests.length + 1} ${new Date().toISOString()} ${request.method} ${request.url} peer=${request.socket.remotePort} ${sent} remaining=${responses.length} answered=${body === undefined ? 'EMPTY' : `${body.windows?.[0]?.used_percent}%`}`)
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(body))
+    })
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address()
