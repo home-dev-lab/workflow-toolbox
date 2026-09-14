@@ -29,7 +29,7 @@ const receiptExit = (file, fallback = 1) => {
 }
 
 export function parseOrchestratorArgs(argv) {
-  const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null, knowledgeBaseIndex: null }
+  const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null, knowledgeBaseIndex: null, pluginDirs: [] }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     const next = () => argv[++i]
@@ -45,6 +45,11 @@ export function parseOrchestratorArgs(argv) {
     else if (arg === '--report') options.report = next()
     else if (arg === '--profile-env') options.profileEnv = next()
     else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = next()
+    else if (arg === '--plugin-dir') {
+      const pluginDir = next() ?? ''
+      if (!path.isAbsolute(pluginDir)) return { error: `--plugin-dir must be an absolute path: ${pluginDir}` }
+      options.pluginDirs.push(path.resolve(pluginDir))
+    }
     else if (arg === '--pilot-timeout') options.pilotTimeout = Number(next())
     else if (arg === '--board-url') options.boardUrl = next()
     else if (arg === '--board-id') options.boardId = next()
@@ -212,6 +217,7 @@ export async function runOrchestrator(input, dependencies = {}) {
   try {
     repo = fs.realpathSync(String(git('git', ['rev-parse', '--show-toplevel'], { cwd: options.cwd ?? process.cwd(), encoding: 'utf8' })).trim())
     if (options.base === 'main') throw new Error('base main is refused')
+    if ((options.pluginDirs ?? []).some((pluginDir) => !path.isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
     if (options.cards?.some((id) => !CARD_ID.test(String(id)))) throw new Error('invalid card id')
     if (!under(repo, realLocation(options.worktreesDir))) throw new Error('worktrees dir is outside repository root')
     if (options.maxMinutes * 60 < options.pilotTimeout) throw new Error('time budget below one pilot timeout')
@@ -294,7 +300,7 @@ export async function runOrchestrator(input, dependencies = {}) {
       row.install = await (dependencies.install ?? defaultInstall)(worktree, cardDir)
       if (!fs.existsSync(path.join(cardDir, 'install.log'))) writeFile(path.join(cardDir, 'install.log'), `EXIT=${row.install ?? 1}\n`)
       if (row.install !== 0) { row.pilot = 1; row.reason = `dependency install failed (EXIT=${row.install})`; writeFile(path.join(cardDir, 'pilot.log'), 'EXIT=1\n'); return row }
-      const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, knowledgeBaseIndex: options.knowledgeBaseIndex, knowledgeBaseProjectRoot: repo, timeout: options.pilotTimeout, boardMoves: false }, pilotDependencies)
+      const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, knowledgeBaseIndex: options.knowledgeBaseIndex, knowledgeBaseProjectRoot: repo, pluginDirs: options.pluginDirs, timeout: options.pilotTimeout, boardMoves: false }, pilotDependencies)
       row.pilot = pilot.exitCode
       row.route = /^route=(LITE|FULL)\b/.exec(fs.existsSync(runnerLog) ? fs.readFileSync(runnerLog, 'utf8') : '')?.[1] ?? pilot.summary?.route ?? '-'
       writeFile(path.join(cardDir, 'pilot.log'), `EXIT=${pilot.exitCode}\n`)
@@ -357,7 +363,7 @@ export async function runOrchestrator(input, dependencies = {}) {
       if (symlink) throw new Error(`judge refused: symlink under wave directory: ${path.relative(waveDir, symlink)}`)
       waveServer = (dependencies.createWaveServer ?? createWaveServer)({ waveDir, cards: ordered, sdk: dependencies.sdk, sdkRequire: dependencies.sdkRequire })
       for (const row of ordered) { waveServer.setCardState(row.id, 'piloting'); waveServer.setCardState(row.id, 'judging') }
-      judge = createSdkJudge({ query: dependencies.query, models: dependencies.models, waveDir, waveServer, contract: dependencies.contract, env: dependencies.env, knowledgeBaseIndex: options.knowledgeBaseIndex, projectRoot: repo })
+      judge = createSdkJudge({ query: dependencies.query, models: dependencies.models, waveDir, waveServer, contract: dependencies.contract, env: dependencies.env, knowledgeBaseIndex: options.knowledgeBaseIndex, projectRoot: repo, pluginDirs: options.pluginDirs })
     }
     for (const row of ordered) {
       // No receipts to judge when the dependency install failed: the card is escalated as is.

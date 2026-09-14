@@ -418,6 +418,40 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).toContain(`plan sha256: ${createHash('sha256').update(plan).digest('hex')}`)
   })
 
+  it('requires byte-identical card DoD bullets with named proofs in plan Acceptance', async () => {
+    const cardText = 'Route: FULL\n## Definition of done\n- Preserve exact punctuation.\n- Run the real e2e.\n\n## Notes\n- not acceptance\n'
+    const lifecycle = testLifecycle('FULL', [], null, null, { cardText })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    const base = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation.\n  Proof: task 1 and test\n` })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'missing' }))).toContain('missing card DoD bullet "Run the real e2e."')
+    await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation!\n  Proof: task 1\n- Run the real e2e.\n  Proof: e2e fixture\n` })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'reworded' }))).toContain('missing card DoD bullet "Preserve exact punctuation."')
+    await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation.\n  Proof: evidence someday\n- Run the real e2e.\n  Proof: e2e fixture\n` })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'proof' }))).toContain('missing Proof line naming a task, test, or e2e for card DoD bullet "Preserve exact punctuation."')
+    await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation.\n  Proof: task 1 and test\n- Run the real e2e.\n  Proof: e2e fixture\n` })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'complete' }))).toBe('accepted phase=critic')
+  })
+
+  it('refuses plan acceptance when the card has no Definition of done section', async () => {
+    const lifecycle = testLifecycle('FULL', [], null, null, { cardText: 'Route: FULL\nDoD: an inline field is not the required section\n' })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Acceptance\n- inline field\n  Proof: test\n' })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toContain('card has no ## Definition of done section')
+  })
+
+  it('requires every card DoD bullet and outcome in pilot report Acceptance', async () => {
+    const cardText = 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n- Keep tests green.\n'
+    const lifecycle = await lifecycleReadyForReport({ cardText })
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing' }))).toContain('missing card DoD bullet "Keep tests green."')
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'outcome' }))).toContain('missing outcome proven, not done: <reason>, or deferred: <reason> for card DoD bullet "Ship exact bytes."')
+    // A proven outcome may carry its evidence on the same line; refusing that shape would loop a pilot on wording.
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven — byte lock in rules-manifest.test.ts\n- Keep tests green.\n  Outcome: proven: pnpm test EXIT=0\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'proven-with-evidence' }))).not.toContain('missing outcome')
+  })
+
   it('accepts ### task headings with indented body bullets, refuses one without DoD, and names both item shapes', async () => {
     const lifecycle = testLifecycle('FULL')
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })

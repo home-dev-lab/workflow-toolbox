@@ -49,7 +49,7 @@ carries the plan's `## Tasks` block byte-identically.
 | Phase | Do this before transition |
 | --- | --- |
 | discovery | Inspect the intake and relevant worktree sources, then transition with `record` containing that discovery and the runner's frozen route; LITE reaches tdd, FULL reaches plan. |
-| plan | Write a plan with ADR decision/rejected, top-level task DoDs, and Gates; then transition. |
+| plan | Write a plan with ADR decision/rejected, top-level task DoDs, Gates, and `## Acceptance`. Quote every card `## Definition of done` bullet byte-identically and follow each with `Proof:` naming a task, test, or e2e; then transition. |
 | critic | Write the brief, run the lane, and transition from its report: approved -> tdd; changes-requested -> plan. After three revisions, a fourth changes-requested routes to a partial report. |
 | tdd or harden | Write the brief, run the lane, then transition to verify. |
 | verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
@@ -65,7 +65,9 @@ partial. A refusal names missing evidence: produce that evidence, do not retry t
 ## Completion and boundaries
 
 Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`, `## E2E`,
-`## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. E2E contains command/procedure
+`## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. Under Acceptance,
+quote every card DoD bullet byte-identically and follow each with `Outcome: proven`, `Outcome: not done: <reason>`,
+or `Outcome: deferred: <reason>`. E2E contains command/procedure
 plus verbatim output, or exactly `e2e not run: <reason>`. FULL also requires `## Independent Review`
 with lenses and confirmed/refuted findings. Keep exact `Partial: <reason>` only on partial runs; the
 owner decides how to proceed from a completed partial run. The report edge refuses a report not written

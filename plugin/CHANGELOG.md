@@ -6,12 +6,18 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Added repeatable absolute local-plugin options to SDK pilots and orchestrators, with pilot
+  initialization receipts required to confirm every configured plugin loaded.
 - Added the `sdk-pilot` skill to expose detached evaluation of the not-yet-supported SDK pilot runner.
 - Added a versioned SDK-role rules manifest with strict source/heading validation, additive project
   manifests, and exact standing, phase-entry, and lane-brief delivery.
 - Added required E2E evidence to pilot reports and required independent-review summaries on FULL runs.
 
 ### Changed
+- SDK lifecycle plans and pilot reports now quote every card Definition-of-done bullet under
+  `## Acceptance`, with named plan proofs and explicit report outcomes enforced at their edges.
+- TDD and harden briefs now include the frontmatter-stripped changelog skill as server-written
+  authoritative instructions and fail closed when its source is unavailable.
 - Split the verify-by-ground-truth rule's oversized top section into addressable gestures and mapped
   gate, delegate-proof, and causal-attribution guidance to the relevant SDK pilot lifecycle roles.
 - SDK pilot critics now receive the server-recorded discovery intake alongside the plan, and SDK

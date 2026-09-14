@@ -9,7 +9,7 @@ import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-life
 import { MAX_CRITIC_ROUNDS } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
-const liteReport = '# report\n\n## E2E\ne2e not run: lifecycle fixture\n'
+const liteReport = '# report\n\n## E2E\ne2e not run: lifecycle fixture\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
 const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
 const roots: string[] = []
 
@@ -191,6 +191,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(calls.filter((call) => call.phase === 'review').every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
     expect(calls.filter((call) => call.phase === 'refutation').every((call) => call.model === 'openai/gpt-6-astra')).toBe(true)
     expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
+    expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.briefText.includes('# Write release records'))).toBe(true)
   })
 
   it('H14-1 lock: completes the exact fourth-critic sequence as a partial committed and archived run', async () => {
@@ -272,7 +273,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     edgeConfig({ review: { verdict: 'clear' }, refutation: { verdict: 'clear' } })
     await lifecycle.artifact({ kind: 'review-brief', content: 'review\n' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'review-clear' })
     await lifecycle.artifact({ kind: 'refutation-brief', content: 'refute\n' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 }); await lifecycle.transition({ phase: 'refutation', outcome: 'clear', tool_use_id: 'refutation-clear' })
-    expect(await lifecycle.artifact({ kind: 'pilot-report', content: '## E2E\ne2e not run: unit fixture\n' })).toBe('wrote pilot-report')
+    expect(await lifecycle.artifact({ kind: 'pilot-report', content: '## E2E\ne2e not run: unit fixture\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n' })).toBe('wrote pilot-report')
     expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toContain('Independent Review')
   })
 
@@ -324,7 +325,7 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
-  const server = createLifecycleServer({ worktree, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [], ...options })
+  const server = createLifecycleServer({ worktree, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [], ...options })
   return { ...handlers(server), calls, base, root: worktree, state: server.state }
 }
 function liteLifecycle() {

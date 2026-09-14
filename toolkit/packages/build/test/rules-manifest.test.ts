@@ -62,8 +62,8 @@ describe('SDK role rules manifest', () => {
   it('measures the composed standing system prompt before and after exact shipped sections', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
-    expect(Buffer.byteLength(contract)).toBe(5607)
-    expect(Buffer.byteLength(composed)).toBe(7839)
+    expect(Buffer.byteLength(contract)).toBe(5933)
+    expect(Buffer.byteLength(composed)).toBe(8165)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 
@@ -84,6 +84,23 @@ describe('SDK role rules manifest', () => {
     expect(brief.indexOf('## Rules that apply to this role (authoritative)')).toBeLessThan(brief.indexOf('## Pilot instructions'))
     expect(brief).toContain('## TDD authority\n\nExact rule bytes.\n')
     expect(brief).toContain('## Pilot instructions\n\n## Tasks')
+  })
+
+  it('places the frontmatter-stripped changelog skill body authoritatively in tdd briefs and refuses a missing source', async () => {
+    const skillRoot = manifestRoot('---\nname: fixture\ndescription: fixture\n---\n\n# Fixture changelog instructions\n\nRun the deterministic writer.\n')
+    const skill = join(skillRoot, 'rule.md')
+    const lifecycle = lifecycleWithRules([], 'LITE', { changelogSkillPath: skill })
+    await lifecycle.transition({ phase: 'discovery', record: 'read it', tool_use_id: 'phase' })
+    await lifecycle.artifact({ kind: 'brief', content: 'pilot context\n' })
+    const brief = readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')
+    expect(brief).toContain('## Changelog instructions (authoritative)\n\n# Fixture changelog instructions\n\nRun the deterministic writer.')
+    expect(brief).not.toContain('name: fixture')
+    expect(brief.indexOf('## Changelog instructions (authoritative)')).toBeLessThan(brief.indexOf('## Pilot instructions'))
+
+    const missing = lifecycleWithRules([], 'LITE', { changelogSkillPath: join(skillRoot, 'absent.md') })
+    await missing.transition({ phase: 'discovery', record: 'read it', tool_use_id: 'phase' })
+    expect(await missing.artifact({ kind: 'brief', content: 'pilot context\n' })).toContain('changelog skill unavailable')
+    expect(() => readFileSync(join(missing.root, '.lane', 'tdd-brief.md'))).toThrow()
   })
 
   it('places independent-role rules with authoritative instructions before fenced pilot context', () => {
@@ -110,11 +127,11 @@ function manifestRoot(content: string) {
   return root
 }
 
-function lifecycleWithRules(rules: unknown[], route = 'FULL') {
+function lifecycleWithRules(rules: unknown[], route = 'FULL', options: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wt-rules-lifecycle-')); roots.push(root)
   mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: root })
-  const server = createLifecycleServer({ worktree: root, route, models: { lane: 'test', review: 'test' }, cardId: 'rules', sessionTag: 'test', rules })
+  const server = createLifecycleServer({ worktree: root, route, models: { lane: 'test', review: 'test' }, cardId: 'rules', sessionTag: 'test', rules, ...options })
   const tools = server.instance._registeredTools
   const text = async (result: Promise<{ content: Array<{ text: string }> }>) => (await result).content[0]!.text
   return { root, transition: (args: Record<string, unknown>) => text(tools.transition.handler(args)), artifact: (args: Record<string, unknown>) => text(tools.write_artifact.handler(args)) }

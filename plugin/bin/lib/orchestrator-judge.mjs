@@ -44,7 +44,7 @@ function messageQueue() {
   }
 }
 
-export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir }) {
+export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir, pluginDirs = [] }) {
   const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: knowledgeBaseIndex, env, projectRoot })
   let knowledgeBaseSent = false
   const withKnowledgeBase = (content) => {
@@ -96,6 +96,7 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
       settingSources: [],
       permissionMode: 'default',
       cwd: waveDir,
+      plugins: pluginDirs.map((pluginPath) => ({ type: 'local', path: pluginPath })),
       tools: ['Read', 'Glob', 'Grep'],
       mcpServers: { 'sdk-wave-lifecycle': waveServer },
       canUseTool: async (toolName, input) => waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex: knowledgeBase.path }),

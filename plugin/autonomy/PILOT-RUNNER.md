@@ -40,13 +40,13 @@ form and Node path APIs for resolution and real-path containment on each host.
 | Edge | Required evidence |
 | --- | --- |
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
-| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, and `## Gates`. |
+| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every card Definition-of-done bullet byte-identically with a following `Proof:` naming a task, test, or e2e. A missing/reworded bullet or a card without that section is refused. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. A fourth changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd or harden -> verify | Attested lane receipt and non-empty report. On FULL, `tdd-brief.md` has the plan `## Tasks` block byte-identically. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
 | review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
 | refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
-| report -> awaiting_fidelity | Pilot report with valid `## E2E`, plus `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
+| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every card DoD bullet with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`, plus `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
@@ -87,6 +87,8 @@ the index and real-path-contained regular Markdown fiches while Glob/Grep remain
 OpenCode runs with `--dir` and `cwd` set to the worktree and `--auto` in `wt-lane.mjs`; `--auto` approves an
 `external_directory` read the user's OpenCode config leaves on `ask`, so the brief names the index and tells
 the lane to report a refused read (a config that denies it wins) rather than rely on the knowledge base.
+TDD and harden briefs also carry the frontmatter-stripped body of the shipped changelog skill in a
+server-written authoritative section; a missing skill source refuses brief composition.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or
@@ -135,10 +137,13 @@ two SDK readings agree with each other (a remapped profile serves a different id
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
 
-`--card`, `--dir`, and `--card-file` are required. Optional flags are `--knowledge-base-index`, `--profile-env`, `--contract`,
+`--card`, `--dir`, and `--card-file` are required. Optional flags are `--knowledge-base-index`, repeatable
+`--plugin-dir <absolute-path>`, `--profile-env`, `--contract`,
 `--hard`, `--mailbox`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
-Linux and macOS, resolves `--dir` to an absolute path, and applies real-path containment before
+Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.
+Configured plugin directories are passed as local SDK plugins beside `pilot-guard`; the initialization
+receipt must name every one or the pilot run is refused. No plugin name or host path is built in.
 
 ## Fidelity review
 
@@ -162,7 +167,8 @@ Launch a wave with `setsid nohup bash -c 'node plugin/bin/wt-run-orchestrator.mj
 EXIT=$? >> <wave.log>' > /dev/null 2>&1 < /dev/null &`, or replace `--cards` with
 `--mission-list <list>` plus repeatable `--mission-label`, `--max-cards`, and
 optional `--max-minutes`. `--hard <id,id>` selects the hard pilot model per card;
-`--profile-env <settings.json>` supplies model remaps to pilots and the orchestrator session.
+`--profile-env <settings.json>` supplies model remaps to pilots and the orchestrator session. Repeatable
+`--plugin-dir <absolute-path>` loads the named local plugins in both card pilots and the SDK judge.
 
 An explicit card is eligible only in Backlog, Next, or In Progress. A mission card must also carry
 one priority label (`P0|P1|P2`), one type label (`feature|chore|bug|research`), one effort label

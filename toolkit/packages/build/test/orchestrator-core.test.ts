@@ -141,7 +141,8 @@ describe('wave lifecycle server', () => {
 
 describe('orchestrator driver', () => {
   it('parses the complete CLI surface and rejects invalid launch shapes', () => {
-    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md' })
+    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md', pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
+    expect(parseOrchestratorArgs(['--cards', '1', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--plugin-dir', 'relative/plugin'])).toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
     expect(parseOrchestratorArgs(['--cards', '1', '--mission-list', 'Next', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r']).error).toContain('exactly one')
   })
 
@@ -381,9 +382,12 @@ describe('SDK orchestrator judge', () => {
         yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'judgment', content: result.content }] } }
       })()
     }
-    const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
+    const plugins = [join(f.root, 'rules-plugin'), join(f.root, 'lsp-plugin')]; plugins.forEach((plugin) => mkdirSync(plugin))
+    const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex, pluginDirs: plugins }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
     expect(calls).toBe(1)
     expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep'] })
+    expect(queryOptions.plugins).toEqual(plugins.map((plugin) => ({ type: 'local', path: plugin })))
+    expect(f.launches.every((launch) => JSON.stringify(launch).includes(JSON.stringify(plugins)))).toBe(true)
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
     expect(prompts).toEqual([
       `KNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,

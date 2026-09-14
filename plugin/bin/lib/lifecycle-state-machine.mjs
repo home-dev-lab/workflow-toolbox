@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
@@ -37,14 +38,18 @@ const PLAN_SHAPE = Object.freeze({
   tasksHeading: 'Tasks',
   taskDodLabels: Object.freeze(['DoD', 'Definition of done']),
   gatesHeading: 'Gates',
+  acceptanceHeading: 'Acceptance',
 })
-export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, and a \`## ${PLAN_SHAPE.gatesHeading}\` section`
+export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, and a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every card \`## Definition of done\` bullet byte-identically with a following \`Proof:\` line naming a task, test, or e2e`
 
 function planSection(content, heading) {
   return new RegExp(`(?:^|\\n)## ${heading}\\b[\\s\\S]*?(?=\\n## |$)`, 'i').exec(content)?.[0] ?? ''
 }
+function acceptanceSection(content) {
+  return /(?:^|\n)## Acceptance[ \t]*\r?\n[\s\S]*?(?=\r?\n## |$)/i.exec(content)?.[0] ?? ''
+}
 
-function containsPlanShape(content) {
+function containsPlanShape(content, requireAcceptance) {
   const adr = planSection(content, PLAN_SHAPE.adrHeading)
   const tasks = planSection(content, PLAN_SHAPE.tasksHeading)
   const lines = tasks.split(/\r?\n/)
@@ -69,8 +74,69 @@ function containsPlanShape(content) {
           .slice(start + 1, taskIndexes[i + 1] ?? lines.length)
           .some((line) => new RegExp(`^\\s*(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(line)),
     ) &&
-    Boolean(planSection(content, PLAN_SHAPE.gatesHeading))
+    Boolean(planSection(content, PLAN_SHAPE.gatesHeading)) &&
+    (!requireAcceptance || Boolean(acceptanceSection(content)))
   )
+}
+function cardDodBullets(content) {
+  const section = /(?:^|\n)## Definition of done\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)?.[1]
+  if (section === undefined) return null
+  return section.split(/\r?\n/).map((line) => /^\s*-\s+(.*?)\s*$/.exec(line)?.[1]).filter((line) => line !== undefined)
+}
+function acceptanceEntries(content) {
+  const section = acceptanceSection(content)
+  const lines = section.split(/\r?\n/)
+  const entries = new Map()
+  for (let index = 1; index < lines.length; index += 1) {
+    const match = /^\s*-\s+(.*?)\s*$/.exec(lines[index])
+    if (!match) continue
+    let end = index + 1
+    while (end < lines.length && !/^\s*-\s+/.test(lines[end])) end += 1
+    const matching = entries.get(match[1]) ?? []
+    matching.push(lines.slice(index + 1, end))
+    entries.set(match[1], matching)
+    index = end - 1
+  }
+  return entries
+}
+function planAcceptanceProblem(content, dodBullets) {
+  if (dodBullets === null) return 'card has no ## Definition of done section'
+  if (dodBullets.length === 0) return 'card ## Definition of done section has no bullets'
+  const entries = acceptanceEntries(content)
+  const used = new Map()
+  for (const bullet of dodBullets) {
+    const index = used.get(bullet) ?? 0
+    const lines = entries.get(bullet)?.[index]
+    if (!lines) return `card DoD bullet "${bullet}"`
+    used.set(bullet, index + 1)
+    if (!lines.some((line) => /^\s*Proof:\s*.*\b(?:task|test|e2e)\b/i.test(line))) {
+      return `Proof line naming a task, test, or e2e for card DoD bullet "${bullet}"`
+    }
+  }
+  return null
+}
+function reportAcceptanceProblem(content, dodBullets) {
+  if (dodBullets === null) return 'card has no ## Definition of done section'
+  if (dodBullets.length === 0) return 'card ## Definition of done section has no bullets'
+  const entries = acceptanceEntries(content)
+  const used = new Map()
+  for (const bullet of dodBullets) {
+    const index = used.get(bullet) ?? 0
+    const lines = entries.get(bullet)?.[index]
+    if (!lines) return `card DoD bullet "${bullet}"`
+    used.set(bullet, index + 1)
+    if (!lines.some((line) => /^\s*(?:Outcome:\s*)?(?:proven(?:\s*[:—–-]\s*\S.*)?|not done:\s*\S.*|deferred:\s*\S.*)\s*$/i.test(line))) {
+      return `outcome proven, not done: <reason>, or deferred: <reason> for card DoD bullet "${bullet}"`
+    }
+  }
+  return null
+}
+function changelogSkillBody(file) {
+  let content
+  try { content = fs.readFileSync(file, 'utf8') } catch (error) { throw new Error(`changelog skill unavailable at ${file}: ${error instanceof Error ? error.message : String(error)}`) }
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/.exec(content)
+  if (!match) throw new Error(`changelog skill unavailable at ${file}: YAML frontmatter is missing`)
+  return match[1].trim()
 }
 function tasksBlock(content) {
   return /(?:^|\n)## Tasks\b[\s\S]*?(?=\n## |$)/i.exec(content)?.[0] ?? null
@@ -126,6 +192,8 @@ export function createLifecycleStateMachine({
   copy = fs.cpSync,
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
   rules = null,
+  cardText = null,
+  changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
     throw new Error('lifecycle worktree must be absolute')
@@ -134,6 +202,7 @@ export function createLifecycleStateMachine({
     throw new Error('lifecycle cardId must match [A-Za-z0-9._-]+')
   }
   const root = fs.realpathSync(worktree)
+  const dodBullets = typeof cardText === 'string' ? cardDodBullets(cardText) : undefined
   const activeRules = rules ?? loadRules({ projectRoot: root })
   let constructionBase = 'HEAD'
   try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
@@ -158,6 +227,12 @@ export function createLifecycleStateMachine({
     }
   }
   assertLaneDir()
+  if (typeof cardText === 'string') {
+    const cardPath = path.join(laneDir, 'card.md')
+    const existingCard = readRegularFile(cardPath)
+    if (existingCard === null) writeRegularFile(cardPath, cardText, { flag: 'wx' })
+    else if (existingCard !== cardText) throw new Error(`lifecycle card snapshot differs: ${cardPath}`)
+  }
   fs.mkdirSync(path.join(root, '.claude', 'reports'), { recursive: true })
   assertLaneDir(true)
   try {
@@ -205,7 +280,9 @@ export function createLifecycleStateMachine({
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
     const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
     if (!INDEPENDENT_ROLES.has(phase)) {
-      const content = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n## Pilot instructions\n\n` : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
+      const changelogInstructions = ['tdd', 'harden'].includes(phase) ? changelogSkillBody(changelogSkillPath) : ''
+      const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
+      const content = `${authoritative}${authoritative ? '## Pilot instructions\n\n' : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
       return snapshotDir
         ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; do not rely on background processes surviving the lane.\n` }
         : content
@@ -319,8 +396,15 @@ export function createLifecycleStateMachine({
       next = frozenRoute === 'LITE' ? 'tdd' : 'plan'
     } else if (state.phase === 'plan') {
       const plan = path.join(laneDir, 'plan.md')
-      if (!readRegularFile(plan) || !containsPlanShape(readRegularFile(plan)))
+      const planContent = readRegularFile(plan)
+      if (dodBullets === null) return refusal('plan->critic', 'card has no ## Definition of done section', plan)
+      if (dodBullets?.length === 0) return refusal('plan->critic', 'card ## Definition of done section has no bullets', plan)
+      if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
         return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
+      if (dodBullets !== undefined) {
+        const acceptanceProblem = planAcceptanceProblem(planContent, dodBullets)
+        if (acceptanceProblem) return refusal('plan->critic', acceptanceProblem, plan)
+      }
       next = 'critic'
     } else if (state.phase === 'critic') {
       const report = path.join(laneDir, 'critic-report.md')
@@ -534,6 +618,10 @@ export function createLifecycleStateMachine({
       return 'pilot-report: this run is not partial'
     }
     if (!enforceSchema) return null
+    if (dodBullets !== undefined) {
+      const acceptanceProblem = reportAcceptanceProblem(content, dodBullets)
+      if (acceptanceProblem) return `pilot-report: missing ${acceptanceProblem}`
+    }
     const e2e = reportSection(content, 'E2E')
     if (!e2e) return 'pilot-report: missing or empty ## E2E section'
     const e2eNotRun = /^e2e not run: \S[^\r\n]*$/i.test(e2e)
