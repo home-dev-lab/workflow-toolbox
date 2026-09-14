@@ -69,15 +69,21 @@ function journal(state: ReturnType<typeof scaffold>): Array<Record<string, unkno
 }
 
 describe('wt-cache-keepalive', () => {
-  it('is off by default even though the monitor is always registered', () => {
+  it('is on by default and stays silent only when explicitly disabled', () => {
     const state = scaffold('off')
-    const result = spawnSync(process.execPath, [MONITOR, '--once', '--now', String(60 * 60_000), '--project', state.projectDir], {
+    const runWith = (value: string | undefined) => spawnSync(process.execPath, [MONITOR, '--once', '--now', String(60 * 60_000), '--project', state.projectDir], {
       encoding: 'utf8',
-      // The ambient opt-in must not leak in: a machine with the keepalive enabled would otherwise fail this default-off check.
-      env: { ...process.env, WT_CACHE_KEEPALIVE_ENABLED: undefined, CLAUDE_CODE_SESSION_ID: state.sessionId, CLAUDE_CONFIG_DIR: state.configDir },
+      // The ambient setting must not leak in either way.
+      env: { ...process.env, WT_CACHE_KEEPALIVE_ENABLED: value, CLAUDE_CODE_SESSION_ID: state.sessionId, CLAUDE_CONFIG_DIR: state.configDir },
     })
-    expect(result.status).toBe(0)
-    expect(result.stdout).toBe('')
+    const unset = runWith(undefined)
+    expect(unset.status).toBe(0)
+    expect(unset.stdout).toContain('CACHE KEEPALIVE')
+    for (const value of ['false', '0', 'no', 'off']) {
+      const disabled = runWith(value)
+      expect(disabled.status).toBe(0)
+      expect(disabled.stdout).toBe('')
+    }
   })
 
   it('uses the 50-minute Claude threshold and journals model, threshold, and refresh count', () => {
@@ -162,7 +168,7 @@ describe('wt-cache-keepalive', () => {
     const help = spawnSync(process.execPath, [MONITOR, '--help'], { encoding: 'utf8' })
     const badClock = spawnSync(process.execPath, [MONITOR, '--now', '1'], { encoding: 'utf8' })
     expect(help.status).toBe(0)
-    expect(help.stdout).toContain('WT_CACHE_KEEPALIVE_ENABLED=true')
+    expect(help.stdout).toContain('WT_CACHE_KEEPALIVE_ENABLED=false')
     expect(badClock.status).toBe(2)
     expect(badClock.stderr).toContain('--now requires --once')
   })

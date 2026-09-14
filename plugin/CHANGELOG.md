@@ -6,6 +6,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- The prompt-cache keepalive monitor is now on by default; set `WT_CACHE_KEEPALIVE_ENABLED=false` to disable
+  it. It still acts only on a session idle past its provider threshold.
 - SDK pilots now freeze executor family and per-role models with their route: consented runs use GPT
   lanes, while profiles without lane consent use a worktree-confined Claude SDK executor launched with
   its phase as `--role` (critic, review and refutation are read-only). Critic, code, review, and

@@ -16,13 +16,13 @@ Options:
   --now <epoch-ms>  injected clock; valid only with --once
   --help, -h        print this text and exit 0
 
-Enable with WT_CACHE_KEEPALIVE_ENABLED=true. The default is off.
+On by default. Disable with WT_CACHE_KEEPALIVE_ENABLED=false (also 0, no, off).
 `
 
 const CHUNK_BYTES = 64 * 1024
 const MAX_RECORD_BYTES = 1024 * 1024
 const MAX_TIMER_MS = 0x7fffffff
-const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on'])
+const FALSE_VALUES = new Set(['0', 'false', 'no', 'off'])
 
 function positiveNumber(value, fallback) {
   const number = Number(value)
@@ -317,7 +317,8 @@ try {
   process.exit(2)
 }
 
-if (!TRUE_VALUES.has(String(process.env.WT_CACHE_KEEPALIVE_ENABLED ?? '').trim().toLowerCase())) process.exit(0)
+// Owner decision 2026-09-14: on by default; it only acts on a session idle past its provider threshold.
+if (FALSE_VALUES.has(String(process.env.WT_CACHE_KEEPALIVE_ENABLED ?? '').trim().toLowerCase())) process.exit(0)
 
 const sessionId = String(process.env.CLAUDE_CODE_SESSION_ID ?? '')
 const safeSessionId = /^[A-Za-z0-9._-]+$/.test(sessionId) ? sessionId : 'unknown-session'

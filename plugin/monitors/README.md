@@ -19,8 +19,8 @@ Reading an environment variable is portable across the supported platforms.
 
 ## Prompt-cache keepalive
 
-`cache-keepalive` is registered with `when: always`, but is **off by default**. Set
-`WT_CACHE_KEEPALIVE_ENABLED=true` before starting a session to opt in. It emits a one-word-reply
+`cache-keepalive` is registered with `when: always` and is **on by default**. Set
+`WT_CACHE_KEEPALIVE_ENABLED=false` before starting a session to disable it. It emits a one-word-reply
 request only after the session transcript shows no real model call for 50 minutes on a `claude-*`
 model or 25 minutes on a `gpt-*` model. Synthetic zero-usage assistant records do not reset that
 clock. Unrecognised model names never wake.
