@@ -20,6 +20,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Claude SDK critic, review, and refutation lanes may Read the resolved knowledge-base index and its
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
+### Fixed
+- The SDK pilot plan check now reads a `### ` heading as a task when no list line sits under it, so a
+  plan written with task headings is no longer refused, and a heading task missing its DoD is no longer
+  accepted through an unrelated bullet; the refusal names both accepted task shapes.
+
 ## [0.174.0] - 2026-09-14
 
 > **Not supported in this release:** the SDK pilot runner (`wt-pilot-runner`), the SDK orchestrator
