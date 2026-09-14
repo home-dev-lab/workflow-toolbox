@@ -13,6 +13,7 @@ const DEFINITIONS = Object.freeze({
   artifact_server_idle_grace_s: { envKey: 'WT_ARTIFACT_SERVER_IDLE_GRACE_S', type: 'number', defaultValue: 600 },
   artifact_server_deny: { envKey: 'WT_ARTIFACT_SERVER_DENY', type: 'string', defaultValue: '' },
   planka_mcp_url: { envKey: 'WT_PLANKA_MCP_URL', type: 'string', defaultValue: 'http://localhost:25478/mcp' },
+  second_opinion_fable_max_pct: { envKey: 'WT_SECOND_OPINION_FABLE_MAX_PCT', type: 'number', defaultValue: 90 },
 })
 
 function configDir(env) {
