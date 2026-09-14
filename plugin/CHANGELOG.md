@@ -27,6 +27,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- Lane supervision now defaults to warn-only `would-clean` evidence, derives orphanhood only from a
+  terminal supervision record plus a gone launcher, bounds default extensions, verifies relaunch
+  startup before ending the old group, enforces owner identity, rotates its journal, and retries
+  watcher failures. Promote cleanup to `enforce` only after at least 100 audited `would-clean`
+  firings show zero live victims. Codex brokers remain observed only because idleness detection is not
+  implemented. Existing adopted launchers must be re-adopted after this change.
 - The open-work Stop gate now detects project-scoped detached pilot/lane runners and fresh
   non-terminal launcher-owned lane logs; discovers suite worktrees from a non-Git umbrella;
   bounds process and log reads; reports live harness tasks without counting them because the Stop
@@ -41,7 +47,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Added
 - Added an always-on lane/orphan watcher, owner-mediated timeout decisions, exact-identity orphan
   cleanup, and an append-only lane-supervisor journal. Live work is never killed merely for age or
-  silence; the safe no-decision default is recorded as `extend`.
+  silence; no-answer extensions are bounded before the recorded default becomes `abandon`.
 
 ## [0.174.0] - 2026-09-14
 

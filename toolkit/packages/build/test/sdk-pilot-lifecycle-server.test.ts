@@ -1,4 +1,4 @@
-import fs, { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { syncBuiltinESMExports } from 'node:module'
@@ -147,6 +147,27 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
     expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt unchanged: /)
+  })
+
+  it('keeps the launch snapshot for a genuine pilot decision timeout', async () => {
+    const timeoutLauncher = launcher("import { mkdirSync, writeFileSync } from 'node:fs'; import { dirname, join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const brief=args[args.indexOf('--brief')+1]; writeFileSync(join(root,'.lane','snapshot-path'),brief); mkdirSync(dirname(join(root,'.lane','supervision.json')),{recursive:true}); writeFileSync(join(root,'.lane','supervision.json'),JSON.stringify({state:'decision-needed',workerPid:process.pid,owner:'pilot',defaultDecision:'extend',decisionDueAt:'later',evidence:{}}))")
+    const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('TIMEOUT')
+    const snapshot = readFileSync(join(lifecycle.root, '.lane', 'snapshot-path'), 'utf8')
+    expect(existsSync(snapshot)).toBe(true)
+    expect(readFileSync(snapshot, 'utf8')).toContain('resume from the existing worktree state')
+  })
+
+  it('terminates the launcher group when a missing receipt has no decision-needed record', async () => {
+    const pidFileName = '.lane/missing-worker-pid'
+    const detached = launcher(`import { spawn } from 'node:child_process'; import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}); child.unref(); writeFileSync(join(root,${JSON.stringify(pidFileName)}),String(child.pid)); process.stdout.write('pid='+child.pid+'\\n')`)
+    const lifecycle = testLifecycle('LITE', [], rawLauncher(readFileSync(detached, 'utf8').replace("process.stdout.write('pid='+process.pid+'\\n');", '')), 30)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
+    const pid = Number(readFileSync(join(lifecycle.root, pidFileName), 'utf8')); let alive = true
+    for (let i = 0; i < 40; i += 1) { try { process.kill(pid, 0) } catch { alive = false; break } await new Promise((resolve) => setTimeout(resolve, 25)) }
+    expect(alive).toBe(false)
   })
 
   it('refuses a lane receipt with an empty report', async () => {

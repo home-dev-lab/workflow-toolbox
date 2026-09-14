@@ -215,7 +215,7 @@ export function createLifecycleLaunch({
               '--brief', snapshotBrief,
               '--log', log,
               '--timeout', String(timeout),
-              ...(executor === 'claude-sdk' ? [] : ['--owner', 'pilot']),
+              ...(executor === 'claude-sdk' ? [] : ['--owner', 'pilot', '--owner-token', nonce, '--brief-cleanup-dir', snapshot]),
               // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
               ...(executor === 'claude-sdk' ? ['--role', phase] : []),
               ...(executor === 'claude-sdk' && ['critic', 'review', 'refutation'].includes(phase) && knowledgeBaseIndex
@@ -253,11 +253,13 @@ export function createLifecycleLaunch({
           }
           try {
             const parsed = JSON.parse(status)
-            if (parsed.workerPid === workerPid && parsed.owner === 'pilot') {
-              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; use wt-lane-control extend|relaunch|abandon; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
+            if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'decision-needed') {
+              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; use wt-lane-control extend|relaunch|abandon --owner-token ${nonce}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
+              snapshot = null
               return `lane ${phase} TIMEOUT: ${detail}`
             }
           } catch {}
+          group = await terminateProcessGroup(workerPid)
           return `lane ${phase} EXIT=missing`
         }
         group = await terminateProcessGroup(workerPid)
