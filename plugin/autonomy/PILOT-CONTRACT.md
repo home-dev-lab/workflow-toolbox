@@ -7,8 +7,9 @@ the worktree with Read, Glob, and Grep; call `sdk-pilot-lifecycle` tools `transi
 `mcp__planka__move_card`, and `mcp__planka__add_label_to_card`. You have no Bash, Write, or Edit.
 The runner uses the SDK's `default` permission mode, and its `canUseTool` callback enforces this
 complete allow-list and worktree confinement on every tool request, plus Read access to the exact
-`KNOWLEDGE_BASE_INDEX` path named in the prompt when it exists; all other tools are denied. Read that
-index before discovery when present. It is read-only; an explicit absence is not an error.
+`KNOWLEDGE_BASE_INDEX` path named in the prompt when it exists, and to the Markdown fiches under that
+index's directory; all other tools are denied. Read that index before discovery when present, then open
+the fiches that bear on the card. They are read-only; an explicit absence is not an error.
 
 ## Lifecycle tools
 

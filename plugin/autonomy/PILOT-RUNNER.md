@@ -20,7 +20,8 @@ The runner resolves `KNOWLEDGE_BASE_INDEX` from `--knowledge-base-index`, then
 `WT_KNOWLEDGE_BASE_INDEX`, then `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/memory/MEMORY.md`,
 where the slug replaces every character outside `[A-Za-z0-9-]` in the absolute project root with
 `-`. The prompt names the existing index or explicitly says none exists. The pilot and orchestrator
-may Read only that exact external file in addition to their normal confined trees.
+may Read that external index and the Markdown files under its directory (real-path contained) in
+addition to their normal confined trees.
 
 The runner derives and freezes the route from the card before `query()`. An exact `Route: LITE` or
 `Route: FULL` line wins, including a `- Route:` bullet. Otherwise effort M or greater, type

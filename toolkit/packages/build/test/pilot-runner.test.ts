@@ -98,10 +98,10 @@ describe('SDK pilot runner', () => {
   })
 
   it.each([
-    ['prompt', (f: ReturnType<typeof fixture>) => ({ option: join(f.root, 'prompt-memory.md'), env: { WT_KNOWLEDGE_BASE_INDEX: join(f.root, 'env-memory.md') } })],
-    ['environment', (f: ReturnType<typeof fixture>) => ({ env: { WT_KNOWLEDGE_BASE_INDEX: join(f.root, 'env-memory.md') } })],
+    ['prompt', (f: ReturnType<typeof fixture>) => ({ option: join(f.root, 'kb-prompt', 'MEMORY.md'), env: { WT_KNOWLEDGE_BASE_INDEX: join(f.root, 'kb-env', 'MEMORY.md') } })],
+    ['environment', (f: ReturnType<typeof fixture>) => ({ env: { WT_KNOWLEDGE_BASE_INDEX: join(f.root, 'kb-env', 'MEMORY.md') } })],
     ['derived', (f: ReturnType<typeof fixture>) => ({ env: { CLAUDE_CONFIG_DIR: join(f.root, 'config') } })],
-  ])('names the %s knowledge-base index in the pilot prompt and allows Read only for that external file', async (_source, setup) => {
+  ])('names the %s knowledge-base index in the pilot prompt and allows Read for that index and its fiches only', async (_source, setup) => {
     const f = fixture()
     const configured = setup(f) as { option?: string, env: Record<string, string> }
     const derived = join(configured.env.CLAUDE_CONFIG_DIR ?? '', 'projects', f.dir.replace(/[^A-Za-z0-9-]/g, '-'), 'memory', 'MEMORY.md')
@@ -117,6 +117,12 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain(`KNOWLEDGE_BASE_INDEX: ${index}`)
     expect((await canUseTool?.('Read', { file_path: index }))?.behavior).toBe('allow')
     expect((await canUseTool?.('Read', { file_path: join(f.root, 'other.md') }))?.behavior).toBe('deny')
+    const fiche = join(index, '..', 'archive', 'a-fiche.md'); mkdirSync(join(fiche, '..'), { recursive: true }); writeFileSync(fiche, 'fiche\n')
+    expect((await canUseTool?.('Read', { file_path: fiche }))?.behavior).toBe('allow')
+    writeFileSync(join(index, '..', 'notes.txt'), 'x\n')
+    expect((await canUseTool?.('Read', { file_path: join(index, '..', 'notes.txt') }))?.behavior).toBe('deny')
+    symlinkSync(join(f.root, 'outside.md'), join(index, '..', 'escape.md')); writeFileSync(join(f.root, 'outside.md'), 'x\n')
+    expect((await canUseTool?.('Read', { file_path: join(index, '..', 'escape.md') }))?.behavior).toBe('deny')
   })
 
   it('places the required arbiter card file verbatim in the first prompt and states an absent knowledge index', async () => {

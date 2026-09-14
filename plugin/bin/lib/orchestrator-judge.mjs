@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { confinedToWorktree } from './pilot-runner-core.mjs'
-import { knowledgeBasePromptLine, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
+import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 
 const MAX_UNPRODUCTIVE_TURNS = 3
 const WAVE_TOOLS = new Set([
@@ -19,7 +19,7 @@ export function waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex = 
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? waveDir
   if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
-  if (toolName === 'Read' && knowledgeBaseIndex && path.resolve(requested) === path.resolve(knowledgeBaseIndex)) return { behavior: 'allow' }
+  if (toolName === 'Read' && knowledgeBaseReadAllowed(knowledgeBaseIndex, requested)) return { behavior: 'allow' }
   const pattern = toolName === 'Glob' ? input.pattern : (input.glob ?? input.pattern)
   if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string') {
     if (path.isAbsolute(pattern) || pattern.split(/[\\/]/).includes('..')) return { behavior: 'deny', message: `path outside wave directory: ${pattern}` }

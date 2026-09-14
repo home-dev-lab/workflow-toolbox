@@ -391,6 +391,8 @@ describe('SDK orchestrator judge', () => {
       'Every card is decided: write_judgment.',
     ])
     expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: knowledgeBaseIndex })).toEqual({ behavior: 'allow' })
+    writeFileSync(join(f.root, 'a-fiche.md'), 'fiche\n')
+    expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: join(f.root, 'a-fiche.md') })).toEqual({ behavior: 'allow' })
     expect(result.rows.map((row: { decision: string, reason: string }) => [row.decision, row.reason])).toEqual([['accepted', 'accept reason'], ['rejected', 'reject reason']])
     expect(readFileSync(f.report, 'utf8')).toContain(judgment)
   })

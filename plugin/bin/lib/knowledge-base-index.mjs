@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -19,4 +19,23 @@ export function knowledgeBasePromptLine(resolution) {
   return resolution.path
     ? `KNOWLEDGE_BASE_INDEX: ${resolution.path}`
     : `KNOWLEDGE_BASE_INDEX: none (no index exists at ${resolution.checkedPath})`
+}
+
+// The index is one line per fiche or hub: reading it without the fiches it points to gives a
+// session titles, not knowledge. Read is therefore allowed on the index itself and on any regular
+// Markdown file under the index's own directory (fiches, hubs, archive/), resolved through real
+// paths so a symlink cannot lead outside it. Stated limit: an explicit index placed in a broad
+// directory opens that directory's Markdown files too.
+export function knowledgeBaseReadAllowed(indexPath, requested) {
+  if (!indexPath || typeof requested !== 'string') return false
+  try {
+    const target = realpathSync(path.resolve(requested))
+    const index = realpathSync(indexPath)
+    if (target === index) return true
+    const root = path.dirname(index)
+    const relative = path.relative(root, target)
+    return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative) && target.endsWith('.md') && statSync(target).isFile()
+  } catch {
+    return false
+  }
 }

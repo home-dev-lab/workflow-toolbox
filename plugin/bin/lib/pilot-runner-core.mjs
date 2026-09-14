@@ -6,7 +6,7 @@ import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lif
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
-import { knowledgeBasePromptLine, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
+import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -100,7 +100,7 @@ export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = tr
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? worktree
   if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
-  if (toolName === 'Read' && knowledgeBaseIndex && resolve(requested) === resolve(knowledgeBaseIndex)) return { behavior: 'allow' }
+  if (toolName === 'Read' && knowledgeBaseReadAllowed(knowledgeBaseIndex, requested)) return { behavior: 'allow' }
   const pattern = toolName === 'Glob' ? input.pattern : (input.glob ?? input.pattern)
   if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string' && /[\\/]/.test(pattern)) {
     const segments = pattern.split(/[\\/]/)
@@ -198,7 +198,7 @@ export async function runPilot(options, dependencies) {
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, models: executorProfile.models, cardId: options.card, sessionTag: `${options.card}-${started}`, ...lifecycleOptions })
 
   async function* prompt() {
-    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present; it is read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
+    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
     yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
