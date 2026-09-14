@@ -8,10 +8,10 @@ import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 
 // @ts-expect-error TS7016 -- lane-live-scan.mjs is a shipped plain-JS plugin script.
-import { registeredWorktrees } from '../../../../plugin/bin/lib/lane-live-scan.mjs'
+import { registeredWorktrees, scanLiveLaneProcesses } from '../../../../plugin/bin/lib/lane-live-scan.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const HOOK = join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.mjs')
+const HOOK = process.env.WT_QUEUE_GATE_HOOK || join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.mjs')
 const HELP_FILE = join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.help.md')
 const LANE_LIVE_SCAN = join(REPO_ROOT, 'plugin/bin/lib/lane-live-scan.mjs')
 const roots: string[] = []
@@ -124,6 +124,12 @@ describe('registeredWorktrees', () => {
     const r = runHook(payload, { ...env, PATH: '' })
     expect(r.code).toBe(0)
     expect(blockText(r)).toContain('Worktree activity is unknown — git worktree enumeration failed')
+  })
+})
+
+describe('scanLiveLaneProcesses', () => {
+  it('reports process inspection as unknown off Linux', () => {
+    expect(scanLiveLaneProcesses({ platform: 'darwin' })).toEqual({ status: 'unknown', processes: [] })
   })
 })
 
@@ -279,23 +285,57 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(r)).toContain('open work remains')
   })
 
-  it('does not treat a live process as liveness without registered-worktree activity or a lane log', () => {
+  it('checks every fresh .lane log for its final EXIT marker', () => {
+    const { env, payload, stateDir, cwd } = scaffold('finished-named-lane-log')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(cwd, '.lane'), { recursive: true })
+    writeFileSync(join(cwd, '.lane', 'critic.log'), 'working\nEXIT=0\n', 'utf8')
+
+    expect(blockText(runHook(payload, env))).toContain('open work remains')
+  })
+
+  it('stays silent for a fresh non-terminal named .lane log', () => {
+    const { env, payload, stateDir, cwd } = scaffold('active-named-lane-log')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(cwd, '.lane'), { recursive: true })
+    writeFileSync(join(cwd, '.lane', 'implement.log'), 'working\n', 'utf8')
+
+    expect(blockText(runHook(payload, env))).toBe('')
+  })
+
+  it.each(['wt-pilot-runner.mjs', 'wt-lane.mjs'])('stays silent for a detached %s process scoped to this project', (script) => {
     const { env, payload, stateDir, cwd } = scaffold('live-external-lane')
+    const laneDir = join(cwd, 'lane-worktree')
+    const procRoot = join(cwd, 'fake-proc')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(procRoot, '101'), { recursive: true })
+    mkdirSync(laneDir, { recursive: true })
+    writeFileSync(join(procRoot, '101', 'cmdline'), `node\0/opt/toolbox/${script}\0--card\0C-1\0--dir\0${laneDir}\0`)
+    agePath(join(procRoot, '101', 'cmdline'))
+    agePath(join(procRoot, '101'))
+    agePath(procRoot)
+    agePath(laneDir)
+    agePath(cwd)
+
+    const r = runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot })
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toBe('')
+  })
+
+  it('does not let a matching detached process outside the project root silence the gate', () => {
+    const { env, payload, stateDir, cwd } = scaffold('outside-live-external-lane')
     const laneDir = join(dirname(cwd), 'outside-session-root')
     const procRoot = join(cwd, 'fake-proc')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
     mkdirSync(join(procRoot, '101'), { recursive: true })
     mkdirSync(laneDir, { recursive: true })
-    writeFileSync(join(laneDir, 'lane-output.txt'), 'external lane wrote here', 'utf8')
-    writeFileSync(join(procRoot, '101', 'cmdline'), `opencode\0run\0--dir\0${laneDir}\0`)
+    writeFileSync(join(procRoot, '101', 'cmdline'), `node\0/opt/toolbox/wt-lane.mjs\0--worker\0--dir=${laneDir}\0`)
     agePath(join(procRoot, '101', 'cmdline'))
     agePath(join(procRoot, '101'))
     agePath(procRoot)
     agePath(cwd)
 
-    const r = runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot })
-    expect(r.code).toBe(0)
-    expect(blockText(r)).toContain('open work remains')
+    expect(blockText(runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot }))).toContain('open work remains')
   })
 
   it('keeps the existing idle verdict when /proc has no matching lane process', () => {
@@ -314,14 +354,49 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(r)).toContain('no recent worktree activity')
   })
 
-  it('keeps the idle verdict when process inspection is unavailable', () => {
+  it('names process inspection as unknown when it is unavailable', () => {
     const { env, payload, stateDir, cwd } = scaffold('live-external-lane-unavailable')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
     agePath(cwd)
 
     const r = runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: join(cwd, 'unreadable-proc') })
     expect(r.code).toBe(0)
-    expect(blockText(r)).toContain('no recent worktree activity')
+    expect(blockText(r)).toContain('detached-runner /proc scan unavailable')
+  })
+
+  it('stays silent while the Stop payload reports a running harness background task', () => {
+    const { env, payload, stateDir, cwd } = scaffold('running-background-task')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    agePath(cwd)
+
+    const r = runHook({
+      ...(payload as Record<string, unknown>),
+      background_tasks: [{ id: 'task-1', type: 'bash', status: 'running', name: 'gate run' }],
+    }, env)
+    expect(blockText(r)).toBe('')
+  })
+
+  it('does not treat a killed, stopped or cancelled background task as running work', () => {
+    // Field case 2026-09-14: task notifications carry `killed` and `stopped`; counting them as running would
+    // silence the gate for as long as the dead task stays in the payload.
+    for (const status of ['killed', 'stopped', 'cancelled']) {
+      const { env, payload, stateDir, cwd } = scaffold(`dead-background-task-${status}`)
+      writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+      agePath(cwd)
+      const r = runHook({
+        ...(payload as Record<string, unknown>),
+        background_tasks: [{ id: 'task-1', type: 'bash', status, name: 'gate run' }],
+      }, env)
+      expect(blockText(r), status).not.toBe('')
+    }
+  })
+
+  it('states that Stop hooks cannot observe whether a Monitor is armed', () => {
+    const { env, payload, stateDir, cwd } = scaffold('monitor-observability')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    agePath(cwd)
+
+    expect(blockText(runHook(payload, env))).toContain('Monitor state is not visible to Stop hooks')
   })
 
   it('still blocks when the worktree is stale and no recent activity exists', () => {
@@ -417,6 +492,58 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(text).toContain('open work remains')
     expect(text).toContain('Worktree activity is unknown — no git root resolved')
     expect(text).toContain('5 open')
+  })
+
+  it('discovers live work in suite worktrees when cwd is a non-git umbrella', () => {
+    const root = mkRoot('umbrella-live-lane')
+    const stateDir = join(root, 'queue-gate-state')
+    const procRoot = join(root, 'fake-proc')
+    const umbrella = join(root, 'suite')
+    const lane = join(umbrella, '.claude', 'worktrees', 'active-lane')
+    const transcriptPath = join(root, 'transcript.jsonl')
+    mkdirSync(lane, { recursive: true })
+    mkdirSync(join(procRoot, '404'), { recursive: true })
+    expect(spawnSync('git', ['init', '--quiet'], { cwd: lane }).status).toBe(0)
+    writeFileSync(transcriptPath, '')
+    writeSnapshot(stateDir, umbrella, { open: 5, at: Date.now(), next: 'CARD-5 scoped item' })
+    writeFileSync(join(procRoot, '404', 'cmdline'), `node\0/opt/toolbox/wt-pilot-runner.mjs\0--dir\0${lane}\0`)
+    agePath(join(procRoot, '404', 'cmdline'))
+    agePath(join(procRoot, '404'))
+    agePath(procRoot)
+    agePath(lane)
+
+    const r = runHook({
+      hook_event_name: 'Stop',
+      session_id: 'session-umbrella-live-lane',
+      cwd: umbrella,
+      transcript_path: transcriptPath,
+    }, {
+      ...process.env,
+      WT_QUEUE_GATE_DIR: stateDir,
+      WT_QUEUE_GATE_PROC_ROOT: procRoot,
+      HOME: root,
+    })
+
+    expect(r.code).toBe(0)
+    expect(blockText(r)).toBe('')
+  })
+
+  it('suppresses an identical decision during one idle stretch but re-fires when open work changes', () => {
+    const { env, payload, stateDir, cwd } = scaffold('identical-decision')
+    const idlePayload = { ...(payload as Record<string, unknown>), background_tasks: [] }
+    agePath(cwd)
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 first item' })
+
+    expect(blockText(runHook(idlePayload, env))).toContain('4 open')
+    expect(blockText(runHook(idlePayload, env))).toBe('')
+    expect(blockText(runHook({
+      ...idlePayload,
+      background_tasks: [{ id: 'task-2', type: 'bash', status: 'running' }],
+    }, env))).toBe('')
+    expect(blockText(runHook(idlePayload, env))).toContain('4 open')
+
+    writeSnapshot(stateDir, cwd, { open: 3, at: Date.now(), next: 'CARD-5 changed item' })
+    expect(blockText(runHook(idlePayload, env))).toContain('3 open')
   })
 
   it('the emitted additionalContext is at most 6 lines', () => {
