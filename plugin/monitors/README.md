@@ -35,3 +35,18 @@ The monitor resolves the current transcript as
 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<absolute-project-slug>/<CLAUDE_CODE_SESSION_ID>.jsonl`
 and scans backward in 64 KiB chunks rather than loading the file. A missing or unreadable transcript
 is journaled and retried; it never produces a wake or terminates the monitor set.
+
+## Lane owner and orphan watch
+
+`lane-orphan-watch` is registered with `when: always`. It reports still-running lanes after 10
+minutes without a worktree write (`lane_stall_minutes` or `WT_LANE_STALL_MINUTES`) and reports the
+90-minute launcher decision bound with evidence; neither condition kills live work. It cleans only
+launcher-attributed terminal/orphaned OpenCode children and childless Codex app-server brokers that
+remain observed idle for 30 minutes (`orphan_broker_idle_minutes` or
+`WT_ORPHAN_BROKER_IDLE_MINUTES`). Every kill uses an exact PID after immediate argv/cwd identity
+verification. Unattributed processes are warned about and journaled, never killed.
+
+The append-only version-1 JSONL journal is
+`<plugin-data-dir>/lane-supervisor/lane-supervisor.jsonl`; path resolution follows
+`plugin/bin/lib/plugin-data-dir.mjs`. Session-owned events are delivered on monitor stdout. A pilot
+receives its own lane event synchronously from the lifecycle result instead.

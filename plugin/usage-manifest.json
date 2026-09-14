@@ -67,6 +67,8 @@
     { "name": "WT_ARTIFACT_SERVER_ROOTS", "where": "plugin/bin/lib/plugin-options.mjs (path-delimited env fallback)" },
     { "name": "WT_ARTIFACT_SERVER_IDLE_GRACE_S", "where": "plugin/bin/lib/plugin-options.mjs (env fallback)" },
     { "name": "WT_ARTIFACT_SERVER_DENY", "where": "plugin/bin/lib/plugin-options.mjs (env fallback)" },
+    { "name": "WT_ORPHAN_BROKER_IDLE_MINUTES", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; default 30)" },
+    { "name": "WT_LANE_STALL_MINUTES", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; default 10)" },
     { "name": "WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS", "where": "plugin/bin/wt-artifact-server.mjs (test-only env knob)" },
     { "name": "WT_ARTIFACT_SERVER_ALLOW_UNSAFE_DENYLIST", "where": "plugin/bin/lib/artifact-server.mjs (test/internal env-only explicit default-deny replacement)" },
     { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" },
@@ -79,6 +81,7 @@
   "cli": [
     { "name": "node plugin/bin/wt-artifact-server.mjs url|status|stop|restart", "where": "plugin/skills/artifact-server/SKILL.md" },
     { "name": "node <configDir>/scripts/wt-lane.mjs", "where": "README.md and plugin/skills/external-lane/SKILL.md" },
+    { "name": "node plugin/bin/wt-lane-control.mjs", "where": "docs/public/known-issues.md" },
     { "name": "node plugin/bin/wt-plugin-eval-gate.mjs", "where": "docs/public/known-issues.md" },
     { "name": "claude plugin validate", "where": "README.md" },
     { "name": "claude --plugin-dir / --debug-file / --allowedTools / -p", "where": "worktrees/fh-spike (spike only)" },

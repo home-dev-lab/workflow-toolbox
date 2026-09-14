@@ -215,6 +215,7 @@ export function createLifecycleLaunch({
               '--brief', snapshotBrief,
               '--log', log,
               '--timeout', String(timeout),
+              ...(executor === 'claude-sdk' ? [] : ['--owner', 'pilot']),
               // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
               ...(executor === 'claude-sdk' ? ['--role', phase] : []),
               ...(executor === 'claude-sdk' && ['critic', 'review', 'refutation'].includes(phase) && knowledgeBaseIndex
@@ -237,6 +238,28 @@ export function createLifecycleLaunch({
           readAttestation,
           readRegularFile,
         })
+        if (!logEntry) {
+          const supervisionFile = path.join(root, '.lane', 'supervision.json')
+          let status = readRegularFile(supervisionFile)
+          // The worker's timeout starts after launcher preflight, so its owner record can land a
+          // fraction after the lifecycle's same nominal wait bound. Wait only for the shipped
+          // launcher; injected test/custom launchers have no supervision contract to await.
+          if (!laneLauncher) {
+            const deadline = Date.now() + 1_000
+            while (!status && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 25))
+              status = readRegularFile(supervisionFile)
+            }
+          }
+          try {
+            const parsed = JSON.parse(status)
+            if (parsed.workerPid === workerPid && parsed.owner === 'pilot') {
+              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; use wt-lane-control extend|relaunch|abandon; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
+              return `lane ${phase} TIMEOUT: ${detail}`
+            }
+          } catch {}
+          return `lane ${phase} EXIT=missing`
+        }
         group = await terminateProcessGroup(workerPid)
         const reportStat = regularFile(report)
         if (!logEntry || !regularFile(log) || !reportStat) return `lane ${phase} EXIT=missing`

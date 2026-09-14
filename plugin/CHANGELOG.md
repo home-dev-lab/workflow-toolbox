@@ -36,6 +36,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   plan written with task headings is no longer refused, and a heading task missing its DoD is no longer
   accepted through an unrelated bullet; the refusal names both accepted task shapes.
 
+## [0.175.0] - 2026-09-14
+
+### Added
+- Added an always-on lane/orphan watcher, owner-mediated timeout decisions, exact-identity orphan
+  cleanup, and an append-only lane-supervisor journal. Live work is never killed merely for age or
+  silence; the safe no-decision default is recorded as `extend`.
+
 ## [0.174.0] - 2026-09-14
 
 > **Not supported in this release:** the SDK pilot runner (`wt-pilot-runner`), the SDK orchestrator

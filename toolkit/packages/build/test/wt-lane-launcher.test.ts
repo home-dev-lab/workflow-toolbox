@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
+const CONTROL = join(ROOT, 'plugin/bin/wt-lane-control.mjs')
+const WATCHER = join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
@@ -35,6 +37,13 @@ function waitFor(log: string, ms = 3000) {
 function waitForFile(file: string, ms = 3000) {
   const until = Date.now() + ms
   while (Date.now() < until) { if (existsSync(file)) return; spawnSync('sleep', ['0.05']) }
+}
+function waitForContent(file: string, pattern: RegExp, ms = 5000) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    if (existsSync(file) && pattern.test(readFileSync(file, 'utf8'))) return
+    spawnSync('sleep', ['0.05'])
+  }
 }
 
 describe('wt-lane detached launcher', () => {
@@ -67,11 +76,55 @@ describe('wt-lane detached launcher', () => {
      expect(readFileSync(join(f.dir, '.lane', 'pid'), 'utf8').trim()).toBe(String(pid))
     waitFor(log); expect(readFileSync(log, 'utf8')).toMatch(/EXIT=0\n$/)
   })
-  it('enforces the timeout with EXIT=124', () => {
-    const f = fixture('sleep 30')
+  it('reports timeout for owner decision without killing live work', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '1']); expect(res.status).toBe(0)
-    const log = join(f.dir, '.lane', 'run.log'); waitFor(log, 3000)
-    expect(readFileSync(log, 'utf8')).toMatch(/EXIT=124\n$/)
+    const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
+    const status = join(f.dir, '.lane', 'supervision.json'); waitForFile(status, 3000)
+    const until = Date.now() + 3000
+    while (Date.now() < until && !readFileSync(status, 'utf8').includes('decision-needed')) spawnSync('sleep', ['0.05'])
+    expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ state: 'decision-needed', defaultDecision: 'extend' })
+    expect(() => process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0)).not.toThrow()
+    expect(existsSync(join(f.dir, '.lane', 'run.log')) ? readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8') : '').not.toMatch(/EXIT=/)
+    process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
+  })
+  it('records the stated extend default when the decision grace expires and still keeps work alive', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '1', '--decision-grace', '0']); expect(res.status).toBe(0)
+    const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
+    const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
+    waitForContent(journal, /"source":"grace-default"/)
+    expect(readFileSync(journal, 'utf8')).toContain('"decision":"extend"')
+    expect(() => process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0)).not.toThrow()
+    process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
+  })
+  it('relaunches a timed-out fake lane from its preserved worktree state', () => {
+    const f = fixture('if [ ! -f "$PWD/progress" ]; then printf kept > "$PWD/progress"; echo $$ > "$PWD/first.pid"; sleep 30; else printf resumed > "$PWD/resumed"; fi')
+    const res = run(f, ['--timeout', '1', '--decision-grace', '10']); expect(res.status).toBe(0)
+    const status = join(f.dir, '.lane', 'supervision.json')
+    waitForContent(status, /decision-needed/)
+    const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'relaunch', '--reason', 'e2e stalled fixture'], { encoding: 'utf8', env: f.env })
+    expect(control.status, control.stderr).toBe(0)
+    waitForFile(join(f.dir, 'resumed'), 5000)
+    expect(readFileSync(join(f.dir, 'progress'), 'utf8')).toBe('kept')
+    expect(readFileSync(join(f.dir, 'resumed'), 'utf8')).toBe('resumed')
+    waitForContent(join(f.dir, '.lane', 'run.log'), /EXIT=0/)
+    const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
+    expect(readFileSync(journal, 'utf8')).toContain('"decision":"relaunch"')
+  })
+  it('cleans and journals a deliberate terminal-log orphan by its exact fake pid', () => {
+    const f = fixture('printf "fake complete\\nEXIT=0\\n" >> "$PWD/.lane/run.log"; echo $$ > "$PWD/orphan.pid"; sleep 30')
+    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const pidFile = join(f.dir, 'orphan.pid'); waitForFile(pidFile)
+    const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
+    expect(watcher.status, watcher.stderr).toBe(0)
+    const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
+    waitForContent(journal, /"event":"cleaned"/)
+    expect(readFileSync(journal, 'utf8')).toContain('"reason":"terminal-lane-log"')
+    const pid = Number(readFileSync(pidFile, 'utf8').trim())
+    const until = Date.now() + 4000; let alive = true
+    while (Date.now() < until) { try { process.kill(pid, 0); spawnSync('sleep', ['0.05']) } catch { alive = false; break } }
+    expect(alive).toBe(false)
   })
   it('a SIGTERM to the worker takes the opencode process with it and writes EXIT=143 (a killed launcher used to leave the lane running)', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')

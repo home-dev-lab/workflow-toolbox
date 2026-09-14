@@ -40,5 +40,11 @@
     "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server-ensure.mjs",
     "description": "Artifact server session monitor — publishes an owner-only session registration for the shared local and tailnet server",
     "when": "always"
+  },
+  {
+    "name": "lane-orphan-watch",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/bin/wt-lane-orphan-watch.mjs",
+    "description": "Lane owner and orphan watch — reports stalled or timed-out live work and identity-checks cleanup of attributable lane and idle broker orphans",
+    "when": "always"
   }
 ]

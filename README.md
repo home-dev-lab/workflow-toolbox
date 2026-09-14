@@ -117,7 +117,7 @@ SPLIT path rather than sending it to the lane.
 
 ## External lanes
 
-For a complete detached implementation or review, use the `external-lane` skill. Adopt the stable launcher with `node plugin/skills/adopt/scripts/install.mjs --set scripts --install --global`, then run `node <configDir>/scripts/wt-lane.mjs --dir <worktree> --model <provider/model> --brief <file>`. It returns immediately with a pid and log path; the log ends in `EXIT=<code>`. The plugin-cache `plugin/bin/wt-lane.mjs` works too, but its path changes with plugin upgrades.
+For a complete detached implementation or review, use the `external-lane` skill. Adopt the stable launcher with `node plugin/skills/adopt/scripts/install.mjs --set scripts --install --global`, then run `node <configDir>/scripts/wt-lane.mjs --dir <worktree> --model <provider/model> --brief <file>`. It returns immediately with a pid and log path; the log ends in `EXIT=<code>` only when the lane actually exits. Reaching the timeout reports evidence to the owner and leaves live work running for an explicit extend, relaunch, or abandon decision. The plugin-cache `plugin/bin/wt-lane.mjs` works too, but its path changes with plugin upgrades.
 
 ## Where to go from here
 

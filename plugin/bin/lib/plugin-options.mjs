@@ -14,6 +14,8 @@ const DEFINITIONS = Object.freeze({
   artifact_server_deny: { envKey: 'WT_ARTIFACT_SERVER_DENY', type: 'string', defaultValue: '' },
   planka_mcp_url: { envKey: 'WT_PLANKA_MCP_URL', type: 'string', defaultValue: '' },
   second_opinion_fable_max_pct: { envKey: 'WT_SECOND_OPINION_FABLE_MAX_PCT', type: 'number', defaultValue: 90 },
+  orphan_broker_idle_minutes: { envKey: 'WT_ORPHAN_BROKER_IDLE_MINUTES', type: 'number', defaultValue: 30 },
+  lane_stall_minutes: { envKey: 'WT_LANE_STALL_MINUTES', type: 'number', defaultValue: 10 },
 })
 
 function configDir(env) {
