@@ -33,14 +33,15 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(call.briefText).toContain('fiches are claims to verify against the current code, never evidence by themselves')
   })
 
-  it('states the external knowledge-base gap in GPT independent briefs without widening launcher arguments', async () => {
+  it('names the external knowledge-base index in GPT independent briefs with a refused-read instruction, without widening launcher arguments', async () => {
     const index = join(tmpdir(), 'external-memory', 'MEMORY.md')
     const lifecycle = fullLifecycle({ knowledgeBase: { path: index, checkedPath: index } })
     edgeConfig({ critic: { verdict: 'approved' } })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     const call = JSON.parse(readFileSync(lifecycle.calls, 'utf8').trim())
     expect(call.argv).not.toContain('--knowledge-base-index')
-    expect(call.briefText).toContain(`KNOWLEDGE_BASE_INDEX: unavailable to this executor (external index ${index} is outside the OpenCode working directory)`)
+    expect(call.briefText).toContain(`KNOWLEDGE_BASE_INDEX: ${index} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`)
+    expect(call.briefText).not.toContain('unavailable to this executor')
   })
 
   it('writes server-owned review and refutation briefs with prospective working-tree diff inputs', async () => {

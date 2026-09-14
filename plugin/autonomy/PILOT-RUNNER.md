@@ -84,8 +84,9 @@ The independent brief names the runner's once-resolved knowledge-base index and 
 claims to verify against current code rather than evidence. For Claude SDK independent roles only, the
 lifecycle passes `--knowledge-base-index` to `wt-claude-executor.mjs`; its `canUseTool` permits Read of
 the index and real-path-contained regular Markdown fiches while Glob/Grep remain worktree-confined.
-OpenCode runs with `--dir` and `cwd` set to the worktree in `wt-lane.mjs` and receives no
-`external_directory` permission, so an external index is explicitly marked unavailable in that brief.
+OpenCode runs with `--dir` and `cwd` set to the worktree and `--auto` in `wt-lane.mjs`; `--auto` approves an
+`external_directory` read the user's OpenCode config leaves on `ask`, so the brief names the index and tells
+the lane to report a refused read (a config that denies it wins) rather than rely on the knowledge base.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or

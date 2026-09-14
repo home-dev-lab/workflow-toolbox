@@ -245,7 +245,10 @@ export function createLifecycleStateMachine({
     const knowledgeBaseLine = knowledgeBase.path
       ? executor === 'claude-sdk'
         ? `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path}`
-        : `KNOWLEDGE_BASE_INDEX: unavailable to this executor (external index ${knowledgeBase.path} is outside the OpenCode working directory)`
+        // OpenCode lanes run with --auto, which approves an external_directory read the user's opencode
+        // config leaves on "ask" (measured 2026-09-14: a Luna run read this index). A config that DENIES it
+        // wins, so the lane must report a refused read instead of claiming it read the fiches.
+        : `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`
       : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
     const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [], rules: roleRules, knowledgeBaseLine }
     return snapshotDir

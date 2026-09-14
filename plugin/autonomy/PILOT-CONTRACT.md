@@ -27,8 +27,8 @@ the allow-listed receipt/log names.
 For every lane: write its brief, run it, then transition. The server recreates launch inputs in a
 read-only external snapshot and puts mapped authoritative rules before fenced pilot context.
 Independent briefs name `KNOWLEDGE_BASE_INDEX`. Claude SDK allows Read of that index and contained
-Markdown fiches; Glob/Grep stay confined. OpenCode marks an external index unavailable rather than
-widening `external_directory`. Fiches are claims to verify against code, not evidence; a finding
+Markdown fiches; Glob/Grep stay confined. OpenCode lanes are told to read it and to report a refused
+read. Fiches are claims to verify against code, not evidence; a finding
 resting only on a fiche is not a finding.
 
 For a critic, review, or refutation lane, `content` is context only. The server writes the
