@@ -97,7 +97,35 @@ describe('SDK pilot runner', () => {
     expect(result.status).toBe(0); expect(result.stdout).not.toContain('--lane-silence')
   })
 
-  it('places the required arbiter card file verbatim in the first prompt', async () => {
+  it.each([
+    ['prompt', (f: ReturnType<typeof fixture>) => ({ option: join(f.root, 'kb-prompt', 'MEMORY.md'), env: { WT_KNOWLEDGE_BASE_INDEX: join(f.root, 'kb-env', 'MEMORY.md') } })],
+    ['environment', (f: ReturnType<typeof fixture>) => ({ env: { WT_KNOWLEDGE_BASE_INDEX: join(f.root, 'kb-env', 'MEMORY.md') } })],
+    ['derived', (f: ReturnType<typeof fixture>) => ({ env: { CLAUDE_CONFIG_DIR: join(f.root, 'config') } })],
+  ])('names the %s knowledge-base index in the pilot prompt and allows Read for that index and its fiches only', async (_source, setup) => {
+    const f = fixture()
+    const configured = setup(f) as { option?: string, env: Record<string, string> }
+    const derived = join(configured.env.CLAUDE_CONFIG_DIR ?? '', 'projects', f.dir.replace(/[^A-Za-z0-9-]/g, '-'), 'memory', 'MEMORY.md')
+    const index = configured.option ?? configured.env.WT_KNOWLEDGE_BASE_INDEX ?? derived
+    mkdirSync(join(index, '..'), { recursive: true }); writeFileSync(index, '# Memory\n')
+    const prompts: string[] = []; let canUseTool: ((name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>) | undefined
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { canUseTool: typeof canUseTool } }) => (async function* () {
+      canUseTool = options.canUseTool
+      yield initMessage()
+      prompts.push((await prompt.next()).value.message.content)
+    })()
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false, knowledgeBaseIndex: configured.option }, { query, resolvePilotModels: models, env: configured.env })
+    expect(prompts[0]).toContain(`KNOWLEDGE_BASE_INDEX: ${index}`)
+    expect((await canUseTool?.('Read', { file_path: index }))?.behavior).toBe('allow')
+    expect((await canUseTool?.('Read', { file_path: join(f.root, 'other.md') }))?.behavior).toBe('deny')
+    const fiche = join(index, '..', 'archive', 'a-fiche.md'); mkdirSync(join(fiche, '..'), { recursive: true }); writeFileSync(fiche, 'fiche\n')
+    expect((await canUseTool?.('Read', { file_path: fiche }))?.behavior).toBe('allow')
+    writeFileSync(join(index, '..', 'notes.txt'), 'x\n')
+    expect((await canUseTool?.('Read', { file_path: join(index, '..', 'notes.txt') }))?.behavior).toBe('deny')
+    symlinkSync(join(f.root, 'outside.md'), join(index, '..', 'escape.md')); writeFileSync(join(f.root, 'outside.md'), 'x\n')
+    expect((await canUseTool?.('Read', { file_path: join(index, '..', 'escape.md') }))?.behavior).toBe('deny')
+  })
+
+  it('places the required arbiter card file verbatim in the first prompt and states an absent knowledge index', async () => {
     const f = fixture(); const cardFile = join(f.root, 'card.md'); const card = '# Card title\n\nDefinition of done: ship it.\n'
     writeFileSync(cardFile, card)
     const prompts: string[] = []
@@ -111,6 +139,7 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
+    expect(prompts[0]).toContain('KNOWLEDGE_BASE_INDEX: none (no index exists at ')
 
   })
 
@@ -210,7 +239,7 @@ describe('SDK pilot runner', () => {
       const transition = server.instance._registeredTools.transition!.handler
       const artifact = server.instance._registeredTools.write_artifact!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', tool_use_id: 'discovery' })
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' })
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       continuation = (await prompt.next()).value.message.content
       await artifact({ kind: 'plan', content: '## Tasks\n- incomplete\n' })
@@ -358,7 +387,7 @@ describe('SDK pilot runner', () => {
       const tools = (registeredServer as RegisteredServer).instance._registeredTools
       const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
       for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
       await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n' })
       receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
@@ -387,7 +416,7 @@ describe('SDK pilot runner', () => {
       const artifact = server.instance._registeredTools.write_artifact!.handler
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', tool_use_id: 'discovery' })
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' })
       for (let round = 1; round <= MAX_CRITIC_ROUNDS; round += 1) {
         await artifact({ kind: 'plan', content: plan }); await transition({ phase: 'plan', tool_use_id: `plan-${round}` })
         await artifact({ kind: 'critic-brief', content: `critic ${round}` }); await run({ kind: 'lane', phase: 'critic', timeout: 1 })
@@ -419,7 +448,7 @@ describe('SDK pilot runner', () => {
       const artifact = server.instance._registeredTools.write_artifact!.handler
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 })
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const continuation = await prompt.next(); if (continuation.done) return; continuations.push(continuation.value.message.content)
       await transition({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })

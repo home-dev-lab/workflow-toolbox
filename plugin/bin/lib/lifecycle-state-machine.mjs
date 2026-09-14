@@ -231,7 +231,13 @@ export function createLifecycleStateMachine({
         artifacts.push(snapshotDir ? snapshotFile(gateName, gateContent) : `.lane/${gateName}`)
       }
     }
-    const options = { phase, context, reportPath, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [] }
+    const discovery = phase === 'critic' ? readRegularFile(path.join(laneDir, 'discovery.md')) : null
+    if (phase === 'critic' && discovery === null) throw new Error('discovery record unavailable')
+    if (phase === 'critic') {
+      canonicalArtifacts.push('.lane/discovery.md')
+      artifacts.push(snapshotDir ? snapshotFile('discovery.md', discovery) : canonicalArtifacts.at(-1))
+    }
+    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [] }
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
@@ -284,6 +290,10 @@ export function createLifecycleStateMachine({
           path.join(laneDir, 'route.json'),
         )
       }
+      if (typeof event.record !== 'string' || !event.record.trim()) {
+        return refusal('discovery->next', 'non-empty discovery record', path.join(laneDir, 'discovery.md'))
+      }
+      writeRegularFile(path.join(laneDir, 'discovery.md'), event.record)
       next = frozenRoute === 'LITE' ? 'tdd' : 'plan'
     } else if (state.phase === 'plan') {
       const plan = path.join(laneDir, 'plan.md')
@@ -518,6 +528,7 @@ export function createLifecycleStateMachine({
         {
           phase: z.string(),
           route: z.string().optional(),
+          record: z.string().optional(),
           outcome: z.string().optional(),
           findings: z.array(z.string()).optional(),
           tool_use_id: z.string(),

@@ -113,7 +113,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-pilot-runner.mjs',
     status: 'mapped',
-    reason: 'The adopted pilot-runner guide documents the SDK runner, mailbox, lane-wait ownership, profile env, and measurements.',
+    reason: 'The sdk-pilot skill and pilot-runner guide document the SDK runner, launch, mailbox, profile env, and measurements.',
   },
   {
     script: 'plugin/bin/wt-pilot-fidelity.mjs',
@@ -636,8 +636,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['plugin/autonomy/AUTHORIZATIONS.md', 'plugin/autonomy/PERMISSIONS.md', 'plugin/skills/adopt/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/'],
-    docs: ['plugin/autonomy/PILOT-RUNNER.md'],
+    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/lib/pilot-runner-core.mjs', 'plugin/bin/lib/knowledge-base-index.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/lifecycle-brief.mjs', 'plugin/bin/lib/lifecycle-state-machine.mjs', 'plugin/bin/lib/orchestrator-judge.mjs', 'plugin/bin/lib/orchestrator-runner-core.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/', 'plugin/skills/sdk-pilot/'],
+    docs: ['plugin/autonomy/PILOT-RUNNER.md', 'plugin/skills/sdk-pilot/SKILL.md'],
   },
   {
     // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer

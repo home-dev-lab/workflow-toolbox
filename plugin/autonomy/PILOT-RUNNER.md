@@ -16,6 +16,13 @@ through the runner mailbox and owner-facing output only through the pilot report
 
 ## Route and phases
 
+The runner resolves `KNOWLEDGE_BASE_INDEX` from `--knowledge-base-index`, then
+`WT_KNOWLEDGE_BASE_INDEX`, then `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/memory/MEMORY.md`,
+where the slug replaces every character outside `[A-Za-z0-9-]` in the absolute project root with
+`-`. The prompt names the existing index or explicitly says none exists. The pilot and orchestrator
+may Read that external index and the Markdown files under its directory (real-path contained) in
+addition to their normal confined trees.
+
 The runner derives and freezes the route from the card before `query()`. An exact `Route: LITE` or
 `Route: FULL` line wins, including a `- Route:` bullet. Otherwise effort M or greater, type
 `feature`, a risk word, more than three named files, or a missing `DoD:` / `Definition of done:`
@@ -24,7 +31,7 @@ field selects FULL; all signals clear selects LITE. The reasons are recorded wit
 
 | Edge | Required evidence |
 | --- | --- |
-| discovery -> tdd (LITE) or plan (FULL) | Frozen runner route. |
+| discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
 | plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, and `## Gates`. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. A fourth changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd or harden -> verify | Attested lane receipt and non-empty report. On FULL, `tdd-brief.md` has the plan `## Tasks` block byte-identically. |
@@ -49,11 +56,12 @@ and excluded from the tree signature.
 Critic, review, and refutation briefs begin with server-owned independent-review instructions. The
 server retains each lane phase's pilot context in memory and, immediately before launch, refuses an
 unwritten phase or exclusively recreates its brief from that context, re-deriving independent inputs.
-The server names the plan/card or the prospective working-tree patch against the construction base plus
+The server names the plan/card/discovery record or the prospective working-tree patch against the construction base plus
 gate receipts, writes review/refutation patches to `.lane/<phase>-input.diff`, names that path and base
 in the brief, and fences pilot prose afterward as untrusted context. The patch includes staged and
 unstaged tracked changes, deletions, modes, symlinks, renames, binary changes, and non-ignored
-untracked files without changing the real index. If Git cannot construct that patch, the total patch
+untracked files without changing the real index. Discovery bytes are fenced as untrusted in the critic
+brief, just like pilot context. If Git cannot construct that patch, the total patch
 output (header, tracked diff, and all untracked-file diffs) exceeds the bounded buffer, or a dirty tree
 produces no substantive hunk, the lifecycle refuses the review/refutation brief and cannot launch
 that lane. Glob and Grep
@@ -108,7 +116,7 @@ two SDK readings agree with each other (a remapped profile serves a different id
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
 
-`--card`, `--dir`, and `--card-file` are required. Optional flags are `--profile-env`, `--contract`,
+`--card`, `--dir`, and `--card-file` are required. Optional flags are `--knowledge-base-index`, `--profile-env`, `--contract`,
 `--hard`, `--mailbox`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
 Linux and macOS, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.

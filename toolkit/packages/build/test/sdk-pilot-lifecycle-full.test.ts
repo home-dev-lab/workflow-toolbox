@@ -269,7 +269,7 @@ function root() {
 function handlers(server: { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }) {
   const tools = server.instance._registeredTools
   return {
-    transition: (args: Record<string, unknown>) => tools.transition!.handler(args).then((result) => result.content[0]!.text),
+    transition: (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args).then((result) => result.content[0]!.text),
     artifact: (args: Record<string, unknown>) => tools.write_artifact!.handler(args).then((result) => result.content[0]!.text),
     run: (args: Record<string, unknown>) => tools.run!.handler(args).then((result) => result.content[0]!.text),
   }

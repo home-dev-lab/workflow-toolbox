@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { confinedToWorktree } from './pilot-runner-core.mjs'
+import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 
 const MAX_UNPRODUCTIVE_TURNS = 3
 const WAVE_TOOLS = new Set([
@@ -12,12 +13,13 @@ const WAVE_TOOLS = new Set([
   'write_judgment',
 ].map((name) => `mcp__sdk-wave-lifecycle__${name}`))
 
-export function waveCanUseTool(waveDir, toolName, input) {
+export function waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex = null } = {}) {
   if (WAVE_TOOLS.has(toolName)) return { behavior: 'allow' }
   if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused by wave judge: ${toolName}` }
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? waveDir
   if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
+  if (toolName === 'Read' && knowledgeBaseReadAllowed(knowledgeBaseIndex, requested)) return { behavior: 'allow' }
   const pattern = toolName === 'Glob' ? input.pattern : (input.glob ?? input.pattern)
   if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string') {
     if (path.isAbsolute(pattern) || pattern.split(/[\\/]/).includes('..')) return { behavior: 'deny', message: `path outside wave directory: ${pattern}` }
@@ -42,7 +44,14 @@ function messageQueue() {
   }
 }
 
-export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env }) {
+export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir }) {
+  const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: knowledgeBaseIndex, env, projectRoot })
+  let knowledgeBaseSent = false
+  const withKnowledgeBase = (content) => {
+    if (knowledgeBaseSent) return content
+    knowledgeBaseSent = true
+    return `${knowledgeBasePromptLine(knowledgeBase)}\n${content}`
+  }
   const queue = messageQueue()
   let active = null
   let consumePromise = null
@@ -89,7 +98,7 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
       cwd: waveDir,
       tools: ['Read', 'Glob', 'Grep'],
       mcpServers: { 'sdk-wave-lifecycle': waveServer },
-      canUseTool: async (toolName, input) => waveCanUseTool(waveDir, toolName, input),
+      canUseTool: async (toolName, input) => waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex: knowledgeBase.path }),
       env,
     } })
     consumePromise = (async () => {
@@ -127,14 +136,14 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
     return result
   }
   const judge = ({ row }) => request(
-    `Judge card ${row.id}: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
-    `Card ${row.id} is still judging. Use decide for card ${row.id}.`,
+    withKnowledgeBase(`Judge card ${row.id}: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`),
+    withKnowledgeBase(`Card ${row.id} is still judging. Use decide for card ${row.id}.`),
     () => waveServer.state().cards[row.id] !== 'judging',
   )
   judge.judgment = async () => {
     const completed = await request(
-      'Every card is decided: write_judgment.',
-      'The wave judgment is not written. Use write_judgment with ## Independent Review and ## Decisions.',
+      withKnowledgeBase('Every card is decided: write_judgment.'),
+      withKnowledgeBase('The wave judgment is not written. Use write_judgment with ## Independent Review and ## Decisions.'),
       () => waveServer.state().judgmentWritten,
     )
     queue.close()

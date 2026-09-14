@@ -6,7 +6,10 @@ the worktree with Read, Glob, and Grep; call `sdk-pilot-lifecycle` tools `transi
 `mcp__planka__get_comments`, `mcp__planka__add_comment`, `mcp__planka__update_card`,
 `mcp__planka__move_card`, and `mcp__planka__add_label_to_card`. You have no Bash, Write, or Edit.
 The runner uses the SDK's `default` permission mode, and its `canUseTool` callback enforces this
-complete allow-list and worktree confinement on every tool request; all other tools are denied.
+complete allow-list and worktree confinement on every tool request, plus Read access to the exact
+`KNOWLEDGE_BASE_INDEX` path named in the prompt when it exists, and to the Markdown fiches under that
+index's directory; all other tools are denied. Read that index before discovery when present, then open
+the fiches that bear on the card. They are read-only; an explicit absence is not an error.
 
 ## Lifecycle tools
 
@@ -30,7 +33,8 @@ FINDINGS:
 - <finding when changes-requested>
 ```
 
-The critic evidence is the plan and optional card; review/refutation evidence is the server-written
+The critic evidence is the plan, optional card, and exact server-recorded discovery/intake bytes,
+fenced as untrusted input; review/refutation evidence is the server-written
 prospective working-tree patch against the named construction base and gate receipts. Every launch brief names a nonce report path; workers must write
 only that path. The server publishes the nonce log/report pair canonically after both validate. The
 critic report must quote the plan SHA-256 line. On FULL, the tdd brief must carry the plan's `## Tasks`
@@ -38,7 +42,7 @@ block byte-identically.
 
 | Phase | Do this before transition |
 | --- | --- |
-| discovery | Transition using the runner's frozen route; LITE reaches tdd, FULL reaches plan. |
+| discovery | Inspect the intake and relevant worktree sources, then transition with `record` containing that discovery and the runner's frozen route; LITE reaches tdd, FULL reaches plan. |
 | plan | Write a plan with ADR decision/rejected, top-level task DoDs, and Gates; then transition. |
 | critic | Write the brief, run the lane, and transition from its report: approved -> tdd; changes-requested -> plan. After three revisions, a fourth changes-requested routes to a partial report. |
 | tdd or harden | Write the brief, run the lane, then transition to verify. |
