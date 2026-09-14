@@ -1104,8 +1104,11 @@ Never satisfy a constraint with placeholder values ("test", "a"); shorten real c
       `const NONCE=${nonceLit},LABELS=${labelsLit};`,
       matcherDef,
       `const RECENCY=${SCANNER_RECENCY_MS},now=Date.now();`,
-      // Candidate config roots: the running session's CLAUDE_CONFIG_DIR plus the standard pair.
-      `const roots=[process.env.CLAUDE_CONFIG_DIR,path.join(os.homedir(),'.claude'),path.join(os.homedir(),'.claude-work')].filter(Boolean);`,
+      // Candidate config roots: the running session's explicit root plus every existing Claude
+      // profile under home. This inlines the debugger discovery rule because the emitted scanner is
+      // self-contained source text and patterns must not depend on the debugger package.
+      `function configRoots(){const out=[],seen=new Set(),home=os.homedir();function add(d){if(!d)return;let r;try{if(!fs.statSync(d).isDirectory())return;r=fs.realpathSync(d)}catch(e){return}if(!seen.has(r)){seen.add(r);out.push(r)}}add(process.env.CLAUDE_CONFIG_DIR);add(path.join(home,'.claude'));let names=[];try{names=fs.readdirSync(home,{withFileTypes:true}).filter(function(e){return(e.isDirectory()||e.isSymbolicLink())&&/^\\.claude-.+$/.test(e.name)}).map(function(e){return e.name}).sort()}catch(e){}for(const name of names)add(path.join(home,name));return out}`,
+      `const roots=configRoots();`,
       `function ls(d){try{return fs.readdirSync(d)}catch(e){return[]}}`,
       // Enumerate recent agent-*.jsonl under */projects/*/*/subagents/workflows/*/.
       `function transcripts(){const out=[];for(const r of roots){const pj=path.join(r,'projects');for(const slug of ls(pj)){const sd=path.join(pj,slug);for(const sess of ls(sd)){const wf=path.join(sd,sess,'subagents','workflows');for(const run of ls(wf)){const rd=path.join(wf,run);for(const f of ls(rd)){if(f.indexOf('agent-')!==0||!f.endsWith('.jsonl'))continue;const fp=path.join(rd,f);let st;try{st=fs.statSync(fp)}catch(e){continue}if(now-st.mtimeMs>RECENCY)continue;out.push(fp)}}}}}return out}`,

@@ -64,8 +64,12 @@ const NEG_COMMAND =
   '/home/x/.opencode/bin/opencode providers list; ' +
   'grep -rn "the claim under test" /home/x/project/src'
 
-function makeRunDir(nonce: string, posLabel: string, negLabel: string): { root: string; posJsonl: string; negJsonl: string } {
-  const root = mkdtempSync(join(tmpdir(), 'prov-fixture-'))
+function makeRunDir(
+  nonce: string,
+  posLabel: string,
+  negLabel: string,
+  root = mkdtempSync(join(tmpdir(), 'prov-fixture-')),
+): { root: string; posJsonl: string; negJsonl: string } {
   const runDir = join(root, 'projects', 'testslug', 'testsess', 'subagents', 'workflows', 'wf_test')
   mkdirSync(runDir, { recursive: true })
   const posJsonl = [labeledUserTurn(posLabel, 'Adversarially verify.'), bashTurn(POS_COMMAND)].join('\n') + '\n'
@@ -246,6 +250,20 @@ describe('scanner e2e — drift-lock against the shipped signal', () => {
     // Drift-lock: the shipped classifier must AGREE on the same transcript content.
     expect(parseTranscriptExternalCalls(posJsonl, shipped).cliCalls > 0).toBe(true)
     expect(parseTranscriptExternalCalls(negJsonl, shipped).cliCalls > 0).toBe(false)
+  })
+
+  it('discovers existing ~/.claude-* config profiles without naming them', () => {
+    const home = mkdtempSync(join(tmpdir(), 'prov-home-'))
+    const profile = join(home, '.claude-acme')
+    const explicit = join(home, 'explicit-config')
+    mkdirSync(explicit)
+    const nonce = deriveProvenanceNonce([posLabel, negLabel])
+    makeRunDir(nonce, posLabel, negLabel, profile)
+    const source = buildProvenanceScannerSource(opencode, nonce, [posLabel, negLabel])
+
+    const out = runScanner(source, explicit, { HOME: home })
+
+    expect(out.anchored).toBe(true)
   })
 
   it('reports anchored:false when the nonce is absent (→ fail-closed upstream)', () => {
