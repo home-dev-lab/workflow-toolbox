@@ -14,8 +14,8 @@
 //
 // WHAT IT DOES AND DOES NOT JUDGE. It never judges the REASON for stopping — a deliberate stop
 // is legitimate at any time, for any reason. It makes it impossible to stop WITHOUT stating one
-// while open work remains and nothing is running. An identical decision is reported once per
-// idle stretch; changed work or liveness evidence is evaluated immediately.
+// while open work remains and nothing is running. An identical decision is reported again after
+// 45 minutes; changed work or liveness evidence is evaluated immediately.
 //
 // ⚠ A FIRST VERSION OF THIS MECHANISM CHECKED THE WRONG THING. It asked "was the queue LISTED
 // recently?" — so listing it and then stopping anyway satisfied it perfectly, and it stayed
@@ -27,8 +27,8 @@
 //   1. It merely PRINTS a reminder → ignorable → a hope with a filename. So it BLOCKS (see the
 //      emission-shape comment near the bottom of this file for exactly how).
 //   2. It blocks too often → becomes an always-red gate → gets bypassed, then removed. So it
-//      fires on a narrow, checkable conjunction, and once for an identical decision per idle
-//      stretch (legacy records retain the old COOLDOWN_MIN migration bound).
+//      fires on a narrow, checkable conjunction, and at most once per 45 minutes for an identical
+//      decision during an idle stretch.
 //      Silence is its normal state; if it ever becomes chatty, that is a defect in IT.
 //
 // TRACKER-AGNOSTIC BY DESIGN — the abstraction this shipped version adds over a private,
@@ -127,8 +127,8 @@
 // Their emitted messages are already distinguishable ("Actionability gate: …" vs "open work
 // remains … N open …") so a reader can tell which one spoke.
 
-import { readFileSync, statSync, readdirSync, existsSync } from 'node:fs'
-import { join, dirname, relative, resolve } from 'node:path'
+import { readFileSync, realpathSync, statSync, readdirSync, existsSync } from 'node:fs'
+import { isAbsolute, join, dirname, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { queueSnapshotFileName, queueSnapshotSlug, resolveQueueSnapshotPath } from './lib/queue-snapshot-path.mjs'
@@ -199,8 +199,9 @@ expireOwnedMarkers(STATE_DIR, ['cooldown'], Date.now())
 // A delegated agent writes to <session>/subagents/agent-*.jsonl. A recent write there means the
 // arc is alive and stopping is just yielding between turns — never a decision to stop.
 // An external lane writes to the driven worktree instead, so recent file activity in every
-// registered worktree of the enclosing repository also counts as in-flight work. Every fresh
-// `.lane/*.log` is a second lane-specific signal, unless its last line is an EXIT marker. A
+// registered worktree of the enclosing repository also counts as in-flight work. Fresh
+// launcher-owned `.lane` logs are a second lane-specific signal, unless their tail ends in an
+// EXIT marker. A
 // non-Git suite umbrella discovers only its own `.claude/worktrees/*` Git entries, rather than
 // letting arbitrary sibling directories silence the gate.
 // ⚠ This reads the SUBAGENTS dir, never the session's own transcript: the session's own file is
@@ -221,12 +222,12 @@ try {
 }
 
 const backgroundTasksVisible = Array.isArray(input.background_tasks)
-if (backgroundTasksVisible && input.background_tasks.some((task) => {
+const backgroundLiveCount = backgroundTasksVisible ? input.background_tasks.filter((task) => {
   if (!task || typeof task !== 'object') return false
-  // Only a status that names live work counts: the harness also reports killed/stopped tasks, and an
-  // unknown status must not silence the gate for as long as the entry stays in the payload.
   return ['running', 'pending', 'in_progress', 'queued', 'starting'].includes(String(task.status))
-})) runningBail()
+}).length : 0
+// Harness Monitors and ordinary background jobs have the same Stop-payload shape. These entries
+// are therefore diagnostic context only; filesystem and process evidence decide whether work runs.
 
 const activityRoot = resolveActivityRoot(cwd)
 const activityCutoff = Date.now() - ACTIVITY_WINDOW_MIN * 60_000
@@ -238,8 +239,18 @@ if (hasActiveLaneLog(worktreeScan, activityCutoff)) runningBail()
 const processScan = scanLiveLaneProcesses({ procRoot: process.env.WT_QUEUE_GATE_PROC_ROOT || '/proc' })
 const processScopeRoot = activityRoot || (worktreeScan.status === 'known' ? cwd : null)
 function underProjectRoot(path) {
-  if (!processScopeRoot) return false
-  const rel = relative(resolve(processScopeRoot), resolve(path))
+  if (!processScopeRoot || !isAbsolute(path)) return false
+  let root = resolve(processScopeRoot)
+  let candidate = resolve(path)
+  try {
+    const realRoot = realpathSync(root)
+    const realCandidate = realpathSync(candidate)
+    root = realRoot
+    candidate = realCandidate
+  } catch {
+    // Lexical absolute-path comparison remains safe when either path no longer exists.
+  }
+  const rel = relative(root, candidate)
   return rel === '' || (!rel.startsWith('..') && !rel.startsWith('/'))
 }
 if (processScan.processes.some((entry) => underProjectRoot(entry.dir))) runningBail()
@@ -369,6 +380,7 @@ const decisionState = JSON.stringify({
   activityStatus,
   processStatus: processScan.status,
   backgroundTasksVisible,
+  backgroundLiveCount,
   queueStatus,
   openCount,
   nextItem,
@@ -383,12 +395,7 @@ try {
   /* first time */
 }
 if (priorState?.decisionState === decisionState) {
-  try {
-    writeFileSync(stateFile, JSON.stringify({ lastBlockedAt: Date.now(), decisionState }), 'utf8')
-  } catch {
-    // A failed refresh only shortens suppression; the gate still fails open for this repeat.
-  }
-  bail()
+  if (Date.now() - (priorState.lastBlockedAt || 0) < COOLDOWN_MIN * 60_000) bail()
 }
 if (!priorState?.decisionState && Date.now() - (priorState?.lastBlockedAt || 0) < COOLDOWN_MIN * 60_000) bail()
 
@@ -486,8 +493,12 @@ process.stdout.write(
             : activityStatus === 'bounded'
               ? 'Worktree activity is unknown — scan bounded out'
               : 'Worktree activity is unknown — git worktree enumeration failed'}${processScan.status === 'unknown'
-                ? ' · detached-runner /proc scan unavailable'
-                : ''}${backgroundTasksVisible ? '' : ' · background task list unavailable'} · Monitor state is not visible to Stop hooks · ` +
+                 ? ' · detached-runner /proc scan unavailable'
+                 : processScan.status === 'capped'
+                   ? ' · detached-runner /proc scan capped'
+                   : ''}${backgroundTasksVisible ? '' : ' · background task list unavailable'}${backgroundLiveCount > 0
+                     ? ` · ${backgroundLiveCount} harness background task${backgroundLiveCount === 1 ? ' is' : 's are'} live but not counted as work because Monitors and background jobs are indistinguishable in the Stop payload`
+                     : ''} · ` +
         (snapshotAncestor ? `using ancestor snapshot from ${snapshotAncestor} · ` : '') +
         (openCount === null
           ? (queueStatus === 'stale'

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync, symlinkSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -130,6 +130,27 @@ describe('registeredWorktrees', () => {
 describe('scanLiveLaneProcesses', () => {
   it('reports process inspection as unknown off Linux', () => {
     expect(scanLiveLaneProcesses({ platform: 'darwin' })).toEqual({ status: 'unknown', processes: [] })
+  })
+
+  it('ignores a matching process whose --dir is not absolute', () => {
+    expect(scanLiveLaneProcesses({
+      readdirImpl: () => ['101'],
+      readFileImpl: () => Buffer.from('node\0wt-lane.mjs\0--dir\0relative/lane\0'),
+    })).toEqual({ status: 'known', processes: [] })
+  })
+
+  it('caps process inspection at the first 5,000 numeric entries', () => {
+    const entries = Array.from({ length: 5_001 }, (_, index) => String(index + 1))
+    let reads = 0
+    const result = scanLiveLaneProcesses({
+      readdirImpl: () => entries,
+      readFileImpl: () => {
+        reads += 1
+        return Buffer.from('node\0worker.mjs\0')
+      },
+    })
+    expect(result).toEqual({ status: 'capped', processes: [] })
+    expect(reads).toBe(5_000)
   })
 })
 
@@ -285,22 +306,37 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(r)).toContain('open work remains')
   })
 
-  it('checks every fresh .lane log for its final EXIT marker', () => {
-    const { env, payload, stateDir, cwd } = scaffold('finished-named-lane-log')
+  it('ignores a fresh env.log because it is not launcher-owned', () => {
+    const { env, payload, stateDir, cwd } = scaffold('fresh-env-log')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
     mkdirSync(join(cwd, '.lane'), { recursive: true })
-    writeFileSync(join(cwd, '.lane', 'critic.log'), 'working\nEXIT=0\n', 'utf8')
+    writeFileSync(join(cwd, '.lane', 'env.log'), 'worker environment\n', 'utf8')
 
     expect(blockText(runHook(payload, env))).toContain('open work remains')
   })
 
-  it('stays silent for a fresh non-terminal named .lane log', () => {
+  it('stays silent for a fresh non-terminal launcher-owned nonce log', () => {
     const { env, payload, stateDir, cwd } = scaffold('active-named-lane-log')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
     mkdirSync(join(cwd, '.lane'), { recursive: true })
-    writeFileSync(join(cwd, '.lane', 'implement.log'), 'working\n', 'utf8')
+    writeFileSync(join(cwd, '.lane', 'critic-run.abc123.log'), 'working\n', 'utf8')
 
     expect(blockText(runHook(payload, env))).toBe('')
+  })
+
+  it('does not mistake a launcher-owned nonce log ending in EXIT for a running lane', () => {
+    const { env, payload, stateDir, cwd } = scaffold('finished-nonce-lane-log')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(cwd, '.lane'), { recursive: true })
+    writeFileSync(join(cwd, '.lane', 'critic-run.abc123.log'), 'working\nEXIT=0\n', 'utf8')
+
+    expect(blockText(runHook(payload, env))).toContain('open work remains')
+  })
+
+  it('reads only a bounded tail when checking launcher-owned logs', () => {
+    const source = readFileSync(LANE_LIVE_SCAN, 'utf8')
+    expect(source).toContain('export const LANE_LOG_TAIL_BYTES = 4096')
+    expect(source).toContain('readSync(')
   })
 
   it.each(['wt-pilot-runner.mjs', 'wt-lane.mjs'])('stays silent for a detached %s process scoped to this project', (script) => {
@@ -338,6 +374,42 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot }))).toContain('open work remains')
   })
 
+  it('does not let a process in a prefix-sibling directory silence the gate', () => {
+    const { env, payload, stateDir, cwd } = scaffold('prefix-sibling-process')
+    const laneDir = join(`${cwd}-sibling`, 'lane')
+    const procRoot = join(cwd, 'fake-proc')
+    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(procRoot, '101'), { recursive: true })
+    mkdirSync(laneDir, { recursive: true })
+    writeFileSync(join(procRoot, '101', 'cmdline'), `node\0/opt/toolbox/wt-lane.mjs\0--dir\0${laneDir}\0`)
+    agePath(join(procRoot, '101', 'cmdline'))
+    agePath(join(procRoot, '101'))
+    agePath(procRoot)
+    agePath(cwd)
+
+    expect(blockText(runHook(payload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot }))).toContain('open work remains')
+  })
+
+  it('matches a real-path process directory when the hook cwd is a symlink', () => {
+    const { env, payload, stateDir, cwd } = scaffold('symlinked-cwd-process')
+    const alias = `${cwd}-alias`
+    const laneDir = join(cwd, 'lane')
+    const procRoot = join(cwd, 'fake-proc')
+    symlinkSync(cwd, alias, 'dir')
+    writeSnapshot(stateDir, alias, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
+    mkdirSync(join(procRoot, '101'), { recursive: true })
+    mkdirSync(laneDir, { recursive: true })
+    writeFileSync(join(procRoot, '101', 'cmdline'), `node\0/opt/toolbox/wt-lane.mjs\0--dir\0${laneDir}\0`)
+    agePath(join(procRoot, '101', 'cmdline'))
+    agePath(join(procRoot, '101'))
+    agePath(procRoot)
+    agePath(laneDir)
+    agePath(cwd)
+
+    const aliasedPayload = { ...(payload as Record<string, unknown>), cwd: alias }
+    expect(blockText(runHook(aliasedPayload, { ...env, WT_QUEUE_GATE_PROC_ROOT: procRoot }))).toBe('')
+  })
+
   it('keeps the existing idle verdict when /proc has no matching lane process', () => {
     const { env, payload, stateDir, cwd } = scaffold('no-live-external-lane')
     const procRoot = join(cwd, 'fake-proc')
@@ -364,39 +436,19 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(r)).toContain('detached-runner /proc scan unavailable')
   })
 
-  it('stays silent while the Stop payload reports a running harness background task', () => {
+  it('blocks despite a live shell background task and explains why it was not counted', () => {
     const { env, payload, stateDir, cwd } = scaffold('running-background-task')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
     agePath(cwd)
 
     const r = runHook({
       ...(payload as Record<string, unknown>),
-      background_tasks: [{ id: 'task-1', type: 'bash', status: 'running', name: 'gate run' }],
+      background_tasks: [{ id: 'task-1', type: 'shell', status: 'running', name: 'quota monitor' }],
     }, env)
-    expect(blockText(r)).toBe('')
-  })
-
-  it('does not treat a killed, stopped or cancelled background task as running work', () => {
-    // Field case 2026-09-14: task notifications carry `killed` and `stopped`; counting them as running would
-    // silence the gate for as long as the dead task stays in the payload.
-    for (const status of ['killed', 'stopped', 'cancelled']) {
-      const { env, payload, stateDir, cwd } = scaffold(`dead-background-task-${status}`)
-      writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
-      agePath(cwd)
-      const r = runHook({
-        ...(payload as Record<string, unknown>),
-        background_tasks: [{ id: 'task-1', type: 'bash', status, name: 'gate run' }],
-      }, env)
-      expect(blockText(r), status).not.toBe('')
-    }
-  })
-
-  it('states that Stop hooks cannot observe whether a Monitor is armed', () => {
-    const { env, payload, stateDir, cwd } = scaffold('monitor-observability')
-    writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
-    agePath(cwd)
-
-    expect(blockText(runHook(payload, env))).toContain('Monitor state is not visible to Stop hooks')
+    const text = blockText(r)
+    expect(text).toContain('open work remains')
+    expect(text).toContain('1 harness background task is live')
+    expect(text).toContain('Monitors and background jobs are indistinguishable in the Stop payload')
   })
 
   it('still blocks when the worktree is stale and no recent activity exists', () => {
@@ -528,18 +580,20 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(r)).toBe('')
   })
 
-  it('suppresses an identical decision during one idle stretch but re-fires when open work changes', () => {
+  it('suppresses an identical decision within 45 minutes and re-fires after that window', () => {
     const { env, payload, stateDir, cwd } = scaffold('identical-decision')
     const idlePayload = { ...(payload as Record<string, unknown>), background_tasks: [] }
     agePath(cwd)
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 first item' })
 
     expect(blockText(runHook(idlePayload, env))).toContain('4 open')
+    const stateFile = join(stateDir, `session-identical-decision-${slug(cwd)}.json`)
+    const emittedAt = (JSON.parse(readFileSync(stateFile, 'utf8')) as { lastBlockedAt: number }).lastBlockedAt
     expect(blockText(runHook(idlePayload, env))).toBe('')
-    expect(blockText(runHook({
-      ...idlePayload,
-      background_tasks: [{ id: 'task-2', type: 'bash', status: 'running' }],
-    }, env))).toBe('')
+    expect((JSON.parse(readFileSync(stateFile, 'utf8')) as { lastBlockedAt: number }).lastBlockedAt).toBe(emittedAt)
+
+    const prior = JSON.parse(readFileSync(stateFile, 'utf8')) as Record<string, unknown>
+    writeFileSync(stateFile, JSON.stringify({ ...prior, lastBlockedAt: Date.now() - 46 * 60_000 }))
     expect(blockText(runHook(idlePayload, env))).toContain('4 open')
 
     writeSnapshot(stateDir, cwd, { open: 3, at: Date.now(), next: 'CARD-5 changed item' })
