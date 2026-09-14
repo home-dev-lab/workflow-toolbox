@@ -146,9 +146,15 @@ async function rewriteReferences($, command) {
   return { command: rewritten, count };
 }
 
-function withNotes(result, rewrites, entropy) {
-  if (!result || result.deny || (!rewrites && !entropy)) return result;
+// A model shown `secret:<kind>#<id>` with no explanation reads the token AS the secret and warns the
+// person that they shared a live credential (reported by Frederic, wt-suite #2151). Every scrubbed
+// result therefore says what the token is.
+export const REDACTION_NOTE = '[wt-secret-guard: text of the form secret:<kind>#<id> is a REDACTION TOKEN, not a secret. The real value was removed before it reached you and you have never seen it, so do not warn that a live credential was shared. Use the token as-is in a Bash command: the guard substitutes the value at execution.]';
+
+function withNotes(result, rewrites, entropy, tokenised = false) {
+  if (!result || result.deny || (!rewrites && !entropy && !tokenised)) return result;
   const notes = [];
+  if (tokenised) notes.push(REDACTION_NOTE);
   if (rewrites) notes.push(`[wt-secret-guard: rewrote ${rewrites} secret reference${rewrites === 1 ? '' : 's'}]`);
   if (entropy) notes.push(`[wt-secret-guard: ${entropy} candidate${entropy === 1 ? '' : 's'} not tokenised - entropy only]`);
   const text = typeof result.text === 'string' ? `${result.text}\n${notes.join('\n')}` : notes.join('\n');
@@ -194,7 +200,7 @@ async function scrubToolResult($, event, next) {
   const cleaned = scrub(response, '');
   await publish($);
   if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${tokens.size} tokenised value(s)`);
-  return withNotes(cleaned.value, 0, cleaned.entropy);
+  return withNotes(cleaned.value, 0, cleaned.entropy, cleaned.changed);
 }
 
 /** @type {import('claude-code').Register} */
@@ -210,7 +216,7 @@ export const register = (on, options) => {
     await publish($);
     // Only counts and kinds may be logged: hook debug logs can otherwise expose the value.
     if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${tokens.size} tokenised value(s)`);
-    return withNotes(cleaned.value, rewrite.count, cleaned.entropy);
+    return withNotes(cleaned.value, rewrite.count, cleaned.entropy, cleaned.changed);
   });
   on('tool.call', { tool: 'Read' }, scrubToolResult);
   on('tool.call', { tool: /^mcp__/ }, scrubToolResult);
@@ -218,7 +224,9 @@ export const register = (on, options) => {
     const cleaned = scrub(event, '');
     await publish($);
     if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${tokens.size} tokenised value(s)`);
-    return next(withNotes(cleaned.value, 0, cleaned.entropy));
+    const noted = withNotes(cleaned.value, 0, cleaned.entropy);
+    // The prompt text stays as typed; the explanation travels beside it as context the person never sees.
+    return next(cleaned.changed ? { ...noted, context: [...(noted.context ?? []), REDACTION_NOTE] } : noted);
   });
 };
 
