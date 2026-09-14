@@ -68,6 +68,10 @@
     "./card-cost-scan": {
       "import": "./src/card-cost-scan.ts",
       "types": "./src/card-cost-scan.ts"
+    },
+    "./delegation-hop-cost": {
+      "import": "./src/delegation-hop-cost.ts",
+      "types": "./src/delegation-hop-cost.ts"
     }
   },
   "scripts": {

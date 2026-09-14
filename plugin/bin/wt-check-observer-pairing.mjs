@@ -14,7 +14,9 @@ Usage:
     --agent-id          the raw agent id to check (or --name)
     --name              the declared spawn name to check (or --agent-id)
     --window-sec        mtime-fallback correlation window in seconds (default 300)
-    --capture-dir       opt-in: archive the two meta.json files of an unresolved pairing here
+    --capture-dir       opt-in: archive the two meta.json files of an unresolved pairing here;
+                        the pairing guard defaults this under the state directory, or use
+                        WT_OBSERVER_PAIRING_CAPTURE_DIR to redirect it
     --retry-ms          bounded retry window (ms) before an observerTaskId conflict is
                          reported as 'unknown' (default 1500). Only catches the FAST edge
                          of the race — the observer's own meta.json write is measured to

@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
-import { cpSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,38 +15,125 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
-function fixture() {
+function fixture(transformSource?: (source: string) => string, install = true) {
   const root = mkdtempSync(join(tmpdir(), 'wt-adopted-lane-consent-'))
   roots.push(root)
   const config = join(root, 'config')
   const project = join(root, 'project')
   const pluginRoot = join(root, 'plugin')
+  const bin = join(root, 'bin')
   const installed = join(root, 'scripts', 'wt-lane.mjs')
   mkdirSync(join(config, 'plugins'), { recursive: true })
   mkdirSync(join(project, '.claude'), { recursive: true })
   mkdirSync(join(pluginRoot, 'bin', 'lib'), { recursive: true })
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs']) {
+  mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
+  mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
+  mkdirSync(bin)
+  writeFileSync(join(bin, 'opencode'), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\n'; exit 0; fi
+exit 0
+`)
+  spawnSync('chmod', ['+x', join(bin, 'opencode')])
+  writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
+  cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
+  const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
+  writeFileSync(join(pluginRoot, 'bin', 'wt-lane.mjs'), transformSource ? transformSource(launcher) : launcher)
+  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane-wait.mjs'), join(pluginRoot, 'bin', 'wt-lane-wait.mjs'))
   writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2,
     plugins: { 'workflow-toolbox@fixture': [{ installPath: pluginRoot, version: '0.0.0' }] },
   }))
-  const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home') }
-  delete env.CLAUDE_PLUGIN_ROOT
-  delete env.WT_PLUGIN_ROOT
-  const install = spawnSync(process.execPath, [INSTALLER, '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
-  expect(install.status, install.stderr).toBe(0)
-  return { config, project, installed, env }
+  // The launcher resolves consent solely through these fixture-owned locations. Do not
+  // inherit a developer's config, home, or lane settings into the child process.
+  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}:/usr/bin:/bin`, XDG_STATE_HOME: join(root, 'state') }
+  if (install) {
+    const result = spawnSync(process.execPath, [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
+    expect(result.status, result.stderr).toBe(0)
+  }
+  return { root, config, project, installed, env, installer: join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs') }
 }
 
-function launch(f: ReturnType<typeof fixture>) {
+function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna') {
   const brief = join(f.project, 'brief.md')
   writeFileSync(brief, '# brief\n')
-  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', 'test/model', '--brief', brief], { encoding: 'utf8', env: f.env })
+  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git'], { encoding: 'utf8', env: f.env })
 }
 
 describe('adopted wt-lane consent resolver', () => {
+  for (const mode of ['--check', '--install']) {
+    it(`${mode} refuses when the resolved plugin root is missing a launcher runtime module`, () => {
+      const f = fixture(undefined, false)
+      const missing = join(f.root, 'plugin', 'bin', 'lib', 'lane-model-allowlist.mjs')
+      rmSync(missing)
+
+      const result = spawnSync(
+        process.execPath,
+        [f.installer, '--set', 'scripts', mode, '--dir', join(f.root, 'scripts')],
+        { encoding: 'utf8', env: f.env },
+      )
+
+      expect(result.status).not.toBe(0)
+      expect(`${result.stdout}${result.stderr}`).toBe(
+        `adopt: wt-lane.mjs runtime module is missing from the resolved plugin root: ${missing} — update or reinstall workflow-toolbox, then retry.\n`,
+      )
+      expect(existsSync(f.installed)).toBe(false)
+    })
+  }
+
+  it('preflights the shared plugin-option resolver derived from the adopted loader', () => {
+    const f = fixture(undefined, false)
+    const missing = join(f.root, 'plugin', 'bin', 'lib', 'plugin-options.mjs')
+    rmSync(missing)
+
+    const result = spawnSync(
+      process.execPath,
+      [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')],
+      { encoding: 'utf8', env: f.env },
+    )
+
+    expect(result.status).not.toBe(0)
+    expect(`${result.stdout}${result.stderr}`).toBe(
+      `adopt: wt-lane.mjs runtime module is missing from the resolved plugin root: ${missing} — update or reinstall workflow-toolbox, then retry.\n`,
+    )
+    expect(existsSync(f.installed)).toBe(false)
+  })
+
+  it('installs and starts the adopted launcher when the resolved plugin root has every runtime module', () => {
+    const f = fixture(undefined, false)
+    const install = spawnSync(
+      process.execPath,
+      [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')],
+      { encoding: 'utf8', env: f.env },
+    )
+    expect(install.status, `${install.stdout}${install.stderr}`).toBe(0)
+
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const started = launch(f)
+    expect(started.status, started.stderr).toBe(0)
+  })
+
+  it('refuses an unlisted model through the plugin runtime before the adopted launcher spawns', () => {
+    const f = fixture()
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const refused = launch(f, 'google/gemini-3.6-flash')
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain('is not in the lane model allow-list')
+  })
+
+  it('uses the plugin model option before the env fallback in the adopted launcher', () => {
+    const f = fixture()
+    f.env.WT_LANE_MODELS = 'env/model'
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({
+      pluginConfigs: { 'workflow-toolbox@fixture': { options: { executor_lane_consent: true, lane_models: 'openai/gpt-5.6-luna' } } },
+    }))
+    expect(launch(f).status).toBe(0)
+  })
+
   it('uses the real resolver for account and project consent fixtures', () => {
     const accounts = [
       { name: 'settings true', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },
@@ -88,5 +175,39 @@ describe('adopted wt-lane consent resolver', () => {
     const actual = spawnSync(process.execPath, [f.installed, '--help'], { encoding: 'utf8', env: f.env })
     expect(actual.status, actual.stderr).toBe(0)
     expect(actual.stdout).toContain('Usage: node wt-lane.mjs')
+  })
+
+  it('forces the fence in an adopted launcher child', () => {
+    const f = fixture()
+    const bin = join(f.root, 'bin')
+    const seen = join(f.root, 'seen-fence')
+    writeFileSync(join(bin, 'opencode'), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\n'; exit 0; fi
+printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
+`)
+    spawnSync('chmod', ['+x', join(bin, 'opencode')])
+    f.env.PATH = `${bin}:/usr/bin:/bin`
+    f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    expect(launch(f).status).toBe(0)
+    const until = Date.now() + 3000
+    while (!existsSync(seen) && Date.now() < until) spawnSync('sleep', ['0.05'])
+    expect(readFileSync(seen, 'utf8')).toBe('true\n')
+  })
+
+  it('refuses a launcher whose consent import fragment was reworded', () => {
+    const f = fixture((source) => source.replace(
+      "import { resolveConsent } from './lib/lane-consent-check-core.mjs'",
+      "import { resolveConsent as resolveLaneConsent } from './lib/lane-consent-check-core.mjs'",
+    ), false)
+    const install = spawnSync(process.execPath, [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], { encoding: 'utf8' })
+
+    expect(install.status).not.toBe(0)
+    expect(`${install.stdout}${install.stderr}`).toContain('launcher transformation expected exactly one occurrence')
+    expect(`${install.stdout}${install.stderr}`).toContain('import { resolveConsent } from')
+    expect(`${install.stdout}${install.stderr}`).toContain(join(f.root, 'plugin', 'bin', 'wt-lane.mjs'))
+    expect(readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')).toContain("import { resolveConsent } from './lib/lane-consent-check-core.mjs'")
   })
 })

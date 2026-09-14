@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { countLaneProcessesReal, evaluateLaneCall } from '../../../../plugin/bin/lib/wt-lane-saturation-core.mjs'
+import { LANE_PROCESS_NAMES, countLaneProcessesReal, evaluateLaneCall } from '../../../../plugin/bin/lib/wt-lane-saturation-core.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-lane-saturation-hook.mjs')
@@ -297,7 +297,11 @@ describe('wt-lane-saturation-hook.mjs', () => {
   // hook controls: arc B's own `opencode run` process is never spawned by a refused call.
   // Skips (never fails) if pgrep is unavailable, for the same documented reason as above.
   it('two-arc contention: the hook denies arc B while arc A saturates the lane, and allows again once arc A drains — arc B is never itself spawned by a refused call', ({ skip }) => {
-    const baseline = countLaneProcessesReal(['opencode'])
+    // The baseline MUST count exactly the process names the hook counts. It used to count only
+    // `opencode` while the hook's default counts `opencode` AND `codex`, so any ambient `codex`
+    // process on the host made the "uncontended" call already saturated — measured 2026-09-13,
+    // a long-lived Codex app-server broker turned this test red on a correct hook.
+    const baseline = countLaneProcessesReal(LANE_PROCESS_NAMES)
     if (baseline.state === 'unknown') {
       skip()
       return
@@ -343,7 +347,7 @@ describe('wt-lane-saturation-hook.mjs', () => {
       // blind sleep — the same drain-polling discipline as the recovery half below.
       const registerDeadline = Date.now() + 5000
       while (Date.now() < registerDeadline) {
-        const current = countLaneProcessesReal(['opencode'])
+        const current = countLaneProcessesReal(LANE_PROCESS_NAMES)
         if (current.state === 'ok' && current.count > baseline.count) break
         spawnSync('sleep', ['0.1'])
       }
@@ -378,7 +382,7 @@ describe('wt-lane-saturation-hook.mjs', () => {
     // that was never needed.
     const drainDeadline = Date.now() + 5000
     while (Date.now() < drainDeadline) {
-      const current = countLaneProcessesReal(['opencode'])
+      const current = countLaneProcessesReal(LANE_PROCESS_NAMES)
       if (current.state === 'ok' && current.count <= baseline.count) break
       spawnSync('sleep', ['0.1'])
     }

@@ -2,7 +2,7 @@
 name: leaf-readonly-three-tools
 description: Confirms the leaf-readonly agent's exact tool fence.
 tags: [agent, leaf-readonly]
-runs: 1
+runs: 3
 max_turns: 4
 allowed_tools: [Agent]
 ---

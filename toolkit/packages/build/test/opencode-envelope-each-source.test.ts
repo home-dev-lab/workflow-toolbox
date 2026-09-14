@@ -38,6 +38,9 @@ function installFakeOpencode(root: string) {
   const bin = join(root, 'opencode')
   writeFileSync(bin, [
     '#!/usr/bin/env node',
+    "if (process.argv[2] === '--version') { console.log('fixture-1'); process.exit(0) }",
+    "if (process.argv[2] === '--pure') { console.log('[]'); process.exit(0) }",
+    "if (process.argv[2] === 'debug' && process.argv[3] === 'skill') { console.log('[]'); process.exit(0) }",
     "if (process.argv[2] === 'providers') process.exit(0)",
     "const taskFile = process.argv[process.argv.indexOf('-f') + 1]",
     "if (process.env.FAKE_CONCURRENCY_LOG) {",

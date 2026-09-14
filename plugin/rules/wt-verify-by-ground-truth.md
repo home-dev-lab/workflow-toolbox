@@ -16,6 +16,19 @@ trailing `echo`, not gate.
 **Corroborate with SECOND signal that fail differently** — tool own summary line, failure count,
 error marker in log. Read BESIDE code. Not instead of code.
 One instrument agree with itself = not corroboration.
+
+**Two readings taken in one window are ONE reading.** Independence is property of CONDITION,
+never source. Two instruments, two processes, two directories sampling same loaded machine in
+same window agree about machine. Before calling second reading corroboration, ask what two runs
+SHARED, not how they differed — and whether YOU are shared condition. Concurrent processes you
+started count, not only commits you made. Measurement run on system it measures adds condition
+while sampling it: absolute rate is upper bound, and going quiet is part of instrument.
+
+**Witness line must be one the BROKEN instrument could MISS.** Seeded row that reads correctly
+under both working and broken interpretation test nothing. Choose against suspected failure mode:
+row that must be PRESENT when mode is truncation; row that must be ABSENT when mode is
+over-matching. Same family as control readable in both outcomes; this applies it to choice of
+witness.
 Misread code not spoil one result. It retroactively VOID every "gates green" claim built on same
 capture path.
 

@@ -2,13 +2,18 @@
 // wt-actionable-gate-hook.mjs — Stop hook consumer for a tracker-agnostic
 // actionability snapshot. The producer decides what is STARTABLE; this hook only
 // enforces the contract's stop-time invariants.
+// External-lane detection is Linux-only; unsupported platforms and detection errors
+// degrade legibly to transcript and declared-bound evidence.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
+import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 import { decide } from './lib/actionability-core.mjs'
+import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { recordGuardEvent } from './lib/guard-journal.mjs'
 import {
   stateRoot,
   projectStatePath,
@@ -25,6 +30,7 @@ const INFLIGHT_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_MS || 3 * 60 * 100
 const INFLIGHT_CAP_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_CAP_MS || 10 * 60 * 1000)
 const LANE_ANCESTOR_DEPTH = Number(process.env.WT_ACTIONABLE_LANE_ANCESTOR_DEPTH || 4)
 const LANE_SELF_EXCLUDE_DEPTH = 32
+const MANDATE_FRESHNESS_MS = Number(process.env.WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES || 480) * 60_000
 
 function readInput() {
   try {
@@ -50,6 +56,13 @@ function snapshotPath(root, cwd) {
 
 function sessionStatePath(root, cwd, sessionId) {
   return sharedSessionStatePath(root, cwd, sessionId)
+}
+
+function mandatePath(cwd) {
+  const stateHome = process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state')
+  const mandateDir = process.env.WT_AUTONOMY_WATCH_MANDATE_DIR || join(stateHome, 'wt-queue-gate')
+  const projectSlug = resolve(cwd).replace(/[^A-Za-z0-9-]/g, '-')
+  return join(mandateDir, `engine-${projectSlug}.json`)
 }
 
 function readJson(path) {
@@ -79,9 +92,12 @@ function readSessionState(path) {
   try {
     const parsed = readJson(path)
     const value = parsed?.consecutiveBlocks
-    return finiteNumber(value) && value >= 0 ? value : 0
+    return {
+      consecutiveBlocks: finiteNumber(value) && value >= 0 ? value : 0,
+      staleSnapshotAt: finiteNumber(parsed?.staleSnapshotAt) ? parsed.staleSnapshotAt : null,
+    }
   } catch {
-    return 0
+    return { consecutiveBlocks: 0, staleSnapshotAt: null }
   }
 }
 
@@ -143,12 +159,12 @@ function hasInFlightWork(transcriptPath, sessionId, now) {
   return false
 }
 
-function nearAncestorsOf(pid, depth) {
+function nearAncestorsOf(pid, depth, fixture) {
   const out = new Set()
   let current = Number(pid)
   for (let i = 0; i < depth && current > 1; i += 1) {
-    const stat = readFileSync(`/proc/${current}/stat`, 'utf8')
-    const ppid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
+    const stat = fixture ? null : readFileSync(`/proc/${current}/stat`, 'utf8')
+    const ppid = fixture ? fixture.processes.get(current)?.ppid : Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1])
     if (!Number.isInteger(ppid) || ppid <= 1) break
     out.add(ppid)
     current = ppid
@@ -163,7 +179,15 @@ function intersects(left, right) {
   return false
 }
 
-function listMatchingPids(pattern) {
+function listMatchingPids(pattern, fixture) {
+  if (fixture) {
+    return {
+      kind: 'ok',
+      pids: [...fixture.processes.values()]
+        .filter((process) => process.patterns.includes(pattern) || process.command.includes(pattern))
+        .map((process) => process.pid),
+    }
+  }
   try {
     const out = execFileSync('pgrep', ['-f', pattern], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
     return {
@@ -178,6 +202,29 @@ function listMatchingPids(pattern) {
   } catch (error) {
     if (error && error.status === 1) return { kind: 'ok', pids: [] }
     return { kind: 'error', reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function readLaneFixture() {
+  const path = process.env.WT_ACTIONABLE_LANE_FIXTURE_PATH
+  if (!path) return { kind: 'absent' }
+  try {
+    const parsed = readJson(path)
+    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.processes) || !Number.isInteger(parsed.hookPid)) {
+      throw new Error('fixture must contain hookPid and processes')
+    }
+    const processes = new Map()
+    for (const entry of parsed.processes) {
+      if (!entry || typeof entry !== 'object' || !Number.isInteger(entry.pid) || !Number.isInteger(entry.ppid) ||
+        typeof entry.cwd !== 'string' || typeof entry.command !== 'string' || !Array.isArray(entry.patterns) ||
+        !entry.patterns.every((pattern) => typeof pattern === 'string')) {
+        throw new Error('fixture process is invalid')
+      }
+      processes.set(entry.pid, entry)
+    }
+    return { kind: 'present', hookPid: parsed.hookPid, processes }
+  } catch (error) {
+    return { kind: 'error', reason: `lane fixture: ${error instanceof Error ? error.message : String(error)}` }
   }
 }
 
@@ -197,26 +244,32 @@ function detectExternalLane(cwd) {
   const detectionMode = process.env.WT_ACTIONABLE_LANE_DETECTION_MODE
   if (detectionMode === 'unsupported') return { kind: 'unsupported', reason: 'forced unsupported for tests' }
 
+  const fixture = readLaneFixture()
+  if (fixture.kind === 'error') return fixture
+
   // Degraded path is explicit: this detection relies on Linux /proc for cwd + ppid and on
   // `pgrep -f` to match the invocation without printing command lines. Elsewhere the hook must
   // fall back to transcripts plus the declared bound, not pretend it checked and found nothing.
-  if (process.platform !== 'linux') {
+  if (fixture.kind === 'absent' && process.platform !== 'linux') {
     return { kind: 'unsupported', reason: `external lane detection requires linux /proc + pgrep (got ${process.platform})` }
   }
 
   try {
-    const hookNear = nearAncestorsOf(process.pid, LANE_ANCESTOR_DEPTH)
-    const hookSelfAndAncestors = new Set([process.pid, ...nearAncestorsOf(process.pid, LANE_SELF_EXCLUDE_DEPTH)])
+    const scanner = fixture.kind === 'present' ? fixture : null
+    const hookPid = scanner?.hookPid ?? process.pid
+    const hookNear = nearAncestorsOf(hookPid, LANE_ANCESTOR_DEPTH, scanner)
+    const hookSelfAndAncestors = new Set([hookPid, ...nearAncestorsOf(hookPid, LANE_SELF_EXCLUDE_DEPTH, scanner)])
     const projectRoot = safeProjectRoot(cwd)
 
     for (const pattern of lanePatterns()) {
-      const matches = listMatchingPids(pattern)
+      const matches = listMatchingPids(pattern, scanner)
       if (matches.kind !== 'ok') return matches
       for (const pid of matches.pids) {
         if (hookSelfAndAncestors.has(pid)) continue
-        const laneRoot = readlinkSync(`/proc/${pid}/cwd`)
+        const laneRoot = scanner ? scanner.processes.get(pid)?.cwd : readlinkSync(`/proc/${pid}/cwd`)
+        if (typeof laneRoot !== 'string') throw new Error(`missing cwd for lane pid ${pid}`)
         if (!isSameOrNestedPath(laneRoot, projectRoot)) continue
-        if (intersects(hookNear, nearAncestorsOf(pid, LANE_ANCESTOR_DEPTH))) {
+        if (intersects(hookNear, nearAncestorsOf(pid, LANE_ANCESTOR_DEPTH, scanner))) {
           return { kind: 'running', pid, pattern }
         }
       }
@@ -270,9 +323,9 @@ function contextPct(transcriptPath) {
   return null
 }
 
-function renderBlock(decision, blockMax, ctxPct, snapshot, now) {
+function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, mandateKind) {
   // Factual, not imperative — see the emission comment in main() for why. Keep the exact
-  // substrings 'actionable item(s) remain', 'normal during a conversation', and 'Block N of M':
+  // substrings 'actionable item(s) remain' and 'Block N of M':
   // the test suite matches on them, and they carry the state a resuming reader needs.
   let actionableLine
   if (finiteNumber(decision.actionable)) {
@@ -286,7 +339,10 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now) {
   } else if (!finiteNumber(snapshot?.producer?.heartbeatAt)) {
     actionableLine = 'Actionability state cannot be distinguished from legacy snapshot evidence — check the tracker.'
   } else {
-    actionableLine = 'Producer heartbeat is stale: no recent board read (normal during a conversation) — nothing, normal.'
+    actionableLine = 'Producer heartbeat is stale; refresh the board snapshot.'
+  }
+  if (decision.reason === 'snapshot-stale' && !actionableLine.includes('refresh the board snapshot')) {
+    actionableLine += ' Refresh the board snapshot.'
   }
   const nextLine = decision.next ? decision.next : 'unknown'
   // ⚠ ONE LINE, and the length lock below is what keeps it that way.
@@ -307,7 +363,12 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now) {
     ctxPct !== null && ctxPct !== undefined && ctxPct >= CONTEXT_LOUD_PCT
       ? ` Context ~${ctxPct}%: the door is already open — you cross it by emitting tokens, never by falling silent.`
       : ''
-  return `[for Claude, not the user] Actionability gate: ${actionableLine} Next: ${nextLine}.${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${blockMax}.`
+  const mandateClause = mandateKind === 'unknown' ? ' Autonomy mandate could not be read.' : ''
+  const laneClause = externalLane.kind === 'unsupported' || externalLane.kind === 'error'
+    ? ` lane detection unavailable: ${externalLane.reason.split(/\r?\n/, 1)[0]}.`
+    : ''
+  const effectiveBlockMax = decision.reason === 'snapshot-stale' ? 1 : blockMax
+  return `[for Claude, not the user] Actionability gate:${mandateClause} ${actionableLine} Next: ${nextLine}.${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${effectiveBlockMax}.${laneClause}`
 }
 
 function main() {
@@ -324,24 +385,31 @@ function main() {
   const snapshot = readSnapshot(root, cwd, now)
   if (snapshot.status === 'invalid') return
 
-  const externalLane = detectExternalLane(cwd)
-  if (externalLane.kind === 'error') return
+  const mandate = classifyMandate(mandatePath(cwd), MANDATE_FRESHNESS_MS, now, sessionId)
+  const protectsStop = mandate.kind === 'live' || mandate.kind === 'unknown'
+  const externalLane = protectsStop ? detectExternalLane(cwd) : { kind: 'idle' }
 
   const sessionPath = sessionStatePath(root, cwd, sessionId)
-  const consecutiveBlocks = readSessionState(sessionPath)
+  const sessionState = readSessionState(sessionPath)
   const decision = decide({
     snapshot,
     now,
     staleAfterMs: STALE_AFTER_MS,
-    inFlight: hasInFlightWork(transcriptPath, sessionId, now) || externalLane.kind === 'running',
-    consecutiveBlocks,
+    inFlight: protectsStop && (hasInFlightWork(transcriptPath, sessionId, now) || externalLane.kind === 'running'),
+    mandateKind: mandate.kind,
+    consecutiveBlocks: sessionState.consecutiveBlocks,
+    staleSnapshotAt: sessionState.staleSnapshotAt,
     blockMax: BLOCK_MAX,
     inFlightCapMs: INFLIGHT_CAP_MS,
   })
 
   if (!decision.block) {
     try {
-      writeJson(sessionPath, { consecutiveBlocks: decision.nextConsecutiveBlocks, updatedAt: now })
+      writeJson(sessionPath, {
+        consecutiveBlocks: decision.nextConsecutiveBlocks,
+        staleSnapshotAt: decision.staleSnapshotAt ?? null,
+        updatedAt: now,
+      })
     } catch {
       // Reset failure must not turn the hook into a blocker.
     }
@@ -349,10 +417,28 @@ function main() {
   }
 
   try {
-    writeJson(sessionPath, { consecutiveBlocks: decision.nextConsecutiveBlocks, updatedAt: now })
+    writeJson(sessionPath, {
+      consecutiveBlocks: decision.nextConsecutiveBlocks,
+      staleSnapshotAt: decision.staleSnapshotAt ?? null,
+      updatedAt: now,
+    })
   } catch {
     return
   }
+  recordGuardEvent({
+    guard: 'wt-actionable-gate-hook.mjs',
+    decision: 'blocked',
+    class: decision.reason,
+    reason: decision.reason,
+    cwd,
+    session: input.session_id,
+    agent: input.agent_id,
+    evidence: {
+      holdReason: decision.reason,
+      mandateKind: mandate.kind,
+      blockIndex: decision.nextConsecutiveBlocks,
+    },
+  })
   // Emission shape — three exist for a Stop hook, and this is a deliberate choice among them,
   // not the original one:
   //   1. stderr + exit 2            — blocks; renders to BOTH the model AND the user's
@@ -374,7 +460,7 @@ function main() {
     hookSpecificOutput: {
       hookEventName: 'Stop',
       // Measured only once the block is certain, so a healthy turn never pays for the read.
-      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath), snapshot, now),
+      additionalContext: renderBlock(decision, BLOCK_MAX, contextPct(transcriptPath), snapshot, now, externalLane, mandate.kind),
     },
   }))
   process.exit(0)

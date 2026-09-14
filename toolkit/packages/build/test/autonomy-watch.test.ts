@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -114,10 +114,6 @@ function transcriptPathFor(configDir: string, projectDir: string, sessionId: str
   return join(configDir, 'projects', projectSlug(projectDir), `${sessionId}.jsonl`)
 }
 
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 function runWatch(
   projectDir: string,
   env: NodeJS.ProcessEnv,
@@ -144,6 +140,89 @@ function runWatch(
 }
 
 describe('wt-autonomy-watch', () => {
+  it('relay sessions print the skip line and leave the state directory empty', () => {
+    const s = scaffold('relay')
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_SESSION_ROLE: ' relay ',
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe("AUTONOMY WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events")
+    expect(readdirSync(s.stateDir)).toEqual([])
+  })
+
+  it('reports a known queue wake with all three classifications', () => {
+    const s = scaffold('v2-wake')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    writeQueue(s.queuePath, { at: now, startable: 2, awaitingOwner: 3, unclassified: 1, next: 'CARD-v2 start here' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 2 startable (3 awaiting owner, 1 unclassified), next: CARD-v2 start here')
+  })
+
+  it('emits MISSION FINISHED once per unchanged snapshot and wakes again for newer startable work', () => {
+    const s = scaffold('mission-finished')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    const env = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+      WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now),
+    }
+    writeQueue(s.queuePath, { at: now, startable: 0, awaitingOwner: 2, unclassified: 1, next: '' })
+
+    const first = runWatch(s.projectDir, env)
+    const second = runWatch(s.projectDir, env)
+    const third = runWatch(s.projectDir, env)
+    writeQueue(s.queuePath, { at: now + 1, startable: 0, awaitingOwner: 2, unclassified: 1, next: '' })
+    const beforeIdlePeriod = runWatch(s.projectDir, { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 1) })
+    const afterIdlePeriod = runWatch(s.projectDir, { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 15 * 60_000 + 1) })
+    writeQueue(s.queuePath, { at: now + 15 * 60_000 + 2, startable: 1, awaitingOwner: 2, unclassified: 0, next: 'CARD-resumed' })
+    const resumed = runWatch(s.projectDir, { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 15 * 60_000 + 2) })
+
+    expect(first.stdout).toBe('AUTONOMY MISSION FINISHED: 0 startable, 2 awaiting owner, 1 unclassified — the queue holds nothing this session can start; ask the owner for the next mission (or, if U > 0, classify the U unclassified items first)')
+    expect(second.stdout).toBe('')
+    expect(third.stdout).toBe('')
+    expect(beforeIdlePeriod.stdout).toBe('')
+    expect(afterIdlePeriod.stdout).toContain('AUTONOMY MISSION FINISHED:')
+    expect(resumed.stdout).toContain('AUTONOMY WAKE:')
+  })
+
+  it('keeps legacy wakes explicit and never emits MISSION FINISHED for them', () => {
+    const s = scaffold('legacy-wake')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now - 5 * 60_000)
+    writeQueue(s.queuePath, { at: now, open: 2, next: 'CARD-legacy keep going' })
+
+    const result = runWatch(s.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 2 open, next: CARD-legacy keep going [legacy snapshot: classification unknown]')
+    expect(result.stdout).not.toContain('MISSION FINISHED')
+  })
+
   it('no mandate marker emits NOTHING even when the other conditions are satisfied', () => {
     const s = scaffold('no-mandate')
     const now = Date.now()
@@ -179,7 +258,7 @@ describe('wt-autonomy-watch', () => {
     })
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 2 open, next: CARD-2 implement watcher')
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 2 open, next: CARD-2 implement watcher [legacy snapshot: classification unknown]')
     expect(existsSync(s.markerPath)).toBe(true)
     const marker = JSON.parse(readFileSync(s.markerPath, 'utf8')) as { next: string }
     expect(marker.next).toBe('CARD-2 implement watcher')
@@ -336,22 +415,55 @@ describe('wt-autonomy-watch', () => {
       CLAUDE_CODE_SESSION_ID: s.sessionId,
       XDG_STATE_HOME: s.stateHome,
       WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
-      // ⚠ 1.8s, not the 60ms this used to use. The FIRST check below must complete while the
-      // mandate is still fresh — and it SPAWNS A SUBPROCESS, which cannot be relied on to finish
-      // inside 60ms on a loaded machine. Measured 2026-08-28: this test failed twice in three full
-      // parallel suite runs and passed 5/5 alone, and the failure was always the first assertion
-      // seeing EXPIRED. The window has to outlast a spawn; the delay only has to outlast the window.
+      WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now),
       WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.03',
     }
 
     const beforeExpiry = runWatch(s.projectDir, env)
-    await delay(2500)
-    const atCrossing = runWatch(s.projectDir, env)
-    const afterCrossing = runWatch(s.projectDir, env)
+    const afterExpiryEnv = { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 2_000) }
+    const atCrossing = runWatch(s.projectDir, afterExpiryEnv)
+    const afterCrossing = runWatch(s.projectDir, afterExpiryEnv)
 
     expect(beforeExpiry.stdout).toBe('')
     expect(atCrossing.stdout).toBe('AUTONOMY MANDATE EXPIRED: mandate freshness window elapsed; nothing is watching this session now. Re-arm with `wt-autonomy-arm.mjs` if autonomy should continue.')
     expect(afterCrossing.stdout).toBe('')
+  })
+
+  it('warns once before expiry, stays silent after expiry, and re-arms for a new declaration', async () => {
+    const s = scaffold('expiry-warning')
+    const now = Date.now()
+    touch(s.transcriptPath, now - 20 * 60_000)
+    writeMandate(s.mandatePath, s.sessionId, now)
+    const env = {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: s.configDir,
+      CLAUDE_CODE_SESSION_ID: s.sessionId,
+      XDG_STATE_HOME: s.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+      WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now),
+      WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.05',
+    }
+
+    const beforeWarning = runWatch(s.projectDir, env)
+    const warningEnv = { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 2_700) }
+    const warning = runWatch(s.projectDir, warningEnv)
+    const afterWarning = runWatch(s.projectDir, warningEnv)
+    const expiryEnv = { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 3_100) }
+    const expiry = runWatch(s.projectDir, expiryEnv)
+    const afterExpiry = runWatch(s.projectDir, expiryEnv)
+
+    expect(beforeWarning.stdout).toBe('')
+    expect(warning.stdout).toBe('AUTONOMY MANDATE CLOSING: 1 min left of the 0.05 min freshness window; re-arm with `wt-autonomy-arm.mjs` before it expires or nothing will be watching this session.')
+    expect(afterWarning.stdout).toBe('')
+    expect(expiry.stdout).toBe('AUTONOMY MANDATE EXPIRED: mandate freshness window elapsed; nothing is watching this session now. Re-arm with `wt-autonomy-arm.mjs` if autonomy should continue.')
+    expect(afterExpiry.stdout).toBe('')
+
+    writeMandate(s.mandatePath, s.sessionId, now + 3_100)
+    const beforeRearmWarning = runWatch(s.projectDir, expiryEnv)
+    const rearmWarning = runWatch(s.projectDir, { ...env, WT_AUTONOMY_WATCH_TEST_NOW_MS: String(now + 5_800) })
+
+    expect(beforeRearmWarning.stdout).toBe('')
+    expect(rearmWarning.stdout).toBe('AUTONOMY MANDATE CLOSING: 1 min left of the 0.05 min freshness window; re-arm with `wt-autonomy-arm.mjs` before it expires or nothing will be watching this session.')
   })
 
   it('an unreadable marker is reported as unknown, never absent', () => {
@@ -448,7 +560,7 @@ describe('wt-autonomy-watch inherits a project-keyed mandate across a session re
     })
 
     expect(result.armed).toContain('mandate=present(own)')
-    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 1 open, next: CARD-10 own session, own mandate')
+    expect(result.stdout).toBe('AUTONOMY WAKE: idle session with mandate, 1 open, next: CARD-10 own session, own mandate [legacy snapshot: classification unknown]')
     expect(result.stdout).not.toContain('inherited')
   })
 })

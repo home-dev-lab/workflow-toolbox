@@ -52,7 +52,22 @@ import type {
 import type { FromSchema } from 'json-schema-to-ts'
 import { docsForChangedFiles } from './docs-provenance.js'
 import type { ProvenanceEntry } from './docs-provenance.js'
-import { isBridgeAgentType, parseRoleStringMap, resolveWrapperModel } from './opencode-routing.js'
+import { isBridgeAgentType, opencodeWorkdirLine, parseRoleStringMap, resolveWrapperModel } from './opencode-routing.js'
+
+export const LOCK_ENUMERATION_INSTRUCTIONS = [
+  "Read the ACTUAL diff first. Consider ONLY new or modified assertions in test files; do not re-review code quality, because other lenses do that.",
+  "",
+  "For each assertion, decide whether it NAMES specific members of a family defined by a shared producer (hard-coded selectors, keys, field names, paths, N of M), or STATES a property over all members. A finding is an assertion that enumerates an OPEN family: a member added tomorrow is invisible to it by construction. Set `file` to the test path, quote the assertion in `detail`, and state the invariant form it should take. Severity is high when code outside the test's own module produces the family; it is low when the family is local.",
+  "",
+  "Do NOT report a list closed by its nature: values of a finite enum, a fixed CLI flag set, or a schema with a declared member count. Do NOT report assertions already phrased as an invariant."
+].join('\n')
+
+/** True when a repo-relative path identifies a test file by directory or basename convention. */
+export function isTestFile(path: string): boolean {
+  const normalized = path.replaceAll('\\', '/')
+  return /(?:^|\/)(?:test|tests|__tests__|e2e)(?:\/|$)/.test(normalized) ||
+    /(?:^|\/)[^/]+\.(?:test|spec)\./.test(normalized)
+}
 
 // ---------------------------------------------------------------------------
 // Per-stage effort defaults (Class B/C launch-time tuning — see parseConfig).
@@ -78,6 +93,9 @@ const SYNTHESIZE_EFFORT: EffortAlias = 'medium'  // Synthesize: final verdict �
 
 export interface PrReviewInput {
   target: string
+  /** Optional ABSOLUTE repository root for bridge-routed roles. Required when
+   *  `agentTypes.review` or `agentTypes.verify` resolves to a recognized bridge. */
+  repoRoot: string | null
   /** Proportionate-review ladder rung this run executes.
    *  'full' (default, and the result when the `mode` key is OMITTED entirely) is
    *  today's behavior, bit-compatible: the Review phase spawns one reviewer PER LENS
@@ -114,12 +132,16 @@ export interface PrReviewInput {
    *  model does not. null = the standard subagent (the default). Requested via the
    *  SAME structured config envelope as reviewerType: `args.agentTypes.verify`
    *  (the SAME role key as a future `effort.verify` override — one role, one key),
-   *  validated by the shared parseConfig. PROBED at run entry (probeAgentType),
-   *  mirroring the reviewerType precedent exactly: when the type cannot answer,
-   *  the run degrades to the standard subagent — reported in the result's
-   *  `verifierProbe`, never silent. Routes the Verify fan ONLY: the lens reviewers
+   *  validated by the shared parseConfig. PROBED at run entry (probeAgentType,
+   *  `required: true`), mirroring the reviewerType precedent exactly: when the
+   *  type cannot answer, the run is REFUSED at launch — the error names the type,
+   *  the reason and the remedy (register the type, or drop `agentTypes.verify` to
+   *  get the standard subagent). It never degrades silently; when the type IS
+   *  available, the probe outcome is reported in the result's `verifierProbe`.
+   *  Routes the Verify fan ONLY: the lens reviewers
    *  and the synthesizer are never specialized by this knob. Never hard-code a
-   *  private (e.g. magic-claude:*) type as a default. */
+   *  private (e.g. magic-claude:*) type as a default. A bridge route also
+   *  requires `repoRoot` in the launch args. */
   verifierType: string | null
   /** Optional subagent type for the per-lens REVIEW agents — a specialist
    *  reviewer, or a cross-family bridge (e.g. 'workflow-toolbox:opencode-verifier')
@@ -127,11 +149,15 @@ export interface PrReviewInput {
    *  Requested via the STRUCTURED config envelope: `args.agentTypes.review`
    *  (the SAME role key as `effort.review` — one role, one key; no bespoke
    *  top-level arg), validated by the shared parseConfig. PROBED at run entry
-   *  (probeAgentType): when the type cannot answer, the run degrades to the
-   *  standard subagent — reported in the result's `probe`, never silent. Routes
+   *  (probeAgentType, `required: true`): when the type cannot answer, the run is
+   *  REFUSED at launch — the error names the type, the reason and the remedy
+   *  (register the type, or drop `agentTypes.review` to get the standard
+   *  subagent). It never degrades silently; when the type IS available, the probe
+   *  outcome is reported in the result's `probe`. Routes
    *  the lens reviewers ONLY: the verifiers and the synthesizer are never
    *  specialized. Never hard-code a private (e.g. magic-claude:*) type as a
-   *  default. A specialist reviewer is more thorough but noisier; the
+   *  default. A bridge route also requires `repoRoot` in the launch args. A
+   *  specialist reviewer is more thorough but noisier; the
    *  refute-first Verify stage filters the extra false positives. */
   reviewerType: string | null
   /** Optional external provider/model directive per bridge-routed role.
@@ -606,6 +632,7 @@ function parseInput(raw: unknown): PrReviewInput {
     }
     return {
       target: raw,
+      repoRoot: null,
       mode: 'full',
       reviewerType: null,
       opencodeModels: null,
@@ -641,6 +668,21 @@ function parseInput(raw: unknown): PrReviewInput {
     )
   }
 
+  let repoRoot: string | null = null
+  if (obj['repoRoot'] !== undefined && obj['repoRoot'] !== null) {
+    if (
+      typeof obj['repoRoot'] !== 'string' ||
+      obj['repoRoot'].length === 0 ||
+      obj['repoRoot'] !== obj['repoRoot'].trim() ||
+      !obj['repoRoot'].startsWith('/')
+    ) {
+      throw new Error(
+        'pr-review: "repoRoot" must be an absolute path with no trailing whitespace when provided',
+      )
+    }
+    repoRoot = obj['repoRoot']
+  }
+
   // Optional verify-fan model override. Shape-only (a non-empty string); ModelAlias is an open
   // union so an unknown alias is the runtime's problem, not parse-time. Omit → pattern default.
   let verifierModel: ModelAlias | null = null
@@ -663,7 +705,7 @@ function parseInput(raw: unknown): PrReviewInput {
   // SILENT no-op — mirroring the effort key is the guard). The Verify fan's
   // routing request follows the SAME convention at `agentTypes.verify`.
   const cfg = parseConfig(obj, {
-    args: ['target', 'verifierModel', 'perAgent', 'effort', 'agentTypes', 'messaging', 'provenance', 'mode', 'models', 'opencodeModels', 'opencodeVariants'],
+    args: ['target', 'repoRoot', 'verifierModel', 'perAgent', 'effort', 'agentTypes', 'messaging', 'provenance', 'mode', 'models', 'opencodeModels', 'opencodeVariants'],
     models: ['review'],
     effort: ['classify', 'route', 'review', 'verify', 'synthesize'],
     agentTypes: ['review', 'verify'],
@@ -689,6 +731,7 @@ function parseInput(raw: unknown): PrReviewInput {
 
   return {
     target: obj['target'],
+    repoRoot,
     mode,
     reviewerType,
     opencodeModels,
@@ -776,8 +819,10 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // Phase 'Probe' (conditional) — resolve the reviewer routing BEFORE any
   // reviewer spawns. One schema-less probe through the requested type; any
   // non-affirmative outcome (UNAVAILABLE marker, null, error text, throw on an
-  // unregistered type) degrades to the standard subagent. Never silent: the
-  // probe logs + emits its own digest, and the result carries `probe`.
+  // unregistered type) REFUSES the launch (`required: true`): an explicitly
+  // requested type that cannot answer is not silently swapped for the standard
+  // subagent — the thrown error carries the remedy. Never silent: the probe
+  // logs + emits its own digest, and the result carries `probe`.
   // -------------------------------------------------------------------------
 
   let resolvedReviewerType: string | null = null
@@ -802,12 +847,19 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   // magic-claude:ts-reviewer) — KEEPS its normal tier, fail-safe toward
   // quality. `models.review` always wins when supplied, either direction.
   const reviewerIsBridge = isBridgeAgentType(resolvedReviewerType)
+  if (reviewerIsBridge && input.repoRoot === null) {
+    throw new Error(
+      `pr-review: review role routed to bridge type '${resolvedReviewerType}' requires repoRoot — ` +
+      'pass repoRoot: <absolute path> in the launch args',
+    )
+  }
   const reviewModel = resolveWrapperModel(reviewerIsBridge, input.models?.review)
 
   // Same probe-then-resolve treatment for the Verify fan's routing request
   // (agentTypes.verify) — mirrors the reviewerType block above exactly, so an
-  // unavailable cross-family verifier degrades to the standard subagent
-  // instead of silently starving every verify call.
+  // unavailable cross-family verifier refuses the launch (`required: true`)
+  // instead of silently starving every verify call or silently swapping in the
+  // standard subagent.
   let resolvedVerifierType: string | null = null
   let verifierProbeReport: AgentTypeProbeReport | null = null
   if (input.verifierType !== null) {
@@ -817,8 +869,17 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
     verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason }
   }
 
+  const verifierIsBridge = isBridgeAgentType(resolvedVerifierType)
+  if (verifierIsBridge && input.repoRoot === null) {
+    throw new Error(
+      `pr-review: verify role routed to bridge type '${resolvedVerifierType}' requires repoRoot — ` +
+      'pass repoRoot: <absolute path> in the launch args',
+    )
+  }
+
   const reviewOpencodeDirectives = reviewerIsBridge
-    ? (input.opencodeModels?.review !== undefined
+    ? opencodeWorkdirLine(resolvedReviewerType, input.repoRoot ?? '') +
+      (input.opencodeModels?.review !== undefined
       ? `OPENCODE_MODEL: ${input.opencodeModels.review}\n\n`
       : '') +
       (input.opencodeVariants?.review !== undefined
@@ -826,7 +887,8 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
         : '')
     : ''
   const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType)
-    ? (input.opencodeModels?.verify !== undefined
+    ? opencodeWorkdirLine(resolvedVerifierType, input.repoRoot ?? '') +
+      (input.opencodeModels?.verify !== undefined
       ? `OPENCODE_MODEL: ${input.opencodeModels.verify}\n\n`
       : '') +
       (input.opencodeVariants?.verify !== undefined
@@ -1021,10 +1083,15 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   }
 
   const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES
+  const hasTestFiles = changeSummary.changedFiles.some(isTestFile)
+  if (hasTestFiles) {
+    rt.log('lock-enumeration lens armed: routing reported at least one test file')
+  }
   const lenses = [
     ...baseLenses,
     ...(provenanceDocs.length > 0 ? ['docs-alignment'] : []),
     ...(coverageSurfaces.length > 0 ? ['docs-coverage'] : []),
+    ...(hasTestFiles ? ['lock-enumeration'] : []),
   ]
 
   // Proportionate-review ladder: 'full' (default)
@@ -1045,6 +1112,9 @@ async function run(rt00: WorkflowRuntime, input: PrReviewInput): Promise<PrRevie
   //   without touching any doc;
   // - every other lens reviews the code itself.
   const lensInstructionsFor = (lens: string): string => {
+    if (lens === 'lock-enumeration') {
+      return LOCK_ENUMERATION_INSTRUCTIONS
+    }
     if (lens === 'docs-coverage') {
       // Added-surface strings are agent-derived from the UNTRUSTED diff and
       // get interpolated into the prompt list — strip backticks and control

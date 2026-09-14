@@ -14,8 +14,9 @@ Usage:
 
 Checks ## Implemented, ## Verification, ## Independent Review, ## Decisions, and ## Remaining
 Risks unless --no-shape is supplied for a non-closing report. Prints Findings disposition and
-shape failures in the same warn/block probation mode. Set WT_FINDINGS_DISPOSITION_MODE=block to
-block before ${PROBATION_UNTIL}.
+shape failures in the same warn/block probation mode. Verification should name the e2e output or
+state "e2e not run" with a reason; omission is always warning-only. Set
+WT_FINDINGS_DISPOSITION_MODE=block to block before ${PROBATION_UNTIL}.
 `
 
 const REQUIRED_SECTIONS = ['Implemented', 'Verification', 'Independent Review', 'Decisions', 'Remaining Risks']
@@ -72,6 +73,16 @@ export function checkReportShape(markdown) {
   })
 }
 
+export function checkE2eVerification(markdown) {
+  const section = extractSection(markdown, 'Verification')
+  if (!section.found) return 'missing'
+  if (/\be2e\s+not\s+run\b(?:[ \t]*(?::|-)\s*\S[^\n]*|[ \t]+(?:because|due to)\s+\S[^\n]*)/i.test(section.body)) {
+    return 'not-run-with-reason'
+  }
+  if (/\be2e(?:\s+verification)?\s+output\b/i.test(section.body)) return 'output-recorded'
+  return 'missing'
+}
+
 function main() {
   const args = process.argv.slice(2)
   handleHelpFlag(args, HELP)
@@ -90,6 +101,7 @@ function main() {
   }
   const result = checkFindings(markdown)
   const missingSections = skipShape ? [] : checkReportShape(markdown)
+  const e2eVerification = skipShape ? 'skipped' : checkE2eVerification(markdown)
   process.stdout.write(
     `findings: ${result.rows} rows, ${result.withoutDisposition} without disposition (mode=${result.mode}, probation until ${PROBATION_UNTIL})\n`,
   )
@@ -100,6 +112,13 @@ function main() {
       process.stdout.write(`closing report section: ${name} is missing or empty\n`)
     }
     process.stdout.write(`closing report shape: ${missingSections.length} required section${missingSections.length === 1 ? '' : 's'} missing or empty\n`)
+  }
+  if (e2eVerification === 'output-recorded') {
+    process.stdout.write('e2e verification: output recorded\n')
+  } else if (e2eVerification === 'not-run-with-reason') {
+    process.stdout.write('e2e verification: not run with reason\n')
+  } else if (e2eVerification === 'missing') {
+    process.stdout.write('e2e verification warning: name the e2e output or state "e2e not run" with a reason (non-blocking)\n')
   }
   process.exit(result.mode === 'block' && (result.withoutDisposition > 0 || missingSections.length > 0) ? 1 : 0)
 }

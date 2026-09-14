@@ -1,0 +1,14 @@
+{
+  "language": "svelte",
+  "triggers": {
+    "extensions": [".svelte"],
+    "files": ["svelte.config.js"]
+  },
+  "rules": [
+    "svelte.md"
+  ],
+  "agents": [
+    "critic.md",
+    "reviewer.md"
+  ]
+}

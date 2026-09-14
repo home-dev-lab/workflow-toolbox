@@ -100,6 +100,11 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'SessionStart',
         cwd: sandbox.projectDir,
       }
+    case 'wt-unsynced-buffer-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        cwd: sandbox.projectDir,
+      }
     // No WT_GUARD_JOURNAL_DIR in this sandbox and the real journal path (under sandbox.env's
     // HOME) does not exist — the exact "no guard has ever fired" case this hook must meet with
     // silence, never a crash.
@@ -237,6 +242,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         session_id: 'selftest-session',
         cwd: sandbox.projectDir,
         transcript_path: sandbox.transcriptPath,
+      }
+    case 'wt-escalation-journal-hook.mjs':
+      return {
+        hook_event_name: 'Stop',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+        last_assistant_message: 'ordinary completed work',
       }
     case 'wt-registry-heartbeat-hook.mjs':
       return {
@@ -445,7 +457,9 @@ function runHook(hookPath: string, payload: unknown, sandbox: Sandbox): HookRun 
     env: sandbox.env,
     input,
     encoding: 'utf8',
-    timeout: 10_000,
+    // Hook startup is intentionally exercised under the full child-process suite; allow
+    // CPU contention to delay Node startup without turning a healthy exit into a false crash.
+    timeout: 30_000,
   })
 
   return {
@@ -499,7 +513,7 @@ describe('plugin hook crash safety', () => {
         cleanupSandbox(sandbox)
       }
     }
-  })
+  }, 60_000)
 
   it('healthy decline stays green: a hook that decides the event is irrelevant remains silent and non-crashing', () => {
     const hookPath = join(REPO_ROOT, 'plugin/bin/wt-spawn-shape-guard-hook.mjs')

@@ -19,6 +19,8 @@ import { isServiceDegraded } from './lib/service-flag.mjs'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { parseQueueSnapshot } from './lib/queue-snapshot-contract.mjs'
+import { relaySkipLine } from './lib/session-role.mjs'
 
 const HELP = `wt-autonomy-watch — wakes an autonomous session (one that declared a mandate via
 wt-autonomy-arm.mjs) when it still has actionable queued work, nothing else in flight, and has
@@ -61,6 +63,11 @@ const DEFAULT_MANDATE_FRESHNESS_MINUTES = Number(process.env.WT_AUTONOMY_WATCH_M
 const DEFAULT_LANE_PATTERNS = ['opencode run', 'codex exec']
 const BOOTSTRAP_OBSERVATION_GRACE_MS = 1_000
 
+function clockNow() {
+  const testNow = Number(process.env.WT_AUTONOMY_WATCH_TEST_NOW_MS)
+  return Number.isFinite(testNow) ? testNow : Date.now()
+}
+
 function write(line) {
   process.stdout.write(`${line}\n`)
 }
@@ -92,6 +99,11 @@ function readNumber(value) {
 
 function parseArgs(argv) {
   handleHelpFlag(argv, HELP)
+  const relayLine = relaySkipLine('AUTONOMY WATCH')
+  if (relayLine) {
+    write(relayLine)
+    process.exit(0)
+  }
   let pollSeconds = DEFAULT_POLL_SECONDS
   let projectDir = process.cwd()
   let once = false
@@ -226,20 +238,12 @@ function externalLaneRunning(cwd) {
 }
 
 function readQueueSnapshot(queuePath, now, staleAfterMs) {
-  if (!existsSync(queuePath)) return { kind: 'unknown' }
-  if (expireMarker('queue', queuePath, now, { queueFreshnessMs: staleAfterMs }).expired) return { kind: 'unknown' }
+  if (!existsSync(queuePath)) return { kind: 'unknown', reason: 'missing queue snapshot' }
+  if (expireMarker('queue', queuePath, now, { queueFreshnessMs: staleAfterMs }).expired) return { kind: 'unknown', reason: 'stale queue snapshot' }
   try {
-    const parsed = JSON.parse(readFileSync(queuePath, 'utf8'))
-    const at = parsed?.at
-    const open = parsed?.open
-    const next = parsed?.next
-    if (typeof at !== 'number' || !Number.isFinite(at)) return { kind: 'unknown' }
-    if (now - at > staleAfterMs) return { kind: 'unknown' }
-    if (typeof open !== 'number' || !Number.isFinite(open) || open < 0) return { kind: 'unknown' }
-    if (typeof next !== 'string') return { kind: 'unknown' }
-    return { kind: 'known', open, next: next.trim() }
+    return parseQueueSnapshot(readFileSync(queuePath, 'utf8'), now, staleAfterMs)
   } catch {
-    return { kind: 'unknown' }
+    return { kind: 'unknown', reason: 'unreadable queue snapshot' }
   }
 }
 
@@ -271,9 +275,18 @@ function readMarker(markerPath) {
     const parsed = JSON.parse(readFileSync(markerPath, 'utf8'))
     const transcriptMtimeMs = parsed?.transcriptMtimeMs
     const mandateDeclaredAtMs = parsed?.mandateDeclaredAtMs
+    const queueAt = parsed?.queueAt
+    const kind = parsed?.kind
+    const emittedAtMs = Date.parse(parsed?.emittedAt)
     if (typeof transcriptMtimeMs !== 'number' || !Number.isFinite(transcriptMtimeMs)) return null
     if (typeof mandateDeclaredAtMs !== 'number' || !Number.isFinite(mandateDeclaredAtMs)) return null
-    return { transcriptMtimeMs, mandateDeclaredAtMs }
+    return {
+      transcriptMtimeMs,
+      mandateDeclaredAtMs,
+      queueAt: typeof queueAt === 'number' && Number.isFinite(queueAt) ? queueAt : null,
+      kind: kind === 'wake' || kind === 'mission-finished' ? kind : null,
+      emittedAtMs: Number.isFinite(emittedAtMs) ? emittedAtMs : null,
+    }
   } catch {
     return null
   }
@@ -295,6 +308,10 @@ function readMandateState(mandateStatePath) {
       lastMandateDeclaredAtMs:
         typeof lastMandateDeclaredAtMs === 'number' && Number.isFinite(lastMandateDeclaredAtMs)
           ? lastMandateDeclaredAtMs
+          : null,
+      warningNotifiedForDeclaredAtMs:
+        typeof parsed?.warningNotifiedForDeclaredAtMs === 'number' && Number.isFinite(parsed.warningNotifiedForDeclaredAtMs)
+          ? parsed.warningNotifiedForDeclaredAtMs
           : null,
       expiryNotifiedForDeclaredAtMs:
         typeof expiryNotifiedForDeclaredAtMs === 'number' && Number.isFinite(expiryNotifiedForDeclaredAtMs)
@@ -319,7 +336,7 @@ function clearMandateState(mandateStatePath) {
 }
 
 function poll(context) {
-  const now = Date.now()
+  const now = clockNow()
   expireOwnedMarkers(context.watchStateDir, ['queue', 'watch-emission', 'watch-mandate-state'], now, {
     queueFreshnessMs: context.queueStaleMs,
     sessionTranscriptDir: context.projectStateRoot,
@@ -336,6 +353,7 @@ function poll(context) {
       observedAt: new Date(now).toISOString(),
       lastMandateKind: 'unknown',
       lastMandateDeclaredAtMs: null,
+      warningNotifiedForDeclaredAtMs: previousMandateState?.warningNotifiedForDeclaredAtMs ?? null,
       expiryNotifiedForDeclaredAtMs: null,
     })
     return
@@ -354,6 +372,7 @@ function poll(context) {
         observedAt: new Date(now).toISOString(),
         lastMandateKind: 'live',
         lastMandateDeclaredAtMs: mandate.declaredAtMs,
+        warningNotifiedForDeclaredAtMs: null,
         expiryNotifiedForDeclaredAtMs: null,
       })
       return
@@ -366,6 +385,10 @@ function poll(context) {
       observedAt: new Date(now).toISOString(),
       lastMandateKind: 'expired',
       lastMandateDeclaredAtMs: mandate.declaredAtMs,
+      warningNotifiedForDeclaredAtMs:
+        previousMandateState?.lastMandateDeclaredAtMs === mandate.declaredAtMs
+          ? previousMandateState.warningNotifiedForDeclaredAtMs
+          : null,
       expiryNotifiedForDeclaredAtMs: mandate.declaredAtMs,
     })
     if (crossedIntoExpiry) {
@@ -373,19 +396,28 @@ function poll(context) {
     }
     return
   }
+  const warningDue = now - mandate.declaredAtMs >= context.mandateFreshnessMs * 0.85
+  const warningAlreadyNotified = previousMandateState?.warningNotifiedForDeclaredAtMs === mandate.declaredAtMs
+  const warningNotifiedForDeclaredAtMs = warningDue || warningAlreadyNotified ? mandate.declaredAtMs : null
   writeMandateState(context.mandateStatePath, {
     observedAt: new Date(now).toISOString(),
     lastMandateKind: 'live',
     lastMandateDeclaredAtMs: mandate.declaredAtMs,
+    warningNotifiedForDeclaredAtMs,
     expiryNotifiedForDeclaredAtMs: null,
   })
+  // Warn at a fraction of the window so the notice scales with custom freshness settings and leaves
+  // time to re-arm, rather than assuming the default window's fixed number of minutes.
+  if (warningDue && !warningAlreadyNotified) {
+    const minutesLeft = Math.max(1, Math.ceil((context.mandateFreshnessMs - (now - mandate.declaredAtMs)) / 60_000))
+    write(`AUTONOMY MANDATE CLOSING: ${minutesLeft} min left of the ${context.mandateFreshnessMs / 60_000} min freshness window; re-arm with \`wt-autonomy-arm.mjs\` before it expires or nothing will be watching this session.`)
+  }
 
   const transcriptMtimeMs = readMtimeMs(context.transcriptPath)
   if (transcriptMtimeMs === null) return
 
   const queue = readQueueSnapshot(context.queuePath, now, context.queueStaleMs)
-  if (queue.kind !== 'known') return
-  if (queue.open <= 0 || queue.next.length === 0) return
+  if (queue.kind === 'unknown') return
 
   const newestSubagentWriteMs = mostRecentSubagentWriteMs(context.subagentsDir)
   if (newestSubagentWriteMs >= now - context.inflightMs) return
@@ -395,9 +427,24 @@ function poll(context) {
   if (now - transcriptMtimeMs < context.idleMs) return
 
   const previousMarker = readMarker(context.markerPath)
-  if (previousMarker && previousMarker.transcriptMtimeMs === transcriptMtimeMs && previousMarker.mandateDeclaredAtMs === mandate.declaredAtMs) {
+  const sameQueue = previousMarker?.queueAt === queue.at
+  if (queue.kind === 'known' && queue.startable === 0) {
+    if (previousMarker?.kind === 'mission-finished' && sameQueue) return
+    // A changed zero snapshot is a fresh finding, but it cannot repeat faster than the idle period.
+    if (previousMarker?.kind === 'mission-finished' && previousMarker.emittedAtMs !== null && now - previousMarker.emittedAtMs < context.idleMs) return
+    writeMarker(context.markerPath, {
+      emittedAt: new Date(now).toISOString(),
+      transcriptMtimeMs,
+      mandateDeclaredAtMs: mandate.declaredAtMs,
+      queueAt: queue.at,
+      kind: 'mission-finished',
+    })
+    write(`AUTONOMY MISSION FINISHED: 0 startable, ${queue.awaitingOwner} awaiting owner, ${queue.unclassified} unclassified — the queue holds nothing this session can start; ask the owner for the next mission (or, if U > 0, classify the U unclassified items first)`)
     return
   }
+  if (queue.kind === 'known' && queue.next.length === 0) return
+  if (queue.kind === 'legacy' && (queue.open <= 0 || queue.next.length === 0)) return
+  if (previousMarker && previousMarker.transcriptMtimeMs === transcriptMtimeMs && previousMarker.mandateDeclaredAtMs === mandate.declaredAtMs && sameQueue) return
 
   // ⚠ INHERITANCE IS ANNOUNCED, NEVER SILENT — this is the half that keeps the chosen failure
   // shape (loud, killable) loud rather than letting it decay back into the silent one it replaced.
@@ -416,10 +463,15 @@ function poll(context) {
     mandateSessionId: mandate.declaredBy,
     inherited: mandate.inherited,
     idleForMs: now - transcriptMtimeMs,
-    open: queue.open,
+    queueAt: queue.at,
+    kind: 'wake',
     next: queue.next,
   })
-  write(`AUTONOMY WAKE: idle session with mandate${provenance}, ${queue.open} open, next: ${queue.next}`)
+  if (queue.kind === 'legacy') {
+    write(`AUTONOMY WAKE: idle session with mandate${provenance}, ${queue.open} open, next: ${queue.next} [legacy snapshot: classification unknown]`)
+  } else {
+    write(`AUTONOMY WAKE: idle session with mandate${provenance}, ${queue.startable} startable (${queue.awaitingOwner} awaiting owner, ${queue.unclassified} unclassified), next: ${queue.next}`)
+  }
 }
 
 function wait(ms) {
@@ -524,7 +576,7 @@ function queueArmedState(queuePath, staleMs, now) {
   }
 }
 
-const nowAtArming = Date.now()
+const nowAtArming = clockNow()
 const mandateState = mandateArmedState(context.mandatePath, context.mandateFreshnessMs, nowAtArming, sessionId)
 const queueState = queueArmedState(context.queuePath, context.queueStaleMs, nowAtArming)
 const canFire = mandateState.startsWith('present') && queueState.startsWith('fresh')
@@ -546,11 +598,14 @@ write(
 // crosses through an observable live -> expired transition on the first poll.
 const mandateAtArming = classifyMandate(context.mandatePath, context.mandateFreshnessMs, nowAtArming, sessionId)
 if (mandateAtArming.kind === 'live') {
+  const previousMandateState = readMandateState(context.mandateStatePath)
+  const sameDeclaration = previousMandateState?.lastMandateDeclaredAtMs === mandateAtArming.declaredAtMs
   writeMandateState(context.mandateStatePath, {
     observedAt: new Date(nowAtArming).toISOString(),
     lastMandateKind: 'live',
     lastMandateDeclaredAtMs: mandateAtArming.declaredAtMs,
-    expiryNotifiedForDeclaredAtMs: null,
+    warningNotifiedForDeclaredAtMs: sameDeclaration ? previousMandateState.warningNotifiedForDeclaredAtMs : null,
+    expiryNotifiedForDeclaredAtMs: sameDeclaration ? previousMandateState.expiryNotifiedForDeclaredAtMs : null,
   })
 }
 

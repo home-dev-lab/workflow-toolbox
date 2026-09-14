@@ -1,8 +1,8 @@
 import * as fs from 'node:fs'
-import * as os from 'node:os'
 import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { describePackContract } from './helpers/pack-contract.js'
 import {
   loadSdk,
   parseAgentFrontmatter,
@@ -13,46 +13,22 @@ import {
 
 const testDir = path.dirname(fileURLToPath(import.meta.url))
 const packDir = path.resolve(testDir, '../../../../plugin/packs/typescript')
-const manifestPath = path.join(packDir, 'pack.json')
 // The rules-on-demand hook is a PRIVATE plugin living in the user's config dir, not in this
 // repository: resolve it through the config dir (never by a fixed `..` depth, which breaks the
 // moment the checkout is nested differently, e.g. under <root>/.claude/worktrees/<name>), and
 // skip its assertion visibly when the plugin is absent — a public consumer never has it.
-const configDir = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude')
-const rulesOnDemandHookPath = path.join(configDir, 'plugins', 'wt-rules-on-demand', 'hooks', 'hooks.js')
-const hasRulesOnDemandHook = fs.existsSync(rulesOnDemandHookPath)
 
-function agentFiles() {
-  return fs.readdirSync(path.join(packDir, 'agents')).filter((name) => name.endsWith('.md')).sort()
-}
-
-describe('TypeScript pack manifest', () => {
-  it.skipIf(!hasRulesOnDemandHook)('the private rules-on-demand hook triggers on .ts/.tsx edits', () => {
-    expect(fs.readFileSync(rulesOnDemandHookPath, 'utf8')).toContain('/\\.(?:ts|tsx)$/i.test(editPath(e))')
-  })
-
-  it('declares files that exist in the pack', () => {
-    expect(fs.existsSync(manifestPath), 'plugin/packs/typescript/pack.json exists').toBe(true)
-
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as {
-      language: string
-      triggers: { extensions: string[] }
-      rules: string[]
-      skills: string[]
-      agents: string[]
-    }
-
-    expect(manifest.language).toBe('typescript')
-    expect(new Set(manifest.triggers.extensions)).toEqual(new Set(['.ts', '.tsx']))
-    for (const name of manifest.rules) expect(fs.existsSync(path.join(packDir, 'rules', name))).toBe(true)
-    for (const name of manifest.skills) expect(fs.existsSync(path.join(packDir, 'skills', name, 'SKILL.md'))).toBe(true)
-    for (const name of manifest.agents) expect(fs.existsSync(path.join(packDir, 'agents', name))).toBe(true)
-    expect([...manifest.agents].sort()).toEqual(agentFiles())
-    for (const name of agentFiles()) {
-      const { frontmatter } = parseAgentFrontmatter(fs.readFileSync(path.join(packDir, 'agents', name), 'utf8'))
-      expect(frontmatter).toMatchObject({ effort: 'high', model: 'sonnet', 'sdk-only': 'true' })
-    }
-  })
+describePackContract({
+  pack: 'typescript',
+  extensions: ['.ts', '.tsx'],
+  consumerTrigger: '/\\.(?:ts|tsx)$/i.test(editPath(e))',
+  declaration: {
+    command: 'typescript-language-server',
+    args: ['--stdio'],
+    extensionToLanguage: { '.ts': 'typescript' },
+    diagnostics: true,
+    startupTimeout: 10000,
+  },
 })
 
 describe('TypeScript pack SDK agent runner', () => {

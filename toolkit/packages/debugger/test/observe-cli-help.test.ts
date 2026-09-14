@@ -8,19 +8,23 @@ import { main } from '../src/observe-cli.js'
 
 /** Run main() with stdout/stderr captured and fetch blocked, so a launch attempt
  *  surfaces as a called fetch spy rather than a real network hit. */
-async function runCli(argv: string[]): Promise<{ code: number; stdout: string; fetchCalls: number }> {
+async function runCli(argv: string[]): Promise<{ code: number; stdout: string; stderr: string; fetchCalls: number }> {
   let stdout = ''
+  let stderr = ''
   const outSpy = vi.spyOn(process.stdout, 'write').mockImplementation((chunk: unknown) => {
     stdout += String(chunk)
     return true
   })
-  vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+  vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+    stderr += String(chunk)
+    return true
+  })
   const fetchSpy = vi
     .spyOn(globalThis, 'fetch')
     .mockRejectedValue(new Error('network blocked in test'))
   try {
     const code = await main(argv)
-    return { code, stdout, fetchCalls: fetchSpy.mock.calls.length }
+    return { code, stdout, stderr, fetchCalls: fetchSpy.mock.calls.length }
   } finally {
     outSpy.mockRestore()
   }
@@ -92,5 +96,27 @@ describe('wt-observe <verb> --help (per-verb)', () => {
       expect(stdout).toBe('')
       expect(fetchCalls).toBe(0)
     }
+  })
+})
+
+describe('wt-observe launch model routing guard', () => {
+  it('refuses args without perAgent.model before contacting the server', async () => {
+    const { code, stderr, fetchCalls } = await runCli(['launch', 'example.js', '--args', '{"models":{"review":"sonnet"},"effort":{"review":"high"}}'])
+    expect(code).toBe(1)
+    expect(stderr).toContain('args.perAgent.model')
+    expect(stderr).toContain('--allow-inherited-model')
+    expect(fetchCalls).toBe(0)
+  })
+
+  it('args.perAgent.model passes the model guard', async () => {
+    const { stderr, fetchCalls } = await runCli(['launch', 'example.js', '--args', '{"perAgent":{"model":"sonnet"}}'])
+    expect(stderr).not.toContain('args.perAgent.model')
+    expect(fetchCalls).toBeGreaterThan(0)
+  })
+
+  it('the explicit inherited-model escape passes the model guard', async () => {
+    const { stderr, fetchCalls } = await runCli(['launch', 'example.js', '--args', '{}', '--allow-inherited-model'])
+    expect(stderr).not.toContain('args.perAgent.model')
+    expect(fetchCalls).toBeGreaterThan(0)
   })
 })

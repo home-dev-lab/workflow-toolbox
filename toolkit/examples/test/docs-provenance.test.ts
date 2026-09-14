@@ -89,6 +89,17 @@ describe('docsForChangedFiles — pure prefix matcher', () => {
     expect(docs).toContain('plugin/skills/workflow-composer/references/model-and-agent-routing.md')
   })
 
+  // REGRESSION LOCK. The entry documenting PILOT-RUNNER.md shipped listing only the pilot-guard
+  // hooks module, while PILOT-RUNNER.md also documents the sdk-pilot-lifecycle module — so a change
+  // to the lifecycle hook routed NO reviewer to the guide describing it, silently. The assertion is
+  // on the matcher's OUTPUT rather than on the sources array, because what actually matters is that
+  // the docs-alignment lens fires: a future sixth source going unlisted is a new defect, not one
+  // this lock would falsely clear.
+  it('routes a change in the runner-hosted SDK pilot lifecycle to the runner guide that documents it', () => {
+    const docs = docsForChangedFiles(['plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'])
+    expect(docs).toContain('plugin/autonomy/PILOT-RUNNER.md')
+  })
+
   it('dedupes docs across entries and preserves manifest order', () => {
     const docs = docsForChangedFiles([
       'toolkit/packages/patterns/src/lean-routing.ts', // → SKILL.md (entry 1)

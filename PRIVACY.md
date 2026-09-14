@@ -60,6 +60,15 @@ already writes for the Workflow tool.
   or telemetry. The spawned `opencode` CLI may send the supplied brief and
   repository context to the provider selected by its existing configuration.
 
+- **Artifact server** (`bin/wt-artifact-server.mjs`) — enabled unless `WT_ARTIFACT_SERVER=0`. It
+  reads files below roots published by local session monitors through owner-only state files (by default, only the project's
+  existing `.claude/reports` and `.claude/worktrees`). It always binds `127.0.0.1`; when the local
+  `tailscale` CLI reports an interface, it also binds that tailnet address. It sends no telemetry and
+  adds no CORS permission. There is no authentication beyond tailnet membership: any reachable
+  tailnet device can request allowed files under every registered root. Path containment,
+  canonical sensitive-name denies, sandbox CSP, and Host checks reduce accidental exposure but do not replace a narrow
+  root or tailnet access control.
+
 ## What it never does
 
 - No telemetry, analytics, crash reporting, or usage tracking.

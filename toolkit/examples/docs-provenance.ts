@@ -51,6 +51,36 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-artifact-server.mjs',
+    status: 'mapped',
+    reason: 'The artifact-server skill documents serving, URLs, roots, lifecycle controls, Tailscale access, and the security boundary.',
+  },
+  {
+    script: 'plugin/bin/wt-artifact-server-ensure.mjs',
+    status: 'mapped',
+    reason: 'The artifact-server skill documents the default-on persistent monitor, registration, discovery, and bind-race startup.',
+  },
+  {
+    script: 'plugin/bin/wt-intake-triage.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The pilot-orchestrator template is its executable caller; this focused intake helper adds no standalone operator guide.',
+  },
+  {
+    script: 'plugin/bin/wt-claimed-test-check.mjs',
+    status: 'missing-doc-surface',
+    reason: 'A repo-maintenance precision checker recorded in the Unreleased changelog; this pairing-half card adds no user-facing operating guide.',
+  },
+  {
+    script: 'plugin/bin/wt-escalation-journal-hook.mjs',
+    status: 'mapped',
+    reason: 'The adopted standing-authorization template documents this warn-only Stop hook and the authorization format it reads.',
+  },
+  {
+    script: 'plugin/bin/wt-pilot-models.mjs',
+    status: 'mapped',
+    reason: 'The pilot-wave skill and adopted pilot-orchestrator template document this spawn-time model resolver CLI.',
+  },
+  {
     script: 'plugin/bin/wt-changelog-entry.mjs',
     status: 'mapped',
     reason: 'The changelog skill and known-issues document this deterministic Unreleased-entry and changeset writer.',
@@ -69,6 +99,31 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-lane.mjs',
     status: 'mapped',
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
+  },
+  {
+    script: 'plugin/bin/wt-claude-executor.mjs',
+    status: 'missing-doc-surface',
+    reason: 'An internal SDK lifecycle executor selected by the pilot runner; it adds no standalone operator workflow in this increment.',
+  },
+  {
+    script: 'plugin/bin/wt-lane-wait.mjs',
+    status: 'mapped',
+    reason: 'The external-lane skill documents the allow-covered monitor waiter and its lane exit contract.',
+  },
+  {
+    script: 'plugin/bin/wt-pilot-runner.mjs',
+    status: 'mapped',
+    reason: 'The adopted pilot-runner guide documents the SDK runner, mailbox, lane-wait ownership, profile env, and measurements.',
+  },
+  {
+    script: 'plugin/bin/wt-pilot-fidelity.mjs',
+    status: 'mapped',
+    reason: 'The adopted pilot-runner guide documents Main\'s shipped evidence freeze/verify command and its mechanical limits.',
+  },
+  {
+    script: 'plugin/bin/wt-run-orchestrator.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The SDK wave driver ships before its operator guide; the follow-up documentation task owns its launch and escalation guidance.',
   },
   {
     script: 'plugin/bin/wt-actionable-gate-hook.mjs',
@@ -109,6 +164,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
       'Known-issues documents this SessionStart post-adoption environment-drift light under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-unsynced-buffer-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this SessionStart Planka degraded-mode reminder under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-arc-watch.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this monitor and its terminal-state output contract under Shipped Hooks, Guards & Monitors.',
@@ -127,6 +187,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-wake-floor.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this elapsed-time-only floor, its mandate gate, and its unconditional cadence under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-cache-keepalive.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this opt-in cache refresh monitor, its transcript clock, provider thresholds, cap, and journal under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-observer.mjs',
@@ -280,6 +345,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, privacy, and security docs describe this bundled public quota probe.',
   },
   {
+    script: 'plugin/bin/wt-second-opinion.mjs',
+    status: 'mapped',
+    reason: 'The second-opinion skill documents route selection, detached invocation, output provenance, quota refusal, and the read-only ownership boundary.',
+  },
+  {
     script: 'plugin/bin/wt-quota-watch.mjs',
     status: 'mapped',
     reason: 'README, privacy, and security docs describe the bundled quota monitor and probe pairing.',
@@ -297,7 +367,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-report-findings-check.mjs',
     status: 'mapped',
-    reason: 'Pilot and lesson-harvest docs describe this closing-report Findings disposition checker and its probation mode.',
+    reason: 'Pilot, lesson-harvest, and known-issues docs describe this closing-report checker, its e2e advisory, and its probation mode.',
   },
   {
     script: 'plugin/bin/wt-observer-pairing-guard-hook.mjs',
@@ -542,8 +612,32 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    sources: ['plugin/bin/wt-lane.mjs', 'plugin/skills/external-lane/'],
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
+  },
+  {
+    sources: [
+      'plugin/bin/wt-artifact-server.mjs',
+      'plugin/bin/wt-artifact-server-ensure.mjs',
+      'plugin/bin/lib/artifact-server.mjs',
+      'plugin/skills/artifact-server/',
+    ],
+    docs: ['README.md', 'PRIVACY.md', 'plugin/skills/artifact-server/SKILL.md'],
+  },
+  {
+    // Adopted owner-granted authorization format, its deterministic reader, and the
+    // Stop-hook measurement that prevents authorized acts from being escalated again.
+    sources: [
+      'plugin/autonomy/AUTHORIZATIONS.md',
+      'plugin/autonomy/PERMISSIONS.md',
+      'plugin/bin/lib/standing-authorizations.mjs',
+      'plugin/bin/wt-escalation-journal-hook.mjs',
+    ],
+    docs: ['plugin/autonomy/AUTHORIZATIONS.md', 'plugin/autonomy/PERMISSIONS.md', 'plugin/skills/adopt/SKILL.md'],
+  },
+  {
+    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/'],
+    docs: ['plugin/autonomy/PILOT-RUNNER.md'],
   },
   {
     // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
@@ -750,6 +844,11 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['README.md', 'PRIVACY.md', 'SECURITY.md'],
   },
   {
+    // One-call read-only advisor and its automatic provider route.
+    sources: ['plugin/bin/wt-second-opinion.mjs', 'plugin/bin/lib/second-opinion-core.mjs', 'plugin/skills/second-opinion/'],
+    docs: ['plugin/skills/second-opinion/SKILL.md'],
+  },
+  {
     // Pilot operators are instructed to run these helper CLIs/guards directly.
     sources: [
       'plugin/bin/wt-run-gate.mjs',
@@ -760,6 +859,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-lane-probe.mjs',
       'plugin/bin/wt-lane-activity.mjs',
       'plugin/bin/wt-lane-postdiff-check.mjs',
+      'plugin/bin/wt-pilot-models.mjs',
     ],
     docs: [
       'plugin/agent-templates/pilot.md',
@@ -817,13 +917,17 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       // and the shim one release after the rename.
       'plugin/bin/wt-adopt-rules-check-hook.mjs',
       'plugin/bin/wt-env-prerequisite-drift-hook.mjs',
+      'plugin/bin/wt-unsynced-buffer-hook.mjs',
       'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
       'plugin/bin/wt-lane-consent-gate-hook.mjs',
       'plugin/bin/wt-arc-watch.mjs',
       'plugin/bin/wt-autonomy-arm.mjs',
-      'plugin/bin/wt-autonomy-watch.mjs',
+       'plugin/bin/wt-autonomy-watch.mjs',
+       'plugin/bin/lib/session-role.mjs',
+       'plugin/bin/lib/queue-snapshot-contract.mjs',
       'plugin/bin/wt-wake-floor.mjs',
+      'plugin/bin/wt-cache-keepalive.mjs',
       'plugin/bin/wt-observer.mjs',
       'plugin/bin/wt-check-commit-signatures-hook.mjs',
       'plugin/bin/wt-check-commit-signatures.mjs',
@@ -865,7 +969,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
        'plugin/bin/wt-version-guard-hook.mjs',
        'plugin/bin/wt-gate-evidence-guard-hook.mjs',
     ],
-    docs: ['docs/public/known-issues.md'],
+    docs: ['docs/public/known-issues.md', 'plugin/monitors/README.md', 'README.md'],
   },
 ]
 

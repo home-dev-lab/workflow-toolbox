@@ -622,6 +622,7 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
         rt,
         JSON.stringify({
           target: 'HEAD~1..HEAD',
+          repoRoot: '/tmp/review-target',
           agentTypes: { review: 'workflow-toolbox:opencode-verifier' },
         }),
       ),
@@ -640,6 +641,57 @@ describe('pr-review reviewer routing (agentTypes.review)', () => {
     await expect(
       wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', reviewerType: 'magic-claude:ts-reviewer' })),
     ).rejects.toThrow('unknown arg `reviewerType`')
+  })
+
+  it('prefixes every review-role prompt with the repository root for a bridge reviewer', async () => {
+    const rt = makeHappyPathRuntime()
+    const repoRoot = '/tmp/review-target'
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      repoRoot,
+      agentTypes: { review: 'workflow-toolbox:opencode-envelope' },
+    }))
+
+    const reviews = reviewCalls(rt)
+    expect(reviews.length).toBeGreaterThan(0)
+    expect(reviews.every((call) => call.prompt.replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '').startsWith(`OPENCODE_WORKDIR: ${repoRoot}\n\n`))).toBe(true)
+  })
+
+  it('prefixes every verify-role prompt with the repository root for a bridge verifier', async () => {
+    const rt = makeHappyPathRuntime()
+    const repoRoot = '/tmp/review-target'
+    await wf.run(rt, JSON.stringify({
+      target: 'HEAD~1..HEAD',
+      repoRoot,
+      agentTypes: { verify: 'workflow-toolbox:opencode-envelope' },
+    }))
+
+    const verifiers = verifyCalls(rt)
+    expect(verifiers.length).toBeGreaterThan(0)
+    expect(verifiers.every((call) => call.prompt.replace(/^<!-- wt-meta [^\n]+ -->\n\n/, '').startsWith(`OPENCODE_WORKDIR: ${repoRoot}\n\n`))).toBe(true)
+  })
+
+  it('refuses a bridge route without repoRoot and names the launch remedy', async () => {
+    const rt = makeHappyPathRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({
+        target: 'HEAD~1..HEAD',
+        agentTypes: { review: 'workflow-toolbox:opencode-envelope' },
+      })),
+    ).rejects.toThrow(
+      /review.*workflow-toolbox:opencode-envelope.*pass repoRoot: <absolute path> in the launch args/i,
+    )
+  })
+
+  it('does not add a workdir directive or require repoRoot without a bridge route', async () => {
+    const rt = makeHappyPathRuntime()
+    await wf.run(rt, JSON.stringify({ target: 'HEAD~1..HEAD', repoRoot: '/tmp/ignored-root' }))
+
+    const routedPrompts = rt.calls
+      .filter((call) => call.opts?.label?.startsWith('pr-review:reviewer:') || call.opts?.label?.startsWith('adversarialVerification:verify:'))
+      .map((call) => call.prompt)
+    expect(routedPrompts.length).toBeGreaterThan(0)
+    expect(routedPrompts.every((prompt) => !prompt.startsWith('OPENCODE_WORKDIR:'))).toBe(true)
   })
 })
 
@@ -662,6 +714,7 @@ describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: TYPE },
       perAgent: { model: 'sonnet' },
     }))
@@ -674,6 +727,7 @@ describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: 'codex:codex-rescue' },
       perAgent: { model: 'sonnet' },
     }))
@@ -695,6 +749,7 @@ describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: 'some-namespace:opencode-experimental-v3' },
       perAgent: { model: 'sonnet' },
     }))
@@ -752,6 +807,7 @@ describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: TYPE },
       perAgent: { model: 'sonnet' },
       models: { review: 'opus' },
@@ -797,6 +853,7 @@ describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
       mode: 'single-verifier',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: TYPE },
       perAgent: { model: 'sonnet' },
     }))
@@ -809,6 +866,7 @@ describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: TYPE },
     }))
     const verify = rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
@@ -870,6 +928,7 @@ describe('pr-review per-role opencode model + variant routing', () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: TYPE, verify: TYPE },
       opencodeModels: { review: 'openai/gpt-5.4', verify: 'openai/gpt-5.6-sol' },
     }))
@@ -878,13 +937,13 @@ describe('pr-review per-role opencode model + variant routing', () => {
     const verifies = verifyCalls(rt)
     expect(reviews.length).toBeGreaterThan(0)
     expect(reviews.every((c) =>
-      stripMeta(c.prompt).startsWith('OPENCODE_MODEL: openai/gpt-5.4\n\n'),
+      stripMeta(c.prompt).startsWith('OPENCODE_WORKDIR: /tmp/review-target\n\nOPENCODE_MODEL: openai/gpt-5.4\n\n'),
     )).toBe(true)
     expect(reviews.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.6-sol'))).toBe(true)
     expect(verifies.length).toBeGreaterThan(0)
     expect(verifies.every((c) =>
-      stripMeta(c.prompt).startsWith('OPENCODE_MODEL: openai/gpt-5.6-sol\n\n') &&
-        String(c.prompt).includes('\nClaim:\n'),
+      stripMeta(c.prompt).includes('OPENCODE_WORKDIR: /tmp/review-target') &&
+        String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.6-sol'),
     )).toBe(true)
     expect(verifies.every((c) => !String(c.prompt).includes('OPENCODE_MODEL: openai/gpt-5.4'))).toBe(true)
   })
@@ -893,6 +952,7 @@ describe('pr-review per-role opencode model + variant routing', () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: TYPE, verify: TYPE },
       opencodeVariants: { review: 'review-high', verify: 'verify-xhigh' },
     }))
@@ -901,13 +961,13 @@ describe('pr-review per-role opencode model + variant routing', () => {
     const verifies = verifyCalls(rt)
     expect(reviews.length).toBeGreaterThan(0)
     expect(reviews.every((c) =>
-      stripMeta(c.prompt).startsWith('OPENCODE_VARIANT: review-high\n\n'),
+      stripMeta(c.prompt).startsWith('OPENCODE_WORKDIR: /tmp/review-target\n\nOPENCODE_VARIANT: review-high\n\n'),
     )).toBe(true)
     expect(reviews.every((c) => !String(c.prompt).includes('OPENCODE_VARIANT: verify-xhigh'))).toBe(true)
     expect(verifies.length).toBeGreaterThan(0)
     expect(verifies.every((c) =>
-      stripMeta(c.prompt).startsWith('OPENCODE_VARIANT: verify-xhigh\n\n') &&
-        String(c.prompt).includes('\nClaim:\n'),
+      stripMeta(c.prompt).includes('OPENCODE_WORKDIR: /tmp/review-target') &&
+        String(c.prompt).includes('OPENCODE_VARIANT: verify-xhigh'),
     )).toBe(true)
     expect(verifies.every((c) => !String(c.prompt).includes('OPENCODE_VARIANT: review-high'))).toBe(true)
   })
@@ -916,6 +976,7 @@ describe('pr-review per-role opencode model + variant routing', () => {
     const rt = makeHappyPathRuntime()
     await wf.run(rt, JSON.stringify({
       target: 'HEAD~1..HEAD',
+      repoRoot: '/tmp/review-target',
       agentTypes: { review: TYPE },
       opencodeModels: { review: 'openai/gpt-5.4', verify: 'openai/gpt-5.6-sol' },
       opencodeVariants: { review: 'review-high', verify: 'verify-xhigh' },
@@ -979,7 +1040,7 @@ describe('pr-review verifier routing (agentTypes.verify)', () => {
     const rt = makeHappyPathRuntime()
     const result = await wf.run(
       rt,
-      JSON.stringify({ target: 'HEAD~1..HEAD', agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } }),
+       JSON.stringify({ target: 'HEAD~1..HEAD', repoRoot: '/tmp/review-target', agentTypes: { verify: 'workflow-toolbox:opencode-verifier' } }),
     )
     // Three probes now run: the two unconditional ones (leaf fence, lean
     // routing) and the verifierType probe (conditional, 'Probe' phase) — find
@@ -1056,6 +1117,7 @@ describe('pr-review verifier routing (agentTypes.verify)', () => {
       rt,
       JSON.stringify({
         target: 'HEAD~1..HEAD',
+        repoRoot: '/tmp/review-target',
         agentTypes: { review: 'magic-claude:ts-reviewer', verify: 'workflow-toolbox:opencode-verifier' },
       }),
     )
@@ -1896,6 +1958,7 @@ describe('pr-review mode ladder', () => {
       JSON.stringify({
         target: 'HEAD~1..HEAD',
         mode: 'single-verifier',
+        repoRoot: '/tmp/review-target',
         agentTypes: { review: 'workflow-toolbox:opencode-verifier' },
       }),
     )

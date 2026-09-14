@@ -37,10 +37,10 @@
       { "name": "silent exit 0 (allow)", "where": "plugin/bin/wt-main-guard-hook.mjs:42-45" }
     ]
   },
-  "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 5 },
+  "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 7 },
   "shippedSkills": {
-    "count": 15,
-    "names": ["adopt", "changelog", "deep-grounding", "delegation-chain", "external-lane", "independent-analysis", "lesson-harvest", "pilot-wave", "planka-tracking", "stale-card-sweep", "toolkit-scaffold", "upgrade-canary", "what-next", "workflow-composer", "workflow-debugger"]
+    "count": 16,
+    "names": ["adopt", "artifact-server", "changelog", "deep-grounding", "delegation-chain", "external-lane", "independent-analysis", "lesson-harvest", "pilot-wave", "planka-tracking", "stale-card-sweep", "toolkit-scaffold", "upgrade-canary", "what-next", "workflow-composer", "workflow-debugger"]
   },
   "functionHooks": {
     "status": "spike only (worktrees/fh-spike); function modules cannot import Node APIs needed to inspect a staged Git diff",
@@ -60,6 +60,15 @@
     { "name": "CLAUDE_PLUGIN_DATA", "where": "plugin/bin/lib/plugin-data-dir.mjs" },
     { "name": "CLAUDE_PLUGIN_ROOT", "where": "plugin/.claude-plugin/plugin.json (hook commands)" },
     { "name": "CLAUDE_CODE_ENABLE_FUNCTION_HOOKS", "where": "worktrees/fh-spike (spike only)" },
+    { "name": "WT_LANE_MODELS", "where": "plugin/bin/lib/plugin-options.mjs (env fallback)" },
+    { "name": "WT_LANE_SKILLS", "where": "plugin/bin/lib/plugin-options.mjs (env fallback)" },
+    { "name": "WT_ARTIFACT_SERVER", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; 0 disables the default-on monitor)" },
+    { "name": "WT_ARTIFACT_SERVER_PORT", "where": "plugin/bin/lib/plugin-options.mjs (env fallback)" },
+    { "name": "WT_ARTIFACT_SERVER_ROOTS", "where": "plugin/bin/lib/plugin-options.mjs (path-delimited env fallback)" },
+    { "name": "WT_ARTIFACT_SERVER_IDLE_GRACE_S", "where": "plugin/bin/lib/plugin-options.mjs (env fallback)" },
+    { "name": "WT_ARTIFACT_SERVER_DENY", "where": "plugin/bin/lib/plugin-options.mjs (env fallback)" },
+    { "name": "WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS", "where": "plugin/bin/wt-artifact-server.mjs (test-only env knob)" },
+    { "name": "WT_ARTIFACT_SERVER_ALLOW_UNSAFE_DENYLIST", "where": "plugin/bin/lib/artifact-server.mjs (test/internal env-only explicit default-deny replacement)" },
     { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" },
     { "name": "WT_GUARD_JOURNAL_DIR", "where": "plugin/bin/lib/guard-journal.mjs and gate-evidence.mjs (test state-root override)" },
     { "name": "WT_ENVELOPE_WORKDIR", "where": "plugin/bin/wt-opencode-envelope.mjs (per-invocation envelope artifact directory override)" },
@@ -68,6 +77,7 @@
     { "name": "WT_FINDINGS_DISPOSITION_NOW", "where": "plugin/bin/wt-report-findings-check.mjs (deterministic clock override)" }
   ],
   "cli": [
+    { "name": "node plugin/bin/wt-artifact-server.mjs url|status|stop|restart", "where": "plugin/skills/artifact-server/SKILL.md" },
     { "name": "node <configDir>/scripts/wt-lane.mjs", "where": "README.md and plugin/skills/external-lane/SKILL.md" },
     { "name": "node plugin/bin/wt-plugin-eval-gate.mjs", "where": "docs/public/known-issues.md" },
     { "name": "claude plugin validate", "where": "README.md" },

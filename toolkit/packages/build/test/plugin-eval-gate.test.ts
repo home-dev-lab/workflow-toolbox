@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
@@ -8,7 +8,6 @@ import { describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const GATE = join(REPO_ROOT, 'plugin/bin/wt-plugin-eval-gate.mjs')
-const EXPECTED_FAILURES = join(REPO_ROOT, 'plugin/evals/expected-failures.json')
 
 // The shape `claude plugin eval --json` wrote on 2026-09-07 (schemaVersion 1), reduced to the
 // fields the gate reads. Kept INLINE: a fixture under the git-ignored `.lane/` directory exists
@@ -25,6 +24,10 @@ const FAILED_RESULT = {
 
 function resultFor(name: string, passed: boolean) {
   return { cases: [{ name, arms: { with: [{ passed }] } }] }
+}
+
+function resultForRuns(name: string, passed: boolean[]) {
+  return { cases: [{ name, arms: { with: passed.map((value) => ({ passed: value })) } }] }
 }
 
 function withFixture(content: unknown, body: (fixture: string) => void) {
@@ -46,23 +49,14 @@ function run(env: NodeJS.ProcessEnv) {
   })
 }
 
-function withExpectedFailures(content: string, body: () => void) {
-  const original = readFileSync(EXPECTED_FAILURES, 'utf8')
-  writeFileSync(EXPECTED_FAILURES, content)
+function withExpectedFailures(content: string, body: (expectedFailures: string) => void) {
+  const dir = mkdtempSync(join(tmpdir(), 'wt-plugin-eval-expected-'))
+  const expectedFailures = join(dir, 'expected-failures.json')
+  writeFileSync(expectedFailures, content)
   try {
-    body()
+    body(expectedFailures)
   } finally {
-    writeFileSync(EXPECTED_FAILURES, original)
-  }
-}
-
-function withoutExpectedFailures(body: () => void) {
-  const original = readFileSync(EXPECTED_FAILURES, 'utf8')
-  rmSync(EXPECTED_FAILURES)
-  try {
-    body()
-  } finally {
-    writeFileSync(EXPECTED_FAILURES, original)
+    rmSync(dir, { recursive: true, force: true })
   }
 }
 
@@ -83,10 +77,28 @@ describe('wt-plugin-eval-gate', () => {
     })
   })
 
+  it('passes a case when two of its three runs pass', () => {
+    withFixture(resultForRuns('flaky-case', [true, true, false]), (fixture) => {
+      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('plugin eval: flaky-case passed 2/3')
+    })
+  })
+
+  it('fails a case when two of its three runs fail', () => {
+    withFixture(resultForRuns('flaky-case', [true, false, false]), (fixture) => {
+      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+
+      expect(result.status).toBe(1)
+      expect(result.stdout).toContain('plugin eval: flaky-case passed 1/3')
+    })
+  })
+
   it('allows a declared expected failure', () => {
-    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation' }]), () => {
+    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation' }]), (expectedFailures) => {
       withFixture(resultFor('declared-failure', false), (fixture) => {
-        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: expectedFailures })
 
         expect(result.status).toBe(0)
         expect(result.stdout).toContain('plugin eval: expected failure declared-failure — sandbox limitation')
@@ -96,9 +108,9 @@ describe('wt-plugin-eval-gate', () => {
   })
 
   it('fails when an expected-failure declaration has expired', () => {
-    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: '2000-01-01' }]), () => {
+    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: '2000-01-01' }]), (expectedFailures) => {
       withFixture(resultFor('declared-failure', false), (fixture) => {
-        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: expectedFailures })
 
         expect(result.status).toBe(1)
         expect(result.stderr).toContain('plugin eval: expected failure declaration expired: declared-failure (until 2000-01-01)')
@@ -107,9 +119,9 @@ describe('wt-plugin-eval-gate', () => {
   })
 
   it('rejects a malformed expected-failure expiry', () => {
-    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: 'tomorrow' }]), () => {
+    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: 'tomorrow' }]), (expectedFailures) => {
       withFixture(resultFor('declared-failure', false), (fixture) => {
-        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: expectedFailures })
 
         expect(result.status).toBe(2)
         expect(result.stderr).toContain('plugin eval: invalid expected failures: declaration until must be an ISO date (YYYY-MM-DD)')
@@ -118,9 +130,9 @@ describe('wt-plugin-eval-gate', () => {
   })
 
   it('allows a future expected-failure expiry', () => {
-    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: '2999-01-01' }]), () => {
+    withExpectedFailures(JSON.stringify([{ case: 'declared-failure', reason: 'sandbox limitation', until: '2999-01-01' }]), (expectedFailures) => {
       withFixture(resultFor('declared-failure', false), (fixture) => {
-        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: expectedFailures })
 
         expect(result.status).toBe(0)
         expect(result.stdout).toContain('plugin eval: expected failure declared-failure — sandbox limitation')
@@ -138,9 +150,9 @@ describe('wt-plugin-eval-gate', () => {
   })
 
   it('rejects an expected-failure declaration when the case now passes', () => {
-    withExpectedFailures(JSON.stringify([{ case: 'declared-passing', reason: 'sandbox limitation' }]), () => {
+    withExpectedFailures(JSON.stringify([{ case: 'declared-passing', reason: 'sandbox limitation' }]), (expectedFailures) => {
       withFixture(resultFor('declared-passing', true), (fixture) => {
-        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: expectedFailures })
 
         expect(result.status).toBe(1)
         expect(result.stdout).toContain('plugin eval: expected failure declared-passing now passes — remove its declaration')
@@ -149,9 +161,9 @@ describe('wt-plugin-eval-gate', () => {
   })
 
   it('exits 2 for a malformed expected-failures declaration', () => {
-    withExpectedFailures('not json', () => {
+    withExpectedFailures('not json', (expectedFailures) => {
       withFixture(resultFor('passing-case', true), (fixture) => {
-        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: expectedFailures })
 
         expect(result.status).toBe(2)
         expect(result.stderr).toContain('plugin eval: invalid expected failures')
@@ -160,14 +172,59 @@ describe('wt-plugin-eval-gate', () => {
   })
 
   it('allows evals without an expected-failures declaration file', () => {
-    withoutExpectedFailures(() => {
-      withFixture(resultFor('passing-case', true), (fixture) => {
-        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture })
+    withFixture(resultFor('passing-case', true), (fixture) => {
+      const dir = mkdtempSync(join(tmpdir(), 'wt-plugin-eval-empty-'))
+      try {
+        const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: join(dir, 'missing.json') })
 
         expect(result.status).toBe(0)
         expect(result.stdout).toContain('plugin eval: passed 1/1, expected failures 0')
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  it('uses the repository declaration file when no override is set', () => {
+    withFixture(resultFor('undeclared-by-repository', false), (fixture) => {
+      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: undefined })
+
+      expect(result.status).toBe(1)
+      expect(result.stdout).toContain('plugin eval: failed 1/1 case(s): undeclared-by-repository')
+    })
+  })
+
+  it('leaves the repository declaration file untouched by fixture tests', () => {
+    const declaration = join(REPO_ROOT, 'plugin/evals/expected-failures.json')
+    const before = readFileSync(declaration, 'utf8')
+    withExpectedFailures(JSON.stringify([{ case: 'fixture-only', reason: 'test' }]), (expectedFailures) => {
+      withFixture(resultFor('passing-case', true), (fixture) => {
+        run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: fixture, WT_PLUGIN_EVAL_EXPECTED_FAILURES: expectedFailures })
       })
     })
+    expect(readFileSync(declaration, 'utf8')).toBe(before)
+  })
+
+  it('launches the CLI when the nominated result does not exist yet, and grades what the CLI wrote', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wt-eval-gate-launch-'))
+    try {
+      const target = join(dir, 'fresh-result.json')
+      const fake = join(dir, 'fake-claude.sh')
+      writeFileSync(fake, [
+        '#!/bin/sh',
+        'out=""',
+        'while [ $# -gt 0 ]; do if [ "$1" = "--json" ]; then out="$2"; fi; shift; done',
+        `printf '%s' '{"cases":[{"name":"fresh-case","arms":{"with":[{"passed":true},{"passed":true},{"passed":false}]}}]}' > "$out"`,
+        'exit 0',
+        '',
+      ].join('\n'), 'utf8')
+      chmodSync(fake, 0o755)
+      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: target, CLAUDE_BIN: fake })
+      expect(result.status).toBe(0)
+      expect(result.stdout).toContain('fresh-case passed 2/3')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('returns success for a recorded eval result when every case passed', () => {

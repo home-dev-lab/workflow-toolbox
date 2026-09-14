@@ -1,4 +1,5 @@
-// Shared gate-record format and tree signature. A record is useful only for the exact tree it ran on.
+// Shared gate-record format and tree signature. Ignored files are outside the signature by design,
+// as they are outside the commit too; lifecycle evidence under .lane/ relies on that exclusion.
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -7,6 +8,10 @@ import { defaultGuardJournalDir } from './guard-journal-read.mjs'
 
 function git(root, args) {
   return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+}
+
+function gitOrEmpty(root, args) {
+  try { return git(root, args) } catch { return '' }
 }
 
 export function repoRoot(cwd) {
@@ -23,15 +28,25 @@ export function readGateDeclaration(root) {
   return parsed
 }
 
-export function treeSignature(root) {
-  const untracked = git(root, ['ls-files', '--others', '--exclude-standard', '-z'])
-    .split('\0')
-    .filter(Boolean)
-    .sort()
-    .join('\0')
+export function treeSignature(root, fileSystem = fs) {
   const hash = createHash('sha256')
-  for (const value of [git(root, ['rev-parse', 'HEAD']), git(root, ['diff', '--cached']), git(root, ['diff']), untracked]) {
-    hash.update(value)
+  hash.update('wt-tree-signature-v3\0')
+  // The signature describes the filesystem, not the index.  Include HEAD names so
+  // staging a deletion or rename cannot change the set being compared.
+  const names = [...new Set([
+    ...gitOrEmpty(root, ['ls-tree', '-r', '--name-only', 'HEAD', '-z']).split('\0'),
+    ...git(root, ['ls-files', '--cached', '-z']).split('\0'),
+    ...git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0'),
+  ])].filter(Boolean).sort()
+  for (const name of names) {
+    const file = path.join(root, name)
+    const stat = fileSystem.lstatSync(file, { throwIfNoEntry: false })
+    if (!stat) continue
+    hash.update(Buffer.from(name)); hash.update('\0')
+    hash.update(`${stat.isFile() ? 'file' : stat.isSymbolicLink() ? 'symlink' : 'other'}\0${stat.mode & 0o7777}\0`)
+    if (stat.isFile()) hash.update(fileSystem.readFileSync(file))
+    else if (stat.isSymbolicLink()) hash.update(fileSystem.readlinkSync(file))
+    else throw new Error(`unsupported repository entry: ${name}`)
     hash.update('\0')
   }
   return hash.digest('hex')
@@ -66,7 +81,7 @@ export function touchesDeclaredPath(paths, declaredPaths) {
 }
 
 export function recordIsFresh(root, record, signature, paths) {
-  if (!record || record.exit !== 0 || record.tree !== signature) return false
+  if (!record || record.version !== 2 || record.exit !== 0 || record.tree !== signature) return false
   const finishedAt = Date.parse(record.finishedAt)
   if (!Number.isFinite(finishedAt)) return false
   return paths.every((file) => {

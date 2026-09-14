@@ -23,6 +23,8 @@
 // sibling `capabilitiesReport` key in the launch args — never inside `capabilities`,
 // which the server validates strictly).
 
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { isAbsolute, relative, resolve } from 'node:path'
 import { mergeSkillSettings, type CapabilitiesSpec, type SkillOverrideMode } from './capabilities.js'
 import {
   resolveCapabilities,
@@ -33,6 +35,7 @@ import {
   type NeedResolution,
 } from './capability-registry.js'
 import { isRecord } from './validator-shared.js'
+import { validateObserverDefinition } from './observer-def.js'
 
 const CWD_TOKEN = '$CWD'
 
@@ -175,17 +178,61 @@ function mergeCapabilitiesSpecs(
  *  be noise. The author sees it at launch, not by digging the run record. Kept internal-
  *  ref-free (the message ships in the CLI bin): it states the limitation self-containedly,
  *  no tracking id. `observers` is the raw args.observers array. */
-export function observerDefinitionFileWarnings(observers: readonly unknown[], registryPresent: boolean): string[] {
+export function observerDefinitionFileWarnings(observers: readonly unknown[], registryPresent: boolean, locallyResolved = new Set<string>()): string[] {
   if (!registryPresent) return []
   const out: string[] = []
   for (const e of observers) {
-    if (isRecord(e) && typeof e['definitionFile'] === 'string') {
+    if (isRecord(e) && typeof e['definitionFile'] === 'string' && !locallyResolved.has(e['definitionFile'])) {
       out.push(
         `observer requires: '${e['definitionFile']}' is a definitionFile — its abstract requires are NOT resolved launcher-side (only inline observer definitions are; a definitionFile's requires are resolved by the server). An unresolved required need becomes a server-side not-attach, never a launch failure.`,
       )
     }
   }
   return out
+}
+
+/** Load a definitionFile only when it is available under one of the server's local
+ * workflow roots. A realpath containment check rejects a symlink escape rather than
+ * giving the launcher access to an arbitrary local JSON file. Null keeps the documented
+ * non-local pass-through behavior; a present file is validated with the shared observer
+ * definition parser before its abstract needs are used. */
+export function readObserverDefinitionFileRequires(definitionFile: string, workflowRoots: readonly string[]): CapabilityNeed[] | null {
+  for (const rawRoot of workflowRoots) {
+    let root: string
+    try {
+      root = realpathSync(rawRoot)
+    } catch {
+      continue
+    }
+    const candidate = resolve(root, definitionFile)
+    const candidateRelative = relative(root, candidate)
+    if (candidateRelative === '..' || candidateRelative.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(candidateRelative)) {
+      throw new Error(`observer definitionFile '${definitionFile}' resolves outside the workflows roots — refusing launch`)
+    }
+    if (!existsSync(candidate)) continue
+    let resolvedFile: string
+    try {
+      resolvedFile = realpathSync(candidate)
+    } catch (e) {
+      throw new Error(`observer definitionFile '${definitionFile}' is present but unreadable: ${String(e)}`)
+    }
+    const resolvedRelative = relative(root, resolvedFile)
+    if (resolvedRelative === '..' || resolvedRelative.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(resolvedRelative)) {
+      throw new Error(`observer definitionFile '${definitionFile}' resolves outside the workflows roots — refusing launch`)
+    }
+    let definition: unknown
+    try {
+      definition = JSON.parse(readFileSync(resolvedFile, 'utf8'))
+    } catch (e) {
+      throw new Error(`observer definitionFile '${definitionFile}' is not valid JSON: ${(e as Error).message}`)
+    }
+    const errors: string[] = []
+    validateObserverDefinition(definition, `observer definitionFile '${definitionFile}'`, errors)
+    if (errors.length > 0) throw new Error(`observer definitionFile '${definitionFile}' is invalid:\n  - ${errors.join('\n  - ')}`)
+    const requires = isRecord(definition) ? definition['requires'] : undefined
+    return Array.isArray(requires) ? (requires as CapabilityNeed[]) : []
+  }
+  return null
 }
 
 /** Fold the resolved `capabilities` + the redacted audit `report` into the launch args
@@ -243,12 +290,13 @@ export function inlineObserverRequires(entry: unknown): CapabilityNeed[] | null 
 
 /** Enforce "the launcher OWNS the `resolution` wire field" (design §5.3; review, high):
  *  STRIP any caller-supplied `resolution` off EVERY observers entry, then set the
- *  launcher-produced one ONLY on an inline definition carrying `requires` (via `resolve`).
+ *  launcher-produced one ONLY on a definition carrying `requires` (via `resolve`).
  *  This is why a caller cannot inject an unverified resolution the server would compose into
  *  the brain. Pure — `resolve` is the (impure) resolver closure supplied by the launcher. */
 export function ownObserverResolutions(
   observers: readonly unknown[],
   resolve: (requires: CapabilityNeed[]) => NeedResolution[],
+  definitionFileRequires?: (entry: Record<string, unknown>) => CapabilityNeed[] | null,
 ): { observers: unknown[]; resolved: number; strippedCaller: number } {
   let resolved = 0
   let strippedCaller = 0
@@ -256,8 +304,8 @@ export function ownObserverResolutions(
     if (!isRecord(entry)) return entry
     const { resolution: callerResolution, ...rest } = entry
     if (callerResolution !== undefined) strippedCaller++
-    const requires = inlineObserverRequires(entry)
-    if (requires === null) return rest
+    const requires = inlineObserverRequires(entry) ?? definitionFileRequires?.(entry) ?? null
+    if (requires === null || requires.length === 0) return rest
     resolved++
     return { ...rest, resolution: resolve(requires) }
   })

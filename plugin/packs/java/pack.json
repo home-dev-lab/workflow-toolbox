@@ -1,0 +1,19 @@
+{
+  "language": "java",
+  "triggers": {
+    "extensions": [".java"],
+    "files": ["pom.xml"]
+  },
+  "rules": [
+    "tdd-junit.md",
+    "lint-typecheck-build.md"
+  ],
+  "skills": [
+    "tdd-red-green",
+    "lint-typecheck-build"
+  ],
+  "agents": [
+    "critic.md",
+    "reviewer.md"
+  ]
+}

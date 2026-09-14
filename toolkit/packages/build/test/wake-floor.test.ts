@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -109,6 +109,14 @@ function collectEmissions(projectDir: string, env: NodeJS.ProcessEnv, count: num
 }
 
 describe('wt-wake-floor', () => {
+  it('relay sessions print the skip line and leave the state directory empty', () => {
+    const state = scaffold('relay')
+    const result = runOnce(state.projectDir, { ...envFor(state.stateHome), WT_SESSION_ROLE: 'RELAY' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe("WAKE FLOOR NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events\n")
+    expect(readdirSync(state.stateDir)).toEqual([])
+  })
+
   it('with a live mandate emits after the idle period and again on the same cadence', async () => {
     const state = scaffold('cadence')
     liveMandate(state.mandatePath)

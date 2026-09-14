@@ -81,7 +81,10 @@ export async function fetchProxyUsage({ base, token, sessionId, model, fetchImpl
   const family = String(body?.family ?? '') || null
   if (response.status !== 200 && !(state in STATE_REASONS)) return { ok: false, family, reason: `HTTP ${response.status}` }
   if (state !== 'ok') return { ok: false, family, reason: STATE_REASONS[state] ?? (state ? `state=${state}` : `no state in answer (HTTP ${response.status})`) }
-  const windows = Array.isArray(body?.windows) ? body.windows.filter((window) => window && typeof window === 'object' && Number.isFinite(Number(window.used_percent))).map((window) => ({ name: String(window.name ?? 'window'), pct: Number(window.used_percent), minutes: Number(window.window_minutes) || null, resetsAt: window.resets_at ?? null })) : []
+  // A window counts only when used_percent is a real number within 0–100: null, '', a numeric string or an
+  // out-of-range value would otherwise render as a plausible figure (0 %, -1 %) — measured by claude-mem-cc-1, 2026-09-09.
+  const windows = Array.isArray(body?.windows) ? body.windows.filter((window) => window && typeof window === 'object' && typeof window.used_percent === 'number' && Number.isFinite(window.used_percent) && window.used_percent >= 0 && window.used_percent <= 100).map((window) => ({ name: String(window.name ?? 'window'), pct: window.used_percent, minutes: Number(window.window_minutes) || null, resetsAt: window.resets_at ?? null })) : []
+  if (Array.isArray(body?.windows) && body.windows.length > 0 && windows.length === 0) return { ok: false, family, reason: 'malformed used_percent in every window' }
   return { ok: true, family, source: body?.source ?? null, state, windows }
 }
 

@@ -1,0 +1,7 @@
+{
+  "symbol-overview": { "prompt": "Use your language server or code intelligence to list the symbols in definitions.svelte. Answer with the exact symbol names only.", "expectedSubstrings": ["greeting", "greet"] },
+  "symbol-lookup": { "prompt": "Use your language server or code intelligence to look up the Svelte symbol greet. State its defining file and line.", "expectedSubstrings": ["definitions.svelte", "greet"] },
+  "declarations": { "prompt": "Use your language server or code intelligence to find the declaration of greet used in use.svelte. State its defining file and line.", "expectedSubstrings": ["definitions.svelte", "greet"] },
+  "references": { "prompt": "Use your language server or code intelligence to find references to the Svelte function greet. Name both source files containing references.", "expectedSubstrings": ["definitions.svelte", "use.svelte"] },
+  "implementations": { "prompt": "Use your language server or code intelligence to find implementations related to the exported Svelte component in definitions.svelte. State the component file.", "expectedSubstrings": ["definitions.svelte"] }
+}

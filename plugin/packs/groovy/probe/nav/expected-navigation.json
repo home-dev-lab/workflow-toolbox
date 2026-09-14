@@ -1,0 +1,7 @@
+{
+  "symbol-overview": { "prompt": "Use your language server or code intelligence to list the symbols in definitions.groovy. Answer with the exact interface and class names only.", "expectedSubstrings": ["Greeter", "FriendlyGreeter"] },
+  "symbol-lookup": { "prompt": "Use your language server or code intelligence to look up the Groovy symbol FriendlyGreeter. State its defining file and line.", "expectedSubstrings": ["definitions.groovy", "FriendlyGreeter"] },
+  "declarations": { "prompt": "Use your language server or code intelligence to find the declaration of Greeter used in use.groovy. State its defining file and line.", "expectedSubstrings": ["definitions.groovy", "Greeter"] },
+  "references": { "prompt": "Use your language server or code intelligence to find references to the Groovy interface Greeter. Name both source files containing references.", "expectedSubstrings": ["definitions.groovy", "use.groovy"] },
+  "implementations": { "prompt": "Use your language server or code intelligence to find implementations of the Groovy interface Greeter. Name the implementing class.", "expectedSubstrings": ["FriendlyGreeter"] }
+}

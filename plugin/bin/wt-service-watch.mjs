@@ -34,6 +34,8 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { isServiceDegraded, defaultFlagPath } from './lib/service-flag.mjs'
+import { relaySkipLine } from './lib/session-role.mjs'
+import { handleHelpFlag } from './lib/cli-help.mjs'
 
 const STATUS_URL = 'https://status.claude.com/api/v2/summary.json'
 
@@ -106,6 +108,13 @@ Options:
   --help                     print this text and exit 0
 `
 
+handleHelpFlag(process.argv.slice(2), HELP)
+const relayLine = relaySkipLine('SERVICE WATCH')
+if (relayLine) {
+  process.stdout.write(`${relayLine}\n`)
+  process.exit(0)
+}
+
 let pollHealthySeconds = 900
 let pollDegradedSeconds = 180
 let expirySeconds = 1200
@@ -117,10 +126,6 @@ let once = false
 
 for (let i = 2; i < process.argv.length; i += 1) {
   const option = process.argv[i]
-  if (option === '--help' || option === '-h') {
-    write(HELP.trimEnd())
-    process.exit(0)
-  }
   if (option === '--once') {
     once = true
     continue

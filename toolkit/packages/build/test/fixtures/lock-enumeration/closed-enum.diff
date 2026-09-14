@@ -1,0 +1,17 @@
+diff --git a/packages/cli/test/output-mode.test.ts b/packages/cli/test/output-mode.test.ts
+index 96f571b..1307a3f 100644
+--- a/packages/cli/test/output-mode.test.ts
++++ b/packages/cli/test/output-mode.test.ts
+@@ -18,4 +18,12 @@ describe('OutputMode', () => {
+   it('parses a known mode', () => {
+     expect(parseOutputMode('json')).toBe(OutputMode.Json)
+   })
++
++  it('declares every supported output mode', () => {
++    expect(Object.values(OutputMode)).toEqual([
++      'text',
++      'json',
++      'quiet',
++    ])
++  })
+ })

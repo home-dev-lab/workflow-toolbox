@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -69,11 +70,18 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
   const configDir = join(root, 'claude-config')
   const hookTmp = join(root, 'hook-tmp')
   const cwd = join(root, 'project')
+  const mandateDir = join(state, 'wt-queue-gate')
   mkdirSync(home, { recursive: true })
   mkdirSync(state, { recursive: true })
   mkdirSync(configDir, { recursive: true })
   mkdirSync(hookTmp, { recursive: true })
   mkdirSync(cwd, { recursive: true })
+  mkdirSync(mandateDir, { recursive: true })
+  writeFileSync(
+    join(mandateDir, `engine-${slug(cwd)}.json`),
+    JSON.stringify({ declaredAtMs: Date.now(), sessionId: `sess-${tag}` }),
+    'utf8',
+  )
   if (opts.withBoardPointer !== false) {
     mkdirSync(join(cwd, '.claude'), { recursive: true })
     writeFileSync(join(cwd, '.claude/planka.json'), JSON.stringify({ boardId: 'b1' }), 'utf8')
@@ -88,7 +96,15 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
     cwd,
     configDir,
     stateDir: join(state, 'wt-actionable'),
-    env: { ...process.env, CLAUDE_PLUGIN_DATA: undefined, HOME: home, XDG_STATE_HOME: state, CLAUDE_CONFIG_DIR: configDir, TMPDIR: hookTmp },
+    env: {
+      ...process.env,
+      CLAUDE_PLUGIN_DATA: undefined,
+      HOME: home,
+      XDG_STATE_HOME: state,
+      CLAUDE_CONFIG_DIR: configDir,
+      TMPDIR: hookTmp,
+      WT_AUTONOMY_WATCH_MANDATE_DIR: mandateDir,
+    },
   }
 }
 
@@ -436,7 +452,9 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
     expect(raw.status).toBe(0)
   })
 
-  it('bounds the failure journal to the latest 100 records', () => {
+  // Card 1860387857: exercise the journal bound in-process instead of paying for
+  // 105 synchronous hook spawns inside Vitest's fixed timeout.
+  it('bounds the failure journal to the latest 100 records', async () => {
     const project = scaffoldProject('bounded-journal', { withParser: true })
     const payload = {
       hook_event_name: 'PostToolUse',
@@ -444,7 +462,12 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
       tool_input: { boardId: 'b1' },
       cwd: project.cwd,
     }
-    for (let i = 0; i < 105; i += 1) expect(runProducerHook(payload, project.env).status).toBe(0)
+    expect(runProducerHook(payload, project.env).status).toBe(0)
+    // Node 24's native ESM require avoids Vite transforming this repository-root module.
+    const hookModule = createRequire(pathToFileURL(PRODUCER_HOOK).href)(PRODUCER_HOOK)
+    for (let i = 0; i < 104; i += 1) {
+      hookModule.writeJournalEntry(project.stateDir, project.cwd, false, 'bound-probe', 'seam-exercised record')
+    }
     expect(readFailureRecords(project.stateDir)).toHaveLength(100)
   })
 
@@ -693,7 +716,7 @@ describe('producer output is consumable by the real consumer decide()', () => {
     }
     expect(runProducerHook(payload, env).status).toBe(0)
     const snap = readSnapshot(stateDir, cwd) as { at: number; actionable: number; next: string; workPossible: boolean; reason: string; blockedUntil: null; inFlightUntil: null }
-    const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, consecutiveBlocks: 0, blockMax: 3 })
+    const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, mandateKind: 'live', consecutiveBlocks: 0, blockMax: 3 })
     expect(decision.block).toBe(true)
     expect(decision.reason).toBe('actionable-work-remains')
   })
@@ -709,7 +732,7 @@ describe('producer output is consumable by the real consumer decide()', () => {
     }
     expect(runProducerHook(payload, env).status).toBe(0)
     const snap = readSnapshot(stateDir, cwd) as { at: number; actionable: number; next: string; workPossible: boolean; reason: string; blockedUntil: null; inFlightUntil: null }
-    const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, consecutiveBlocks: 0, blockMax: 3 })
+    const decision = runDecide({ snapshot: { status: 'present', ...snap }, now: snap.at + 1000, staleAfterMs: 2 * 60 * 60 * 1000, mandateKind: 'live', consecutiveBlocks: 0, blockMax: 3 })
     expect(decision.block).toBe(false)
   })
 

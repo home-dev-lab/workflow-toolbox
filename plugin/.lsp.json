@@ -1,0 +1,55 @@
+{
+  "typescript": {
+    "command": "typescript-language-server",
+    "args": [
+      "--stdio"
+    ],
+    "extensionToLanguage": {
+      ".ts": "typescript"
+    },
+    "diagnostics": true,
+    "startupTimeout": 10000
+  },
+  "java": {
+    "command": "jdtls",
+    "args": [],
+    "extensionToLanguage": {
+      ".java": "java"
+    },
+    "diagnostics": true,
+    "startupTimeout": 23000
+  },
+  "kotlin": {
+    "command": "kotlin-language-server",
+    "args": [],
+    "extensionToLanguage": {
+      ".kt": "kotlin",
+      ".kts": "kotlin"
+    },
+    "diagnostics": true,
+    "startupTimeout": 60000
+  },
+  "python": {
+    "command": "pyright-langserver",
+    "args": [
+      "--stdio"
+    ],
+    "extensionToLanguage": {
+      ".py": "python",
+      ".pyi": "python"
+    },
+    "diagnostics": true,
+    "startupTimeout": 10000
+  },
+  "svelte": {
+    "command": "svelteserver",
+    "args": [
+      "--stdio"
+    ],
+    "extensionToLanguage": {
+      ".svelte": "svelte"
+    },
+    "diagnostics": true,
+    "startupTimeout": 10000
+  }
+}

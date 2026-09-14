@@ -11,8 +11,11 @@
 // explicitly (coveredAgents/totalAgents, plus this CLI's own unmatchedNames/unmatchedIds),
 // never a silent empty success indistinguishable from a wrong path or a typo'd name.
 
+import { readFileSync, readdirSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { scanCardCostAgents } from './card-cost-scan.js'
 import { buildCardCostReport } from './card-cost.js'
+import { buildDelegationHopCostReport, formatDelegationHopCostMarkdown, type DelegationTranscript } from './delegation-hop-cost.js'
 
 interface CardCostArgs {
   subagentsDir: string | null
@@ -20,15 +23,28 @@ interface CardCostArgs {
   names: string[]
   agentIds: string[]
   help: boolean
+  hops: boolean
+  session: string | null
+  json: boolean
   error?: string
 }
 
 function parseCardCostArgs(argv: string[]): CardCostArgs {
-  const r: CardCostArgs = { subagentsDir: null, cardId: null, names: [], agentIds: [], help: false }
+  const r: CardCostArgs = { subagentsDir: null, cardId: null, names: [], agentIds: [], help: false, hops: false, session: null, json: false }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!
     if (a === '--help' || a === '-h') {
       r.help = true
+    } else if (a === '--hops') {
+      r.hops = true
+    } else if (a === '--json') {
+      r.json = true
+    } else if (a === '--session') {
+      const v = argv[++i]
+      if (v === undefined) return { ...r, error: '--session requires a value.' }
+      r.session = v
+    } else if (a.startsWith('--session=')) {
+      r.session = a.slice('--session='.length)
     } else if (a === '--subagents-dir') {
       const v = argv[++i]
       if (v === undefined) return { ...r, error: '--subagents-dir requires a value.' }
@@ -63,12 +79,16 @@ function printHelp(): void {
     [
       'wt-card-cost — per-tracked-card token/activity cost report from EXPLICITLY named agents',
       '',
-      'Usage: wt:card-cost -- --subagents-dir <dir> [--card-id <id>] [--name <n> ...] [--agent-id <id> ...]',
+       'Usage: wt:card-cost -- --subagents-dir <dir> [--card-id <id>] [--name <n> ...] [--agent-id <id> ...]',
+       '       wt:card-cost -- --hops --session <main-session.jsonl> [--json]',
       '',
       "  --subagents-dir  the session's flat subagents/ dir (NOT subagents/workflows/<runId>)",
       '  --card-id        tag stamped into the output JSON (informational only)',
       "  --name           match agents by their meta.json `name` (repeatable)",
-      '  --agent-id       match agents by exact agent-<id> stem (repeatable)',
+       '  --agent-id       match agents by exact agent-<id> stem (repeatable)',
+       '  --hops           report transcript-derived delegation depth, width, envelope, and chatter',
+       '  --session        main session JSONL; its sibling <session>/subagents/ tree is read',
+       '  --json           with --hops, print the report JSON instead of Markdown',
       '',
       'At least one of --name/--agent-id is required — this CLI never sweeps the whole',
       'directory or infers scope from a time window (see card-cost-scan.ts).',
@@ -80,8 +100,29 @@ function printHelp(): void {
   )
 }
 
+function readJsonl(path: string): unknown[] {
+  try {
+    return readFileSync(path, 'utf8').split('\n').flatMap((line) => {
+      try { return line.trim() === '' ? [] : [JSON.parse(line)] } catch { return [] }
+    })
+  } catch {
+    return []
+  }
+}
+
+function collectAgentTranscripts(dir: string): DelegationTranscript[] {
+  let entries
+  try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return [] }
+  return entries.flatMap((entry) => {
+    const path = join(dir, entry.name)
+    if (entry.isDirectory()) return collectAgentTranscripts(path)
+    const match = /^agent-(.+)\.jsonl$/.exec(entry.name)
+    return match === null ? [] : [{ id: match[1]!, records: readJsonl(path) }]
+  })
+}
+
 function main(): number {
-  const { subagentsDir, cardId, names, agentIds, help, error } = parseCardCostArgs(process.argv.slice(2))
+  const { subagentsDir, cardId, names, agentIds, help, error, hops, session, json } = parseCardCostArgs(process.argv.slice(2))
   if (help) {
     printHelp()
     return 0
@@ -89,6 +130,17 @@ function main(): number {
   if (error) {
     process.stderr.write(`wt-card-cost: ${error}\n`)
     return 2
+  }
+  if (hops) {
+    if (session === null) {
+      process.stderr.write('wt-card-cost: --hops requires --session <main-session.jsonl>.\n')
+      return 2
+    }
+    const sessionId = basename(session, '.jsonl')
+    const transcripts = [{ id: 'main', records: readJsonl(session) }, ...collectAgentTranscripts(join(dirname(session), sessionId, 'subagents'))]
+    const report = buildDelegationHopCostReport(transcripts)
+    process.stdout.write(json ? JSON.stringify(report, null, 2) + '\n' : formatDelegationHopCostMarkdown(report))
+    return 0
   }
   if (subagentsDir === null) {
     process.stderr.write('wt-card-cost: --subagents-dir is required.\n')

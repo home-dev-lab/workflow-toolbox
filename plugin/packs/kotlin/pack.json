@@ -1,0 +1,16 @@
+{
+  "language": "kotlin",
+  "triggers": {
+    "extensions": [".kt", ".kts"],
+    "files": ["build.gradle.kts", "settings.gradle.kts"]
+  },
+  "rules": [
+    "tdd-junit-kotlin-test.md",
+    "lint-typecheck-build.md"
+  ],
+  "skills": [],
+  "agents": [
+    "critic.md",
+    "reviewer.md"
+  ]
+}

@@ -11,6 +11,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { runFailOpenHookAsync } from './lib/fail-open-trace.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import {
   laneTextFromOutput,
   laneUsageFromOutput,
@@ -106,6 +107,12 @@ function runScriptedOpencodeCall(prompt, workdir, model, variant) {
   const test = testRun(prompt, model)
   if (test !== null) return test
 
+  const fence = verifyOpencodeSkillFence('opencode')
+  if (!fence.ok) return { stdout: opencodeSkillFenceRefusal(fence.reason), stderr: '', model, durationMs: 0 }
+  const childEnv = opencodeChildEnv()
+  const discovery = verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: workdir, env: childEnv })
+  if (!discovery.ok) return { stdout: effectiveSkillDiscoveryRefusal(discovery, 'wt-envelope-intercept'), stderr: '', model, durationMs: discovery.durationMs }
+
   const taskFile = path.join(workdir, `.wt-envelope-intercept-${process.pid}-${crypto.randomUUID().slice(0, 8)}.md`)
   const streamDir = ensureDir(verifierStreamDirForEnv(process.env, os.homedir(), process.platform))
   const streamFile = path.join(streamDir, `wt-opencode-json-stream-${process.pid}-${crypto.randomUUID().slice(0, 8)}.jsonl`)
@@ -125,6 +132,7 @@ function runScriptedOpencodeCall(prompt, workdir, model, variant) {
       encoding: 'utf8',
       timeout: RUN_TIMEOUT_MS,
       input: '',
+      env: childEnv,
     })
     const stdout = typeof res.stdout === 'string' ? res.stdout : ''
     const stderr = typeof res.stderr === 'string' ? res.stderr : ''

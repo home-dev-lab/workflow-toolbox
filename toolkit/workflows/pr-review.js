@@ -51,7 +51,9 @@ var __wt = (() => {
   // pr-review.workflow.ts
   var pr_review_workflow_exports = {};
   __export(pr_review_workflow_exports, {
-    default: () => pr_review_workflow_default
+    LOCK_ENUMERATION_INSTRUCTIONS: () => LOCK_ENUMERATION_INSTRUCTIONS,
+    default: () => pr_review_workflow_default,
+    isTestFile: () => isTestFile
   });
 
   // ../packages/runtime/src/constants.ts
@@ -478,10 +480,8 @@ unreadable channel never fails your task.`;
     if (cap === void 0) {
       return { kept: items, truncated: 0 };
     }
-    if (cap < 1) {
-      throw new Error(
-        `applyCap: cap must be >= 1, got ${cap} \u2014 set maxItems to a positive integer or omit it`
-      );
+    if (!Number.isInteger(cap) || cap < 1) {
+      throw new Error(`applyCap: cap must be a positive integer, got ${cap} \u2014 set maxItems to a positive integer or omit it`);
     }
     if (cap >= items.length) {
       return { kept: items, truncated: 0 };
@@ -2284,8 +2284,32 @@ ${renderClaim(claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
-      sources: ["plugin/bin/wt-lane.mjs", "plugin/skills/external-lane/"],
+      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/skills/external-lane/"],
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
+    },
+    {
+      sources: [
+        "plugin/bin/wt-artifact-server.mjs",
+        "plugin/bin/wt-artifact-server-ensure.mjs",
+        "plugin/bin/lib/artifact-server.mjs",
+        "plugin/skills/artifact-server/"
+      ],
+      docs: ["README.md", "PRIVACY.md", "plugin/skills/artifact-server/SKILL.md"]
+    },
+    {
+      // Adopted owner-granted authorization format, its deterministic reader, and the
+      // Stop-hook measurement that prevents authorized acts from being escalated again.
+      sources: [
+        "plugin/autonomy/AUTHORIZATIONS.md",
+        "plugin/autonomy/PERMISSIONS.md",
+        "plugin/bin/lib/standing-authorizations.mjs",
+        "plugin/bin/wt-escalation-journal-hook.mjs"
+      ],
+      docs: ["plugin/autonomy/AUTHORIZATIONS.md", "plugin/autonomy/PERMISSIONS.md", "plugin/skills/adopt/SKILL.md"]
+    },
+    {
+      sources: ["plugin/bin/wt-pilot-runner.mjs", "plugin/bin/wt-pilot-fidelity.mjs", "plugin/bin/lib/sdk-pilot-lifecycle-server.mjs", "plugin/bin/lib/route-from-card.mjs", "plugin/autonomy/PILOT-CONTRACT.md", "plugin/hooks-modules/pilot-guard/"],
+      docs: ["plugin/autonomy/PILOT-RUNNER.md"]
     },
     {
       // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
@@ -2492,6 +2516,11 @@ ${renderClaim(claim)}`;
       docs: ["README.md", "PRIVACY.md", "SECURITY.md"]
     },
     {
+      // One-call read-only advisor and its automatic provider route.
+      sources: ["plugin/bin/wt-second-opinion.mjs", "plugin/bin/lib/second-opinion-core.mjs", "plugin/skills/second-opinion/"],
+      docs: ["plugin/skills/second-opinion/SKILL.md"]
+    },
+    {
       // Pilot operators are instructed to run these helper CLIs/guards directly.
       sources: [
         "plugin/bin/wt-run-gate.mjs",
@@ -2501,7 +2530,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-pilot-card-reconcile.mjs",
         "plugin/bin/wt-lane-probe.mjs",
         "plugin/bin/wt-lane-activity.mjs",
-        "plugin/bin/wt-lane-postdiff-check.mjs"
+        "plugin/bin/wt-lane-postdiff-check.mjs",
+        "plugin/bin/wt-pilot-models.mjs"
       ],
       docs: [
         "plugin/agent-templates/pilot.md",
@@ -2559,13 +2589,17 @@ ${renderClaim(claim)}`;
         // and the shim one release after the rename.
         "plugin/bin/wt-adopt-rules-check-hook.mjs",
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
+        "plugin/bin/wt-unsynced-buffer-hook.mjs",
         "plugin/bin/wt-guard-recurrence-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",
         "plugin/bin/wt-lane-consent-gate-hook.mjs",
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",
+        "plugin/bin/lib/session-role.mjs",
+        "plugin/bin/lib/queue-snapshot-contract.mjs",
         "plugin/bin/wt-wake-floor.mjs",
+        "plugin/bin/wt-cache-keepalive.mjs",
         "plugin/bin/wt-observer.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",
@@ -2607,7 +2641,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-version-guard-hook.mjs",
         "plugin/bin/wt-gate-evidence-guard-hook.mjs"
       ],
-      docs: ["docs/public/known-issues.md"]
+      docs: ["docs/public/known-issues.md", "plugin/monitors/README.md", "README.md"]
     }
   ];
   function docsForChangedFiles(changedFiles, manifest = DOCS_PROVENANCE) {
@@ -2625,6 +2659,11 @@ ${renderClaim(claim)}`;
   }
 
   // opencode-routing.ts
+  function opencodeWorkdirLine(resolvedType, repoRoot) {
+    return isBridgeAgentType(resolvedType) ? `OPENCODE_WORKDIR: ${repoRoot}
+
+` : "";
+  }
   function isBridgeAgentType(resolvedType) {
     return isExternalBridgeType(resolvedType);
   }
@@ -2660,6 +2699,17 @@ ${renderClaim(claim)}`;
   }
 
   // pr-review.workflow.ts
+  var LOCK_ENUMERATION_INSTRUCTIONS = [
+    "Read the ACTUAL diff first. Consider ONLY new or modified assertions in test files; do not re-review code quality, because other lenses do that.",
+    "",
+    "For each assertion, decide whether it NAMES specific members of a family defined by a shared producer (hard-coded selectors, keys, field names, paths, N of M), or STATES a property over all members. A finding is an assertion that enumerates an OPEN family: a member added tomorrow is invisible to it by construction. Set `file` to the test path, quote the assertion in `detail`, and state the invariant form it should take. Severity is high when code outside the test's own module produces the family; it is low when the family is local.",
+    "",
+    "Do NOT report a list closed by its nature: values of a finite enum, a fixed CLI flag set, or a schema with a declared member count. Do NOT report assertions already phrased as an invariant."
+  ].join("\n");
+  function isTestFile(path) {
+    const normalized = path.replaceAll("\\", "/");
+    return /(?:^|\/)(?:test|tests|__tests__|e2e)(?:\/|$)/.test(normalized) || /(?:^|\/)[^/]+\.(?:test|spec)\./.test(normalized);
+  }
   var CLASSIFY_EFFORT = "low";
   var ROUTE_ACT_EFFORT = "medium";
   var REVIEW_EFFORT = "high";
@@ -2831,6 +2881,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       }
       return {
         target: raw,
+        repoRoot: null,
         mode: "full",
         reviewerType: null,
         opencodeModels: null,
@@ -2860,6 +2911,15 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
         'pr-review: "target" must be a non-empty string \u2014 provide a git ref range or change description (e.g. "HEAD~3..HEAD")'
       );
     }
+    let repoRoot = null;
+    if (obj["repoRoot"] !== void 0 && obj["repoRoot"] !== null) {
+      if (typeof obj["repoRoot"] !== "string" || obj["repoRoot"].length === 0 || obj["repoRoot"] !== obj["repoRoot"].trim() || !obj["repoRoot"].startsWith("/")) {
+        throw new Error(
+          'pr-review: "repoRoot" must be an absolute path with no trailing whitespace when provided'
+        );
+      }
+      repoRoot = obj["repoRoot"];
+    }
     let verifierModel = null;
     if (obj["verifierModel"] !== void 0 && obj["verifierModel"] !== null) {
       if (typeof obj["verifierModel"] !== "string" || obj["verifierModel"].trim().length === 0) {
@@ -2870,7 +2930,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       verifierModel = obj["verifierModel"];
     }
     const cfg = parseConfig(obj, {
-      args: ["target", "verifierModel", "perAgent", "effort", "agentTypes", "messaging", "provenance", "mode", "models", "opencodeModels", "opencodeVariants"],
+      args: ["target", "repoRoot", "verifierModel", "perAgent", "effort", "agentTypes", "messaging", "provenance", "mode", "models", "opencodeModels", "opencodeVariants"],
       models: ["review"],
       effort: ["classify", "route", "review", "verify", "synthesize"],
       agentTypes: ["review", "verify"]
@@ -2887,6 +2947,7 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
     const opencodeVariants = parseOpencodeRoleMap(obj["opencodeVariants"], "opencodeVariants");
     return {
       target: obj["target"],
+      repoRoot,
       mode,
       reviewerType,
       opencodeModels,
@@ -2937,6 +2998,11 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       probeReport = { requested: input.reviewerType, available: probe.available, reason: probe.reason };
     }
     const reviewerIsBridge = isBridgeAgentType(resolvedReviewerType);
+    if (reviewerIsBridge && input.repoRoot === null) {
+      throw new Error(
+        `pr-review: review role routed to bridge type '${resolvedReviewerType}' requires repoRoot \u2014 pass repoRoot: <absolute path> in the launch args`
+      );
+    }
     const reviewModel = resolveWrapperModel(reviewerIsBridge, input.models?.review);
     let resolvedVerifierType = null;
     let verifierProbeReport = null;
@@ -2946,12 +3012,18 @@ Return { "changedFiles": ["<path>", ...], "addedPublicSurface": ["<new export/ro
       resolvedVerifierType = probe.agentType ?? null;
       verifierProbeReport = { requested: input.verifierType, available: probe.available, reason: probe.reason };
     }
-    const reviewOpencodeDirectives = reviewerIsBridge ? (input.opencodeModels?.review !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.review}
+    const verifierIsBridge = isBridgeAgentType(resolvedVerifierType);
+    if (verifierIsBridge && input.repoRoot === null) {
+      throw new Error(
+        `pr-review: verify role routed to bridge type '${resolvedVerifierType}' requires repoRoot \u2014 pass repoRoot: <absolute path> in the launch args`
+      );
+    }
+    const reviewOpencodeDirectives = reviewerIsBridge ? opencodeWorkdirLine(resolvedReviewerType, input.repoRoot ?? "") + (input.opencodeModels?.review !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.review}
 
 ` : "") + (input.opencodeVariants?.review !== void 0 ? `OPENCODE_VARIANT: ${input.opencodeVariants.review}
 
 ` : "") : "";
-    const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType) ? (input.opencodeModels?.verify !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.verify}
+    const verifyOpencodeDirectives = isBridgeAgentType(resolvedVerifierType) ? opencodeWorkdirLine(resolvedVerifierType, input.repoRoot ?? "") + (input.opencodeModels?.verify !== void 0 ? `OPENCODE_MODEL: ${input.opencodeModels.verify}
 
 ` : "") + (input.opencodeVariants?.verify !== void 0 ? `OPENCODE_VARIANT: ${input.opencodeVariants.verify}
 
@@ -3055,14 +3127,22 @@ Return { "category": "<one of the five categories>" }`,
       );
     }
     const baseLenses = REVIEWER_LENSES[category] ?? DEFAULT_LENSES;
+    const hasTestFiles = changeSummary.changedFiles.some(isTestFile);
+    if (hasTestFiles) {
+      rt.log("lock-enumeration lens armed: routing reported at least one test file");
+    }
     const lenses = [
       ...baseLenses,
       ...provenanceDocs.length > 0 ? ["docs-alignment"] : [],
-      ...coverageSurfaces.length > 0 ? ["docs-coverage"] : []
+      ...coverageSurfaces.length > 0 ? ["docs-coverage"] : [],
+      ...hasTestFiles ? ["lock-enumeration"] : []
     ];
     const isConsolidated = input.mode === "single-verifier";
     const reviewItems = isConsolidated ? [CONSOLIDATED_LENS] : lenses;
     const lensInstructionsFor = (lens) => {
+      if (lens === "lock-enumeration") {
+        return LOCK_ENUMERATION_INSTRUCTIONS;
+      }
       if (lens === "docs-coverage") {
         const sanitizedSurface = (s) => s.replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, " ").slice(0, 200);
         return `The routing stage reports this change ADDS the following public surface, while touching NO documentation file:

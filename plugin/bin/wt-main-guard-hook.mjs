@@ -21,9 +21,10 @@
 //   resolved because it contains an unexpanded variable or a glob).
 // - JOURNAL ONLY (legitimate, never denied, but must leave a trace): a `git merge` integrating
 //   a branch INTO main/master while main-session is on main/master (the OPPOSITE direction
-//   from what the pilot guard blocks); any OTHER `rm -rf` that did not hit the catastrophic
-//   criteria (an ordinary build-dir / node_modules / /tmp scratch / worktree purge — routine
-//   here, and denying it would get this guard bypassed within a week).
+//   from what the pilot guard blocks); `git reset --hard` / `git checkout -f` on a dirty
+//   worktree; any OTHER `rm -rf` that did not hit the catastrophic criteria (an ordinary
+//   build-dir / node_modules / /tmp scratch / worktree purge — routine here, and denying it
+//   would get this guard bypassed within a week).
 // - Everything else → true no-op: nothing emitted, nothing journalled.
 //
 // ⚠ MEASURED-POSTURE SPLIT (see docs/public/known-issues.md and the port's own test suite for
@@ -31,7 +32,8 @@
 // unchosen session history and shipped BLOCKING only where that measurement cleared a
 // zero-false-positive bar. Any class below that bar ships JOURNAL-ONLY (allowed, logged, never
 // denied) until re-measured — see FORCE_PUSH_BLOCKING / DELETE_PUSH_BLOCKING /
-// RM_CATASTROPHIC_BLOCKING / PUBLISH_BLOCKING below for the per-class posture and its reason.
+// RM_CATASTROPHIC_BLOCKING / PUBLISH_BLOCKING / RESET_HARD_BLOCKING below for the per-class
+// posture and its reason.
 //
 // Escape hatch: a denial the operator cannot clear turns into a bypass. A ONE-TIME, file-based
 // override at ~/.local/state/wt-main-guard/allow-once.json — not an env var, because an env
@@ -91,11 +93,14 @@ const ALLOW_ONCE_PATH = path.join(STATE_DIR, 'allow-once.json')
 //                        $VAR was bound earlier in the SAME multi-line command to a scratch/tmp
 //                        path (`$(mktemp -d)`, a scratchpad dir) that this segment-local
 //                        classifier cannot see. Ships JOURNAL-ONLY.
+//   reset-hard          unmeasured on unchosen material. Ships JOURNAL-ONLY until its
+//                        false-positive rate is measured.
 const PUBLISH_BLOCKING = true
 const FORCE_PUSH_BLOCKING = true
 const DELETE_PUSH_BLOCKING = true
 const RM_ROOT_HOME_BLOCKING = true
 const RM_GITROOT_UNRESOLVABLE_BLOCKING = false
+const RESET_HARD_BLOCKING = false
 
 // ---------------------------------------------------------------------------------------
 // Code vs data — a command line mixes both, and a textual guard that reads the raw string
@@ -296,6 +301,53 @@ function gitMergeIntoMainViolation(seg, cwd) {
 }
 
 // ---------------------------------------------------------------------------------------
+// Class 7 — git reset --hard / git checkout -f on a dirty worktree
+// ---------------------------------------------------------------------------------------
+
+function resetHardWorktree(seg, cwd) {
+  const tokens = seg.split(/\s+/).filter(Boolean)
+  const reset = tokens.indexOf('reset')
+  const checkout = tokens.indexOf('checkout')
+  const actionIndex = reset === -1 ? checkout : checkout === -1 ? reset : Math.min(reset, checkout)
+  if (actionIndex === -1 || tokens.slice(0, actionIndex).indexOf('git') === -1) return null
+
+  const destructive =
+    tokens[actionIndex] === 'reset'
+      ? tokens.slice(actionIndex + 1).includes('--hard')
+      : tokens.slice(actionIndex + 1).some((token) => token === '-f' || token === '--force')
+  if (!destructive) return null
+
+  let worktree = cwd
+  for (let index = 0; index < actionIndex; index += 1) {
+    if (tokens[index] === '-C' && tokens[index + 1]) {
+      worktree = path.resolve(worktree, tokens[index + 1])
+      index += 1
+    }
+  }
+  return worktree
+}
+
+function resetHardViolation(seg, cwd) {
+  const worktree = resetHardWorktree(seg, cwd)
+  if (!worktree) return null
+  try {
+    const porcelain = execFileSync('git', ['status', '--porcelain'], {
+      cwd: worktree,
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim()
+    if (!porcelain) return null
+    return `discards ${porcelain.split('\n').length} uncommitted change(s)`
+  } catch {
+    // A missing git executable, non-worktree cwd, or status failure is not proof of a destructive
+    // action. Stay silent rather than create a false violation.
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------------------
 // Classification
 // ---------------------------------------------------------------------------------------
 
@@ -323,6 +375,10 @@ function classify(command, cwd) {
   for (const seg of segments(fullyStripped)) {
     const merge = gitMergeIntoMainViolation(seg, cwd)
     if (merge) return { kind: 'journal', class: 'merge-into-main', reason: merge }
+  }
+  for (const seg of segments(fullyStripped)) {
+    const resetHard = resetHardViolation(seg, cwd)
+    if (resetHard) return { kind: RESET_HARD_BLOCKING ? 'deny' : 'journal', class: 'reset-hard', reason: resetHard }
   }
   for (const seg of segments(heredocStripped)) {
     const rmOther = rmOtherViolation(seg)

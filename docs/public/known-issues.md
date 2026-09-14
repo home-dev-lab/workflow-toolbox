@@ -40,6 +40,8 @@ agent definitions without an undeclared dependency on a sibling toolkit checkout
 `## Findings` section containing either `None.` or a Markdown table with one allowed disposition
 per row, plus non-empty `## Implemented`, `## Verification`, `## Independent Review`,
 `## Decisions`, and `## Remaining Risks` sections; pass `--no-shape` for a non-closing report.
+The Verification section should name its e2e output or state `e2e not run` with a reason. Omitting
+both emits a warning only, even when the Findings and shape checks run in block mode.
 It prints its active regime with every result. The checker warns through 2026-09-13 and blocks on
 2026-09-14; set `WT_FINDINGS_DISPOSITION_MODE=block` to switch early. The
 `WT_FINDINGS_DISPOSITION_NOW` clock override exists for deterministic tests.
@@ -78,13 +80,16 @@ It prints its active regime with every result. The checker warns through 2026-09
 ### Plugin eval suite is early access
 
 `claude plugin eval` is an early-access Claude Code surface. The release-only
-`node plugin/bin/wt-plugin-eval-gate.mjs` runs four one-run haiku cases when
+`node plugin/bin/wt-plugin-eval-gate.mjs` runs four three-run haiku cases when
 `CLAUDE_CODE_WALNUT_SPIRE=1`: the external-lane launcher, the unavailable
 opencode-verifier marker, the leaf-readonly tool fence, and changelog skill
 invocation. It is never part of `pnpm test`, because each case starts a Claude
 agent and LLM graders also spend model calls. The initial measured single-case
 cost was 19 seconds, three turns, and $0.0546244 for the agent plus $0.00203
-for the three haiku judge votes; release runs use one agent run per case.
+for the three haiku judge votes. Release runs use three agent runs per case; five
+measurements averaged 210 seconds and $0.4197936 per gate (12 case-runs).
+The gate passes a case only when a strict majority of its three recorded runs
+pass, and prints its per-case pass count.
 
 When the early-access flag is absent, the gate exits 0 and prints `plugin eval:
 not run (early access flag absent)`. That is a skipped paid check, not evidence
@@ -155,6 +160,10 @@ Because the mandate marker is project-keyed, the session that wakes is not alway
 
 Runs beneath `wt-autonomy-watch.mjs`: after 15 elapsed minutes by default, and again on that cadence, it emits exactly one line asking the session to check the queue itself. Its only gate is the same live, project-keyed mandate classification used by the autonomy arm/watch pair; without a mandate, or with an absent, malformed or expired marker, it emits nothing. It reads no transcript, queue snapshot, card, delegate, process or Git state, so missing or stale work-state data cannot silence it. The message explicitly says the wake proves nothing about whether work remains because elapsed time is the only thing it measured. `WT_WAKE_FLOOR_IDLE_MINUTES` changes the default cadence, while `--poll <seconds>`, `--project <dir>`, `--once`, and `--help` follow the sibling monitor conventions.
 
+### `wt-cache-keepalive.mjs` — opt-in prompt-cache refresh monitor
+
+Disabled by default; `WT_CACHE_KEEPALIVE_ENABLED=true` opts a session in. It tail-scans that session's own transcript in bounded chunks and asks for the one-word reply `warm` after 50 minutes without a real `claude-*` call or 25 minutes without a real `gpt-*` call. The provider-specific thresholds, 60-second poll, consecutive-refresh cap of 10, and journal directory are configurable through `WT_CACHE_KEEPALIVE_ANTHROPIC_MINUTES`, `WT_CACHE_KEEPALIVE_OPENAI_MINUTES`, `WT_CACHE_KEEPALIVE_POLL_SECONDS`, `WT_CACHE_KEEPALIVE_MAX_REFRESHES`, and `WT_CACHE_KEEPALIVE_JOURNAL_DIR`. A synthetic zero-usage response records an `uncallable` outcome but does not reset the real-call clock; the monitor still spaces attempts from its previous wake and stops at the cap. Real work resets the count. Unknown models and missing transcripts stay silent and write their reason to the per-session JSONL journal. The CLI Proxy route's actual OpenAI cache lifetime and whether every GPT-remapped transcript exposes a `gpt-*` provider model remain unmeasured, so the 25-minute branch is implemented from the configured transcript contract but not yet validated live.
+
 ### `wt-observer.mjs` — recorded-lesson observer (monitor)
 
 Watches this session's own transcript and is SILENT on a clean pass. It has two paths. First, a mechanical premature-stop check that never consults a model: the session transcript currently ends on an assistant turn, has also been untouched for at least the configured quiet window (never below five minutes and, by default, at least the poll interval), the project-keyed mandate marker is still live, the queue snapshot still reports open work, and no delegated subagent transcript is fresh. If that conjunction is true, it writes a short wake message into the same spool `wt-wake-channel.mjs` reads. Otherwise it extracts only the session's own message text plus tool NAMES from the transcript delta, never tool outputs, bounds that window to a byte ceiling, and asks an external cross-family lane whether anything the session just did matches a lesson already summarized in the project's knowledge-base index. The lane receives that one-line-per-fact index and the delta, never the rules corpus and never a fiche body; it returns only the matching fiche slug plus one exact evidence line, leaving the arbiter to open the fiche. `--index` selects the index, then `WT_OBSERVER_LESSON_INDEX`, then `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<project-slug>/memory/MEMORY.md`; an absent, empty, or unreadable index produces a degraded stderr pass and no wake. Calls are limited to one per `WT_OBSERVER_LANE_INTERVAL_MINUTES` (30 minutes by default), including across duplicate processes or a restart of the same session through shared atomic rate state; intervening transcript changes accumulate behind the unchanged watermark and enter the next call rather than being discarded. Every call appends its timestamp, input bytes, reported token counts when available, outcome, and trigger to the `lane-cost.jsonl` path named by `--help`, so daily cost is measurable. A fiche is only surfaced when the lane also returns one exact evidence line from that delta; a finding with no evidence is discarded. Every non-clean inability to measure — unreadable transcript, indeterminate bounded tail, unreadable index, unwritable cost log, lane timeout, missing bridge, malformed lane verdict — is written to stderr so "could not measure" never looks like a healthy silent pass. `--poll <seconds>`, `--project <dir>`, `--once`, and `--help` follow the sibling monitor conventions.
@@ -183,6 +192,10 @@ Starts `opencode run` in a detached supervisor with closed stdin, explicit `--di
 
 Re-checks, at every session start, that the environment settings the adopted sets require are still DECLARED in the active config profile's `settings.json`. `adopt` writes them on the day you adopt; nothing re-checks afterwards, so a settings file edited later — by you, by another tool, by a machine restore — silently degrades the plugin: without the nested-spawn depth key an executor lane can die mid-wave, and without the observer flag adopted pilots run with no watchdog while their reports honestly say "no observer findings". It is a warning light, never a gate: it always exits `0`. Three states, never a boolean — a settings file it cannot read or parse is reported as **NOT CHECKED**, explicitly not as "absent", because folding "I could not measure" into "it is broken" is how a session-start check earns a reputation for crying wolf. It is silent when every prerequisite is present, and silent for a project that adopted nothing (a project with its own hand-written agents has no observer prerequisite — adoption is detected by the installer's banner in `.claude/rules`/`.claude/agents`, never by the directory merely existing). When it does speak it names the key, the concrete consequence, and the way out in both directions: run the installer, or declare the key yourself with any value you prefer — it checks that a key is declared, never what it holds. **No environment value ever reaches its output**, since that block carries real credentials; it reads key names only.
 
+### `wt-unsynced-buffer-hook.mjs` — Planka degraded-mode reminder (SessionStart)
+
+Reads `<cwd>/.claude/progress.md` at session start and, when it contains `## Unsynced (Planka down)`, emits one loud line with the count of Markdown list entries, the buffer path, and the instruction to fold the entries back into the board and purge the section. It is silent when the file or heading is absent and on any read or parse error. It always exits `0`: a reminder must never block session start.
+
 ### `wt-hook-registration-drift-hook.mjs` — stale hook-registration detector (SessionStart + UserPromptSubmit)
 
 At SessionStart it resolves every `${CLAUDE_PLUGIN_ROOT}` hook path the current manifest declares and writes that exact set to a small per-session state file. On each later UserPromptSubmit it re-checks those recorded absolute paths against the filesystem. Clean checks stay silent and leave the file untouched. If any recorded path has disappeared, it emits one `additionalContext` naming the missing hook files by event and basename, states plainly that this session's in-memory hook registration is stale, and says the limit honestly: it cannot repair itself mid-session, only a session restart picks up the corrected manifest. It records `reportedAt` after that first notice so the same session is not warned again on every turn.
@@ -209,7 +222,7 @@ Refuses a silent stop when tracked work remains, no work is running, and the mar
 
 ### `wt-observer-pairing-guard-hook.mjs` — observer-pairing reporter (PostToolUse)
 
-Runs after an `Agent` spawn whose agent definition declares an observer and delegates the pairing decision to `wt-check-observer-pairing.mjs`. It emits nothing for a passing checker verdict and surfaces only lost-observer or indeterminate outcomes. The checker remains the source of truth for ownership links, contradictory or dangling states, the `in_process_teammate` exemption, and mtime fallback. Internal errors fail open.
+Runs after an `Agent` spawn whose agent definition declares an observer and delegates the pairing decision to `wt-check-observer-pairing.mjs`. It emits nothing for a passing checker verdict and surfaces only lost-observer or indeterminate outcomes. Conflicting pairing evidence is captured under the state directory by default; set `WT_OBSERVER_PAIRING_CAPTURE_DIR` to redirect it. The checker remains the source of truth for ownership links, contradictory or dangling states, the `in_process_teammate` exemption, and mtime fallback. Internal errors fail open.
 
 ### `wt-service-watch.mjs` — Claude service-status supervisor (monitor)
 
@@ -227,9 +240,9 @@ Warns, never blocks, when a brief asks a spawned agent to report, reply, send, m
 
 Warns, never blocks, when a read-only, do-not-modify, or investigate-only brief targets a type with a wide allow-list (`*`, `Bash`, `Write`, `Edit`, or an MCP tool), or with no `tools:` line at all. The latter is separately journaled as `spawn-readonly-no-allowlist`, because an absent declaration inherits the whole surface. Narrow read-only lists, quoted examples, and unresolved definitions stay silent.
 
-### `wt-workflow-model-guard-hook.mjs` — inherited-model advisory (PreToolUse on Workflow)
+### `wt-workflow-model-guard-hook.mjs` — inherited-model blocker (PreToolUse on Workflow)
 
-Warns, never blocks, when Workflow `args` carries no `perAgent.model`, `models`, or `effort`; if `args` is absent, it inspects the supplied script text instead. The warning makes the otherwise implicit session-model inheritance visible before a fan-out begins.
+Refuses a Workflow launch unless `args.perAgent.model` is a non-empty string. `models` and `effort` alone do not satisfy the floor because an unnamed role would still inherit the session model. The `wt-observe launch` path applies the same refusal and offers `--allow-inherited-model` for an explicit one-call override.
 
 ### `wt-nested-spawn-guard-hook.mjs` — nested self-verification advisory (PreToolUse on Agent)
 

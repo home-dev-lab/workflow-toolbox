@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// wt-rule-edit-horizon-hook.mjs — surface the reload horizon at the moment an
-// ambient rule is edited, when the otherwise-delayed effect is easiest to miss.
+// wt-rule-edit-horizon-hook.mjs — surface the adoption or reload horizon when
+// user rules, project rules, shipped rules, or shipped agent definitions are edited.
 //
 // Ambient rules are snapshotted when a session starts. A sub-agent spawn inherits
 // that session's snapshot, so neither the current session nor a spawn can verify an
@@ -70,6 +70,13 @@ function isPluginSourceRule(file) {
   return segments[rulesIndex - 1] === 'plugin' && file.endsWith('.md')
 }
 
+function isPluginAgentTemplate(file) {
+  const segments = file.split(/[\\/]+/).filter(Boolean)
+  const templatesIndex = segments.lastIndexOf('agent-templates')
+  if (templatesIndex < 1 || templatesIndex === segments.length - 1) return false
+  return segments[templatesIndex - 1] === 'plugin' && file.endsWith('.md')
+}
+
 // Ambient rules live one level under a `.claude`-named (or `.claude-*`, e.g. `.claude-work`)
 // directory: `<config-dir>/rules/*.md`. `rules` must be the DIRECT child of that segment —
 // `.claude/agents/rules/x.md` or `.claude/rules-backup/rules/x.md` are NOT the ambient rules
@@ -103,7 +110,8 @@ function main() {
   const file = normalizeFile(sourceFile, payload.cwd)
   if (!file) return
   const plugin = isPluginSourceRule(file)
-  if (!plugin && !isAmbientRule(file)) return
+  const agentTemplate = isPluginAgentTemplate(file)
+  if (!plugin && !agentTemplate && !isAmbientRule(file)) return
 
   // ⚠ TWO things, and the second is why this hook is the right home for it.
   //
@@ -124,11 +132,17 @@ function main() {
     : `Editing ${file} is verifiable ONLY FROM A NEW SESSION: an agent spawn inherits its ` +
       `session's rule snapshot, so neither this session nor a spawn can confirm the change. `
   const context =
-    horizon +
-    `Writing conventions for a rule file: telegraphic register — strip GRAMMAR, never CONTENT. ` +
-    `A clause you can only shorten by losing a nuance stays long: compressed into a one-liner it ` +
-    `survives in the file and STOPS ACTING (measured 3/3 to 1/3). And a rule is a DIRECTIVE — ` +
-    `dates, incident stories and field cases go to a note, not here.`
+    agentTemplate
+      ? `${file} is a SHIPPED agent definition: it is adopted under its bare name by ` +
+        '`adopt --set agents`, so a locally edited adopted copy under a project\'s `.claude/agents/` ' +
+        `leaves plugin updates permanently. Fix the template here and re-adopt. The watchdog pairing ` +
+        '(`observer:`) only works on an adopted, unregistered copy. Writing conventions for an agent ' +
+        `definition: English only, telegraphic register, directive, no machine path.`
+      : horizon +
+        `Writing conventions for a rule file: telegraphic register — strip GRAMMAR, never CONTENT. ` +
+        `A clause you can only shorten by losing a nuance stays long: compressed into a one-liner it ` +
+        `survives in the file and STOPS ACTING (measured 3/3 to 1/3). And a rule is a DIRECTIVE — ` +
+        `dates, incident stories and field cases go to a note, not here.`
 
   process.stdout.write(
     JSON.stringify({

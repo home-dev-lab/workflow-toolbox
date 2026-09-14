@@ -49,6 +49,17 @@ describe('CLI Proxy selected usage', () => {
     await expect(fetchProxyUsage({ base, token: 'gateway', sessionId: 'session', model: 'gpt', timeoutMs: 500 })).resolves.toMatchObject({ windows: [{ name: 'hourly' }, { name: 'daily' }] })
   })
 
+  it('never renders a malformed used_percent as a figure (null, empty, numeric string, out of range)', async () => {
+    // LOCK — measured by claude-mem-cc-1 on the private twin, 2026-09-09: Number(null) === 0 rendered as 0 %.
+    status = 200
+    for (const bad of [null, '', '15', -1, 101, undefined]) {
+      body = { family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: bad, window_minutes: 10080 }] }
+      await expect(fetchProxyUsage({ base, token: 'gateway', sessionId: 'session', model: 'gpt', timeoutMs: 500 })).resolves.toMatchObject({ ok: false, reason: expect.stringMatching(/malformed used_percent/) })
+    }
+    body = { family: 'codex', state: 'ok', windows: [{ name: 'primary', used_percent: null, window_minutes: 300 }, { name: 'secondary', used_percent: 42, window_minutes: 10080 }] }
+    await expect(fetchProxyUsage({ base, token: 'gateway', sessionId: 'session', model: 'gpt', timeoutMs: 500 })).resolves.toMatchObject({ ok: true, windows: [{ name: 'secondary', pct: 42 }] })
+  })
+
   it.each([
     [200, { family: 'codex', state: 'unavailable' }, /provider usage unavailable/],
     [404, { state: 'unbound' }, /session not bound/],

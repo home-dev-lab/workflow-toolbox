@@ -130,17 +130,14 @@ export interface PipelineSpec {
    *  every pre-loop spec keeps today's behavior untouched. */
   loop?: PipelineLoopSpec
   /** Per-spec structural cap overrides. Omitted uses the safe defaults; a nested
-   *  pipeline-stage's child spec may set its own limits independently and inherits none.
-   *  CAVEAT (maxPipelineDepth only, found in review): depth is checked TOP-DOWN — an
-   *  ancestor's OWN resolved maxPipelineDepth is checked against the FULL remaining subtree
-   *  beneath it (staticNestingDepth counts the whole descendant chain), and that check runs
-   *  BEFORE recursion ever reaches a deeper child's own (possibly more permissive) `limits`.
-   *  So a child spec's raised maxPipelineDepth only takes effect for depth occurring entirely
-   *  beneath specs that themselves already permit reaching it — to allow deeper nesting
-   *  ANYWHERE in a tree, raise maxPipelineDepth on the ANCESTOR whose own default would
-   *  otherwise reject that depth (typically the root), not merely on the nested spec that
-   *  needs the room. True per-branch independence (a child's override rescuing depth an
-   *  ancestor's own default would otherwise reject) is a known gap, not yet implemented. */
+   *  pipeline-stage's child spec may set its own limits independently. CAVEAT
+   *  (`maxPipelineDepth`): `maxStages` and
+   *  `maxLoopIterations` are checked wholly within that spec. `maxPipelineDepth` is a
+   *  per-branch remaining-depth budget: entering a nested pipeline consumes one unit from the
+   *  active budget, and a child with an explicit override starts a fresh budget at its resolved
+   *  limit after the parent has admitted that edge. An override therefore governs descendants,
+   *  never ancestors: root default 8 → child override 20 → 12 deeper levels is valid, while the
+   *  same child without the override exhausts the default-8 budget and is rejected by name. */
   limits?: PipelineLimits
 }
 
@@ -151,14 +148,13 @@ export interface PipelineSpec {
 export const MAX_STAGES = 12
 
 /** DEFAULT cap on pipeline NESTING depth; see MAX_PIPELINE_DEPTH_CEILING for the absolute
- *  hard limit. Enforced in TWO places: validateStageList below rejects a spec whose OWN
- *  STATIC nesting (fully computable from the submitted spec alone, before anything is minted)
- *  exceeds its resolved cap — a clean, zero-mutation failure at the validation boundary; the
- *  companion app’s runner ALSO still checks the CUMULATIVE ancestors chain at instantiation
- *  (today's v1 inline-only child specs make the two checks always agree; the cumulative check
- *  is what will still matter once by-reference child specs land — a shallow SUBMITTED spec
+ *  hard limit. Enforced in TWO places: validateStageList below walks each branch with a
+ *  remaining-depth budget, resetting it only where a nested spec explicitly overrides the cap
+ *  — a clean, zero-mutation failure at the validation boundary. The companion app’s runner
+ *  ALSO checks the cumulative instantiated ancestors chain; that separate runtime defense is
+ *  what will still matter once by-reference child specs land, because a shallow submitted spec
  *  could reference an externally, already-deeply-nested child that no static read of the
- *  current spec alone could see). */
+ *  current spec alone could see. */
 export const MAX_PIPELINE_DEPTH = 8
 
 /** DEFAULT cap on a loop's `maxIterations` — same order of magnitude as the in-run
@@ -203,15 +199,9 @@ function validateLimitsShape(limits: PipelineLimits | undefined): string | null 
   return null
 }
 
-/** The spec's OWN internal nesting depth, fully computable from its `stage.pipeline` chains
- *  alone — 0 for a spec with no pipeline-stages, N for one nested N levels deep. Deliberately
- *  separate from the CUMULATIVE ancestors-chain check (the runner's startChildPipeline). */
-function staticNestingDepth(stages: readonly StageSpecV2[]): number {
-  let max = 0
-  for (const stage of stages) {
-    if (stage.pipeline !== undefined) max = Math.max(max, 1 + staticNestingDepth(stage.pipeline.stages))
-  }
-  return max
+interface RemainingDepthBudget {
+  remaining: number
+  limit: number
 }
 
 /** Structural validation of a spec's stage list — shared by parsePipelineSpec (untrusted JSON
@@ -226,22 +216,17 @@ function staticNestingDepth(stages: readonly StageSpecV2[]): number {
  *  independently at each level (duplicate-name uniqueness is PER-LEVEL, never global — a
  *  child's stageAttempts lives in its own separate manifest, so a child stage sharing a name
  *  with a PARENT stage cannot collide). */
-export function validateStageList(stages: readonly StageSpecV2[], limits?: PipelineLimits): string | null {
+function validateStageListWithDepthBudget(
+  stages: readonly StageSpecV2[],
+  limits: PipelineLimits | undefined,
+  depthBudget: RemainingDepthBudget,
+): string | null {
   const limitsError = validateLimitsShape(limits)
   if (limitsError !== null) return limitsError
   const resolved = resolveLimits(limits)
   if (stages.length === 0) return 'a pipeline spec must have at least one stage'
   if (stages.length > resolved.maxStages) {
     return `a pipeline spec may have at most ${resolved.maxStages} stages (got ${stages.length}) — raise via limits.maxStages, up to the documented absolute ceiling of ${MAX_STAGES_CEILING}`
-  }
-  // Checked ONCE, up front, on the FULL stage list: a recursive call for a nested sub-spec
-  // would only ever re-check a strictly SMALLER sub-problem (redundant, never a missed case) —
-  // the outermost call's depth already covers the whole tree, so this rejects before the
-  // per-stage loop below (and every caller's own minting/persisting) ever runs.
-  const staticDepth = staticNestingDepth(stages)
-  if (staticDepth > resolved.maxPipelineDepth) {
-    const defaultLimitNote = limits?.maxPipelineDepth === undefined ? `; default MAX_PIPELINE_DEPTH (${MAX_PIPELINE_DEPTH})` : ''
-    return `this pipeline nests ${staticDepth} levels deep on its own — exceeding limits.maxPipelineDepth (${resolved.maxPipelineDepth}); raise via limits.maxPipelineDepth, up to the documented absolute ceiling of ${MAX_PIPELINE_DEPTH_CEILING}; rejected before minting or persisting anything${defaultLimitNote}`
   }
   const seen = new Set<string>()
   for (const stage of stages) {
@@ -270,7 +255,14 @@ export function validateStageList(stages: readonly StageSpecV2[], limits?: Pipel
       if (stage.artifact !== undefined) {
         return `stage "${stage.name}" is a sub-pipeline stage — "artifact" is disallowed here (its handoff is always the child's own raw final output, passed through verbatim; no extractor ever runs at this boundary)`
       }
-      const nestedError = validateStageList(stage.pipeline!.stages, stage.pipeline!.limits)
+      if (depthBudget.remaining === 0) {
+        return `stage "${stage.name}" cannot enter its nested pipeline because the remaining-depth budget for limits.maxPipelineDepth (${depthBudget.limit}) is exhausted; raise the limit before this level, up to the documented absolute ceiling of ${MAX_PIPELINE_DEPTH_CEILING}; rejected before minting or persisting anything`
+      }
+      const childLimit = stage.pipeline!.limits?.maxPipelineDepth
+      const childBudget = childLimit === undefined
+        ? { remaining: depthBudget.remaining - 1, limit: depthBudget.limit }
+        : { remaining: childLimit, limit: childLimit }
+      const nestedError = validateStageListWithDepthBudget(stage.pipeline!.stages, stage.pipeline!.limits, childBudget)
       if (nestedError !== null) return `stage "${stage.name}"'s nested pipeline is invalid: ${nestedError}`
     }
   }
@@ -281,11 +273,19 @@ export function validateStageList(stages: readonly StageSpecV2[], limits?: Pipel
   return null
 }
 
+export function validateStageList(stages: readonly StageSpecV2[], limits?: PipelineLimits): string | null {
+  const resolved = resolveLimits(limits)
+  return validateStageListWithDepthBudget(stages, limits, {
+    remaining: resolved.maxPipelineDepth,
+    limit: resolved.maxPipelineDepth,
+  })
+}
+
 /** Total workflow LAUNCHES one pass over `stages` can trigger, loops expanded: a
  *  workflow-stage counts 1; a pipeline-stage counts its child's own expanded total × the
  *  child's loop ceiling (each parent pass launches a fresh child, and that child re-runs its
  *  own list up to child.loop.maxIterations times). Static — fully computable from the
- *  submitted spec alone, mirroring staticNestingDepth's recursion. */
+ *  submitted spec alone, mirroring the depth-budget walk's recursion. */
 function expandedLaunches(stages: readonly StageSpecV2[]): number {
   let total = 0
   for (const stage of stages) {
@@ -418,7 +418,7 @@ function parseStageSpecV2(v: unknown): StageSpecV2 | null {
   if (hasWorkflow) {
     stage = { name, workflow: s['workflow'] as string }
   } else {
-    const nested = parsePipelineSpec(s['pipeline'])
+    const nested = parsePipelineSpecShape(s['pipeline'])
     if (nested === null) return null
     stage = { name, pipeline: nested }
   }
@@ -499,7 +499,7 @@ function parseLimitsShape(v: unknown): PipelineLimits | null {
 /** Parse untrusted JSON (an HTTP body, a disk-persisted manifest's `spec` field, an emitted
  *  definePipeline() artifact re-read as a round-trip check) into a validated PipelineSpec, or
  *  null on any malformed shape. */
-export function parsePipelineSpec(v: unknown): PipelineSpec | null {
+function parsePipelineSpecShape(v: unknown): PipelineSpec | null {
   if (typeof v !== 'object' || v === null) return null
   const s = v as Record<string, unknown>
   if (typeof s['goal'] !== 'string' || typeof s['projectDir'] !== 'string') return null
@@ -517,10 +517,6 @@ export function parsePipelineSpec(v: unknown): PipelineSpec | null {
     if (validateLimitsShape(parsed) !== null) return null
     limits = parsed
   }
-  // Structural checks shared with the runner's start() defense-in-depth guard: empty, over the
-  // resolved stage cap, duplicate names, or a trailing gateAfter all fail here, at the
-  // untrusted-JSON boundary — never reaching a persisted, orphaned record.
-  if (validateStageList(stages, limits) !== null) return null
   const spec: PipelineSpec = { goal: s['goal'], projectDir: s['projectDir'], stages }
   if (limits !== undefined) spec.limits = limits
   if (s['workspaceId'] !== undefined) {
@@ -544,9 +540,11 @@ export function parsePipelineSpec(v: unknown): PipelineSpec | null {
     // tests). Key set only when defined (exactOptionalPropertyTypes idiom, same as above).
     spec.loop = loop
   }
-  // This level's loop rules (until shape re-check, maxIterations bounds, the ungated-
-  // criterion expanded budget). Nested children each ran this at their OWN parse (the
-  // parseStageSpecV2 → parsePipelineSpec recursion), so one level-local call covers the tree.
-  if (validateLoop(spec) !== null) return null
+  return spec
+}
+
+export function parsePipelineSpec(v: unknown): PipelineSpec | null {
+  const spec = parsePipelineSpecShape(v)
+  if (spec === null || validatePipelineSpec(spec) !== null) return null
   return spec
 }

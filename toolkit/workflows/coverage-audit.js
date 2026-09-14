@@ -476,10 +476,8 @@ unreadable channel never fails your task.`;
     if (cap === void 0) {
       return { kept: items, truncated: 0 };
     }
-    if (cap < 1) {
-      throw new Error(
-        `applyCap: cap must be >= 1, got ${cap} \u2014 set maxItems to a positive integer or omit it`
-      );
+    if (!Number.isInteger(cap) || cap < 1) {
+      throw new Error(`applyCap: cap must be a positive integer, got ${cap} \u2014 set maxItems to a positive integer or omit it`);
     }
     if (cap >= items.length) {
       return { kept: items, truncated: 0 };
@@ -2164,8 +2162,32 @@ ${renderClaim(claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
-      sources: ["plugin/bin/wt-lane.mjs", "plugin/skills/external-lane/"],
+      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/skills/external-lane/"],
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
+    },
+    {
+      sources: [
+        "plugin/bin/wt-artifact-server.mjs",
+        "plugin/bin/wt-artifact-server-ensure.mjs",
+        "plugin/bin/lib/artifact-server.mjs",
+        "plugin/skills/artifact-server/"
+      ],
+      docs: ["README.md", "PRIVACY.md", "plugin/skills/artifact-server/SKILL.md"]
+    },
+    {
+      // Adopted owner-granted authorization format, its deterministic reader, and the
+      // Stop-hook measurement that prevents authorized acts from being escalated again.
+      sources: [
+        "plugin/autonomy/AUTHORIZATIONS.md",
+        "plugin/autonomy/PERMISSIONS.md",
+        "plugin/bin/lib/standing-authorizations.mjs",
+        "plugin/bin/wt-escalation-journal-hook.mjs"
+      ],
+      docs: ["plugin/autonomy/AUTHORIZATIONS.md", "plugin/autonomy/PERMISSIONS.md", "plugin/skills/adopt/SKILL.md"]
+    },
+    {
+      sources: ["plugin/bin/wt-pilot-runner.mjs", "plugin/bin/wt-pilot-fidelity.mjs", "plugin/bin/lib/sdk-pilot-lifecycle-server.mjs", "plugin/bin/lib/route-from-card.mjs", "plugin/autonomy/PILOT-CONTRACT.md", "plugin/hooks-modules/pilot-guard/"],
+      docs: ["plugin/autonomy/PILOT-RUNNER.md"]
     },
     {
       // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
@@ -2372,6 +2394,11 @@ ${renderClaim(claim)}`;
       docs: ["README.md", "PRIVACY.md", "SECURITY.md"]
     },
     {
+      // One-call read-only advisor and its automatic provider route.
+      sources: ["plugin/bin/wt-second-opinion.mjs", "plugin/bin/lib/second-opinion-core.mjs", "plugin/skills/second-opinion/"],
+      docs: ["plugin/skills/second-opinion/SKILL.md"]
+    },
+    {
       // Pilot operators are instructed to run these helper CLIs/guards directly.
       sources: [
         "plugin/bin/wt-run-gate.mjs",
@@ -2381,7 +2408,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-pilot-card-reconcile.mjs",
         "plugin/bin/wt-lane-probe.mjs",
         "plugin/bin/wt-lane-activity.mjs",
-        "plugin/bin/wt-lane-postdiff-check.mjs"
+        "plugin/bin/wt-lane-postdiff-check.mjs",
+        "plugin/bin/wt-pilot-models.mjs"
       ],
       docs: [
         "plugin/agent-templates/pilot.md",
@@ -2439,13 +2467,17 @@ ${renderClaim(claim)}`;
         // and the shim one release after the rename.
         "plugin/bin/wt-adopt-rules-check-hook.mjs",
         "plugin/bin/wt-env-prerequisite-drift-hook.mjs",
+        "plugin/bin/wt-unsynced-buffer-hook.mjs",
         "plugin/bin/wt-guard-recurrence-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",
         "plugin/bin/wt-lane-consent-gate-hook.mjs",
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",
+        "plugin/bin/lib/session-role.mjs",
+        "plugin/bin/lib/queue-snapshot-contract.mjs",
         "plugin/bin/wt-wake-floor.mjs",
+        "plugin/bin/wt-cache-keepalive.mjs",
         "plugin/bin/wt-observer.mjs",
         "plugin/bin/wt-check-commit-signatures-hook.mjs",
         "plugin/bin/wt-check-commit-signatures.mjs",
@@ -2487,7 +2519,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-version-guard-hook.mjs",
         "plugin/bin/wt-gate-evidence-guard-hook.mjs"
       ],
-      docs: ["docs/public/known-issues.md"]
+      docs: ["docs/public/known-issues.md", "plugin/monitors/README.md", "README.md"]
     }
   ];
 

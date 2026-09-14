@@ -46,14 +46,23 @@ describe('applyCap', () => {
 
   it('keeps only the first cap items and reports truncated count', () => {
     const items = [1, 2, 3, 4, 5]
-    const result = applyCap(items, 3)
-    expect(result.kept).toEqual([1, 2, 3])
-    expect(result.truncated).toBe(2)
+    const result = applyCap(items, 2)
+    expect(result.kept).toEqual([1, 2])
+    expect(result.truncated).toBe(3)
   })
 
-  it('throws synchronously when cap < 1', () => {
-    expect(() => applyCap([1, 2], 0)).toThrow()
-    expect(() => applyCap([1, 2], -1)).toThrow()
+  it('throws synchronously for a cap that is not a positive integer', () => {
+    for (const cap of [Number.NaN, 1.5, Number.POSITIVE_INFINITY, 0, -1]) {
+      expect(() => applyCap([1, 2], cap)).toThrow(
+        `applyCap: cap must be a positive integer, got ${cap}`,
+      )
+    }
+  })
+
+  it('does not coerce a numeric string cap', () => {
+    expect(() => applyCap([1, 2], '2' as unknown as number)).toThrow(
+      'applyCap: cap must be a positive integer, got 2',
+    )
   })
 
   it('works with empty array', () => {

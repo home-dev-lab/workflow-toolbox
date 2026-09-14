@@ -1,0 +1,16 @@
+{
+  "language": "groovy",
+  "triggers": {
+    "extensions": [".groovy", ".gradle"],
+    "files": ["build.gradle", "settings.gradle", "spock.conf"]
+  },
+  "rules": [
+    "tdd-spock.md",
+    "lint-typecheck-build.md"
+  ],
+  "skills": [],
+  "agents": [
+    "critic.md",
+    "reviewer.md"
+  ]
+}

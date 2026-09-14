@@ -15,7 +15,7 @@
 // invocation shape, against scratch git repos built to exercise each of the three defects.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, cpSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -101,10 +101,94 @@ function runStep(root: string, env: Record<string, string>) {
   const res = spawnSync('bash', ['-e', scriptPath], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: '1', ...env },
+    env: { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: '1', GITHUB_WORKSPACE: root, ...env },
   })
   return { out: `${res.stdout ?? ''}${res.stderr ?? ''}`, code: res.status }
 }
+
+function writeTrustedFiles(root: string, allowedSigners: string) {
+  mkdirSync(join(root, 'trusted', '.github'), { recursive: true })
+  mkdirSync(join(root, 'trusted', 'plugin'), { recursive: true })
+  writeFileSync(join(root, 'trusted', '.github', 'allowed_signers'), allowedSigners)
+  cpSync(PLUGIN_BIN, join(root, 'trusted', 'plugin', 'bin'), { recursive: true })
+}
+
+function createSigningKey(root: string) {
+  const keyPath = join(root, 'attacker-key')
+  const res = spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', keyPath], { encoding: 'utf8' })
+  if (res.status !== 0) throw new Error(`ssh-keygen failed: ${res.stderr}`)
+  return { keyPath, publicKey: readFileSync(`${keyPath}.pub`, 'utf8').trim() }
+}
+
+describe('signatures.yml verification step — trusted PR policy and checker', () => {
+  it('derives both policy and checker paths from TRUSTED_ROOT', () => {
+    const yaml = readFileSync(WORKFLOW, 'utf8')
+
+    expect(yaml).toContain('ref: ${{ github.event.pull_request.base.sha }}')
+    expect(yaml).toContain('path: trusted')
+    expect(yaml).toContain('TRUSTED_ROOT=trusted')
+    expect(yaml).toContain('TRUSTED_ROOT="$GITHUB_WORKSPACE"')
+    expect(yaml).toContain('gpg.ssh.allowedSignersFile "$TRUSTED_ROOT/.github/allowed_signers"')
+    expect(yaml).toContain('CHECKER="$TRUSTED_ROOT/plugin/bin/wt-check-commit-signatures.mjs"')
+    // A missing trusted checkout on a pull request must FAIL the job, never fall back to the PR
+    // head — the fallback would silently re-open the hole this step closes.
+    expect(yaml).toContain("Trusted checkout 'trusted/' is missing on a pull_request event")
+    expect(yaml).not.toMatch(/\[ -n "\$\{PR_BASE:-\}" \] && \[ -d trusted \]/)
+    expect(yaml).toContain('node "$CHECKER" --repo "$GITHUB_WORKSPACE"')
+    expect(yaml).not.toContain('CHECKER=plugin/bin/wt-check-commit-signatures.mjs')
+    expect(yaml).not.toContain('gpg.ssh.allowedSignersFile "$GITHUB_WORKSPACE/.github/allowed_signers"')
+  })
+
+  it('configures Git to use the trusted allowed-signers pathname rather than the PR policy', () => {
+    const root = initSignableRepo('trusted-policy')
+    const before = commit(root, 'f.txt', 'a', 'base signed', true)
+    const attacker = createSigningKey(root)
+    git(root, ['config', 'user.signingkey', `${attacker.keyPath}.pub`])
+    const tip = commit(root, 'f.txt', 'ab', 'PR signed', true)
+    const attackerPolicy = `webdoublefx@gmail.com ${attacker.publicKey}\n`
+
+    // The PR checkout permits this key, but its replacement trusted policy does not.
+    writeFileSync(join(root, 'allowed_signers'), attackerPolicy)
+    writeTrustedFiles(root, '')
+    const prEnv = {
+      BEFORE: '',
+      HEAD_SHA: tip,
+      PR_BASE: before,
+      PR_HEAD: tip,
+      DEFAULT_BRANCH: 'main',
+      GITHUB_WORKSPACE: root,
+    }
+
+    const configured = runStep(root, prEnv)
+    expect(configured.code).toBe(0)
+    expect(git(root, ['config', '--get', 'gpg.ssh.allowedSignersFile'])).toBe('trusted/.github/allowed_signers')
+
+    writeFileSync(join(root, 'trusted', '.github', 'allowed_signers'), attackerPolicy)
+    const accepted = runStep(root, prEnv)
+    expect(accepted.code).toBe(0)
+    expect(accepted.out).toContain('carry a good signature')
+  })
+
+  it('runs the trusted checker even when the PR checkout replaces its checker with a no-op', () => {
+    const root = initSignableRepo('trusted-checker')
+    const before = commit(root, 'f.txt', 'a', 'base signed', true)
+    const tip = commit(root, 'f.txt', 'ab', 'PR UNSIGNED', false)
+    writeTrustedFiles(root, ALLOWED_SIGNERS_LINE)
+    writeFileSync(join(root, 'plugin', 'bin', 'wt-check-commit-signatures.mjs'), 'process.exit(0)\n')
+
+    const { out, code } = runStep(root, {
+      BEFORE: '',
+      HEAD_SHA: tip,
+      PR_BASE: before,
+      PR_HEAD: tip,
+      DEFAULT_BRANCH: 'main',
+      GITHUB_WORKSPACE: root,
+    })
+
+    expect(code).toBe(1)
+    expect(out).toContain('PR UNSIGNED')
+  })
+})
 
 describe('signatures.yml verification step — new-branch merge-base fallback', () => {
   it('catches an unsigned ancestor under a signed tip on a brand-new branch (the bypass a review found)', () => {

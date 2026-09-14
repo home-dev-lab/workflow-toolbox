@@ -177,8 +177,8 @@ export function emitDigest<S extends string>(rt: WorkflowRuntime, d: TypedPhaseD
 // applyCap() — truncation with mandatory reporting
 //
 // - cap undefined  → no-op (kept = items, truncated = 0)
-// - cap >= 1       → keep first cap items, report how many were dropped
-// - cap < 1        → throw synchronously with actionable message (§7)
+// - positive integer cap → keep first cap items, report how many were dropped
+// - any other cap        → throw synchronously with an actionable message (§7)
 // ---------------------------------------------------------------------------
 
 export function applyCap<T>(
@@ -188,10 +188,8 @@ export function applyCap<T>(
   if (cap === undefined) {
     return { kept: items, truncated: 0 }
   }
-  if (cap < 1) {
-    throw new Error(
-      `applyCap: cap must be >= 1, got ${cap} — set maxItems to a positive integer or omit it`,
-    )
+  if (!Number.isInteger(cap) || cap < 1) {
+    throw new Error(`applyCap: cap must be a positive integer, got ${cap} — set maxItems to a positive integer or omit it`)
   }
   if (cap >= items.length) {
     return { kept: items, truncated: 0 }

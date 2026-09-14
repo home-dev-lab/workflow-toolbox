@@ -22,6 +22,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { laneTextFromOutput, laneUsageFromOutput, verifierStreamDirForEnv } from './wt-verifier-cli-guard-hook.mjs'
 import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/opencode-envelope-tasks.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-5.6-luna' // gpt-5.4 withdrawn from Codex/ChatGPT accounts 2026-08-31
 const DEFAULT_AGENT = 'plan'
@@ -195,8 +196,8 @@ function resolveBinarySync() {
   return null
 }
 
-function providerAuthenticatedSync(bin) {
-  const res = preflightSpawnSync(bin, ['providers', 'list'], { encoding: 'utf8', timeout: 30000 })
+function providerAuthenticatedSync(bin, cwd, env) {
+  const res = preflightSpawnSync(bin, ['providers', 'list'], { cwd, encoding: 'utf8', timeout: 30000, env })
   return res.status === 0
 }
 
@@ -267,7 +268,7 @@ function reapGroup(pid) {
  * permission prompt never silently hangs the process, an explicit `--dir` (never the inherited
  * cwd), and a timeout with an `EXIT=<code>` marker appended to the SAME log after the process
  * exits (never a separate, reusable path — every invocation gets its own unique stream file). */
-function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSec, taskId }) {
+function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSec, taskId, childEnv }) {
   return new Promise((resolve) => {
     const startedAt = Date.now()
     const streamFile = uniqueStreamFile(taskId)
@@ -297,7 +298,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
     // show it. Signalling the GROUP is what closes both — a survivor cannot hold the pipe if no
     // survivor exists. The invariant, stated so a later reader can check the body against it:
     // WHEN THIS FUNCTION STOPS A CALL, NOTHING THAT CALL STARTED IS STILL RUNNING.
-    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+    const child = spawn(bin, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: childEnv })
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -350,11 +351,11 @@ async function runTask(task, opts, outDir) {
 
   let result
   let modelUsed = model
-  result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id })
+  result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opts.childEnv })
 
   if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
     modelUsed = fallbackModel
-    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry` })
+    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opts.childEnv })
   }
 
   const answerFile = path.join(outDir, `${safeId}.answer.txt`)
@@ -509,7 +510,18 @@ async function reduceManifest(opts) {
     process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
     return 1
   }
-  if (!providerAuthenticatedSync(bin)) {
+  const fence = verifyOpencodeSkillFence(bin)
+  if (!fence.ok) {
+    process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
+    return 1
+  }
+  const childEnv = opencodeChildEnv()
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv })
+  if (!discovery.ok) {
+    process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
+    return 1
+  }
+  if (!providerAuthenticatedSync(bin, opts.dir, childEnv)) {
     process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
     return 1
   }
@@ -522,7 +534,7 @@ async function reduceManifest(opts) {
   // manifest satisfies --reduce's own input contract. Deterministic on purpose: re-running the
   // SAME reduce overwrites its own previous answer instead of accumulating.
   const reduceId = `reduce-${crypto.createHash('sha256').update(path.resolve(opts.reduce)).digest('hex').slice(0, 8)}`
-  const result = await runTask({ id: reduceId, prompt }, { ...opts, bin }, outDir)
+  const result = await runTask({ id: reduceId, prompt }, { ...opts, bin, childEnv }, outDir)
   writeReduceManifest(manifestPath, {
     sourceManifest: path.resolve(opts.reduce), status: 'complete', nothingToDo: false,
     dir: path.resolve(opts.dir), outDir, total: 1, answered: result.status === 'answer' ? 1 : 0,
@@ -640,13 +652,24 @@ async function main() {
     process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
     return 1
   }
-  if (!providerAuthenticatedSync(bin)) {
+  const fence = verifyOpencodeSkillFence(bin)
+  if (!fence.ok) {
+    process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
+    return 1
+  }
+  const childEnv = opencodeChildEnv()
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv })
+  if (!discovery.ok) {
+    process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
+    return 1
+  }
+  if (!providerAuthenticatedSync(bin, opts.dir, childEnv)) {
     process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
     return 1
   }
 
   fs.mkdirSync(outDir, { recursive: true })
-  const results = await runPool(tasks, opts.concurrency, (task) => runTask(task, { ...opts, bin }, outDir))
+  const results = await runPool(tasks, opts.concurrency, (task) => runTask(task, { ...opts, bin, childEnv }, outDir))
 
   const manifest = generatedMode ? {
     source: { mode: generation.mode, path: path.resolve(sourcePath), items: generation.sourceCount },

@@ -48,6 +48,9 @@ function makeStubRoot() {
     stub,
     [
       '#!/usr/bin/env bash',
+      'if [ "$1" = "--version" ]; then echo "fixture-1"; exit 0; fi',
+      'if [ "$1" = "--pure" ]; then echo "[{\\"name\\":\\"workflow-toolbox-allowed-sentinel\\"}]"; exit 0; fi',
+      'if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then echo "[]"; exit 0; fi',
       'if [ "$1" != "run" ]; then echo "openai/gpt-5.4"; exit 0; fi',
       // Inherits stdout — this is what used to keep node's `close` from ever firing.
       `sleep 120 & # ${SENTINEL}`,

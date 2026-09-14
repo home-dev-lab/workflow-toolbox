@@ -20,7 +20,7 @@
 // process would see them across successive polls.
 
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync, existsSync, utimesSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync, existsSync, utimesSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -293,6 +293,15 @@ function readFlag(flagPath: string) {
 }
 
 describe('wt-service-watch: writes the flag on real degradation', () => {
+  it('relay sessions print the skip line and do not write state', () => {
+    const dir = tmpRoot('wt-service-watch-relay-')
+    const fixture = writeFixture(dir, 'payload.json', degradedApiPayload())
+    const r = runOnce(['--fixture', fixture, '--flag', join(dir, 'flag.json')], { WT_SESSION_ROLE: ' relay ' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe("SERVICE WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events\n")
+    expect(readdirSync(dir)).toEqual(['payload.json'])
+  })
+
   it('a degraded API component writes the flag with the right shape', () => {
     const dir = tmpRoot('wt-service-watch-')
     const fixture = writeFixture(dir, 'payload.json', degradedApiPayload())
@@ -585,6 +594,22 @@ describe('wt-arc-watch: suppresses emission while the service flag is live, resu
     // service-flag-related) so it should NOT be individually reported as a
     // fresh STALE event — confirming the baseline sweep, not a backlog dump.
     expect(res.stdout).not.toContain('STALE: sess-1/agent-a.jsonl')
+  })
+
+  it('a relay arc watcher prints the skip line and leaves its state directory empty', () => {
+    const root = tmpRoot('wt-arc-watch-relay-')
+    const project = join(root, 'project')
+    const configDir = join(root, 'config')
+    mkdirSync(project, { recursive: true })
+    mkdirSync(configDir, { recursive: true })
+    const res = spawnSync(process.execPath, [ARC_WATCH, '--project', project], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, WT_SESSION_ROLE: 'RELAY' },
+      timeout: 5_000,
+    })
+    expect(res.status).toBe(0)
+    expect(res.stdout).toBe("ARC WATCH NOT ARMED: relay session (WT_SESSION_ROLE=relay) — this session only relays; it cannot act on this watcher's events\n")
+    expect(readdirSync(root)).toEqual(['config', 'project'])
   })
 })
 
@@ -1135,32 +1160,32 @@ ${
     const counterPath = join(cfg, 'counter.txt')
     writeCounterProbe(cfg, counterPath, 'always-succeed')
 
-    // This test needs a REAL steady-state cycle boundary to inject the attack between
-    // cycle 1 (which legitimately writes a COMPLETE cache) and cycle 2 (which must reject
-    // whatever is on disk by then) — so it does NOT use the sleep-log seam (which would
-    // collapse the gap to ~0ms) for this run. --poll 5 (the CLI floor) keeps the real wait
-    // small and bounded; the ~800ms injection delay leaves a generous ~4.2s margin before
-    // cycle 2 actually reads the cache, which is what makes this robust under load rather
-    // than a re-run of the counting-race flake this file's tests were rewritten to avoid —
-    // the assertion is exact-count-after-self-exit, not a count sampled inside a window.
+    // Inject after the watcher itself reports that cycle 1 has reached its sleep boundary.
+    // This is an event from the process under test, rather than a wall-clock estimate of
+    // when a contended child process will have finished its first cycle.
+    const sleepLogPath = join(cfg, 'sleeps.log')
+    writeFileSync(sleepLogPath, '')
     const res = await new Promise<{ stdout: string; timedOut: boolean }>((resolve) => {
       const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], {
-        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2' },
+        env: {
+          ...process.env,
+          CLAUDE_CONFIG_DIR: cfg,
+          WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2',
+          WT_QUOTA_WATCH_TEST_SLEEP_LOG: sleepLogPath,
+        },
       })
       let stdout = ''
       child.stdout.on('data', (d) => {
         stdout += d
       })
-      const injectAttack = setTimeout(() => {
+      const sleepWatcher = watch(sleepLogPath, () => {
+        const sleeps = readSleepLog(sleepLogPath)
+        if (sleeps.length !== 1) return
+        sleepWatcher.close()
         writeFileSync(join(cfg, '.quota-cache.json'), JSON.stringify({ at: Date.now(), data: { configDir: cfg, seven_day: { pct: 50 } } })) // five_hour missing
-      }, 800)
-      const safety = setTimeout(() => {
-        child.kill('SIGKILL')
-        resolve({ stdout, timedOut: true })
-      }, 12_000)
+      })
       child.on('close', () => {
-        clearTimeout(injectAttack)
-        clearTimeout(safety)
+        sleepWatcher.close()
         resolve({ stdout, timedOut: false })
       })
     })
@@ -1170,7 +1195,7 @@ ${
     // corrupted to partial in between) — BOTH hit the live probe. If cycle 2 had accepted
     // the corrupted partial cache, the counter would still read 1.
     expect(readCounter(counterPath)).toBe(2)
-  }, 15_000)
+  })
 
   it('a live probe refills the shared cache in the format the per-turn hook reads', async () => {
     const cfg = tmpRoot('wt-quota-watch-cache-')

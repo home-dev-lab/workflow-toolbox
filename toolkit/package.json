@@ -9,6 +9,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "test": "pnpm build:dist && node scripts/cross-repo-typecheck.mjs && vitest run",
+    "test:under-load": "node scripts/suite-under-load.mjs",
     "test:cross-repo": "node scripts/cross-repo-typecheck.mjs",
     "wt:build": "tsx packages/build/src/cli.ts build",
     "wt:pipeline": "tsx packages/build/src/cli.ts pipeline",
@@ -31,7 +32,8 @@
     "canary:observer": "tsx packages/smoke/src/observer-canaries.ts",
     "audit:rules-overlap": "node scripts/audit-rules-overlap.mjs",
     "report:citation-candidates": "tsx scripts/citation-candidate-report.ts",
-    "wt:report-lens": "tsx scripts/report-contract-lens.ts"
+    "wt:report-lens": "tsx scripts/report-contract-lens.ts",
+    "packs:lsp": "node scripts/build-lsp-root.mjs"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.260",

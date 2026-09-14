@@ -128,6 +128,24 @@ describe('registeredWorktrees', () => {
 })
 
 describe('wt-queue-not-empty-gate-hook: emission shape', () => {
+  it('refuses a known startable queue and lets a finished mission stop', () => {
+    const startable = scaffold('v2-startable')
+    writeSnapshot(startable.stateDir, startable.cwd, { at: Date.now(), startable: 2, awaitingOwner: 3, unclassified: 1, next: 'CARD-startable' })
+    const startableText = blockText(runHook(startable.payload, startable.env))
+    expect(startableText).toContain('2 startable (3 awaiting owner, 1 unclassified)')
+
+    const finished = scaffold('v2-finished')
+    writeSnapshot(finished.stateDir, finished.cwd, { at: Date.now(), startable: 0, awaitingOwner: 3, unclassified: 1, next: '' })
+    const finishedText = blockText(runHook(finished.payload, finished.env))
+    expect(finishedText).toContain('0 startable (3 awaiting owner, 1 unclassified); finished mission may stop')
+  })
+
+  it('retains legacy refusal with an explicit classification suffix', () => {
+    const { env, payload, stateDir, cwd } = scaffold('legacy-suffix')
+    writeSnapshot(stateDir, cwd, { open: 2, at: Date.now(), next: 'CARD-legacy' })
+    expect(blockText(runHook(payload, env))).toContain('2 open [legacy snapshot: classification unknown]')
+  })
+
   it('uses one exported 12-minute window for registered-worktree and lane-log liveness', () => {
     expect(readFileSync(LANE_LIVE_SCAN, 'utf8')).toContain('export const ACTIVITY_WINDOW_MIN = 12')
   })

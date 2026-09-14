@@ -1,0 +1,19 @@
+[
+  {
+    "id": "inline-shaped",
+    "title": "Clarify README",
+    "labels": ["effort:S"],
+    "description": "Update docs/README.md.\n\n## Definition of done\n\nThe heading is clear."
+  },
+  {
+    "id": "settled",
+    "title": "Preserve route",
+    "labels": ["effort:M"],
+    "description": "Route: lane-direct\n\nDefinition of done: release the settled change."
+  },
+  {
+    "id": "ambiguous",
+    "title": "Needs a label",
+    "description": "Open question: which policy applies?"
+  }
+]

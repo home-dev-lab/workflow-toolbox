@@ -124,7 +124,7 @@ describe('validateStageList', () => {
     expect(validateStageList([{ name: 'a', pipeline: nested }])).toBeNull()
   })
 
-  it(`rejects a spec whose own static nesting exceeds MAX_PIPELINE_DEPTH (${MAX_PIPELINE_DEPTH})`, () => {
+  it(`rejects a branch that exhausts MAX_PIPELINE_DEPTH (${MAX_PIPELINE_DEPTH})`, () => {
     // Build a chain nested `depth` levels deep: nestSpec(0) = 1 flat stage; nestSpec(n) wraps
     // nestSpec(n-1) one level deeper.
     function nestSpec(depth: number): PipelineSpec {
@@ -133,7 +133,7 @@ describe('validateStageList', () => {
     }
     expect(validateStageList(nestSpec(MAX_PIPELINE_DEPTH).stages)).toBeNull()
     expect(validateStageList(nestSpec(MAX_PIPELINE_DEPTH + 1).stages)).toMatch(
-      new RegExp(`nests ${MAX_PIPELINE_DEPTH + 1} levels deep.*MAX_PIPELINE_DEPTH \\(${MAX_PIPELINE_DEPTH}\\)`),
+      new RegExp(`remaining-depth budget.*limits\\.maxPipelineDepth \\(${MAX_PIPELINE_DEPTH}\\).*exhausted`),
     )
   })
 })
@@ -611,33 +611,46 @@ describe('PipelineLimits — user-configurable caps', () => {
     expect(parsePipelineSpec({ goal: 'g', projectDir: '/repo', stages, limits: { maxStages } })).toBeNull()
   })
 
-  // Documented (not fixed — review finding, MED, accepted as a follow-up card rather than a
-  // risky same-night algorithm change): maxPipelineDepth is checked TOP-DOWN, so an ANCESTOR's
-  // own resolved limit governs the FULL descendant subtree beneath it, checked BEFORE recursion
-  // ever reaches a deeper child's own more permissive `limits`. This test locks the ACTUAL
-  // behavior (a child's raised limit does NOT rescue depth an ancestor's own default already
-  // rejects) so a future change either fixes this deliberately (updating the test) or trips it
-  // as a regression, never silently.
-  it('a nested child\'s raised maxPipelineDepth does NOT rescue depth the ROOT\'s own default already rejects (known limitation, carded)', () => {
+  it('a nested child\'s raised maxPipelineDepth starts a fresh remaining-depth budget', () => {
     function nestSpec(depth: number): PipelineSpec {
       if (depth === 0) return { goal: 'g', projectDir: '/repo', stages: [baseStage('leaf')] }
       return { goal: 'g', projectDir: '/repo', stages: [{ name: `l${depth}`, pipeline: nestSpec(depth - 1) }] }
     }
-    // Build a 9-deep tree, then give the DEEPEST non-leaf spec (depth 1 — the level whose OWN
-    // `stage.pipeline!.limits` the recursive validateStageList call would actually read) a
-    // permissive override, well above both the root's default (8) and the actual depth (9).
-    const rejected = nestSpec(9)
-    let cursor = rejected
-    for (let i = 0; i < 8; i++) cursor = (cursor.stages[0] as StageSpecV2).pipeline!
-    cursor.limits = { maxPipelineDepth: MAX_PIPELINE_DEPTH_CEILING }
-    // If independence held, this would be ACCEPTED (the deepest level explicitly allows up to
-    // 20 levels beneath it). It is REJECTED instead: the ROOT's own default (8) is checked
-    // against the FULL 9-level subtree, before recursion ever reaches depth 1's own override.
-    expect(validateStageList(rejected.stages)).toMatch(/nests 9 levels deep/)
-    // Setting the SAME override on the ROOT's own call instead (the documented workaround) DOES
-    // work — proving the gap is specifically about WHERE the override is set, not that
-    // overriding maxPipelineDepth is broken outright.
-    const accepted = nestSpec(9)
-    expect(validateStageList(accepted.stages, { maxPipelineDepth: 9 })).toBeNull()
+
+    const child = nestSpec(12)
+    child.limits = { maxPipelineDepth: MAX_PIPELINE_DEPTH_CEILING }
+    expect(validateStageList([{ name: 'deep-child', pipeline: child }])).toBeNull()
+    expect(
+      parsePipelineSpec({ goal: 'root', projectDir: '/repo', stages: [{ name: 'deep-child', pipeline: child }] }),
+    ).not.toBeNull()
+  })
+
+  it('a root at the default still rejects a deep child with no maxPipelineDepth override, naming the child and limit', () => {
+    function nestSpec(depth: number): PipelineSpec {
+      if (depth === 0) return { goal: 'g', projectDir: '/repo', stages: [baseStage('leaf')] }
+      return { goal: 'g', projectDir: '/repo', stages: [{ name: `l${depth}`, pipeline: nestSpec(depth - 1) }] }
+    }
+
+    const error = validateStageList([{ name: 'default-child', pipeline: nestSpec(12) }])
+    expect(error).toMatch(/stage "default-child"'s nested pipeline is invalid/)
+    expect(error).toMatch(new RegExp(`limits\\.maxPipelineDepth \\(${MAX_PIPELINE_DEPTH}\\)`))
+  })
+
+  it('a child maxPipelineDepth override does not leak upward into an exhausted ancestor budget', () => {
+    function nestSpec(depth: number): PipelineSpec {
+      if (depth === 0) {
+        return {
+          goal: 'g',
+          projectDir: '/repo',
+          stages: [baseStage('leaf')],
+          limits: { maxPipelineDepth: MAX_PIPELINE_DEPTH_CEILING },
+        }
+      }
+      return { goal: 'g', projectDir: '/repo', stages: [{ name: `l${depth}`, pipeline: nestSpec(depth - 1) }] }
+    }
+
+    const error = validateStageList(nestSpec(MAX_PIPELINE_DEPTH + 1).stages)
+    expect(error).toMatch(/stage "l1".*remaining-depth budget.*exhausted/)
+    expect(error).toMatch(new RegExp(`limits\\.maxPipelineDepth \\(${MAX_PIPELINE_DEPTH}\\)`))
   })
 })

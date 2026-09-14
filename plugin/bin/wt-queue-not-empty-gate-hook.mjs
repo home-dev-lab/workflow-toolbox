@@ -133,6 +133,7 @@ import { queueSnapshotFileName, queueSnapshotSlug, resolveQueueSnapshotPath } fr
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { ACTIVITY_WINDOW_MIN, hasActiveLaneLog, registeredWorktrees, registeredWorktreeActivity } from './lib/lane-live-scan.mjs'
 import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
+import { parseQueueSnapshot } from './lib/queue-snapshot-contract.mjs'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
   || join(homedir(), '.local', 'state', 'wt-queue-gate')
@@ -269,8 +270,10 @@ let nextItem = ''
 // message costs nothing and stops the number from lying by omission.
 let snapshotAgeMin = null
 let queueStatus = 'known'
+let queue = { kind: 'unknown', reason: 'unreadable queue snapshot' }
 try {
-  const snap = JSON.parse(readFileSync(snapshot, 'utf8'))
+  const text = readFileSync(snapshot, 'utf8')
+  const snap = JSON.parse(text)
 
   // --- 3a. Is working even possible right now? -------------------------------------------
   // See the "IS WORKING EVEN POSSIBLE" header section. Strict on both fields — a malformed or
@@ -290,25 +293,37 @@ try {
   // exactly the fail-OPEN this section's own comment says never to allow. Only a genuine
   // non-negative finite NUMBER counts; anything else falls through with openCount left null,
   // which is the same "unknown ⇒ work remains" fail-closed path as an unreadable/stale file.
-  const rawOpen = snap.open
-  const isValidOpen = typeof rawOpen === 'number' && Number.isFinite(rawOpen) && rawOpen >= 0
-  const validAt = typeof snap.at === 'number' && Number.isFinite(snap.at)
-  if (!validAt || !isValidOpen || typeof snap.next !== 'string') {
-    queueStatus = 'malformed'
-  } else if (age > SNAPSHOT_MAX_AGE_MIN * 60_000) {
+  queue = parseQueueSnapshot(text, Date.now(), SNAPSHOT_MAX_AGE_MIN * 60_000)
+  if (queue.kind === 'unknown' && queue.reason === 'stale queue snapshot') {
     // Keep the stale verdict for this invocation even when cleanup succeeds: a reader must ignore
     // stale evidence, not confuse its removal with a project that was never wired.
     expireMarker('queue', snapshot, Date.now(), { queueFreshnessMs: SNAPSHOT_MAX_AGE_MIN * 60_000 })
     queueStatus = 'stale'
     snapshotAgeMin = Math.round(age / 60_000)
-  } else {
-    openCount = rawOpen
-    nextItem = String(snap.next || '')
+  } else if (queue.kind === 'unknown') {
+    queueStatus = 'malformed'
+  } else if (queue.kind === 'legacy') {
+    openCount = queue.open
+    nextItem = queue.next
     snapshotAgeMin = Math.round(age / 60_000)
     queueStatus = 'known'
   }
 } catch {
   queueStatus = 'malformed' // exists, but unreadable/corrupt JSON — see FAIL-CLOSED above
+}
+if (queue.kind === 'known' && queue.startable === 0) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'Stop',
+      additionalContext: `[for Claude, not the user] 0 startable (${queue.awaitingOwner} awaiting owner, ${queue.unclassified} unclassified); finished mission may stop — the queue holds nothing this session can start`,
+    },
+  }))
+  process.exit(0)
+}
+if (queue.kind === 'known') {
+  openCount = queue.startable
+  nextItem = queue.next
+  snapshotAgeMin = Math.round((Date.now() - queue.at) / 60_000)
 }
 if (openCount === 0) bail() // the queue really is empty — stopping needs no justification
 
@@ -396,7 +411,7 @@ recordGuardEvent({
   session: input.session_id,
   agent: input.agent_id,
   class: `activity:${activityStatus}`,
-  reason: openCount === null ? `queue:${queueStatus}` : `queue:${openCount}-open`,
+  reason: openCount === null ? `queue:${queueStatus}` : queue.kind === 'known' ? `queue:${openCount}-startable` : `queue:${openCount}-open`,
 })
 process.stdout.write(
   JSON.stringify({
@@ -428,7 +443,9 @@ process.stdout.write(
           ? (queueStatus === 'stale'
               ? `Queue size is unknown — snapshot is stale (${snapshotAgeMin}min old)`
               : 'Queue size is unknown — snapshot is unreadable/malformed')
-          : `${openCount} open`) +
+          : queue.kind === 'known'
+            ? `${queue.startable} startable (${queue.awaitingOwner} awaiting owner, ${queue.unclassified} unclassified)`
+            : `${openCount} open [legacy snapshot: classification unknown]`) +
         `${nextItem ? ` · next: ${nextItem}` : ''} — chain or say why · ${HELP_PATH}`,
     },
   }),

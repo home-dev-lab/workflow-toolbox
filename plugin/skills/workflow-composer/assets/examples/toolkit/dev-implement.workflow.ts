@@ -2107,6 +2107,157 @@ async function runSequential(
 //   - sign machine commits unless signCommits is true.
 // ---------------------------------------------------------------------------
 
+interface MergePipelineRow {
+  task: PlanTask
+  outcome: TddOutcome
+}
+
+/** One branch whose merge outcome applies uniformly to all of its pending rows.
+ * `id` is both the agent-label suffix and the identity used by batched cleanup. */
+interface MergeCandidate {
+  id: string
+  branch: string
+  workdir: string
+  rows: MergePipelineRow[]
+  keptFields: { worktreePath: string; branch: string }
+  cleanupEligible: boolean
+}
+
+/** One call merges one branch and applies that one result to every row in
+ * `candidate.rows`; cleanup is deliberately performed separately after all
+ * merge candidates have been processed. */
+interface MergeCandidateOptions {
+  rt: WorkflowRuntime
+  ctx: PlanArtifact['context']
+  signFlag: string
+  mechanicalEffort: EffortAlias
+  integrationEffort: EffortAlias
+  candidate: MergeCandidate
+  noun: 'task' | 'lane'
+  statusById: Map<string, TaskStatus>
+  reportTasks: ReportTask[]
+  warnings: string[]
+  merged: Array<{ id: string; path: string; branch: string }>
+}
+
+interface CleanupMergedWorktreesOptions {
+  rt: WorkflowRuntime
+  ctx: PlanArtifact['context']
+  merged: Array<{ id: string; path: string; branch: string }>
+  cleanupRoot: string
+  warnings: string[]
+  noun: 'task' | 'lane'
+  mechanicalEffort: EffortAlias
+}
+
+async function mergeCandidate(options: MergeCandidateOptions): Promise<void> {
+  const {
+    rt, ctx, signFlag, mechanicalEffort, integrationEffort, candidate, noun,
+    statusById, reportTasks, warnings, merged,
+  } = options
+  const { id: labelKey, branch, workdir, rows: pendingRows, keptFields, cleanupEligible } = candidate
+
+  const merge = await rt.agent<MergeResult>(
+      `You are the ${noun === 'task' ? 'merge' : 'lane merge'} agent — from ${ctx.projectDir} (the MAIN tree), merge the ${noun} branch ` +
+      `${branch} into the current branch: FIRST capture the pre-merge HEAD ` +
+      `(\`git rev-parse HEAD\`), then run \`git ${signFlag}merge --no-ff ${branch}\`.\n` +
+      `On CONFLICT: run \`git merge --abort\` and report conflict: true — NEVER resolve conflicts ` +
+      `yourself. Evidence required: the pre-merge sha and the resulting sha (or '' if aborted).\n` +
+      `Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", ` +
+      `"mergeSha": "<sha or empty>", "note": "<what git actually said>" }`,
+      { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${labelKey}`, phase: 'Merge', effort: mechanicalEffort },
+  )
+  if (merge === null || merge.conflict || !merge.merged) {
+      for (const p of pendingRows) {
+        statusById.set(p.task.id, 'merge-failed')
+        reportTasks.push({
+          id: p.task.id, title: p.task.title, status: 'merge-failed',
+          iterations: p.outcome.iterations, evidence: p.outcome.evidence,
+          note: `merge-failed — ${merge === null ? 'merge agent died (branch not merged)' : merge.note}`, ...keptFields,
+          ...seamFields(p.outcome),
+        })
+      }
+  } else if (merge.preMergeSha.trim() === '') {
+      for (const p of pendingRows) {
+        statusById.set(p.task.id, 'merge-failed')
+        reportTasks.push({
+          id: p.task.id, title: p.task.title, status: 'merge-failed',
+          iterations: p.outcome.iterations, evidence: p.outcome.evidence,
+          note: `merge-failed — merge agent reported merged without a preMergeSha (no revert target)`,
+          ...keptFields, ...seamFields(p.outcome),
+        })
+      }
+      warn(
+        rt,
+        warnings,
+        `dev-implement: merge agent for ${noun === 'task' ? labelKey : `lane ${labelKey}`} reported merged: true with an empty ` +
+        `preMergeSha — no revert target exists, so the merge is treated as failed; the MAIN ` +
+        `tree may hold an unverified merge of ${branch} (inspect git log manually)`,
+      )
+  } else {
+    const integ = await rt.agent<CheckResult>(
+        `You are the independent integration checker — verify the integrated main tree: run ` +
+        `${ctx.testCommand} from ${ctx.projectDir} and read the ACTUAL output (the per-task checker ` +
+        `saw an isolated ${noun === 'task' ? '' : 'lane '}worktree; you are checking that the MERGED whole still passes).\n` +
+        `Return { "green": true|false, "evidence": "<what the run actually showed>", ` +
+        `"failureSummary": "<empty string if green, else the failures>" }`,
+        { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${labelKey}`, phase: 'Merge', effort: integrationEffort },
+    )
+    if (integ === null || !integ.green) {
+        if (integ === null) {
+          warn(rt, warnings, `dev-implement: integration checker died for ${noun === 'task' ? labelKey : `lane ${labelKey}`} — reverting conservatively without evidence`)
+        }
+        const revert = await rt.agent<RevertResult>(
+          `You are the merge revert agent — revert the failed merge: from ${ctx.projectDir} run ` +
+          `\`git reset --hard ${merge.preMergeSha}\` and confirm with \`git rev-parse HEAD\`.\n` +
+          `Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
+          { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${labelKey}`, phase: 'Merge', effort: mechanicalEffort },
+        )
+        if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
+          const how = revert === null ? 'agent died' : !revert.reverted ? 'failed' : `reported HEAD ${revert.headSha} instead of the pre-merge sha`
+          warn(rt, warnings, `dev-implement: revert ${how} for ${noun === 'task' ? labelKey : `lane ${labelKey}`} — the MAIN tree may ` +
+            `still hold the bad merge; manual recovery: git reset --hard ${merge.preMergeSha}`)
+        }
+        for (const p of pendingRows) {
+          statusById.set(p.task.id, 'integration-failed')
+          reportTasks.push({
+            id: p.task.id, title: p.task.title, status: 'integration-failed',
+            iterations: p.outcome.iterations, evidence: integ === null ? '' : integ.evidence,
+            note: `integration-failed — ${integ === null ? 'integration checker died (conservative revert)' : integ.failureSummary}`,
+            ...keptFields, ...seamFields(p.outcome),
+          })
+        }
+    } else {
+        for (const p of pendingRows) {
+          statusById.set(p.task.id, 'succeeded')
+          reportTasks.push({ id: p.task.id, title: p.task.title, status: 'succeeded', iterations: p.outcome.iterations, evidence: integ.evidence, ...seamFields(p.outcome) })
+        }
+      if (cleanupEligible) merged.push({ id: labelKey, path: workdir, branch })
+    }
+  }
+}
+
+async function cleanupMergedWorktrees(options: CleanupMergedWorktreesOptions): Promise<void> {
+  const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort } = options
+  if (merged.length === 0) return
+  const cleanupResult = await rt.agent<CleanupResult>(
+      `You are the cleanup agent — remove the merged ${noun === 'task' ? '' : 'lane '}worktrees and their ${noun} branches. From ` +
+      `${ctx.projectDir}, for EACH entry run \`git worktree remove <path>\` FIRST and ` +
+      `\`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):\n` +
+      merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join('\n') +
+      `\nDo NOT touch any other worktree or branch.\n` +
+      `Return { "removed": ["<${noun === 'task' ? 'taskId' : 'laneKey'}>"], "failures": [{"id": "<${noun === 'task' ? 'taskId' : 'laneKey'}>", "note": "<why>"}], "note": "<summary>" }`,
+      { schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge', effort: mechanicalEffort },
+  )
+  if (cleanupResult === null) {
+    warn(rt, warnings, noun === 'task'
+      ? `dev-implement: cleanup agent died — merged worktrees left on disk under ${cleanupRoot} (manual: git worktree remove)`
+      : `dev-implement: cleanup agent died — merged lane worktrees left on disk under ${cleanupRoot} (manual: git worktree remove)`)
+  } else if (cleanupResult.failures.length > 0) {
+    warn(rt, warnings, `dev-implement: cleanup incomplete for ${noun === 'task' ? '' : 'lane(s) '}${cleanupResult.failures.map((f) => f.id).join(', ')} — ${cleanupResult.note}`)
+  }
+}
+
 async function runWorktree(
   rt: WorkflowRuntime,
   input: ResolvedDevImplementInput,
@@ -2408,121 +2559,16 @@ async function runWorktree(
       })
     }
     for (const { task, outcome } of toMerge) {
-      const kept = { worktreePath: wtPath(task.id), branch: wtBranch(task.id) }
-
-      const merge = await rt.agent<MergeResult>(
-        `You are the merge agent — from ${ctx.projectDir} (the MAIN tree), merge the task branch ` +
-        `${wtBranch(task.id)} into the current branch: FIRST capture the pre-merge HEAD ` +
-        `(\`git rev-parse HEAD\`), then run \`git ${signFlag}merge --no-ff ${wtBranch(task.id)}\`.\n` +
-        `On CONFLICT: run \`git merge --abort\` and report conflict: true — NEVER resolve conflicts ` +
-        `yourself. Evidence required: the pre-merge sha and the resulting sha (or '' if aborted).\n` +
-        `Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", ` +
-        `"mergeSha": "<sha or empty>", "note": "<what git actually said>" }`,
-        { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${task.id}`, phase: 'Merge', effort: mechanicalEffort },
-      )
-      if (merge === null || merge.conflict || !merge.merged) {
-        statusById.set(task.id, 'merge-failed')
-        reportTasks.push({
-          id: task.id, title: task.title, status: 'merge-failed',
-          iterations: outcome.iterations, evidence: outcome.evidence,
-          note: `merge-failed — ${merge === null ? 'merge agent died (branch not merged)' : merge.note}`, ...kept,
-          ...seamFields(outcome),
-        })
-        continue
-      }
-      // The self-reported preMergeSha is the SOLE revert target if integration
-      // goes red — an empty one would render the revert as a bare
-      // `git reset --hard` (= reset to HEAD, KEEPING the bad merge), so refuse
-      // it deterministically before any integration spend.
-      if (merge.preMergeSha.trim() === '') {
-        statusById.set(task.id, 'merge-failed')
-        reportTasks.push({
-          id: task.id, title: task.title, status: 'merge-failed',
-          iterations: outcome.iterations, evidence: outcome.evidence,
-          note: `merge-failed — merge agent reported merged without a preMergeSha (no revert target)`,
-          ...kept, ...seamFields(outcome),
-        })
-        warn(
-          rt,
-          warnings,
-          `dev-implement: merge agent for ${task.id} reported merged: true with an empty ` +
-          `preMergeSha — no revert target exists, so the merge is treated as failed; the MAIN ` +
-          `tree may hold an unverified merge of ${wtBranch(task.id)} (inspect git log manually)`,
-        )
-        continue
-      }
-
-      const integ = await rt.agent<CheckResult>(
-        `You are the independent integration checker — verify the integrated main tree: run ` +
-        `${ctx.testCommand} from ${ctx.projectDir} and read the ACTUAL output (the per-task checker ` +
-        `saw an isolated worktree; you are checking that the MERGED whole still passes).\n` +
-        `Return { "green": true|false, "evidence": "<what the run actually showed>", ` +
-        `"failureSummary": "<empty string if green, else the failures>" }`,
-        { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${task.id}`, phase: 'Merge', effort: integrationEffort },
-      )
-      if (integ === null || !integ.green) {
-        if (integ === null) {
-          warn(rt, warnings, `dev-implement: integration checker died for ${task.id} — reverting conservatively without evidence`)
-        }
-        const revert = await rt.agent<RevertResult>(
-          `You are the merge revert agent — revert the failed merge: from ${ctx.projectDir} run ` +
-          `\`git reset --hard ${merge.preMergeSha}\` and confirm with \`git rev-parse HEAD\`.\n` +
-          `Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
-          { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${task.id}`, phase: 'Merge', effort: mechanicalEffort },
-        )
-        // The revert agent's self-report is NOT trusted on its own: the schema's
-        // contract is that the resulting HEAD equals the preMergeSha, and the
-        // headSha it confirmed with `git rev-parse HEAD` is the one deterministic
-        // check available — reverted: true with a mismatching HEAD is a failure.
-        if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
-          const how =
-            revert === null ? 'agent died'
-            : !revert.reverted ? 'failed'
-            : `reported HEAD ${revert.headSha} instead of the pre-merge sha`
-          warn(
-            rt,
-            warnings,
-            `dev-implement: revert ${how} for ${task.id} — the MAIN tree may ` +
-            `still hold the bad merge; manual recovery: git reset --hard ${merge.preMergeSha}`,
-          )
-        }
-        statusById.set(task.id, 'integration-failed')
-        reportTasks.push({
-          id: task.id, title: task.title, status: 'integration-failed',
-          iterations: outcome.iterations, evidence: integ === null ? '' : integ.evidence,
-          note: `integration-failed — ${integ === null ? 'integration checker died (conservative revert)' : integ.failureSummary}`,
-          ...kept, ...seamFields(outcome),
-        })
-        continue
-      }
-
-      statusById.set(task.id, 'succeeded')
-      reportTasks.push({
-        id: task.id, title: task.title, status: 'succeeded',
-        iterations: outcome.iterations, evidence: integ.evidence,
-        ...seamFields(outcome),
+      await mergeCandidate({
+        rt, ctx, signFlag, mechanicalEffort, integrationEffort,
+        candidate: { id: task.id, branch: wtBranch(task.id), workdir: wtPath(task.id), rows: [{ task, outcome }], keptFields: { worktreePath: wtPath(task.id), branch: wtBranch(task.id) }, cleanupEligible: true },
+        noun: 'task', statusById, reportTasks, warnings, merged,
       })
-      merged.push({ id: task.id, path: wtPath(task.id), branch: wtBranch(task.id) })
     }
   }
 
   // ---- Batched cleanup of MERGED worktrees only (kept ones stay for forensics) ----
-  if (merged.length > 0) {
-    const cleanup = await rt.agent<CleanupResult>(
-      `You are the cleanup agent — remove the merged worktrees and their task branches. From ` +
-      `${ctx.projectDir}, for EACH entry run \`git worktree remove <path>\` FIRST and ` +
-      `\`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):\n` +
-      merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join('\n') +
-      `\nDo NOT touch any other worktree or branch.\n` +
-      `Return { "removed": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>"}], "note": "<summary>" }`,
-      { schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge', effort: mechanicalEffort },
-    )
-    if (cleanup === null) {
-      warn(rt, warnings, `dev-implement: cleanup agent died — merged worktrees left on disk under ${wtRoot} (manual: git worktree remove)`)
-    } else if (cleanup.failures.length > 0) {
-      warn(rt, warnings, `dev-implement: cleanup incomplete for ${cleanup.failures.map((f) => f.id).join(', ')} — ${cleanup.note}`)
-    }
-  }
+  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'task', mechanicalEffort })
 
   // -------------------------------------------------------------------------
   // Phase 'Report' — deterministic tallying IN CODE (no agent).
@@ -2575,13 +2621,8 @@ async function runWorktree(
 // when decideAutoRouting resolved 'parallel-lanes' (>= 2 lanes, files[]
 // pairwise disjoint). Setup/geometry mirrors runWorktree's (same
 // SETUP_RESULT_SCHEMA agent, same wtRoot-sibling/projectSub derivation) but
-// is a DELIBERATE, self-contained duplicate rather than a shared helper: the
-// design invariant is that runWorktree's own code paths stay unchanged
-// beyond the L1660-era dispatch (byte-identical behavior for the explicit
-// "worktree" mode, verified by its existing test suite) — extracting shared
-// internals out of it would touch code the invariant protects. A THIRD
-// occurrence of this shape would tip the Rule-of-Three balance toward
-// extracting a shared helper; today it is exactly two.
+// shares the safety-critical merge/integration/revert/cleanup pipeline with
+// runWorktree. Its setup and per-lane TDD geometry remain deliberately local.
 //
 // No WAVES here (unlike runWorktree): a dependsOn edge never crosses a lane
 // (weakly-connected components, by construction), so all lanes are
@@ -2882,126 +2923,15 @@ async function runAutoLanes(
   for (const lane of readyLanes) {
     const pending = lanePending.get(lane.key)
     if (pending === undefined || pending.length === 0) continue
-    const kept = { worktreePath: lanePath(lane.key), branch: laneBranch(lane.key) }
-
-    const merge = await rt.agent<MergeResult>(
-      `You are the lane merge agent — from ${ctx.projectDir} (the MAIN tree), merge the lane branch ` +
-      `${laneBranch(lane.key)} into the current branch: FIRST capture the pre-merge HEAD ` +
-      `(\`git rev-parse HEAD\`), then run \`git ${signFlag}merge --no-ff ${laneBranch(lane.key)}\`.\n` +
-      `On CONFLICT: run \`git merge --abort\` and report conflict: true — NEVER resolve conflicts ` +
-      `yourself. Evidence required: the pre-merge sha and the resulting sha (or '' if aborted).\n` +
-      `Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", ` +
-      `"mergeSha": "<sha or empty>", "note": "<what git actually said>" }`,
-      { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${lane.key}`, phase: 'Merge', effort: mechanicalEffort },
-    )
-    if (merge === null || merge.conflict || !merge.merged) {
-      for (const p of pending) {
-        statusById.set(p.task.id, 'merge-failed')
-        reportTasks.push({
-          id: p.task.id, title: p.task.title, status: 'merge-failed',
-          iterations: p.outcome.iterations, evidence: p.outcome.evidence,
-          note: `merge-failed — ${merge === null ? 'merge agent died (branch not merged)' : merge.note}`, ...kept,
-          ...seamFields(p.outcome),
-        })
-      }
-      continue
-    }
-    if (merge.preMergeSha.trim() === '') {
-      for (const p of pending) {
-        statusById.set(p.task.id, 'merge-failed')
-        reportTasks.push({
-          id: p.task.id, title: p.task.title, status: 'merge-failed',
-          iterations: p.outcome.iterations, evidence: p.outcome.evidence,
-          note: `merge-failed — merge agent reported merged without a preMergeSha (no revert target)`,
-          ...kept, ...seamFields(p.outcome),
-        })
-      }
-      warn(
-        rt,
-        warnings,
-        `dev-implement: merge agent for lane ${lane.key} reported merged: true with an empty ` +
-        `preMergeSha — no revert target exists, so the merge is treated as failed; the MAIN ` +
-        `tree may hold an unverified merge of ${laneBranch(lane.key)} (inspect git log manually)`,
-      )
-      continue
-    }
-
-    const integ = await rt.agent<CheckResult>(
-      `You are the independent integration checker — verify the integrated main tree: run ` +
-      `${ctx.testCommand} from ${ctx.projectDir} and read the ACTUAL output (the per-task checker ` +
-      `saw an isolated lane worktree; you are checking that the MERGED whole still passes).\n` +
-      `Return { "green": true|false, "evidence": "<what the run actually showed>", ` +
-      `"failureSummary": "<empty string if green, else the failures>" }`,
-      { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${lane.key}`, phase: 'Merge', effort: integrationEffort },
-    )
-    if (integ === null || !integ.green) {
-      if (integ === null) {
-        warn(rt, warnings, `dev-implement: integration checker died for lane ${lane.key} — reverting conservatively without evidence`)
-      }
-      const revert = await rt.agent<RevertResult>(
-        `You are the merge revert agent — revert the failed merge: from ${ctx.projectDir} run ` +
-        `\`git reset --hard ${merge.preMergeSha}\` and confirm with \`git rev-parse HEAD\`.\n` +
-        `Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
-        { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${lane.key}`, phase: 'Merge', effort: mechanicalEffort },
-      )
-      if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
-        const how =
-          revert === null ? 'agent died'
-          : !revert.reverted ? 'failed'
-          : `reported HEAD ${revert.headSha} instead of the pre-merge sha`
-        warn(
-          rt,
-          warnings,
-          `dev-implement: revert ${how} for lane ${lane.key} — the MAIN tree may ` +
-          `still hold the bad merge; manual recovery: git reset --hard ${merge.preMergeSha}`,
-        )
-      }
-      for (const p of pending) {
-        statusById.set(p.task.id, 'integration-failed')
-        reportTasks.push({
-          id: p.task.id, title: p.task.title, status: 'integration-failed',
-          iterations: p.outcome.iterations, evidence: integ === null ? '' : integ.evidence,
-          note: `integration-failed — ${integ === null ? 'integration checker died (conservative revert)' : integ.failureSummary}`,
-          ...kept, ...seamFields(p.outcome),
-        })
-      }
-      continue
-    }
-
-    for (const p of pending) {
-      statusById.set(p.task.id, 'succeeded')
-      reportTasks.push({
-        id: p.task.id, title: p.task.title, status: 'succeeded',
-        iterations: p.outcome.iterations, evidence: integ.evidence,
-        ...seamFields(p.outcome),
-      })
-    }
-    // Cleanup eligibility: merged AND fully clean (no internal failure). A
-    // lane that merged its prior green work but was later abandoned by a
-    // sibling task's failure stays on disk for forensics even though part
-    // of its work already landed on main.
-    if (!(laneHadFailure.get(lane.key) ?? false)) {
-      merged.push({ id: lane.key, path: lanePath(lane.key), branch: laneBranch(lane.key) })
-    }
+    await mergeCandidate({
+      rt, ctx, signFlag, mechanicalEffort, integrationEffort,
+      candidate: { id: lane.key, branch: laneBranch(lane.key), workdir: lanePath(lane.key), rows: pending, keptFields: { worktreePath: lanePath(lane.key), branch: laneBranch(lane.key) }, cleanupEligible: !(laneHadFailure.get(lane.key) ?? false) },
+      noun: 'lane', statusById, reportTasks, warnings, merged,
+    })
   }
 
   // ---- Batched cleanup of MERGED-AND-CLEAN lane worktrees only ----
-  if (merged.length > 0) {
-    const cleanup = await rt.agent<CleanupResult>(
-      `You are the cleanup agent — remove the merged lane worktrees and their lane branches. From ` +
-      `${ctx.projectDir}, for EACH entry run \`git worktree remove <path>\` FIRST and ` +
-      `\`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):\n` +
-      merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join('\n') +
-      `\nDo NOT touch any other worktree or branch.\n` +
-      `Return { "removed": ["<laneKey>"], "failures": [{"id": "<laneKey>", "note": "<why>"}], "note": "<summary>" }`,
-      { schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge', effort: mechanicalEffort },
-    )
-    if (cleanup === null) {
-      warn(rt, warnings, `dev-implement: cleanup agent died — merged lane worktrees left on disk under ${wtRoot} (manual: git worktree remove)`)
-    } else if (cleanup.failures.length > 0) {
-      warn(rt, warnings, `dev-implement: cleanup incomplete for lane(s) ${cleanup.failures.map((f) => f.id).join(', ')} — ${cleanup.note}`)
-    }
-  }
+  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'lane', mechanicalEffort })
 
   // -------------------------------------------------------------------------
   // Phase 'Report' — deterministic tallying IN CODE (no agent).

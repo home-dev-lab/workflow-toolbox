@@ -42,6 +42,52 @@ function touchFile(file: string, mtimeMs: number): void {
   utimesSync(file, t, t)
 }
 
+async function runIdleRegistryScenario(records: unknown[], runForMs = 11_000): Promise<string> {
+  const root = tmpRoot('wt-idle-registry-watch')
+  const home = path.join(root, 'home')
+  const configDir = path.join(root, 'config')
+  const projectDir = path.join(root, 'project')
+  const stateDir = path.join(root, 'registry')
+  const sessionId = 'idle-session'
+  const subagentsDir = path.join(configDir, 'projects', projectSlug(projectDir), sessionId, 'subagents')
+  mkdirSync(home, { recursive: true })
+  mkdirSync(subagentsDir, { recursive: true })
+  mkdirSync(projectDir, { recursive: true })
+  mkdirSync(stateDir, { recursive: true })
+  touchFile(path.join(subagentsDir, 'agent-idle.jsonl'), Date.now())
+  writeFileSync(path.join(stateDir, `${sessionId}.jsonl`), `${records.map((record) => JSON.stringify(record)).join('\n')}\n`)
+
+  const child = spawn(process.execPath, [ARC_WATCH, '--project', projectDir, '--poll', '5'], {
+    env: {
+      ...process.env,
+      HOME: home,
+      CLAUDE_CONFIG_DIR: configDir,
+      CLAUDE_CODE_SESSION_ID: sessionId,
+      WT_OUTBOUND_GUARD_DIR: stateDir,
+      WT_LIVENESS_DIR: path.join(root, 'missing-liveness-dir'),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  spawned.push(child)
+
+  return await new Promise<string>((resolve, reject) => {
+    let stdout = ''
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      resolve(stdout)
+    }, runForMs)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => { stdout += chunk })
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk: string) => { stdout += chunk })
+    child.on('error', (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
+    child.on('exit', () => clearTimeout(timer))
+  })
+}
+
 type WatchScenarioOptions = {
   transcriptName?: string
   metaName?: string | null
@@ -354,6 +400,20 @@ describe('worktreeRecentlyActive', () => {
 })
 
 describe('wt-arc-watch liveness integration', () => {
+  it('emits each active idle registry record once and suppresses one closed by stop', async () => {
+    const idle = {
+      t: 'idle', name: 'pilot-idle', team: 'delivery', idleMin: 5,
+      qualified: true, reason: 'active mandate and open cards', at: '2026-09-12T07:00:00.000Z',
+    }
+    const active = await runIdleRegistryScenario([idle])
+    expect(active.match(/IDLE pilot-idle 5m — active mandate and open cards/g)).toHaveLength(1)
+
+    const closed = await runIdleRegistryScenario([idle, {
+      t: 'stop', name: 'pilot-idle', at: '2026-09-12T07:01:00.000Z',
+    }])
+    expect(closed).not.toContain('IDLE pilot-idle')
+  }, 30_000)
+
   it('Invariant 1: no liveness file behaves exactly like the old STALE path', async () => {
     const out = await runWatchScenario({
       metaName: 'pilot/needs-liveness',

@@ -346,7 +346,13 @@ const MANAGED_AGENTS = [
   { file: 'pilot-orchestrator-watchdog.md' },
 ]
 
-const MANAGED_AUTONOMY = [{ file: 'AUTONOMY.md' }]
+const MANAGED_AUTONOMY = [
+  { file: 'AUTHORIZATIONS.md' },
+  { file: 'AUTONOMY.md' },
+  { file: 'PERMISSIONS.md' },
+  { file: 'PILOT-CONTRACT.md' },
+  { file: 'PILOT-RUNNER.md' },
+]
 
 /** The plugin's REGISTERED agents (`plugin/agents/`) — DISCOVERED from the filesystem at
  *  run time, never hard-coded, so an agent added to that dir later shows up here with
@@ -512,7 +518,7 @@ const SETS = {
   // had a pre-migration flat layout to fall back to — reusing 'rules' would make that
   // migration heuristic silently probe a legacy location that never existed.
   docs: { kind: 'docs', srcDir: 'docs/rules-rationale', defaultDir: '.claude/docs/wt', globalSubdir: 'docs/wt', resolveItems: discoverDocsItems },
-  scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }] },
+  scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }, { file: 'wt-lane-wait.mjs' }] },
 }
 
 const MANAGED_SET_NAMES = Object.keys(SETS)
@@ -598,11 +604,17 @@ function itemContent(set, item, root) {
   const src = path.join(root, set.srcDir, item.file)
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
   const content = fs.readFileSync(src, 'utf8')
-  if (set.kind !== 'scripts') return content
+  if (set.kind !== 'scripts' || item.file !== 'wt-lane.mjs') return content
   // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
   // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
-  return content
-    .replace("import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'", `
+  const replaceExactlyOnce = (body, fragment, replacement) => {
+    const count = body.split(fragment).length - 1
+    if (count !== 1) {
+      fail(`launcher transformation expected exactly one occurrence in ${src}: ${fragment.slice(0, 60)}`)
+    }
+    return body.replace(fragment, replacement)
+  }
+  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'\nimport { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'\nimport { laneModelRefusal } from './lib/lane-model-allowlist.mjs'", `
 function pluginRoot(env = process.env) {
   for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
     if (typeof candidate === 'string' && candidate) return candidate
@@ -625,15 +637,79 @@ async function loadAdoptedConsentModules() {
   if (!root) throw new Error('could not locate workflow-toolbox plugin root via CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT, or plugins/installed_plugins.json')
   const resolver = path.join(root, 'bin', 'lib', 'lane-consent-check-core.mjs')
   const gate = path.join(root, 'bin', 'lib', 'lane-consent-gate-core.mjs')
+    const fence = path.join(root, 'bin', 'lib', 'opencode-skill-fence.mjs')
+    const allowlist = path.join(root, 'bin', 'lib', 'lane-skill-allowlist.mjs')
+    const modelAllowlist = path.join(root, 'bin', 'lib', 'lane-model-allowlist.mjs')
+    const pluginOptions = path.join(root, 'bin', 'lib', 'plugin-options.mjs')
   try {
-    const [{ resolveConsent }, { evaluateConsentGate }] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href)])
-    return { resolveConsent, evaluateConsentGate }
+    const [{ resolveConsent }, { evaluateConsentGate }, fenceModule, allowlistModule, modelAllowlistModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href), import(pathToFileURL(allowlist).href), import(pathToFileURL(modelAllowlist).href), import(pathToFileURL(pluginOptions).href)])
+    return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal: fenceModule.effectiveSkillDiscoveryRefusal, materialiseAllowedSkills: fenceModule.materialiseAllowedSkills, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery: fenceModule.verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence, resolveLaneSkillAllowlist: allowlistModule.resolveLaneSkillAllowlist, laneModelRefusal: modelAllowlistModule.laneModelRefusal }
   } catch {
-    throw new Error(\`could not load workflow-toolbox consent resolver from \${resolver} and \${gate}\`)
+    throw new Error(\`could not load workflow-toolbox lane runtime modules from \${resolver}, \${gate}, \${fence}, \${allowlist}, \${modelAllowlist}, and \${pluginOptions}\`)
   }
 }`)
-    .replace("async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
-    .replace("import { appendFileSync, mkdirSync, openSync, existsSync, statSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
+  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
+  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
+  const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
+  if (relativeRuntimeImport) {
+    fail(`launcher transformation left a relative runtime import in ${src}: ${relativeRuntimeImport.slice(0, 60)}`)
+  }
+  return adopted
+}
+
+/** Resolve the plugin root the adopted wt-lane launcher will use. This intentionally mirrors
+ * the generated pluginRoot() above: explicit launcher roots win, then the active config's
+ * installed-plugin registry. The launcher cannot import this standalone installer helper, so
+ * fixture tests lock the two paths to the same observable result. */
+function adoptedLauncherPluginRoot(env = process.env) {
+  for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
+    if (typeof candidate === 'string' && candidate) return candidate
+  }
+  const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || os.homedir(), '.claude')
+  const registry = path.join(configDir, 'plugins', 'installed_plugins.json')
+  try {
+    const parsed = JSON.parse(fs.readFileSync(registry, 'utf8'))
+    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
+    const key = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
+    const entry = key ? plugins[key] : null
+    const installed = Array.isArray(entry) ? entry[0] : entry
+    if (typeof installed?.installPath === 'string' && installed.installPath) return installed.installPath
+  } catch {
+    // Reported below with the same remedies as a missing runtime module.
+  }
+  return null
+}
+
+/** Extract the runtime modules from the generated loader itself. Keeping no parallel module
+ * list means a future path joined from root and passed to import() in
+ * loadAdoptedConsentModules is automatically part of this preflight. */
+function adoptedLauncherRuntimeModules(adopted, runtimeRoot) {
+  const loader = /async function loadAdoptedConsentModules\(\) \{([\s\S]*?)\n\}/.exec(adopted)?.[1]
+  if (!loader) fail('launcher transformation did not produce loadAdoptedConsentModules')
+  const moduleByVariable = new Map()
+  for (const match of loader.matchAll(/const\s+(\w+)\s*=\s*path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
+    const segments = [...match[2].matchAll(/'([^']+)'/g)].map((segment) => segment[1])
+    if (segments.length > 0) moduleByVariable.set(match[1], path.join(runtimeRoot, ...segments))
+  }
+  const modules = [...loader.matchAll(/import\(pathToFileURL\((\w+)\)\.href\)/g)]
+    .map((match) => moduleByVariable.get(match[1]))
+    .filter(Boolean)
+  if (modules.length === 0) fail('launcher transformation produced no runtime modules in loadAdoptedConsentModules')
+  return modules
+}
+
+function preflightAdoptedLauncherRuntime(chosen, sourceRoot) {
+  if (!chosen.includes('scripts')) return
+  const runtimeRoot = adoptedLauncherPluginRoot()
+  if (!runtimeRoot) {
+    fail('wt-lane.mjs plugin root could not be resolved — install or update workflow-toolbox, then retry')
+  }
+  const adopted = itemContent(SETS.scripts, { file: 'wt-lane.mjs' }, sourceRoot)
+  for (const modulePath of adoptedLauncherRuntimeModules(adopted, runtimeRoot)) {
+    if (!realFile(modulePath)) {
+      fail(`wt-lane.mjs runtime module is missing from the resolved plugin root: ${modulePath} — update or reinstall workflow-toolbox, then retry.`)
+    }
+  }
 }
 
 /** The shipped content's fingerprint, or null when the source cannot be read.
@@ -2308,6 +2384,8 @@ function main() {
   // a standalone script that must each run alone. They are locked in step by tests, not by
   // a shared module they cannot both reach.
   const globalRoot = resolvedConfigRoot()
+
+  preflightAdoptedLauncherRuntime(chosen, root)
 
   process.stdout.write(
     `adopt: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,

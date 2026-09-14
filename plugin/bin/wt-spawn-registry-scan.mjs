@@ -114,11 +114,10 @@ function projectSlug(cwd) { return cwd.replace(/[^a-zA-Z0-9]/g, '-'); }
 function subagentsDirFor(sessionId) {
   return join(resolveConfigDir(), 'projects', projectSlug(CWD), sessionId, 'subagents');
 }
-// Minutes since the freshest transcript matching this childName last grew, or null if none is
-// found / readable. NEVER a death signal — only ever used to SUPPRESS a false positive when a
-// live transcript proves the agent is working; staleness or absence changes nothing, the entry
-// is asked about exactly as before.
-function transcriptFreshnessMin(sessionId, childName, nowMs) {
+// Milliseconds of the freshest transcript matching this childName, or null if none is found /
+// readable. A write after a stop is a later sign of life and therefore reopens that agent arc;
+// its freshness is still only used to suppress a false positive, never to conclude a death.
+function transcriptActivityMs(sessionId, childName) {
   const dir = subagentsDirFor(sessionId);
   if (!existsSync(dir)) return null;
   let entries;
@@ -134,7 +133,7 @@ function transcriptFreshnessMin(sessionId, childName, nowMs) {
       if (freshest === null || m > freshest) freshest = m;
     } catch { /* transcript file missing/unreadable — skip this candidate meta */ }
   }
-  return freshest === null ? null : (nowMs - freshest) / 60000;
+  return freshest;
 }
 
 if (!existsSync(STATE_DIR)) {
@@ -248,6 +247,8 @@ const lastByAgentId = (t) => {
 };
 const stoppedById = lastByAgentId('stop');
 const spokeById = lastByAgentId('out');
+const laterOf = (...timestamps) => timestamps.reduce((latest, timestamp) =>
+  timestamp !== undefined && (latest === undefined || timestamp > latest) ? timestamp : latest, undefined);
 
 // WAITING-FOR — read side of the convention wt-outbound-guard-hook.mjs writes (see its own
 // comment for the wire format and the idempotence/erasure invariants).
@@ -298,18 +299,24 @@ for (const s of spawns) {
   // were buggy: no explicit name was ever given, so the spawn cannot be correlated, full stop.
   const name = s.name ? s.childName : null;
   if (!name) { untrackable.push(s); continue; }
-  const stoppedAt = stopped.get(name) || (s.child ? stoppedById.get(s.child) : undefined);
-  if (stoppedAt !== undefined) continue;                 // accounted for: it ended
+  const stoppedAt = laterOf(stopped.get(name), s.child ? stoppedById.get(s.child) : undefined);
+  const spokenAt = laterOf(spoke.get(name), s.child ? spokeById.get(s.child) : undefined);
+  // A stop closes only the completed turn. An outbound record or transcript write STRICTLY after
+  // it proves the named agent was relaunched; a later stop still closes that later arc.
+  let transcriptActivity = stoppedAt === undefined ? null : transcriptActivityMs(sessionId, name);
+  const transcriptAt = transcriptActivity === null ? undefined : new Date(transcriptActivity).toISOString();
+  const lastSignOfLifeAt = laterOf(spokenAt, transcriptAt);
+  if (stoppedAt !== undefined && !(lastSignOfLifeAt !== undefined && lastSignOfLifeAt > stoppedAt)) continue;
   // Acked AFTER this spawn: a human said they dealt with it. A later spawn of the same name has
   // a newer `at` than the ack and is therefore reported again — the ack settles one entry, not
   // a name forever.
   if (acked.has(name) && acked.get(name) > s.at) continue;
-  const spokenAt = spoke.get(name) || (s.child ? spokeById.get(s.child) : undefined);
   const last = spokenAt || s.at;                         // never spoke => silent since birth
   const quietMin = Math.round((now - Date.parse(last)) / 60000);
   // Only worth the directory scan for candidates that would otherwise be flagged — an entry
   // already under QUIET_MIN was never going to be flagged, so its liveness is moot.
-  const transcriptFreshMin = quietMin >= QUIET_MIN ? transcriptFreshnessMin(sessionId, name, now) : null;
+  if (transcriptActivity === null && quietMin >= QUIET_MIN) transcriptActivity = transcriptActivityMs(sessionId, name);
+  const transcriptFreshMin = transcriptActivity === null ? null : (now - transcriptActivity) / 60000;
   open.push({
     name,
     parent: s.parentName || s.parent,

@@ -6,6 +6,230 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- The prompt-cache keepalive monitor is now on by default; set `WT_CACHE_KEEPALIVE_ENABLED=false` to disable
+  it. It still acts only on a session idle past its provider threshold.
+- SDK pilots now freeze executor family and per-role models with their route: consented runs use GPT
+  lanes, while profiles without lane consent use a worktree-confined Claude SDK executor launched with
+  its phase as `--role` (critic, review and refutation are read-only). Critic, code, review, and
+  refutation models have route- and hard-aware defaults and independent profile overrides
+  (`WT_EXECUTOR_CRITIC_MODEL`, `WT_EXECUTOR_CODE_MODEL`, `WT_EXECUTOR_REVIEW_MODEL`,
+  `WT_EXECUTOR_REFUTATION_MODEL`). Harness pilot and orchestrator defaults are now Opus, with Fable
+  for hard cards (`WT_PILOT_MODEL`, `WT_PILOT_HARD_MODEL`, `WT_ORCHESTRATOR_MODEL`); the SDK runner uses
+  its own keys (`WT_SDK_PILOT_MODEL`, `WT_SDK_PILOT_HARD_MODEL`, `WT_SDK_ORCHESTRATOR_MODEL`), all Opus
+  by default.
+- SDK pilots and the SDK orchestrator read their Planka MCP endpoint from the `planka_mcp_url` plugin
+  option (environment fallback `WT_PLANKA_MCP_URL`, default `http://localhost:25478/mcp`) instead of a
+  hard-coded port.
+- Lane model/skill allow-lists and user-facing artifact-server settings are now Claude Code plugin
+  options, resolved consistently before their existing environment fallbacks. String lists use
+  comma/newline syntax in plugin settings; test-only artifact-server knobs remain env-only.
+
+### Added
+- Added the `wt-secret-guard` Function Hooks plugin to the marketplace: it scrubs secrets from prompts and
+  tool results and rewrites 1Password references. Requires `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` and the
+  1Password CLI.
+- Added `/second-opinion`, a one-call read-only advisor that automatically uses GPT-6 Astra when
+  GPT-lane consent and the Codex companion are present, otherwise Claude Fable through the Agent SDK.
+  Fable calls fail closed at a configurable weekly scoped-quota ceiling, and detached output records
+  route provenance plus a final exit marker.
+- External OpenCode lanes now allow only `openai/gpt-5.6-luna`, `openai/gpt-5.6-terra`,
+  `openai/gpt-5.6-sol`, and `openai/gpt-6-astra` by default. Set the comma- or
+  whitespace-separated `WT_LANE_MODELS` allow-list to replace that default; model matching is exact.
+- External OpenCode lanes can declare a comma- or whitespace-separated `WT_LANE_SKILLS` allow-list.
+  Approved Claude skills are copied into lane-local OpenCode configuration while the Claude-skill fence
+  remains forced; `save-memory`, `planka-tracking`, and `what-next` remain unconditionally refused as
+  single-writer memory/board skills, including case and `_`/`-` name variants. Every toolbox OpenCode run
+  now performs an uncached, bounded `opencode debug skill` check at launch with the run's exact environment,
+  directory, and config, and fails closed if effective discovery reports a refused name or the probe fails.
+  This is a checked-at-launch filesystem snapshot, not a defense against an actor racing local writes. Materialisation is rebuilt from scratch,
+  rejects destination and source symlinks, requires the root frontmatter name to match its directory, and
+  rejects nested `SKILL.md` files. Inherited `OPENCODE_CONFIG` is dropped rather than passed through.
+- Added a default-on, dependency-free artifact server with per-user port discovery, bind-race
+  single-instance startup, owner-only filesystem session registration and automatic last-session shutdown,
+  identity-checked status/stop/restart controls, multi-root project-local defaults, URL helpers,
+  escaped Markdown/text rendering, sandbox CSP, pinned realpath confinement, Host validation, and a
+  non-shrinkable-by-default sensitive-file deny list. When Tailscale is detected it also binds the
+  tailnet interface and reports direct or manually configured Tailscale Serve URLs.
+- Added an off-by-default prompt-cache keepalive monitor (`WT_CACHE_KEEPALIVE_ENABLED`) that tail-reads the current session transcript,
+  applies provider-specific idle thresholds, caps consecutive refreshes, and journals wake outcomes.
+- Added the Kotlin JVM language pack with Kotlin/Gradle/Maven triggers, JUnit 5 and `kotlin.test`
+  rules, SDK-only review agents, probe fixtures, and a documented fallback from the expired
+  JetBrains Kotlin LSP release to `fwcd/kotlin-language-server`.
+- Added the Svelte language pack with Svelte/Vite/Vitest selection, SDK-only review agents,
+  `svelteserver` diagnostics, archived two-arm probes, and navigation-parity fixtures.
+- Added the Groovy language pack with sole `.groovy`/`.gradle`, Gradle, and Spock trigger ownership,
+  focused rules, SDK-only review agents, and archived headless probe fixtures. The attempted
+  GroovyLanguageServer build did not start in the harness, so no Groovy LSP declaration ships.
+- Added the Vue language pack with `.vue`, Vite, Vitest, and Vue TypeScript triggers, local family
+  guidance, SDK-only agents, and archived Volar diagnostics/navigation fixtures. Volar 3.3.11 is
+  installed under `~/.local`, but its available-binary headless probe initialized without delivering
+  the planted diagnostic, so the pack intentionally ships without an `.lsp.json` declaration.
+- The observer-pairing guard now archives checker-reported conflicting `meta.json` pairs under the state directory by default, with `WT_OBSERVER_PAIRING_CAPTURE_DIR` available to redirect evidence.
+- SDK pilot runner summaries now record the requested model and resolver provenance alongside the
+  model reported by the SDK initialization receipt and first assistant turn, explicitly flagging
+  agreement, disagreement, or absent SDK evidence.
+- `wt:card-cost -- --hops` now reports transcript-derived delegation depth, fan-out width, envelope estimates, async notification/read-back delivery, and message re-ingestion cost.
+- Language-pack probes now measure archived native-LSP navigation capabilities through an explicit `--capability` axis and render a cross-language parity table.
+- The PR review workflow now adds a `lock-enumeration` lens for changed test files, identifying assertions that enumerate open shared families instead of stating invariants.
+- `wt-observe launch` now resolves locally available `definitionFile` observer requirements through the capability registry, while preserving server-side pass-through for unavailable files and refusing root-escaping paths.
+- Pipeline nesting limits now use a per-branch remaining-depth budget, so a nested spec can start a fresh downward-only budget with its own `maxPipelineDepth` override without loosening an exhausted ancestor.
+- Split the SDK pilot lifecycle server into focused state-machine/tool, launch/attestation, report-edge, and brief-composition modules without changing its MCP export surface or behavior.
+- `wt-arc-watch` now surfaces qualified named-teammate idle records from the session spawn registry once, while suppressing records already closed by a later stop.
+- Rule-edit horizon notices now cover shipped agent templates, explaining their bare-name adoption and re-adoption horizon.
+- Language packs: `plugin/.lsp.json` is now GENERATED from `plugin/packs/*/.lsp.json` by `pnpm packs:lsp` (TypeScript first, then packs alphabetically; duplicate keys and incomplete declarations refused) and locked by a byte-identity test; two new packs, Python (`pyright-langserver`) and Java (Eclipse JDT LS, `jdtls`, JDK 21+ required; Groovy is guidance only, no declaration); one archived two-arm headless diagnostics probe per pack (`node toolkit/scripts/lsp-pack-probe.mjs <pack>`, verdict read from Claude Code's own debug log); the add-a-language recipe `docs/public/language-packs.md` and the pack README template `plugin/packs/README-TEMPLATE.md` with a sections gate.
+- Measured wildcard-first Glob and Grep matches through in-worktree symlinks as confined to the worktree by the real SDK.
+- Added the headless SDK orchestrator runner: deterministic multi-card pilot waves are judged by one
+  read-only, wave-confined SDK session, while code owns receipts, reports, board comments, and all
+  merge/publish escalations to main. Card IDs and real paths now fail closed, configured remotes and
+  merge ref updates are fenced inside wave worktrees, symlinks prevent judge launch, MCP initialization
+  completes its notification handshake, partial board mutations are reconciled in fatal reports, and
+  receipts are copied beside the report.
+### Fixed
+- Artifact-server session monitors now deregister when their parent exits, and servers exit after three
+  registration polls when their state directory disappears or `server.json` no longer names their PID,
+  preventing orphan processes after an abruptly killed test run.
+- `wt-pilot-runner.mjs` now records the launching `CLAUDE_CODE_SESSION_ID` in `.lane/env.log`, overwriting it on each launch like `wt-lane.mjs` and using an empty value when no session id is present.
+- SDK pilot and orchestrator entrypoints now resolve one shared Agent SDK install after lane-consent
+  checks, searching the development toolkit, target project, `CLAUDE_PLUGIN_DATA`, and global npm root
+  in order. Installed-plugin refusals now print a one-line, copy-pastable install command instead of
+  naming a missing toolkit directory.
+- Adopt now refuses `wt-lane` script checks and installs when its resolved runtime plugin root is missing a module loaded by the transformed launcher.
+- Every toolbox-owned OpenCode launch (`wt-lane`, verifier, envelope, intercepted verifier, and observer)
+  now shares a forced `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true` child environment, excluding Claude
+  Code's single-writer skills while leaving OpenCode and `.agents` skills available. A model-free,
+  isolated synthetic-skill probe fails closed when OpenCode stops honoring the fence and caches each
+  successful verdict by resolved binary path and version in plugin state; adopted launchers load the
+  same helper from their installed plugin.
+- `wt-lane.mjs` now records the launching `CLAUDE_CODE_SESSION_ID` in `.lane/env.log`, using an empty value when no session id is present.
+- SDK pilot routing now recognizes populated DoD headings; critic rounds retain trusted prior findings,
+  ignore fenced fake DoDs, distinguish strictly parsed blocking from non-blocking findings, retain
+  deduplicated optional findings from every round, bound report input, require successful receipts for
+  advancement, disclose the enforced plan grammar, and report the actual critic-round count when the
+  bound is exhausted.
+- The actionability Stop gate now blocks only under a live autonomy mandate (or a legibly unreadable
+  mandate), limits stale snapshots to one refresh request per snapshot, and journals every block with
+  its reason, mandate classification, and consecutive index.
+- Pilot and pilot-orchestrator watchdogs now pin `haiku` instead of inheriting the spawning session's
+  model: a paired observer receives no model parameter from the spawner, so an unpinned watchdog ran
+  on the premium tier. A lock now fails on any `observer:` pairing whose observer lacks a `model:`.
+- Removed overlapping language-pack file triggers so Gradle DSL files follow their implementation
+  language, Maven selects Java, and Svelte/Vue selection relies on framework-specific files.
+- Signature CI now loads its signer policy and checker from the protected PR base ref while checking the PR checkout's commits.
+- `wt-lane.mjs` now refuses a `--dir` outside a Git work tree before the consent gate, with an absolute `git worktree add` remedy; `--allow-no-git` remains available for deliberate non-repository lanes.
+- `wt-spawn-registry-scan` now reopens a named agent only when a later outbound record or transcript write follows its last stop; a final stop still closes the arc.
+- Lifecycle archives are now published by rename only after every summary and validation write, so a failed post-copy validation leaves no published archive.
+- **`wt-lane.mjs` worker ends its whole process group on `SIGTERM`/`SIGINT`** (log `EXIT=143`/`130`): a launcher killed by pid used to die alone and leave the detached `opencode` lane running in the worktree, invisible to the caller.
+- `wt-memory-index-check` no longer reports an existing subfolder fiche as a false dangling reference.
+- SDK pilot runs now route a spent critic or review/refutation round bound to an archived partial report, require
+  its exact `Partial:` reason, and return exit code 2 instead of deadlocking on an unavailable edge.
+- SDK pilot runs now use `default` permission mode so `canUseTool` enforces worktree read confinement
+  and the exact lifecycle/Planka allow-list; dangerous permission bypass is no longer enabled.
+- Lane launches now consume read-only runner-owned snapshots outside the worktree and keep the launcher
+  worker, `opencode`, and ordinary descendants in the reported process group terminated after receipt or
+  timeout; processes that create their own session remain outside this guarantee.
+### Fixed
+- Lane briefs now require phase-bound `write_artifact` provenance and are recreated exclusively from
+  server-held pilot context immediately before launch, with independent patch inputs re-derived then.
+### Fixed
+- Prospective review and refutation patches now enforce their output limit across the combined
+  header, tracked diff, and every untracked-file diff, refusing as soon as the total exceeds it.
+### Fixed
+- Independent review and refutation now fail closed when their prospective patch cannot be built,
+  exceeds the output limit, or has no substantive hunk despite a dirty tree; no brief is left
+  launchable after refusal.
+- Fidelity bundles apply lifecycle-name classification before handling symlinks. Unmatched symlink
+  names now require `--other-file` at freeze, and manifests preserve that classification so verify
+  cannot reinterpret an unknown-name symlink as recognized evidence.
+### Changed
+- The shipped SDLC protocol now requires a real-data, repeatable end-to-end check wherever possible,
+  with verbatim output in the report; the closing-report checker accepts named e2e output or a
+  reasoned `e2e not run`, and warns without blocking when both are absent.
+- Workflow launches now fail loud unless `args.perAgent.model` is a non-empty string: the Workflow PreToolUse guard denies the call, and `wt-observe launch` refuses it unless `--allow-inherited-model` explicitly accepts inheritance.
+- Ground-truth verification guidance now treats readings taken in one shared measurement window as
+  one reading and requires witness lines selected against the suspected failure mode.
+- The dev-implement example now shares its worktree and lane merge safety pipeline without changing emitted prompts.
+- The SDK pilot lifecycle is now the runner-hosted `sdk-pilot-lifecycle` MCP server, replacing the
+  Function Hook and raw Bash allow-list. It derives and freezes card routing; parses lane verdicts
+  from attested reports; generates independent-review briefs from server-owned templates and
+  nonce-binds both lane logs and reports; re-checks ancestors and relative glob prefixes through
+  symlinks; and uses filesystem tree signature v3, which ignores index-only changes. The lifecycle
+  run tool waits for lanes, so `--lane-silence` is removed. Fidelity bundles use canonical manifest
+  v2 with exact snapshot-bound entry schemas, coherent commit heads, and length-prefixed signatures;
+  `verify` supports `--require-same-tree` and `--require-head` (`--require-clean-tree` is deprecated).
+  Lifecycle code is split into server/state, receipts/launch, and report-edge transaction modules;
+  an uncertain post-commit HEAD is persisted and reconciled on retry without committing twice. The
+  runner now requires `--card-file`, exposes only the exact documented Planka operations, uses
+  mailbox-in/report-out owner communication, and supplies independent review with the prospective
+  staged, unstaged, and untracked working-tree patch against the construction base.
+- SDK pilot runs inject phase-specific continuation prompts when a pilot ends a turn before
+  awaiting-fidelity, failing after three consecutive end turns without successful lifecycle progress.
+- SDK pilot `critic-brief` artifacts are bound to the critic phase, matching every other lane brief's
+  write-brief, run-lane, transition order while retaining the plan digest requirement.
+### Fixed
+- `wt-run-gate` signatures now invalidate records for content, deletion, mode, type, and symlink-target
+  changes; the SDK pilot can write only its lifecycle-gated lane brief and report artifacts.
+- SDK pilot completion now requires the correlated lifecycle result to equal the awaiting-fidelity
+  receipt; refusal text containing that marker cannot complete a run. Fidelity manifests accept only
+  named quality gates, lifecycle phases, integer exits, and typed top-level scalars. Archive success
+  summaries are published only after archive creation and final tree-cleanliness validation succeed.
+- SDK pilot lifecycle: a `changes-requested` review or refutation must now name at least one
+  non-blank finding. An empty findings list was accepted, so a revision round could consume one of
+  the bounded rounds while recording no reason for it. A `clear` outcome still carries no findings,
+  which is the outcome that legitimately has none.
+- Pilot model keys: the resolver and `wt-pilot-models` report the EFFECTIVE model a profile remaps
+  an alias to (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL`, process env over settings env), and a raw
+  provider name in a `WT_*_MODEL` key is refused with that remedy — a GPT pilot is the same harness
+  alias under a remapping profile, not a separate runner.
+- `wt-quota-watch.mjs`: a usage percentage that falls between two polls is reported as a RESET
+  only when the previously reported reset time has come AND identity continuity is established
+  (account fingerprint unchanged, Claude route). Every other drop is `QUOTA DROP … unverified`
+  with both reset times: before that time (a manual reset, or a change of account, binding or
+  source) and, on the proxy route, after it too ("reset likely but unverified … probe before
+  relying on the capacity") — the event type never exceeds the evidence, because a consumer acts
+  on the type without reading the caveat. Classifier in `lib/quota-drop.mjs`.
+### Added
+- Add deterministic pilot-orchestrator intake triage and `wt-intake-triage` CLI: forced route handling,
+  one batched strong-model classification, route-up-on-doubt, and an executable fixture lock for inline,
+  lane-direct, and pilot work.
+- Pilot runner now detects silent executor worktrees, injects a bounded status turn, and records `silence_injections`; pilots continue one `EXIT=124` lane with a diff-preserving brief before reporting a second-timeout PARTIAL.
+- Add a SessionStart warning when `.claude/progress.md` has unsynced Planka-buffer entries, directing the session to fold them into the board and purge the section.
+- Add `wt-claimed-test-check.mjs`, a warn-only scan for normative documentation claims that lack a plausibly relevant toolkit test.
+- Pilot runner accepts an arbiter-written `--card-file`, traces injected turns to stdout, and records their count in `summary.json`.
+- `wt-main-guard-hook.mjs` now journals (without denying) `git reset --hard` and `git checkout -f` only when their worktree has uncommitted changes.
+- Add adopted standing-authorization and permission-class templates; escalations now consult owner-granted acts and a warn-only Stop hook journals covered and uncovered requests.
+- Add a fail-safe `WT_SESSION_ROLE=relay` mode that leaves the five always-on monitors unarmed in relay sessions while preserving principal defaults.
+- Add the v2 tracker-neutral queue snapshot contract, including startable, awaiting-owner, and
+  unclassified counts; the autonomy watcher now reports a completed mission once per snapshot and
+  the stop gate permits that finished mission to end.
+- Add spawn-time pilot and orchestrator model profile keys with Anthropic `sonnet` defaults and
+  process-environment/settings-profile resolution.
+- Warn before an autonomy mandate freshness window expires so sessions can re-arm in time.
+- Add `wt-lane-wait.mjs`, an allow-rule-covered Monitor command that waits for a lane worker and its terminal exit marker without printing the lane log.
+- Record a redacted environment snapshot in `.lane/env.log` when a lane worker starts.
+### Changed
+- Run each release-only plugin eval case three times and decide it by a strict majority, reporting
+  each case's pass count so transient model outcomes do not decide a release rerun.
+### Fixed
+- Pass the explicit repository root to bridge-routed `pr-review` reviewers and refuse launches that omit it.
+- Replace 105 synchronous hook spawns inside a fixed test timeout with an in-process `writeJournalEntry` journal seam.
+- Quota route: a proxy window whose `used_percent` is not a finite number within 0–100 is dropped, and an answer whose windows are all malformed reads as unknown instead of 0 %.
+- Make autonomy-watch expiry transition tests deterministic with an injected test clock.
+- Keep plugin eval expected-failure fixtures in temporary files instead of mutating the shipped declaration.
+- Refuse adopted launcher generation when its consent transformation fragments are missing, duplicated, or leave relative imports behind.
+- `wt-actionable-gate-hook` now falls back to transcript and declared-bound evidence when Linux lane detection errors, and names the detection failure in its block.
+- Make the actionability-gate hook tests independent of ambient Linux lane detection; test-only.
+
+## [0.173.0] - 2026-09-09
+
+### Release notes
+- Docs audit and coverage audit NOT run for this release (rituals suspended by the owner on 2026-09-03 until the thin-envelope campaign completes).
+- Cross-family review of the whole range (GPT lane, five lenses + refutation): the five HIGH and two MEDIUM findings are fixed in this release, each with a lock proven red first; six lower findings are deferred and listed on the release card.
+- Cross-platform verdicts for the two new plugin binaries: `wt-piped-gate-exit-code-guard-hook.mjs` parses the command text only (one `readFileSync`, no platform call) and behaves the same on Linux, macOS and Windows; `wt-opencode-verify.mjs` resolves the CLI with a POSIX `command -v` and a list of POSIX install paths, so on Windows it refuses with the legible `OPENCODE_UNAVAILABLE` marker unless `opencode` is reachable through those paths — it never returns a plausible verdict where it cannot run. Both read from source; Linux exercised, macOS and Windows not run.
+- The TypeScript pack's SDK runner is now a toolkit development utility, not a shipped file (see `docs/public/known-issues.md`); the pack stays experimental.
+- Plugin eval gate (`wt-plugin-eval-gate.mjs`, early-access flag on): 4/4 on the final run. Three runs on the same content: run 1 failed on a grader that could not match a line-wrapped command (fixed in this release), run 2 failed once on `opencode-verifier-unavailable` with a single haiku run that narrated instead of calling; the gate's single-run verdict is tracked as unstable (release card).
+- npm packages are NOT published by this release; pending changesets are released separately.
+
+### Changed
 - Let the plugin eval gate track declared expected failures and reject malformed or expired expiry dates
 - Document `<project root>/.claude/worktrees/<name>` as the gitignored convention for new concurrent worktrees.
 - Require hand-written executor-lane briefs to request report lessons and harvest each report at its lane integration.

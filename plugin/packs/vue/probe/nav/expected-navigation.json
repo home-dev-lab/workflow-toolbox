@@ -1,0 +1,7 @@
+{
+  "symbol-overview": { "prompt": "Use your language server or code intelligence to list the symbols in definitions.vue. Answer with the exact exported symbol names only.", "expectedSubstrings": ["Greeter", "FriendlyGreeter"] },
+  "symbol-lookup": { "prompt": "Use your language server or code intelligence to look up the Vue symbol FriendlyGreeter. State its defining file and line.", "expectedSubstrings": ["definitions.vue", "FriendlyGreeter"] },
+  "declarations": { "prompt": "Use your language server or code intelligence to find the declaration of Greeter used in use.vue. State its defining file and line.", "expectedSubstrings": ["definitions.vue", "Greeter"] },
+  "references": { "prompt": "Use your language server or code intelligence to find references to the Vue interface Greeter. Name both source files containing references.", "expectedSubstrings": ["definitions.vue", "use.vue"] },
+  "implementations": { "prompt": "Use your language server or code intelligence to find implementations of the Vue interface Greeter. Name the implementing class.", "expectedSubstrings": ["FriendlyGreeter"] }
+}

@@ -322,10 +322,10 @@ holds for that pattern, but `agentsSpawned` is counted independently and can
 equal `iterations` too (e.g. a body that calls exactly one agent per tick) —
 don't assume the two diverge, just that they're tracking different things.
 
-No silent caps, ever, for any positive-integer cap: every `max*` option
-reports what it cut. (`applyCap` only rejects `cap < 1`; a non-integer or
-`NaN` cap slips past that guard and can silently drop items without a
-`truncated > 0` warning firing — pass a positive integer.) For
+No silent caps, ever: every `max*` option reports what it cut. `applyCap`
+mechanically refuses every cap that is not a positive integer, so a fractional,
+non-finite, or `NaN` cap cannot silently drop items without a
+`truncated > 0` warning firing. For
 `adversarialVerification`, a cap never destroys evidence: claims cut by
 `maxVerifyClaims` stay in the output (`itemsIn === itemsOut`) and carry the
 distinct claim verdict `'unverified-by-cap'` (`votes: []`, no trail records —

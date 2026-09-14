@@ -78,8 +78,8 @@ function send(child: ChildProcessWithoutNullStreams, message: object): void {
   child.stdin.write(`${JSON.stringify(message)}\n`)
 }
 
-async function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 3000
+async function waitFor(predicate: () => boolean, patienceMs = 3000): Promise<void> {
+  const deadline = Date.now() + patienceMs
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error('timed out waiting for wake-channel output')
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -194,7 +194,9 @@ describe('wt-wake-channel MCP server', () => {
 
     writeFileSync(join(spool, 'post-init.txt'), 'the observer speaks', 'utf8')
 
-    await waitFor(() => channelMessages(messages).length === 1)
+    // 15 s patience: under a loaded full suite the filesystem watch event has arrived after 3 s (failed twice on
+    // 2026-09-13 while lanes ran). Still far below the 60 s poll, so only the watch can satisfy it.
+    await waitFor(() => channelMessages(messages).length === 1, 15000)
     expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
       '<observer source="wt-wake-channel">the observer speaks</observer>',
     ])
