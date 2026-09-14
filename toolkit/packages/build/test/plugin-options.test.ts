@@ -16,6 +16,7 @@ const cases = [
   { option: 'artifact_server_port', envKey: 'WT_ARTIFACT_SERVER_PORT', optionValue: 49123, envValue: '49124', defaultValue: null },
   { option: 'artifact_server_idle_grace_s', envKey: 'WT_ARTIFACT_SERVER_IDLE_GRACE_S', optionValue: 42, envValue: '43', defaultValue: 600 },
   { option: 'artifact_server_deny', envKey: 'WT_ARTIFACT_SERVER_DENY', optionValue: '*.option', envValue: '*.env', defaultValue: '' },
+  { option: 'planka_mcp_url', envKey: 'WT_PLANKA_MCP_URL', optionValue: 'http://option:1/mcp', envValue: 'http://env:2/mcp', defaultValue: 'http://localhost:25478/mcp' },
 ] as const
 
 function fixture(settings?: unknown) {

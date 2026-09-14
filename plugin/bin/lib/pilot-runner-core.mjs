@@ -1,3 +1,4 @@
+import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -238,7 +239,7 @@ export async function runPilot(options, dependencies) {
     cwd: options.dir,
     plugins: [{ type: 'local', path: guardPlugin }],
     tools: ['Read', 'Glob', 'Grep'],
-    mcpServers: { planka: { type: 'http', url: 'http://localhost:25478/mcp' }, [LIFECYCLE_MCP_KEY]: lifecycleServer },
+    mcpServers: { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value }, [LIFECYCLE_MCP_KEY]: lifecycleServer },
     canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true }),
     permissionMode: 'default',
     env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },

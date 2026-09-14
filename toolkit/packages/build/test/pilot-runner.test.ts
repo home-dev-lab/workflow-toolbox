@@ -570,6 +570,15 @@ describe('SDK pilot runner', () => {
     expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
   })
 
+  it('points the Planka MCP at the planka_mcp_url setting, not a hard-coded port', async () => {
+    const f = fixture(); let options: { mcpServers: Record<string, { url?: string }> } | undefined
+    const configDir = join(f.root, 'config'); mkdirSync(configDir)
+    const query = ({ options: received }: { options: { mcpServers: Record<string, { url?: string }> } }) => { options = received; return (async function* () { yield initMessage() })() }
+    const env = { CLAUDE_CONFIG_DIR: configDir, WT_PLANKA_MCP_URL: 'http://board.example:9999/mcp' }
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { env, query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
+    expect(options!.mcpServers.planka?.url).toBe('http://board.example:9999/mcp')
+  })
+
   it('fails closed after an initialized stream ends without lifecycle completion', async () => {
     const f = fixture()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models })

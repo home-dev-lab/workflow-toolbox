@@ -12,6 +12,7 @@ const DEFINITIONS = Object.freeze({
   artifact_server_port: { envKey: 'WT_ARTIFACT_SERVER_PORT', type: 'number', defaultValue: null },
   artifact_server_idle_grace_s: { envKey: 'WT_ARTIFACT_SERVER_IDLE_GRACE_S', type: 'number', defaultValue: 600 },
   artifact_server_deny: { envKey: 'WT_ARTIFACT_SERVER_DENY', type: 'string', defaultValue: '' },
+  planka_mcp_url: { envKey: 'WT_PLANKA_MCP_URL', type: 'string', defaultValue: 'http://localhost:25478/mcp' },
 })
 
 function configDir(env) {

@@ -1,3 +1,4 @@
+import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -6,7 +7,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { createSdkJudge } from './orchestrator-judge.mjs'
 import { createWaveServer } from './wave-lifecycle-server.mjs'
 
-const DEFAULTS = { concurrency: 1, base: 'develop', pilotTimeout: 5400, boardUrl: 'http://localhost:25478/mcp', maxCards: Infinity, maxMinutes: Infinity, missionLabels: [], hard: [] }
+const DEFAULTS = { concurrency: 1, base: 'develop', pilotTimeout: 5400, maxCards: Infinity, maxMinutes: Infinity, missionLabels: [], hard: [] }
 const ELIGIBLE_LISTS = new Set(['Backlog', 'Next', 'In Progress'])
 const cardList = (result) => Array.isArray(result) ? result : Array.isArray(result?.cards) ? result.cards : Array.isArray(result?.items) ? result.items : null
 const listName = (card) => card?.listName ?? card?.list?.name ?? card?.list ?? ''
@@ -28,7 +29,7 @@ const receiptExit = (file, fallback = 1) => {
 }
 
 export function parseOrchestratorArgs(argv) {
-  const options = { ...DEFAULTS, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null }
+  const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     const next = () => argv[++i]
@@ -177,7 +178,7 @@ function renderReport({ waveId, options, rows, stopReason, fatal, judgment, boar
 }
 
 export async function runOrchestrator(input, dependencies = {}) {
-  const options = { ...DEFAULTS, ...input }
+  const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, ...input }
   const git = dependencies.git ?? ((program, args, opts) => execFileSync(program, args, opts))
   const now = dependencies.now ?? (() => Date.now())
   const writeFile = dependencies.writeFile ?? fs.writeFileSync
