@@ -903,6 +903,22 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect([first, second].join('\n')).toContain('current phase tdd')
     expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'one', route: 'LITE' }))).toContain('unique tool_use_id')
   })
+
+  it('accepts a transition despite a lifecycle receipt write failure and retries it idempotently', async () => {
+    let writes = 0
+    const lifecycle = testLifecycle('LITE', [], null, null, {
+      timelineWriter: (file: string, content: string) => {
+        writes += 1
+        if (writes === 2) throw new Error('disk unavailable')
+        writeFileSync(file, content)
+      },
+    })
+    const event = { phase: 'discovery', tool_use_id: 'same-transition' }
+    expect(await text(lifecycle.transition(event))).toBe('accepted phase=tdd')
+    expect(await text(lifecycle.transition(event))).toBe('accepted phase=tdd')
+    const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd'])
+  })
 })
 
 const roots: string[] = []

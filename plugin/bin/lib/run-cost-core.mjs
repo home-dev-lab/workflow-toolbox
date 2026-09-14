@@ -5,36 +5,43 @@ import { execFileSync } from 'node:child_process'
 
 const NOT_MEASURED = 'not measured'
 const TOKEN_FIELDS = ['input', 'cache_write', 'cache_read', 'output', 'reasoning', 'first_pass_input', 'fresh_tokens']
+const FAMILIES = ['anthropic', 'openai']
 
 function readJson(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'))
 }
 
 function tokenColumns(family, usage) {
-  const input = Number(usage.input ?? usage.tokens_input) || 0
-  const cacheWrite = family === 'anthropic' ? Number(usage.cache_write ?? usage.cache_creation) || 0 : NOT_MEASURED
-  const cacheRead = Number(usage.cache_read ?? usage.tokens_cache_read) || 0
-  const output = Number(usage.output ?? usage.tokens_output) || 0
+  const input = Number(usage.input ?? usage.tokens_input ?? usage.input_tokens) || 0
+  const cacheWrite = family === 'anthropic' ? Number(usage.cache_write ?? usage.cache_creation ?? usage.cache_creation_input_tokens) || 0 : NOT_MEASURED
+  const cacheRead = Number(usage.cache_read ?? usage.tokens_cache_read ?? usage.cache_read_input_tokens) || 0
+  const output = Number(usage.output ?? usage.tokens_output ?? usage.output_tokens) || 0
   const reasoning = family === 'openai' ? Number(usage.reasoning ?? usage.tokens_reasoning) || 0 : NOT_MEASURED
-  const numericCacheWrite = cacheWrite === NOT_MEASURED ? 0 : cacheWrite
-  return { input, cache_write: cacheWrite, cache_read: cacheRead, output, reasoning, first_pass_input: input + numericCacheWrite, fresh_tokens: input + numericCacheWrite + output }
+  const firstPass = input + (typeof cacheWrite === 'number' ? cacheWrite : 0)
+  return { family, input, cache_write: cacheWrite, cache_read: cacheRead, output, reasoning, first_pass_input: firstPass, fresh_tokens: firstPass + output + (typeof reasoning === 'number' ? reasoning : 0) }
+}
+
+function timestampOf(value) {
+  const timestamp = typeof value === 'string' ? Date.parse(value) : Number(value)
+  return Number.isFinite(timestamp) ? timestamp : null
 }
 
 function phaseFor(timestamp, phases) {
   return phases.find((phase) => timestamp >= phase.entered_at && timestamp <= (phase.exited_at ?? Infinity))
 }
 
-export function attributePilotTurns(turns, phases) {
-  return turns.map((turn) => {
-    const timestamp = typeof turn.ended_at === 'string' ? Date.parse(turn.ended_at) : Number(turn.ended_at)
-    const phase = phaseFor(timestamp, phases)
+export function attributePilotTurns(messages, phases) {
+  return messages.map((message) => {
+    const receiptTime = message.arrived_at ?? message.ended_at
+    const timestamp = timestampOf(receiptTime)
+    const phase = timestamp === null ? null : phaseFor(timestamp, phases)
     return {
       phase: phase?.phase ?? 'unknown',
       round: phase?.round ?? null,
-      model: turn.model ?? 'unknown',
-      ended_at: turn.ended_at,
-      tokens: tokenColumns('anthropic', turn),
-      ...(phase ? {} : { status: 'unknown', reason: `no lifecycle phase contains pilot turn timestamp ${turn.ended_at}` }),
+      model: message.model ?? 'unknown',
+      arrived_at: receiptTime,
+      tokens: tokenColumns('anthropic', message),
+      ...(phase ? {} : { status: 'unknown', reason: `no lifecycle phase contains pilot message timestamp ${receiptTime}` }),
     }
   })
 }
@@ -55,7 +62,7 @@ function modelName(row) {
 function queryOpenCodeSessions({ dbPath, sqlite = 'sqlite3', execFile = execFileSync, directory, startedAt, endedAt }) {
   const quote = (value) => `'${String(value).replaceAll("'", "''")}'`
   const query = `SELECT id,directory,model,tokens_input,tokens_output,tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated FROM session WHERE directory=${quote(directory)} AND time_updated>=${Math.floor(startedAt)} AND time_created<=${Math.ceil(endedAt)} ORDER BY time_created`
-  const output = execFile(sqlite, ['-readonly', '-json', dbPath, query], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const output = execFile(sqlite, ['-readonly', '-json', '--', dbPath, query], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
   return output.trim() ? JSON.parse(output) : []
 }
 
@@ -63,8 +70,12 @@ function phaseKey(phase, round) {
   return `${phase}\0${round ?? ''}`
 }
 
+function emptyFamily(family) {
+  return { input: 0, cache_write: family === 'anthropic' ? 0 : NOT_MEASURED, cache_read: 0, output: 0, reasoning: family === 'openai' ? 0 : NOT_MEASURED, first_pass_input: 0, fresh_tokens: 0 }
+}
+
 function addTokens(target, tokens) {
-  for (const field of TOKEN_FIELDS) if (typeof tokens[field] === 'number') target[field] = (target[field] ?? 0) + tokens[field]
+  for (const field of TOKEN_FIELDS) if (typeof tokens[field] === 'number') target[field] = (typeof target[field] === 'number' ? target[field] : 0) + tokens[field]
 }
 
 function summariseEntries(entries, phases) {
@@ -83,54 +94,84 @@ function summariseEntries(entries, phases) {
       bucket.unknown.push(entry.reason)
       if (!entry.tokens) continue
     }
-    const model = bucket.models[entry.model] ?? { input: 0, cache_write: NOT_MEASURED, cache_read: 0, output: 0, reasoning: NOT_MEASURED, first_pass_input: 0, fresh_tokens: 0 }
-    for (const field of TOKEN_FIELDS) {
-      const value = entry.tokens[field]
-      if (typeof value === 'number') model[field] = (typeof model[field] === 'number' ? model[field] : 0) + value
-    }
+    const family = entry.tokens.family
+    const model = bucket.models[entry.model] ?? { family, ...emptyFamily(family) }
+    addTokens(model, entry.tokens)
     bucket.models[entry.model] = model
   }
   return [...buckets.values()]
 }
 
-function inferredTimeline(laneDir, startedAt, endedAt) {
+function embeddedWindow(file) {
+  const content = fs.readFileSync(file, 'utf8')
+  const values = [...content.matchAll(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/g)].map((match) => Date.parse(match[0])).filter(Number.isFinite)
+  if (values.length > 0) return { started_at: Math.min(...values), ended_at: Math.max(...values), basis: 'embedded log timestamps' }
+  const mtime = fs.statSync(file).mtimeMs
+  return { started_at: mtime, ended_at: mtime, basis: 'log mtime' }
+}
+
+function inferredTimeline(laneDir) {
+  const rounds = new Map()
   const logs = fs.readdirSync(laneDir).filter((name) => /^(?:tdd|critic|review|refutation|harden)-run\.[^.]+(?:-[^.]+)*\.log$/.test(name))
-  const lanes = logs.map((name, index) => {
+  const lanes = logs.map((name) => {
     const phase = name.split('-run.')[0]
-    return { phase, round: phase === 'critic' ? index + 1 : null, started_at: startedAt, ended_at: endedAt, model: null, usage_file: null, inferred: true }
+    const round = (rounds.get(phase) ?? 0) + 1; rounds.set(phase, round)
+    const window = embeddedWindow(path.join(laneDir, name))
+    return { phase, round: phase === 'critic' ? round : null, started_at: window.started_at, ended_at: window.ended_at, model: null, usage_file: null, inferred: true, inference: window.basis }
   })
   return { phases: [], lanes, inferred: true }
+}
+
+function archiveWindow(laneDir, timeline, summary, options) {
+  if (options.startedAt != null || options.endedAt != null) {
+    if (options.startedAt == null || options.endedAt == null) throw new Error('--started-at and --ended-at must be provided together')
+    return { startedAt: options.startedAt, endedAt: options.endedAt, inferred: false, basis: 'explicit CLI window' }
+  }
+  if (timestampOf(timeline.started_at) !== null && timestampOf(timeline.ended_at) !== null) return { startedAt: timestampOf(timeline.started_at), endedAt: timestampOf(timeline.ended_at), inferred: false, basis: 'runner lifecycle records' }
+  try {
+    const transcript = readJson(path.join(laneDir, 'sdk-transcript.json'))
+    const timestamps = (Array.isArray(transcript) ? transcript : []).map((message) => timestampOf(message.timestamp)).filter((value) => value !== null)
+    if (timestamps.length >= 2) return { startedAt: Math.min(...timestamps), endedAt: Math.max(...timestamps), inferred: true, basis: 'sdk transcript timestamps' }
+  } catch {}
+  const candidates = ['summary.json', 'usage.json', 'sdk-pilot.log'].map((name) => path.join(laneDir, name)).filter((file) => fs.existsSync(file)).map((file) => fs.statSync(file).mtimeMs)
+  for (const lane of timeline.lanes ?? []) candidates.push(lane.started_at, lane.ended_at)
+  if (candidates.length === 0) throw new Error('run window unavailable from lifecycle, transcript, or archive mtimes')
+  const endedAt = Math.max(...candidates)
+  const earliest = Math.min(...candidates)
+  const summaryDuration = Number(summary?.minutes) * 60_000
+  const startedAt = earliest < endedAt ? earliest : Number.isFinite(summaryDuration) && summaryDuration > 0 ? endedAt - summaryDuration : endedAt
+  return { startedAt, endedAt, inferred: true, basis: Number.isFinite(summaryDuration) && earliest === endedAt ? 'archive mtime and summary minutes' : 'archive record mtimes' }
+}
+
+function usageDifference(messages, resultTotals) {
+  const messageTotal = emptyFamily('anthropic')
+  for (const message of messages) addTokens(messageTotal, tokenColumns('anthropic', message))
+  const resultTotal = tokenColumns('anthropic', resultTotals ?? {})
+  const difference = {}
+  for (const field of TOKEN_FIELDS) if (typeof messageTotal[field] === 'number' && typeof resultTotal[field] === 'number') difference[field] = messageTotal[field] - resultTotal[field]
+  return { agrees: Object.values(difference).every((value) => value === 0), message_sum: messageTotal, result_total: resultTotal, difference }
 }
 
 export function computeRunCost(options) {
   const laneDir = path.resolve(options.laneDir)
   const routeReceipt = readJson(path.join(laneDir, 'route.json'))
-  let summary = {}
+  let summary = null
   try { summary = readJson(path.join(laneDir, 'summary.json')) } catch {}
   const usage = readJson(path.join(laneDir, 'usage.json'))
-  const endedAt = options.endedAt ?? Date.now()
-  const startedAt = options.startedAt ?? endedAt - (Number(summary.minutes) || 0) * 60_000
   let timeline
-  try { timeline = readJson(path.join(laneDir, 'lifecycle.json')) } catch { timeline = inferredTimeline(laneDir, startedAt, endedAt) }
+  try { timeline = readJson(path.join(laneDir, 'lifecycle.json')) } catch { timeline = inferredTimeline(laneDir) }
+  const window = archiveWindow(laneDir, timeline, summary, options)
+  const { startedAt, endedAt } = window
   const worktree = options.worktree ?? routeReceipt.worktree ?? path.dirname(laneDir)
   const phases = timeline.phases ?? []
-  const pilotTurns = attributePilotTurns((usage.turns ?? []).map((turn) => ({ ...turn, model: turn.model ?? summary.served_model ?? summary.model })), phases)
+  const pilotMessages = usage.messages ?? usage.turns ?? []
+  const pilotTurns = attributePilotTurns(pilotMessages.map((message) => ({ ...message, model: message.model ?? summary?.served_model ?? summary?.model })), phases)
   const entries = [...pilotTurns]
   const unknown = []
-  let inferredLaneSessions = null
-  if (timeline.inferred && routeReceipt.executor !== 'claude-sdk') {
-    try {
-      const rows = options.sessions ?? queryOpenCodeSessions({ dbPath: options.dbPath ?? process.env.WT_OPENCODE_DB ?? path.join(os.homedir(), '.local/share/opencode/opencode.db'), sqlite: options.sqlite, execFile: options.execFile, directory: worktree, startedAt, endedAt })
-      inferredLaneSessions = []
-      for (const row of rows) {
-        const cluster = inferredLaneSessions.at(-1)
-        if (!cluster || Number(row.time_created) > Math.max(...cluster.map((item) => Number(item.time_updated)))) inferredLaneSessions.push([row])
-        else cluster.push(row)
-      }
-    } catch {}
-  }
+  const allSessions = routeReceipt.executor === 'claude-sdk' ? [] : options.sessions ?? queryOpenCodeSessions({ dbPath: options.dbPath ?? process.env.WT_OPENCODE_DB ?? path.join(os.homedir(), '.local/share/opencode/opencode.db'), sqlite: options.sqlite, execFile: options.execFile, directory: worktree, startedAt, endedAt })
+  const assignedSessions = new Set()
 
-  for (const [laneIndex, lane] of (timeline.lanes ?? []).entries()) {
+  for (const lane of timeline.lanes ?? []) {
     if (routeReceipt.executor === 'claude-sdk') {
       try {
         const laneUsage = readJson(path.resolve(laneDir, lane.usage_file))
@@ -141,55 +182,72 @@ export function computeRunCost(options) {
       }
       continue
     }
-    try {
-      const sessions = inferredLaneSessions?.[laneIndex] ?? options.sessions ?? queryOpenCodeSessions({ dbPath: options.dbPath ?? process.env.WT_OPENCODE_DB ?? path.join(os.homedir(), '.local/share/opencode/opencode.db'), sqlite: options.sqlite, execFile: options.execFile, directory: worktree, startedAt: lane.started_at, endedAt: lane.ended_at })
-      if (inferredLaneSessions?.[laneIndex]) { lane.started_at = Math.min(...sessions.map((row) => Number(row.time_created))); lane.ended_at = Math.max(...sessions.map((row) => Number(row.time_updated))) }
-      const matched = matchLaneSessions(sessions, worktree, lane.started_at, lane.ended_at, { explain: true })
-      if (!Array.isArray(matched)) { entries.push({ phase: lane.phase, round: lane.round ?? null, ...matched }); unknown.push(matched.reason); continue }
-      for (const row of matched) entries.push({ phase: lane.phase, round: lane.round ?? null, model: modelName(row), tokens: tokenColumns('openai', row), wall_time_ms: Math.max(0, Number(row.time_updated) - Number(row.time_created)) })
-    } catch (error) {
-      const reason = `OpenCode cost unavailable for ${lane.phase}${lane.round ? ` round ${lane.round}` : ''}: ${error instanceof Error ? error.message : String(error)}`
-      entries.push({ phase: lane.phase, round: lane.round ?? null, status: 'unknown', reason }); unknown.push(reason)
+    const matched = matchLaneSessions(allSessions.filter((row) => !assignedSessions.has(row.id)), worktree, lane.started_at, lane.ended_at, { explain: true })
+    if (!Array.isArray(matched)) { entries.push({ phase: lane.phase, round: lane.round ?? null, ...matched, wall_time_ms: lane.ended_at - lane.started_at }); unknown.push(matched.reason); continue }
+    for (const row of matched) {
+      assignedSessions.add(row.id)
+      entries.push({ phase: lane.phase, round: lane.round ?? null, model: modelName(row), tokens: tokenColumns('openai', row), wall_time_ms: Math.max(0, Number(row.time_updated) - Number(row.time_created)) })
     }
+  }
+  for (const row of allSessions.filter((item) => item.directory === worktree && !assignedSessions.has(item.id))) {
+    const reason = `OpenCode session ${row.id} matched the run but no lane window`
+    entries.push({ phase: 'unmatched', round: null, model: modelName(row), status: 'unknown', reason, tokens: tokenColumns('openai', row), wall_time_ms: Math.max(0, Number(row.time_updated) - Number(row.time_created)) })
+    unknown.push(reason)
   }
   for (const turn of pilotTurns) if (turn.status === 'unknown') unknown.push(turn.reason)
 
   const phaseCosts = summariseEntries(entries, phases)
-  const totals = { input: 0, cache_write: 0, cache_read: 0, output: 0, reasoning: 0, first_pass_input: 0, fresh_tokens: 0, wall_time_ms: Math.max(0, endedAt - startedAt) }
-  for (const phase of phaseCosts) for (const model of Object.values(phase.models)) addTokens(totals, model)
-  const partialReason = summary.partial?.reason ?? (!summary.completed ? summary.reason : null)
+  const families = { anthropic: null, openai: null }
+  for (const phase of phaseCosts) for (const model of Object.values(phase.models)) {
+    families[model.family] ??= emptyFamily(model.family)
+    addTokens(families[model.family], model)
+  }
+  const outcome = summary === null
+    ? { status: 'unknown', reason: 'summary.json unavailable' }
+    : summary.partial?.reason || !summary.completed
+      ? { status: 'partial', reason: summary.partial?.reason ?? summary.reason ?? 'run incomplete' }
+      : { status: 'complete' }
+  const resultTotals = usage.result_totals ?? usage.totals ?? {}
   return {
-    version: 1,
+    version: 2,
+    card_id: routeReceipt.cardId ?? routeReceipt.card_id ?? null,
     route: options.route ?? routeReceipt.route,
-    outcome: partialReason ? { status: 'partial', reason: partialReason } : { status: 'complete' },
+    outcome,
     worktree,
-    window: { started_at: new Date(startedAt).toISOString(), ended_at: new Date(endedAt).toISOString() },
+    window: { started_at: new Date(startedAt).toISOString(), ended_at: new Date(endedAt).toISOString(), inferred: window.inferred, basis: window.basis },
     phases: phaseCosts,
-    totals,
+    families,
+    totals: { wall_time_ms: Math.max(0, endedAt - startedAt) },
     unknown,
-    sources: { pilot: 'Claude Agent SDK result usage', lanes: routeReceipt.executor === 'claude-sdk' ? 'Claude Agent SDK result usage' : 'OpenCode session rows via sqlite3', timeline: timeline.inferred ? 'inferred (lifecycle timestamps unavailable)' : 'lifecycle transition receipts' },
+    cross_checks: { pilot_result: usageDifference(pilotMessages, resultTotals) },
+    sources: { pilot: usage.messages ? 'Claude Agent SDK assistant message usage' : 'legacy Claude Agent SDK result usage', lanes: routeReceipt.executor === 'claude-sdk' ? 'Claude Agent SDK result usage' : 'OpenCode session rows via sqlite3', timeline: timeline.inferred ? 'inferred from each lane log' : 'lifecycle transition receipts' },
   }
 }
 
-export function unknownRunCost({ route = 'unknown', reason, worktree = null }) {
-  return { version: 1, route, outcome: { status: 'partial', reason }, worktree, phases: [], totals: 'unknown', unknown: [reason] }
+export function unknownRunCost({ route = 'unknown', reason, worktree = null, cardId = null, startedAt = null }) {
+  return { version: 2, card_id: cardId, route, outcome: { status: 'partial', reason }, worktree, window: startedAt == null ? null : { started_at: new Date(startedAt).toISOString() }, phases: [], families: { anthropic: null, openai: null }, totals: 'unknown', unknown: [reason] }
 }
 
 export function costReportSection(cost) {
-  const lines = ['## Run Cost', '', `Route: ${cost.route} | Outcome: ${cost.outcome.status}${cost.outcome.reason ? ` (${cost.outcome.reason})` : ''}`]
-  if (cost.totals === 'unknown') return `${lines.join('\n')}\n\nCost: unknown (${cost.unknown.join('; ')})\n`
-  lines.push('', '| Phase | Model | Input | Cache write | Cache read | Output | Reasoning | First-pass input | Fresh | Wall ms |', '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+  const lines = ['<!-- run-cost -->', '## Measured Run Cost', '', `Route: ${cost.route} | Outcome: ${cost.outcome.status}${cost.outcome.reason ? ` (${cost.outcome.reason})` : ''} | Unknown: ${cost.unknown.length}`]
+  if (cost.totals === 'unknown') return `${lines.join('\n')}\n\nCost: unknown (${cost.unknown.join('; ')})\n<!-- /run-cost -->\n`
+  lines.push('', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
   for (const phase of cost.phases) {
     const label = `${phase.phase}${phase.round ? ` ${phase.round}` : ''}`
-    for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)
-    for (const reason of phase.unknown) lines.push(`| ${label} | unknown (${reason}) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | ${phase.wall_time_ms} |`)
+    for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${value.family} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)
+    for (const reason of phase.unknown) lines.push(`| ${label} | unknown | unknown (${reason}) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | ${phase.wall_time_ms} |`)
   }
+  const check = cost.cross_checks?.pilot_result
+  if (check && !check.agrees) lines.push('', `Pilot assistant/result usage difference: ${JSON.stringify(check.difference)}`)
+  lines.push('<!-- /run-cost -->')
   return `${lines.join('\n')}\n`
 }
 
 export function appendCostReport(report, cost) {
-  const withoutPrevious = report.replace(/\n## Run Cost\n[\s\S]*$/, '').replace(/\s*$/, '')
-  return `${withoutPrevious}\n\n${costReportSection(cost)}`
+  const block = costReportSection(cost).trimEnd()
+  const pattern = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/
+  if (pattern.test(report)) return `${report.replace(pattern, block).replace(/\s*$/, '')}\n`
+  return `${report.replace(/\s*$/, '')}\n\n${block}\n`
 }
 
 function costFiles(root) {
@@ -205,34 +263,54 @@ function costFiles(root) {
   return files
 }
 
+function aggregateFamily(target, source) {
+  if (!source) return
+  target ??= {}
+  for (const field of TOKEN_FIELDS) if (typeof source[field] === 'number') target[field] = (typeof target[field] === 'number' ? target[field] : 0) + source[field]
+  return target
+}
+
 export function aggregateRunCosts(root, { includePartial = false } = {}) {
-  const routes = Object.fromEntries(['LITE', 'FULL', 'HARD'].map((route) => [route, { runs: 0, input: 0, cache_write: 0, cache_read: 0, output: 0, reasoning: 0, first_pass_input: 0, fresh_tokens: 0, wall_time_ms: 0 }]))
+  const routes = Object.fromEntries(['LITE', 'FULL', 'HARD'].map((route) => [route, { runs: 0, unknown: 0, wall_time_ms: 0, families: { anthropic: null, openai: null } }]))
   const partial = []
+  const runs = []
   const seen = new Set()
   for (const file of costFiles(path.resolve(root))) {
-    const marker = file.lastIndexOf(`${path.sep}.lane${path.sep}`)
-    const archiveRoot = marker >= 0 ? file.slice(0, marker) : path.dirname(file)
+    const parent = path.dirname(file)
+    const archiveRoot = path.basename(parent) === '.lane' ? path.dirname(parent) : parent
     let cost
     try { cost = readJson(file) } catch (error) {
       partial.push({ archive: path.basename(archiveRoot), route: 'unknown', reason: `invalid cost.json: ${error instanceof Error ? error.message : String(error)}` })
       continue
     }
-    const identity = cost.worktree && cost.window?.started_at ? `${cost.worktree}\0${cost.window.started_at}` : file
-    if (seen.has(identity)) continue
-    seen.add(identity)
-    if (cost.outcome?.status === 'partial') partial.push({ archive: path.basename(archiveRoot), route: cost.route, reason: cost.outcome.reason ?? 'unknown' })
-    if (cost.outcome?.status === 'partial' && !includePartial) continue
-    if (!routes[cost.route] || !cost.totals || cost.totals === 'unknown') continue
-    routes[cost.route].runs += 1
-    for (const field of [...TOKEN_FIELDS, 'wall_time_ms']) if (typeof cost.totals[field] === 'number') routes[cost.route][field] += cost.totals[field]
+    const identity = cost.card_id != null && cost.window?.started_at ? `${cost.card_id}\0${cost.window.started_at}` : null
+    if (identity && seen.has(identity)) continue
+    if (identity) seen.add(identity)
+    const unknownCount = Array.isArray(cost.unknown) ? cost.unknown.length : 0
+    runs.push({ archive: path.basename(archiveRoot), card_id: cost.card_id ?? 'unknown', route: cost.route, outcome: cost.outcome?.status ?? 'unknown', unknown: unknownCount })
+    if (cost.outcome?.status !== 'complete') partial.push({ archive: path.basename(archiveRoot), route: cost.route, reason: cost.outcome?.reason ?? 'unknown' })
+    if (cost.outcome?.status !== 'complete' && !includePartial) continue
+    if (!routes[cost.route] || !cost.families || !cost.totals || cost.totals === 'unknown') continue
+    const route = routes[cost.route]
+    route.runs += 1; route.unknown += unknownCount; route.wall_time_ms += Number(cost.totals.wall_time_ms) || 0
+    for (const family of FAMILIES) route.families[family] = aggregateFamily(route.families[family] ?? emptyFamily(family), cost.families[family]) ?? route.families[family]
   }
-  return { routes, partial }
+  return { routes, runs, partial }
 }
 
 export function formatAggregate(result) {
-  const lines = ['Route | Runs | Input | Cache write | Cache read | Output | Reasoning | First-pass input | Fresh | Wall ms', '--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---:']
-  for (const route of ['LITE', 'FULL', 'HARD']) { const row = result.routes[route]; lines.push(`${route} | ${row.runs} | ${row.input} | ${row.cache_write} | ${row.cache_read} | ${row.output} | ${row.reasoning} | ${row.first_pass_input} | ${row.fresh_tokens} | ${row.wall_time_ms}`) }
-  lines.push('', 'Partial runs:')
+  const lines = ['Route | Family | Runs | Completeness | Input | Cache write | Cache read | Output | Reasoning | First-pass input | Fresh | Wall ms', '--- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---:']
+  for (const routeName of ['LITE', 'FULL', 'HARD']) {
+    const route = result.routes[routeName]
+    for (const family of FAMILIES) {
+      const row = route.families[family] ?? emptyFamily(family)
+      lines.push(`${routeName} | ${family} | ${route.runs} | ${route.unknown ? `incomplete (${route.unknown} unknown)` : 'complete'} | ${row.input} | ${row.cache_write} | ${row.cache_read} | ${row.output} | ${row.reasoning} | ${row.first_pass_input} | ${row.fresh_tokens} | ${route.wall_time_ms}`)
+    }
+  }
+  lines.push('', 'Runs:', 'Archive | Card | Route | Outcome | Unknown', '--- | --- | --- | --- | ---:')
+  if (result.runs.length === 0) lines.push('none')
+  else for (const run of result.runs) lines.push(`${run.archive} | ${run.card_id} | ${run.route} | ${run.outcome} | ${run.unknown}`)
+  lines.push('', 'Partial or unknown runs:')
   if (result.partial.length === 0) lines.push('none')
   else for (const run of result.partial) lines.push(`${run.archive} | ${run.route} | ${run.reason}`)
   return `${lines.join('\n')}\n`

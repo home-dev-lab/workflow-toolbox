@@ -56,5 +56,7 @@ is incomplete or failed. Do not infer completion from model prose: the runner re
 `accepted phase=awaiting_fidelity` lifecycle receipt and a pilot report.
 
 To total archived costs mechanically, run `node "${CLAUDE_PLUGIN_ROOT}/bin/wt-run-cost.mjs"
-<reports-directory>`. It totals complete runs by LITE/FULL/HARD route and lists partial runs separately;
-add `--include-partial` only when partial costs should enter route totals.
+<reports-directory>`. It totals complete runs by LITE/FULL/HARD route and provider family, lists every
+run's unknown count, and lists partial or unknown-outcome runs separately; add `--include-partial` only
+when those runs should enter route totals. Legacy run and lane windows are inferred from archived
+timestamps or documented mtime fallbacks, so do not hand-enter a window for routine aggregation.
