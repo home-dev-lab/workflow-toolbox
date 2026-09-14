@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,7 @@ import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bi
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
 const PLUGIN_ROOT = join(ROOT, 'plugin')
+const SDK_RESOLVER = join(PLUGIN_ROOT, 'bin/lib/sdk-resolution.mjs')
 // The runner now REQUIRES a valid first `system:init` receipt: a fake stream without one used to
 // pass while proving nothing about whether any plugin or lifecycle tool ever loaded.
 const initMessage = (model?: string) => ({
@@ -39,6 +40,18 @@ function freshFixture() {
   writeFileSync(join(f.dir, 'toolkit', 'package.json'), JSON.stringify({ devDependencies: { '@anthropic-ai/claude-agent-sdk': '*' } }))
   spawnSync('git', ['add', 'toolkit/package.json'], { cwd: f.dir })
   return f
+}
+function fakeSdk(root: string, marker: string) {
+  const packageDir = join(root, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
+  mkdirSync(packageDir, { recursive: true })
+  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+  writeFileSync(join(packageDir, 'index.cjs'), `module.exports = { marker: ${JSON.stringify(marker)} }\n`)
+}
+function resolveSdkInChild(options: Record<string, unknown>) {
+  const script = `const { resolveAgentSdkRequire } = await import(${JSON.stringify(SDK_RESOLVER)}); try { const require = resolveAgentSdkRequire(${JSON.stringify(options)}); process.stdout.write(JSON.stringify({ marker: require('@anthropic-ai/claude-agent-sdk').marker, path: require.resolve('@anthropic-ai/claude-agent-sdk') })) } catch (error) { process.stdout.write(error.message) }`
+  const env = { ...process.env }
+  delete env.NODE_PATH
+  return spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env })
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
@@ -127,19 +140,59 @@ describe('SDK pilot runner', () => {
     expect(reachedQuery).toBe(true)
   })
 
-  it('refuses unresolved SDK installs with a one-line remedy', () => {
-    const f = fixture()
-    // Run the resolution in a child with NODE_PATH cleared: vitest sets NODE_PATH to this checkout's node_modules, and
-    // Node appends NODE_PATH to every lookup, so an in-process check resolves the SDK from here and never refuses.
-    const helper = fileURLToPath(new URL('../../../../plugin/bin/lib/sdk-resolution.mjs', import.meta.url))
-    const base = join(f.dir, 'toolkit', 'package.json')
-    const script = `const { resolveAgentSdkRequire } = await import(${JSON.stringify(helper)}); try { resolveAgentSdkRequire({ ownBases: [${JSON.stringify(base)}] }); process.stdout.write('RESOLVED') } catch (error) { process.stdout.write(error.message) }`
-    const env = { ...process.env }
-    delete env.NODE_PATH
-    const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env })
+  it('resolves the SDK from the target project before plugin data', () => {
+    const f = fixture(); const pluginData = join(f.root, 'plugin data')
+    fakeSdk(f.dir, 'project'); fakeSdk(pluginData, 'plugin-data')
+    const result = resolveSdkInChild({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: { CLAUDE_PLUGIN_DATA: pluginData }, npmRoot: null })
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe('@anthropic-ai/claude-agent-sdk is not installed for ' + join(f.dir, 'toolkit') + '; run: pnpm install --offline --frozen-lockfile')
-    expect(result.stdout).not.toContain('\n')
+    expect(JSON.parse(result.stdout)).toMatchObject({ marker: 'project', path: expect.stringContaining(join(f.dir, 'node_modules')) })
+  })
+
+  it('resolves the SDK from CLAUDE_PLUGIN_DATA after the target project', () => {
+    const f = fixture(); const pluginData = join(f.root, 'plugin data'); fakeSdk(pluginData, 'plugin-data')
+    const result = resolveSdkInChild({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: { CLAUDE_PLUGIN_DATA: pluginData }, npmRoot: null })
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ marker: 'plugin-data', path: expect.stringContaining(join(pluginData, 'node_modules')) })
+  })
+
+  it('resolves the SDK from the global npm root after local candidates', () => {
+    const f = fixture(); const globalPrefix = join(f.root, 'global'); fakeSdk(globalPrefix, 'global')
+    const result = resolveSdkInChild({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: {}, npmRoot: join(globalPrefix, 'node_modules') })
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ marker: 'global', path: expect.stringContaining(join(globalPrefix, 'node_modules')) })
+  })
+
+  it('keeps the development toolkit install ahead of project dependencies', () => {
+    const f = fixture(); fakeSdk(f.dir, 'project')
+    const result = resolveSdkInChild({ projectDir: f.dir, env: {}, npmRoot: null })
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ path: expect.stringContaining(join(ROOT, 'toolkit', 'node_modules')) })
+    expect(JSON.parse(result.stdout).marker).not.toBe('project')
+  })
+
+  it('refuses unresolved SDK installs with the exact global or plugin-data one-line remedy', () => {
+    const f = fixture(); const pluginData = join(f.root, 'plugin data')
+    const common = { ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, npmRoot: null }
+    const global = resolveSdkInChild({ ...common, env: {} })
+    expect(global.stdout).toBe('@anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk')
+    expect(global.stdout).not.toContain('\n')
+    const local = resolveSdkInChild({ ...common, env: { CLAUDE_PLUGIN_DATA: pluginData } })
+    // The literal path, never "$CLAUDE_PLUGIN_DATA": that variable is not set in the terminal where the remedy is pasted.
+    expect(local.stdout).toBe(`@anthropic-ai/claude-agent-sdk is not installed; run: npm install --prefix "${pluginData}" @anthropic-ai/claude-agent-sdk`)
+    expect(local.stdout).not.toContain('\n')
+    const windows = resolveSdkInChild({ ...common, env: { CLAUDE_PLUGIN_DATA: pluginData }, platform: 'win32' })
+    expect(windows.stdout).toBe(`@anthropic-ai/claude-agent-sdk is not installed; run: npm install --prefix "${pluginData}" @anthropic-ai/claude-agent-sdk`)
+  })
+
+  it('starts SDK resolution from an installed plugin using the target project', () => {
+    const f = fixture(); fakeSdk(f.dir, 'project')
+    const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
+    const configDir = join(f.root, 'config'); mkdirSync(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const profile = join(f.root, 'bad-profile.json'); writeFileSync(profile, '{bad')
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-pilot-runner.mjs'), '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract, '--profile-env', profile], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') } })
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('cannot read --profile-env')
+    expect(result.stderr).not.toContain('@anthropic-ai/claude-agent-sdk is not installed')
   })
 
   it('derives plan-phase guidance and invalid-plan refusal from one grammar description', async () => {

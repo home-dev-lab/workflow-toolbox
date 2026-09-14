@@ -74,6 +74,19 @@ process that creates its own session escapes the lane process group and remains 
 
 ## Completion and CLI
 
+### SDK installation
+
+The runner and orchestrator resolve `@anthropic-ai/claude-agent-sdk` in this order: the plugin's
+sibling `toolkit/` install when running from a development checkout; the runner's `--dir` project or
+the orchestrator's process cwd; `CLAUDE_PLUGIN_DATA`; then the global npm root reported by one
+`npm root -g` call. A failed global-root probe is ignored. An installed plugin does not contain the
+development `toolkit/` tree, so install the SDK in the target project, globally with
+`npm install -g @anthropic-ai/claude-agent-sdk`, or in plugin data with
+`npm install --prefix "<plugin data dir>" @anthropic-ai/claude-agent-sdk`. The refusal prints the
+resolved plugin-data path in quotes on every platform, because `CLAUDE_PLUGIN_DATA` is set for the
+plugin's own processes and not in the terminal where the command is pasted. All
+candidate paths and separators use Node's platform-native path APIs.
+
 The runner completes only after the trimmed correlated lifecycle result equals
 `accepted phase=awaiting_fidelity` and
 `.lane/pilot-report.md` both exist; the report edge accepts only the pilot report registered by

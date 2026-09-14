@@ -68,7 +68,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   registration polls when their state directory disappears or `server.json` no longer names their PID,
   preventing orphan processes after an abruptly killed test run.
 - `wt-pilot-runner.mjs` now records the launching `CLAUDE_CODE_SESSION_ID` in `.lane/env.log`, overwriting it on each launch like `wt-lane.mjs` and using an empty value when no session id is present.
-- `wt-pilot-runner.mjs` and the SDK lifecycle server resolve the Agent SDK from the runner's own install first; a card worktree without `node_modules` no longer fails with `Cannot find module`, and an install with no SDK anywhere refuses with one line naming `pnpm install --offline --frozen-lockfile`.
+- SDK pilot and orchestrator entrypoints now resolve one shared Agent SDK install after lane-consent
+  checks, searching the development toolkit, target project, `CLAUDE_PLUGIN_DATA`, and global npm root
+  in order. Installed-plugin refusals now print a one-line, copy-pastable install command instead of
+  naming a missing toolkit directory.
 - Adopt now refuses `wt-lane` script checks and installs when its resolved runtime plugin root is missing a module loaded by the transformed launcher.
 - Every toolbox-owned OpenCode launch (`wt-lane`, verifier, envelope, intercepted verifier, and observer)
   now shares a forced `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true` child environment, excluding Claude

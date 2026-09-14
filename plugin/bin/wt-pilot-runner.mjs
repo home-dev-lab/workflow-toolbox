@@ -1,14 +1,10 @@
 #!/usr/bin/env node
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { parsePilotRunnerArgs, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 import { recordSessionEnvLog } from './lib/session-env-log.mjs'
 import { sdkRunnerConsentRefusal } from './lib/sdk-runner-consent.mjs'
-
-const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 
 function usage() {
   return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--timeout 5400]'
@@ -25,9 +21,9 @@ async function main() {
   const refusal = sdkRunnerConsentRefusal('wt-pilot-runner', options.dir)
   if (refusal) { process.stderr.write(`${refusal}\n`); return 1 }
   try {
-    const require = resolveAgentSdkRequire({ ownBases: [join(ROOT, 'toolkit/package.json')] })
+    const require = resolveAgentSdkRequire({ projectDir: options.dir })
     const sdk = await import(require.resolve('@anthropic-ai/claude-agent-sdk'))
-    const result = await runPilot(options, { query: sdk.query, resolvePilotModels })
+    const result = await runPilot(options, { query: sdk.query, resolvePilotModels, lifecycleOptions: { sdk, sdkRequire: require } })
     process.stdout.write(`fresh=${result.summary.fresh_tokens} turns=${result.summary.turns} report=${result.summary.report_exists} requested_model=${result.summary.requested_model} served_model=${result.summary.served_model ?? 'unknown'} served_model_first_turn=${result.summary.served_model_first_turn ?? 'unknown'} served_model_agreement=${result.summary.served_model_agreement}\n`)
     return result.exitCode ?? 0
   } catch (error) {

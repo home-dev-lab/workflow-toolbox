@@ -1,14 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
+import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 
 const NAME = 'sdk-wave-lifecycle'
-const require = createRequire(new URL('../../../toolkit/package.json', import.meta.url))
-const { createSdkMcpServer, tool } = require('@anthropic-ai/claude-agent-sdk')
-// zod is the SDK's dependency, not the toolkit root's: resolve it from the SDK's own location (as
-// lifecycle-server.mjs does). Resolving it from toolkit/package.json loaded under vitest and failed
-// in a real process — the first real wave would have died at module load.
-const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
 const terminal = (file) => {
   try { return /(?:^|\n)EXIT=(\S+)\s*$/.exec(fs.readFileSync(file, 'utf8'))?.[1] ?? null } catch { return null }
 }
@@ -17,7 +12,11 @@ const toolResult = (text) => ({ content: [{ type: 'text', text }] })
 const MAX_DIFF_BYTES = 200 * 1024
 const TERMINAL_STATES = new Set(['accepted', 'escalated', 'rejected', 'undecided'])
 
-export function createWaveServer({ waveDir, cards, receipts = {}, sha256 = null }) {
+export function createWaveServer({ waveDir, cards, receipts = {}, sha256 = null, sdk = null, sdkRequire = null }) {
+  const require = sdkRequire ?? resolveAgentSdkRequire({ projectDir: waveDir })
+  const { createSdkMcpServer, tool } = sdk ?? require('@anthropic-ai/claude-agent-sdk')
+  // zod belongs to the SDK install selected by the shared resolver, not to the caller.
+  const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
   const root = path.resolve(waveDir)
   fs.mkdirSync(root, { recursive: true })
   const byId = new Map(cards.map((card) => [String(card.id), card]))

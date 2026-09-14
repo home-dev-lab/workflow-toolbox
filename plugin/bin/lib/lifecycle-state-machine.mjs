@@ -3,7 +3,6 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
@@ -106,6 +105,7 @@ export function createLifecycleStateMachine({
   cardId,
   sessionTag,
   sdk = null,
+  sdkRequire = null,
   laneLauncher = null,
   lanePollMs = 25,
   laneWaitMs = null,
@@ -162,8 +162,7 @@ export function createLifecycleStateMachine({
     cardId: String(cardId),
     sessionTag: String(sessionTag),
   })
-  const bundledToolkit = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../toolkit/package.json')
-  const require = resolveAgentSdkRequire({ ownBases: [bundledToolkit], fallbackBases: [path.join(root, 'toolkit/package.json')] })
+  const require = sdkRequire ?? resolveAgentSdkRequire({ projectDir: root })
   const { createSdkMcpServer, tool } = sdk ?? require('@anthropic-ai/claude-agent-sdk')
   const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
   writeRegularFile(

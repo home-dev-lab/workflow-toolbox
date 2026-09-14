@@ -353,7 +353,7 @@ export async function runOrchestrator(input, dependencies = {}) {
     if (!judge && dependencies.query && ordered.length) {
       const symlink = firstSymlink(waveDir)
       if (symlink) throw new Error(`judge refused: symlink under wave directory: ${path.relative(waveDir, symlink)}`)
-      waveServer = (dependencies.createWaveServer ?? createWaveServer)({ waveDir, cards: ordered })
+      waveServer = (dependencies.createWaveServer ?? createWaveServer)({ waveDir, cards: ordered, sdk: dependencies.sdk, sdkRequire: dependencies.sdkRequire })
       for (const row of ordered) { waveServer.setCardState(row.id, 'piloting'); waveServer.setCardState(row.id, 'judging') }
       judge = createSdkJudge({ query: dependencies.query, models: dependencies.models, waveDir, waveServer, contract: dependencies.contract, env: dependencies.env })
     }
