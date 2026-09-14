@@ -11,6 +11,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   manifests, and exact standing, phase-entry, and lane-brief delivery.
 
 ### Changed
+- Split the verify-by-ground-truth rule's oversized top section into addressable gestures and mapped
+  gate, delegate-proof, and causal-attribution guidance to the relevant SDK pilot lifecycle roles.
 - SDK pilot critics now receive the server-recorded discovery intake alongside the plan, and SDK
   pilots and orchestrators receive the resolved read-only project knowledge-base index path or an
   explicit absence.

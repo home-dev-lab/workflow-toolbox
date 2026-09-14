@@ -142,6 +142,44 @@
     },
     {
       "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## A gate is its exit code, never its printed text",
+      "recipients": [
+        "pilot",
+        "tdd",
+        "harden"
+      ],
+      "triggers": [
+        "phase:verify",
+        "lane:tdd",
+        "lane:harden"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## Delegate green report is input, not proof",
+      "recipients": [
+        "pilot"
+      ],
+      "triggers": [
+        "phase:verify"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## Symptom vanishing after a change is correlation",
+      "recipients": [
+        "pilot",
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "phase:verify",
+        "lane:review",
+        "lane:refutation"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
       "heading": "## Before measuring fix, prove subject RUN that fix",
       "recipients": [
         "pilot",

@@ -2,6 +2,8 @@
 
 Plausibility break under pressure. Ground truth not break. Check signal that decide claim.
 
+## A gate is its exit code, never its printed text
+
 **Gate = EXIT CODE. Not printed text.** Redirect command to file. Write `$?` to same file right
 after. Read file back.
 
@@ -16,6 +18,8 @@ trailing `echo`, not gate.
 **Corroborate with SECOND signal that fail differently** — tool own summary line, failure count,
 error marker in log. Read BESIDE code. Not instead of code.
 One instrument agree with itself = not corroboration.
+
+## Corroboration requires independent conditions
 
 **Two readings taken in one window are ONE reading.** Independence is property of CONDITION,
 never source. Two instruments, two processes, two directories sampling same loaded machine in
@@ -32,6 +36,8 @@ witness.
 Misread code not spoil one result. It retroactively VOID every "gates green" claim built on same
 capture path.
 
+## A gate must certify the intended tree
+
 **Exit code answer for the COMMAND, never the SUBJECT.** Gate can genuinely belong to gate, run
 un-piped, code read correctly — and still certify the WRONG TREE. A merge that aborts leaves
 subject unchanged; gate chained right after runs honestly on the stale tree, reports real
@@ -47,11 +53,15 @@ Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: warns when `git me
 
 Enforced by `wt-piped-gate-exit-code-guard-hook.mjs` (PreToolUse Bash: warns, never blocks, when a control gate is piped and `$?` then reads the last pipeline element's code; capture instead with `command > file; echo EXIT=$? >> file`, or use `${pipestatus[1]}` on zsh).
 
+## Parallel branches require a seam review
+
 **Merging parallel branches requires THREE reviews: each branch, then their seam.** Hold sibling
 branches and merge them together. Before merging, compare their contracts by hand; branch gates
 validate each branch alone, not their seam. Run the merged tree's gates after the merge: they are
 the first mechanical checks that can judge the seam. A conflict-free merge and green sibling gates
 do not certify it. Rationale and field cases: `docs/wt/wt-verify-by-ground-truth.md` §Parallel-branch seam.
+
+## Verify claims against their actual evidence
 
 **UI claim = RENDERED PIXELS.** Not API payload. Field can sit in JSON and be dropped before DOM.
 Drive real browser.
@@ -81,6 +91,8 @@ diligent and perfectly wrong. No thoroughness inside that set reach outside it.
 can notice stated reach and other evidence cannot both be true.
 ⚠ Keyword search own floor: target described in different words than query is invisible to it.
 
+## A guard pass signal is not its invariant
+
 **Guard pass-signal ≠ the invariant it prove.** Check property PER UNIT. Not aggregate mechanism
 emitted.
 
@@ -93,6 +105,8 @@ construction.
 Relayed claim later shown hollow → correction go back to SAME recipients. Not absorbed into
 report nobody re-read.
 
+## Delegate green report is input, not proof
+
 **Delegate green report = input. Not proof of work. Not proof of WHERE it ran.** Re-run gates
 yourself. Verify provenance from execution traces.
 
@@ -101,12 +115,16 @@ surprise is the one that silently skip verification. Include FIRST occurrence of
 observed before. Even mid-flow, off-task, harmless-looking. Skip-tell: you are BUSY and event is
 peripheral.
 
+## Symptom vanishing after a change is correlation
+
 **Symptom vanish right after your change = CORRELATION.** Name other variables that could move in
 same window. Say what you found when you looked.
 Cheapest decisive check: re-run OLD approach once. Old approach work now too → your change was
 never the cause.
 Environment count as variable. Green result depend on `PATH`, config dir, pre-existing file,
 installed binary? Name that dependency. Ask if YOU created it earlier for other reason.
+
+## Shipping requires an explicit cross-platform verdict
 
 **Ship anything → explicit CROSS-PLATFORM verdict.** Name system dependencies. Per dependency say:
 throw, degrade to named `unknown`, or silently return plausible value.
@@ -117,6 +135,8 @@ Linux-only is legitimate conclusion. Letting reader assume portability is not.
 **After claiming mechanism, grep for code that must exist for claim to be FALSE.** Report what you
 found. Fastest guard against explanation built from quote that say opposite of conclusion drawn
 from it.
+
+## High-impact mechanisms require three answers
 
 **High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
 published surface — answer all three:**
