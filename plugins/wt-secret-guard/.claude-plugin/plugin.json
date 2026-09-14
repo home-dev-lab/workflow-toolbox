@@ -1,0 +1,24 @@
+{
+  "name": "wt-secret-guard",
+  "version": "0.1.0",
+  "description": "Private function-hook secret scrubber for Bash results and pasted prompts",
+  "author": {
+    "name": "doublefx"
+  },
+  "userConfig": {
+    "opAccount": {
+      "title": "1Password account passed to `op read --account` (empty = the CLI's default account)",
+      "type": "string",
+      "required": false,
+      "default": "",
+      "description": "Account passed as `op read --account <value>` when references are rewritten; leave empty on a single-account machine. OP_ACCOUNT does not reach op.exe through WSL interop."
+    },
+    "opBinary": {
+      "title": "1Password CLI executable the hook runs for `op read` (e.g. `op.exe` under WSL interop)",
+      "description": "The hook's own process capability spawns this executable; shell aliases do not apply there. Default `op`; on this machine the working CLI is `op.exe` (the Linux `/usr/bin/op` is not signed in).",
+      "type": "string",
+      "required": false,
+      "default": "op"
+    }
+  }
+}

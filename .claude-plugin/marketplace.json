@@ -10,6 +10,11 @@
       "name": "workflow-toolbox",
       "source": "./plugin",
       "description": "Toolbox for Claude Code's Workflow tool — author, scaffold, and debug deterministic multi-agent workflow scripts (workflow-composer, with the @workflow-toolbox compile-time pattern toolkit as its standard library)."
+    },
+    {
+      "name": "wt-secret-guard",
+      "source": "./plugins/wt-secret-guard",
+      "description": "Supported Function Hooks secret scrubber for prompts and tool results."
     }
   ]
 }

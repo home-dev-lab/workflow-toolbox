@@ -25,6 +25,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   comma/newline syntax in plugin settings; test-only artifact-server knobs remain env-only.
 
 ### Added
+- Added the `wt-secret-guard` Function Hooks plugin to the marketplace: it scrubs secrets from prompts and
+  tool results and rewrites 1Password references. Requires `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` and the
+  1Password CLI.
 - External OpenCode lanes now allow only `openai/gpt-5.6-luna`, `openai/gpt-5.6-terra`,
   `openai/gpt-5.6-sol`, and `openai/gpt-6-astra` by default. Set the comma- or
   whitespace-separated `WT_LANE_MODELS` allow-list to replace that default; model matching is exact.
