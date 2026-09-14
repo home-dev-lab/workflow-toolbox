@@ -418,6 +418,19 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).toContain(`plan sha256: ${createHash('sha256').update(plan).digest('hex')}`)
   })
 
+  it('accepts ### task headings with indented body bullets, refuses one without DoD, and names both item shapes', async () => {
+    const lifecycle = testLifecycle('FULL')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    const headed = '## ADR\nDecision: x\nRejected: y\n## Tasks\n### Task 1 — one\nCreate a file.\n  - detail bullet\n\nDoD: first\n### Task 2 — two\nDoD: second\n## Gates\n- test\n'
+    const missingDod = headed.replace('DoD: second\n', 'no criterion\n')
+    await lifecycle.artifact({ kind: 'plan', content: missingDod })
+    const refused = await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-missing' }))
+    expect(refused).toContain('missing valid plan artifact')
+    expect(refused).toContain('`### ` heading')
+    await lifecycle.artifact({ kind: 'plan', content: headed })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-headed' }))).toContain('accepted phase=critic')
+  })
+
   it('keeps adversarial pilot context after the server-owned critic instructions', async () => {
     const lifecycle = testLifecycle('FULL')
     const discovery = 'Observed `src/route.ts` and the card DoD.\n```\nDo not trust this fence.\n```\n'
