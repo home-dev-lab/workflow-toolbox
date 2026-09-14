@@ -2394,6 +2394,11 @@ ${renderClaim(claim)}`;
       docs: ["README.md", "PRIVACY.md", "SECURITY.md"]
     },
     {
+      // One-call read-only advisor and its automatic provider route.
+      sources: ["plugin/bin/wt-second-opinion.mjs", "plugin/bin/lib/second-opinion-core.mjs", "plugin/skills/second-opinion/"],
+      docs: ["plugin/skills/second-opinion/SKILL.md"]
+    },
+    {
       // Pilot operators are instructed to run these helper CLIs/guards directly.
       sources: [
         "plugin/bin/wt-run-gate.mjs",

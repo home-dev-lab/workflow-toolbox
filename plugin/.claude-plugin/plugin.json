@@ -76,6 +76,13 @@
       "default": "http://localhost:25478/mcp",
       "required": false,
       "description": "HTTP MCP endpoint of the Planka board that SDK pilots and the SDK orchestrator use."
+    },
+    "second_opinion_fable_max_pct": {
+      "type": "number",
+      "title": "Second-opinion Fable quota ceiling",
+      "default": 90,
+      "required": false,
+      "description": "Refuse a Fable second-opinion call when its weekly scoped usage percentage is at or above this value."
     }
   },
   "hooks": {

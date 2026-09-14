@@ -28,6 +28,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added the `wt-secret-guard` Function Hooks plugin to the marketplace: it scrubs secrets from prompts and
   tool results and rewrites 1Password references. Requires `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1` and the
   1Password CLI.
+- Added `/second-opinion`, a one-call read-only advisor that automatically uses GPT-6 Astra when
+  GPT-lane consent and the Codex companion are present, otherwise Claude Fable through the Agent SDK.
+  Fable calls fail closed at a configurable weekly scoped-quota ceiling, and detached output records
+  route provenance plus a final exit marker.
 - External OpenCode lanes now allow only `openai/gpt-5.6-luna`, `openai/gpt-5.6-terra`,
   `openai/gpt-5.6-sol`, and `openai/gpt-6-astra` by default. Set the comma- or
   whitespace-separated `WT_LANE_MODELS` allow-list to replace that default; model matching is exact.

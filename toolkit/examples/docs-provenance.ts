@@ -345,6 +345,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, privacy, and security docs describe this bundled public quota probe.',
   },
   {
+    script: 'plugin/bin/wt-second-opinion.mjs',
+    status: 'mapped',
+    reason: 'The second-opinion skill documents route selection, detached invocation, output provenance, quota refusal, and the read-only ownership boundary.',
+  },
+  {
     script: 'plugin/bin/wt-quota-watch.mjs',
     status: 'mapped',
     reason: 'README, privacy, and security docs describe the bundled quota monitor and probe pairing.',
@@ -837,6 +842,11 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     // Bundled quota monitor/probe pair.
     sources: ['plugin/bin/wt-quota-probe.mjs', 'plugin/bin/wt-quota-watch.mjs', 'plugin/bin/lib/quota-route.mjs'],
     docs: ['README.md', 'PRIVACY.md', 'SECURITY.md'],
+  },
+  {
+    // One-call read-only advisor and its automatic provider route.
+    sources: ['plugin/bin/wt-second-opinion.mjs', 'plugin/bin/lib/second-opinion-core.mjs', 'plugin/skills/second-opinion/'],
+    docs: ['plugin/skills/second-opinion/SKILL.md'],
   },
   {
     // Pilot operators are instructed to run these helper CLIs/guards directly.
