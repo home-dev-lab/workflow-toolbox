@@ -3,54 +3,54 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { appendSupervisorJournal, classifyLane, latestWorktreeWrite, processAlive, processEvidenceStatus, supervisionUnavailableMessage, terminateVerified } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, classifyLane, latestWorktreeWrite, processEvidenceStatus, supervisionUnavailableMessage, terminateLane } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 describe('lane supervisor safety core', () => {
-  it('never authorizes an unattributed process', () => {
-    expect(classifyLane({ process: { pid: 41, argv: ['opencode', 'run'] }, record: null })).toEqual({ action: 'warn', reason: 'unknown-owner' })
+  it('returns unknown without a readable attributed record', () => {
+    expect(classifyLane(null)).toMatchObject({ status: 'unknown', reason: 'invalid-record' })
   })
 
-  it('authorizes only terminal supervision records whose launcher is gone', () => {
-    const process = { pid: 41, argv: ['opencode', 'run', '--dir', '/work'] }
-    const record = { state: 'running', childPid: 41, workerPid: 40, worktree: '/work', childArgv: process.argv }
-    expect(classifyLane({ process, record, launcherAlive: true })).toEqual({ action: 'keep', reason: 'live-lane' })
-    expect(classifyLane({ process, record, launcherAlive: false })).toEqual({ action: 'keep', reason: 'nonterminal-supervision-record' })
-    expect(classifyLane({ process, record: { ...record, state: 'exited' }, launcherAlive: true })).toEqual({ action: 'keep', reason: 'launcher-still-running' })
-    expect(classifyLane({ process, record: { ...record, state: 'exited' }, launcherAlive: false })).toEqual({ action: 'clean', reason: 'exited-launcher-gone' })
-    expect(classifyLane({ process, record: { ...record, state: 'abandoned' }, launcherAlive: false })).toEqual({ action: 'clean', reason: 'abandoned-launcher-gone' })
+  it('classifies worker and child only by their recorded pid and argv identities', () => {
+    const worker = { pid: 40, argv: ['node', 'wt-lane.mjs', '--worker'] }
+    const child = { pid: 41, argv: ['opencode', 'run'] }
+    const record = { runId: '40-1', state: 'running', workerPid: worker.pid, workerArgv: worker.argv, childPid: child.pid, childArgv: child.argv, worktree: '/work' }
+    const inspect = (pid: number) => pid === worker.pid ? worker : pid === child.pid ? child : null
+    expect(classifyLane(record, { inspect })).toMatchObject({ status: 'running', worker: 'running', child: 'running' })
+    expect(classifyLane({ ...record, state: 'decision-needed' }, { inspect })).toMatchObject({ status: 'decision-needed' })
+    expect(classifyLane({ ...record, state: 'abandoned' }, { inspect })).toMatchObject({ status: 'unknown', reason: 'inconsistent-record' })
+    expect(classifyLane({ ...record, state: 'abandoned' }, { inspect: (pid: number) => pid === worker.pid ? worker : null })).toMatchObject({ status: 'terminal' })
+    expect(classifyLane(record, { inspect: (pid: number) => pid === child.pid ? child : null })).toMatchObject({ status: 'worker-gone-child-alive' })
+    expect(classifyLane(record, { inspect: () => null })).toMatchObject({ status: 'gone' })
+    expect(classifyLane(record, { inspect: (pid: number) => pid === worker.pid ? { ...worker, argv: ['unrelated'] } : child })).toMatchObject({ status: 'worker-gone-child-alive' })
   })
 
-  it('reports brokers as observed because broker idleness is not implemented', () => {
-    expect(classifyLane).toBeTypeOf('function')
+  it('is unknown off Linux even when neither pid can be inspected', () => {
+    const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node'], childPid: 41, childArgv: ['opencode'], worktree: '/work' }
+    expect(classifyLane(record, { platform: 'darwin', inspect: () => null })).toMatchObject({ status: 'unknown', worker: 'unknown', child: 'unknown' })
   })
 
-  it('re-verifies identity immediately before kill and refuses a reused pid', () => {
+  it('re-verifies both identities immediately before terminating and refuses a reused pid', () => {
     const kill = vi.fn()
-    const expected = { pid: 77, argv: ['opencode', 'run', '--dir', '/lane'], cwd: '/lane' }
-    const result = terminateVerified(expected, {
-      inspect: () => ({ pid: 77, argv: ['node', 'unrelated.mjs'], cwd: '/other' }),
+    const record = { runId: '76-1', state: 'running', worktree: '/lane', workerPid: 76, workerArgv: ['node', 'wt-lane'], childPid: 77, childArgv: ['opencode'] }
+    const result = terminateLane(record, {
+      inspect: (pid: number) => pid === 76 ? { pid: 76, argv: ['unrelated'] } : { pid: 77, argv: ['opencode'] },
       kill,
+      graceMs: 0,
     })
-    expect(result).toEqual({ killed: false, reason: 'identity-changed' })
+    expect(result).toMatchObject({ killed: false, reason: 'identity-changed' })
     expect(kill).not.toHaveBeenCalled()
   })
 
-  it('escalates and reports cleaned only after the exact process is gone', () => {
+  it('terminates the verified worker group and journals what it killed', () => {
     const kill = vi.fn()
-    const expected = { pid: 77, argv: ['opencode', 'run', '--dir', '/lane'], cwd: '/lane' }
-    let checks = 0
-    expect(terminateVerified(expected, { inspect: () => checks++ < 2 ? expected : null, kill, graceMs: 0 })).toEqual({ killed: true, reason: 'terminated' })
-    expect(kill.mock.calls).toEqual([[77, 'SIGTERM'], [77, 'SIGKILL']])
-  })
-
-  it('does not report cleaned when the process survives SIGKILL', () => {
-    const kill = vi.fn()
-    const expected = { pid: 77, argv: ['opencode'], cwd: '/lane' }
-    expect(terminateVerified(expected, { inspect: () => expected, kill, graceMs: 0 })).toEqual({ killed: false, reason: 'still-alive-after-sigkill' })
-  })
-
-  it('treats EPERM as alive', () => {
-    expect(processAlive(77, { kill: () => { const error = new Error('denied') as NodeJS.ErrnoException; error.code = 'EPERM'; throw error } })).toBe(true)
+    const journal = vi.fn()
+    const record = { runId: '76-1', state: 'running', worktree: '/lane', workerPid: 76, workerArgv: ['node'], childPid: 77, childArgv: ['opencode'] }
+    let live = true
+    const inspect = (pid: number) => live ? { pid, argv: pid === 76 ? ['node'] : ['opencode'], groupId: 76 } : null
+    kill.mockImplementation((_pid, signal) => { if (signal === 'SIGKILL') live = false })
+    expect(terminateLane(record, { inspect, kill, journal, graceMs: 0, source: 'test' })).toMatchObject({ killed: true, reason: 'terminated' })
+    expect(kill.mock.calls).toEqual([[-76, 'SIGTERM'], [-76, 'SIGKILL']])
+    expect(journal).toHaveBeenCalledWith(expect.objectContaining({ event: 'terminated', runId: '76-1', source: 'test', workerPid: 76, childPid: 77 }))
   })
 
   it('names a bounded worktree scan unknown and reports non-Linux availability', () => {

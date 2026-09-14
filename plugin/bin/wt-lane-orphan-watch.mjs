@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, processAlive, readLogTail, supervisionPaths, supervisionUnavailableMessage, terminateVerified } from './lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionUnavailableMessage, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { registeredWorktrees, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
@@ -10,7 +10,6 @@ import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
 const CONTROL = fileURLToPath(new URL('./wt-lane-control.mjs', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./wt-lane.mjs', import.meta.url))
-const shellArg = (value) => JSON.stringify(String(value))
 const argvValue = (argv, flag) => {
   const index = Array.isArray(argv) ? argv.indexOf(flag) : -1
   return index >= 0 ? argv[index + 1] ?? null : null
@@ -81,27 +80,26 @@ async function main() {
   const sweep = () => {
     const known = records(options.project)
     for (const record of known) {
-      const processRecord = inspectProcess(record.childPid)
-      if (!processRecord) continue
-      const verdict = classifyLane({ process: processRecord, record, launcherAlive: processAlive(record.workerPid) })
+      const verdict = classifyLane(record)
+      const processRecord = verdict.child === 'running' ? inspectProcess(record.childPid) : null
       const ownsNotice = record.owner === 'session' && Boolean(record.ownerSessionId) && record.ownerSessionId === process.env.CLAUDE_CODE_SESSION_ID
       const decisionKey = `${record.runId}:${record.timeoutAt}`
       if (ownsNotice && record.state === 'decision-needed' && !notified.has(decisionKey)) {
         const e = record.evidence ?? {}
         const model = argvValue(record.workerArgv, '--model')
         const brief = argvValue(record.workerArgv, '--brief')
-        const control = `node ${shellArg(CONTROL)} --dir ${shellArg(record.worktree)}`
+        const control = `node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)}`
         const restart = model && brief && path.isAbsolute(brief) && existsSync(brief)
-          ? `; to relaunch from the worktree's current state, abandon, then run node ${shellArg(LAUNCHER)} --dir ${shellArg(record.worktree)} --model ${shellArg(model)} --brief ${shellArg(brief)}`
+          ? `; to relaunch from the worktree's current state, abandon, then run node ${shellQuote(LAUNCHER)} --dir ${shellQuote(record.worktree)} --model ${shellQuote(model)} --brief ${shellQuote(brief)}`
           : ''
         notice(decisionKey, `LANE ${record.state}: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${e.lastWriteAt ?? 'unknown'} process=${e.process ?? 'unknown'} log-tail=${JSON.stringify(e.logTail ?? '')}; extend with ${control} --decision extend, or abandon with ${control} --decision abandon before ${record.decisionDueAt}${restart}; default=${record.defaultDecision}`)
       }
       const stalledKey = `${record.runId}:stalled`
-      if (record.state === 'running') {
+      if (verdict.status === 'running' && processRecord) {
         const activity = latestWorktreeWrite(record.worktree)
         if (activity.status === 'known' && activity.at && Date.now() - activity.at >= stallMinutes * 60_000) {
           const evidence = { lastWriteAt: new Date(activity.at).toISOString(), activityBounded: activity.bounded, logTail: readLogTail(record.log), process: 'running' }
-          if (!journaled.has(stalledKey) && journal({ event: 'stalled', pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })) journaled.add(stalledKey)
+          if (!journaled.has(stalledKey) && journal({ event: 'stalled', runId: record.runId, pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })) journaled.add(stalledKey)
           if (ownsNotice && !notified.has(stalledKey)) notice(stalledKey, `LANE stalled: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${evidence.lastWriteAt} process=running log-tail=${JSON.stringify(evidence.logTail)}; inspect or nudge; timeout decisions are extend or abandon; no process was killed`)
         } else {
           journaled.delete(stalledKey)
@@ -112,19 +110,25 @@ async function main() {
         notified.delete(stalledKey)
       }
       const cleanKey = `${record.runId}:would-clean`
-      if (verdict.action !== 'clean') {
+      const cleanupCandidate = verdict.status === 'worker-gone-child-alive' && ['exited', 'abandoned'].includes(record.state) && processRecord
+      if (!cleanupCandidate) {
         journaled.delete(cleanKey)
         notified.delete(cleanKey)
+        if (verdict.status === 'worker-gone-child-alive') {
+          const orphanKey = `${record.runId}:worker-gone-child-alive`
+          if (!journaled.has(orphanKey) && journal({ event: 'worker-gone-child-alive', runId: record.runId, pid: record.childPid, argv: argvSummary(processRecord?.argv ?? record.childArgv ?? []), worktree: record.worktree, owner: record.owner, reason: verdict.reason })) journaled.add(orphanKey)
+          if (ownsNotice && !notified.has(orphanKey)) notice(orphanKey, `LANE worker-gone-child-alive: worktree=${record.worktree} child pid=${record.childPid}; abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)} --decision abandon`)
+        }
         continue
       }
       const evidence = { recordState: record.state, launcherAlive: false, childPid: record.childPid, childArgv: record.childArgv, childCwd: processRecord.cwd, workerPid: record.workerPid }
       if (cleanupMode === 'observe') {
-        if (!journaled.has(cleanKey) && journal({ event: 'would-clean', pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: verdict.reason, evidence })) journaled.add(cleanKey)
+        if (!journaled.has(cleanKey) && journal({ event: 'would-clean', runId: record.runId, pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: verdict.reason, evidence })) journaled.add(cleanKey)
         if (ownsNotice && !notified.has(cleanKey)) notice(cleanKey, `LANE would-clean: worktree=${record.worktree} pid=${record.childPid} reason=${verdict.reason}; lane_orphan_cleanup=observe, no process was killed`)
         continue
       }
-      const result = terminateVerified(processRecord)
-      journal({ event: result.killed ? 'cleaned' : 'cleanup-refused', pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: result.killed ? verdict.reason : result.reason, evidence }, { killed: result.killed })
+      const result = terminateLane(record, { journal, source: 'watcher' })
+      journal({ event: result.killed ? 'cleaned' : 'cleanup-refused', runId: record.runId, pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: result.killed ? verdict.reason : result.reason, evidence }, { killed: result.killed })
     }
     const table = listProcessTable()
     const attributed = new Set(known.map((record) => record.childPid))

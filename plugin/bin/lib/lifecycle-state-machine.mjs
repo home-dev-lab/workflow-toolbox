@@ -198,6 +198,7 @@ export function createLifecycleStateMachine({
   laneLauncher = null,
   lanePollMs = 25,
   laneWaitMs = null,
+  lanePlatform = process.platform,
   gateRunner = null,
   git = execFileSync,
   copy = fs.cpSync,
@@ -372,6 +373,7 @@ export function createLifecycleStateMachine({
     laneLauncher,
     lanePollMs,
     laneWaitMs,
+    lanePlatform,
     gateRunner,
   })
   function transition(event) {

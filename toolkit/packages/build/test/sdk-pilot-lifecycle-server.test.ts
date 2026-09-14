@@ -148,7 +148,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     const lifecycle = testLifecycle('LITE', [], emptyLauncher(), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
     expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt unchanged: /)
   })
 
@@ -169,7 +169,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-    expect(result).toMatch(/abandon with node "\/.*wt-lane-control\.mjs" .*--decision abandon --owner-token "[0-9a-f-]+"/)
+    expect(result).toMatch(/abandon with node '\/.*wt-lane-control\.mjs' .*--decision abandon --owner-token '[0-9a-f-]+'/)
     expect(result).toContain('re-run this lifecycle lane phase')
     expect(result).not.toContain('wt-lane.mjs --dir')
     const record = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', '999-2.json'), 'utf8'))
@@ -198,7 +198,7 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('LITE', [], wrapper, 500)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const first = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-    const command = /abandon with (node .*? --decision abandon --owner-token "[0-9a-f-]+")/.exec(first)?.[1]
+    const command = /abandon with (node .*? --decision abandon --owner-token '[0-9a-f-]+')/.exec(first)?.[1]
     expect(command).toBeTruthy()
     const firstBrief = readFileSync(join(lifecycle.root, '.lane', 'launch-brief-1'), 'utf8')
     expect(existsSync(firstBrief)).toBe(true)
@@ -264,7 +264,7 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('LITE', [], rawLauncher(readFileSync(detached, 'utf8').replace("process.stdout.write('pid='+process.pid+'\\n');", '')), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-    expect(result).toMatch(/TIMEOUT:.*--owner-token "[0-9a-f-]+"/)
+    expect(result).toMatch(/TIMEOUT:.*--owner-token '[0-9a-f-]+'/)
     const pid = Number(readFileSync(join(lifecycle.root, pidFileName), 'utf8'))
     expect(() => process.kill(pid, 0)).not.toThrow()
     const identity = inspectProcess(pid); expect(identity?.argv.join(' ')).toContain('setInterval')
@@ -277,22 +277,44 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('LITE', [], running, 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-    expect(result).toMatch(/TIMEOUT:.*--owner-token "[0-9a-f-]+"/)
+    expect(result).toMatch(/TIMEOUT:.*--owner-token '[0-9a-f-]+'/)
     const pid = Number(readFileSync(join(lifecycle.root, pidFileName), 'utf8'))
     expect(() => process.kill(pid, 0)).not.toThrow()
     const record = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', '996-1.json'), 'utf8'))
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it('terminates the launcher group when a missing receipt has no decision-needed record', async () => {
+  it('returns TIMEOUT naming a surviving child when the worker is gone', async () => {
+    const detached = launcher(`import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],runId='995-1',dir=join(root,'.lane','supervision'),source='setInterval(()=>{},1000)',child=spawn(process.execPath,['-e',source],{detached:true,stdio:'ignore'}); child.unref(); mkdirSync(dir,{recursive:true}); writeFileSync(join(root,'.lane','orphan-pid'),String(child.pid)); writeFileSync(join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv:process.argv,childPid:child.pid,childArgv:[process.execPath,'-e',source],worktree:root,owner:'pilot',ownerToken:args[args.indexOf('--owner-token')+1],timeoutAt:new Date().toISOString()})); writeFileSync(join(dir,'current.json'),JSON.stringify({runId})); process.stdout.write('run='+runId+'\\n')`)
+    const lifecycle = testLifecycle('LITE', [], detached, 30)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
+    expect(result).toMatch(/TIMEOUT:.*worker-gone-child-alive.*child pid=\d+.*--decision abandon/s)
+    const child = inspectProcess(Number(readFileSync(join(lifecycle.root, '.lane', 'orphan-pid'), 'utf8')))
+    expect(child).not.toBeNull()
+    killIdentity(child, 'SIGKILL')
+  })
+
+  it('returns TIMEOUT unknown and retains the snapshot off Linux', async () => {
+    const detached = launcher(`import { mkdirSync, writeFileSync } from 'node:fs'; const args=process.argv,root=args[args.indexOf('--dir')+1],brief=args[args.indexOf('--brief')+1],dir=root+'/.lane/supervision',runId='994-1'; mkdirSync(dir,{recursive:true}); writeFileSync(root+'/.lane/snapshot-path',brief); writeFileSync(dir+'/'+runId+'.json',JSON.stringify({runId,state:'running',workerPid:process.pid,workerArgv:process.argv,childPid:999999,childArgv:['none'],worktree:root,owner:'pilot'})); writeFileSync(dir+'/current.json',JSON.stringify({runId})); process.stdout.write('run='+runId+'\\n')`)
+    const lifecycle = testLifecycle('LITE', [], detached, 30, { lanePlatform: 'darwin' })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
+    expect(result).toMatch(/TIMEOUT:.*unknown.*--decision abandon/s)
+    const snapshot = readFileSync(join(lifecycle.root, '.lane', 'snapshot-path'), 'utf8')
+    expect(existsSync(snapshot)).toBe(true)
+  })
+
+  it('returns EXIT=missing without terminating an unsupervised launcher', async () => {
     const pidFileName = '.lane/missing-worker-pid'
     const detached = launcher(`import { spawn } from 'node:child_process'; import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}); child.unref(); writeFileSync(join(root,${JSON.stringify(pidFileName)}),String(child.pid)); process.stdout.write('pid='+child.pid+'\\n')`)
     const lifecycle = testLifecycle('LITE', [], rawLauncher(readFileSync(detached, 'utf8').replace("process.stdout.write('pid='+process.pid+'\\n');", '')), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
     const pid = Number(readFileSync(join(lifecycle.root, pidFileName), 'utf8')); let alive = true
     for (let i = 0; i < 40; i += 1) { try { process.kill(pid, 0) } catch { alive = false; break } await new Promise((resolve) => setTimeout(resolve, 25)) }
-    expect(alive).toBe(false)
+    expect(alive).toBe(true)
+    killIdentity(inspectProcess(pid), 'SIGKILL')
   })
 
   it('refuses a lane receipt with an empty report', async () => {
@@ -474,7 +496,7 @@ printf 'report\n' > "$report"
     expect(readFileSync(recordedInput, 'utf8')).not.toContain('forged diff')
   })
 
-  it('terminates the launcher-reported process group after attesting its receipt', async () => {
+  it('does not terminate a launcher-reported process group after attesting its receipt', async () => {
     const pidFile = join(tmpdir(), `wt-h9-pid-${process.pid}-${Date.now()}`)
     roots.push(pidFile)
     const worker = rawLauncher(`import { spawn } from 'node:child_process'; import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const report=/Write the report to \`([^\`]+)\`/.exec(readFileSync(brief,'utf8'))[1]; const child=spawn('sleep',['600'],{detached:true,stdio:'ignore'}); child.unref(); writeFileSync(${JSON.stringify(pidFile)},String(child.pid)); process.stdout.write('pid='+child.pid+'\\n'); writeFileSync(report,'report\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
@@ -485,10 +507,10 @@ printf 'report\n' > "$report"
     const pid = Number(readFileSync(pidFile, 'utf8'))
     let gone = false
     try { process.kill(pid, 0) } catch { gone = true }
-    if (!gone) { try { process.kill(-pid, 'SIGKILL') } catch {} }
-    expect(gone, `process group ${pid} survived its lane receipt`).toBe(true)
+    expect(gone, `process group ${pid} was killed by lifecycle`).toBe(false)
+    killIdentity(inspectProcess(pid), 'SIGKILL')
     const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
-    expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].group).toBe('terminated')
+    expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].group).toBe('worker-owned')
   })
 
   it('the shipped launcher keeps ordinary descendants in the terminated lane group', async () => {
@@ -904,7 +926,7 @@ printf 'report\n' > "$report"
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-run.log'), 'old\nEXIT=0\n')
     writeFileSync(join(lifecycle.root, '.lane', 'tdd-report.md'), 'old\n')
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
   })
 
   it('does not attest a foreign receipt without the launch nonce', async () => {
@@ -920,7 +942,7 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('LITE', [], launcher("import { writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; writeFileSync(log, 'LANE_NONCE=other\\nEXIT=0\\n'); writeFileSync(process.argv[process.argv.indexOf('--brief') + 1].replace('-brief.md', '-report.md'), 'report\\n')"), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=missing')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toContain('lane tdd TIMEOUT: unknown')
   })
 
   it('publishes only the genuine per-launch receipt while an old worker writes every other receipt', async () => {

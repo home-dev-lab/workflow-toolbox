@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path'
-import { inspectProcess, readCurrentSupervision, sameIdentity, supervisionPaths, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, classifyLane, readCurrentSupervision, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
+import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
 function usage() {
   return 'Usage: node wt-lane-control.mjs --dir <worktree> --decision extend|abandon [--extend <seconds>] [--owner-token <token>] [--reason <text>]'
@@ -35,11 +36,20 @@ function main() {
     ? Boolean(state.ownerSessionId && process.env.CLAUDE_CODE_SESSION_ID === state.ownerSessionId)
     : Boolean(state.ownerToken && options.ownerToken === state.ownerToken)
   if (!ownsLane) { process.stderr.write('wt-lane-control: refused: caller is not the recorded owner\n'); return 1 }
-  if (state.state !== 'decision-needed' || !state.timeoutAt) { process.stderr.write('wt-lane-control: refused: no current decision point\n'); return 1 }
-  const worker = inspectProcess(state.workerPid)
-  if (!sameIdentity({ pid: state.workerPid, argv: state.workerArgv }, worker)) { process.stderr.write('wt-lane-control: refused: launcher identity changed or is gone\n'); return 1 }
-  const child = inspectProcess(state.childPid)
-  if (!sameIdentity({ pid: state.childPid, argv: state.childArgv, cwd: state.worktree }, child)) { process.stderr.write('wt-lane-control: refused: lane identity changed or is gone\n'); return 1 }
+  const verdict = classifyLane(state)
+  if (!['decision-needed', 'worker-gone-child-alive'].includes(verdict.status) || !state.timeoutAt) { process.stderr.write(`wt-lane-control: refused: no current decision point (${verdict.status})\n`); return 1 }
+  if (options.decision === 'abandon') {
+    const stateFile = supervisionPaths(options.dir, state.runId).record
+    const abandoned = { ...state, state: 'abandoned', decision: 'abandon', decisionSource: 'owner', decidedAt: new Date().toISOString() }
+    const dataDir = path.join(resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
+    const journal = (event) => { try { appendSupervisorJournal(dataDir, event) } catch {} }
+    journal({ event: 'decision', runId: state.runId, decision: 'abandon', source: 'owner', pid: state.childPid, worktree: state.worktree, owner: state.owner, reason: options.reason ?? null })
+    const result = terminateLane(state, { source: 'control', journal, markTerminal: (stage) => writeJsonAtomic(stateFile, stage === 'terminal' ? abandoned : { ...state, state: 'terminating', decision: 'abandon', decisionSource: 'owner', decidedAt: abandoned.decidedAt }) })
+    if (!result.killed && result.reason !== 'already-gone') { process.stderr.write(`wt-lane-control: refused: ${result.reason}\n`); return 1 }
+    process.stdout.write(`decision=abandon\nrun=${state.runId}\n`)
+    return 0
+  }
+  if (verdict.status !== 'decision-needed') { process.stderr.write('wt-lane-control: refused: launcher is gone; only abandon is available\n'); return 1 }
   writeJsonAtomic(supervisionPaths(options.dir, state.runId).decision, { version: 1, runId: state.runId, timeoutAt: state.timeoutAt, decision: options.decision, extendSeconds: options.extendSeconds, reason: options.reason, decidedAt: new Date().toISOString() })
   process.stdout.write(`decision=${options.decision}\nrun=${state.runId}\n`)
   return 0

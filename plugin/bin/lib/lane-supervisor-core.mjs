@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
@@ -10,32 +10,87 @@ export function sameIdentity(expected, actual) {
     && (!expected.cwd || expected.cwd === actual.cwd))
 }
 
-export function terminateVerified(expected, { inspect = inspectProcess, kill = process.kill, graceMs = 1000 } = {}) {
-  const actual = inspect(expected.pid)
-  if (!sameIdentity(expected, actual)) return { killed: false, reason: actual ? 'identity-changed' : 'already-gone' }
-  try { kill(expected.pid, 'SIGTERM') } catch (error) {
-    return { killed: false, reason: error?.code === 'ESRCH' ? 'already-gone' : `sigterm-${error?.code ?? 'failed'}` }
-  }
-  if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-  if (!inspect(expected.pid)) return { killed: true, reason: 'terminated' }
-  try { kill(expected.pid, 'SIGKILL') } catch (error) {
-    if (error?.code === 'ESRCH') return { killed: true, reason: 'terminated' }
-    return { killed: false, reason: `sigkill-${error?.code ?? 'failed'}` }
-  }
-  if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-  return inspect(expected.pid)
-    ? { killed: false, reason: 'still-alive-after-sigkill' }
-    : { killed: true, reason: 'terminated' }
+function identityStatus(expected, { inspect, platform, procRoot }) {
+  if (platform !== 'linux') return 'unknown'
+  if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv)) return 'unknown'
+  const actual = inspect(expected.pid, { platform, procRoot })
+  if (actual) return sameIdentity(expected, actual) ? 'running' : 'gone'
+  if (inspect !== inspectProcess) return 'gone'
+  const processDir = path.join(procRoot, String(expected.pid))
+  if (!existsSync(processDir)) return 'gone'
+  try {
+    const stat = readFileSync(path.join(processDir, 'stat'), 'utf8')
+    if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] === 'Z') return 'gone'
+  } catch {}
+  return 'unknown'
 }
 
-export function classifyLane({ process, record, launcherAlive = false }) {
-  if (!record || record.childPid !== process.pid || (process.cwd && record.worktree !== process.cwd) || JSON.stringify(record.childArgv) !== JSON.stringify(process.argv)) {
-    return { action: 'warn', reason: 'unknown-owner' }
+export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc' } = {}) {
+  if (!record || typeof record !== 'object' || typeof record.runId !== 'string') {
+    return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
-  if (!['exited', 'abandoned'].includes(record.state)) return { action: 'keep', reason: launcherAlive ? 'live-lane' : 'nonterminal-supervision-record' }
-  if (launcherAlive) return { action: 'keep', reason: 'launcher-still-running' }
-  if (!launcherAlive) return { action: 'clean', reason: `${record.state}-launcher-gone` }
-  return { action: 'keep', reason: 'live-lane' }
+  if (platform !== 'linux') return { status: 'unknown', reason: `identity-unavailable-${platform}`, worker: 'unknown', child: 'unknown' }
+  if (record.state === 'launch-failed') return { status: 'terminal', reason: 'launch-failed', worker: 'gone', child: 'gone' }
+  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv }, { inspect, platform, procRoot })
+  const child = identityStatus({ pid: record.childPid, argv: record.childArgv }, { inspect, platform, procRoot })
+  if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
+  if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
+  if (worker === 'unknown' || child === 'unknown') return { status: 'unknown', reason: 'identity-unreadable', worker, child }
+  if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
+  if (worker === 'running' && child === 'running' && ['running', 'decision-needed'].includes(record.state)) {
+    return { status: record.state, reason: record.state, worker, child }
+  }
+  return { status: 'unknown', reason: 'inconsistent-record', worker, child }
+}
+
+export function terminateLane(record, { inspect = inspectProcess, kill = process.kill, graceMs = 1000, platform = process.platform, journal = () => {}, source = 'unknown', markTerminal = null } = {}) {
+  const verdict = classifyLane(record, { inspect, platform })
+  if (verdict.status === 'gone') return { killed: false, reason: 'already-gone', verdict }
+  if (!['running', 'decision-needed', 'terminal', 'worker-gone-child-alive'].includes(verdict.status)) {
+    return { killed: false, reason: verdict.reason, verdict }
+  }
+  const worker = inspect(record.workerPid, { platform })
+  const child = inspect(record.childPid, { platform })
+  if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv }, worker))
+    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv }, child))) {
+    return { killed: false, reason: 'identity-changed', verdict }
+  }
+  if ((worker?.groupId && worker.groupId !== record.workerPid) || (child?.groupId && child.groupId !== record.workerPid)) {
+    return { killed: false, reason: 'process-group-changed', verdict }
+  }
+  const event = { event: 'termination-signaled', runId: record.runId, source, workerPid: record.workerPid, childPid: record.childPid, pid: record.childPid, argv: argvSummary(record.childArgv ?? []), worktree: record.worktree, owner: record.owner ?? null, reason: 'verified lane process group' }
+  journal(event)
+  if (markTerminal) markTerminal('terminating')
+  const signal = (name) => {
+    try { kill(-record.workerPid, name); return true } catch (error) {
+      if (error?.code === 'ESRCH') return false
+      throw error
+    }
+  }
+  try {
+    if (!signal('SIGTERM')) {
+      if (markTerminal) markTerminal('terminal')
+      return { killed: false, reason: 'already-gone', verdict }
+    }
+    if (markTerminal) markTerminal('terminal')
+    if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
+    const afterTerm = classifyLane(record, { inspect, platform })
+    if (afterTerm.status === 'gone') {
+      journal({ ...event, event: 'terminated', reason: 'terminated' })
+      return { killed: true, reason: 'terminated', verdict: afterTerm }
+    }
+    if (afterTerm.status === 'unknown' && afterTerm.reason === 'identity-unreadable') return { killed: false, reason: 'identity-unreadable-after-sigterm', verdict: afterTerm }
+    if (!signal('SIGKILL')) return { killed: true, reason: 'terminated', verdict: afterTerm }
+    if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
+    const afterKill = classifyLane(record, { inspect, platform })
+    if (afterKill.status === 'gone') {
+      journal({ ...event, event: 'terminated', reason: 'terminated' })
+      return { killed: true, reason: 'terminated', verdict: afterKill }
+    }
+    return { killed: false, reason: 'still-alive-after-sigkill', verdict: afterKill }
+  } catch (error) {
+    return { killed: false, reason: `signal-${error?.code ?? 'failed'}`, verdict }
+  }
 }
 
 export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform } = {}) {
@@ -43,11 +98,17 @@ export function inspectProcess(pid, { procRoot = '/proc', platform = process.pla
   try {
     const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
     const cwd = readlinkSync(path.join(procRoot, String(pid), 'cwd'))
-    return { pid: Number(pid), argv, cwd }
+    const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+    const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    if (rest[0] === 'Z') return null
+    return { pid: Number(pid), argv, cwd, groupId: Number(rest[2]) }
   } catch {
     try {
       const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
-      return { pid: Number(pid), argv, cwd: null }
+      const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+      const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+      if (rest[0] === 'Z') return null
+      return { pid: Number(pid), argv, cwd: null, groupId: Number(rest[2]) }
     } catch { return null }
   }
 }
@@ -57,9 +118,16 @@ export function processEvidenceStatus(pid, { platform = process.platform, inspec
   return inspect(pid, { platform }) ? 'running' : 'gone'
 }
 
-export function processAlive(pid, { kill = process.kill } = {}) {
-  try { kill(pid, 0); return true } catch (error) { return error?.code === 'EPERM' }
+export function laneHardBoundAt(record) {
+  const timeoutAt = Date.parse(record?.timeoutAt)
+  const timeoutMs = Number(record?.timeoutSeconds) * 1000
+  const graceMs = Number(record?.decisionGraceSeconds) * 1000
+  const remaining = Math.max(0, Number(record?.maxExtensions) - Number(record?.extensionCount))
+  if (![timeoutAt, timeoutMs, graceMs, remaining].every(Number.isFinite)) return null
+  return timeoutAt + remaining * (timeoutMs + graceMs) + graceMs + Math.max(0, Number(record?.decisionTransitionBoundMs) || 0)
 }
+
+export const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}'`
 
 export function readLogTail(file, maxBytes = 2048) {
   try {

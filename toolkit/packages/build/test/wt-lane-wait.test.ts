@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { inspectProcess } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const WAITER = join(ROOT, 'plugin/bin/wt-lane-wait.mjs')
@@ -22,6 +24,12 @@ function fixture(script: string) {
   const worker = spawn('sh', ['-c', script], { cwd: root, detached: true, stdio: 'ignore' })
   worker.unref()
   writeFileSync(join(lane, 'pid'), String(worker.pid))
+  const runId = `${worker.pid}-1`
+  const identity = inspectProcess(worker.pid!) ?? { argv: ['sh', '-c', script] }
+  const supervision = join(lane, 'supervision')
+  mkdirSync(supervision)
+  writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: worker.pid, workerArgv: identity.argv, childPid: worker.pid, childArgv: identity.argv, worktree: root }))
+  writeFileSync(join(supervision, 'current.json'), JSON.stringify({ runId }))
   return { root, lane, pid: worker.pid! }
 }
 
