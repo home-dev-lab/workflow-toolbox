@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
@@ -44,6 +46,15 @@ function waitForContent(file: string, pattern: RegExp, ms = 5000) {
     if (existsSync(file) && pattern.test(readFileSync(file, 'utf8'))) return
     spawnSync('sleep', ['0.05'])
   }
+}
+function journalEvents(file: string, event: string) {
+  if (!existsSync(file)) return []
+  return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((item) => item.event === event)
+}
+function killIdentity(expected: { pid: number, argv: string[], cwd?: string | null } | null, signal: NodeJS.Signals) {
+  if (!expected) throw new Error('expected test process identity is gone')
+  expect(sameIdentity(expected, inspectProcess(expected.pid))).toBe(true)
+  process.kill(expected.pid, signal)
 }
 function currentStateFile(dir: string, ms = 3000) {
   const pointer = join(dir, '.lane', 'supervision', 'current.json')
@@ -186,6 +197,46 @@ describe('wt-lane detached launcher', () => {
     expect(readFileSync(journal, 'utf8')).toContain('"event":"would-clean"')
     process.kill(pid, 'SIGKILL')
   })
+  it.each([
+    ['pilot', 'stalled'],
+    ['pilot', 'would-clean'],
+    ['foreign session', 'stalled'],
+    ['foreign session', 'would-clean'],
+  ])('journals one %s-owned %s episode across repeated sweeps', (ownerKind, event) => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
+    const ownerArgs = ownerKind === 'pilot' ? ['--owner', 'pilot', '--owner-token', 'pilot-token'] : []
+    const res = run(f, ['--timeout', '60', ...ownerArgs]); expect(res.status).toBe(0)
+    const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
+    waitForFile(status); waitForFile(pidFile)
+    const state = JSON.parse(readFileSync(status, 'utf8'))
+    if (event === 'would-clean') {
+      killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGKILL')
+      writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
+    } else {
+      const old = new Date(Date.now() - 120_000)
+      const ageTree = (dir: string) => {
+        for (const name of readdirSync(dir)) {
+          const file = join(dir, name)
+          if (file === join(f.dir, '.lane', 'supervision')) continue
+          if (statSync(file).isDirectory()) ageTree(file)
+          utimesSync(file, old, old)
+        }
+      }
+      ageTree(f.dir); utimesSync(f.dir, old, old)
+    }
+    const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
+    const watcher = spawn(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.05'], {
+      stdio: 'ignore',
+      env: { ...f.env, CLAUDE_CODE_SESSION_ID: 'watching-session', WT_LANE_STALL_MINUTES: '1' },
+    })
+    const watcherIdentity = inspectProcess(watcher.pid!)
+    spawnSync('sleep', ['0.3'])
+    killIdentity(watcherIdentity, 'SIGTERM')
+    expect(journalEvents(journal, event)).toHaveLength(1)
+    if (event === 'would-clean') killIdentity({ pid: state.childPid, argv: state.childArgv, cwd: state.worktree }, 'SIGKILL')
+    else killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
+  })
   it('enforce mode escalates and journals cleaned only after the orphan is gone', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
@@ -281,6 +332,18 @@ describe('wt-lane detached launcher', () => {
     const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'extend'], { encoding: 'utf8', env: { ...f.env, CLAUDE_CODE_SESSION_ID: 'other-session' } })
     expect(control.status).toBe(1); expect(control.stderr).toContain('recorded owner')
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
+  })
+  it('prints a control command that runs as written outside the plugin repository', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30'); f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
+    const res = run(f, ['--timeout', '1', '--decision-grace', '10']); expect(res.status).toBe(0)
+    waitForContent(currentStateFile(f.dir), /decision-needed/)
+    const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
+    const command = /extend with (node .*? --decision extend)(?:,| before)/.exec(watcher.stdout)?.[1]
+    expect(command).toBeTruthy()
+    const control = spawnSync(command!, { cwd: f.root, shell: true, encoding: 'utf8', env: f.env })
+    expect(control.status, control.stderr).toBe(0)
+    const state = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))
+    killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
   })
   it('refuses relaunch as an unknown decision', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')

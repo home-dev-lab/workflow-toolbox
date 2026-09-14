@@ -7,11 +7,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { launchProcess, launchProcessWithOutput, terminateProcessGroup, waitForLaneReceipt } from './lifecycle-receipts.mjs'
-import { processAlive, supervisionPaths } from './lane-supervisor-core.mjs'
+import { inspectProcess, sameIdentity, supervisionPaths } from './lane-supervisor-core.mjs'
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
 const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
+const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
+const shellArg = (value) => JSON.stringify(String(value))
 
 function terminalExit(content) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(content)?.[1] ?? null
@@ -231,6 +233,7 @@ export function createLifecycleLaunch({
         }
         const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
         if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return refusal(`${state.phase}->next`, 'launcher pid', log)
+        const launchedWorker = inspectProcess(workerPid)
         let logEntry = await waitForLaneReceipt({
           log,
           nonce,
@@ -256,11 +259,16 @@ export function createLifecycleLaunch({
             }
           }
           let parsed = null
+          const ownerControl = `extend with node ${shellArg(CONTROL)} --dir ${shellArg(root)} --decision extend --owner-token ${shellArg(nonce)}, or abandon with node ${shellArg(CONTROL)} --dir ${shellArg(root)} --decision abandon --owner-token ${shellArg(nonce)}`
+          const workerMatches = (record) => sameIdentity(
+            { pid: record?.workerPid, argv: record?.workerArgv },
+            inspectProcess(workerPid),
+          )
           try {
             parsed = JSON.parse(status)
             if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'running') {
               const transitionDueAt = Date.parse(parsed.decisionTransitionDueAt)
-              while (!logEntry && parsed.state === 'running' && parsed.workerPid === workerPid && processAlive(workerPid) && Date.now() <= transitionDueAt) {
+              while (!logEntry && parsed.state === 'running' && parsed.workerPid === workerPid && workerMatches(parsed) && Date.now() <= transitionDueAt) {
                 logEntry = await waitForLaneReceipt({
                   log,
                   nonce,
@@ -274,19 +282,26 @@ export function createLifecycleLaunch({
                 parsed = JSON.parse(status)
               }
             }
-            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'decision-needed') {
-              const control = `node plugin/bin/wt-lane-control.mjs --dir ${root}`
-              const launch = `node plugin/bin/wt-lane.mjs --dir ${root} --model ${model} --brief <brief-file>`
-              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; extend with ${control} --decision extend --owner-token ${nonce}, or abandon with ${control} --decision abandon --owner-token ${nonce}; to relaunch from the worktree's current state, abandon, then start a fresh lane with ${launch}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
+            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'decision-needed' && workerMatches(parsed)) {
+              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; ${ownerControl}; after abandon completes, re-run this lifecycle lane phase to launch a fresh owner-bound lane and brief; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
               snapshot = null
               return `lane ${phase} TIMEOUT: ${detail}`
             }
-            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'running' && processAlive(workerPid)) {
+            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'running' && workerMatches(parsed)) {
               snapshot = null
-              return `lane ${phase} TIMEOUT: owner=${parsed.owner}; live worker is still completing its bounded timeout transition; no process was killed`
+              return `lane ${phase} TIMEOUT: owner=${parsed.owner}; live worker is still completing its bounded timeout transition; ${ownerControl}; wait for the decision point before choosing; no process was killed`
+            }
+            if (!logEntry && parsed?.workerPid === workerPid && launchedWorker && sameIdentity(launchedWorker, inspectProcess(workerPid))) {
+              snapshot = null
+              return `lane ${phase} TIMEOUT: owner=pilot; supervision record does not match the live launched worker; ${ownerControl}; no process was killed`
             }
           } catch {}
           if (!logEntry) {
+            if (runId && launchedWorker && sameIdentity(launchedWorker, inspectProcess(workerPid))) {
+              snapshot = null
+              return `lane ${phase} TIMEOUT: owner=pilot; supervision evidence is unreadable; ${ownerControl}; no process was killed`
+            }
+            if (runId) return `lane ${phase} EXIT=missing`
             group = await terminateProcessGroup(workerPid)
             return `lane ${phase} EXIT=missing`
           }
