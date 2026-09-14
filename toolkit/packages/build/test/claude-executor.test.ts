@@ -31,7 +31,7 @@ const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
   fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE})}));
   if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
-  else { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; fs.writeFileSync(report,'executor report\\n'); yield {type:'result',subtype:'success',is_error:false}; }
+  else { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test'}; yield {type:'result',subtype:'success',is_error:false,usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11}}; }
 })()`)
   return { root, worktree, cli: join(installed, 'bin', 'wt-claude-executor.mjs') }
 }
@@ -86,6 +86,8 @@ describe('Claude SDK executor', () => {
     waitFor(report); waitFor(receipt)
     expect(readFileSync(report, 'utf8')).toBe('executor report\n')
     expect(readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1)).toBe('EXIT=0')
+    waitFor(`${log}.usage.json`)
+    expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
     expect(existsSync(outside)).toBe(false)
     expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
     expect(JSON.parse(readFileSync(receipt, 'utf8')).plugins[0].path).toContain(join('hooks-modules', 'pilot-guard'))

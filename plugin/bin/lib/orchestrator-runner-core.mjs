@@ -308,7 +308,7 @@ export async function runOrchestrator(input, dependencies = {}) {
       row.pilot = pilot.exitCode
       row.route = /^route=(LITE|FULL)\b/.exec(fs.existsSync(runnerLog) ? fs.readFileSync(runnerLog, 'utf8') : '')?.[1] ?? pilot.summary?.route ?? '-'
       writeFile(path.join(cardDir, 'pilot.log'), `EXIT=${pilot.exitCode}\n`)
-      for (const name of ['summary.json', 'usage.json', 'sdk-transcript.json', 'pilot-report.md']) {
+      for (const name of ['summary.json', 'usage.json', 'cost.json', 'sdk-transcript.json', 'pilot-report.md']) {
         const source = path.join(worktree, '.lane', name)
         if (fs.existsSync(source)) fs.copyFileSync(source, path.join(cardDir, name))
       }

@@ -319,6 +319,33 @@ describe('SDK pilot runner', () => {
     } })
   })
 
+  it('records assistant usage arrivals and attributes exact numbers across streamed phases', async () => {
+    const f = fixture(); let clock = 1000
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }> } }
+    const query = ({ options }: { options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const transition = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools.transition!.handler
+      yield initMessage('claude-test')
+      yield { type: 'assistant', message: { model: 'claude-test', usage: { input_tokens: 3, cache_creation_input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 11 }, content: [] } }
+      await transition({ phase: 'discovery', record: 'discovery\n', tool_use_id: 'discovery' })
+      // The SDK repeats one assistant message per content block with the same id and usage (measured: 121 entries, 65 ids
+      // on the 2026-09-14 FULL run); a repeat must replace, never add.
+      yield { type: 'assistant', message: { id: 'msg_b', model: 'claude-test', usage: { input_tokens: 13, cache_creation_input_tokens: 17, cache_read_input_tokens: 19, output_tokens: 20 }, content: [] } }
+      yield { type: 'assistant', message: { id: 'msg_b', model: 'claude-test', usage: { input_tokens: 13, cache_creation_input_tokens: 17, cache_read_input_tokens: 19, output_tokens: 23 }, content: [] } }
+      yield { type: 'result', usage: { input_tokens: 16, cache_creation_input_tokens: 22, cache_read_input_tokens: 26, output_tokens: 35 } }
+    })()
+    await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+      query,
+      now: () => clock += 100,
+      resolvePilotModels: models,
+      resolveExecutorProfile: () => ({ executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } }),
+      lifecycleOptions: { now: () => clock += 100 },
+    })
+    const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'discovery').models['claude-test']).toMatchObject({ input: 3, cache_write: 5, output: 11, fresh_tokens: 19 })
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'tdd').models['claude-test']).toMatchObject({ input: 13, cache_write: 17, output: 23, fresh_tokens: 53 })
+    expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: false, difference: { input: 0, cache_write: 0, cache_read: 0, output: -1, first_pass_input: 0, fresh_tokens: -1 } })
+  })
+
   it('defaults the contract and mailbox paths when called programmatically without them (the orchestrator driver)', async () => {
     const f = fixture(); let seen: Record<string, unknown> = {}
     const query = ({ options }: { options: Record<string, unknown> }) => (async function* () { seen = options; yield initMessage(); yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } } })()
@@ -417,6 +444,16 @@ describe('SDK pilot runner', () => {
     expect(registeredServer).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
+    const usage = JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8') as string)
+    expect(usage.turns[0]).toMatchObject({ model: 'sonnet', input: 1, output: 1, ended_at: expect.stringMatching(/^\d{4}-/) })
+    const timeline = JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8') as string)
+    expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd', 'verify', 'report'])
+    expect(timeline.lanes[0]).toMatchObject({ phase: 'tdd', started_at: expect.any(Number), ended_at: expect.any(Number) })
+    const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8') as string)
+    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: [expect.stringContaining('no OpenCode session matched')] })
+    expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
+    expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
+    expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
   })
 
   it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {

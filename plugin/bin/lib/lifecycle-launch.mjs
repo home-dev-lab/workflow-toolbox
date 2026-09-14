@@ -66,6 +66,9 @@ export function createLifecycleLaunch({
   lanePollMs,
   laneWaitMs,
   gateRunner,
+  now = () => Date.now(),
+  recordLaneStart = () => null,
+  recordLaneEnd = () => {},
 }) {
   const evidencePath = path.join(laneDir, 'evidence.json')
   const attestations = new Map()
@@ -169,7 +172,7 @@ export function createLifecycleLaunch({
       const canonicalLog = path.join(laneDir, `${phase}-run.log`)
       const canonicalReport = path.join(laneDir, `${phase}-report.md`)
       const timeout = Math.min(args.timeout ?? 5400, 5400)
-      const launchedAt = Date.now()
+      const launchedAt = now()
       const nonce = randomUUID()
       const log = path.join(laneDir, `${phase}-run.${nonce}.log`)
       const report = path.join(laneDir, `${phase}-report.${nonce}.md`)
@@ -183,6 +186,7 @@ export function createLifecycleLaunch({
       fs.rmSync(canonicalReport, { force: true })
       let snapshot = null
       let group = 'already-gone'
+      let laneRecord = null
       try {
         snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-lane-launch-'))
         fs.chmodSync(snapshot, 0o700)
@@ -205,7 +209,8 @@ export function createLifecycleLaunch({
               ? frozenModels.refutation
               : phase === 'critic'
                 ? frozenModels.critic
-                : frozenModels.review
+              : frozenModels.review
+          laneRecord = recordLaneStart({ phase, model, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json` })
           launch = await launchProcessWithOutput(
             process.execPath,
             [
@@ -238,6 +243,7 @@ export function createLifecycleLaunch({
           readRegularFile,
         })
         group = await terminateProcessGroup(workerPid)
+        recordLaneEnd(laneRecord, now())
         const reportStat = regularFile(report)
         if (!logEntry || !regularFile(log) || !reportStat) return `lane ${phase} EXIT=missing`
         if (reportStat.size > MAX_LANE_REPORT_BYTES) {
@@ -266,6 +272,7 @@ export function createLifecycleLaunch({
         fs.rmSync(brief, { force: true })
         return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
       } finally {
+        if (laneRecord?.ended_at === null) recordLaneEnd(laneRecord, now())
         if (snapshot) fs.rmSync(snapshot, { recursive: true, force: true })
       }
     }

@@ -11,6 +11,7 @@ import { absentPluginPaths } from './plugin-receipt.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
+import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -177,6 +178,7 @@ export async function runPilot(options, dependencies) {
   const started = now()
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   const turns = []
+  const messages = []
   const transcript = []
   const tools = []
   let turnTools = []
@@ -290,6 +292,15 @@ export async function runPilot(options, dependencies) {
       firstAssistantSeen = true
       servedModelFirstTurn = message.message?.model
     }
+    if (message.type === 'assistant' && message.message?.usage) {
+      // One assistant message is streamed once per content block with the same id and usage: a repeat replaces the
+      // recorded usage (keeping the first arrival time), it never adds to it.
+      const record = { ...usageOf(message.message), model: message.message.model ?? servedModelFirstTurn ?? servedModel ?? model.value, arrived_at: new Date(now()).toISOString() }
+      const messageId = message.message.id
+      const previous = messageId ? messages.findIndex((entry) => entry.message_id === messageId) : -1
+      if (previous >= 0) messages[previous] = { ...record, message_id: messageId, arrived_at: messages[previous].arrived_at }
+      else messages.push(messageId ? { ...record, message_id: messageId } : record)
+    }
     const content = message.message?.content
     if (Array.isArray(content)) for (const item of content) {
         if (item.type === 'tool_use') {
@@ -313,7 +324,7 @@ export async function runPilot(options, dependencies) {
     }
     if (message.type === 'result') {
       const usage = usageOf(message)
-      turns.push({ ...usage, tool_names: [...new Set(turnTools)] })
+      turns.push({ ...usage, model: servedModelFirstTurn ?? servedModel ?? model.value, ended_at: new Date(now()).toISOString(), tool_names: [...new Set(turnTools)] })
       turnTools = []
       for (const key of Object.keys(totals)) totals[key] += usage[key]
       if (!completed) pendingTurnEnds += 1
@@ -323,16 +334,39 @@ export async function runPilot(options, dependencies) {
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
   if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
   const freshTokens = totals.input + totals.cache_creation + totals.output
-  const usage = { turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
+  const usage = { messages, result_totals: totals, turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
   let lifecycleSummary = {}
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
   const completedNormally = awaitingFidelityReceipt && exists(report)
   const partial = lifecycleSummary.partial ?? null
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
-  const summary = { ...lifecycleSummary, partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const ended = now()
+  const summary = { ...lifecycleSummary, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
+  let cost
+  try {
+    cost = computeRunCost({ laneDir: join(options.dir, '.lane'), worktree: options.dir, startedAt: started, endedAt: ended, route: options.hard ? 'HARD' : routing.route })
+  } catch (error) {
+    cost = unknownRunCost({ route: options.hard ? 'HARD' : routing.route, worktree: options.dir, reason: `cost computation failed: ${error instanceof Error ? error.message : String(error)}` })
+  }
+  try {
+    const costContent = `${JSON.stringify(cost, null, 2)}\n`
+    writeFile(join(options.dir, '.lane', 'cost.json'), costContent)
+    let costReport = null
+    if (exists(report)) {
+      costReport = appendCostReport(readFile(report, 'utf8'), cost)
+      writeFile(report, costReport)
+    }
+    const archive = lifecycleSummary.archive?.path
+    if (archive) {
+      writeFile(join(archive, 'cost.json'), costContent)
+      if (costReport !== null) writeFile(join(archive, 'pilot-report.md'), costReport)
+    }
+  } catch (error) {
+    log(`cost receipt unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   return { usage, summary, exitCode: completedNormally ? (partial ? 2 : 0) : 1 }
 }

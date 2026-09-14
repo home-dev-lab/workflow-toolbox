@@ -131,13 +131,47 @@ message or earlier continuation that was followed by progress), and reason
 `pilot ended its turn 3 times without progress`. Any other stream ending first exits 1 and writes
 `summary.completed=false`. A completed full run exits 0. A completed partial run exits 2 with
 `summary.completed=true` and the lifecycle's non-null `partial` object; full-run summaries carry
-`partial:null`. `.lane/usage.json`, `.lane/summary.json`, and
+`partial:null`. `.lane/usage.json`, `.lane/summary.json`, `.lane/cost.json`, and
 `.lane/sdk-transcript.json` record the run. The summary records `requested_model` with its resolver
 source/effective model, plus `served_model` from the SDK `system:init` receipt and
 `served_model_first_turn` from the first assistant message. `served_model_agreement` is `true` when the
 two SDK readings agree with each other (a remapped profile serves a different id than the requested
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
+
+`lifecycle.json` timestamps the runner start/end, each accepted phase interval, and each lane launch.
+Each streamed pilot assistant message records its arrival time and SDK usage and is attributed to the
+containing interval; repeated critics retain their round number. The final SDK result total is retained
+only as a cross-check, with every per-column difference reported. Claude executor lanes write SDK usage
+beside the nonce log. GPT lane cost is read-only
+from OpenCode `session` rows whose `directory` exactly matches the worktree and whose timestamps
+overlap that lane's launch window. The reader invokes the external `sqlite3` CLI because the plugin's
+Node floor is 20; `WT_OPENCODE_DB` overrides the default
+`~/.local/share/opencode/opencode.db`. An absent CLI, unreadable database, or unmatched lane is
+`unknown` with its reason, never zero, and cost failure never changes the runner exit.
+
+For a legacy archive without `lifecycle.json`, each nonce log gets its own window from its first and
+last embedded ISO timestamp, or its mtime when the log has no timestamps. Sessions outside every lane
+are retained under `unmatched`; lanes with no session remain `unknown`. Run wall time comes from runner
+lifecycle records, then archived SDK transcript timestamps, then archive record mtimes (using recorded
+summary minutes only when those mtimes collapse to one copied instant). Every fallback is marked
+`inferred` with its basis. `--started-at` and `--ended-at` are paired forensic overrides, not defaults.
+
+`cost.json` records card/run identity, route (`HARD` when `--hard` selected it),
+complete/partial/unknown outcome, wall time,
+and per phase/model raw `input`, `cache_write`, `cache_read`, `output`, and `reasoning` columns.
+Unsupported provider fields say `not measured`; `first_pass_input` is input plus measured cache write.
+Anthropic `fresh_tokens` adds output, while OpenAI `fresh_tokens` adds output and reasoning because
+OpenCode records reasoning separately from output. At run end the runner replaces only its delimited
+`<!-- run-cost -->` report block and refreshes both files in the lifecycle archive. The pilot's own
+headings and trailing text are preserved. The orchestrator evidence copy also retains `cost.json`.
+
+`node plugin/bin/wt-run-cost.mjs <reports-directory>` recursively reads archived `cost.json` files
+and prints LITE/FULL/HARD totals split into Anthropic and OpenAI rows, preserving family-specific raw
+columns. Every run lists its unknown count; a route containing any unknown is marked incomplete. Only
+complete runs enter totals by default; partial and unknown-outcome runs are always listed separately
+and enter totals only with `--include-partial`. Mirrored receipts deduplicate by card id plus runner
+start, never by archive path. Malformed usage exits 2.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--knowledge-base-index`, repeatable
 `--plugin-dir <absolute-path>`, `--profile-env`, `--contract`,

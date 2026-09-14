@@ -204,6 +204,8 @@ export function createLifecycleStateMachine({
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
   rules = null,
   cardText = null,
+  now = () => Date.now(),
+  timelineWriter = null,
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
@@ -286,6 +288,17 @@ export function createLifecycleStateMachine({
     verifySnapshot: null,
     report: { stage: 'idle', base: null, head: null, tree: null },
   }
+  const timelinePath = path.join(laneDir, 'lifecycle.json')
+  const lifecycleStartedAt = now()
+  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [] }
+  const atomicTimelineWriter = timelineWriter ?? ((file, content) => {
+    const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
+    try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { fs.rmSync(temporary, { force: true }) }
+  })
+  const persistTimeline = () => {
+    try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch { /* Cost evidence is best-effort and cannot alter lifecycle acceptance. */ }
+  }
+  persistTimeline()
   const laneBriefContexts = new Map()
   let serial = Promise.resolve()
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
@@ -373,6 +386,17 @@ export function createLifecycleStateMachine({
     lanePollMs,
     laneWaitMs,
     gateRunner,
+    now,
+    recordLaneStart: ({ phase, model, startedAt, usageFile }) => {
+      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
+      timeline.lanes.push(record)
+      persistTimeline()
+      return record
+    },
+    recordLaneEnd: (record, endedAt) => {
+      record.ended_at = endedAt
+      persistTimeline()
+    },
   })
   function transition(event) {
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
@@ -385,6 +409,7 @@ export function createLifecycleStateMachine({
     const shape = JSON.stringify(event)
     const previous = state.handled.get(event.tool_use_id)
     if (previous) {
+      if (previous.shape === shape) persistTimeline()
       return previous.shape === shape ? previous.result : refusal(`${state.phase}->next`, 'unique tool_use_id', laneDir)
     }
     if (event.phase !== state.phase) {
@@ -555,7 +580,6 @@ export function createLifecycleStateMachine({
       next = 'awaiting_fidelity'
     }
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
-    state.phase = next
     const phaseRules = next === 'awaiting_fidelity'
       ? ''
       : composeRules(activeRules, {
@@ -565,7 +589,17 @@ export function createLifecycleStateMachine({
     const result = next === 'awaiting_fidelity'
       ? AWAITING_FIDELITY_RESULT
       : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}`
+    const transitionedAt = now()
+    state.phase = next
     state.handled.set(event.tool_use_id, { shape, result })
+    const currentPhase = timeline.phases.at(-1)
+    if (currentPhase?.transition_id !== event.tool_use_id) {
+      currentPhase.exited_at = transitionedAt
+      currentPhase.transition_id = event.tool_use_id
+      if (next !== 'awaiting_fidelity') timeline.phases.push({ phase: next, round: next === 'critic' ? state.priorCriticRounds.length + 1 : null, entered_at: transitionedAt, exited_at: null, transition_id: null })
+      else timeline.ended_at = transitionedAt
+    }
+    persistTimeline()
     return result
   }
   async function artifact({ kind, content }) {

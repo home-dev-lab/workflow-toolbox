@@ -50,7 +50,13 @@ On Windows, launch the same Node command with `Start-Process` rather than `setsi
 ## Watch
 
 Poll the worktree's .lane/sdk-pilot.log until its final `EXIT=<code>` marker appears, and read the whole log.
-Inspect the .lane/summary.json, .lane/usage.json, .lane/sdk-transcript.json, and
+Inspect the .lane/summary.json, .lane/usage.json, .lane/cost.json, .lane/sdk-transcript.json, and
 .lane/pilot-report.md files. Exit 0 is a completed full run, exit 2 is a completed partial run, and exit 1
 is incomplete or failed. Do not infer completion from model prose: the runner requires its correlated
 `accepted phase=awaiting_fidelity` lifecycle receipt and a pilot report.
+
+To total archived costs mechanically, run `node "${CLAUDE_PLUGIN_ROOT}/bin/wt-run-cost.mjs"
+<reports-directory>`. It totals complete runs by LITE/FULL/HARD route and provider family, lists every
+run's unknown count, and lists partial or unknown-outcome runs separately; add `--include-partial` only
+when those runs should enter route totals. Legacy run and lane windows are inferred from archived
+timestamps or documented mtime fallbacks, so do not hand-enter a window for routine aggregation.
