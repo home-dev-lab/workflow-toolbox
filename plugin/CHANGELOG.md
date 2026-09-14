@@ -27,6 +27,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- The open-work Stop gate now detects project-scoped detached pilot/lane runners and fresh
+  non-terminal launcher-owned lane logs; discovers suite worktrees from a non-Git umbrella;
+  bounds process and log reads; reports live harness tasks without counting them because the Stop
+  payload cannot distinguish Monitors from background jobs; and re-emits an unchanged idle verdict
+  after its 45-minute cooldown.
 - The SDK pilot plan check now reads a `### ` heading as a task when no list line sits under it, so a
   plan written with task headings is no longer refused, and a heading task missing its DoD is no longer
   accepted through an unrelated bullet; the refusal names both accepted task shapes.
