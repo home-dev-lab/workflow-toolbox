@@ -17,11 +17,13 @@ import { loadProfileEnv, runPilot } from './lib/pilot-runner-core.mjs'
 import { createRequire } from 'node:module'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
 import { randomUUID } from 'node:crypto'
+import { sdkRunnerConsentRefusal } from './lib/sdk-runner-consent.mjs'
 import path from 'node:path'
 
 const options = parseOrchestratorArgs(process.argv.slice(2))
 if (options.help) process.stdout.write('wt-run-orchestrator --cards <ids> | --mission-list <name> --worktrees-dir <dir> --report <path>\n')
 else if (options.error) { process.stderr.write(`${options.error}\n`); process.exitCode = 2 }
+else if (sdkRunnerConsentRefusal('wt-run-orchestrator', process.cwd())) { process.stderr.write(`${sdkRunnerConsentRefusal('wt-run-orchestrator', process.cwd())}\n`); process.exitCode = 1 }
 else {
   options.waveId = randomUUID().slice(0, 8)
   process.stdout.write(`wave=${options.waveId} report=${path.resolve(options.report)}\n`)

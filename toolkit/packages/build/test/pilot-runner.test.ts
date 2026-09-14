@@ -60,6 +60,25 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(existing.dir, '.lane', 'env.log'), 'utf8')).toBe('CLAUDE_CODE_SESSION_ID=runner-session\n')
   })
 
+  it('refuses before any agent starts when the profile has no lane consent, and the lib passes a consented one', async () => {
+    // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+    const { sdkRunnerConsentRefusal } = await import('../../../../plugin/bin/lib/sdk-runner-consent.mjs')
+    const f = fixture()
+    const configDir = join(f.root, 'config'); mkdirSync(configDir)
+    const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir, HOME: f.root }
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
+    const refused = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], { env, encoding: 'utf8' })
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain('wt-pilot-runner: Refused before any agent starts')
+    expect(refused.stderr).toContain('No Claude-only executor exists yet')
+    expect(refused.stdout).not.toContain('fresh=')
+    expect(sdkRunnerConsentRefusal('x', f.dir, env)).toContain('no lane consent')
+    writeFileSync(join(configDir, 'settings.json'), '{ not json')
+    expect(sdkRunnerConsentRefusal('x', f.dir, env)).toContain('could not be resolved')
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    expect(sdkRunnerConsentRefusal('x', f.dir, env)).toBeNull()
+  })
+
   it('parses required arguments and refuses absent card, bad timeout, and malformed profile env', () => {
     expect(parsePilotRunnerArgs(['--dir', '/tmp/a'])).toMatchObject({ error: 'missing required --card or --dir' })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).toMatchObject({ error: '--card-file is required: the route is derived from the card' })

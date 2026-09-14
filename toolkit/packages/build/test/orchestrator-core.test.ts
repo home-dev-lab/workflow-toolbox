@@ -310,7 +310,14 @@ describe('orchestrator driver', () => {
   })
 
   it('prints the routing line before doing driver work', () => {
-    const f = repoFixture(); const result = spawnSync(process.execPath, [CLI, '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8' }); expect(result.stdout.split('\n')[0]).toMatch(/^wave=\S+ report=/)
+    const f = repoFixture(); const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const result = spawnSync(process.execPath, [CLI, '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } }); expect(result.stdout.split('\n')[0]).toMatch(/^wave=\S+ report=/)
+  })
+
+  it('refuses before any wave work when the profile has no lane consent', () => {
+    const f = repoFixture(); const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
+    const result = spawnSync(process.execPath, [CLI, '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir } })
+    expect(result.status).toBe(1); expect(result.stdout).not.toContain('wave='); expect(result.stderr).toContain('wt-run-orchestrator: Refused before any agent starts')
   })
 })
 
