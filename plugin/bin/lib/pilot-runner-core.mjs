@@ -1,10 +1,13 @@
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
+import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
+import { absentPluginPaths } from './plugin-receipt.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
@@ -12,6 +15,7 @@ import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
 const MAX_UNPRODUCTIVE_TURNS = 3
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 const NEXT_BY_PHASE = {
   discovery: 'transition discovery using the frozen route',
   plan: `write the plan matching ${PLAN_SHAPE_DESCRIPTION}, then transition plan`,
@@ -33,7 +37,7 @@ const PLANKA_TOOLS = new Set([
 ])
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, pluginDirs: [], timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -43,6 +47,11 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--contract') options.contract = argv[++i] ?? null
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
     else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
+    else if (arg === '--plugin-dir') {
+      const pluginDir = argv[++i] ?? ''
+      if (!isAbsolute(pluginDir)) return { error: `--plugin-dir must be an absolute path: ${pluginDir}` }
+      options.pluginDirs.push(resolve(pluginDir))
+    }
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
@@ -52,7 +61,7 @@ export function parsePilotRunnerArgs(argv) {
   if (!options.cardFile) return { error: '--card-file is required: the route is derived from the card' }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
   options.dir = resolve(options.dir)
-  options.contract = resolve(options.contract ?? join(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md'))
+  options.contract = resolve(options.contract ?? join(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md'))
   options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
   if (options.profileEnv) options.profileEnv = resolve(options.profileEnv)
   if (options.cardFile) options.cardFile = resolve(options.cardFile)
@@ -140,13 +149,14 @@ function servedModelAgreement({ requestedModel, servedModel, servedModelFirstTur
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
+  if ((options.pluginDirs ?? []).some((pluginDir) => !isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
   const effectiveEnv = { ...env, ...profileEnv }
   const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
   // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
   // called directly did not — the first real wave died on a `path` of undefined.
-  const contractPath = options.contract ?? resolve(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md')
+  const contractPath = options.contract ?? resolve(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md')
   const mailboxPath = options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt')
   options = { ...options, contract: contractPath, mailbox: mailboxPath }
   const contract = readFile(options.contract, 'utf8')
@@ -156,6 +166,7 @@ export async function runPilot(options, dependencies) {
   const systemPrompt = composeStandingPrompt(contract, rules)
   if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
   const cardText = readFile(options.cardFile, 'utf8')
+  if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
   const routing = deriveRoute(cardText)
   const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
   log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} executor=${executorProfile.executor}`)
@@ -186,8 +197,10 @@ export async function runPilot(options, dependencies) {
   let servedModel
   let servedModelFirstTurn
   let firstAssistantSeen = false
-  const pluginRoot = resolve(dirname(new URL(import.meta.url).pathname), '../..')
+  const pluginRoot = resolve(MODULE_DIR, '../..')
   const guardPlugin = join(pluginRoot, 'hooks-modules', 'pilot-guard')
+  const configuredPlugins = options.pluginDirs ?? []
+  const pluginPaths = [guardPlugin, ...configuredPlugins]
 
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
   // run would satisfy it without this session ever writing one. Refuse to start on a dirty lane.
@@ -200,7 +213,7 @@ export async function runPilot(options, dependencies) {
   for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
   }
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, sessionTag: `${options.card}-${started}`, rules, ...lifecycleOptions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, ...lifecycleOptions })
 
   async function* prompt() {
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
@@ -249,7 +262,7 @@ export async function runPilot(options, dependencies) {
     settingSources: [],
     maxTurns: 120,
     cwd: options.dir,
-    plugins: [{ type: 'local', path: guardPlugin }],
+    plugins: pluginPaths.map((path) => ({ type: 'local', path })),
     tools: ['Read', 'Glob', 'Grep'],
     // No Planka endpoint configured means no board tools, never a guessed local port.
     mcpServers: { ...(resolveWorkflowToolboxOption('planka_mcp_url', { env }).value ? { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
@@ -268,7 +281,7 @@ export async function runPilot(options, dependencies) {
       const initTools = Array.isArray(message.tools) ? message.tools : []
       const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
       const missing = ['transition', 'write_artifact', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
-      const absent = [guardPlugin].filter((path) => !initPlugins.some((plugin) => plugin.path === path))
+      const absent = absentPluginPaths(pluginPaths, initPlugins)
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
       }

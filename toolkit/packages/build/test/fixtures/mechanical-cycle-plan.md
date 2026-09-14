@@ -49,6 +49,10 @@ Base: develop f7d8d7e9. Sources read: `plugin/hooks-modules/sdk-pilot-lifecycle/
 ## Gates
 Per lane, from `<worktree>/toolkit`, detached, each with an `EXIT=` last line: `pnpm typecheck`, `pnpm lint`, `pnpm test`; `node plugin/bin/wt-plugin-validate.mjs --strict` (or the `claude plugin validate` equivalent used today); `git diff --check`. Every lock proven red first, archived at `.lane/red/<task>-<lock>.log` with its `EXIT=` line. Test-union: total after each lane strictly greater than before. Review: Sol on a repository-free diff bundle after lane A and after lane B; refutation lane; dispositions on the card; main's diff-read and one recorded gate on develop after the merge.
 
+## Acceptance
+- exercise the lifecycle fixture
+  Proof: e2e mechanical lifecycle test
+
 ## Critic round 3 answers, applied
 - `canUseTool`: used only if A0/P2 proves it runs under the runner's bypass settings; the lifecycle MCP tool names are exact-allowed; malformed built-in inputs fail closed; relative paths resolve from the worktree; symlink targets resolved.
 - The single-commit swap is atomic in history only: A6 adds a startup handshake — the runner refuses to start unless exactly one lifecycle implementation is present (server registered, old hook module absent), and `summary.json` records the implementation version.

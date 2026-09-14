@@ -1,6 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +19,7 @@ const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-run-orchestrator.mjs')
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+const judgeInit = (plugins: Array<{ path: string }> = []) => ({ type: 'system', subtype: 'init', plugins })
 type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }, setCardState: (id: string, state: string) => void, state: () => unknown }
 const text = (server: RegisteredServer, name: string, input: Record<string, unknown>) => server.instance._registeredTools[name]!.handler(input).then((result) => result.content[0]!.text)
 function fakeSdk(root: string) {
@@ -141,7 +142,8 @@ describe('wave lifecycle server', () => {
 
 describe('orchestrator driver', () => {
   it('parses the complete CLI surface and rejects invalid launch shapes', () => {
-    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md' })
+    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md', pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
+    expect(parseOrchestratorArgs(['--cards', '1', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--plugin-dir', 'relative/plugin'])).toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
     expect(parseOrchestratorArgs(['--cards', '1', '--mission-list', 'Next', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r']).error).toContain('exactly one')
   })
 
@@ -155,6 +157,14 @@ describe('orchestrator driver', () => {
     expect(readFileSync(join(result.waveDir, 'cards/1/card.md'), 'utf8')).toBe('Route: LITE\n## Definition of done\n- ship\n')
     expect(readFileSync(join(result.waveDir, 'cards/1/runner.log'), 'utf8').split('\n')[0]).toMatch(/^route=LITE /)
     expect(f.gitCalls.flat().some((arg) => ['merge', 'push', 'branch -D'].includes(arg))).toBe(false)
+  })
+
+  it('refuses each card with no DoD criterion before moving it or starting its pilot', async () => {
+    const f = repoFixture([{ id: '1', listName: 'Next', description: 'Route: LITE\n## Notes\n- no acceptance here\n' }])
+    const result = await runOrchestrator(f.options, f)
+    expect(result).toMatchObject({ exitCode: 1, stopReason: expect.stringContaining('add a Definition of done to card 1') })
+    expect(f.moves).toEqual([])
+    expect(f.launches).toEqual([])
   })
 
   it('O1-7 lock: copies card receipts beside the report and prints their path', async () => {
@@ -182,7 +192,7 @@ describe('orchestrator driver', () => {
   })
 
   it('R2-1 lock: a malformed Depends-on line skips the card and the report names the card and the reason', async () => {
-    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: ../../../outside' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none' }]
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: ../../../outside\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }]
     const f = repoFixture(cards)
     const result = await runOrchestrator({ ...f.options, cards: undefined, missionList: 'Next', missionLabels: [] }, f)
     expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['2'])
@@ -192,7 +202,7 @@ describe('orchestrator driver', () => {
   })
 
   it('R2-2 lock: a worker that fails does not let the report be emitted before the other worker\'s board mutations are recorded', async () => {
-    const f = repoFixture([{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }])
+    const f = repoFixture([{ id: '1', listName: 'Next', description: 'a\nDoD: ship' }, { id: '2', listName: 'Next', description: 'b\nDoD: ship' }])
     let release: () => void = () => {}
     const gate = new Promise<void>((resolve) => { release = resolve })
     const git = (program: string, args: string[], options: Record<string, unknown>) => {
@@ -241,7 +251,7 @@ describe('orchestrator driver', () => {
   })
 
   it('names max-cards and no-eligible-card stop conditions', async () => {
-    const cards = [{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }]; const f = repoFixture(cards)
+    const cards = [{ id: '1', listName: 'Next', description: 'a\nDoD: ship' }, { id: '2', listName: 'Next', description: 'b\nDoD: ship' }]; const f = repoFixture(cards)
     const result = await runOrchestrator({ ...f.options, maxCards: 1 }, f); expect(result.stopReason).toBe('max-cards reached'); expect(result.rows).toHaveLength(1)
   })
 
@@ -255,7 +265,7 @@ describe('orchestrator driver', () => {
   })
 
   it('applies the time reservation before a concurrent launch', async () => {
-    const cards = [{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }]; const f = repoFixture(cards); const times = [0, 61_000]
+    const cards = [{ id: '1', listName: 'Next', description: 'a\nDoD: ship' }, { id: '2', listName: 'Next', description: 'b\nDoD: ship' }]; const f = repoFixture(cards); const times = [0, 61_000]
     const result = await runOrchestrator({ ...f.options, startedAt: 0, maxMinutes: 2, pilotTimeout: 60, concurrency: 2 }, { ...f, now: () => times.shift() ?? 61_000 })
     expect(result.stopReason).toBe('time budget exhausted'); expect(result.rows).toHaveLength(1)
   })
@@ -266,7 +276,7 @@ describe('orchestrator driver', () => {
   })
 
   it('paginates mission discovery until total across two pages', async () => {
-    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none' }]; const f = repoFixture(cards); const offsets: number[] = []
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S'], description: 'Depends-on: none\nDoD: ship' }]; const f = repoFixture(cards); const offsets: number[] = []
     const board = { ...f.board, findCards: async ({ offset }: { offset: number }) => { offsets.push(offset); return { cards: cards.slice(offset, offset + 1), total: 2 } } }; const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', concurrency: 1 }, { ...f, board }); expect(result.rows).toHaveLength(2); expect(offsets.slice(0, 2)).toEqual([0, 1])
   })
 
@@ -294,19 +304,19 @@ describe('orchestrator driver', () => {
   })
 
   it('overlaps two pilots at concurrency 2 but judges and reports in card order', async () => {
-    const cards = [{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }]; const f = repoFixture(cards); let active = 0; let peak = 0; let release!: () => void; const barrier = new Promise<void>((resolve) => { release = resolve }); setTimeout(() => release(), 200); const judged: string[] = []
+    const cards = [{ id: '1', listName: 'Next', description: 'a\nDoD: ship' }, { id: '2', listName: 'Next', description: 'b\nDoD: ship' }]; const f = repoFixture(cards); let active = 0; let peak = 0; let release!: () => void; const barrier = new Promise<void>((resolve) => { release = resolve }); setTimeout(() => release(), 200); const judged: string[] = []
     const runPilot = async (...args: Parameters<typeof f.runPilot>) => { active += 1; peak = Math.max(peak, active); if (active === 2) release(); await barrier; const result = await f.runPilot(...args); writeFileSync(join(args[0].dir, 'shared.txt'), args[0].card); spawnSync('git', ['add', '.'], { cwd: args[0].dir }); spawnSync('git', ['commit', '-qm', 'shared'], { cwd: args[0].dir }); active -= 1; return result }
     const judge = async ({ row }: { row: { id: string, decision: string } }) => { judged.push(row.id); row.decision = 'accepted' }
     const result = await runOrchestrator({ ...f.options, concurrency: 2 }, { ...f, runPilot, judge }); expect(peak).toBe(2); expect(judged).toEqual(['1', '2']); expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['1', '2']); expect(readFileSync(f.report, 'utf8')).toContain('seam overlap 1/2: shared.txt')
   })
 
   it('applies all three mission label axes and Done dependencies fail-closed', async () => {
-    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'mission'], description: 'Depends-on: none' }]; const f = repoFixture(cards)
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'mission'], description: 'Depends-on: none\nDoD: ship' }]; const f = repoFixture(cards)
     const board = { ...f.board, getCard: async (id: string) => id === '9' ? { id: '9', listName: 'Done' } : f.board.getCard(id) }; const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', missionLabels: ['mission'] }, { ...f, board }); expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['1'])
   })
 
   it('re-scans a mission after each card and removes cards that cease to be eligible', async () => {
-    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: none' }]; const f = repoFixture(cards); let scans = 0
+    const cards = [{ id: '1', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: #9\nDoD: ship' }, { id: '2', listName: 'Next', labels: ['P1', 'bug', 'effort:S', 'mission'], description: 'Depends-on: none\nDoD: ship' }]; const f = repoFixture(cards); let scans = 0
     const board = { ...f.board, getCard: async (id: string) => id === '9' ? { id: '9', listName: 'Done' } : f.board.getCard(id), findCards: async (args: { limit: number, offset: number }) => { scans += 1; const visible = scans === 1 ? cards : cards.slice(0, 1); return { cards: visible.slice(args.offset, args.offset + args.limit), total: visible.length } } }
     const result = await runOrchestrator({ ...f.options, cards: null, missionList: 'Next', missionLabels: ['mission'] }, { ...f, board }); expect(result.rows.map((row: { id: string }) => row.id)).toEqual(['1']); expect(scans).toBeGreaterThanOrEqual(2)
   })
@@ -369,6 +379,7 @@ describe('SDK orchestrator judge', () => {
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: Record<string, unknown> }) => {
       calls += 1; queryOptions = options
       return (async function* () {
+        yield judgeInit(options.plugins as Array<{ path: string }>)
         const tools = ((options.mcpServers as Record<string, Server>)['sdk-wave-lifecycle']!).instance._registeredTools
         for (const [id, decision] of [['1', 'accept'], ['2', 'reject']] as const) {
           const message = await prompt.next(); prompts.push(message.value.message.content)
@@ -381,9 +392,13 @@ describe('SDK orchestrator judge', () => {
         yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'judgment', content: result.content }] } }
       })()
     }
-    const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
+    const plugins = [join(f.root, 'rules-plugin'), join(f.root, 'lsp-plugin')]; plugins.forEach((plugin) => mkdirSync(plugin))
+    const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex, pluginDirs: plugins }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
     expect(calls).toBe(1)
     expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep'] })
+    expect(queryOptions.plugins).toEqual(plugins.map((plugin) => ({ type: 'local', path: plugin })))
+    expect(f.launches).toHaveLength(2)
+    expect(f.launches.every((launch) => JSON.stringify(launch).includes(JSON.stringify(plugins)))).toBe(true)
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
     expect(prompts).toEqual([
       `KNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
@@ -395,6 +410,20 @@ describe('SDK orchestrator judge', () => {
     expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: join(f.root, 'a-fiche.md') })).toEqual({ behavior: 'allow' })
     expect(result.rows.map((row: { decision: string, reason: string }) => [row.decision, row.reason])).toEqual([['accepted', 'accept reason'], ['rejected', 'reject reason']])
     expect(readFileSync(f.report, 'utf8')).toContain(judgment)
+  })
+
+  it('refuses a judge init receipt missing a configured plugin and accepts canonical symlink/trailing-slash paths', async () => {
+    const f = repoFixture(); const waveDir = join(f.root, '.waves', 'judge-receipt'); mkdirSync(waveDir, { recursive: true })
+    const target = join(f.root, 'plugin-target'); const linked = join(f.root, 'plugin-link'); mkdirSync(target); symlinkSync(target, linked)
+    const waveServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer
+    waveServer.setCardState('1', 'piloting'); waveServer.setCardState('1', 'judging')
+    const missing = createSdkJudge({ query: () => (async function* () { yield judgeInit() })(), models: { orchestrator: { value: 'test' } }, waveDir, waveServer, contract: '# contract', pluginDirs: [linked] })
+    await expect(missing({ row: { id: '1' } })).rejects.toThrow(/initialization receipt.*absentPlugins/)
+
+    const acceptedServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer
+    acceptedServer.setCardState('1', 'piloting'); acceptedServer.setCardState('1', 'judging')
+    const accepted = createSdkJudge({ query: () => (async function* () { yield judgeInit([{ path: `${realpathSync(target)}/` }]); yield { type: 'result' }; yield { type: 'result' }; yield { type: 'result' } })(), models: { orchestrator: { value: 'test' } }, waveDir, waveServer: acceptedServer, contract: '# contract', pluginDirs: [linked] })
+    await expect(accepted({ row: { id: '1' } })).resolves.toBe(false)
   })
 
   it('O1-2 lock: rejects absolute and traversal Glob/Grep inputs while allowing wildcard-first local patterns', () => {
@@ -424,8 +453,9 @@ describe('SDK orchestrator judge', () => {
   })
 
   it('marks every remaining card undecided and writes an exit-1 report after three turns without progress', async () => {
-    const cards = [{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }]; const f = repoFixture(cards); const prompts: string[] = []
+    const cards = [{ id: '1', listName: 'Next', description: 'a\nDoD: ship' }, { id: '2', listName: 'Next', description: 'b\nDoD: ship' }]; const f = repoFixture(cards); const prompts: string[] = []
     const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield judgeInit()
       prompts.push((await prompt.next()).value.message.content)
       for (let turn = 0; turn < 3; turn += 1) {
         yield { type: 'result' }
@@ -441,9 +471,10 @@ describe('SDK orchestrator judge', () => {
   })
 
   it('fails closed when the SDK stream ends between a card decision and the final judgment', async () => {
-    const cards = [{ id: '1', listName: 'Next', description: 'a' }, { id: '2', listName: 'Next', description: 'b' }]; const f = repoFixture(cards)
+    const cards = [{ id: '1', listName: 'Next', description: 'a\nDoD: ship' }, { id: '2', listName: 'Next', description: 'b\nDoD: ship' }]; const f = repoFixture(cards)
     type Server = { instance: { _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, Server> } }) => (async function* () {
+      yield judgeInit()
       const tools = options.mcpServers['sdk-wave-lifecycle']!.instance._registeredTools
       await prompt.next()
       const result = await tools.decide!.handler({ cardId: '1', decision: 'reject', reason: 'contradiction', assessment: 'card-1.txt:1 contradicts the bullet.', tool_use_id: 'first' })

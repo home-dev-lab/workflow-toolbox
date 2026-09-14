@@ -33,13 +33,17 @@ mkdir -p <worktree>/.lane
 setsid nohup sh -c 'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-pilot-runner.mjs" \
   --card <card-id> --card-file <absolute-card-file> --dir <absolute-worktree> \
   --knowledge-base-index <absolute-MEMORY.md> \
+  --plugin-dir <absolute-rules-on-demand-plugin> \
+  --plugin-dir <absolute-lsp-plugin> \
   > <absolute-worktree>/.lane/sdk-pilot.log 2>&1; \
   echo EXIT=$? >> <absolute-worktree>/.lane/sdk-pilot.log' \
   >/dev/null 2>&1 < /dev/null &
 ```
 
-Omit `--knowledge-base-index` when no prompt-level value is available. Optional runner flags include
-`--profile-env`, `--contract`, `--hard`, `--mailbox`, and `--timeout`.
+Omit `--knowledge-base-index` when no prompt-level value is available. Omit either repeatable
+`--plugin-dir` when that local plugin is not configured; every supplied path must be absolute and the
+runner refuses an initialization receipt that omits it. Other optional flags include `--profile-env`,
+`--contract`, `--hard`, `--mailbox`, and `--timeout`.
 
 On Windows, launch the same Node command with `Start-Process` rather than `setsid nohup`.
 

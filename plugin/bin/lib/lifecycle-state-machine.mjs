@@ -3,12 +3,14 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
 import { completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
+import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -37,14 +39,18 @@ const PLAN_SHAPE = Object.freeze({
   tasksHeading: 'Tasks',
   taskDodLabels: Object.freeze(['DoD', 'Definition of done']),
   gatesHeading: 'Gates',
+  acceptanceHeading: 'Acceptance',
 })
-export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, and a \`## ${PLAN_SHAPE.gatesHeading}\` section`
+export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, and a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every folded card Definition-of-done criterion exactly with a following \`Proof:\` line naming a task, test, e2e, test file, or gate`
 
 function planSection(content, heading) {
   return new RegExp(`(?:^|\\n)## ${heading}\\b[\\s\\S]*?(?=\\n## |$)`, 'i').exec(content)?.[0] ?? ''
 }
+function acceptanceSection(content) {
+  return /(?:^|\n)## Acceptance[ \t]*\r?\n[\s\S]*?(?=\r?\n#{1,6}(?:[ \t]+|$)|$)/i.exec(content)?.[0] ?? ''
+}
 
-function containsPlanShape(content) {
+function containsPlanShape(content, requireAcceptance) {
   const adr = planSection(content, PLAN_SHAPE.adrHeading)
   const tasks = planSection(content, PLAN_SHAPE.tasksHeading)
   const lines = tasks.split(/\r?\n/)
@@ -69,8 +75,79 @@ function containsPlanShape(content) {
           .slice(start + 1, taskIndexes[i + 1] ?? lines.length)
           .some((line) => new RegExp(`^\\s*(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(line)),
     ) &&
-    Boolean(planSection(content, PLAN_SHAPE.gatesHeading))
+    Boolean(planSection(content, PLAN_SHAPE.gatesHeading)) &&
+    (!requireAcceptance || Boolean(acceptanceSection(content)))
   )
+}
+function acceptanceEntries(content) {
+  const section = acceptanceSection(content)
+  const lines = section.split(/\r?\n/)
+  const entries = new Map()
+  let entry = null
+  const finish = () => {
+    if (!entry) return
+    const criterion = entry.criterion.join(' ')
+    const matching = entries.get(criterion) ?? []
+    matching.push(entry.details)
+    entries.set(criterion, matching)
+    entry = null
+  }
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index]
+    const topLevel = /^-\s+(.*?)\s*$/.exec(line)
+    if (topLevel && !/^(?:Proof|Outcome):/i.test(topLevel[1])) {
+      finish()
+      entry = { criterion: [topLevel[1]], details: [], detail: -1 }
+      continue
+    }
+    if (!entry) continue
+    const folded = line.trim()
+    const detail = folded.replace(/^-\s+/, '')
+    if (!folded) continue
+    if (/^(?:Proof|Outcome):/i.test(detail)) {
+      entry.details.push(detail)
+      entry.detail = entry.details.length - 1
+    } else if (/^[ \t]+/.test(line) && entry.detail >= 0) {
+      entry.details[entry.detail] += ` ${folded}`
+    } else if (/^[ \t]+/.test(line)) {
+      entry.criterion.push(folded)
+    }
+  }
+  finish()
+  return entries
+}
+function acceptanceProblem(content, dodBullets, validDetail, expectedDetail, exampleDetail) {
+  const entries = acceptanceEntries(content)
+  const used = new Map()
+  for (const bullet of dodBullets) {
+    const index = used.get(bullet) ?? 0
+    const lines = entries.get(bullet)?.[index]
+    if (!lines) return `expected \`- ${bullet}\` followed by ${expectedDetail}; example: \`- ${bullet}\` then ${exampleDetail}`
+    used.set(bullet, index + 1)
+    if (!lines.some(validDetail)) return `expected ${expectedDetail} after \`- ${bullet}\`; example: \`- ${bullet}\` then ${exampleDetail}`
+  }
+  return null
+}
+const planAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
+  content,
+  dodBullets,
+  (line) => /^Proof:\s*\S/i.test(line) && /\b(?:tasks?|tests?|e2e|typecheck|lint)\b|(?:^|[/\\])\S+\.(?:test|spec)\.[A-Za-z0-9]+/i.test(line),
+  '`Proof: <task, test, e2e, test file, or gate>`',
+  '`Proof: tests/unit.test.ts`',
+)
+const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
+  content,
+  dodBullets,
+  (line) => /^Outcome:\s*(?:proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?|not done:\s*\S.*|deferred:\s*\S.*)\s*$/i.test(line),
+  '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`',
+  '`Outcome: proven by tests/unit.test.ts`',
+)
+function changelogSkillBody(file) {
+  let content
+  try { content = fs.readFileSync(file, 'utf8') } catch (error) { throw new Error(`changelog skill unavailable at ${file}: ${error instanceof Error ? error.message : String(error)}`) }
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/.exec(content)
+  if (!match) throw new Error(`changelog skill unavailable at ${file}: YAML frontmatter is missing`)
+  return match[1].trim()
 }
 function tasksBlock(content) {
   return /(?:^|\n)## Tasks\b[\s\S]*?(?=\n## |$)/i.exec(content)?.[0] ?? null
@@ -126,6 +203,8 @@ export function createLifecycleStateMachine({
   copy = fs.cpSync,
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
   rules = null,
+  cardText = null,
+  changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
     throw new Error('lifecycle worktree must be absolute')
@@ -134,6 +213,7 @@ export function createLifecycleStateMachine({
     throw new Error('lifecycle cardId must match [A-Za-z0-9._-]+')
   }
   const root = fs.realpathSync(worktree)
+  const dodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText) : undefined
   const activeRules = rules ?? loadRules({ projectRoot: root })
   let constructionBase = 'HEAD'
   try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
@@ -158,6 +238,12 @@ export function createLifecycleStateMachine({
     }
   }
   assertLaneDir()
+  if (typeof cardText === 'string') {
+    const cardPath = path.join(laneDir, 'card.md')
+    const existingCard = readRegularFile(cardPath)
+    if (existingCard === null) writeRegularFile(cardPath, cardText, { flag: 'wx' })
+    else if (existingCard !== cardText) throw new Error(`lifecycle card snapshot ${JSON.stringify(existingCard)} differs from runner card text ${JSON.stringify(cardText)}; remove ${cardPath} to restart the lifecycle on the new card`)
+  }
   fs.mkdirSync(path.join(root, '.claude', 'reports'), { recursive: true })
   assertLaneDir(true)
   try {
@@ -205,7 +291,9 @@ export function createLifecycleStateMachine({
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
     const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
     if (!INDEPENDENT_ROLES.has(phase)) {
-      const content = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n## Pilot instructions\n\n` : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
+      const changelogInstructions = ['tdd', 'harden'].includes(phase) ? changelogSkillBody(changelogSkillPath) : ''
+      const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
+      const content = `${authoritative}${authoritative ? '## Pilot instructions\n\n' : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
       return snapshotDir
         ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; do not rely on background processes surviving the lane.\n` }
         : content
@@ -319,8 +407,13 @@ export function createLifecycleStateMachine({
       next = frozenRoute === 'LITE' ? 'tdd' : 'plan'
     } else if (state.phase === 'plan') {
       const plan = path.join(laneDir, 'plan.md')
-      if (!readRegularFile(plan) || !containsPlanShape(readRegularFile(plan)))
+      const planContent = readRegularFile(plan)
+      if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
         return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
+      if (dodBullets !== undefined) {
+        const acceptanceProblem = planAcceptanceProblem(planContent, dodBullets)
+        if (acceptanceProblem) return refusal('plan->critic', acceptanceProblem, plan)
+      }
       next = 'critic'
     } else if (state.phase === 'critic') {
       const report = path.join(laneDir, 'critic-report.md')
@@ -534,6 +627,10 @@ export function createLifecycleStateMachine({
       return 'pilot-report: this run is not partial'
     }
     if (!enforceSchema) return null
+    if (dodBullets !== undefined) {
+      const acceptanceProblem = reportAcceptanceProblem(content, dodBullets)
+      if (acceptanceProblem) return `pilot-report: missing ${acceptanceProblem}`
+    }
     const e2e = reportSection(content, 'E2E')
     if (!e2e) return 'pilot-report: missing or empty ## E2E section'
     const e2eNotRun = /^e2e not run: \S[^\r\n]*$/i.test(e2e)

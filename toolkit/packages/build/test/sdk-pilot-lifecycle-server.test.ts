@@ -72,7 +72,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   it.each([
     ['A-3 fenced fake DoD', '```md\n## DoD\n- example only\n```\n', 'FULL'],
     ['A-3 fenced empty DoD', '~~~\n## DoD\n~~~\n', 'FULL'],
-    ['A-4 child-heading DoD', '## DoD\n\n### Acceptance\n- ship it\n', 'LITE'],
+    ['A-4 child-heading ends DoD', '## DoD\n\n### Acceptance\n- ship it\n', 'FULL'],
   ])('%s', (_id, dod, route) => {
     const result = deriveRoute(`Type: chore\nEffort: S\nFiles: a.mjs\n${dod}`)
     expect(result.route).toBe(route)
@@ -416,6 +416,73 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-valid' })
     await lifecycle.artifact({ kind: 'critic-brief', content: 'review this\n' })
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).toContain(`plan sha256: ${createHash('sha256').update(plan).digest('hex')}`)
+  })
+
+  it('requires byte-identical card DoD bullets with named proofs in plan Acceptance', async () => {
+    const cardText = 'Route: FULL\n## Definition of done\n- Preserve exact punctuation.\n- Run the real e2e.\n\n## Notes\n- not acceptance\n'
+    const lifecycle = testLifecycle('FULL', [], null, null, { cardText })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    const base = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation.\n  Proof: task 1 and test\n` })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'missing' }))).toContain('expected `- Run the real e2e.` followed by `Proof: <task, test, e2e, test file, or gate>`')
+    await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation!\n  Proof: task 1\n- Run the real e2e.\n  Proof: e2e fixture\n` })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'reworded' }))).toContain('example: `- Preserve exact punctuation.` then `Proof: tests/unit.test.ts`')
+    await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation.\n  Proof: evidence someday\n- Run the real e2e.\n  Proof: e2e fixture\n` })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'proof' }))).toContain('expected `Proof: <task, test, e2e, test file, or gate>` after `- Preserve exact punctuation.`')
+    await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation.\n  Proof: task 1 and test\n- Run the real e2e.\n  Proof: e2e fixture\n` })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'complete' }))).toBe('accepted phase=critic')
+  })
+
+  it('uses the routing DoD grammar for headings, inline fields, numbering, wrapping, fences, nesting, CRLF, and duplicates', async () => {
+    const cardText = [
+      'Route: FULL',
+      '## DoD',
+      '1. Keep the first criterion',
+      '   wrapped exactly.',
+      '   - nested detail',
+      '* Repeat me.',
+      '- Repeat me.',
+      '```md',
+      '- fenced fake',
+      '```',
+      '### Notes',
+      '- outside fake',
+      '',
+    ].join('\r\n')
+    expect(deriveRoute(cardText)).toMatchObject({ route: 'FULL', reasons: ['human Route: FULL'] })
+    const lifecycle = testLifecycle('FULL', [], null, null, { cardText })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Acceptance\n- Keep the first criterion\n  wrapped exactly.\n  - nested detail\n  - Proof: tasks 1 and 2\n- Repeat me.\n- Proof: src/unit.spec.ts\n- Repeat me.\n  Proof: lint gate\n' })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toBe('accepted phase=critic')
+
+    const inline = testLifecycle('FULL', [], null, null, { cardText: 'Route: FULL\r\nDefinition of done: ship inline bytes\r\n' })
+    await inline.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await inline.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Acceptance\n- ship inline bytes\n  Proof: typecheck gate\n' })
+    expect(await text(inline.transition({ phase: 'plan', tool_use_id: 'inline' }))).toBe('accepted phase=critic')
+  })
+
+  it('requires every card DoD bullet and outcome in pilot report Acceptance', async () => {
+    const cardText = 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n- Keep tests green.\n'
+    const lifecycle = await lifecycleReadyForReport({ cardText })
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing' }))).toContain('expected `- Keep tests green.` followed by `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`')
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'outcome' }))).toContain('example: `- Ship exact bytes.` then `Outcome: proven by tests/unit.test.ts`')
+    // A proven outcome may carry its evidence on the same line; refusing that shape would loop a pilot on wording.
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven — byte lock in rules-manifest.test.ts\n- Keep tests green.\n  Outcome: proven: pnpm test EXIT=0\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'proven-with-evidence' }))).toContain('missing commit')
+  })
+
+  it('keeps bullet Proof and Outcome lines in the preceding Acceptance entry and accepts proven evidence without a separator', async () => {
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship exact bytes.\n- Keep tests green.\n' })
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n- Outcome: proven by tests/unit.test.ts\n- Keep tests green.\n  Outcome: not done: blocked upstream\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'bullet-outcome' }))).toContain('missing commit')
+  })
+
+  it('names both stale card texts and the one restart action', () => {
+    const first = testLifecycle('LITE', [], null, null, { cardText: 'DoD: old text\n' })
+    expect(() => createLifecycleServer({ worktree: first.root, route: 'LITE', models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'new', rules: [], cardText: 'DoD: new text\n' }))
+      .toThrow(`lifecycle card snapshot "DoD: old text\\n" differs from runner card text "DoD: new text\\n"; remove ${join(first.root, '.lane', 'card.md')} to restart the lifecycle on the new card`)
   })
 
   it('accepts ### task headings with indented body bullets, refuses one without DoD, and names both item shapes', async () => {
