@@ -640,11 +640,12 @@ async function loadAdoptedConsentModules() {
     const fence = path.join(root, 'bin', 'lib', 'opencode-skill-fence.mjs')
     const allowlist = path.join(root, 'bin', 'lib', 'lane-skill-allowlist.mjs')
     const modelAllowlist = path.join(root, 'bin', 'lib', 'lane-model-allowlist.mjs')
+    const pluginOptions = path.join(root, 'bin', 'lib', 'plugin-options.mjs')
   try {
-    const [{ resolveConsent }, { evaluateConsentGate }, fenceModule, allowlistModule, modelAllowlistModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href), import(pathToFileURL(allowlist).href), import(pathToFileURL(modelAllowlist).href)])
+    const [{ resolveConsent }, { evaluateConsentGate }, fenceModule, allowlistModule, modelAllowlistModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href), import(pathToFileURL(allowlist).href), import(pathToFileURL(modelAllowlist).href), import(pathToFileURL(pluginOptions).href)])
     return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal: fenceModule.effectiveSkillDiscoveryRefusal, materialiseAllowedSkills: fenceModule.materialiseAllowedSkills, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery: fenceModule.verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence, resolveLaneSkillAllowlist: allowlistModule.resolveLaneSkillAllowlist, laneModelRefusal: modelAllowlistModule.laneModelRefusal }
   } catch {
-    throw new Error(\`could not load workflow-toolbox lane runtime modules from \${resolver}, \${gate}, \${fence}, \${allowlist}, and \${modelAllowlist}\`)
+    throw new Error(\`could not load workflow-toolbox lane runtime modules from \${resolver}, \${gate}, \${fence}, \${allowlist}, \${modelAllowlist}, and \${pluginOptions}\`)
   }
 }`)
   adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")

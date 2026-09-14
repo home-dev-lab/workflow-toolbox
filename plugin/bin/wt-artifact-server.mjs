@@ -26,6 +26,7 @@ import {
   readArtifactDiscovery,
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
 const HELP = `wt-artifact-server - serve registered artifacts through local or tailnet URLs
 
@@ -166,7 +167,7 @@ async function directoryPage(root, target, urlSegments) {
 }
 
 function idleGraceMs() {
-  const seconds = Number(process.env.WT_ARTIFACT_SERVER_IDLE_GRACE_S ?? 600)
+  const seconds = Number(resolveWorkflowToolboxOption('artifact_server_idle_grace_s').value)
   if (!Number.isFinite(seconds) || seconds < 0) throw new Error('WT_ARTIFACT_SERVER_IDLE_GRACE_S must be a non-negative number')
   return seconds * 1_000
 }

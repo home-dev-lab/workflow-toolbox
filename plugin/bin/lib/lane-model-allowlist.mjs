@@ -1,3 +1,5 @@
+import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
+
 export const DEFAULT_LANE_MODELS = Object.freeze([
   'openai/gpt-5.6-luna',
   'openai/gpt-5.6-terra',
@@ -6,7 +8,7 @@ export const DEFAULT_LANE_MODELS = Object.freeze([
 ])
 
 export function resolveLaneModelAllowlist({ env = process.env } = {}) {
-  const configured = typeof env.WT_LANE_MODELS === 'string' ? env.WT_LANE_MODELS.trim() : ''
+  const configured = resolveWorkflowToolboxOption('lane_models', { env }).value.trim()
   if (!configured) return [...DEFAULT_LANE_MODELS]
   return [...new Set(configured.split(/[\s,]+/).filter(Boolean))]
 }

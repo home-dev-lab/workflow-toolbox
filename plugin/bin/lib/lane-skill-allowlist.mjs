@@ -1,3 +1,5 @@
+import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
+
 // These skills can mutate shared memory or a board; lanes must remain single-writer safe.
 // save-memory, planka-tracking/SKILL.md, and what-next/SKILL.md are their respective writers.
 export const REFUSED_LANE_SKILLS = Object.freeze(['save-memory', 'planka-tracking', 'what-next'])
@@ -11,7 +13,7 @@ export function normalizeOpencodeSkillName(name) {
 const NAME = /^[a-z0-9][a-z0-9._-]*$/i
 
 export function resolveLaneSkillAllowlist({ env = process.env } = {}) {
-  const value = typeof env.WT_LANE_SKILLS === 'string' ? env.WT_LANE_SKILLS.trim() : ''
+  const value = resolveWorkflowToolboxOption('lane_skills', { env }).value.trim()
   if (!value) return { allowed: [], refusals: [] }
   const allowed = []
   const refusals = []

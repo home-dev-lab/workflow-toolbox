@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
 import path from 'node:path'
+import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 
 export const ARTIFACT_SERVER_ID = 'workflow-toolbox-artifact-server'
 export const ARTIFACT_SERVER_VERSION = JSON.parse(readFileSync(new URL('../../.claude-plugin/plugin.json', import.meta.url), 'utf8')).version
@@ -126,8 +127,8 @@ export function assignArtifactMounts(roots, assignments = new Map(), hash = arti
 }
 
 export function configuredArtifactPort(env = process.env) {
-  const raw = env.WT_ARTIFACT_SERVER_PORT
-  const port = raw === undefined ? deriveArtifactPort() : Number(raw)
+  const raw = resolveWorkflowToolboxOption('artifact_server_port', { env }).value
+  const port = raw === null ? deriveArtifactPort() : Number(raw)
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error('WT_ARTIFACT_SERVER_PORT must be an integer from 1 to 65535')
   }
@@ -170,8 +171,10 @@ function projectRoot(cwd) {
 }
 
 export function configuredRoots(env = process.env, cwd = process.cwd()) {
-  if (env.WT_ARTIFACT_SERVER_ROOTS !== undefined) {
-    const entries = env.WT_ARTIFACT_SERVER_ROOTS.split(path.delimiter).filter(Boolean)
+  const configured = resolveWorkflowToolboxOption('artifact_server_roots', { env })
+  if (configured.value !== null) {
+    const separator = configured.source === 'plugin option' ? /[\n,]/ : path.delimiter
+    const entries = configured.value.split(separator).map((entry) => entry.trim()).filter(Boolean)
     return normalizeRoots(entries.map((entry) => {
       const equals = entry.indexOf('=')
       const rawPath = equals < 0 ? entry : entry.slice(equals + 1)
@@ -286,7 +289,7 @@ function globRegex(pattern) {
 }
 
 export function configuredDenyPatterns(env = process.env) {
-  const custom = (env.WT_ARTIFACT_SERVER_DENY ?? '').split(/[\n,]/).map((value) => value.trim()).filter(Boolean)
+  const custom = resolveWorkflowToolboxOption('artifact_server_deny', { env }).value.split(/[\n,]/).map((value) => value.trim()).filter(Boolean)
   return env.WT_ARTIFACT_SERVER_ALLOW_UNSAFE_DENYLIST === '1' ? custom : [...DEFAULT_DENY_PATTERNS, ...custom]
 }
 

@@ -17,6 +17,7 @@ import {
   probeArtifactServer,
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
 const HELP = `wt-artifact-server-ensure - register this session with the shared artifact server
 
@@ -94,7 +95,7 @@ function cleanExit() {
 }
 
 async function main() {
-  if (process.env.WT_ARTIFACT_SERVER === '0') return
+  if (!resolveWorkflowToolboxOption('artifact_server').value) return
   let firstPort
   let roots
   try {

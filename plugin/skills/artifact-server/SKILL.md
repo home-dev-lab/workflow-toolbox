@@ -11,12 +11,18 @@ argument-hint: "[file-path]"
 
 The artifact server turns registered local files into clickable links. A persistent monitor for
 each Claude session starts or attaches to one per-user server and keeps that session registered even
-while idle. It is enabled by default; set `WT_ARTIFACT_SERVER=0` before starting Claude Code to
-disable it.
+while idle. It is enabled by default; disable the `artifact_server` plugin option in Claude Code
+settings, or use the `WT_ARTIFACT_SERVER=0` environment fallback when that option is absent.
+
+The user-facing plugin options are `artifact_server`, `artifact_server_roots`,
+`artifact_server_port`, `artifact_server_idle_grace_s`, and `artifact_server_deny`. A plugin option
+wins over its corresponding `WT_ARTIFACT_SERVER*` environment fallback; an absent option and env
+value use the defaults below. Option lists are comma- or newline-separated. The legacy roots env
+fallback remains platform-path-delimited.
 
 ## Roots and links
 
-When `WT_ARTIFACT_SERVER_ROOTS` is unset, the monitor registers the current project's existing
+When `artifact_server_roots` and `WT_ARTIFACT_SERVER_ROOTS` are unset, the monitor registers the current project's existing
 `.claude/reports` and `.claude/worktrees` directories. The project is the session cwd's Git root, or
 the cwd when it is not in a repository. Their mounts are `<project>-reports` and
 `<project>-worktrees`; projects with the same basename receive stable short hash suffixes. The home
@@ -45,8 +51,8 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/r
 
 ## Lifecycle
 
-The default port is stable for the OS user in the 48000-48999 range. Set
-`WT_ARTIFACT_SERVER_PORT` to override the first candidate. Discovery probes every candidate for the
+The default port is stable for the OS user in the 48000-48999 range. Set the
+`artifact_server_port` option, or its `WT_ARTIFACT_SERVER_PORT` fallback, to override the first candidate. Discovery probes every candidate for the
 service identity and current OS uid before choosing a free port. A foreign listener causes fallback
 through up to 20 ports, and concurrent starts resolve through kernel bind contention.
 
@@ -61,7 +67,7 @@ the real port, local and remote URLs, pinned roots, PID, version, and start time
 The server checks registration PIDs with `process.kill(pid, 0)` every two seconds. An idle live
 session keeps it alive. Clean removal of the last registration stops it immediately; a dead
 monitor's registration is ignored and removed after a 10-minute grace, configurable with
-`WT_ARTIFACT_SERVER_IDLE_GRACE_S`. A newer plugin never replaces an older running server
+`artifact_server_idle_grace_s` or its `WT_ARTIFACT_SERVER_IDLE_GRACE_S` fallback. A newer plugin never replaces an older running server
 automatically; its monitor prints one restart notice.
 
 Human-only operator commands are:
@@ -106,8 +112,10 @@ the tailnet.
   403. Roots are canonicalized only when first observed and pinned; replacing a root with a symlink
   makes it unavailable until a new session registers it.
 - The default case-insensitive deny list blocks `.git`, `.env*`, `*.pem`, `*.key`, `id_rsa*`,
-  `id_ed25519*`, `credentials*`, and `*.secret*`. `WT_ARTIFACT_SERVER_DENY` adds patterns. Only
-  `WT_ARTIFACT_SERVER_ALLOW_UNSAFE_DENYLIST=1` replaces the defaults. Policy is per registration and
+  `id_ed25519*`, `credentials*`, and `*.secret*`. `artifact_server_deny`, or its
+  `WT_ARTIFACT_SERVER_DENY` fallback, adds patterns. Only the test/internal env-only knob
+  `WT_ARTIFACT_SERVER_ALLOW_UNSAFE_DENYLIST=1` replaces the defaults. The other test-only knob,
+  `WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS`, is also env-only. Policy is per registration and
   is checked against canonical path segments plus the root basename, so benign symlink aliases do
   not bypass it.
 - Markdown raw HTML is escaped. `.txt`, `.log`, and `.json` are escaped; `.html` is served unchanged
