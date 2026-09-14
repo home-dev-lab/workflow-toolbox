@@ -24,10 +24,12 @@ refutation, or harden; timeout is at most 5400 seconds. Use `run { kind: 'gate',
 `typecheck`, `lint`, or `test`. Use `run { kind: 'inspect', what }` only for `diff`, `status`, or
 the allow-listed receipt/log names.
 
-Every lane phase follows the same order: write its brief, run the lane, then transition. At launch the server
-exclusively recreates canonical pilot-readable copies and launches from a read-only runner-owned snapshot outside the worktree, so later disk modifications cannot replace launch inputs.
-Each brief places exact mapped role rules under `## Rules that apply to this role (authoritative)` before
-pilot context; those rules are authoritative, not part of the untrusted context fence.
+For every lane: write its brief, run it, then transition. The server recreates launch inputs in a
+read-only external snapshot and puts mapped authoritative rules before fenced pilot context.
+Independent briefs name `KNOWLEDGE_BASE_INDEX`. Claude SDK allows Read of that index and contained
+Markdown fiches; Glob/Grep stay confined. OpenCode marks an external index unavailable rather than
+widening `external_directory`. Fiches are claims to verify against code, not evidence; a finding
+resting only on a fiche is not a finding.
 
 For a critic, review, or refutation lane, `content` is context only. The server writes the
 authoritative independent-review instructions first, names the evidence to judge, fences your text
@@ -39,12 +41,10 @@ FINDINGS:
 - <finding when changes-requested>
 ```
 
-The critic evidence is the plan, optional card, and exact server-recorded discovery/intake bytes,
-fenced as untrusted input; review/refutation evidence is the server-written
-prospective working-tree patch against the named construction base and gate receipts. Every launch brief names a nonce report path; workers must write
-only that path. The server publishes the nonce log/report pair canonically after both validate. The
-critic report must quote the plan SHA-256 line. On FULL, the tdd brief must carry the plan's `## Tasks`
-block byte-identically.
+Critic evidence is the plan, optional card, and recorded discovery; review/refutation evidence is the
+prospective patch and gate receipts. Write only the nonce report named in the brief. The server
+publishes its validated log/report pair. Critic reports quote the plan SHA-256. On FULL, the tdd brief
+carries the plan's `## Tasks` block byte-identically.
 
 | Phase | Do this before transition |
 | --- | --- |
@@ -64,14 +64,13 @@ partial. A refusal names missing evidence: produce that evidence, do not retry t
 
 ## Completion and boundaries
 
-Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`,
-`## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`; then transition report. Keep
-the exact line `Partial: <reason>` in a partial run's report; omit `Partial:` on a full run. The owner
-decides how to proceed from a completed partial run. The report edge re-hashes the report you wrote
-(a report not written through write_artifact this run, or changed since, is refused). Keep
-working until that transition returns the awaiting-fidelity receipt, then write nothing more and end
-the turn: the runner commits, archives `.lane/`, and stops. An earlier end of turn is re-prompted at
-most three consecutive times without lifecycle progress; the third unproductive turn fails the run. Never push, publish, merge, force, delete,
-or retry a denied call; `pilot-guard` enforces those boundaries. Print no secrets or environment
-variables. Owner messages arrive only through the runner's mailbox. Communicate back to the owner
-only through the pilot report; Planka is for tracked-card state, not owner messaging.
+Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`, `## E2E`,
+`## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. E2E contains command/procedure
+plus verbatim output, or exactly `e2e not run: <reason>`. FULL also requires `## Independent Review`
+with lenses and confirmed/refuted findings. Keep exact `Partial: <reason>` only on partial runs; the
+owner decides how to proceed from a completed partial run. The report edge refuses a report not written
+through write_artifact this run, or changed since.
+Continue through the awaiting-fidelity receipt, then write nothing and end: the runner commits and
+archives. Three unproductive turns fail. Never push, publish, merge, force, delete, retry a denial,
+print secrets/environment, or message the owner outside the pilot report. `pilot-guard` enforces this;
+mailbox is owner input and Planka is card state.

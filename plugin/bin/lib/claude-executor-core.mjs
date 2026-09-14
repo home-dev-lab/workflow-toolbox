@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { knowledgeBaseReadAllowed } from './knowledge-base-index.mjs'
 
 const READ_TOOLS = ['Read', 'Glob', 'Grep']
 const WRITE_TOOLS = ['Edit', 'Write', 'Bash']
@@ -30,11 +31,11 @@ export function executorTools(readOnly) {
   return readOnly ? [...READ_TOOLS, 'Write'] : [...READ_TOOLS, ...WRITE_TOOLS]
 }
 
-export function executorCanUseTool(root, report, readOnly, toolName, input) {
+export function executorCanUseTool(root, report, readOnly, toolName, input, { knowledgeBaseIndex = null } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   if (READ_TOOLS.includes(toolName)) {
     const requested = input.file_path ?? input.path ?? root
-    let allowed = confined(root, requested)
+    let allowed = confined(root, requested) || (readOnly && toolName === 'Read' && knowledgeBaseReadAllowed(knowledgeBaseIndex, requested))
     const pattern = toolName === 'Glob' ? input.pattern : input.glob ?? input.pattern
     if (allowed && (toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string' && /[\\/]/.test(pattern)) {
       const segments = pattern.split(/[\\/]/)
@@ -56,7 +57,7 @@ export function executorCanUseTool(root, report, readOnly, toolName, input) {
 }
 
 export function parseExecutorArgs(argv) {
-  const options = { dir: null, model: null, brief: null, log: null, timeout: 5400, role: null }
+  const options = { dir: null, model: null, brief: null, log: null, timeout: 5400, role: null, knowledgeBaseIndex: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') options.dir = argv[++i] ?? null
@@ -65,6 +66,7 @@ export function parseExecutorArgs(argv) {
     else if (arg === '--log') options.log = argv[++i] ?? null
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
     else if (arg === '--role') options.role = argv[++i] ?? null
+    else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
@@ -73,6 +75,7 @@ export function parseExecutorArgs(argv) {
   if (!['tdd', 'harden', 'critic', 'review', 'refutation'].includes(options.role)) return { error: '--role must be tdd, harden, critic, review, or refutation' }
   options.dir = path.resolve(options.dir); options.brief = path.resolve(options.brief)
   options.log = path.resolve(options.log ?? path.join(options.dir, '.lane', 'run.log'))
+  if (options.knowledgeBaseIndex) options.knowledgeBaseIndex = path.resolve(options.knowledgeBaseIndex)
   return options
 }
 

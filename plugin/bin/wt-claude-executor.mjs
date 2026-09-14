@@ -7,7 +7,7 @@ import { executorBrief, executorCanUseTool, executorTools, parseExecutorArgs } f
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 
-const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--log <path>] [--timeout 5400]'
+const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
 function finish(log, code) {
   try {
@@ -43,7 +43,7 @@ async function worker(options) {
       settingSources: [],
       plugins: [{ type: 'local', path: guardPlugin }],
       tools: executorTools(launch.readOnly),
-      canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input),
+      canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex }),
       permissionMode: 'default',
       sandbox: { enabled: true, autoAllowBashIfSandboxed: false },
       settings: { permissions: { blockReadsOutsideWorkingDirectories: true, disableBypassPermissionsMode: 'disable' } },
@@ -71,7 +71,7 @@ async function main() {
   try { assertHarnessAlias(options.model); executorBrief(options) } catch (error) { process.stderr.write(`wt-claude-executor: ${error instanceof Error ? error.message : String(error)}\n`); return 2 }
   if (isWorker) return worker(options)
   mkdirSync(path.join(options.dir, '.lane'), { recursive: true })
-  const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', options.dir, '--model', options.model, '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role], { detached: true, stdio: 'ignore', env: process.env })
+  const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', options.dir, '--model', options.model, '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role, ...(options.knowledgeBaseIndex ? ['--knowledge-base-index', options.knowledgeBaseIndex] : [])], { detached: true, stdio: 'ignore', env: process.env })
   child.unref()
   process.stdout.write(`pid=${child.pid}\nlog=${options.log}\n`)
   return 0
