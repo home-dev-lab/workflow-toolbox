@@ -1,6 +1,6 @@
 {
   "name": "wt-secret-guard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Private function-hook secret scrubber for Bash results and pasted prompts",
   "author": {
     "name": "Frederic Thomas",
