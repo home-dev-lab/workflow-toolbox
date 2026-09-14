@@ -7,12 +7,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { launchProcess, launchProcessWithOutput, terminateProcessGroup, waitForLaneReceipt } from './lifecycle-receipts.mjs'
-import { supervisionPaths } from './lane-supervisor-core.mjs'
+import { processAlive, supervisionPaths } from './lane-supervisor-core.mjs'
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
 const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
-const LANE_TIMEOUT_GRACE_MS = 1_000
 
 function terminalExit(content) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(content)?.[1] ?? null
@@ -195,6 +194,13 @@ export function createLifecycleLaunch({
         const snapshotBrief = path.join(snapshot, 'brief.md')
         fs.writeFileSync(snapshotBrief, launchBriefs.launch, { flag: 'wx', mode: 0o400 })
         fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
+        const model = phase === 'tdd' || phase === 'harden'
+          ? frozenModels.code
+          : phase === 'refutation'
+            ? frozenModels.refutation
+            : phase === 'critic'
+              ? frozenModels.critic
+              : frozenModels.review
         let launch
         try {
           const launcher = laneLauncher ?? path.join(
@@ -202,13 +208,6 @@ export function createLifecycleLaunch({
             '..',
             executor === 'claude-sdk' ? 'wt-claude-executor.mjs' : 'wt-lane.mjs',
           )
-          const model = phase === 'tdd' || phase === 'harden'
-            ? frozenModels.code
-            : phase === 'refutation'
-              ? frozenModels.refutation
-              : phase === 'critic'
-                ? frozenModels.critic
-                : frozenModels.review
           launch = await launchProcessWithOutput(
             process.execPath,
             [
@@ -259,23 +258,32 @@ export function createLifecycleLaunch({
           let parsed = null
           try {
             parsed = JSON.parse(status)
-            if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'running' && Date.parse(parsed.timeoutAt)) {
-              logEntry = await waitForLaneReceipt({
-                log,
-                nonce,
-                timeoutMs: Math.max(0, Date.parse(parsed.timeoutAt) - Date.now()) + LANE_TIMEOUT_GRACE_MS,
-                launchedAt,
-                pollMs: lanePollMs,
-                readAttestation,
-                readRegularFile,
-              })
-              status = readRegularFile(supervisionFile)
-              parsed = JSON.parse(status)
+            if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'running') {
+              const transitionDueAt = Date.parse(parsed.decisionTransitionDueAt)
+              while (!logEntry && parsed.state === 'running' && parsed.workerPid === workerPid && processAlive(workerPid) && Date.now() <= transitionDueAt) {
+                logEntry = await waitForLaneReceipt({
+                  log,
+                  nonce,
+                  timeoutMs: Math.min(25, Math.max(0, transitionDueAt - Date.now())),
+                  launchedAt,
+                  pollMs: lanePollMs,
+                  readAttestation,
+                  readRegularFile,
+                })
+                status = readRegularFile(supervisionFile)
+                parsed = JSON.parse(status)
+              }
             }
             if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'decision-needed') {
-              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; use wt-lane-control extend|relaunch|abandon --owner-token ${nonce}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
+              const control = `node plugin/bin/wt-lane-control.mjs --dir ${root}`
+              const launch = `node plugin/bin/wt-lane.mjs --dir ${root} --model ${model} --brief <brief-file>`
+              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; extend with ${control} --decision extend --owner-token ${nonce}, or abandon with ${control} --decision abandon --owner-token ${nonce}; to relaunch from the worktree's current state, abandon, then start a fresh lane with ${launch}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
               snapshot = null
               return `lane ${phase} TIMEOUT: ${detail}`
+            }
+            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && parsed.state === 'running' && processAlive(workerPid)) {
+              snapshot = null
+              return `lane ${phase} TIMEOUT: owner=${parsed.owner}; live worker is still completing its bounded timeout transition; no process was killed`
             }
           } catch {}
           if (!logEntry) {

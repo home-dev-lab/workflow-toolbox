@@ -128,7 +128,6 @@ export function supervisionPaths(root, runId = null) {
     pointer: path.join(dir, 'current.json'),
     record: runId ? path.join(dir, `${runId}.json`) : null,
     decision: runId ? path.join(dir, `${runId}.decision.json`) : null,
-    handoff: runId ? path.join(dir, `${runId}.handoff.json`) : null,
   }
 }
 

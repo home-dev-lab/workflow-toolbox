@@ -49,6 +49,10 @@ async function main() {
   if (!['observe', 'enforce'].includes(cleanupMode)) { process.stderr.write('wt-lane-orphan-watch: lane_orphan_cleanup must be observe or enforce\n'); return 2 }
   const dataDir = path.join(resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const notified = new Set()
+  const notice = (key, message) => {
+    process.stdout.write(`${message}\n`)
+    notified.add(key)
+  }
   let journalFailureReported = false
   const journal = (event, { killed = false } = {}) => {
     try {
@@ -71,28 +75,26 @@ async function main() {
       if (!processRecord) continue
       const verdict = classifyLane({ process: processRecord, record, launcherAlive: processAlive(record.workerPid) })
       const ownsNotice = record.owner === 'session' && Boolean(record.ownerSessionId) && record.ownerSessionId === process.env.CLAUDE_CODE_SESSION_ID
-      if (ownsNotice && record.state === 'decision-needed' && !notified.has(`${record.runId}:${record.timeoutAt}`)) {
-        notified.add(`${record.runId}:${record.timeoutAt}`)
+      const decisionKey = `${record.runId}:${record.timeoutAt}`
+      if (ownsNotice && record.state === 'decision-needed' && !notified.has(decisionKey)) {
         const e = record.evidence ?? {}
-        process.stdout.write(`LANE ${record.state}: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${e.lastWriteAt ?? 'unknown'} process=${e.process ?? 'unknown'} log-tail=${JSON.stringify(e.logTail ?? '')}; decide with wt-lane-control extend|relaunch|abandon before ${record.decisionDueAt}; default=${record.defaultDecision}\n`)
+        notice(decisionKey, `LANE ${record.state}: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${e.lastWriteAt ?? 'unknown'} process=${e.process ?? 'unknown'} log-tail=${JSON.stringify(e.logTail ?? '')}; extend with node plugin/bin/wt-lane-control.mjs --dir ${record.worktree} --decision extend, or abandon with node plugin/bin/wt-lane-control.mjs --dir ${record.worktree} --decision abandon before ${record.decisionDueAt}; to relaunch from the worktree's current state, abandon, then run node plugin/bin/wt-lane.mjs --dir ${record.worktree} --model <provider/model> --brief <brief-file>; default=${record.defaultDecision}`)
       }
       if (record.state === 'running' && !notified.has(`${record.runId}:stalled`)) {
         const activity = latestWorktreeWrite(record.worktree)
         if (activity.status === 'known' && activity.at && Date.now() - activity.at >= stallMinutes * 60_000) {
           const evidence = { lastWriteAt: new Date(activity.at).toISOString(), activityBounded: activity.bounded, logTail: readLogTail(record.log), process: 'running' }
-          if (journal({ event: 'stalled', pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })) {
-            notified.add(`${record.runId}:stalled`)
-            if (ownsNotice) process.stdout.write(`LANE stalled: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${evidence.lastWriteAt} process=running log-tail=${JSON.stringify(evidence.logTail)}; inspect, nudge, extend, relaunch, or abandon; no process was killed\n`)
-          }
+          journal({ event: 'stalled', pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })
+          if (ownsNotice) notice(`${record.runId}:stalled`, `LANE stalled: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${evidence.lastWriteAt} process=running log-tail=${JSON.stringify(evidence.logTail)}; inspect or nudge; timeout decisions are extend or abandon; no process was killed`)
         }
       }
       if (verdict.action !== 'clean') continue
       const evidence = { recordState: record.state, launcherAlive: false, childPid: record.childPid, childArgv: record.childArgv, childCwd: processRecord.cwd, workerPid: record.workerPid }
       if (cleanupMode === 'observe') {
         const key = `${record.runId}:would-clean`
-        if (!notified.has(key) && journal({ event: 'would-clean', pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: verdict.reason, evidence })) {
-          notified.add(key)
-          if (ownsNotice) process.stdout.write(`LANE would-clean: worktree=${record.worktree} pid=${record.childPid} reason=${verdict.reason}; lane_orphan_cleanup=observe, no process was killed\n`)
+        if (!notified.has(key)) {
+          journal({ event: 'would-clean', pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: verdict.reason, evidence })
+          if (ownsNotice) notice(key, `LANE would-clean: worktree=${record.worktree} pid=${record.childPid} reason=${verdict.reason}; lane_orphan_cleanup=observe, no process was killed`)
         }
         continue
       }
@@ -105,10 +107,8 @@ async function main() {
       if (!/(?:^|[\\/\s])opencode(?:\s|$)/i.test(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
       const unknown = inspectProcess(item.pid)
       if (!unknown?.cwd || (unknown.cwd !== options.project && !unknown.cwd.startsWith(`${options.project}${path.sep}`))) continue
-      if (journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })) {
-        notified.add(`unknown:${item.pid}`)
-        process.stdout.write(`WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed\n`)
-      }
+      journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
+      notice(`unknown:${item.pid}`, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
     }
     const brokers = listBrokers()
     if (brokers.supported) for (const pid of brokers.pids) {

@@ -56,10 +56,12 @@ receives its own lane event synchronously from the lifecycle result instead.
 
 Supervision uses one `.lane/supervision/<runId>.json` record per run and an atomic
 `.lane/supervision/current.json` pointer. Control ownership is an accident guard, not authentication.
-Pilot-owned timeout decisions offer `extend` and `abandon`, but not `relaunch`, because the lifecycle
-call that owned the receipt has already returned.
+Session and pilot timeout decisions are `extend` or `abandon`. To relaunch from the worktree's current
+state, run `node plugin/bin/wt-lane-control.mjs --dir <worktree> --decision abandon`, then start a fresh
+lane on that worktree with `node <configDir>/scripts/wt-lane.mjs --dir <worktree> --model
+<provider/model> --brief <file>`; the worktree files are retained.
 
-The journal rotates at 10 MiB and keeps one previous file. Sweep output/journal failures are reported
-once per failing streak and retried. Linux provides the full watcher/control contract; other platforms
+The journal rotates at 10 MiB and keeps one previous file. A notice is emitted even if its journal
+write fails; journal failures are reported once per failing streak and retried. Linux provides the full watcher/control contract; other platforms
 receive one availability notice per session. Detached grandchildren that call `setsid` escape the
 launcher's process group and cannot be reached by group cleanup.

@@ -168,8 +168,22 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
     const pointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
     const supervision = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', `${pointer.runId}.json`), 'utf8'))
-    process.kill(-supervision.workerPid, 'SIGTERM')
     expect(result).toContain('TIMEOUT')
+    try { process.kill(-supervision.workerPid, 'SIGTERM') } catch {}
+  }, 15_000)
+
+  it('does not terminate a live real worker while its timeout evidence scan is still completing', async () => {
+    const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
+    const fakeSource = '#!/bin/sh\nif [ "$1" = "--version" ]; then printf \'fixture-1\\n\'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf \'[{"name":"workflow-toolbox-allowed-sentinel"}]\\n\'; exit 0; fi\nif [ "$1" = "debug" ]; then printf \'[]\\n\'; exit 0; fi\nsleep 30\n'
+    const helperSource = "const fs=require('fs');const path=require('path');const root=process.argv[1],pid=Number(process.argv[2]);const pointer=path.join(root,'.lane','supervision','current.json');const poll=setInterval(()=>{try{const run=JSON.parse(fs.readFileSync(pointer)).runId;const record=path.join(root,'.lane','supervision',run+'.json');const state=JSON.parse(fs.readFileSync(record));if(state.state==='running'&&Date.parse(state.timeoutAt)){clearInterval(poll);setTimeout(()=>{process.kill(pid,'SIGSTOP');setTimeout(()=>{try{process.kill(pid,'SIGCONT')}catch{}},1500)},Math.max(0,Date.parse(state.timeoutAt)-Date.now()-25))}}catch{}},10)"
+    const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawn, spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+process.env.PATH,CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test'}}); const worker=Number(/^pid=(\\d+)$/m.exec(result.stdout)?.[1]); const helper=spawn(process.execPath,['-e',${JSON.stringify(helperSource)},root,String(worker)],{detached:true,stdio:'ignore'}); helper.unref(); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
+    const lifecycle = testLifecycle('LITE', [], wrapper, 30, { executor: 'gpt-lane' })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
+    const pointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
+    const supervision = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', `${pointer.runId}.json`), 'utf8'))
+    expect(result).toContain('TIMEOUT')
+    try { process.kill(-supervision.workerPid, 'SIGTERM') } catch {}
   }, 15_000)
 
   it('terminates the launcher group when a missing receipt has no decision-needed record', async () => {
