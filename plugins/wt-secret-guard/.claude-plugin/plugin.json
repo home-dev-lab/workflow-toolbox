@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Private function-hook secret scrubber for Bash results and pasted prompts",
   "author": {
-    "name": "doublefx"
+    "name": "Frederic Thomas",
+    "email": "fthomas@apache.org"
   },
   "userConfig": {
     "opAccount": {
@@ -15,7 +16,7 @@
     },
     "opBinary": {
       "title": "1Password CLI executable the hook runs for `op read` (e.g. `op.exe` under WSL interop)",
-      "description": "The hook's own process capability spawns this executable; shell aliases do not apply there. Default `op`; on this machine the working CLI is `op.exe` (the Linux `/usr/bin/op` is not signed in).",
+      "description": "The hook's own process capability spawns this executable; shell aliases do not apply there. Default `op`; under WSL, set `op.exe` when the Windows 1Password CLI is the signed-in one.",
       "type": "string",
       "required": false,
       "default": "op"

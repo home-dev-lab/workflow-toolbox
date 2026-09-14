@@ -18,7 +18,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   its own keys (`WT_SDK_PILOT_MODEL`, `WT_SDK_PILOT_HARD_MODEL`, `WT_SDK_ORCHESTRATOR_MODEL`), all Opus
   by default.
 - SDK pilots and the SDK orchestrator read their Planka MCP endpoint from the `planka_mcp_url` plugin
-  option (environment fallback `WT_PLANKA_MCP_URL`, default `http://localhost:25478/mcp`) instead of a
+  option (environment fallback `WT_PLANKA_MCP_URL`, empty by default: no board tools) instead of a
   hard-coded port.
 - Lane model/skill allow-lists and user-facing artifact-server settings are now Claude Code plugin
   options, resolved consistently before their existing environment fallbacks. String lists use
