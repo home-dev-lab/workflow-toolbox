@@ -5,6 +5,14 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Added the `sdk-pilot` skill to expose detached evaluation of the not-yet-supported SDK pilot runner.
+
+### Changed
+- SDK pilot critics now receive the server-recorded discovery intake alongside the plan, and SDK
+  pilots and orchestrators receive the resolved read-only project knowledge-base index path or an
+  explicit absence.
+
 ## [0.174.0] - 2026-09-14
 
 > **Not supported in this release:** the SDK pilot runner (`wt-pilot-runner`), the SDK orchestrator

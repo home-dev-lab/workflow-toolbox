@@ -141,7 +141,7 @@ describe('wave lifecycle server', () => {
 
 describe('orchestrator driver', () => {
   it('parses the complete CLI surface and rejects invalid launch shapes', () => {
-    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b' })
+    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md' })
     expect(parseOrchestratorArgs(['--cards', '1', '--mission-list', 'Next', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r']).error).toContain('exactly one')
   })
 
@@ -363,7 +363,7 @@ describe('SDK orchestrator judge', () => {
       { id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship one\n' },
       { id: '2', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship two\n' },
     ]
-    const f = repoFixture(cards); let calls = 0; const prompts: string[] = []; let queryOptions: Record<string, unknown> = {}
+    const f = repoFixture(cards); const knowledgeBaseIndex = join(f.root, 'MEMORY.md'); writeFileSync(knowledgeBaseIndex, '# Memory\n'); let calls = 0; const prompts: string[] = []; let queryOptions: Record<string, unknown> = {}
     type Server = { instance: { _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
     const judgment = '## Independent Review\nBoth diffs satisfy their cards.\n\n## Decisions\n1 accept; 2 reject.'
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: Record<string, unknown> }) => {
@@ -381,15 +381,16 @@ describe('SDK orchestrator judge', () => {
         yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'judgment', content: result.content }] } }
       })()
     }
-    const result = await runOrchestrator(f.options, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
+    const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
     expect(calls).toBe(1)
     expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep'] })
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
     expect(prompts).toEqual([
-      'Judge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
+      `KNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
       'Judge card 2: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
       'Every card is decided: write_judgment.',
     ])
+    expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: knowledgeBaseIndex })).toEqual({ behavior: 'allow' })
     expect(result.rows.map((row: { decision: string, reason: string }) => [row.decision, row.reason])).toEqual([['accepted', 'accept reason'], ['rejected', 'reject reason']])
     expect(readFileSync(f.report, 'utf8')).toContain(judgment)
   })

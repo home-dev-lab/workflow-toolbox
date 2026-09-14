@@ -6,6 +6,7 @@ import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lif
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
+import { knowledgeBasePromptLine, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -31,7 +32,7 @@ const PLANKA_TOOLS = new Set([
 ])
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -40,6 +41,7 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--profile-env') options.profileEnv = argv[++i] ?? null
     else if (arg === '--contract') options.contract = argv[++i] ?? null
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
+    else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
@@ -90,7 +92,7 @@ export function confinedToWorktree(root, requested) {
   return relative(realpathSync(root), resolved) === '' || !relative(realpathSync(root), resolved).startsWith('..')
 }
 
-export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true } = {}) {
+export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true, knowledgeBaseIndex = null } = {}) {
   if (['transition', 'write_artifact', 'run'].map(lifecycleToolName).includes(toolName)) return { behavior: 'allow' }
   if (toolName === 'mcp__planka__move_card' && !boardMoves) return { behavior: 'deny', message: 'board moves are the orchestrator\'s' }
   if (PLANKA_TOOLS.has(toolName)) return { behavior: 'allow' }
@@ -98,6 +100,7 @@ export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = tr
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? worktree
   if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
+  if (toolName === 'Read' && knowledgeBaseIndex && resolve(requested) === resolve(knowledgeBaseIndex)) return { behavior: 'allow' }
   const pattern = toolName === 'Glob' ? input.pattern : (input.glob ?? input.pattern)
   if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string' && /[\\/]/.test(pattern)) {
     const segments = pattern.split(/[\\/]/)
@@ -136,6 +139,8 @@ function servedModelAgreement({ requestedModel, servedModel, servedModelFirstTur
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
+  const effectiveEnv = { ...env, ...profileEnv }
+  const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
   // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
@@ -193,7 +198,7 @@ export async function runPilot(options, dependencies) {
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, models: executorProfile.models, cardId: options.card, sessionTag: `${options.card}-${started}`, ...lifecycleOptions })
 
   async function* prompt() {
-    const standing = `Pilot card ${options.card} in ${options.dir}. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
+    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present; it is read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
     yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
@@ -243,9 +248,9 @@ export async function runPilot(options, dependencies) {
     tools: ['Read', 'Glob', 'Grep'],
     // No Planka endpoint configured means no board tools, never a guessed local port.
     mcpServers: { ...(resolveWorkflowToolboxOption('planka_mcp_url', { env }).value ? { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
-    canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true }),
+    canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path }),
     permissionMode: 'default',
-    env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+    env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
   } })
   for await (const message of stream) {
     transcript.push(message)
