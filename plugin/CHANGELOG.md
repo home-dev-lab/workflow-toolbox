@@ -15,6 +15,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   confident empty list. Failed clock-tick, directory, process-record, executable-lookup, and Git
   probes no longer become guessed ages, empty scans, dead processes, or unmerged branches.
 
+### Changed
+- `wt-run-gate` now names the tree it certified on the same line as the exit code —
+  `tree=<branch>@<short-sha>[ dirty] dir=<absolute path>` — because an exit code answers for the
+  COMMAND and never for the SUBJECT: a gate can be genuinely green about a tree nobody intended to
+  certify. It degrades legibly rather than omitting the field, since an absent field reads as "the
+  same as expected": a directory outside a repository prints `tree=not-a-repo`, and a git that
+  cannot be launched prints `tree=unknown`. A tree carrying uncommitted tracked changes is marked
+  `dirty`, because a record keyed by a tree signature is not reproducible from the commit alone.
+  The two paths that never reach that line — a gate killed by a signal, and one that fails to
+  launch — carry the same identity in their own message.
+
 ## [0.176.0] - 2026-09-15
 
 ### Fixed
