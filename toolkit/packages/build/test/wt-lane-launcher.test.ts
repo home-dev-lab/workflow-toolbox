@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +13,7 @@ const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
 const CONTROL = join(ROOT, 'plugin/bin/wt-lane-control.mjs')
 const WATCHER = join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
 const roots: string[] = []
+const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) })
 
 function fixture(script: string) {
@@ -69,6 +71,57 @@ function currentDecisionFile(dir: string) {
 }
 
 describe('wt-lane detached launcher', () => {
+  it('refuses a stale brief and names the acknowledgement flag and fresh-round remedy', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    const brief = join(f.dir, 'brief.md')
+    const old = new Date(Date.now() - 15 * 60_000)
+    utimesSync(brief, old, old)
+
+    const result = run(f, ['--max-brief-age', '600'])
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toMatch(new RegExp(`^wt-lane: Refused: brief ${escapeRegex(brief)} is stale \\(age=.+; maximum=10m0s\\); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round\\.\\n$`))
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+  })
+
+  it('launches an intentionally resumed round when stale-brief acknowledgement is explicit', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    const brief = join(f.dir, 'brief.md')
+    const old = new Date(Date.now() - 15 * 60_000)
+    utimesSync(brief, old, old)
+
+    const result = run(f, ['--max-brief-age', '600', '--acknowledge-stale-brief'])
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain(`brief=${brief}\n`)
+    expect(result.stdout).toMatch(/brief_age=15m\d+s\n/)
+    expect(result.stdout).toContain('brief_heading=# brief\n')
+    expect(result.stdout).toContain(`brief_sha256=${createHash('sha256').update('# brief\n').digest('hex')}\n`)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
+  })
+
+  it('prints and journals the sha256 of the exact brief bytes the worker obeys', () => {
+    const original = '# Original round\nfirst bytes\n'
+    const replacement = '# Replacement round\nchanged after detach\n'
+    const f = fixture('brief=${2#Read and execute the complete brief at }; brief=${brief%.}; cp "$brief" "$PWD/obeyed.md"')
+    const brief = join(f.dir, 'brief.md')
+    writeFileSync(brief, original)
+    f.env.SLOW_PREFLIGHT_AT_COUNT = '2'
+
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    writeFileSync(brief, replacement)
+    waitFor(join(f.dir, '.lane', 'run.log'), 10_000)
+
+    const expectedHash = createHash('sha256').update(original).digest('hex')
+    expect(result.stdout).toContain(`brief_sha256=${expectedHash}\n`)
+    expect(readFileSync(join(f.dir, 'obeyed.md'), 'utf8')).toBe(original)
+    expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).toMatch(
+      new RegExp(`^LANE_RUN_ID=.+\\nBRIEF_PATH=${escapeRegex(brief)}\\nBRIEF_AGE=.+\\nBRIEF_HEADING=# Original round\\nBRIEF_SHA256=${expectedHash}\\n`),
+    )
+  }, 15_000)
+
   it('launches a model in the default lane model allow-list', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     expect(run(f).status).toBe(0)
@@ -706,9 +759,11 @@ describe('wt-lane detached launcher', () => {
     const res = run(f, ['--variant', 'high', '--timeout', '1']); expect(res.status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'claude-skills-fence'), 'utf8')).toBe('true\n')
-    expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toBe([
+    const argv = readFileSync(join(f.dir, 'argv'), 'utf8').split('\n')
+    expect(argv[1]).toMatch(/^Read and execute the complete brief at .+[/\\]\.lane[/\\]brief-snapshots[/\\]\d+-\d+\.md\.$/)
+    expect(argv).toEqual([
       'run',
-      `Read and execute the complete brief at ${join(f.dir, 'brief.md')}.`,
+      argv[1],
       '--auto',
       '--dir',
       f.dir,
@@ -717,7 +772,7 @@ describe('wt-lane detached launcher', () => {
       '--variant',
       'high',
       '',
-    ].join('\n'))
+    ])
   })
   it('refuses before launch when OpenCode ignores the fence', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')

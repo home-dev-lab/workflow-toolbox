@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // wt-lane.mjs -- detached, one-command external opencode lane launcher.
 
-import { appendFileSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { readFileSync as readLaneLog } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
@@ -17,6 +18,7 @@ const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
 const DEFAULT_DECISION_GRACE = 300
 const DEFAULT_MAX_EXTENSIONS = 3
+const DEFAULT_MAX_BRIEF_AGE = 600
 const DECISION_TRANSITION_BOUND_MS = 5_000
 const LAUNCH_LOCK_MAX_AGE_MS = 120_000
 
@@ -25,16 +27,19 @@ async function loadConsentModules() {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--variant <name>] [--allow-no-git]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--variant <name>] [--allow-no-git]'
 }
 
 function parse(argv) {
-  const out = { dir: null, model: null, brief: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, allowNoGit: false, runId: null }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, allowNoGit: false, runId: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
     else if (arg === '--model') out.model = argv[++i] ?? null
     else if (arg === '--brief') out.brief = argv[++i] ?? null
+    else if (arg === '--max-brief-age') out.maxBriefAge = Number(argv[++i])
+    else if (arg === '--acknowledge-stale-brief') out.acknowledgeStaleBrief = true
+    else if (arg === '--brief-receipt') out.briefReceipt = argv[++i] ?? null
     else if (arg === '--timeout') out.timeout = Number(argv[++i])
     else if (arg === '--decision-grace') out.decisionGrace = Number(argv[++i])
     else if (arg === '--max-extensions') out.maxExtensions = Number(argv[++i])
@@ -49,6 +54,7 @@ function parse(argv) {
     else return { error: `unknown argument: ${arg}` }
   }
   if (!out.dir || !out.model || !out.brief) return { error: 'missing required --dir, --model, or --brief' }
+  if (!Number.isFinite(out.maxBriefAge) || out.maxBriefAge <= 0) return { error: '--max-brief-age must be a positive number of seconds' }
   if (!Number.isFinite(out.timeout) || out.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
   if (!Number.isFinite(out.decisionGrace) || out.decisionGrace < 0) return { error: '--decision-grace must be a non-negative number of seconds' }
   if (!Number.isSafeInteger(out.maxExtensions) || out.maxExtensions < 0) return { error: '--max-extensions must be a non-negative integer' }
@@ -62,6 +68,46 @@ function parse(argv) {
   if (out.briefCleanupDir) out.briefCleanupDir = path.resolve(out.briefCleanupDir)
   out.log = path.resolve(out.log ?? path.join(out.dir, '.lane', 'run.log'))
   return out
+}
+
+function formatAge(ageMs) {
+  const seconds = Math.max(0, Math.floor(ageMs / 1000))
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m${seconds % 60}s`
+}
+
+function readBriefEvidence(file) {
+  let fd
+  try {
+    fd = openSync(file, 'r')
+    const bytes = readFileSync(fd)
+    const stat = fstatSync(fd)
+    const heading = bytes.toString('utf8').split(/\r?\n/).find((line) => /^#(?:\s|$)/.test(line)) ?? '(no Markdown heading)'
+    const ageMs = Math.max(0, Date.now() - stat.mtimeMs)
+    return { bytes, path: file, ageMs, age: formatAge(ageMs), heading, sha256: createHash('sha256').update(bytes).digest('hex') }
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+function parseBriefReceipt(encoded) {
+  try {
+    const receipt = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
+    if (typeof receipt?.path !== 'string' || typeof receipt?.age !== 'string' || typeof receipt?.heading !== 'string' || !/^[0-9a-f]{64}$/.test(receipt?.sha256)) return null
+    return receipt
+  } catch {
+    return null
+  }
+}
+
+function briefEvidenceLines(receipt, upper = false) {
+  if (!upper) return [`brief=${receipt.path}`, `brief_age=${receipt.age}`, `brief_heading=${receipt.heading}`, `brief_sha256=${receipt.sha256}`]
+  return [
+    `BRIEF_PATH=${receipt.path}`,
+    `BRIEF_AGE=${receipt.age}`,
+    `BRIEF_HEADING=${receipt.heading}`,
+    `BRIEF_SHA256=${receipt.sha256}`,
+  ]
 }
 
 function checkGitWorktree(dir) {
@@ -123,6 +169,31 @@ async function main() {
   })
   if (!existsSync(opts.dir) || !statSync(opts.dir).isDirectory()) { process.stderr.write(`wt-lane: --dir is not a directory: ${opts.dir}\n`); return 2 }
   if (!existsSync(opts.brief)) { process.stderr.write(`wt-lane: --brief does not exist: ${opts.brief}\n`); return 2 }
+  let briefEvidence
+  if (worker) {
+    briefEvidence = parseBriefReceipt(opts.briefReceipt)
+    if (!briefEvidence) { process.stderr.write('wt-lane: internal brief receipt is missing or malformed\n'); return 2 }
+    let workerBytes
+    try { workerBytes = readFileSync(opts.brief) } catch (error) {
+      process.stderr.write(`wt-lane: brief snapshot is unreadable: ${opts.brief} (${error instanceof Error ? error.message : String(error)})\n`)
+      return 1
+    }
+    const workerSha256 = createHash('sha256').update(workerBytes).digest('hex')
+    if (workerSha256 !== briefEvidence.sha256) {
+      process.stderr.write(`wt-lane: Refused: brief snapshot sha256 mismatch for ${opts.brief}; refusing to obey bytes other than those announced by the launcher.\n`)
+      return 1
+    }
+    process.once('beforeExit', () => { if (!workerSpawnedChild) rmSync(opts.brief, { force: true }) })
+  } else {
+    try { briefEvidence = readBriefEvidence(opts.brief) } catch (error) {
+      process.stderr.write(`wt-lane: --brief is unreadable: ${opts.brief} (${error instanceof Error ? error.message : String(error)})\n`)
+      return 2
+    }
+    if (briefEvidence.ageMs > opts.maxBriefAge * 1000 && !opts.acknowledgeStaleBrief) {
+      process.stderr.write(`wt-lane: Refused: brief ${opts.brief} is stale (age=${briefEvidence.age}; maximum=${formatAge(opts.maxBriefAge * 1000)}); refresh or rewrite it for a new round, or add --acknowledge-stale-brief when intentionally resuming this old round.\n`)
+      return 1
+    }
+  }
   if (!opts.allowNoGit && !checkGitWorktree(opts.dir)) return 2
 
   // Invoke the same consent resolver and wording as the PreToolUse gate before a node wrapper
@@ -313,8 +384,15 @@ async function main() {
     mkdirSync(path.join(opts.dir, '.lane'), { recursive: true })
     const runId = opts.runId
     const paths = consentModules.supervisionPaths(opts.dir, runId)
+    const briefSnapshotDir = path.join(opts.dir, '.lane', 'brief-snapshots')
+    const briefSnapshot = path.join(briefSnapshotDir, `${runId}.md`)
     try {
-      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', opts.brief, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      mkdirSync(briefSnapshotDir, { recursive: true, mode: 0o700 })
+      chmodSync(briefSnapshotDir, 0o700)
+      writeFileSync(briefSnapshot, briefEvidence.bytes, { flag: 'wx', mode: 0o400 })
+      const briefReceipt = Buffer.from(JSON.stringify({ path: briefEvidence.path, age: briefEvidence.age, heading: briefEvidence.heading, sha256: briefEvidence.sha256 }), 'utf8').toString('base64url')
+      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
       const identity = consentModules.inspectProcess(child.pid) ?? { argv: [process.execPath, ...workerArgs], startTime: null }
       const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
@@ -322,11 +400,13 @@ async function main() {
         writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: null, childArgv: null, childStartTime: null, worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
       } catch (error) {
         child.kill('SIGTERM')
+        rmSync(briefSnapshot, { force: true })
         if (error?.code === 'EEXIST') { process.stderr.write(`wt-lane: Refused: supervision record ${paths.record} already exists\n`); return 1 }
         throw error
       }
       if (!consentModules.claimCurrentSupervision(paths, runId)) {
         child.kill('SIGTERM')
+        rmSync(briefSnapshot, { force: true })
         process.stderr.write('wt-lane: Refused: another lane launch owns the current supervision pointer\n')
         return 1
       }
@@ -346,7 +426,7 @@ async function main() {
     const first = readFileSync(opts.log, 'utf8').split(/\r?\n/, 1)[0]
     if (/^LANE_NONCE=/.test(first)) receiptPrefix = `${first}\n`
   } catch {}
-  writeFileSync(opts.log, `${receiptPrefix}LANE_RUN_ID=${runId}\n`)
+  writeFileSync(opts.log, `${receiptPrefix}LANE_RUN_ID=${runId}\n${briefEvidenceLines(briefEvidence, true).join('\n')}\n`)
   const fd = openSync(opts.log, 'a')
   let terminateWorker = null
   let pendingTermination = null
@@ -415,7 +495,8 @@ async function main() {
     endGroup(code, { terminal: ownerDecision ? null : { state: 'abandoned', decision: 'abandon', decisionSource: 'signal', decidedAt: new Date().toISOString() } })
   }
   const cleanupBrief = () => {
-    if (opts.briefCleanupDir && opts.brief.startsWith(`${opts.briefCleanupDir}${path.sep}`)) rmSync(opts.briefCleanupDir, { recursive: true, force: true })
+    if (opts.briefReceipt) rmSync(opts.brief, { force: true })
+    if (opts.briefCleanupDir && briefEvidence.path.startsWith(`${opts.briefCleanupDir}${path.sep}`)) rmSync(opts.briefCleanupDir, { recursive: true, force: true })
   }
   let timer
   let graceTimer
