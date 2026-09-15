@@ -1,5 +1,5 @@
 import crypto from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -92,5 +92,25 @@ describe('OpenCode Claude-skill fence', () => {
     mkdirSync(f.stateDir, { recursive: true })
     writeFileSync(path.join(f.stateDir, oldKey + '.json'), JSON.stringify({ ok: true, binary: realpathSync(f.bin), version: '1.2.3' }))
     expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: true, allowOk: true, cached: false })
+  })
+
+  it('retains only the newest 64 capability results when writing a cache miss', () => {
+    const f = stub('honor')
+    mkdirSync(f.stateDir, { recursive: true })
+    for (let index = 0; index < 80; index += 1) {
+      const file = path.join(f.stateDir, `${index.toString(16).padStart(64, '0')}.json`)
+      writeFileSync(file, '{}')
+      const timestamp = new Date(Date.UTC(2026, 0, 1, 0, index))
+      utimesSync(file, timestamp, timestamp)
+    }
+    writeFileSync(path.join(f.stateDir, 'keep.txt'), 'not a fence cache entry')
+
+    expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: true, cached: false })
+
+    const cacheFiles = readdirSync(f.stateDir).filter((name) => /^[a-f0-9]{64}\.json$/.test(name))
+    expect(cacheFiles).toHaveLength(64)
+    expect(cacheFiles).not.toContain(`${'0'.repeat(64)}.json`)
+    expect(cacheFiles).toContain(`${(79).toString(16).padStart(64, '0')}.json`)
+    expect(readFileSync(path.join(f.stateDir, 'keep.txt'), 'utf8')).toBe('not a fence cache entry')
   })
 })

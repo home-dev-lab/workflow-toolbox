@@ -31,6 +31,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- Bounded the OpenCode skill-fence capability cache to its 64 newest results whenever a miss is
+  written, with serialized publication and pruning so concurrent sessions cannot remove each other's
+  fresh entries. Older binary/version results are discarded and may require one capability re-probe
+  if that exact OpenCode installation is used again.
 - `wt-lane.mjs` now prints and journals the source brief path, age, first Markdown heading,
   and SHA-256 before detaching; refuses briefs older than 10 minutes unless the caller adds
   `--acknowledge-stale-brief`; and gives the worker a hash-verified private snapshot so the
