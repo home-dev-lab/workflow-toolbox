@@ -31,6 +31,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- Artifact-server monitors now retry pending startup discovery through the filesystem claim path,
+  bounded by attempts, one minute of their own retry work, and a five-minute overall cap, and
+  journalled through deferral, failure, attachment, or give-up.
 - Lane supervision now defaults to warn-only `would-clean` evidence, derives orphanhood only from a
   terminal supervision record plus a gone launcher, bounds default extensions, and stores immutable
   per-run records behind an atomic pointer. Timeout decisions are limited to `extend` and `abandon`;
