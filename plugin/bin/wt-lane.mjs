@@ -149,69 +149,99 @@ async function main() {
     mkdirSync(paths.dir, { recursive: true })
     const identity = consentModules.inspectProcess(process.pid) ?? { argv: process.argv, startTime: null }
     const lockOwner = { version: 1, runId, pid: process.pid, argv: identity.argv, startTime: identity.startTime, createdAt: new Date().toISOString() }
-    const lockIsStale = () => {
+    const lockStatus = (lockPath) => {
       let owner = null
-      try { owner = JSON.parse(readFileSync(path.join(launchLock, 'owner.json'), 'utf8')) } catch {}
+      try { owner = JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf8')) } catch {}
       let age
-      try { age = Date.now() - statSync(launchLock).mtimeMs } catch (error) { if (error?.code === 'ENOENT') return { retry: true }; throw error }
+      try { age = Date.now() - statSync(lockPath).mtimeMs } catch (error) { if (error?.code === 'ENOENT') return { retry: true }; throw error }
       if (!owner || !Number.isSafeInteger(owner.pid)) return age > LAUNCH_LOCK_MAX_AGE_MS
         ? { stale: true, owner, reason: `owner record is unreadable after ${LAUNCH_LOCK_MAX_AGE_MS}ms` }
         : { stale: false, owner, reason: 'owner record is not ready' }
       try { process.kill(owner.pid, 0) } catch (error) {
         if (error?.code === 'ESRCH') return { stale: true, owner, reason: 'owner process is gone' }
-        return { stale: false, owner, reason: 'owner process liveness is unknown' }
       }
       const actual = consentModules.inspectProcess(owner.pid)
-      if (actual && Number.isFinite(owner.startTime) && actual.startTime !== owner.startTime) return { stale: true, owner, reason: 'owner pid was reused' }
-      if (actual && Number.isFinite(owner.startTime) && actual.startTime === owner.startTime) return { stale: false, owner, reason: 'owner process is still running' }
-      return { stale: false, owner, reason: 'owner process identity is unknown' }
+      if (actual && Number.isFinite(owner.startTime) && Number.isFinite(actual.startTime) && actual.startTime !== owner.startTime) return { stale: true, owner, reason: 'owner pid was reused' }
+      if (actual && Number.isFinite(owner.startTime) && Number.isFinite(actual.startTime) && actual.startTime === owner.startTime) return { stale: false, owner, reason: 'owner process is still running' }
+      return age > LAUNCH_LOCK_MAX_AGE_MS
+        ? { stale: true, owner, reason: `owner process identity is unreadable after ${LAUNCH_LOCK_MAX_AGE_MS}ms` }
+        : { stale: false, owner, reason: 'owner process identity is not ready' }
+    }
+    const removeOwnedLock = (lockPath, owner) => {
+      let current = null
+      try { current = JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf8')) } catch {}
+      if (current?.runId === owner.runId && current.pid === owner.pid && current.startTime === owner.startTime) rmSync(lockPath, { recursive: true, force: true })
+    }
+    const refusal = (lockPath, status) => {
+      const activity = lockPath === recoveryLock ? 'another lane launch is recovering an abandoned launch lock' : 'another lane launch is in progress'
+      const condition = status.reason === 'owner process is still running'
+        ? 'its recorded owner has exited or its PID start time has changed'
+        : `its owner identity is readable or its age exceeds ${LAUNCH_LOCK_MAX_AGE_MS / 1000}s`
+      process.stderr.write(`wt-lane: Refused: ${activity}: ${lockPath} (${status.reason}); the next launch recovers this path once ${condition}\n`)
     }
     const acquire = () => {
-      try {
-        mkdirSync(launchLock)
-        writeFileSync(path.join(launchLock, 'owner.json'), `${JSON.stringify(lockOwner, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
-        return true
-      } catch (error) {
-        if (error?.code !== 'EEXIST') throw error
-        const status = lockIsStale()
-        if (status.retry) return acquire()
-        if (!status.stale) {
-          process.stderr.write(`wt-lane: Refused: another lane launch is in progress (${status.reason}); retry this launch after its owner exits; unreadable owner records older than ${LAUNCH_LOCK_MAX_AGE_MS / 1000}s recover automatically\n`)
-          return false
-        }
-        try { mkdirSync(recoveryLock) } catch (recoveryError) {
-          if (recoveryError?.code === 'EEXIST') {
-            process.stderr.write('wt-lane: Refused: another lane launch is recovering an abandoned launch lock; retry this launch\n')
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        try {
+          mkdirSync(launchLock)
+          writeFileSync(path.join(launchLock, 'owner.json'), `${JSON.stringify(lockOwner, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+          return true
+        } catch (error) {
+          if (error?.code !== 'EEXIST') throw error
+          const status = lockStatus(launchLock)
+          if (status.retry) continue
+          if (!status.stale) {
+            refusal(launchLock, status)
             return false
           }
-          throw recoveryError
+          try {
+            mkdirSync(recoveryLock)
+            writeFileSync(path.join(recoveryLock, 'owner.json'), `${JSON.stringify(lockOwner, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+          } catch (recoveryError) {
+            if (recoveryError?.code === 'EEXIST') {
+              const recoveryStatus = lockStatus(recoveryLock)
+              if (recoveryStatus.retry) continue
+              if (!recoveryStatus.stale) {
+                refusal(recoveryLock, recoveryStatus)
+                return false
+              }
+              const abandonedRecovery = `${recoveryLock}.stale.${process.pid}.${Date.now()}`
+              try { renameSync(recoveryLock, abandonedRecovery) } catch (renameError) {
+                if (renameError?.code === 'ENOENT') continue
+                throw renameError
+              }
+              rmSync(abandonedRecovery, { recursive: true, force: true })
+              continue
+            }
+            removeOwnedLock(recoveryLock, lockOwner)
+            throw recoveryError
+          }
+          const confirmed = lockStatus(launchLock)
+          if (confirmed.retry || !confirmed.stale) {
+            removeOwnedLock(recoveryLock, lockOwner)
+            if (confirmed.retry) continue
+            refusal(launchLock, confirmed)
+            return false
+          }
+          const quarantine = `${launchLock}.stale.${process.pid}.${Date.now()}`
+          try { renameSync(launchLock, quarantine) } catch { removeOwnedLock(recoveryLock, lockOwner); continue }
+          rmSync(quarantine, { recursive: true, force: true })
+          try {
+            const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
+            consentModules.appendSupervisorJournal(dataDir, { event: 'launch-lock-recovered', runId, pid: status.owner?.pid ?? null, argv: consentModules.argvSummary(status.owner?.argv ?? []), worktree: opts.dir, owner: null, reason: status.reason })
+          } catch {}
+          removeOwnedLock(recoveryLock, lockOwner)
+          continue
         }
-        const confirmed = lockIsStale()
-        if (confirmed.retry || !confirmed.stale) {
-          rmSync(recoveryLock, { recursive: true, force: true })
-          if (confirmed.retry) return acquire()
-          process.stderr.write(`wt-lane: Refused: another lane launch is in progress (${confirmed.reason}); retry this launch after its owner exits\n`)
-          return false
-        }
-        const quarantine = `${launchLock}.stale.${process.pid}.${Date.now()}`
-        try { renameSync(launchLock, quarantine) } catch { rmSync(recoveryLock, { recursive: true, force: true }); return acquire() }
-        rmSync(quarantine, { recursive: true, force: true })
-        try {
-          const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
-          consentModules.appendSupervisorJournal(dataDir, { event: 'launch-lock-recovered', runId, pid: status.owner?.pid ?? null, argv: consentModules.argvSummary(status.owner?.argv ?? []), worktree: opts.dir, owner: null, reason: status.reason })
-        } catch {}
-        rmSync(recoveryLock, { recursive: true, force: true })
-        return acquire()
       }
+      process.stderr.write(`wt-lane: Refused: ${launchLock} or ${recoveryLock} changed ownership repeatedly; they clear when the competing launch or recovery finishes\n`)
+      return false
     }
     if (!acquire()) return 1
     let released = false
     releaseLaunchLock = () => {
       if (released) return
       released = true
-      let owner = null
-      try { owner = JSON.parse(readFileSync(path.join(launchLock, 'owner.json'), 'utf8')) } catch {}
-      if (owner?.runId === lockOwner.runId && owner.pid === lockOwner.pid && owner.startTime === lockOwner.startTime) rmSync(launchLock, { recursive: true, force: true })
+      removeOwnedLock(launchLock, lockOwner)
     }
     process.once('exit', releaseLaunchLock)
     const current = consentModules.readCurrentSupervision(opts.dir)
