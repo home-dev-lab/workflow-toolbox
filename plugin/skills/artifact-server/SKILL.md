@@ -41,15 +41,26 @@ Files mount at `/<name>/...`. Different sessions can register different roots; t
 their deduplicated union. Each monitor owns its registration and removes it when that session exits.
 There is no HTTP registration or other network control endpoint.
 
-Always ask the helper for a link. It picks the longest matching root and exits 3 outside all roots:
+Always ask the helper for a link. Never hand the user a file path: whoever proposes an artifact
+must provide its complete URL. Prefer the remote URL whenever one exists because it works both on
+the server machine and from another tailnet device; `localhost` only works on the server machine.
+Try `--remote` first, then fall back to the local command only when it exits 3. The helper picks the
+longest matching root and exits 3 outside all roots:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md"
 node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md" --remote
+node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md"
 ```
 
 `--remote` exits 3 when no tailnet URL is available. In a normal shell, replace
 `${CLAUDE_PLUGIN_ROOT}` with the installed plugin root.
+
+The deliverable is the single file's complete URL, not the root index. Index browsing is only a
+local convenience and does not survive every path-mounted proxy: in particular, a trailing slash on
+a Tailscale Serve mount root such as `/artifacts/` routes to the upstream root handler rather than
+this server. Never construct or hand over such a mount-root link. Root-relative links in rendered
+Markdown, such as `[other](/report.md)`, also target the domain root under a path mount because the
+server cannot infer the proxy-owned prefix; artifact authors must use document-relative links.
 
 ## Lifecycle
 
@@ -93,6 +104,11 @@ if `tailscale` is unavailable, detection asks PowerShell to resolve `tailscale.e
 returned path with `wslpath`; no Windows install directory is assumed. Discovery distinguishes a
 successful lookup with no tailnet IP from an unavailable lookup, while local serving remains usable.
 The server never configures Tailscale Serve.
+
+Detection is a precondition for proxied access, not an optional convenience. Every Serve request
+presents the MagicDNS Host, and that name enters the server's Host allow-list only when detection
+finds it. A `421 Misdirected Request` therefore means the presented Host was not detected and admitted;
+inspect Tailscale detection and server status before debugging the proxy, DNS, or firewall.
 
 The direct remote URL is `http://<tailscale-ip>:<port>`. Function Hooks `Link` requires HTTPS; an
 operator can configure the tailnet-only proxy manually:
