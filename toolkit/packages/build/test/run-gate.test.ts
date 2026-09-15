@@ -314,4 +314,48 @@ describe('wt-run-gate --check', () => {
     expect(result.status).toBe(2)
     expect(result.out).toContain('wt-run-gate:')
   })
+
+  // Card #1864603468384175920. A gate's exit code answers for the COMMAND, never for the SUBJECT:
+  // four merged deliveries were gated from a checkout holding `main` while the work sat on
+  // `develop` in a worktree, and every number was true about a tree nobody meant to certify.
+  // These lock the identity onto the SAME line as the exit code — reading it at a different
+  // moment is the whole failure, so a separate command would not close it.
+  it('names the branch and HEAD of the tree it certified, on the exit line itself', () => {
+    const { root, env } = gateRepo()
+    const first = run(['--name', 'g', '--out-dir', join(root, 'out'), '--', process.execPath, '-e', 'process.exit(0)'], { cwd: root, env })
+    expect(first.status).toBe(0)
+    const head = spawnSync('git', ['-C', root, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+    const branch = spawnSync('git', ['-C', root, 'symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8' }).stdout.trim()
+    expect(first.out).toContain(`tree=${branch}@${head}`)
+    expect(first.out).toContain(`dir=${root}`)
+
+    // The discriminating half: the SAME command on a DIFFERENT branch must be distinguishable by
+    // reading the printed line alone. An identity that never varies proves nothing.
+    spawnSync('git', ['-C', root, 'checkout', '-q', '-b', 'other-branch'], { encoding: 'utf8' })
+    const second = run(['--name', 'g', '--out-dir', join(root, 'out'), '--', process.execPath, '-e', 'process.exit(0)'], { cwd: root, env })
+    expect(second.out).toContain(`tree=other-branch@${head}`)
+    expect(second.out).not.toContain(`tree=${branch}@${head}`)
+  })
+
+  it('marks a tree with uncommitted tracked changes as dirty, because its record is not reproducible', () => {
+    const { root, env } = gateRepo()
+    const clean = run(['--name', 'g', '--out-dir', join(root, 'out'), '--', process.execPath, '-e', 'process.exit(0)'], { cwd: root, env })
+    expect(clean.out).not.toContain(' dirty')
+
+    writeFileSync(join(root, 'plugin', 'thing.mjs'), '// edited\n')
+    const dirty = run(['--name', 'g', '--out-dir', join(root, 'out'), '--', process.execPath, '-e', 'process.exit(0)'], { cwd: root, env })
+    expect(dirty.out).toContain(' dirty')
+  })
+
+  it('degrades LEGIBLY rather than omitting the field: not-a-repo outside one, unknown without git', () => {
+    const outside = mkDir()
+    const noRepo = run(['--name', 'g', '--out-dir', join(outside, 'out'), '--', process.execPath, '-e', 'process.exit(0)'], { cwd: outside })
+    expect(noRepo.out).toContain('tree=not-a-repo')
+
+    // An omitted field would read as "the same as expected", which is the one thing it must never
+    // mean — so an unreachable git says so instead of going quiet.
+    const { root, env } = gateRepo()
+    const noGit = run(['--name', 'g', '--out-dir', join(root, 'out'), '--', process.execPath, '-e', 'process.exit(0)'], { cwd: root, env: { ...env, PATH: join(root, 'no-such-bin') } })
+    expect(noGit.out).toContain('tree=unknown')
+  })
 })
