@@ -40,6 +40,10 @@ export function artifactIntentPath(env = process.env, home = homedir(), platform
   return path.join(artifactStateDir(env, home, platform), 'intent.json')
 }
 
+export function artifactStartupClaimPath(env = process.env, home = homedir(), platform = process.platform) {
+  return path.join(artifactStateDir(env, home, platform), 'startup.claim')
+}
+
 export function artifactUid() {
   return typeof process.getuid === 'function' ? process.getuid() : userInfo().username
 }
