@@ -2631,6 +2631,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs",
         "plugin/bin/wt-var-colon-modifier-guard-hook.mjs",
         "plugin/bin/wt-merge-chain-guard-hook.mjs",
+        "plugin/bin/wt-concurrent-test-guard-hook.mjs",
         "plugin/bin/wt-piped-gate-exit-code-guard-hook.mjs",
         "plugin/bin/wt-missing-package-script-guard-hook.mjs",
         "plugin/bin/wt-main-guard-hook.mjs",
