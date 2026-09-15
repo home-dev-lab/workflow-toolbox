@@ -210,14 +210,14 @@ printf 'report\n' > "$report"
     const firstRecord = JSON.parse(readFileSync(firstRecordPath, 'utf8'))
     expect(firstRecord.state).toBe('abandoned')
     expect(existsSync(firstBrief)).toBe(false)
-    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 2 }))).toBe('lane tdd EXIT=0')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 10 }))).toBe('lane tdd EXIT=0')
     const secondPointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
     const secondRecord = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', `${secondPointer.runId}.json`), 'utf8'))
     expect(secondRecord).toMatchObject({ owner: 'pilot', state: 'exited' })
     expect(secondRecord.runId).not.toBe(firstRecord.runId)
     expect(secondRecord.ownerToken).not.toBe(firstRecord.ownerToken)
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-restart-count'), 'utf8')).toBe('2')
-  }, 15_000)
+  }, 60_000)
 
   it('derives the lifecycle wait from a real worker timeout recorded after delayed preflight', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))

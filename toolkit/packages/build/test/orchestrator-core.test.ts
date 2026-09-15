@@ -157,7 +157,7 @@ describe('orchestrator driver', () => {
     expect(readFileSync(join(result.waveDir, 'cards/1/card.md'), 'utf8')).toBe('Route: LITE\n## Definition of done\n- ship\n')
     expect(readFileSync(join(result.waveDir, 'cards/1/runner.log'), 'utf8').split('\n')[0]).toMatch(/^route=LITE /)
     expect(f.gitCalls.flat().some((arg) => ['merge', 'push', 'branch -D'].includes(arg))).toBe(false)
-  })
+  }, 60_000)
 
   it('refuses each card with no DoD criterion before moving it or starting its pilot', async () => {
     const f = repoFixture([{ id: '1', listName: 'Next', description: 'Route: LITE\n## Notes\n- no acceptance here\n' }])

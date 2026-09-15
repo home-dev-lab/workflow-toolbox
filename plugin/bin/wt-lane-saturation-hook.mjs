@@ -64,7 +64,7 @@
 // unavailable) are handled separately, inside evaluateLaneCall, and never reach here.
 
 import { readFileSync } from 'node:fs'
-import { evaluateLaneCall } from './lib/wt-lane-saturation-core.mjs'
+import { evaluateLaneCall, laneSaturationTestBanner } from './lib/wt-lane-saturation-core.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 
 function readPayload() {
@@ -77,6 +77,8 @@ function readPayload() {
 }
 
 function main() {
+  const testBanner = laneSaturationTestBanner()
+  if (testBanner) process.stderr.write(`${testBanner}\n`)
   const payload = readPayload()
   const result = evaluateLaneCall(payload)
 

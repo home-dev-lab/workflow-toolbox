@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionUnavailableMessage, terminateLane } from './lib/lane-supervisor-core.mjs'
@@ -10,6 +10,9 @@ import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
 const CONTROL = fileURLToPath(new URL('./wt-lane-control.mjs', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./wt-lane.mjs', import.meta.url))
+const TEST_SEAMS_ACTIVE = new Set([
+  ...(process.env.WT_LANE_WATCH_TEST_SWEEP_LOG ? ['WT_LANE_WATCH_TEST_SWEEP_LOG'] : []),
+])
 const argvValue = (argv, flag) => {
   const index = Array.isArray(argv) ? argv.indexOf(flag) : -1
   return index >= 0 ? argv[index + 1] ?? null : null
@@ -63,6 +66,15 @@ async function main() {
   const notified = new Set()
   const journaled = new Set()
   const episodeStarts = new Map()
+  const testSweepLog = (line) => {
+    if (!process.env.WT_LANE_WATCH_TEST_SWEEP_LOG) return
+    try {
+      appendFileSync(process.env.WT_LANE_WATCH_TEST_SWEEP_LOG, `${line}\n`)
+    } catch (error) {
+      // Test receipt logging must never throw past safeSweep or mask the real sweep error.
+      process.stderr.write(`wt-lane-orphan-watch: test sweep log write failed; watcher behavior unchanged: ${error instanceof Error ? error.message : String(error)}\n`)
+    }
+  }
   const notice = (key, message) => {
     process.stdout.write(`${message}\n`)
     notified.add(key)
@@ -80,6 +92,10 @@ async function main() {
       journalFailureReported = true
       return false
     }
+  }
+  if (TEST_SEAMS_ACTIVE.size > 0) {
+    const controls = [...TEST_SEAMS_ACTIVE].map((name) => `${name}=${process.env[name]}`).join(' ')
+    process.stderr.write(`⚠ LANE ORPHAN WATCH TEST MODE — ${controls} — sweep receipts are test-only and logging failures cannot alter watcher behavior. This must NEVER be set outside the test suite.\n`)
   }
   if (process.platform !== 'linux') process.stdout.write(`${supervisionUnavailableMessage()}\n`)
   const sweep = () => {
@@ -111,6 +127,7 @@ async function main() {
           journaled.delete(stalledKey)
           notified.delete(stalledKey)
           episodeStarts.delete(stalledKey)
+          testSweepLog(`${stalledKey}:cleared`)
         }
       } else {
         journaled.delete(stalledKey)
@@ -161,6 +178,8 @@ async function main() {
     try { sweep(); failureReported = false } catch (error) {
       if (!failureReported) process.stderr.write(`wt-lane-orphan-watch: sweep failed; will retry: ${error instanceof Error ? error.message : String(error)}\n`)
       failureReported = true
+    } finally {
+      testSweepLog('sweep')
     }
   }
   safeSweep()

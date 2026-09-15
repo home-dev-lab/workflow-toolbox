@@ -31,6 +31,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- Load-sensitive integration tests now synchronize on protocol replies, filesystem state, owned
+  process identities, watcher sweep receipts, and child exit/stream closure instead of ambient
+  process deltas or short sleeps. The load harness verifies every CPU burner by PID and argv before
+  stopping it, and signing fixtures use private keys they create and own. Production test controls
+  now announce every active name, quota barriers are bounded, malformed saturation controls retain
+  real counting, and receipt/cleanup failures cannot mask watcher or suite outcomes.
 - `wt-lane.mjs` now prints and journals the source brief path, age, first Markdown heading,
   and SHA-256 before detaching; refuses briefs older than 10 minutes unless the caller adds
   `--acknowledge-stale-brief`; and gives the worker a hash-verified private snapshot so the
