@@ -31,6 +31,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- `wt-lane.mjs` now prints and journals the source brief path, age, first Markdown heading,
+  and SHA-256 before detaching; refuses briefs older than 10 minutes unless the caller adds
+  `--acknowledge-stale-brief`; and gives the worker a hash-verified private snapshot so the
+  bytes it obeys cannot differ from the bytes the launcher announced. The age bound is
+  configurable with `--max-brief-age`.
 - Artifact-server monitors now retry pending startup discovery through the filesystem claim path,
   bounded by attempts, one minute of their own retry work, and a five-minute overall cap, and
   journalled through deferral, failure, attachment, or give-up.
