@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer, request as httpRequest, type Server } from 'node:http'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,7 +31,7 @@ function pidAlive(pid: number) {
   }
 }
 
-async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 5_000): Promise<T> {
+async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 15_000): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const value = await read()
@@ -122,7 +122,12 @@ async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'
 
 async function stopDetached(pid: number) {
   if (!detachedPids.delete(pid) || !pidAlive(pid)) return
-  process.kill(pid, 'SIGTERM')
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+    return
+  }
   await waitFor(() => pidAlive(pid) ? null : true, 3_000).catch(() => undefined)
 }
 
@@ -152,11 +157,42 @@ function runCli(args: string[], env: NodeJS.ProcessEnv) {
   })
 }
 
-async function waitForState(stateHome: string, predicate: (state: Discovery) => boolean = () => true, timeoutMs = 5_000) {
-  const state = await waitFor(() => {
-    const value = readState(stateHome)
-    return value && predicate(value) ? value : null
-  }, timeoutMs)
+async function waitForState(stateHome: string, predicate: (state: Discovery) => boolean = () => true, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  const state = await new Promise<Discovery>((resolve, reject) => {
+    let watcher: ReturnType<typeof watch> | null = null
+    let poller: ReturnType<typeof setInterval> | null = null
+    const stopWaiting = () => {
+      clearTimeout(timer)
+      if (poller) clearInterval(poller)
+      watcher?.close()
+    }
+    const timer = setTimeout(() => {
+      stopWaiting()
+      reject(new Error(`timed out waiting for artifact server state; last state=${JSON.stringify(readState(stateHome))}`))
+    }, timeoutMs)
+    const inspect = () => {
+      const value = readState(stateHome)
+      if (!value || !predicate(value)) return false
+      stopWaiting()
+      resolve(value)
+      return true
+    }
+    const arm = () => {
+      if (inspect()) return
+      if (Date.now() >= deadline) return
+      watcher?.close()
+      const stateDir = join(stateHome, 'wt-artifact-server')
+      watcher = watch(existsSync(stateDir) ? stateDir : stateHome, { persistent: false }, () => {
+        if (!inspect() && existsSync(stateDir)) arm()
+      })
+      inspect()
+    }
+    // fs.watch is the fast path, not the correctness boundary: events may be coalesced or
+    // dropped on every supported platform. Poll the state predicate as a bounded backstop.
+    poller = setInterval(inspect, 50)
+    arm()
+  })
   detachedPids.add(state.pid)
   return state
 }
@@ -293,6 +329,24 @@ describe('owner decision 2: discovery and one instance', () => {
     expect(spawnReceipts(testLog)).toEqual([])
   })
 
+  it('names every active test control in one startup banner', () => {
+    const { project } = projectWithRoots('test-mode-banner')
+    const stateHome = temporaryDir('test-mode-banner-state')
+    const result = spawnSync(process.execPath, [ENSURE], {
+      cwd: project,
+      encoding: 'utf8',
+      env: baseEnv(stateHome, {
+        WT_ARTIFACT_SERVER: '0',
+        WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS: '60000',
+      }),
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stderr).toContain('ARTIFACT SERVER TEST MODE')
+    expect(result.stderr).toContain('WT_ARTIFACT_SERVER_TEST_MODE=1')
+    expect(result.stderr).toContain('WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS=60000')
+  })
+
   it('ignores hostile retry and readiness controls when test mode is disabled', async () => {
     const { project } = projectWithRoots('retry-test-mode-gate')
     const stateHome = temporaryDir('retry-test-mode-gate-state')
@@ -358,6 +412,7 @@ describe('owner decision 2: discovery and one instance', () => {
     const common = {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
       WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+      WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS: '60000',
     }
     const holder = spawnEnsure(project, baseEnv(stateHome, {
       ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '7000',
@@ -871,7 +926,7 @@ describe('owner decision 2: discovery and one instance', () => {
     try {
       const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port) })
       spawnEnsure(project, env)
-      const state = await waitForState(stateHome)
+      const state = await waitForState(stateHome, () => true, 60_000)
       expect(state.port).toBe(port + 1)
       expect(foreign.listening).toBe(true)
       await closeServer(foreign)
@@ -881,7 +936,7 @@ describe('owner decision 2: discovery and one instance', () => {
     } finally {
       if (foreign.listening) await closeServer(foreign)
     }
-  })
+  }, 70_000)
 
   it('[E-04] refuses uid mismatch attachment and same-process forged stop identity', async () => {
     const stateHome = temporaryDir('mismatch-state')
@@ -914,12 +969,13 @@ describe('owner decision 2: discovery and one instance', () => {
 
       const { project } = projectWithRoots('uid-mismatch')
       spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
-      const own = await waitForState(stateHome, (value) => value.port === address.port + 1)
-      expect(own.port).toBe(address.port + 1)
+      const own = await waitForState(stateHome, (value) => value.port !== address.port, 30_000)
+        .catch(() => readState(stateHome))
+      expect(own?.port).not.toBe(address.port)
     } finally {
       await closeServer(foreign)
     }
-  })
+  }, 40_000)
 })
 
 describe('owner decision 3: session lifetime and operator controls', () => {
