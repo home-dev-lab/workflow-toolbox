@@ -6,6 +6,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Artifact-server Markdown pages now render GitHub-flavoured pipe tables, including inline markup and
+  escaped or code-span pipes, inside a phone-friendly horizontal scroll container.
 - SDK lifecycle plan transitions now warn when a sentence claims an existing test, lock, guard, or
   behavior provides coverage without a repo-relative `path:line` citation, or when that citation's
   file or line does not exist. Future-work promises pass untouched. The heuristic remains warn-only
