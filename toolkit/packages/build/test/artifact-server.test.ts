@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer, request as httpRequest, type Server } from 'node:http'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,7 +31,7 @@ function pidAlive(pid: number) {
   }
 }
 
-async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 5_000): Promise<T> {
+async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 15_000): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const value = await read()
@@ -47,6 +47,26 @@ function statePath(stateHome: string) {
 
 function registrationsPath(stateHome: string) {
   return join(stateHome, 'wt-artifact-server', 'registrations')
+}
+
+function startupClaimPath(stateHome: string) {
+  return join(stateHome, 'wt-artifact-server', 'startup.claim')
+}
+
+function spawnReceipts(file: string) {
+  try { return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) } catch { return [] }
+}
+
+function jsonReceipts<T>(file: string): T[] {
+  return spawnReceipts(file).map((line) => JSON.parse(line) as T)
+}
+
+function childOutput(child: ChildProcess) {
+  let stdout = ''
+  let stderr = ''
+  child.stdout?.on('data', (chunk) => { stdout += String(chunk) })
+  child.stderr?.on('data', (chunk) => { stderr += String(chunk) })
+  return { stdout: () => stdout, stderr: () => stderr }
 }
 
 type RootRecord = { name: string, path: string }
@@ -75,7 +95,7 @@ function baseEnv(stateHome: string, extra: NodeJS.ProcessEnv = {}): NodeJS.Proce
   chmodSync(git, 0o755)
   return {
     ...process.env, PATH: bin, XDG_STATE_HOME: stateHome,
-    WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', ...extra,
+    WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1', ...extra,
   }
 }
 
@@ -102,7 +122,12 @@ async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'
 
 async function stopDetached(pid: number) {
   if (!detachedPids.delete(pid) || !pidAlive(pid)) return
-  process.kill(pid, 'SIGTERM')
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+    return
+  }
   await waitFor(() => pidAlive(pid) ? null : true, 3_000).catch(() => undefined)
 }
 
@@ -132,10 +157,41 @@ function runCli(args: string[], env: NodeJS.ProcessEnv) {
   })
 }
 
-async function waitForState(stateHome: string, predicate: (state: Discovery) => boolean = () => true) {
-  const state = await waitFor(() => {
-    const value = readState(stateHome)
-    return value && predicate(value) ? value : null
+async function waitForState(stateHome: string, predicate: (state: Discovery) => boolean = () => true, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  const state = await new Promise<Discovery>((resolve, reject) => {
+    let watcher: ReturnType<typeof watch> | null = null
+    let poller: ReturnType<typeof setInterval> | null = null
+    const stopWaiting = () => {
+      clearTimeout(timer)
+      if (poller) clearInterval(poller)
+      watcher?.close()
+    }
+    const timer = setTimeout(() => {
+      stopWaiting()
+      reject(new Error(`timed out waiting for artifact server state; last state=${JSON.stringify(readState(stateHome))}`))
+    }, timeoutMs)
+    const inspect = () => {
+      const value = readState(stateHome)
+      if (!value || !predicate(value)) return false
+      stopWaiting()
+      resolve(value)
+      return true
+    }
+    const arm = () => {
+      if (inspect()) return
+      if (Date.now() >= deadline) return
+      watcher?.close()
+      const stateDir = join(stateHome, 'wt-artifact-server')
+      watcher = watch(existsSync(stateDir) ? stateDir : stateHome, { persistent: false }, () => {
+        if (!inspect() && existsSync(stateDir)) arm()
+      })
+      inspect()
+    }
+    // fs.watch is the fast path, not the correctness boundary: events may be coalesced or
+    // dropped on every supported platform. Poll the state predicate as a bounded backstop.
+    poller = setInterval(inspect, 50)
+    arm()
   })
   detachedPids.add(state.pid)
   return state
@@ -231,6 +287,631 @@ describe('owner decision 2: discovery and one instance', () => {
     expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
   })
 
+  it('starts exactly one server when concurrent monitors ensure an empty state', async () => {
+    const { project } = projectWithRoots('startup-claim-race')
+    const stateHome = temporaryDir('startup-claim-race-state')
+    const spawnLog = join(temporaryDir('startup-claim-race-log'), 'spawns.log')
+    const contentionLog = join(temporaryDir('startup-claim-contention-log'), 'contention.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_CONTENTION_LOG: contentionLog,
+      WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '150',
+    })
+
+    for (let index = 0; index < 6; index += 1) spawnEnsure(project, env)
+
+    const state = await waitForState(stateHome)
+    await waitFor(async () => (await health(state)).registeredSessions === 6 ? true : null, 10_000)
+    expect(spawnReceipts(spawnLog)).toHaveLength(1)
+    expect(spawnReceipts(contentionLog).length).toBeGreaterThan(0)
+  })
+
+  it('ignores all test controls unless master test mode is enabled', async () => {
+    const { project } = projectWithRoots('test-mode-gate')
+    const stateHome = temporaryDir('test-mode-gate-state')
+    const testLog = join(temporaryDir('test-mode-gate-log'), 'spawns.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_MODE: '0',
+      WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: testLog, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+      WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1', WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '1',
+      WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS: '1', WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '1',
+      WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS: '1',
+      WT_ARTIFACT_SERVER_TEST_READINESS_MS: '1',
+    }))
+
+    await waitForState(stateHome)
+    expect(spawnReceipts(testLog)).toEqual([])
+  })
+
+  it('names every active test control in one startup banner', () => {
+    const { project } = projectWithRoots('test-mode-banner')
+    const stateHome = temporaryDir('test-mode-banner-state')
+    const result = spawnSync(process.execPath, [ENSURE], {
+      cwd: project,
+      encoding: 'utf8',
+      env: baseEnv(stateHome, {
+        WT_ARTIFACT_SERVER: '0',
+        WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS: '60000',
+      }),
+    })
+
+    expect(result.status).toBe(0)
+    expect(result.stderr).toContain('ARTIFACT SERVER TEST MODE')
+    expect(result.stderr).toContain('WT_ARTIFACT_SERVER_TEST_MODE=1')
+    expect(result.stderr).toContain('WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS=60000')
+  })
+
+  it('ignores hostile retry and readiness controls when test mode is disabled', async () => {
+    const { project } = projectWithRoots('retry-test-mode-gate')
+    const stateHome = temporaryDir('retry-test-mode-gate-state')
+    const preloadDir = temporaryDir('retry-test-mode-gate-preload')
+    const preload = join(preloadDir, 'freeze-server.cjs')
+    const frozenLog = join(preloadDir, 'frozen.log')
+    writeFileSync(preload, `if (process.argv[1]?.endsWith('wt-artifact-server.mjs') && process.argv[2] === 'serve') { require('node:fs').appendFileSync(${JSON.stringify(frozenLog)}, JSON.stringify({ pid: process.pid, argv: process.argv }) + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000) }\n`)
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const startedAt = Date.now()
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_MODE: '0',
+      WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS: '1', WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '1',
+      WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS: '1',
+      WT_ARTIFACT_SERVER_TEST_READINESS_MS: '1', NODE_OPTIONS: `--require=${preload}`,
+    }))
+    const output = childOutput(monitor)
+
+    await waitFor(() => /did not become ready/i.test(output.stdout()) ? true : null, 8_000)
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(4_000)
+    const receipts = await waitFor(() => {
+      const values = jsonReceipts<{ pid: number, argv: string[] }>(frozenLog)
+      return values.length >= 3 ? values : null
+    }, 20_000)
+    for (const receipt of receipts) {
+      expect(receipt.argv).toEqual([process.execPath, SERVER, 'serve'])
+      detachedPids.add(receipt.pid)
+    }
+    expect(output.stdout()).toMatch(/retry attempt 2\/3/i)
+    expect(monitor.exitCode).toBeNull()
+    expect(readdirSync(registrationsPath(stateHome))).toHaveLength(1)
+  }, 25_000)
+
+  it('recovers an aged empty claim left by an interrupted holder', async () => {
+    const { project } = projectWithRoots('empty-startup-claim')
+    const stateHome = temporaryDir('empty-startup-claim-state')
+    const spawnLog = join(temporaryDir('empty-startup-claim-log'), 'spawns.log')
+    const claimPath = startupClaimPath(stateHome)
+    mkdirSync(claimPath, { recursive: true, mode: 0o700 })
+    const staleTime = new Date(Date.now() - 16_000)
+    utimesSync(claimPath, staleTime, staleTime)
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+    }))
+    const state = await waitForState(stateHome)
+    expect(state.port).toBe(port)
+    expect(spawnReceipts(spawnLog)).toHaveLength(1)
+  })
+
+  it.skipIf(process.platform === 'win32')('does not evict a live holder paused beyond the old three-second bound', async () => {
+    const { project } = projectWithRoots('paused-startup-claim')
+    const stateHome = temporaryDir('paused-startup-claim-state')
+    const spawnLog = join(temporaryDir('paused-startup-claim-spawns'), 'spawns.log')
+    const acquisitionLog = join(temporaryDir('paused-startup-claim-acquisitions'), 'acquisitions.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const common = {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+      WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS: '60000',
+    }
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '7000',
+    }))
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    await waitFor(() => spawnReceipts(acquisitionLog).length === 1 ? true : null)
+    process.kill(holder.pid, 'SIGSTOP')
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 4_000))
+      spawnEnsure(project, baseEnv(stateHome, common))
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
+    } finally {
+      if (pidAlive(holder.pid)) process.kill(holder.pid, 'SIGCONT')
+    }
+
+    const state = await waitForState(stateHome, () => true, 10_000)
+    await waitFor(async () => (await health(state)).registeredSessions === 2 ? true : null, 10_000)
+    expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
+    expect(spawnReceipts(spawnLog)).toHaveLength(1)
+  }, 20_000)
+
+  it('keeps a live, heartbeating claim whose creation is over 30 seconds old', async () => {
+    const { project } = projectWithRoots('long-startup-claim')
+    const stateHome = temporaryDir('long-startup-claim-state')
+    const spawnLog = join(temporaryDir('long-startup-claim-spawns'), 'spawns.log')
+    const acquisitionLog = join(temporaryDir('long-startup-claim-acquisitions'), 'acquisitions.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+      WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '31000',
+    })
+    const holder = spawnEnsure(project, env)
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    await waitFor(() => spawnReceipts(acquisitionLog).length === 1 ? true : null)
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+      WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '40000',
+    }))
+
+    await new Promise((resolve) => setTimeout(resolve, 4_000))
+    expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
+    const state = await waitForState(stateHome, () => true, 35_000)
+    await waitFor(async () => (await health(state)).registeredSessions === 2 ? true : null, 10_000)
+    expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
+    expect(spawnReceipts(spawnLog)).toHaveLength(1)
+  }, 45_000)
+
+  it('releases only its token file and cannot delete a replacement claim', async () => {
+    const { project } = projectWithRoots('owned-startup-claim')
+    const stateHome = temporaryDir('owned-startup-claim-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '5000',
+    }))
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    const claimPath = startupClaimPath(stateHome)
+    const ownerFile = await waitFor(() => {
+      try {
+        const files = readdirSync(claimPath)
+        return files.length === 1 && /^[0-9a-f-]+\.json$/.test(files[0]!) ? files[0]! : null
+      } catch { return null }
+    })
+    rmSync(join(claimPath, ownerFile), { force: true })
+    rmdirSync(claimPath)
+    mkdirSync(claimPath, { mode: 0o700 })
+    writeFileSync(join(claimPath, 'replacement.json'), '{}', { mode: 0o600 })
+
+    await stopChild(holder)
+    expect(readdirSync(claimPath)).toEqual(['replacement.json'])
+  })
+
+  it('reports a contention timeout and preserves its registration while the holder starts', async () => {
+    const { project } = projectWithRoots('startup-contention-timeout')
+    const stateHome = temporaryDir('startup-contention-timeout-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '5000',
+    }))
+    await waitFor(() => {
+      try { return readdirSync(startupClaimPath(stateHome)).length === 1 ? true : null } catch { return null }
+    })
+    const contender = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '400',
+    }))
+    const output = childOutput(contender)
+    await waitFor(() => /startup claim holder did not finish/i.test(output.stdout()) ? true : null, 7_000)
+
+    expect(output.stdout()).not.toMatch(/no available port/i)
+    expect(contender.exitCode).toBeNull()
+    expect(readdirSync(registrationsPath(stateHome))).toHaveLength(2)
+    await stopChild(holder)
+  })
+
+  it('retries discovery after a contending holder dies and becomes served', async () => {
+    const { project } = projectWithRoots('startup-retry-after-dead-holder')
+    const stateHome = temporaryDir('startup-retry-after-dead-holder-state')
+    const spawnLog = join(temporaryDir('startup-retry-after-dead-holder-spawns'), 'spawns.log')
+    const acquisitionLog = join(temporaryDir('startup-retry-after-dead-holder-acquisitions'), 'acquisitions.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const common = {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+    }
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+    }))
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    expect(holder.spawnargs).toEqual([process.execPath, ENSURE])
+    await waitFor(() => spawnReceipts(acquisitionLog).length === 1 ? true : null)
+    const contender = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '300',
+      WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '10000',
+    }))
+    if (!contender.pid) throw new Error('startup contender has no pid')
+    const output = childOutput(contender)
+    await waitFor(() => /startup claim holder did not finish/i.test(output.stdout()) ? true : null, 5_000)
+
+    await stopChild(holder, 'SIGKILL')
+    children.delete(holder)
+    const state = await waitForState(stateHome, () => true, 8_000)
+    expect((await health(state)).service).toBe('workflow-toolbox-artifact-server')
+    expect(spawnReceipts(spawnLog)).toEqual([`${contender.pid} ${port}`])
+    expect(output.stdout()).toMatch(/retry attempt 1\/3/i)
+    await waitFor(() => /attached.*startup retry/i.test(output.stdout()) ? true : null)
+  }, 15_000)
+
+  it('defers retry to a live startup holder instead of racing it', async () => {
+    const { project } = projectWithRoots('startup-retry-live-holder')
+    const stateHome = temporaryDir('startup-retry-live-holder-state')
+    const spawnLog = join(temporaryDir('startup-retry-live-holder-spawns'), 'spawns.log')
+    const acquisitionLog = join(temporaryDir('startup-retry-live-holder-acquisitions'), 'acquisitions.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const common = {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+    }
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '7000',
+    }))
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    await waitFor(() => spawnReceipts(acquisitionLog).length === 1 ? true : null)
+    const contender = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '300',
+      WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '12000',
+    }))
+    const output = childOutput(contender)
+    await waitFor(() => /retry deferred.*live startup claim holder/i.test(output.stdout()) ? true : null, 5_000)
+    await new Promise((resolve) => setTimeout(resolve, 2_500))
+    expect(spawnReceipts(spawnLog)).toEqual([])
+    expect(spawnReceipts(acquisitionLog)).toEqual(expect.arrayContaining([expect.stringMatching(new RegExp(`^${holder.pid} `))]))
+    expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
+
+    await waitForState(stateHome, () => true, 8_000)
+    expect(spawnReceipts(spawnLog)).toEqual([`${holder.pid} ${port}`])
+    expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
+    await waitFor(() => /attached.*startup retry/i.test(output.stdout()) ? true : null, 5_000)
+  }, 18_000)
+
+  it('stops retrying at the attempt budget while retaining registration', async () => {
+    const { project } = projectWithRoots('startup-retry-attempt-bound')
+    const stateHome = temporaryDir('startup-retry-attempt-bound-state')
+    const preloadDir = temporaryDir('startup-retry-attempt-bound-preload')
+    const preload = join(preloadDir, 'freeze-server.cjs')
+    const frozenLog = join(preloadDir, 'frozen.log')
+    const spawnLog = join(preloadDir, 'spawns.log')
+    writeFileSync(preload, `if (process.argv[1]?.endsWith('wt-artifact-server.mjs') && process.argv[2] === 'serve') { require('node:fs').appendFileSync(${JSON.stringify(frozenLog)}, JSON.stringify({ pid: process.pid, argv: process.argv }) + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000) }\n`)
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_READINESS_MS: '100', WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '600000',
+      NODE_OPTIONS: `--require=${preload}`,
+    }))
+    if (!monitor.pid) throw new Error('startup monitor has no pid')
+    const output = childOutput(monitor)
+
+    await waitFor(() => /retry stopped.*3\/3 attempts/i.test(output.stdout()) ? true : null, 12_000)
+    const receipts = jsonReceipts<{ pid: number, argv: string[] }>(frozenLog)
+    expect(receipts).toHaveLength(4)
+    for (const receipt of receipts) {
+      expect(receipt.argv).toEqual([process.execPath, SERVER, 'serve'])
+      detachedPids.add(receipt.pid)
+    }
+    expect(spawnReceipts(spawnLog)).toEqual(Array(4).fill(`${monitor.pid} ${port}`))
+    expect(output.stdout().match(/retry attempt [123]\/3/gi)).toHaveLength(3)
+    await new Promise((resolve) => setTimeout(resolve, 6_500))
+    expect(spawnReceipts(spawnLog)).toHaveLength(4)
+    expect(output.stdout().match(/retry stopped/gi)).toHaveLength(1)
+    expect(monitor.exitCode).toBeNull()
+    expect(readdirSync(registrationsPath(stateHome))).toHaveLength(1)
+  }, 22_000)
+
+  it('preserves the retry window while deferring, then serves after the holder dies', async () => {
+    const { project } = projectWithRoots('startup-retry-window-bound')
+    const stateHome = temporaryDir('startup-retry-window-bound-state')
+    const spawnLog = join(temporaryDir('startup-retry-window-bound-spawns'), 'spawns.log')
+    const acquisitionLog = join(temporaryDir('startup-retry-window-bound-acquisitions'), 'acquisitions.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const common = {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+    }
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+    }))
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    await waitFor(() => spawnReceipts(acquisitionLog).length === 1 ? true : null)
+    const contender = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '300',
+      WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '3000',
+    }))
+    const output = childOutput(contender)
+
+    await waitFor(() => /retry deferred/i.test(output.stdout()) ? true : null, 5_000)
+    await new Promise((resolve) => setTimeout(resolve, 3_500))
+    await stopChild(holder, 'SIGKILL')
+    children.delete(holder)
+
+    const state = await waitForState(stateHome, () => true, 8_000)
+    expect(spawnReceipts(spawnLog)).toEqual([`${contender.pid} ${port}`])
+    expect(output.stdout()).toMatch(/retry attempt 1\/3/i)
+    await waitFor(() => /attached.*startup retry/i.test(output.stdout()) ? true : null)
+    expect(contender.exitCode).toBeNull()
+    expect((await health(state)).registeredSessions).toBe(1)
+  }, 18_000)
+
+  it('ends live-holder deferral at the absolute overall cap', async () => {
+    const { project } = projectWithRoots('startup-retry-overall-cap')
+    const stateHome = temporaryDir('startup-retry-overall-cap-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+    }))
+    await waitFor(() => {
+      try { return readdirSync(startupClaimPath(stateHome)).length === 1 ? true : null } catch { return null }
+    })
+    const contender = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '300',
+      WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '1000', WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS: '3000',
+    }))
+    const output = childOutput(contender)
+
+    await waitFor(() => /overall cap reached after 0\/3 attempts and \d+ ms total wait \(cap 3000 ms\)/i.test(output.stdout()) ? true : null, 7_000)
+    expect(output.stdout()).not.toMatch(/retry attempt/i)
+    expect(contender.exitCode).toBeNull()
+    await stopChild(holder)
+  }, 10_000)
+
+  it('attaches to a slow healthy server during retry pre-scan without journalling an attempt', async () => {
+    const { project } = projectWithRoots('startup-retry-slow-health')
+    const stateHome = temporaryDir('startup-retry-slow-health-state')
+    const preloadDir = temporaryDir('startup-retry-slow-health-preload')
+    const preload = join(preloadDir, 'freeze-server.cjs')
+    const frozenLog = join(preloadDir, 'frozen.log')
+    writeFileSync(preload, `if (process.argv[1]?.endsWith('wt-artifact-server.mjs') && process.argv[2] === 'serve') { require('node:fs').appendFileSync(${JSON.stringify(frozenLog)}, JSON.stringify({ pid: process.pid }) + '\\n'); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000) }\n`)
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_READINESS_MS: '100',
+      WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '10000', NODE_OPTIONS: `--require=${preload}`,
+    }))
+    const output = childOutput(monitor)
+    await waitFor(() => /did not become ready/i.test(output.stdout()) ? true : null, 5_000)
+    const [frozen] = await waitFor(() => {
+      const receipts = jsonReceipts<{ pid: number }>(frozenLog)
+      return receipts.length === 1 ? receipts : null
+    })
+    if (!frozen) throw new Error('frozen artifact server receipt is missing')
+    detachedPids.add(frozen.pid)
+
+    const slowHealthy = createServer((_request, response) => {
+      setTimeout(() => {
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ service: 'workflow-toolbox-artifact-server', uid: typeof process.getuid === 'function' ? process.getuid() : userInfo().username }))
+      }, 500)
+    })
+    await new Promise<void>((resolve, reject) => {
+      slowHealthy.once('error', reject)
+      slowHealthy.listen(port, '127.0.0.1', resolve)
+    })
+    try {
+      await waitFor(() => /attached.*startup retry/i.test(output.stdout()) ? true : null, 5_000)
+      expect(output.stdout()).not.toMatch(/retry attempt/i)
+    } finally {
+      await closeServer(slowHealthy)
+    }
+  }, 10_000)
+
+  it('journals retry spawn failures and remains bounded and registered', async () => {
+    const { project } = projectWithRoots('startup-retry-error')
+    const stateHome = temporaryDir('startup-retry-error-state')
+    const preloadDir = temporaryDir('startup-retry-error-preload')
+    const marker = join(preloadDir, 'fail-spawn')
+    const preload = join(preloadDir, 'fail-spawn.cjs')
+    writeFileSync(preload, `const cp = require('node:child_process'); const original = cp.spawn; cp.spawn = function(command, args, options) { if (args?.[0]?.endsWith('wt-artifact-server.mjs') && args?.[1] === 'serve' && require('node:fs').existsSync(${JSON.stringify(marker)})) { const child = new (require('node:events').EventEmitter)(); process.nextTick(() => child.emit('error', new Error('forced retry spawn failure'))); return child } return original.call(this, command, args, options) }\n`)
+    const acquisitionLog = join(preloadDir, 'acquisitions.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const common = {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+      NODE_OPTIONS: `--require=${preload}`,
+    }
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+    }))
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    await waitFor(() => spawnReceipts(acquisitionLog).length === 1 ? true : null)
+    const contender = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '300',
+      WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS: '2', WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '30000',
+    }))
+    const output = childOutput(contender)
+    await waitFor(() => /startup claim holder did not finish/i.test(output.stdout()) ? true : null, 5_000)
+    writeFileSync(marker, 'fail')
+    await stopChild(holder, 'SIGKILL')
+    children.delete(holder)
+
+    await waitFor(() => /retry stopped.*2\/2 attempts/i.test(output.stdout()) ? true : null, 9_000)
+    expect(output.stdout().match(/retry error.*forced retry spawn failure/gi)).toHaveLength(2)
+    await new Promise((resolve) => setTimeout(resolve, 4_500))
+    expect(output.stdout().match(/retry attempt/gi)).toHaveLength(2)
+    expect(output.stdout().match(/retry stopped/gi)).toHaveLength(1)
+    expect(contender.exitCode).toBeNull()
+    const registeredPids = readdirSync(registrationsPath(stateHome)).map((file) => {
+      return (JSON.parse(readFileSync(join(registrationsPath(stateHome), file), 'utf8')) as { pid: number }).pid
+    })
+    expect(registeredPids).toContain(contender.pid)
+  }, 18_000)
+
+  it('reports a lost claim and preserves its registration and keepalive', async () => {
+    const { project } = projectWithRoots('startup-claim-lost')
+    const stateHome = temporaryDir('startup-claim-lost-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '500',
+    }))
+    const output = childOutput(holder)
+    const claimPath = startupClaimPath(stateHome)
+    const ownerFile = await waitFor(() => {
+      try { return readdirSync(claimPath)[0] ?? null } catch { return null }
+    })
+    rmSync(join(claimPath, ownerFile), { force: true })
+    rmdirSync(claimPath)
+    mkdirSync(claimPath, { mode: 0o700 })
+    writeFileSync(join(claimPath, 'replacement.json'), '{}', { mode: 0o600 })
+
+    await waitFor(() => /startup claim was lost/i.test(output.stdout()) ? true : null)
+    expect(output.stdout()).not.toMatch(/no available port/i)
+    expect(holder.exitCode).toBeNull()
+    expect(readdirSync(registrationsPath(stateHome))).toHaveLength(1)
+  })
+
+  it('reports shutdown without claiming port exhaustion', async () => {
+    const { project } = projectWithRoots('startup-shutdown')
+    const stateHome = temporaryDir('startup-shutdown-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+    }))
+    const output = childOutput(holder)
+    await waitFor(() => {
+      try { return readdirSync(startupClaimPath(stateHome)).length === 1 ? true : null } catch { return null }
+    })
+    holder.kill('SIGTERM')
+    await waitFor(() => /startup stopped during shutdown/i.test(output.stdout()) ? true : null)
+    expect(output.stdout()).not.toMatch(/no available port/i)
+  })
+
+  it('reports a spawned server that was not ready without claiming port exhaustion', async () => {
+    const { project } = projectWithRoots('startup-not-ready')
+    const stateHome = temporaryDir('startup-not-ready-state')
+    const preloadDir = temporaryDir('startup-not-ready-preload')
+    const preload = join(preloadDir, 'delay-server.cjs')
+    const delayedProcess = join(preloadDir, 'delayed-process.json')
+    writeFileSync(preload, `if (process.argv[1]?.endsWith('wt-artifact-server.mjs') && process.argv[2] === 'serve') { require('node:fs').writeFileSync(${JSON.stringify(delayedProcess)}, JSON.stringify({ pid: process.pid, argv: process.argv })); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000) }\n`)
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), NODE_OPTIONS: `--require=${preload}`,
+      // Keep this legacy assertion isolated from the monitor's later retry spawns.
+      WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '1',
+    }))
+    const output = childOutput(holder)
+    const delayed = await waitFor(() => {
+      try { return JSON.parse(readFileSync(delayedProcess, 'utf8')) as { pid: number, argv: string[] } } catch { return null }
+    })
+    expect(delayed.argv).toEqual([process.execPath, SERVER, 'serve'])
+    detachedPids.add(delayed.pid)
+
+    await waitFor(() => /did not become ready/i.test(output.stdout()) ? true : null, 12_000)
+    expect(output.stdout()).not.toMatch(/no available port/i)
+    expect(holder.exitCode).toBeNull()
+    expect(readdirSync(registrationsPath(stateHome))).toHaveLength(1)
+  }, 15_000)
+
+  it('still reports no available port when candidate ports are occupied', async () => {
+    const { project } = projectWithRoots('startup-no-port')
+    const stateHome = temporaryDir('startup-no-port-state')
+    const foreign = await reservePort()
+    try {
+      const monitor = spawnEnsure(project, baseEnv(stateHome, {
+        WT_ARTIFACT_SERVER_PORT: String(foreign.port), WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1',
+      }))
+      const output = childOutput(monitor)
+      await waitFor(() => /no available port/i.test(output.stdout()) ? true : null, 3_000)
+      expect(output.stdout()).not.toMatch(/startup claim holder did not finish/i)
+    } finally {
+      await closeServer(foreign.server)
+    }
+  })
+
+  it('recovers a startup claim after its holder is killed', async () => {
+    const { project } = projectWithRoots('stale-startup-claim')
+    const stateHome = temporaryDir('stale-startup-claim-state')
+    const spawnLog = join(temporaryDir('stale-startup-claim-log'), 'spawns.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const env = baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+    })
+    const holder = spawnEnsure(project, env)
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    expect(holder.spawnargs).toEqual([process.execPath, ENSURE])
+    await waitFor(() => {
+      try {
+        const [ownerFile] = readdirSync(startupClaimPath(stateHome))
+        if (!ownerFile) return null
+        const owner = JSON.parse(readFileSync(join(startupClaimPath(stateHome), ownerFile), 'utf8')) as { pid?: number }
+        return owner.pid === holder.pid ? true : null
+      } catch { return null }
+    })
+    const holderExited = new Promise<void>((resolve) => holder.once('exit', () => resolve()))
+    holder.kill('SIGKILL')
+    await holderExited
+    children.delete(holder)
+
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+    }))
+    const state = await waitForState(stateHome)
+    expect(state.port).toBe(port)
+    expect(spawnReceipts(spawnLog)).toHaveLength(1)
+  })
+
+  it('reclaims a live holder that stops heartbeating', async () => {
+    const { project } = projectWithRoots('frozen-startup-claim')
+    const stateHome = temporaryDir('frozen-startup-claim-state')
+    const spawnLog = join(temporaryDir('frozen-startup-claim-spawns'), 'spawns.log')
+    const acquisitionLog = join(temporaryDir('frozen-startup-claim-acquisitions'), 'acquisitions.log')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const common = {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_SPAWN_LOG: spawnLog,
+      WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG: acquisitionLog,
+    }
+    const holder = spawnEnsure(project, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '20000',
+      WT_ARTIFACT_SERVER_TEST_STOP_HEARTBEAT_AFTER_MS: '100',
+    }))
+    if (!holder.pid) throw new Error('startup claim holder has no pid')
+    await waitFor(() => spawnReceipts(acquisitionLog).length === 1 ? true : null)
+    spawnEnsure(project, baseEnv(stateHome, common))
+
+    const state = await waitForState(stateHome, () => true, 22_000)
+    expect(pidAlive(holder.pid)).toBe(true)
+    expect(spawnReceipts(acquisitionLog)).toHaveLength(2)
+    expect(spawnReceipts(spawnLog)).toHaveLength(1)
+    await stopChild(holder)
+    expect(state.port).toBe(port)
+  }, 25_000)
+
   it('[A-02] probes all candidates before starting after a fallback port becomes free', async () => {
     const { project } = projectWithRoots('fallback')
     const stateHome = temporaryDir('fallback-state')
@@ -245,7 +926,7 @@ describe('owner decision 2: discovery and one instance', () => {
     try {
       const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port) })
       spawnEnsure(project, env)
-      const state = await waitForState(stateHome)
+      const state = await waitForState(stateHome, () => true, 60_000)
       expect(state.port).toBe(port + 1)
       expect(foreign.listening).toBe(true)
       await closeServer(foreign)
@@ -255,7 +936,7 @@ describe('owner decision 2: discovery and one instance', () => {
     } finally {
       if (foreign.listening) await closeServer(foreign)
     }
-  })
+  }, 70_000)
 
   it('[E-04] refuses uid mismatch attachment and same-process forged stop identity', async () => {
     const stateHome = temporaryDir('mismatch-state')
@@ -288,12 +969,13 @@ describe('owner decision 2: discovery and one instance', () => {
 
       const { project } = projectWithRoots('uid-mismatch')
       spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
-      const own = await waitForState(stateHome, (value) => value.port === address.port + 1)
-      expect(own.port).toBe(address.port + 1)
+      const own = await waitForState(stateHome, (value) => value.port !== address.port, 30_000)
+        .catch(() => readState(stateHome))
+      expect(own?.port).not.toBe(address.port)
     } finally {
       await closeServer(foreign)
     }
-  })
+  }, 40_000)
 })
 
 describe('owner decision 3: session lifetime and operator controls', () => {

@@ -1,0 +1,222 @@
+{
+  "$schema": "./rules-manifest.schema.json",
+  "version": 1,
+  "entries": [
+    {
+      "source": "rules/wt-sdlc.md",
+      "heading": "## Understand before coding",
+      "recipients": [
+        "pilot",
+        "critic",
+        "tdd",
+        "review",
+        "refutation",
+        "harden"
+      ],
+      "triggers": [
+        "standing",
+        "lane:critic",
+        "lane:tdd",
+        "lane:review",
+        "lane:refutation",
+        "lane:harden"
+      ]
+    },
+    {
+      "source": "rules/wt-sdlc.md",
+      "heading": "## Plan, task, and test",
+      "recipients": [
+        "pilot",
+        "critic",
+        "tdd"
+      ],
+      "triggers": [
+        "standing",
+        "lane:critic",
+        "lane:tdd"
+      ]
+    },
+    {
+      "source": "rules/wt-sdlc.md",
+      "heading": "## Implement and verify",
+      "recipients": [
+        "pilot",
+        "tdd",
+        "harden",
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "standing",
+        "lane:tdd",
+        "lane:harden",
+        "lane:review",
+        "lane:refutation"
+      ]
+    },
+    {
+      "source": "rules/wt-sdlc.md",
+      "heading": "## Compatibility context",
+      "recipients": [
+        "pilot",
+        "critic",
+        "tdd"
+      ],
+      "triggers": [
+        "phase:plan",
+        "lane:critic",
+        "lane:tdd"
+      ]
+    },
+    {
+      "source": "rules/wt-sdlc.md",
+      "heading": "## Independent review and refutation",
+      "recipients": [
+        "pilot",
+        "critic",
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "phase:harden",
+        "lane:critic",
+        "lane:review",
+        "lane:refutation"
+      ]
+    },
+    {
+      "source": "rules/wt-sdlc.md",
+      "heading": "## Final report",
+      "recipients": [
+        "pilot"
+      ],
+      "triggers": [
+        "phase:report"
+      ]
+    },
+    {
+      "source": "rules/wt-durable-fix-at-the-right-level.md",
+      "heading": "## Choosing the level",
+      "recipients": [
+        "pilot",
+        "harden"
+      ],
+      "triggers": [
+        "phase:plan",
+        "lane:harden"
+      ]
+    },
+    {
+      "source": "rules/wt-durable-fix-at-the-right-level.md",
+      "heading": "## Mechanical beats disciplined, every time available",
+      "recipients": [
+        "pilot",
+        "harden"
+      ],
+      "triggers": [
+        "phase:plan",
+        "lane:harden"
+      ]
+    },
+    {
+      "source": "rules/wt-step-back-architectural.md",
+      "heading": "# Step back to the architectural root — and ground \"it doesn't exist\" before a workaround",
+      "recipients": [
+        "pilot",
+        "harden"
+      ],
+      "triggers": [
+        "critic-round>=2",
+        "lane:harden"
+      ]
+    },
+    {
+      "source": "rules/wt-step-back-architectural.md",
+      "heading": "## A fix whose defect has a TWIN elsewhere is carried in the same pass",
+      "recipients": [
+        "pilot"
+      ],
+      "triggers": [
+        "phase:plan"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## A gate is its exit code, never its printed text",
+      "recipients": [
+        "pilot",
+        "tdd",
+        "harden"
+      ],
+      "triggers": [
+        "phase:verify",
+        "lane:tdd",
+        "lane:harden"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## Delegate green report is input, not proof",
+      "recipients": [
+        "pilot"
+      ],
+      "triggers": [
+        "phase:verify"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## Symptom vanishing after a change is correlation",
+      "recipients": [
+        "pilot",
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "phase:verify",
+        "lane:review",
+        "lane:refutation"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## Before measuring fix, prove subject RUN that fix",
+      "recipients": [
+        "pilot",
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "phase:verify",
+        "lane:review",
+        "lane:refutation"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## Control must be readable in BOTH outcomes, not only in failure",
+      "recipients": [
+        "pilot",
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "phase:verify",
+        "lane:review",
+        "lane:refutation"
+      ]
+    },
+    {
+      "source": "rules/wt-verify-by-ground-truth.md",
+      "heading": "## Summary asserting a guarantee is verified against its body, SAME pass",
+      "recipients": [
+        "review",
+        "refutation"
+      ],
+      "triggers": [
+        "lane:review",
+        "lane:refutation"
+      ]
+    }
+  ]
+}

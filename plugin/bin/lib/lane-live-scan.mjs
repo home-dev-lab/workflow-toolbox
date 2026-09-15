@@ -1,10 +1,32 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { basename, join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 
 export const ACTIVITY_MAX_ENTRIES = 4000
 export const ACTIVITY_WINDOW_MIN = 12
+export const LANE_LOG_TAIL_BYTES = 4096
+export const PROCESS_SCAN_MAX_ENTRIES = 5000
 export const ACTIVITY_SKIP_DIRS = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
+
+function launcherOwnsLog(name) {
+  return name === 'run.log'
+    || name === 'sdk-pilot.log'
+    || name === 'runner-stdout.log'
+    || /-run\.log$/.test(name)
+    || /-run\..+\.log$/.test(name)
+}
+
+function readTail(file, size) {
+  const length = Math.min(size, LANE_LOG_TAIL_BYTES)
+  const buffer = Buffer.alloc(length)
+  const fd = openSync(file, 'r')
+  try {
+    const bytesRead = readSync(fd, buffer, 0, length, size - length)
+    return buffer.subarray(0, bytesRead).toString('utf8')
+  } finally {
+    closeSync(fd)
+  }
+}
 
 // This scan can only suppress the advisory: a recent write means work may be in flight, but an
 // absent, idle, bounded, or unreadable lane never creates a new block or deny.
@@ -36,7 +58,7 @@ export function worktreeActivity(root, cutoff, {
         stack.push(fullPath)
         continue
       }
-      if (fullPath === join(root, '.lane', 'run.log')) continue
+      if (dir === join(root, '.lane') && entry.name.endsWith('.log')) continue
       try {
         const info = statImpl(fullPath)
         if (info.mtimeMs >= cutoff) return 'recent'
@@ -84,30 +106,58 @@ export function registeredWorktreeActivity(worktreeScan, cutoff) {
 export function hasActiveLaneLog(worktreeScan, cutoff) {
   if (worktreeScan.status !== 'known') return false
   for (const worktree of worktreeScan.worktrees) {
-    const log = join(worktree, '.lane', 'run.log')
+    let names
     try {
-      if (statSync(log).mtimeMs < cutoff) continue
-      const lines = readFileSync(log, 'utf8').trimEnd().split('\n')
-      const lastLine = lines.at(-1) || ''
-      if (!/^EXIT=\d+$/.test(lastLine)) return true
+      names = readdirSync(join(worktree, '.lane')).filter(launcherOwnsLog)
     } catch {
-      // An unreadable lane log is not evidence of liveness.
+      continue
+    }
+    for (const name of names) {
+      const log = join(worktree, '.lane', name)
+      try {
+        const info = statSync(log)
+        if (info.mtimeMs < cutoff) continue
+        const lines = readTail(log, info.size).trimEnd().split('\n')
+        const lastLine = lines.at(-1) || ''
+        if (!/^EXIT=\d+$/.test(lastLine)) return true
+      } catch {
+        // An unreadable lane log is not evidence of liveness.
+      }
     }
   }
   return false
 }
 
+// A suite checkout can be an umbrella directory rather than a repository. Its worktrees have a
+// stable, project-owned location, so discovering only Git entries directly below that location
+// preserves project scope without treating arbitrary sibling directories as activity.
+export function suiteUmbrellaWorktrees(root) {
+  if (!root) return { status: 'no-root', worktrees: [] }
+  const worktreesDir = join(root, '.claude', 'worktrees')
+  try {
+    const worktrees = readdirSync(worktreesDir, { withFileTypes: true })
+      .slice(0, 200)
+      .filter((entry) => entry.isDirectory() && existsSync(join(worktreesDir, entry.name, '.git')))
+      .map((entry) => join(worktreesDir, entry.name))
+    return worktrees.length > 0 ? { status: 'known', worktrees } : { status: 'no-root', worktrees: [] }
+  } catch {
+    return { status: 'no-root', worktrees: [] }
+  }
+}
+
 function laneDirFromArgs(args) {
   const executable = basename(args[0] || '')
   const subcommand = args[1]
-  if (!((executable === 'opencode' && subcommand === 'run') || (executable === 'codex' && subcommand === 'exec'))) {
+  const script = args.find((arg) => ['wt-pilot-runner.mjs', 'wt-lane.mjs'].includes(basename(arg)))
+  if (!script && !((executable === 'opencode' && subcommand === 'run') || (executable === 'codex' && subcommand === 'exec'))) {
     return null
   }
 
   for (let index = 2; index < args.length; index += 1) {
-    if (args[index] === '--dir' && args[index + 1]) return args[index + 1]
+    if (args[index] === '--dir' && isAbsolute(args[index + 1] || '')) return args[index + 1]
     if (args[index].startsWith('--dir=') && args[index].slice('--dir='.length)) {
-      return args[index].slice('--dir='.length)
+      const dir = args[index].slice('--dir='.length)
+      return isAbsolute(dir) ? dir : null
     }
   }
   return null
@@ -131,16 +181,23 @@ export function scanLiveLaneProcesses({
   }
 
   const processes = []
+  let numericEntries = 0
+  let capped = false
   for (const entry of entries) {
     const pid = typeof entry === 'string' ? entry : entry.name
     if (!/^\d+$/.test(pid)) continue
+    numericEntries += 1
+    if (numericEntries > PROCESS_SCAN_MAX_ENTRIES) {
+      capped = true
+      break
+    }
     try {
       const args = Buffer.from(readFileImpl(join(procRoot, pid, 'cmdline'))).toString('utf8').split('\0').filter(Boolean)
       const dir = laneDirFromArgs(args)
-      if (dir) processes.push({ pid, dir, command: `${basename(args[0])} ${args[1]}` })
+      if (dir) processes.push({ pid, dir, command: args.map((arg) => basename(arg)).slice(0, 2).join(' ') })
     } catch {
       // A process can exit between /proc's directory read and its cmdline read.
     }
   }
-  return { status: 'known', processes }
+  return { status: capped ? 'capped' : 'known', processes }
 }

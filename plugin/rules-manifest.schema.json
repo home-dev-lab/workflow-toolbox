@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://workflow-toolbox.dev/schemas/rules-manifest.schema.json",
+  "title": "Workflow Toolbox SDK role rules manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "entries"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "integer", "const": 1 },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source", "heading", "recipients", "triggers"],
+        "properties": {
+          "source": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:/)(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\).+" },
+          "heading": { "type": "string", "pattern": "^#{1,6} [^\\r\\n]+$" },
+          "recipients": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "enum": ["pilot", "orchestrator", "critic", "tdd", "review", "refutation", "harden"] }
+          },
+          "triggers": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "standing",
+                "phase:discovery", "phase:plan", "phase:critic", "phase:tdd", "phase:verify", "phase:review", "phase:refutation", "phase:harden", "phase:report",
+                "lane:critic", "lane:tdd", "lane:review", "lane:refutation", "lane:harden",
+                "critic-round>=2"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

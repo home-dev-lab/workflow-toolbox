@@ -5,6 +5,79 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Added lifecycle-phase and model cost receipts for SDK pilot runs, archived report summaries, and
+  the complete-only `wt-run-cost.mjs` LITE/FULL/HARD aggregator. Cost receipts use streamed assistant
+  usage, provider-correct fresh-token formulas, archive-derived wall time, per-log legacy matching,
+  family-split aggregate rows, explicit unknown counts, and run-identity deduplication.
+- Added repeatable absolute local-plugin options to SDK pilots and orchestrators, with pilot and judge
+  initialization receipts required to confirm every configured plugin loaded.
+- Added the `sdk-pilot` skill to expose detached evaluation of the not-yet-supported SDK pilot runner.
+- Added a versioned SDK-role rules manifest with strict source/heading validation, additive project
+  manifests, and exact standing, phase-entry, and lane-brief delivery.
+- Added required E2E evidence to pilot reports and required independent-review summaries on FULL runs.
+
+### Changed
+- SDK lifecycle plans and pilot reports now quote every folded card Definition-of-done criterion under
+  `## Acceptance`, with named plan proofs and explicit report outcomes enforced at their edges.
+- TDD and harden briefs now include the frontmatter-stripped changelog skill as server-written
+  authoritative instructions and fail closed when its source is unavailable.
+- Split the verify-by-ground-truth rule's oversized top section into addressable gestures and mapped
+  gate, delegate-proof, and causal-attribution guidance to the relevant SDK pilot lifecycle roles.
+- SDK pilot critics now receive the server-recorded discovery intake alongside the plan, and SDK
+  pilots and orchestrators receive the resolved read-only project knowledge-base index path or an
+  explicit absence.
+- Claude SDK critic, review, and refutation lanes may Read the resolved knowledge-base index and its
+  contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
+
+### Fixed
+- Load-sensitive integration tests now synchronize on protocol replies, filesystem state, owned
+  process identities, watcher sweep receipts, and child exit/stream closure instead of ambient
+  process deltas or short sleeps. The load harness verifies every CPU burner by PID and argv before
+  stopping it, and signing fixtures use private keys they create and own. Production test controls
+  now announce every active name, quota barriers are bounded, malformed saturation controls retain
+  real counting, and receipt/cleanup failures cannot mask watcher or suite outcomes.
+- `wt-lane.mjs` now prints and journals the source brief path, age, first Markdown heading,
+  and SHA-256 before detaching; refuses briefs older than 10 minutes unless the caller adds
+  `--acknowledge-stale-brief`; and gives the worker a hash-verified private snapshot so the
+  bytes it obeys cannot differ from the bytes the launcher announced. The age bound is
+  configurable with `--max-brief-age`.
+- Artifact-server monitors now retry pending startup discovery through the filesystem claim path,
+  bounded by attempts, one minute of their own retry work, and a five-minute overall cap, and
+  journalled through deferral, failure, attachment, or give-up.
+- Run-cost receipts now reconcile output tokens present only in the authoritative Claude SDK terminal
+  result into a named `reconciled` field and phase, compare the primary model's SDK usage with that
+  result total, and retain otherwise-unattributed sub-model usage by model without claiming an
+  independent whole-run output instrument.
+- Lane supervision now defaults to warn-only `would-clean` evidence, derives orphanhood only from a
+  terminal supervision record plus a gone launcher, bounds default extensions, and stores immutable
+  per-run records behind an atomic pointer. Timeout decisions are limited to `extend` and `abandon`;
+  relaunching from retained worktree state is an owner-driven abandon followed by a normal fresh
+  launch. The lifecycle polls a live `running` worker through its recorded timeout-transition bound
+  instead of killing it after a fixed grace. The watcher owner-filters attributable output, emits
+  notices independently of guarded audit writes, reports journal failures and unjournaled kills,
+  rotates its journal, and retries failures. Promote cleanup to `enforce`
+  only after at least 100 audited `would-clean`
+  firings show zero live victims. Codex brokers remain observed only because idleness detection is not
+  implemented. Existing adopted launchers must be re-adopted after this change.
+- Concurrent artifact-server session monitors now coordinate startup through a recoverable filesystem
+  claim, preventing duplicate `serve` spawns while allowing a later monitor to replace a dead holder.
+- The open-work Stop gate now detects project-scoped detached pilot/lane runners and fresh
+  non-terminal launcher-owned lane logs; discovers suite worktrees from a non-Git umbrella;
+  bounds process and log reads; reports live harness tasks without counting them because the Stop
+  payload cannot distinguish Monitors from background jobs; and re-emits an unchanged idle verdict
+  after its 45-minute cooldown.
+- The SDK pilot plan check now reads a `### ` heading as a task when no list line sits under it, so a
+  plan written with task headings is no longer refused, and a heading task missing its DoD is no longer
+  accepted through an unrelated bullet; the refusal names both accepted task shapes.
+
+## [0.175.0] - 2026-09-14
+
+### Added
+- Added an always-on lane/orphan watcher, owner-mediated timeout decisions, exact-identity orphan
+  cleanup, and an append-only lane-supervisor journal. Live work is never killed merely for age or
+  silence; no-answer extensions are bounded before the recorded default becomes `abandon`.
+
 ## [0.174.0] - 2026-09-14
 
 > **Not supported in this release:** the SDK pilot runner (`wt-pilot-runner`), the SDK orchestrator

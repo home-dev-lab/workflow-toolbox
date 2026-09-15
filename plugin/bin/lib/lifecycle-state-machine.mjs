@@ -3,11 +3,14 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
 import { completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
+import { composeRules, loadRules } from './rules-manifest.mjs'
+import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -36,19 +39,31 @@ const PLAN_SHAPE = Object.freeze({
   tasksHeading: 'Tasks',
   taskDodLabels: Object.freeze(['DoD', 'Definition of done']),
   gatesHeading: 'Gates',
+  acceptanceHeading: 'Acceptance',
 })
-export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, and a \`## ${PLAN_SHAPE.gatesHeading}\` section`
+export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, and a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every folded card Definition-of-done criterion exactly with a following \`Proof:\` line naming a task, test, e2e, test file, or gate`
 
 function planSection(content, heading) {
   return new RegExp(`(?:^|\\n)## ${heading}\\b[\\s\\S]*?(?=\\n## |$)`, 'i').exec(content)?.[0] ?? ''
 }
+function acceptanceSection(content) {
+  return /(?:^|\n)## Acceptance[ \t]*\r?\n[\s\S]*?(?=\r?\n#{1,6}(?:[ \t]+|$)|$)/i.exec(content)?.[0] ?? ''
+}
 
-function containsPlanShape(content) {
+function containsPlanShape(content, requireAcceptance) {
   const adr = planSection(content, PLAN_SHAPE.adrHeading)
   const tasks = planSection(content, PLAN_SHAPE.tasksHeading)
   const lines = tasks.split(/\r?\n/)
+  // A column-0 `- ` / `1. ` line is a task. A `### ` heading is a task only when no such line sits under
+  // it before the next heading; otherwise it groups the list tasks beneath it.
+  const isListItem = (line) => /^(?:- |\d+\. )/.test(line)
   const taskIndexes = lines
-    .map((line, index) => (/^(?:- |\d+\. )/.test(line) ? index : -1))
+    .map((line, index) => {
+      if (isListItem(line)) return index
+      if (!/^### /.test(line)) return -1
+      const next = lines.findIndex((other, j) => j > index && /^#{1,3} /.test(other))
+      return lines.slice(index + 1, next === -1 ? lines.length : next).some(isListItem) ? -1 : index
+    })
     .filter((index) => index >= 0)
   return (
     PLAN_SHAPE.adrTerms.every((term) => new RegExp(term, 'i').test(adr)) &&
@@ -60,8 +75,79 @@ function containsPlanShape(content) {
           .slice(start + 1, taskIndexes[i + 1] ?? lines.length)
           .some((line) => new RegExp(`^\\s*(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(line)),
     ) &&
-    Boolean(planSection(content, PLAN_SHAPE.gatesHeading))
+    Boolean(planSection(content, PLAN_SHAPE.gatesHeading)) &&
+    (!requireAcceptance || Boolean(acceptanceSection(content)))
   )
+}
+function acceptanceEntries(content) {
+  const section = acceptanceSection(content)
+  const lines = section.split(/\r?\n/)
+  const entries = new Map()
+  let entry = null
+  const finish = () => {
+    if (!entry) return
+    const criterion = entry.criterion.join(' ')
+    const matching = entries.get(criterion) ?? []
+    matching.push(entry.details)
+    entries.set(criterion, matching)
+    entry = null
+  }
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index]
+    const topLevel = /^-\s+(.*?)\s*$/.exec(line)
+    if (topLevel && !/^(?:Proof|Outcome):/i.test(topLevel[1])) {
+      finish()
+      entry = { criterion: [topLevel[1]], details: [], detail: -1 }
+      continue
+    }
+    if (!entry) continue
+    const folded = line.trim()
+    const detail = folded.replace(/^-\s+/, '')
+    if (!folded) continue
+    if (/^(?:Proof|Outcome):/i.test(detail)) {
+      entry.details.push(detail)
+      entry.detail = entry.details.length - 1
+    } else if (/^[ \t]+/.test(line) && entry.detail >= 0) {
+      entry.details[entry.detail] += ` ${folded}`
+    } else if (/^[ \t]+/.test(line)) {
+      entry.criterion.push(folded)
+    }
+  }
+  finish()
+  return entries
+}
+function acceptanceProblem(content, dodBullets, validDetail, expectedDetail, exampleDetail) {
+  const entries = acceptanceEntries(content)
+  const used = new Map()
+  for (const bullet of dodBullets) {
+    const index = used.get(bullet) ?? 0
+    const lines = entries.get(bullet)?.[index]
+    if (!lines) return `expected \`- ${bullet}\` followed by ${expectedDetail}; example: \`- ${bullet}\` then ${exampleDetail}`
+    used.set(bullet, index + 1)
+    if (!lines.some(validDetail)) return `expected ${expectedDetail} after \`- ${bullet}\`; example: \`- ${bullet}\` then ${exampleDetail}`
+  }
+  return null
+}
+const planAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
+  content,
+  dodBullets,
+  (line) => /^Proof:\s*\S/i.test(line) && /\b(?:tasks?|tests?|e2e|typecheck|lint)\b|(?:^|[/\\])\S+\.(?:test|spec)\.[A-Za-z0-9]+/i.test(line),
+  '`Proof: <task, test, e2e, test file, or gate>`',
+  '`Proof: tests/unit.test.ts`',
+)
+const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
+  content,
+  dodBullets,
+  (line) => /^Outcome:\s*(?:proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?|not done:\s*\S.*|deferred:\s*\S.*)\s*$/i.test(line),
+  '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`',
+  '`Outcome: proven by tests/unit.test.ts`',
+)
+function changelogSkillBody(file) {
+  let content
+  try { content = fs.readFileSync(file, 'utf8') } catch (error) { throw new Error(`changelog skill unavailable at ${file}: ${error instanceof Error ? error.message : String(error)}`) }
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/.exec(content)
+  if (!match) throw new Error(`changelog skill unavailable at ${file}: YAML frontmatter is missing`)
+  return match[1].trim()
 }
 function tasksBlock(content) {
   return /(?:^|\n)## Tasks\b[\s\S]*?(?=\n## |$)/i.exec(content)?.[0] ?? null
@@ -103,6 +189,7 @@ export function createLifecycleStateMachine({
   reasons = [],
   executor = 'gpt-lane',
   executorEnv = process.env,
+  knowledgeBase = { path: null, checkedPath: null },
   models,
   cardId,
   sessionTag,
@@ -111,10 +198,16 @@ export function createLifecycleStateMachine({
   laneLauncher = null,
   lanePollMs = 25,
   laneWaitMs = null,
+  lanePlatform = process.platform,
   gateRunner = null,
   git = execFileSync,
   copy = fs.cpSync,
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
+  rules = null,
+  cardText = null,
+  now = () => Date.now(),
+  timelineWriter = null,
+  changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
     throw new Error('lifecycle worktree must be absolute')
@@ -123,6 +216,8 @@ export function createLifecycleStateMachine({
     throw new Error('lifecycle cardId must match [A-Za-z0-9._-]+')
   }
   const root = fs.realpathSync(worktree)
+  const dodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText) : undefined
+  const activeRules = rules ?? loadRules({ projectRoot: root })
   let constructionBase = 'HEAD'
   try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
   const laneDir = path.join(root, '.lane')
@@ -146,6 +241,12 @@ export function createLifecycleStateMachine({
     }
   }
   assertLaneDir()
+  if (typeof cardText === 'string') {
+    const cardPath = path.join(laneDir, 'card.md')
+    const existingCard = readRegularFile(cardPath)
+    if (existingCard === null) writeRegularFile(cardPath, cardText, { flag: 'wx' })
+    else if (existingCard !== cardText) throw new Error(`lifecycle card snapshot ${JSON.stringify(existingCard)} differs from runner card text ${JSON.stringify(cardText)}; remove ${cardPath} to restart the lifecycle on the new card`)
+  }
   fs.mkdirSync(path.join(root, '.claude', 'reports'), { recursive: true })
   assertLaneDir(true)
   try {
@@ -188,13 +289,27 @@ export function createLifecycleStateMachine({
     verifySnapshot: null,
     report: { stage: 'idle', base: null, head: null, tree: null },
   }
+  const timelinePath = path.join(laneDir, 'lifecycle.json')
+  const lifecycleStartedAt = now()
+  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [] }
+  const atomicTimelineWriter = timelineWriter ?? ((file, content) => {
+    const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
+    try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { fs.rmSync(temporary, { force: true }) }
+  })
+  const persistTimeline = () => {
+    try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch { /* Cost evidence is best-effort and cannot alter lifecycle acceptance. */ }
+  }
+  persistTimeline()
   const laneBriefContexts = new Map()
   let serial = Promise.resolve()
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
+    const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
     if (!INDEPENDENT_ROLES.has(phase)) {
-      const content = `${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
+      const changelogInstructions = ['tdd', 'harden'].includes(phase) ? changelogSkillBody(changelogSkillPath) : ''
+      const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
+      const content = `${authoritative}${authoritative ? '## Pilot instructions\n\n' : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
       return snapshotDir
-        ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; do not rely on background processes surviving the lane.\n` }
+        ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; if another lane is started after this one ends, resume from the existing worktree state and preserve the same report and receipt contract. Do not rely on other background processes surviving the lane.\n` }
         : content
     }
     const artifacts = []
@@ -231,7 +346,21 @@ export function createLifecycleStateMachine({
         artifacts.push(snapshotDir ? snapshotFile(gateName, gateContent) : `.lane/${gateName}`)
       }
     }
-    const options = { phase, context, reportPath, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [] }
+    const discovery = phase === 'critic' ? readRegularFile(path.join(laneDir, 'discovery.md')) : null
+    if (phase === 'critic' && discovery === null) throw new Error('discovery record unavailable')
+    if (phase === 'critic') {
+      canonicalArtifacts.push('.lane/discovery.md')
+      artifacts.push(snapshotDir ? snapshotFile('discovery.md', discovery) : canonicalArtifacts.at(-1))
+    }
+    const knowledgeBaseLine = knowledgeBase.path
+      ? executor === 'claude-sdk'
+        ? `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path}`
+        // OpenCode lanes run with --auto, which approves an external_directory read the user's opencode
+        // config leaves on "ask" (measured 2026-09-14: a Luna run read this index). A config that DENIES it
+        // wins, so the lane must report a refused read instead of claiming it read the fiches.
+        : `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`
+      : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
+    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : constructionBase, priorRounds: phase === 'critic' ? state.priorCriticRounds : [], rules: roleRules, knowledgeBaseLine }
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
@@ -244,6 +373,7 @@ export function createLifecycleStateMachine({
     laneDir,
     executor,
     executorEnv,
+    knowledgeBaseIndex: knowledgeBase.path,
     frozenModels,
     state,
     laneBriefContexts,
@@ -256,7 +386,19 @@ export function createLifecycleStateMachine({
     laneLauncher,
     lanePollMs,
     laneWaitMs,
+    lanePlatform,
     gateRunner,
+    now,
+    recordLaneStart: ({ phase, model, startedAt, usageFile }) => {
+      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
+      timeline.lanes.push(record)
+      persistTimeline()
+      return record
+    },
+    recordLaneEnd: (record, endedAt) => {
+      record.ended_at = endedAt
+      persistTimeline()
+    },
   })
   function transition(event) {
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
@@ -269,6 +411,7 @@ export function createLifecycleStateMachine({
     const shape = JSON.stringify(event)
     const previous = state.handled.get(event.tool_use_id)
     if (previous) {
+      if (previous.shape === shape) persistTimeline()
       return previous.shape === shape ? previous.result : refusal(`${state.phase}->next`, 'unique tool_use_id', laneDir)
     }
     if (event.phase !== state.phase) {
@@ -284,11 +427,20 @@ export function createLifecycleStateMachine({
           path.join(laneDir, 'route.json'),
         )
       }
+      if (typeof event.record !== 'string' || !event.record.trim()) {
+        return refusal('discovery->next', 'non-empty discovery record', path.join(laneDir, 'discovery.md'))
+      }
+      writeRegularFile(path.join(laneDir, 'discovery.md'), event.record)
       next = frozenRoute === 'LITE' ? 'tdd' : 'plan'
     } else if (state.phase === 'plan') {
       const plan = path.join(laneDir, 'plan.md')
-      if (!readRegularFile(plan) || !containsPlanShape(readRegularFile(plan)))
+      const planContent = readRegularFile(plan)
+      if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
         return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
+      if (dodBullets !== undefined) {
+        const acceptanceProblem = planAcceptanceProblem(planContent, dodBullets)
+        if (acceptanceProblem) return refusal('plan->critic', acceptanceProblem, plan)
+      }
       next = 'critic'
     } else if (state.phase === 'critic') {
       const report = path.join(laneDir, 'critic-report.md')
@@ -404,7 +556,7 @@ export function createLifecycleStateMachine({
       if (sha256(pilotReport) !== state.pilotReportDigest) {
         return refusal('report->awaiting_fidelity', 'pilot report unchanged since write_artifact', pilotReportPath)
       }
-      const reportProblem = pilotReportProblem(pilotReport)
+      const reportProblem = pilotReportProblem(pilotReport, true)
       if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
@@ -430,9 +582,26 @@ export function createLifecycleStateMachine({
       next = 'awaiting_fidelity'
     }
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
+    const phaseRules = next === 'awaiting_fidelity'
+      ? ''
+      : composeRules(activeRules, {
+          recipient: 'pilot',
+          triggers: [`phase:${next}`, ...(next === 'critic' && state.priorCriticRounds.length > 0 ? ['critic-round>=2'] : [])],
+        })
+    const result = next === 'awaiting_fidelity'
+      ? AWAITING_FIDELITY_RESULT
+      : `accepted phase=${next}${resultDetail}${phaseRules ? `\n\n## Rules for phase ${next} (authoritative)\n\n${phaseRules}` : ''}`
+    const transitionedAt = now()
     state.phase = next
-    const result = next === 'awaiting_fidelity' ? AWAITING_FIDELITY_RESULT : `accepted phase=${next}${resultDetail}`
     state.handled.set(event.tool_use_id, { shape, result })
+    const currentPhase = timeline.phases.at(-1)
+    if (currentPhase?.transition_id !== event.tool_use_id) {
+      currentPhase.exited_at = transitionedAt
+      currentPhase.transition_id = event.tool_use_id
+      if (next !== 'awaiting_fidelity') timeline.phases.push({ phase: next, round: next === 'critic' ? state.priorCriticRounds.length + 1 : null, entered_at: transitionedAt, exited_at: null, transition_id: null })
+      else timeline.ended_at = transitionedAt
+    }
+    persistTimeline()
     return result
   }
   async function artifact({ kind, content }) {
@@ -484,7 +653,7 @@ export function createLifecycleStateMachine({
   // The pilot report's partial/full contract, checked on the exact bytes given: at write_artifact
   // and again at the report edge on the file about to be committed (Sol round 14: a stale or
   // edited pilot-report.md used to satisfy the edge by merely existing).
-  function pilotReportProblem(content) {
+  function pilotReportProblem(content, enforceSchema = false) {
     const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
     const lines = content.split(/\r?\n/)
     if (partialLine && !lines.includes(partialLine)) {
@@ -493,7 +662,31 @@ export function createLifecycleStateMachine({
     if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) {
       return 'pilot-report: this run is not partial'
     }
+    if (!enforceSchema) return null
+    if (dodBullets !== undefined) {
+      const acceptanceProblem = reportAcceptanceProblem(content, dodBullets)
+      if (acceptanceProblem) return `pilot-report: missing ${acceptanceProblem}`
+    }
+    const e2e = reportSection(content, 'E2E')
+    if (!e2e) return 'pilot-report: missing or empty ## E2E section'
+    const e2eNotRun = /^e2e not run: \S[^\r\n]*$/i.test(e2e)
+    const hasProcedure = /^(?:command|procedure):\s+\S.+$/im.test(e2e)
+    const hasOutput = /^(?:verbatim )?output:\s+\S.*$/im.test(e2e)
+    const hasEvidenceLine = /^e2e evidence:\s+\S.+\s(?:=>|output:)\s\S.*$/im.test(e2e)
+    if (!e2eNotRun && !(hasProcedure && hasOutput) && !hasEvidenceLine) {
+      return 'pilot-report: ## E2E requires command/procedure and verbatim output, or exactly "e2e not run: <reason>"'
+    }
+    if (frozenRoute === 'FULL') {
+      const review = reportSection(content, 'Independent Review')
+      if (!review) return 'pilot-report: missing or empty ## Independent Review section on FULL route'
+      if (!/\blens(?:es)?\b/i.test(review) || !/\bconfirmed\b/i.test(review) || !/\brefuted\b/i.test(review)) {
+        return 'pilot-report: ## Independent Review on FULL requires lenses, confirmed findings, and refuted findings'
+      }
+    }
     return null
+  }
+  function reportSection(content, heading) {
+    return new RegExp(`(?:^|\\n)## ${heading}\\s*\\r?\\n([\\s\\S]*?)(?=\\r?\\n## |$)`, 'i').exec(content)?.[1].trim() ?? ''
   }
   async function queued(work) {
     const prior = serial
@@ -518,6 +711,7 @@ export function createLifecycleStateMachine({
         {
           phase: z.string(),
           route: z.string().optional(),
+          record: z.string().optional(),
           outcome: z.string().optional(),
           findings: z.array(z.string()).optional(),
           tool_use_id: z.string(),

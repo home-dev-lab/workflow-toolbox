@@ -7,8 +7,8 @@
 // other one. So the silence cases below are not padding — a guard that fires on ordinary
 // commands becomes noise within a day and takes its real case with it.
 
-import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { chmodSync, copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,6 +21,41 @@ const HOOK = join(REPO_ROOT, 'plugin/bin/wt-lane-saturation-hook.mjs')
 
 const roots: string[] = []
 const ORIGINAL_ENFORCE_MODE = process.env.WT_LANE_ENFORCE_MODE
+
+function childExit(child: ChildProcess) {
+  return new Promise<void>((resolve) => child.once('exit', () => resolve()))
+}
+
+async function waitForOwnedLane(pid: number, executable: string, patienceMs = 10_000) {
+  const deadline = Date.now() + patienceMs
+  while (Date.now() < deadline) {
+    const count = countLaneProcessesReal(['opencode'], [pid])
+    let argvMatches = true
+    if (process.platform === 'linux') {
+      try { argvMatches = readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')[0] === executable } catch { argvMatches = false }
+    }
+    if (count.state === 'ok' && count.pids?.includes(pid) && argvMatches) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`owned lane pid ${pid} did not become visible with argv ${executable}`)
+}
+
+async function stopOwnedChild(child: ChildProcess, executable: string) {
+  if (!child.pid) return
+  await waitForOwnedLane(child.pid, executable)
+  const exited = childExit(child)
+  child.kill('SIGTERM')
+  await exited
+}
+
+function verifyOwnedArgv(child: ChildProcess, executable: string) {
+  if (!child.pid) throw new Error('owned child has no pid')
+  if (process.platform === 'linux') {
+    expect(readFileSync(`/proc/${child.pid}/cmdline`, 'utf8').split('\0')[0]).toBe(executable)
+  } else {
+    expect(child.spawnfile).toBe(executable)
+  }
+}
 afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
   // A test asserting the real default must delete the env var to observe it — restore
@@ -193,14 +228,14 @@ describe('wt-lane-saturation-hook.mjs', () => {
     expect(result.deny).toBeUndefined()
   })
 
-  // This is the one test in this suite that exercises the real, ambient-dependent `pgrep`
-  // mechanism; it is deliberately built to tolerate other real `opencode`/`codex` processes
-  // already running on this machine via a before/after delta, and if `pgrep` itself is
+  // This is the one test in this suite that exercises the real `pgrep`
+  // mechanism; it is deliberately restricted to PIDs this test spawned and whose argv it
+  // verifies, so unrelated `opencode`/`codex` processes cannot affect it. If `pgrep` itself is
   // unavailable it skips rather than fails. This is NOT a silent flake tolerance — it is a
   // documented, deliberate scope limitation.
-  it('counts by exact process name in the real pgrep path, using a delta robust to ambient usage', ({ skip }) => {
-    const baseline = countLaneProcessesReal(['opencode'])
-    if (baseline.state === 'unknown') {
+  it('counts by exact process name in the real pgrep path, restricted to child pids and argv the test owns', async ({ skip }) => {
+    const available = countLaneProcessesReal(['opencode'], [])
+    if (available.state === 'unknown') {
       skip()
       return
     }
@@ -211,40 +246,33 @@ describe('wt-lane-saturation-hook.mjs', () => {
     const marker = join(root, 'marker.sh')
     copyFileSync('/bin/sleep', fake)
     chmodSync(fake, 0o755)
-    writeFileSync(marker, '#!/bin/sh\n# opencode run --model x\nsleep 5\n')
+    writeFileSync(marker, '#!/bin/sh\n# opencode run --model x\nsleep 30\n')
     chmodSync(marker, 0o755)
 
-    const laneChild = spawnSync(process.execPath, [
-      '-e',
-      `const {spawn}=require('node:child_process');const c=spawn(${JSON.stringify(fake)},['5'],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid)`,
-    ], { encoding: 'utf8' })
-    const lanePid = Number.parseInt(String(laneChild.stdout ?? '').trim(), 10)
-
-    let shellPid = Number.NaN
+    const laneChild = spawn(fake, ['30'], { stdio: 'ignore' })
+    if (!laneChild.pid) throw new Error('lane child has no pid')
+    await waitForOwnedLane(laneChild.pid, fake)
+    let shellChild: ChildProcess | null = null
 
     try {
-      const withLane = countLaneProcessesReal(['opencode'])
+      const withLane = countLaneProcessesReal(['opencode'], [laneChild.pid])
       expect(withLane.state).toBe('ok')
-      if (withLane.state === 'ok') expect(withLane.count - baseline.count).toBe(1)
+      if (withLane.state === 'ok') expect(withLane).toMatchObject({ count: 1, pids: [laneChild.pid] })
 
-      const shellChild = spawnSync(process.execPath, [
-        '-e',
-        `const {spawn}=require('node:child_process');const c=spawn('/bin/sh',[${JSON.stringify(marker)}],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid)`,
-      ], { encoding: 'utf8' })
-      shellPid = Number.parseInt(String(shellChild.stdout ?? '').trim(), 10)
+      shellChild = spawn('/bin/sh', [marker], { stdio: 'ignore' })
+      if (!shellChild.pid) throw new Error('shell child has no pid')
 
-      const withShellMention = countLaneProcessesReal(['opencode'])
+      const withShellMention = countLaneProcessesReal(['opencode'], [laneChild.pid, shellChild.pid])
       expect(withShellMention.state).toBe('ok')
-      if (withShellMention.state === 'ok') expect(withShellMention.count - baseline.count).toBe(1)
+      if (withShellMention.state === 'ok') expect(withShellMention).toMatchObject({ count: 1, pids: [laneChild.pid] })
     } finally {
-      for (const pid of [lanePid, shellPid]) {
-        if (!Number.isFinite(pid)) continue
-        try {
-          process.kill(pid)
-        } catch {
-          /* already gone */
-        }
+      if (shellChild?.pid) {
+        verifyOwnedArgv(shellChild, '/bin/sh')
+        const exited = childExit(shellChild)
+        shellChild.kill('SIGTERM')
+        await exited
       }
+      await stopOwnedChild(laneChild, fake)
     }
   })
 
@@ -256,6 +284,55 @@ describe('wt-lane-saturation-hook.mjs', () => {
     })
     expect(`${res.stdout ?? ''}${res.stderr ?? ''}`).toBe('')
     expect(res.status).toBe(0)
+  })
+
+  it('an empty or malformed owned-pid control cannot hide a real lane process from the limiter', async ({ skip }) => {
+    const available = countLaneProcessesReal(['opencode'], [])
+    if (available.state === 'unknown') {
+      skip()
+      return
+    }
+    const root = mkdtempSync(join(tmpdir(), 'wt-lane-empty-owned-'))
+    roots.push(root)
+    const fake = join(root, 'opencode')
+    copyFileSync('/bin/sleep', fake)
+    chmodSync(fake, 0o755)
+    const lane = spawn(fake, ['30'], { stdio: 'ignore' })
+    if (!lane.pid) throw new Error('lane child has no pid')
+    await waitForOwnedLane(lane.pid, fake)
+
+    try {
+      for (const pids of ['', 'not-a-pid', `${lane.pid},broken`]) {
+        const res = spawnSync(process.execPath, [HOOK], {
+          input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'opencode run -m x < /dev/null' } }),
+          encoding: 'utf8',
+          env: { ...process.env, WT_LANE_MAX_CONCURRENT: '1', WT_LANE_SATURATION_TEST_MODE: '1', WT_LANE_SATURATION_TEST_PIDS: pids },
+        })
+        expect(JSON.parse(res.stdout || '{}')?.hookSpecificOutput?.permissionDecision, pids).toBe('deny')
+        expect(res.stderr).toContain('LANE SATURATION TEST MODE')
+        expect(res.stderr).toContain(`WT_LANE_SATURATION_TEST_PIDS=${pids}`)
+      }
+    } finally {
+      await stopOwnedChild(lane, fake)
+    }
+  })
+
+  it('treats malformed pgrep output as unknown instead of a false zero', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lane-malformed-pgrep-'))
+    roots.push(root)
+    const pgrep = join(root, 'pgrep')
+    writeFileSync(pgrep, '#!/bin/sh\nprintf "not-a-pid\\n"\n')
+    chmodSync(pgrep, 0o755)
+
+    const res = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'opencode run -m x < /dev/null' } }),
+      encoding: 'utf8',
+      env: { ...process.env, PATH: root },
+    })
+
+    expect(res.stdout).toContain('lane usage NOT MEASURED')
+    expect(res.stdout).toContain('malformed pid')
+    expect(res.stdout).not.toContain('permissionDecision')
   })
 
   // Now that this guard can DENY, a broken entry path must fail OPEN, never closed — an
@@ -296,13 +373,11 @@ describe('wt-lane-saturation-hook.mjs', () => {
   // not this hook's). "No call ever executes past the bound" is verified at the level this
   // hook controls: arc B's own `opencode run` process is never spawned by a refused call.
   // Skips (never fails) if pgrep is unavailable, for the same documented reason as above.
-  it('two-arc contention: the hook denies arc B while arc A saturates the lane, and allows again once arc A drains — arc B is never itself spawned by a refused call', ({ skip }) => {
-    // The baseline MUST count exactly the process names the hook counts. It used to count only
-    // `opencode` while the hook's default counts `opencode` AND `codex`, so any ambient `codex`
-    // process on the host made the "uncontended" call already saturated — measured 2026-09-13,
-    // a long-lived Codex app-server broker turned this test red on a correct hook.
-    const baseline = countLaneProcessesReal(LANE_PROCESS_NAMES)
-    if (baseline.state === 'unknown') {
+  it('two-arc contention: the hook denies arc B while arc A saturates the lane, and allows again once arc A drains — arc B is never itself spawned by a refused call', async ({ skip }) => {
+    // Prove pgrep exists before manufacturing contention. The hook below receives only the
+    // owned PID, so ambient opencode/codex processes cannot alter either decision.
+    const available = countLaneProcessesReal(LANE_PROCESS_NAMES, [])
+    if (available.state === 'unknown') {
       skip()
       return
     }
@@ -313,12 +388,19 @@ describe('wt-lane-saturation-hook.mjs', () => {
     copyFileSync('/bin/sleep', fake)
     chmodSync(fake, 0o755)
 
-    // Bound is sized RELATIVE to whatever is already live on this machine (baseline), not
-    // to an absolute count — the same robustness discipline as the delta test above. With
-    // the bound set to exactly baseline+1: arc B's call is allowed while only the ambient
-    // baseline is live, denied once arc A adds one more live process, and allowed again
-    // once arc A's process exits.
-    const env: NodeJS.ProcessEnv = { ...process.env, WT_LANE_MAX_CONCURRENT: String(baseline.count + 1) }
+    const marker = join(root, 'start-lane')
+    const arcA = spawn('/bin/sh', ['-c', 'while [ ! -e "$1" ]; do sleep 0.02; done; exec "$2" 30', 'arc-a', marker, fake], { stdio: 'ignore' })
+    if (!arcA.pid) throw new Error('arc A has no pid')
+    await new Promise<void>((resolve, reject) => {
+      arcA.once('spawn', resolve)
+      arcA.once('error', reject)
+    })
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      WT_LANE_MAX_CONCURRENT: '1',
+      WT_LANE_SATURATION_TEST_MODE: '1',
+      WT_LANE_SATURATION_TEST_PIDS: String(arcA.pid),
+    }
     delete env.WT_LANE_ENFORCE_MODE // real default: deny
 
     const callArcB = () =>
@@ -334,23 +416,13 @@ describe('wt-lane-saturation-hook.mjs', () => {
     const before = callArcB()
     expect(before.status).toBe(0)
     expect(`${before.stdout ?? ''}`.trim()).toBe('') // silent = allowed, no deny JSON
+    expect(before.stderr).toContain('WT_LANE_SATURATION_TEST_PIDS')
 
     // --- arc A saturates the lane: one real process, named exactly `opencode`, alive.
-    const arcA = spawnSync(process.execPath, [
-      '-e',
-      `const {spawn}=require('node:child_process');const c=spawn(${JSON.stringify(fake)},['5'],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid)`,
-    ], { encoding: 'utf8' })
-    const arcAPid = Number.parseInt(String(arcA.stdout ?? '').trim(), 10)
+    writeFileSync(marker, 'start')
 
     try {
-      // Poll until pgrep actually sees arc A's process under its exact name, rather than a
-      // blind sleep — the same drain-polling discipline as the recovery half below.
-      const registerDeadline = Date.now() + 5000
-      while (Date.now() < registerDeadline) {
-        const current = countLaneProcessesReal(LANE_PROCESS_NAMES)
-        if (current.state === 'ok' && current.count > baseline.count) break
-        spawnSync('sleep', ['0.1'])
-      }
+      await waitForOwnedLane(arcA.pid, fake)
 
       // --- direction (a): arc B is now DENIED — it must genuinely be refused, not merely
       // told. This is the harness-level refusal (permissionDecision:'deny'); arc B's
@@ -364,30 +436,16 @@ describe('wt-lane-saturation-hook.mjs', () => {
       expect(String(parsed?.hookSpecificOutput?.permissionDecisionReason ?? '')).toContain('REFUSED, not merely flagged')
       expect(String(parsed?.hookSpecificOutput?.permissionDecisionReason ?? '')).toContain('at or past its bound')
     } finally {
-      if (Number.isFinite(arcAPid)) {
-        try {
-          process.kill(arcAPid)
-        } catch {
-          /* already gone */
-        }
-      }
+      await stopOwnedChild(arcA, fake)
     }
 
     // --- direction (b), second half: arc A has DRAINED — the lane stays USABLE for arc B,
     // which now proceeds exactly as it would have without ever having lost a batch: no
-    // retry loop, no accumulated state, no manual intervention. This is "waits, then
-    // proceeds" made concrete rather than asserted. Poll for the real count to actually
-    // return to baseline rather than a fixed sleep — killing a process is asynchronous, and
-    // a blind delay either flakes under scheduling pressure or pads every run with slack
-    // that was never needed.
-    const drainDeadline = Date.now() + 5000
-    while (Date.now() < drainDeadline) {
-      const current = countLaneProcessesReal(LANE_PROCESS_NAMES)
-      if (current.state === 'ok' && current.count <= baseline.count) break
-      spawnSync('sleep', ['0.1'])
-    }
+    // retry loop, no accumulated state, no manual intervention. The child's `exit` event above
+    // is the drain signal; no wall-clock sleep guesses when SIGTERM has taken effect.
     const after = callArcB()
     expect(after.status).toBe(0)
     expect(`${after.stdout ?? ''}`.trim()).toBe('')
+    expect(after.stderr).toContain(`WT_LANE_SATURATION_TEST_PIDS=${arcA.pid}`)
   })
 })

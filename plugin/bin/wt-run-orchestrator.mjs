@@ -21,7 +21,7 @@ import path from 'node:path'
 
 async function main() {
   const options = parseOrchestratorArgs(process.argv.slice(2))
-  if (options.help) { process.stdout.write('wt-run-orchestrator --cards <ids> | --mission-list <name> --worktrees-dir <dir> --report <path>\n'); return 0 }
+  if (options.help) { process.stdout.write('wt-run-orchestrator --cards <ids> | --mission-list <name> --worktrees-dir <dir> --report <path> [--knowledge-base-index <path>] [--plugin-dir <absolute-path>]...\n'); return 0 }
   if (options.error) { process.stderr.write(`${options.error}\n`); return 2 }
   try {
     const require = resolveAgentSdkRequire({ projectDir: process.cwd() })

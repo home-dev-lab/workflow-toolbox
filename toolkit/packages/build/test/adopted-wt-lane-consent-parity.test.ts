@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,7 +38,7 @@ exit 0
   spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
@@ -58,10 +58,10 @@ exit 0
   return { root, config, project, installed, env, installer: join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs') }
 }
 
-function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna') {
+function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna', extra: string[] = []) {
   const brief = join(f.project, 'brief.md')
   writeFileSync(brief, '# brief\n')
-  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git'], { encoding: 'utf8', env: f.env })
+  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git', ...extra], { encoding: 'utf8', env: f.env })
 }
 
 describe('adopted wt-lane consent resolver', () => {
@@ -115,6 +115,22 @@ describe('adopted wt-lane consent resolver', () => {
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const started = launch(f)
     expect(started.status, started.stderr).toBe(0)
+  })
+
+  it('preserves stale-brief refusal and acknowledgement evidence in the adopted launcher', () => {
+    const f = fixture()
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const brief = join(f.project, 'brief.md')
+    writeFileSync(brief, '# adopted brief\n')
+    const old = new Date(Date.now() - 15 * 60_000)
+    utimesSync(brief, old, old)
+
+    const refused = spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git', '--max-brief-age', '600'], { encoding: 'utf8', env: f.env })
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain('--acknowledge-stale-brief')
+    const acknowledged = spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git', '--max-brief-age', '600', '--acknowledge-stale-brief'], { encoding: 'utf8', env: f.env })
+    expect(acknowledged.status, acknowledged.stderr).toBe(0)
+    expect(acknowledged.stdout).toMatch(/brief_sha256=[0-9a-f]{64}\n/)
   })
 
   it('refuses an unlisted model through the plugin runtime before the adopted launcher spawns', () => {

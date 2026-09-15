@@ -83,6 +83,20 @@
       "default": 90,
       "required": false,
       "description": "Refuse a Fable second-opinion call when its weekly scoped usage percentage is at or above this value."
+    },
+    "lane_orphan_cleanup": {
+      "type": "string",
+      "title": "Attributed lane orphan cleanup mode",
+      "default": "observe",
+      "required": false,
+      "description": "observe journals would-clean evidence without signaling; enforce terminates exact re-verified attributed lane orphans."
+    },
+    "lane_stall_minutes": {
+      "type": "number",
+      "title": "Lane worktree stall threshold",
+      "default": 10,
+      "required": false,
+      "description": "Minutes without a worktree write before a still-running supervised lane is reported to its owner with evidence; it is never killed for this condition."
     }
   },
   "hooks": {

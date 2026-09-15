@@ -1,15 +1,22 @@
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
+import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
+import { absentPluginPaths } from './plugin-receipt.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
+import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
+import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
+import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
 const MAX_UNPRODUCTIVE_TURNS = 3
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 const NEXT_BY_PHASE = {
   discovery: 'transition discovery using the frozen route',
   plan: `write the plan matching ${PLAN_SHAPE_DESCRIPTION}, then transition plan`,
@@ -31,7 +38,7 @@ const PLANKA_TOOLS = new Set([
 ])
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, pluginDirs: [], timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -40,6 +47,12 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--profile-env') options.profileEnv = argv[++i] ?? null
     else if (arg === '--contract') options.contract = argv[++i] ?? null
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
+    else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
+    else if (arg === '--plugin-dir') {
+      const pluginDir = argv[++i] ?? ''
+      if (!isAbsolute(pluginDir)) return { error: `--plugin-dir must be an absolute path: ${pluginDir}` }
+      options.pluginDirs.push(resolve(pluginDir))
+    }
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
@@ -49,7 +62,7 @@ export function parsePilotRunnerArgs(argv) {
   if (!options.cardFile) return { error: '--card-file is required: the route is derived from the card' }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
   options.dir = resolve(options.dir)
-  options.contract = resolve(options.contract ?? join(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md'))
+  options.contract = resolve(options.contract ?? join(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md'))
   options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
   if (options.profileEnv) options.profileEnv = resolve(options.profileEnv)
   if (options.cardFile) options.cardFile = resolve(options.cardFile)
@@ -90,7 +103,7 @@ export function confinedToWorktree(root, requested) {
   return relative(realpathSync(root), resolved) === '' || !relative(realpathSync(root), resolved).startsWith('..')
 }
 
-export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true } = {}) {
+export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true, knowledgeBaseIndex = null } = {}) {
   if (['transition', 'write_artifact', 'run'].map(lifecycleToolName).includes(toolName)) return { behavior: 'allow' }
   if (toolName === 'mcp__planka__move_card' && !boardMoves) return { behavior: 'deny', message: 'board moves are the orchestrator\'s' }
   if (PLANKA_TOOLS.has(toolName)) return { behavior: 'allow' }
@@ -98,6 +111,7 @@ export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = tr
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? worktree
   if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
+  if (toolName === 'Read' && knowledgeBaseReadAllowed(knowledgeBaseIndex, requested)) return { behavior: 'allow' }
   const pattern = toolName === 'Glob' ? input.pattern : (input.glob ?? input.pattern)
   if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string' && /[\\/]/.test(pattern)) {
     const segments = pattern.split(/[\\/]/)
@@ -120,6 +134,16 @@ function usageOf(message) {
   }
 }
 
+function addModelUsage(target, source) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return
+  for (const [model, usage] of Object.entries(source)) {
+    if (!usage || typeof usage !== 'object' || Array.isArray(usage)) continue
+    const total = target[model] ?? { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, thinkingTokens: 0 }
+    for (const field of Object.keys(total)) total[field] += Number(usage[field]) || 0
+    target[model] = total
+  }
+}
+
 function servedModelAgreement({ requestedModel, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen }) {
   if (!initReceiptSeen) return 'unknown (initialization receipt never arrived)'
   if (servedModel === undefined) return 'unknown (init receipt carries no model)'
@@ -136,16 +160,24 @@ function servedModelAgreement({ requestedModel, servedModel, servedModelFirstTur
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
+  if ((options.pluginDirs ?? []).some((pluginDir) => !isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
+  const effectiveEnv = { ...env, ...profileEnv }
+  const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
   // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
   // called directly did not — the first real wave died on a `path` of undefined.
-  const contractPath = options.contract ?? resolve(dirname(new URL(import.meta.url).pathname), '../../autonomy/PILOT-CONTRACT.md')
+  const contractPath = options.contract ?? resolve(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md')
   const mailboxPath = options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt')
   options = { ...options, contract: contractPath, mailbox: mailboxPath }
   const contract = readFile(options.contract, 'utf8')
+  // The project manifest lives with the project, not in each generated card worktree: resolve it
+  // from the same project root the knowledge-base index uses.
+  const rules = dependencies.rules ?? loadRules({ projectRoot: options.knowledgeBaseProjectRoot ?? options.dir })
+  const systemPrompt = composeStandingPrompt(contract, rules)
   if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
   const cardText = readFile(options.cardFile, 'utf8')
+  if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
   const routing = deriveRoute(cardText)
   const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
   log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} executor=${executorProfile.executor}`)
@@ -156,6 +188,8 @@ export async function runPilot(options, dependencies) {
   const started = now()
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   const turns = []
+  const messages = []
+  const modelUsage = {}
   const transcript = []
   const tools = []
   let turnTools = []
@@ -176,8 +210,10 @@ export async function runPilot(options, dependencies) {
   let servedModel
   let servedModelFirstTurn
   let firstAssistantSeen = false
-  const pluginRoot = resolve(dirname(new URL(import.meta.url).pathname), '../..')
+  const pluginRoot = resolve(MODULE_DIR, '../..')
   const guardPlugin = join(pluginRoot, 'hooks-modules', 'pilot-guard')
+  const configuredPlugins = options.pluginDirs ?? []
+  const pluginPaths = [guardPlugin, ...configuredPlugins]
 
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
   // run would satisfy it without this session ever writing one. Refuse to start on a dirty lane.
@@ -190,10 +226,10 @@ export async function runPilot(options, dependencies) {
   for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
   }
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, models: executorProfile.models, cardId: options.card, sessionTag: `${options.card}-${started}`, ...lifecycleOptions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, ...lifecycleOptions })
 
   async function* prompt() {
-    const standing = `Pilot card ${options.card} in ${options.dir}. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
+    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
     yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
@@ -235,17 +271,17 @@ export async function runPilot(options, dependencies) {
 
   const stream = query({ prompt: prompt(), options: {
     model: model.value,
-    systemPrompt: contract,
+    systemPrompt,
     settingSources: [],
     maxTurns: 120,
     cwd: options.dir,
-    plugins: [{ type: 'local', path: guardPlugin }],
+    plugins: pluginPaths.map((path) => ({ type: 'local', path })),
     tools: ['Read', 'Glob', 'Grep'],
     // No Planka endpoint configured means no board tools, never a guessed local port.
     mcpServers: { ...(resolveWorkflowToolboxOption('planka_mcp_url', { env }).value ? { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
-    canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true }),
+    canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path }),
     permissionMode: 'default',
-    env: { ...env, ...profileEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+    env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
   } })
   for await (const message of stream) {
     transcript.push(message)
@@ -258,7 +294,7 @@ export async function runPilot(options, dependencies) {
       const initTools = Array.isArray(message.tools) ? message.tools : []
       const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
       const missing = ['transition', 'write_artifact', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
-      const absent = [guardPlugin].filter((path) => !initPlugins.some((plugin) => plugin.path === path))
+      const absent = absentPluginPaths(pluginPaths, initPlugins)
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
       }
@@ -266,6 +302,15 @@ export async function runPilot(options, dependencies) {
     if (!firstAssistantSeen && message.type === 'assistant') {
       firstAssistantSeen = true
       servedModelFirstTurn = message.message?.model
+    }
+    if (message.type === 'assistant' && message.message?.usage) {
+      // One assistant message is streamed once per content block with the same id and usage: a repeat replaces the
+      // recorded usage (keeping the first arrival time), it never adds to it.
+      const record = { ...usageOf(message.message), model: message.message.model ?? servedModelFirstTurn ?? servedModel ?? model.value, arrived_at: new Date(now()).toISOString() }
+      const messageId = message.message.id
+      const previous = messageId ? messages.findIndex((entry) => entry.message_id === messageId) : -1
+      if (previous >= 0) messages[previous] = { ...record, message_id: messageId, arrived_at: messages[previous].arrived_at }
+      else messages.push(messageId ? { ...record, message_id: messageId } : record)
     }
     const content = message.message?.content
     if (Array.isArray(content)) for (const item of content) {
@@ -290,7 +335,8 @@ export async function runPilot(options, dependencies) {
     }
     if (message.type === 'result') {
       const usage = usageOf(message)
-      turns.push({ ...usage, tool_names: [...new Set(turnTools)] })
+      addModelUsage(modelUsage, message.modelUsage)
+      turns.push({ ...usage, model: servedModelFirstTurn ?? servedModel ?? model.value, ended_at: new Date(now()).toISOString(), tool_names: [...new Set(turnTools)] })
       turnTools = []
       for (const key of Object.keys(totals)) totals[key] += usage[key]
       if (!completed) pendingTurnEnds += 1
@@ -300,16 +346,39 @@ export async function runPilot(options, dependencies) {
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
   if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
   const freshTokens = totals.input + totals.cache_creation + totals.output
-  const usage = { turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
+  const usage = { messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
   let lifecycleSummary = {}
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
   const completedNormally = awaitingFidelityReceipt && exists(report)
   const partial = lifecycleSummary.partial ?? null
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
-  const summary = { ...lifecycleSummary, partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (now() - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const ended = now()
+  const summary = { ...lifecycleSummary, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
+  let cost
+  try {
+    cost = computeRunCost({ laneDir: join(options.dir, '.lane'), worktree: options.dir, startedAt: started, endedAt: ended, route: options.hard ? 'HARD' : routing.route })
+  } catch (error) {
+    cost = unknownRunCost({ route: options.hard ? 'HARD' : routing.route, worktree: options.dir, reason: `cost computation failed: ${error instanceof Error ? error.message : String(error)}` })
+  }
+  try {
+    const costContent = `${JSON.stringify(cost, null, 2)}\n`
+    writeFile(join(options.dir, '.lane', 'cost.json'), costContent)
+    let costReport = null
+    if (exists(report)) {
+      costReport = appendCostReport(readFile(report, 'utf8'), cost)
+      writeFile(report, costReport)
+    }
+    const archive = lifecycleSummary.archive?.path
+    if (archive) {
+      writeFile(join(archive, 'cost.json'), costContent)
+      if (costReport !== null) writeFile(join(archive, 'pilot-report.md'), costReport)
+    }
+  } catch (error) {
+    log(`cost receipt unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   return { usage, summary, exitCode: completedNormally ? (partial ? 2 : 0) : 1 }
 }

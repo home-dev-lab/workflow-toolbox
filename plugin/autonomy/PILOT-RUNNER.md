@@ -16,22 +16,39 @@ through the runner mailbox and owner-facing output only through the pilot report
 
 ## Route and phases
 
+The runner resolves `KNOWLEDGE_BASE_INDEX` from `--knowledge-base-index`, then
+`WT_KNOWLEDGE_BASE_INDEX`, then `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<slug>/memory/MEMORY.md`,
+where the slug replaces every character outside `[A-Za-z0-9-]` in the absolute project root with
+`-`. The prompt names the existing index or explicitly says none exists. The pilot and orchestrator
+may Read that external index and the Markdown files under its directory (real-path contained) in
+addition to their normal confined trees.
+
 The runner derives and freezes the route from the card before `query()`. An exact `Route: LITE` or
 `Route: FULL` line wins, including a `- Route:` bullet. Otherwise effort M or greater, type
-`feature`, a risk word, more than three named files, or a missing `DoD:` / `Definition of done:`
-field selects FULL; all signals clear selects LITE. The reasons are recorded with the route.
+`feature`, a risk word, more than three named files, or no Definition-of-done criterion selects FULL;
+all signals clear selects LITE. A criterion is an item under `## DoD` / `## Definition of done` or the
+value of an inline `DoD:` / `Definition of done:` field. No criterion makes both runners refuse before
+starting the SDK query. The reasons are recorded with the route.
 `.lane/route.json` is an audit record, not an input to routing.
+
+The installed plugin's version-1 `rules-manifest.json` maps exact sections under `plugin/rules`; an
+optional `<project>/.claude/wt-rules-manifest.json` uses the same schema and adds project-root sources.
+The runner validates every role, lifecycle trigger, source path, and exact heading before composition.
+It appends standing pilot sections to the contract system prompt, returns phase sections in the
+transition result for the new phase, and composes role sections into lane briefs before pilot context.
+Missing files/headings and malformed manifests fail closed. Manifest paths use `/` as a portable stored
+form and Node path APIs for resolution and real-path containment on each host.
 
 | Edge | Required evidence |
 | --- | --- |
-| discovery -> tdd (LITE) or plan (FULL) | Frozen runner route. |
-| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, and `## Gates`. |
+| discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
+| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing/reworded criterion is refused with an example. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. A fourth changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd or harden -> verify | Attested lane receipt and non-empty report. On FULL, `tdd-brief.md` has the plan `## Tasks` block byte-identically. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
 | review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
 | refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
-| report -> awaiting_fidelity | Pilot report, unchanged lifecycle snapshot, runner commit, and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
+| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`, plus `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
@@ -49,17 +66,31 @@ and excluded from the tree signature.
 Critic, review, and refutation briefs begin with server-owned independent-review instructions. The
 server retains each lane phase's pilot context in memory and, immediately before launch, refuses an
 unwritten phase or exclusively recreates its brief from that context, re-deriving independent inputs.
-The server names the plan/card or the prospective working-tree patch against the construction base plus
+The server names the plan/card/discovery record or the prospective working-tree patch against the construction base plus
 gate receipts, writes review/refutation patches to `.lane/<phase>-input.diff`, names that path and base
 in the brief, and fences pilot prose afterward as untrusted context. The patch includes staged and
 unstaged tracked changes, deletions, modes, symlinks, renames, binary changes, and non-ignored
-untracked files without changing the real index. If Git cannot construct that patch, the total patch
+untracked files without changing the real index. Discovery bytes are fenced as untrusted in the critic
+brief, just like pilot context. If Git cannot construct that patch, the total patch
 output (header, tracked diff, and all untracked-file diffs) exceeds the bounded buffer, or a dirty tree
 produces no substantive hunk, the lifecycle refuses the review/refutation brief and cannot launch
 that lane. Glob and Grep
 patterns with separators are confined by real-path checking their non-glob prefix, including through
 relative symlinks. The `measures wildcard-first Glob and Grep matches through an in-worktree symlink with a real SDK query` lock (`WT_REAL_SDK_LOCKS=1`) measured wildcard-first matches not to escape the worktree through an in-worktree symlink. Lifecycle implementation, receipts/launch, and report-edge transaction code live
 in separate modules behind the unchanged public server export.
+
+TDD and harden briefs, and independent critic/review/refutation briefs, put mapped exact rule sections
+under `## Rules that apply to this role (authoritative)`. Both executor families receive a
+runner-owned snapshot brief; its knowledge-base availability line reflects the selected launcher.
+The independent brief names the runner's once-resolved knowledge-base index and states that fiches are
+claims to verify against current code rather than evidence. For Claude SDK independent roles only, the
+lifecycle passes `--knowledge-base-index` to `wt-claude-executor.mjs`; its `canUseTool` permits Read of
+the index and real-path-contained regular Markdown fiches while Glob/Grep remain worktree-confined.
+OpenCode runs with `--dir` and `cwd` set to the worktree and `--auto` in `wt-lane.mjs`; `--auto` approves an
+`external_directory` read the user's OpenCode config leaves on `ask`, so the brief names the index and tells
+the lane to report a refused read (a config that denies it wins) rather than rely on the knowledge base.
+TDD and harden briefs also carry the frontmatter-stripped body of the shipped changelog skill in a
+server-written authoritative section; a missing skill source refuses brief composition.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or
@@ -100,7 +131,7 @@ message or earlier continuation that was followed by progress), and reason
 `pilot ended its turn 3 times without progress`. Any other stream ending first exits 1 and writes
 `summary.completed=false`. A completed full run exits 0. A completed partial run exits 2 with
 `summary.completed=true` and the lifecycle's non-null `partial` object; full-run summaries carry
-`partial:null`. `.lane/usage.json`, `.lane/summary.json`, and
+`partial:null`. `.lane/usage.json`, `.lane/summary.json`, `.lane/cost.json`, and
 `.lane/sdk-transcript.json` record the run. The summary records `requested_model` with its resolver
 source/effective model, plus `served_model` from the SDK `system:init` receipt and
 `served_model_first_turn` from the first assistant message. `served_model_agreement` is `true` when the
@@ -108,10 +139,47 @@ two SDK readings agree with each other (a remapped profile serves a different id
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
 
-`--card`, `--dir`, and `--card-file` are required. Optional flags are `--profile-env`, `--contract`,
+`lifecycle.json` timestamps the runner start/end, each accepted phase interval, and each lane launch.
+Each streamed pilot assistant message records its arrival time and SDK usage and is attributed to the
+containing interval; repeated critics retain their round number. The final SDK result total is retained
+only as a cross-check, with every per-column difference reported. Claude executor lanes write SDK usage
+beside the nonce log. GPT lane cost is read-only
+from OpenCode `session` rows whose `directory` exactly matches the worktree and whose timestamps
+overlap that lane's launch window. The reader invokes the external `sqlite3` CLI because the plugin's
+Node floor is 20; `WT_OPENCODE_DB` overrides the default
+`~/.local/share/opencode/opencode.db`. An absent CLI, unreadable database, or unmatched lane is
+`unknown` with its reason, never zero, and cost failure never changes the runner exit.
+
+For a legacy archive without `lifecycle.json`, each nonce log gets its own window from its first and
+last embedded ISO timestamp, or its mtime when the log has no timestamps. Sessions outside every lane
+are retained under `unmatched`; lanes with no session remain `unknown`. Run wall time comes from runner
+lifecycle records, then archived SDK transcript timestamps, then archive record mtimes (using recorded
+summary minutes only when those mtimes collapse to one copied instant). Every fallback is marked
+`inferred` with its basis. `--started-at` and `--ended-at` are paired forensic overrides, not defaults.
+
+`cost.json` records card/run identity, route (`HARD` when `--hard` selected it),
+complete/partial/unknown outcome, wall time,
+and per phase/model raw `input`, `cache_write`, `cache_read`, `output`, and `reasoning` columns.
+Unsupported provider fields say `not measured`; `first_pass_input` is input plus measured cache write.
+Anthropic `fresh_tokens` adds output, while OpenAI `fresh_tokens` adds output and reasoning because
+OpenCode records reasoning separately from output. At run end the runner replaces only its delimited
+`<!-- run-cost -->` report block and refreshes both files in the lifecycle archive. The pilot's own
+headings and trailing text are preserved. The orchestrator evidence copy also retains `cost.json`.
+
+`node plugin/bin/wt-run-cost.mjs <reports-directory>` recursively reads archived `cost.json` files
+and prints LITE/FULL/HARD totals split into Anthropic and OpenAI rows, preserving family-specific raw
+columns. Every run lists its unknown count; a route containing any unknown is marked incomplete. Only
+complete runs enter totals by default; partial and unknown-outcome runs are always listed separately
+and enter totals only with `--include-partial`. Mirrored receipts deduplicate by card id plus runner
+start, never by archive path. Malformed usage exits 2.
+
+`--card`, `--dir`, and `--card-file` are required. Optional flags are `--knowledge-base-index`, repeatable
+`--plugin-dir <absolute-path>`, `--profile-env`, `--contract`,
 `--hard`, `--mailbox`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
-Linux and macOS, resolves `--dir` to an absolute path, and applies real-path containment before
+Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.
+Configured plugin directories are passed as local SDK plugins beside `pilot-guard`; the initialization
+receipt must name every one or the pilot run is refused. No plugin name or host path is built in.
 
 ## Fidelity review
 
@@ -135,7 +203,8 @@ Launch a wave with `setsid nohup bash -c 'node plugin/bin/wt-run-orchestrator.mj
 EXIT=$? >> <wave.log>' > /dev/null 2>&1 < /dev/null &`, or replace `--cards` with
 `--mission-list <list>` plus repeatable `--mission-label`, `--max-cards`, and
 optional `--max-minutes`. `--hard <id,id>` selects the hard pilot model per card;
-`--profile-env <settings.json>` supplies model remaps to pilots and the orchestrator session.
+`--profile-env <settings.json>` supplies model remaps to pilots and the orchestrator session. Repeatable
+`--plugin-dir <absolute-path>` loads the named local plugins in both card pilots and the SDK judge.
 
 An explicit card is eligible only in Backlog, Next, or In Progress. A mission card must also carry
 one priority label (`P0|P1|P2`), one type label (`feature|chore|bug|research`), one effort label

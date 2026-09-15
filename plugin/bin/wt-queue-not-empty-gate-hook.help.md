@@ -30,10 +30,11 @@ tracks your capacity says work is genuinely impossible right now (a spent usage 
 saturated context), the gate goes fully silent for that window rather than nag about a condition
 nothing can act on.
 
-## Why it lets you through eventually
+## Why it does not repeat itself
 
-A cooldown bounds how often it can speak (see `COOLDOWN_MIN` in the hook). A gate that could never
-be satisfied would deadlock the work it protects, get switched off, and take its real case with it.
+The hook persists the open-work and running verdict it already reported. It stays silent while that
+decision state remains identical in the same idle stretch, speaks again as soon as the state changes,
+and rearms after visible work runs. Legacy cooldown-only records retain their old bounded behavior.
 
 ## This file's status
 

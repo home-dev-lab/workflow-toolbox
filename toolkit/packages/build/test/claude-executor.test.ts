@@ -31,7 +31,7 @@ const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
   fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE})}));
   if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
-  else { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; fs.writeFileSync(report,'executor report\\n'); yield {type:'result',subtype:'success',is_error:false}; }
+  else { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test'}; yield {type:'result',subtype:'success',is_error:false,usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11}}; }
 })()`)
   return { root, worktree, cli: join(installed, 'bin', 'wt-claude-executor.mjs') }
 }
@@ -64,6 +64,20 @@ describe('Claude SDK executor', () => {
     expect(executorCanUseTool(root, report, false, 'Write', { file_path: join(root, 'link', 'escaped') }).behavior).toBe('deny')
   })
 
+  it('allows read-only review roles to Read the configured knowledge-base index and its Markdown fiches only', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-executor-kb-worktree-')); roots.push(root); mkdirSync(join(root, '.lane'))
+    const knowledgeBase = mkdtempSync(join(tmpdir(), 'wt-executor-kb-')); roots.push(knowledgeBase)
+    const index = join(knowledgeBase, 'MEMORY.md'); const fiche = join(knowledgeBase, 'fiches', 'review.md')
+    mkdirSync(join(knowledgeBase, 'fiches')); writeFileSync(index, '- [review](fiches/review.md)\n'); writeFileSync(fiche, '# Review\n'); writeFileSync(join(knowledgeBase, 'private.txt'), 'no\n')
+    const report = join(root, '.lane', 'review-report.nonce.md')
+    const options = parseExecutorArgs(['--dir', root, '--model', 'opus', '--brief', join(root, 'brief.md'), '--role', 'review', '--knowledge-base-index', index])
+    expect(options).toMatchObject({ knowledgeBaseIndex: index })
+    expect(executorCanUseTool(root, report, true, 'Read', { file_path: fiche }, { knowledgeBaseIndex: index })).toEqual({ behavior: 'allow' })
+    expect(executorCanUseTool(root, report, true, 'Read', { file_path: join(knowledgeBase, 'private.txt') }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
+    expect(executorCanUseTool(root, report, true, 'Grep', { path: knowledgeBase, pattern: 'Review' }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
+    expect(executorCanUseTool(root, report, false, 'Read', { file_path: fiche }, { knowledgeBaseIndex: index }).behavior).toBe('deny')
+  })
+
   it('prints a detached pid, loads the guard, writes only the named report, and ends its log with EXIT=0', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.nonce.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'run.log'); const receipt = join(f.root, 'receipt.json'); const outside = join(f.root, 'outside.txt')
     writeFileSync(brief, `Implement the task.\n\nWrite the report to \`${report}\`.\n`)
@@ -72,6 +86,8 @@ describe('Claude SDK executor', () => {
     waitFor(report); waitFor(receipt)
     expect(readFileSync(report, 'utf8')).toBe('executor report\n')
     expect(readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1)).toBe('EXIT=0')
+    waitFor(`${log}.usage.json`)
+    expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
     expect(existsSync(outside)).toBe(false)
     expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
     expect(JSON.parse(readFileSync(receipt, 'utf8')).plugins[0].path).toContain(join('hooks-modules', 'pilot-guard'))

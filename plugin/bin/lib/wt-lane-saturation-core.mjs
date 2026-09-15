@@ -55,19 +55,55 @@ export function stripNonExecutedText(command) {
  *  could not measure. "pgrep is missing" and "nothing is running" are opposite facts, and
  *  reporting the first as the second would tell a caller the lane is free at exactly the
  *  moment nobody can tell. */
-export function countLaneProcessesReal(names = LANE_PROCESS_NAMES) {
+export function countLaneProcessesReal(names = LANE_PROCESS_NAMES, ownedPids = null) {
   let total = 0
+  const matchedPids = []
+  const owned = ownedPids === null ? null : new Set(ownedPids)
   for (const name of names) {
-    const res = spawnSync('pgrep', ['-c', '-x', name], { encoding: 'utf8' })
+    const res = spawnSync('pgrep', ['-x', name], { encoding: 'utf8' })
     if (res.error) return { state: 'unknown', reason: `pgrep is unavailable (${res.error.message})` }
     // pgrep exits 1 when nothing matched — that is a real zero, not an error.
     if (res.status !== 0 && res.status !== 1) {
       return { state: 'unknown', reason: `pgrep exited ${res.status} for "${name}"` }
     }
-    const parsed = Number.parseInt(String(res.stdout ?? '').trim(), 10)
-    total += Number.isFinite(parsed) ? parsed : 0
+    const lines = String(res.stdout ?? '').trim().split(/\s+/).filter(Boolean)
+    if (lines.some((line) => !/^\d+$/.test(line) || !Number.isSafeInteger(Number(line)) || Number(line) < 1)) {
+      // Never turn malformed output into a false zero. The caller reports measurement as
+      // unknown and deliberately allows with a warning: a broken counter is not evidence
+      // on which a deny-capable hook may safely block every lane call.
+      return { state: 'unknown', reason: `pgrep returned a malformed pid for "${name}"` }
+    }
+    const pids = lines.map(Number)
+    const selected = owned === null ? pids : pids.filter((pid) => owned.has(pid))
+    total += selected.length
+    matchedPids.push(...selected)
   }
-  return { state: 'ok', count: total }
+  return { state: 'ok', count: total, pids: matchedPids }
+}
+
+export function laneSaturationTestSeams(env = process.env) {
+  const active = new Set()
+  if (env['WT_LANE_SATURATION_TEST_MODE'] === '1') {
+    active.add('WT_LANE_SATURATION_TEST_MODE')
+    if (env['WT_LANE_SATURATION_TEST_PIDS'] !== undefined) active.add('WT_LANE_SATURATION_TEST_PIDS')
+  }
+  return active
+}
+
+export function laneSaturationTestBanner(env = process.env) {
+  const active = laneSaturationTestSeams(env)
+  if (active.size === 0) return null
+  const controls = [...active].map((name) => `${name}=${env[name]}`).join(' ')
+  return `⚠ LANE SATURATION TEST MODE — ${controls} — only a non-empty, parseable owned PID list may narrow counting; empty or malformed input leaves the real count in force. This must NEVER be set outside the test suite.`
+}
+
+function testOwnedPids(env) {
+  if (env['WT_LANE_SATURATION_TEST_MODE'] !== '1') return null
+  const raw = String(env['WT_LANE_SATURATION_TEST_PIDS'] ?? '').trim()
+  if (!raw) return null
+  const parts = raw.split(',').map((part) => part.trim())
+  if (parts.some((part) => !/^\d+$/.test(part) || !Number.isSafeInteger(Number(part)) || Number(part) < 1)) return null
+  return [...new Set(parts.map(Number))]
 }
 
 export function boundFromEnvReal(env = process.env) {
@@ -95,7 +131,7 @@ export function enforceModeFromEnvReal(env = process.env) {
 export function evaluateLaneCall(
   payload,
   {
-    countLaneProcesses = countLaneProcessesReal,
+    countLaneProcesses = null,
     boundFromEnv = boundFromEnvReal,
     enforceModeFromEnv = enforceModeFromEnvReal,
     env = process.env,
@@ -107,7 +143,9 @@ export function evaluateLaneCall(
   }
 
   const { bound, source } = boundFromEnv(env)
-  const live = countLaneProcesses()
+  const live = countLaneProcesses
+    ? countLaneProcesses()
+    : countLaneProcessesReal(LANE_PROCESS_NAMES, testOwnedPids(env))
 
   if (live.state === 'unknown') {
     // NEVER deny on a measurement failure: "pgrep is missing" and "nothing is running" are

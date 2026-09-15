@@ -9,6 +9,8 @@ import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-life
 import { MAX_CRITIC_ROUNDS } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
+const liteReport = '# report\n\n## E2E\ne2e not run: lifecycle fixture\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
+const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
 const roots: string[] = []
 
 afterEach(() => {
@@ -19,6 +21,29 @@ afterEach(() => {
 })
 
 describe('real SDK lifecycle server FULL sequence', () => {
+  it('passes the knowledge-base index only to Claude SDK independent roles and names it in their briefs', async () => {
+    const knowledgeBaseDir = mkdtempSync(join(tmpdir(), 'wt-lifecycle-kb-')); roots.push(knowledgeBaseDir)
+    const index = join(knowledgeBaseDir, 'MEMORY.md'); writeFileSync(index, '- review claim\n')
+    const lifecycle = fullLifecycle({ executor: 'claude-sdk', knowledgeBase: { path: index, checkedPath: index } })
+    edgeConfig({ critic: { verdict: 'approved' } })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    const call = JSON.parse(readFileSync(lifecycle.calls, 'utf8').trim())
+    expect(call.argv).toContain('--knowledge-base-index'); expect(call.argv).toContain(index)
+    expect(call.briefText).toContain(`KNOWLEDGE_BASE_INDEX: ${index}`)
+    expect(call.briefText).toContain('fiches are claims to verify against the current code, never evidence by themselves')
+  })
+
+  it('names the external knowledge-base index in GPT independent briefs with a refused-read instruction, without widening launcher arguments', async () => {
+    const index = join(tmpdir(), 'external-memory', 'MEMORY.md')
+    const lifecycle = fullLifecycle({ knowledgeBase: { path: index, checkedPath: index } })
+    edgeConfig({ critic: { verdict: 'approved' } })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    const call = JSON.parse(readFileSync(lifecycle.calls, 'utf8').trim())
+    expect(call.argv).not.toContain('--knowledge-base-index')
+    expect(call.briefText).toContain(`KNOWLEDGE_BASE_INDEX: ${index} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`)
+    expect(call.briefText).not.toContain('unavailable to this executor')
+  })
+
   it('writes server-owned review and refutation briefs with prospective working-tree diff inputs', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     edgeConfig({ review: { verdict: 'clear' } })
@@ -156,7 +181,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     await lifecycle.artifact({ kind: 'refutation-brief', content: 'refute' })
     await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
     expect(await lifecycle.transition({ phase: 'refutation', outcome: 'clear', tool_use_id: 'refutation' })).toBe('accepted phase=report')
-    expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# completed full cycle\n' })).toBe('wrote pilot-report')
+    expect(await lifecycle.artifact({ kind: 'pilot-report', content: fullReport })).toBe('wrote pilot-report')
     expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toBe('accepted phase=awaiting_fidelity')
 
     const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
@@ -166,6 +191,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(calls.filter((call) => call.phase === 'review').every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
     expect(calls.filter((call) => call.phase === 'refutation').every((call) => call.model === 'openai/gpt-6-astra')).toBe(true)
     expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.model === 'openai/gpt-5.6-sol')).toBe(true)
+    expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.briefText.includes('# Write release records'))).toBe(true)
   })
 
   it('H14-1 lock: completes the exact fourth-critic sequence as a partial committed and archived run', async () => {
@@ -187,7 +213,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: 4, reason, findings: ['tighten the proof'] } })
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# partial report\n' }))
       .toBe(`pilot-report: partial run, add the line "Partial: ${reason}"`)
-    expect(await lifecycle.artifact({ kind: 'pilot-report', content: `# partial report\nPartial: ${reason}\n` })).toBe('wrote pilot-report')
+    expect(await lifecycle.artifact({ kind: 'pilot-report', content: `${fullReport}Partial: ${reason}\n` })).toBe('wrote pilot-report')
     expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toBe('accepted phase=awaiting_fidelity')
     expect(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout.trim()).toBe('2')
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
@@ -226,6 +252,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     ['harden receipt EXIT=1 is refused', async () => hardenReceipt(1), /lane receipt EXIT=1/],
     ['harden receipt missing is refused', async () => hardenReceipt(null), /lane receipt unchanged/],
     ['report edge with missing pilot-report is refused', async () => reportEdge(false, false), /missing pilot report/],
+    ['LITE report without E2E is refused', async () => liteReportArtifact('# report\n'), /E2E/],
     ['report edge with a gate digest changed after verify is refused', async () => reportEdge(true, true), /gate digest changed/],
     ['report edge with a stale pilot-report never registered this run is refused (Sol round 14)', async () => reportEdge(false, false, 'stale'), /pilot report registered this run/],
     ['report edge with a pilot-report modified after write_artifact is refused (Sol round 14)', async () => reportEdge(true, false, 'modified'), /pilot report unchanged since write_artifact/],
@@ -239,6 +266,15 @@ describe('real SDK lifecycle server FULL sequence', () => {
     ['write_artifact kind outside its phase', async () => liteLifecycle().artifact({ kind: 'pilot-report', content: 'nope' }), /pilot-report in phase discovery: write it in phase report/],
   ])('%s', async (_name, exercise, expected) => {
     expect(await exercise()).toMatch(expected)
+  })
+
+  it('refuses a FULL report without Independent Review even when E2E is present', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    edgeConfig({ review: { verdict: 'clear' }, refutation: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review\n' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'review-clear' })
+    await lifecycle.artifact({ kind: 'refutation-brief', content: 'refute\n' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 }); await lifecycle.transition({ phase: 'refutation', outcome: 'clear', tool_use_id: 'refutation-clear' })
+    expect(await lifecycle.artifact({ kind: 'pilot-report', content: '## E2E\ne2e not run: unit fixture\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n' })).toBe('wrote pilot-report')
+    expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toContain('Independent Review')
   })
 
   it('binds the critic brief to critic and admits the real FULL-run order', async () => {
@@ -269,7 +305,7 @@ function root() {
 function handlers(server: { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }) {
   const tools = server.instance._registeredTools
   return {
-    transition: (args: Record<string, unknown>) => tools.transition!.handler(args).then((result) => result.content[0]!.text),
+    transition: (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args).then((result) => result.content[0]!.text),
     artifact: (args: Record<string, unknown>) => tools.write_artifact!.handler(args).then((result) => result.content[0]!.text),
     run: (args: Record<string, unknown>) => tools.run!.handler(args).then((result) => result.content[0]!.text),
   }
@@ -289,13 +325,13 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
-  const server = createLifecycleServer({ worktree, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, ...options })
+  const server = createLifecycleServer({ worktree, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [], ...options })
   return { ...handlers(server), calls, base, root: worktree, state: server.state }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
-  const server = createLifecycleServer({ worktree, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 } })
+  const server = createLifecycleServer({ worktree, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [] })
   return { ...handlers(server), root: worktree }
 }
 async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }) { for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name }) }
@@ -361,9 +397,16 @@ async function hardenReceipt(exit: number | null) {
 async function reportEdge(writeReport: boolean, changeGate: boolean, tamper: 'stale' | 'modified' | null = null) {
   const lifecycle = liteLifecycle()
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
-  if (writeReport) await lifecycle.artifact({ kind: 'pilot-report', content: '# report\n' })
+  if (writeReport) await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
   if (tamper === 'stale') writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# left by an earlier run\n')
-  if (tamper === 'modified') writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), '# report\nedited after write_artifact\n')
+  if (tamper === 'modified') writeFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), `${liteReport}edited after write_artifact\n`)
   if (changeGate) writeFileSync(join(lifecycle.root, '.lane', 'test.log'), 'changed\nEXIT=0\n')
+  return lifecycle.transition({ phase: 'report', tool_use_id: 'report' })
+}
+
+async function liteReportArtifact(content: string) {
+  const lifecycle = liteLifecycle()
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
+  await lifecycle.artifact({ kind: 'pilot-report', content })
   return lifecycle.transition({ phase: 'report', tool_use_id: 'report' })
 }

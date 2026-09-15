@@ -31,7 +31,7 @@ function fixture() {
   const dir = join(root, 'worktree'); mkdirSync(join(dir, '.lane'), { recursive: true }); writeFileSync(join(dir, '.gitignore'), '.lane/\n.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: dir })
   const contract = join(root, 'contract.md'); writeFileSync(contract, '# contract\n')
-  const cardFile = join(root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\nDoD: exercise the runner\n')
+  const cardFile = join(root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\n## Definition of done\n- exercise the runner\n')
   return { root, dir, contract, cardFile }
 }
 function freshFixture() {
@@ -90,6 +90,13 @@ describe('SDK pilot runner', () => {
     expect(result.status).toBe(2); expect(result.stderr).toContain('missing required --card or --dir')
   })
 
+  it('parses repeatable absolute plugin directories and refuses a relative one', () => {
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp']))
+      .toMatchObject({ pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', 'relative/plugin']))
+      .toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
+  })
+
   it('rejects the removed lane-silence option and omits it from usage', () => {
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).not.toHaveProperty('laneSilence')
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--lane-silence', '3'])).toMatchObject({ error: 'unknown argument: --lane-silence' })
@@ -97,7 +104,35 @@ describe('SDK pilot runner', () => {
     expect(result.status).toBe(0); expect(result.stdout).not.toContain('--lane-silence')
   })
 
-  it('places the required arbiter card file verbatim in the first prompt', async () => {
+  it.each([
+    ['prompt', (f: ReturnType<typeof fixture>) => ({ option: join(f.root, 'kb-prompt', 'MEMORY.md'), env: { WT_KNOWLEDGE_BASE_INDEX: join(f.root, 'kb-env', 'MEMORY.md') } })],
+    ['environment', (f: ReturnType<typeof fixture>) => ({ env: { WT_KNOWLEDGE_BASE_INDEX: join(f.root, 'kb-env', 'MEMORY.md') } })],
+    ['derived', (f: ReturnType<typeof fixture>) => ({ env: { CLAUDE_CONFIG_DIR: join(f.root, 'config') } })],
+  ])('names the %s knowledge-base index in the pilot prompt and allows Read for that index and its fiches only', async (_source, setup) => {
+    const f = fixture()
+    const configured = setup(f) as { option?: string, env: Record<string, string> }
+    const derived = join(configured.env.CLAUDE_CONFIG_DIR ?? '', 'projects', f.dir.replace(/[^A-Za-z0-9-]/g, '-'), 'memory', 'MEMORY.md')
+    const index = configured.option ?? configured.env.WT_KNOWLEDGE_BASE_INDEX ?? derived
+    mkdirSync(join(index, '..'), { recursive: true }); writeFileSync(index, '# Memory\n')
+    const prompts: string[] = []; let canUseTool: ((name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>) | undefined
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { canUseTool: typeof canUseTool } }) => (async function* () {
+      canUseTool = options.canUseTool
+      yield initMessage()
+      prompts.push((await prompt.next()).value.message.content)
+    })()
+    await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false, knowledgeBaseIndex: configured.option }, { query, resolvePilotModels: models, env: configured.env })
+    expect(prompts[0]).toContain(`KNOWLEDGE_BASE_INDEX: ${index}`)
+    expect((await canUseTool?.('Read', { file_path: index }))?.behavior).toBe('allow')
+    expect((await canUseTool?.('Read', { file_path: join(f.root, 'other.md') }))?.behavior).toBe('deny')
+    const fiche = join(index, '..', 'archive', 'a-fiche.md'); mkdirSync(join(fiche, '..'), { recursive: true }); writeFileSync(fiche, 'fiche\n')
+    expect((await canUseTool?.('Read', { file_path: fiche }))?.behavior).toBe('allow')
+    writeFileSync(join(index, '..', 'notes.txt'), 'x\n')
+    expect((await canUseTool?.('Read', { file_path: join(index, '..', 'notes.txt') }))?.behavior).toBe('deny')
+    symlinkSync(join(f.root, 'outside.md'), join(index, '..', 'escape.md')); writeFileSync(join(f.root, 'outside.md'), 'x\n')
+    expect((await canUseTool?.('Read', { file_path: join(index, '..', 'escape.md') }))?.behavior).toBe('deny')
+  })
+
+  it('places the required arbiter card file verbatim in the first prompt and states an absent knowledge index', async () => {
     const f = fixture(); const cardFile = join(f.root, 'card.md'); const card = '# Card title\n\nDefinition of done: ship it.\n'
     writeFileSync(cardFile, card)
     const prompts: string[] = []
@@ -111,7 +146,17 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
+    expect(prompts[0]).toContain('KNOWLEDGE_BASE_INDEX: none (no index exists at ')
 
+  })
+
+  it('refuses a card with no DoD criterion before query starts', async () => {
+    const f = fixture(); writeFileSync(f.cardFile, 'Route: LITE\n## Notes\n- no acceptance here\n')
+    let queried = false
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
+      query: () => { queried = true; return (async function* () {})() }, resolvePilotModels: models,
+    })).rejects.toThrow('add a Definition of done to the card')
+    expect(queried).toBe(false)
   })
 
   it('freezes the selected executor family and role models once in route.json', async () => {
@@ -202,7 +247,7 @@ describe('SDK pilot runner', () => {
   })
 
   it('derives plan-phase guidance and invalid-plan refusal from one grammar description', async () => {
-    const f = fixture(); writeFileSync(f.cardFile, 'Route: FULL\nDoD: plan it\n')
+    const f = fixture(); writeFileSync(f.cardFile, 'Route: FULL\n## Definition of done\n- plan it\n')
     let continuation = ''; let refusal = ''
     type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
@@ -210,7 +255,7 @@ describe('SDK pilot runner', () => {
       const transition = server.instance._registeredTools.transition!.handler
       const artifact = server.instance._registeredTools.write_artifact!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', tool_use_id: 'discovery' })
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' })
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       continuation = (await prompt.next()).value.message.content
       await artifact({ kind: 'plan', content: '## Tasks\n- incomplete\n' })
@@ -274,6 +319,40 @@ describe('SDK pilot runner', () => {
     } })
   })
 
+  it('records assistant usage arrivals and attributes exact numbers across streamed phases', async () => {
+    const f = fixture(); let clock = 1000
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<unknown> }> } }
+    const query = ({ options }: { options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const transition = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools.transition!.handler
+      yield initMessage('claude-test')
+      yield { type: 'assistant', message: { model: 'claude-test', usage: { input_tokens: 3, cache_creation_input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 11 }, content: [] } }
+      await transition({ phase: 'discovery', record: 'discovery\n', tool_use_id: 'discovery' })
+      // The SDK repeats one assistant message per content block with the same id and usage (measured: 121 entries, 65 ids
+      // on the 2026-09-14 FULL run); a repeat must replace, never add.
+      yield { type: 'assistant', message: { id: 'msg_b', model: 'claude-test', usage: { input_tokens: 13, cache_creation_input_tokens: 17, cache_read_input_tokens: 19, output_tokens: 20 }, content: [] } }
+      yield { type: 'assistant', message: { id: 'msg_b', model: 'claude-test', usage: { input_tokens: 13, cache_creation_input_tokens: 17, cache_read_input_tokens: 19, output_tokens: 23 }, content: [] } }
+      yield { type: 'result', usage: { input_tokens: 16, cache_creation_input_tokens: 22, cache_read_input_tokens: 26, output_tokens: 35 }, modelUsage: {
+        'claude-test': { inputTokens: 16, cacheCreationInputTokens: 22, cacheReadInputTokens: 26, outputTokens: 35 },
+        'claude-haiku-test': { inputTokens: 2, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 1 },
+      } }
+    })()
+    await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
+      query,
+      now: () => clock += 100,
+      resolvePilotModels: models,
+      resolveExecutorProfile: () => ({ executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } }),
+      lifecycleOptions: { now: () => clock += 100 },
+    })
+    const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'discovery').models['claude-test']).toMatchObject({ input: 3, cache_write: 5, output: 11, fresh_tokens: 19 })
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'tdd').models['claude-test']).toMatchObject({ input: 13, cache_write: 17, output: 23, fresh_tokens: 53 })
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'reconciled').models['claude-test']).toMatchObject({ output: 1, fresh_tokens: 1 })
+    expect(cost.reconciled).toEqual([expect.objectContaining({ kind: 'terminal_result_output', tokens: 1 })])
+    expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: true, message_sum: { output: 34 }, attributed_sum: { output: 35 }, difference: { input: 0, cache_write: 0, cache_read: 0, output: 0, first_pass_input: 0, fresh_tokens: 0 } })
+    expect(cost.cross_checks.model_usage).toMatchObject({ agrees: true, primary_model: 'claude-test', difference: { input: 0, output: 0, fresh_tokens: 0 } })
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed').models['claude-haiku-test']).toMatchObject({ input: 2, output: 1, fresh_tokens: 3 })
+  })
+
   it('defaults the contract and mailbox paths when called programmatically without them (the orchestrator driver)', async () => {
     const f = fixture(); let seen: Record<string, unknown> = {}
     const query = ({ options }: { options: Record<string, unknown> }) => (async function* () { seen = options; yield initMessage(); yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } } })()
@@ -281,6 +360,8 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), sleep: async () => {},
     })
     expect(typeof seen.systemPrompt).toBe('string'); expect(String(seen.systemPrompt)).toContain('lifecycle')
+    expect(String(seen.systemPrompt)).toContain('## Standing rules (authoritative)')
+    expect(String(seen.systemPrompt)).toContain('## Understand before coding')
     expect(result.summary.completed).toBe(false)
   })
 
@@ -348,7 +429,7 @@ describe('SDK pilot runner', () => {
 
   it('completes from the real result of the lifecycle server registered in query options', async () => {
     const f = fixture(); let heads = 0; let registeredServer: unknown; let receipt = ''
-    const cardFile = join(f.root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\n')
+    const cardFile = join(f.root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\n## Definition of done\n- complete the real lifecycle fixture\n')
     const launcher = join(f.root, 'launcher.mjs')
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, 'report\\n')")
     appendFileSync(launcher, "\nprocess.stdout.write('pid='+process.pid+'\\n')\n")
@@ -358,9 +439,9 @@ describe('SDK pilot runner', () => {
       const tools = (registeredServer as RegisteredServer).instance._registeredTools
       const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
       for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n' })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n\n## E2E\ne2e not run: runner fixture\n\n## Acceptance\n- complete the real lifecycle fixture\n  Outcome: proven\n' })
       receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'real-lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'real-lifecycle', content: receipt }] } }
@@ -370,24 +451,34 @@ describe('SDK pilot runner', () => {
     expect(registeredServer).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
+    const usage = JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8') as string)
+    expect(usage.turns[0]).toMatchObject({ model: 'sonnet', input: 1, output: 1, ended_at: expect.stringMatching(/^\d{4}-/) })
+    const timeline = JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8') as string)
+    expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd', 'verify', 'report'])
+    expect(timeline.lanes[0]).toMatchObject({ phase: 'tdd', started_at: expect.any(Number), ended_at: expect.any(Number) })
+    const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8') as string)
+    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: [expect.stringContaining('no OpenCode session matched')] })
+    expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
+    expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
+    expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
   })
 
   it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {
     const f = fixture(); let heads = 0
     const reason = `plan not approved after ${MAX_CRITIC_ROUNDS} critic rounds`
-    writeFileSync(f.cardFile, 'Route: FULL\nDoD: exercise partial completion\n')
+    writeFileSync(f.cardFile, 'Route: FULL\n## Definition of done\n- exercise partial completion\n')
     const launcher = join(f.root, 'launcher.mjs')
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
     const continuations: string[] = []
     type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
-    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
       const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
       const transition = server.instance._registeredTools.transition!.handler
       const artifact = server.instance._registeredTools.write_artifact!.handler
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', tool_use_id: 'discovery' })
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' })
       for (let round = 1; round <= MAX_CRITIC_ROUNDS; round += 1) {
         await artifact({ kind: 'plan', content: plan }); await transition({ phase: 'plan', tool_use_id: `plan-${round}` })
         await artifact({ kind: 'critic-brief', content: `critic ${round}` }); await run({ kind: 'lane', phase: 'critic', timeout: 1 })
@@ -395,7 +486,7 @@ describe('SDK pilot runner', () => {
       }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const continuation = await prompt.next(); continuations.push(continuation.value.message.content)
-      await artifact({ kind: 'pilot-report', content: `# partial\nPartial: ${reason}\n` })
+      await artifact({ kind: 'pilot-report', content: `# partial\nPartial: ${reason}\n\n## E2E\ne2e not run: runner fixture\n\n## Independent Review\nLenses: plan completeness\nConfirmed findings: plan remained unapproved\nRefuted findings: none\n\n## Acceptance\n- exercise partial completion\n  Outcome: not done: plan remained unapproved\n` })
       const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
@@ -419,11 +510,11 @@ describe('SDK pilot runner', () => {
       const artifact = server.instance._registeredTools.write_artifact!.handler
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 })
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const continuation = await prompt.next(); if (continuation.done) return; continuations.push(continuation.value.message.content)
       await transition({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n' })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n\n## E2E\ne2e not run: runner fixture\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n' })
       const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
@@ -567,6 +658,32 @@ describe('SDK pilot runner', () => {
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(options!.permissionMode).toBe('default')
     expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
+  })
+
+  it('loads every configured plugin and refuses an init receipt that omits one', async () => {
+    const complete = fixture(); const first = join(complete.root, 'rules-plugin'); const second = join(complete.root, 'lsp-plugin')
+    mkdirSync(first); mkdirSync(second)
+    let queryPlugins: string[] = []
+    const query = ({ options }: { options: { plugins: Array<{ path: string }> } }) => (async function* () {
+      queryPlugins = options.plugins.map((plugin) => plugin.path)
+      yield { ...initMessage(), plugins: options.plugins }
+    })()
+    await runPilot({ card: '1', cardFile: complete.cardFile, dir: complete.dir, contract: complete.contract, mailbox: join(complete.root, 'none'), timeout: 1, hard: false, pluginDirs: [first, second] }, { query, resolvePilotModels: models })
+    expect(queryPlugins).toEqual([expect.stringContaining('pilot-guard'), first, second])
+
+    const missing = fixture(); const omitted = join(missing.root, 'omitted-plugin'); mkdirSync(omitted)
+    await expect(runPilot({ card: '1', cardFile: missing.cardFile, dir: missing.dir, contract: missing.contract, mailbox: join(missing.root, 'none'), timeout: 1, hard: false, pluginDirs: [omitted] }, {
+      query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models,
+    })).rejects.toThrow(new RegExp(`absentPlugins.*${omitted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+  })
+
+  it('matches configured plugins to receipt paths through symlinks and trailing separators', async () => {
+    const f = fixture(); const target = join(f.root, 'plugin-target'); const linked = join(f.root, 'plugin-link')
+    mkdirSync(target); symlinkSync(target, linked)
+    const query = ({ options }: { options: { plugins: Array<{ path: string }> } }) => (async function* () {
+      yield { ...initMessage(), plugins: [options.plugins[0], { path: `${realpathSync(target)}/` }] }
+    })()
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, pluginDirs: [linked] }, { query, resolvePilotModels: models })).resolves.toBeDefined()
   })
 
   it('runs the SDK pilot on the SDK pilot keys, never the harness pilot keys (harness hard = fable, SDK hard = opus)', async () => {

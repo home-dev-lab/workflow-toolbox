@@ -604,17 +604,33 @@ function itemContent(set, item, root) {
   const src = path.join(root, set.srcDir, item.file)
   if (!fs.existsSync(src)) fail(`${set.kind} source not found: ${src} — the ${set.kind} bundle (plugin/${set.srcDir}/) is out of sync`)
   const content = fs.readFileSync(src, 'utf8')
-  if (set.kind !== 'scripts' || item.file !== 'wt-lane.mjs') return content
-  // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
-  // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
+  if (set.kind !== 'scripts') return content
   const replaceExactlyOnce = (body, fragment, replacement) => {
     const count = body.split(fragment).length - 1
-    if (count !== 1) {
-      fail(`launcher transformation expected exactly one occurrence in ${src}: ${fragment.slice(0, 60)}`)
-    }
+    if (count !== 1) fail(`${item.file === 'wt-lane-wait.mjs' ? 'waiter' : 'launcher'} transformation expected exactly one occurrence in ${src}: ${fragment.slice(0, 60)}`)
     return body.replace(fragment, replacement)
   }
-  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'\nimport { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'\nimport { laneModelRefusal } from './lib/lane-model-allowlist.mjs'", `
+  if (item.file === 'wt-lane-wait.mjs') {
+    return replaceExactlyOnce(content, "import { classifyLane, readCurrentSupervision } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
+import { pathToFileURL } from 'node:url'
+const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude')
+let runtimeRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.WT_PLUGIN_ROOT || null
+if (!runtimeRoot) {
+  try {
+    const parsed = JSON.parse(readFileSync(path.join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'))
+    const plugins = parsed?.plugins && typeof parsed.plugins === 'object' ? parsed.plugins : parsed
+    const key = Object.keys(plugins).find((name) => name.startsWith('workflow-toolbox@'))
+    const entry = key ? plugins[key] : null
+    runtimeRoot = (Array.isArray(entry) ? entry[0] : entry)?.installPath || null
+  } catch {}
+}
+if (!runtimeRoot) throw new Error('could not locate workflow-toolbox plugin root; update the plugin and re-adopt wt-lane-wait.mjs')
+const { classifyLane, readCurrentSupervision } = await import(pathToFileURL(path.join(runtimeRoot, 'bin', 'lib', 'lane-supervisor-core.mjs')).href)`)
+  }
+  if (item.file !== 'wt-lane.mjs') return content
+  // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
+  // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
+  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'\nimport { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'\nimport { laneModelRefusal } from './lib/lane-model-allowlist.mjs'\nimport { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'\nimport { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'", `
 function pluginRoot(env = process.env) {
   for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
     if (typeof candidate === 'string' && candidate) return candidate
@@ -641,15 +657,17 @@ async function loadAdoptedConsentModules() {
     const allowlist = path.join(root, 'bin', 'lib', 'lane-skill-allowlist.mjs')
     const modelAllowlist = path.join(root, 'bin', 'lib', 'lane-model-allowlist.mjs')
     const pluginOptions = path.join(root, 'bin', 'lib', 'plugin-options.mjs')
+    const supervisor = path.join(root, 'bin', 'lib', 'lane-supervisor-core.mjs')
+    const pluginDataDir = path.join(root, 'bin', 'lib', 'plugin-data-dir.mjs')
   try {
-    const [{ resolveConsent }, { evaluateConsentGate }, fenceModule, allowlistModule, modelAllowlistModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href), import(pathToFileURL(allowlist).href), import(pathToFileURL(modelAllowlist).href), import(pathToFileURL(pluginOptions).href)])
-    return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal: fenceModule.effectiveSkillDiscoveryRefusal, materialiseAllowedSkills: fenceModule.materialiseAllowedSkills, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery: fenceModule.verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence, resolveLaneSkillAllowlist: allowlistModule.resolveLaneSkillAllowlist, laneModelRefusal: modelAllowlistModule.laneModelRefusal }
+    const [{ resolveConsent }, { evaluateConsentGate }, fenceModule, allowlistModule, modelAllowlistModule, , supervisorModule, pluginDataModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href), import(pathToFileURL(allowlist).href), import(pathToFileURL(modelAllowlist).href), import(pathToFileURL(pluginOptions).href), import(pathToFileURL(supervisor).href), import(pathToFileURL(pluginDataDir).href)])
+    return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal: fenceModule.effectiveSkillDiscoveryRefusal, materialiseAllowedSkills: fenceModule.materialiseAllowedSkills, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery: fenceModule.verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence, resolveLaneSkillAllowlist: allowlistModule.resolveLaneSkillAllowlist, laneModelRefusal: modelAllowlistModule.laneModelRefusal, appendSupervisorJournal: supervisorModule.appendSupervisorJournal, argvSummary: supervisorModule.argvSummary, claimCurrentSupervision: supervisorModule.claimCurrentSupervision, classifyLane: supervisorModule.classifyLane, inspectProcess: supervisorModule.inspectProcess, laneHardBoundAt: supervisorModule.laneHardBoundAt, latestWorktreeWrite: supervisorModule.latestWorktreeWrite, processEvidenceStatus: supervisorModule.processEvidenceStatus, readCurrentSupervision: supervisorModule.readCurrentSupervision, readLogTail: supervisorModule.readLogTail, shellQuote: supervisorModule.shellQuote, supervisionPaths: supervisorModule.supervisionPaths, terminateLane: supervisorModule.terminateLane, writeJsonAtomic: supervisorModule.writeJsonAtomic, resolvePluginDataDir: pluginDataModule.resolvePluginDataDir }
   } catch {
-    throw new Error(\`could not load workflow-toolbox lane runtime modules from \${resolver}, \${gate}, \${fence}, \${allowlist}, \${modelAllowlist}, and \${pluginOptions}\`)
+    throw new Error(\`the installed workflow-toolbox plugin is older or incompatible; update it and re-adopt wt-lane.mjs (runtime modules: \${resolver}, \${gate}, \${fence}, \${allowlist}, \${modelAllowlist}, \${pluginOptions}, \${supervisor}, \${pluginDataDir})\`)
   }
 }`)
-  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
-  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, mkdirSync, openSync, existsSync, statSync, writeFileSync, readFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
+  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
+  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
   const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
   if (relativeRuntimeImport) {
     fail(`launcher transformation left a relative runtime import in ${src}: ${relativeRuntimeImport.slice(0, 60)}`)

@@ -20,23 +20,6 @@ export function launchProcessWithOutput(program, args, options) {
     child.once('close', (code, signal) => resolve({ code: signal ? 124 : (code ?? 1), stdout, stderr }))
   })
 }
-export async function terminateProcessGroup(pid, graceMs = 5000, pollMs = 25) {
-  const signal = (name) => {
-    try { process.kill(-pid, name); return true }
-    catch (error) {
-      if (error?.code === 'ESRCH') return false
-      throw error
-    }
-  }
-  if (!signal('SIGTERM')) return 'already-gone'
-  const deadline = Date.now() + graceMs
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, pollMs))
-    if (!signal(0)) return 'terminated'
-  }
-  signal('SIGKILL')
-  return 'terminated'
-}
 export async function waitForLaneReceipt({ log, nonce, timeoutMs, launchedAt, pollMs, readAttestation, readRegularFile }) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() <= deadline) {

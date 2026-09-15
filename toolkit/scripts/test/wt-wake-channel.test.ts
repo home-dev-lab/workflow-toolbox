@@ -26,6 +26,8 @@ const serverScript = fileURLToPath(
 )
 const processes: ChildProcessWithoutNullStreams[] = []
 const tempDirs: string[] = []
+const messageWaiters = new WeakMap<JsonRpcMessage[], Set<() => void>>()
+let barrierId = 10_000
 
 afterEach(() => {
   for (const child of processes.splice(0)) child.kill('SIGTERM')
@@ -55,6 +57,7 @@ function startServer(pollMs = '20'): {
   processes.push(child)
 
   const messages: JsonRpcMessage[] = []
+  messageWaiters.set(messages, new Set())
   let stdout = ''
   let errors = ''
   child.stdout.setEncoding('utf8')
@@ -64,7 +67,10 @@ function startServer(pollMs = '20'): {
     const lines = stdout.split('\n')
     stdout = lines.pop() ?? ''
     for (const line of lines) {
-      if (line) messages.push(JSON.parse(line) as JsonRpcMessage)
+      if (line) {
+        messages.push(JSON.parse(line) as JsonRpcMessage)
+        for (const notify of messageWaiters.get(messages) ?? []) notify()
+      }
     }
   })
   child.stderr.on('data', (chunk: string) => {
@@ -78,12 +84,31 @@ function send(child: ChildProcessWithoutNullStreams, message: object): void {
   child.stdin.write(`${JSON.stringify(message)}\n`)
 }
 
-async function waitFor(predicate: () => boolean, patienceMs = 3000): Promise<void> {
-  const deadline = Date.now() + patienceMs
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('timed out waiting for wake-channel output')
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
+async function waitForMessage(messages: JsonRpcMessage[], predicate: (message: JsonRpcMessage) => boolean, patienceMs = 45_000): Promise<JsonRpcMessage> {
+  const existing = messages.find(predicate)
+  if (existing) return existing
+  return new Promise((resolve, reject) => {
+    const waiters = messageWaiters.get(messages)!
+    const timer = setTimeout(() => {
+      waiters.delete(inspect)
+      reject(new Error('timed out waiting for wake-channel output'))
+    }, patienceMs)
+    const inspect = () => {
+      const message = messages.find(predicate)
+      if (!message) return
+      clearTimeout(timer)
+      waiters.delete(inspect)
+      resolve(message)
+    }
+    waiters.add(inspect)
+  })
+}
+
+async function sync(child: ChildProcessWithoutNullStreams, messages: JsonRpcMessage[]): Promise<void> {
+  const id = barrierId++
+  send(child, { jsonrpc: '2.0', id, method: 'tools/list', params: {} })
+  const response = await waitForMessage(messages, (message) => message.id === id)
+  messages.splice(messages.indexOf(response), 1)
 }
 
 async function initialize(child: ChildProcessWithoutNullStreams, messages: JsonRpcMessage[]): Promise<void> {
@@ -93,8 +118,9 @@ async function initialize(child: ChildProcessWithoutNullStreams, messages: JsonR
     method: 'initialize',
     params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
   })
-  await waitFor(() => messages.some((message) => message.id === 1))
+  await waitForMessage(messages, (message) => message.id === 1)
   send(child, { jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
+  await sync(child, messages)
 }
 
 function channelMessages(messages: JsonRpcMessage[]): JsonRpcMessage[] {
@@ -108,8 +134,7 @@ describe('wt-wake-channel MCP server', () => {
     send(child, { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })
     send(child, { jsonrpc: '2.0', id: 3, method: 'unknown/request', params: {} })
     send(child, { jsonrpc: '2.0', method: 'unknown/notification', params: {} })
-    await waitFor(() => messages.some((message) => message.id === 3))
-    await new Promise((resolve) => setTimeout(resolve, 80))
+    await waitForMessage(messages, (message) => message.id === 3)
 
     expect(messages).toEqual([
       {
@@ -136,12 +161,12 @@ describe('wt-wake-channel MCP server', () => {
     const { child, spool, messages, stderr } = startServer()
     mkdirSync(spool, { recursive: true })
     writeFileSync(join(spool, 'wake.txt'), '  inspect the finished run  \n', 'utf8')
-    await new Promise((resolve) => setTimeout(resolve, 80))
+    await sync(child, messages)
     expect(messages).toEqual([])
 
     await initialize(child, messages)
-    await waitFor(() => channelMessages(messages).length === 1)
-    await new Promise((resolve) => setTimeout(resolve, 80))
+    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel')
+    await sync(child, messages)
 
     expect(channelMessages(messages)).toEqual([
       {
@@ -166,8 +191,8 @@ describe('wt-wake-channel MCP server', () => {
     writeFileSync(join(spool, 'b-empty.txt'), ' \n\t', 'utf8')
     writeFileSync(join(spool, 'c-valid.txt'), 'later wake', 'utf8')
 
-    await waitFor(() => channelMessages(messages).length === 1)
-    await new Promise((resolve) => setTimeout(resolve, 80))
+    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel')
+    await sync(child, messages)
 
     expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
       '<observer source="wt-wake-channel">later wake</observer>',
@@ -189,14 +214,12 @@ describe('wt-wake-channel MCP server', () => {
   it('delivers a message deposited AFTER initialization, without waiting for the poll', async () => {
     const { child, spool, messages, stderr } = startServer('60000')
     await initialize(child, messages)
-    await new Promise((resolve) => setTimeout(resolve, 80))
     expect(channelMessages(messages)).toEqual([])
 
     writeFileSync(join(spool, 'post-init.txt'), 'the observer speaks', 'utf8')
 
-    // 15 s patience: under a loaded full suite the filesystem watch event has arrived after 3 s (failed twice on
-    // 2026-09-13 while lanes ran). Still far below the 60 s poll, so only the watch can satisfy it.
-    await waitFor(() => channelMessages(messages).length === 1, 15000)
+    // Patience stays well below the 60 s poll, so only the filesystem watch can satisfy this assertion.
+    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel', 30_000)
     expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
       '<observer source="wt-wake-channel">the observer speaks</observer>',
     ])

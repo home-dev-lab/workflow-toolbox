@@ -101,9 +101,19 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
   },
   {
+    script: 'plugin/bin/wt-lane-control.mjs',
+    status: 'mapped',
+    reason: 'Known-issues and the external-lane skill document the owner decision CLI and its identity refusals.',
+  },
+  {
+    script: 'plugin/bin/wt-lane-orphan-watch.mjs',
+    status: 'mapped',
+    reason: 'Known-issues and the monitor README document automatic arming, safe cleanup classes, evidence, and the journal.',
+  },
+  {
     script: 'plugin/bin/wt-claude-executor.mjs',
-    status: 'missing-doc-surface',
-    reason: 'An internal SDK lifecycle executor selected by the pilot runner; it adds no standalone operator workflow in this increment.',
+    status: 'mapped',
+    reason: 'PILOT-RUNNER documents this internal SDK lifecycle executor, including its role models, CLI handoff, and knowledge-base Read boundary.',
   },
   {
     script: 'plugin/bin/wt-lane-wait.mjs',
@@ -113,7 +123,12 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-pilot-runner.mjs',
     status: 'mapped',
-    reason: 'The adopted pilot-runner guide documents the SDK runner, mailbox, lane-wait ownership, profile env, and measurements.',
+    reason: 'The sdk-pilot skill and pilot-runner guide document the SDK runner, launch, mailbox, profile env, and measurements.',
+  },
+  {
+    script: 'plugin/bin/wt-run-cost.mjs',
+    status: 'mapped',
+    reason: 'PILOT-RUNNER documents archived cost collection, unknown handling, and complete-only route aggregation.',
   },
   {
     script: 'plugin/bin/wt-pilot-fidelity.mjs',
@@ -612,7 +627,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/skills/external-lane/'],
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
@@ -636,8 +651,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['plugin/autonomy/AUTHORIZATIONS.md', 'plugin/autonomy/PERMISSIONS.md', 'plugin/skills/adopt/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/'],
-    docs: ['plugin/autonomy/PILOT-RUNNER.md'],
+    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/wt-run-cost.mjs', 'plugin/bin/wt-claude-executor.mjs', 'plugin/bin/wt-lane.mjs', 'plugin/bin/lib/pilot-runner-core.mjs', 'plugin/bin/lib/run-cost-core.mjs', 'plugin/bin/lib/knowledge-base-index.mjs', 'plugin/bin/lib/claude-executor-core.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/lifecycle-brief.mjs', 'plugin/bin/lib/lifecycle-launch.mjs', 'plugin/bin/lib/lifecycle-report-edge.mjs', 'plugin/bin/lib/lifecycle-state-machine.mjs', 'plugin/bin/lib/rules-manifest.mjs', 'plugin/rules-manifest.json', 'plugin/rules-manifest.schema.json', 'plugin/bin/lib/orchestrator-judge.mjs', 'plugin/bin/lib/orchestrator-runner-core.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/', 'plugin/skills/sdk-pilot/'],
+    docs: ['plugin/autonomy/PILOT-RUNNER.md', 'plugin/skills/sdk-pilot/SKILL.md'],
   },
   {
     // The pilot delegation suite (dev-loop drivers) is DESCRIBED BY its composer
@@ -921,6 +936,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
       'plugin/bin/wt-lane-consent-gate-hook.mjs',
+      'plugin/bin/wt-lane-orphan-watch.mjs',
       'plugin/bin/wt-arc-watch.mjs',
       'plugin/bin/wt-autonomy-arm.mjs',
        'plugin/bin/wt-autonomy-watch.mjs',

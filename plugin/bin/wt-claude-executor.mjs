@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,7 +7,7 @@ import { executorBrief, executorCanUseTool, executorTools, parseExecutorArgs } f
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 
-const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--log <path>] [--timeout 5400]'
+const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
 function finish(log, code) {
   try {
@@ -36,6 +36,8 @@ async function worker(options) {
   const stop = (code) => { clearTimeout(timer); abortController.abort(); finish(options.log, code); process.exitCode = code }
   process.once('SIGTERM', () => stop(143)); process.once('SIGINT', () => stop(130))
   let failed = false
+  let servedModel = options.model
+  const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   try {
     const stream = query({ prompt: launch.prompt, options: {
       model: options.model,
@@ -43,20 +45,31 @@ async function worker(options) {
       settingSources: [],
       plugins: [{ type: 'local', path: guardPlugin }],
       tools: executorTools(launch.readOnly),
-      canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input),
+      canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex }),
       permissionMode: 'default',
       sandbox: { enabled: true, autoAllowBashIfSandboxed: false },
       settings: { permissions: { blockReadsOutsideWorkingDirectories: true, disableBypassPermissionsMode: 'disable' } },
       abortController,
       env: process.env,
     } })
-    for await (const message of stream) if (message.type === 'result' && message.is_error) failed = true
+    for await (const message of stream) {
+      if (message.type === 'system' && message.subtype === 'init' && message.model) servedModel = message.model
+      if (message.type === 'result') {
+        if (message.is_error) failed = true
+        const value = message.usage ?? {}
+        totals.input += value.input_tokens ?? 0
+        totals.cache_creation += value.cache_creation_input_tokens ?? 0
+        totals.cache_read += value.cache_read_input_tokens ?? 0
+        totals.output += value.output_tokens ?? 0
+      }
+    }
   } catch (error) {
     if (!timedOut) { failed = true; appendFileSync(options.log, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`) }
   } finally {
     clearTimeout(timer)
   }
   const code = timedOut ? 124 : failed || !existsSync(launch.report) || statSync(launch.report).size === 0 ? 1 : 0
+  writeFileSync(`${options.log}.usage.json`, `${JSON.stringify({ model: servedModel, totals }, null, 2)}\n`)
   finish(options.log, code)
   return code
 }
@@ -71,7 +84,7 @@ async function main() {
   try { assertHarnessAlias(options.model); executorBrief(options) } catch (error) { process.stderr.write(`wt-claude-executor: ${error instanceof Error ? error.message : String(error)}\n`); return 2 }
   if (isWorker) return worker(options)
   mkdirSync(path.join(options.dir, '.lane'), { recursive: true })
-  const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', options.dir, '--model', options.model, '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role], { detached: true, stdio: 'ignore', env: process.env })
+  const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', options.dir, '--model', options.model, '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role, ...(options.knowledgeBaseIndex ? ['--knowledge-base-index', options.knowledgeBaseIndex] : [])], { detached: true, stdio: 'ignore', env: process.env })
   child.unref()
   process.stdout.write(`pid=${child.pid}\nlog=${options.log}\n`)
   return 0
