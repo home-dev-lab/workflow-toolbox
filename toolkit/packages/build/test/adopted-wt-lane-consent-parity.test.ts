@@ -26,6 +26,7 @@ function fixture(transformSource?: (source: string) => string, install = true) {
   mkdirSync(join(config, 'plugins'), { recursive: true })
   mkdirSync(join(project, '.claude'), { recursive: true })
   mkdirSync(join(pluginRoot, 'bin', 'lib'), { recursive: true })
+  mkdirSync(join(pluginRoot, 'hooks'), { recursive: true })
   mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true })
   mkdirSync(join(pluginRoot, 'skills', 'adopt', 'scripts'), { recursive: true })
   mkdirSync(bin)
@@ -38,7 +39,7 @@ exit 0
   spawnSync('chmod', ['+x', join(bin, 'opencode')])
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'resolved-binary.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')

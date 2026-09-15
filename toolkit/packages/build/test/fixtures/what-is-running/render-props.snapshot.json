@@ -1,0 +1,17 @@
+{
+  "Box": {
+    "props": ["alignItems", "alignSelf", "backgroundColor", "borderColor", "borderDimColor", "borderStyle", "columnGap", "display", "flexDirection", "flexGrow", "flexShrink", "flexWrap", "gap", "height", "hover", "justifyContent", "key", "margin", "marginBottom", "marginLeft", "marginRight", "marginTop", "marginX", "marginY", "minHeight", "minWidth", "overflow", "padding", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop", "paddingX", "paddingY", "rowGap", "width"],
+    "hover": ["backgroundColor", "borderColor", "borderDimColor", "borderStyle", "display", "scope"]
+  },
+  "Text": {
+    "props": ["backgroundColor", "bold", "color", "dimColor", "hover", "inverse", "italic", "strikethrough", "underline", "wrap"],
+    "hover": ["backgroundColor", "bold", "color", "dimColor", "inverse", "italic", "scope", "strikethrough", "underline"]
+  },
+  "Button": {
+    "props": ["action", "autoFocus", "dimColor", "hotkey", "hover", "key", "label", "onPress", "plain"],
+    "hover": ["backgroundColor", "bold", "color", "dimColor", "inverse", "italic", "scope", "strikethrough", "underline"]
+  },
+  "Link": {
+    "props": ["href", "label"]
+  }
+}

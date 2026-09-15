@@ -1,0 +1,51 @@
+                                                                      │What is running                                                                  [Close]
+ ▐▛███▛█   Claude Code v2.1.270                                       │Session launched by: unknown
+▝▜██████▀  Haiku 4.5 · Claude Max                                     │ Card 1863330215321666598 · ship a local artifact server with the workflow-toolbox plugin
+  ▝▝ ▝▝    ~/projects/wt-suite · /rc                                  │  Lane · ship a local artifact server with the workflow-toolbox plugin
+                                                                      │  model openai/gpt-5.6-sol · → timed out waiting for artifact server state · elapsed 13 …
+                                                                      │Idle helpers (7; oldest unknown) [Show]
+● Monitor event: "Account quota watch — reports five-hour/seven-day   │
+usage crossing a threshold and window resets, so a long delegated arc │
+gets a wake-up before hitting the wall"                               │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+✻ Tomfoolering…                                                       │
+  ⎿  Tip: Use /clear to start fresh when switching topics and free up │
+     context                                                          │
+                                                             tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux.conf for wheel scroll
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 4.5 | [░░░░░░░░░░░░░░░░░░░░] | 0.0% | 0/200K | 5h 3% ↻ 21:10 (1h23) · wk 60% ↻ ven. 18/09 05:00 · fable 100% | wt-suite | None | Java 17.0.9 | Node 2…
+  OpenAI wk 7% ↻ 19/09 09:14
+  Antigravity 12% ↻ 14/09 00:18
+  ⏵⏵ bypass permissions on · 5 monitors
+  what is running
+EXIT=0

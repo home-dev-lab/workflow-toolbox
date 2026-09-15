@@ -55,6 +55,39 @@ tree signature to the guard-journal state directory. --check reads records for a
 running a command and exits 0 only when every requested gate is green for its current signature.
 `
 
+// A gate's exit code answers for the COMMAND, never for the SUBJECT: it can be genuinely green
+// about a tree nobody intended to certify. Measured 2026-09-15: four merged deliveries were gated
+// from the repository's own root, which held `main` while the work sat on `develop` in a worktree.
+// Every number was true and none of it was about the change. So the identity of the tree is
+// printed on the SAME line as the exit code — the whole failure is that the two facts otherwise
+// get read at different moments, and only one of them gets read at all.
+//
+// Degrades LEGIBLY in every direction rather than going quiet: a missing or failing git prints
+// `tree=unknown`, a directory outside a repository prints `tree=not-a-repo`. An omitted field
+// would read as "the same as expected", which is the one thing it must never mean.
+function treeIdentity(cwd) {
+  const git = (...gitArgs) => {
+    const out = spawnSync('git', ['-C', cwd, ...gitArgs], { shell: false, encoding: 'utf8' })
+    if (out.error || out.status !== 0) return null
+    return (out.stdout ?? '').trim()
+  }
+  // Same discrimination the skill fence makes between a lookup MECHANISM failure and a genuine
+  // absence, and it is not cosmetic: outside a repository `--is-inside-work-tree` exits NON-ZERO,
+  // so a status-only reading reports `unknown` for a directory that is simply not a repo. The
+  // deciding signal is whether git could be LAUNCHED at all.
+  const probe = spawnSync('git', ['-C', cwd, 'rev-parse', '--is-inside-work-tree'], { shell: false, encoding: 'utf8' })
+  if (probe.error) return 'tree=unknown'
+  if (probe.status !== 0 || (probe.stdout ?? '').trim() !== 'true') return 'tree=not-a-repo'
+  const head = git('rev-parse', '--short', 'HEAD')
+  const branch = git('symbolic-ref', '--quiet', '--short', 'HEAD') || 'detached'
+  if (head === null) return 'tree=unknown'
+  // A record is keyed by a tree SIGNATURE, so a dirty tree's record is not reproducible from the
+  // commit alone. Say so where the exit code is read, not only in the record.
+  const status = git('status', '--porcelain', '--untracked-files=no')
+  const dirty = status === null ? ' dirty=unknown' : status === '' ? '' : ' dirty'
+  return `tree=${branch}@${head}${dirty}`
+}
+
 function fail(msg) {
   process.stderr.write(`wt-run-gate: ${msg}\n`)
   process.exit(2)
@@ -159,6 +192,8 @@ function main() {
   const exitFile = path.join(outDir, `${args.name}.exit`)
   const logFile = path.join(outDir, `${args.name}.log`)
 
+  const identity = treeIdentity(process.cwd())
+
   const [cmd, ...cmdArgs] = args.cmd
   const res = spawnSync(cmd, cmdArgs, { shell: false, encoding: 'utf8' })
   // The line that matters: NOTHING runs between the gate returning and its code being written.
@@ -202,16 +237,16 @@ function main() {
   }
 
   if (res.signal) {
-    process.stderr.write(`wt-run-gate: ${args.name}: killed by signal ${res.signal} — no exit code was ever returned\n`)
+    process.stderr.write(`wt-run-gate: ${args.name}: killed by signal ${res.signal} — no exit code was ever returned (${identity} dir=${process.cwd()})\n`)
     process.exit(1)
   }
 
   if (res.error) {
-    process.stderr.write(`wt-run-gate: ${args.name}: failed to launch — ${res.error.message}\n`)
+    process.stderr.write(`wt-run-gate: ${args.name}: failed to launch — ${res.error.message} (${identity} dir=${process.cwd()})\n`)
     process.exit(2)
   }
 
-  process.stdout.write(`GATE ${args.name}: exit=${realExitCode} log=${logFile} exit-file=${exitFile}\n`)
+  process.stdout.write(`GATE ${args.name}: exit=${realExitCode} ${identity} dir=${process.cwd()} log=${logFile} exit-file=${exitFile}\n`)
 
   let forceFail = false
   if (args.failPattern) {
