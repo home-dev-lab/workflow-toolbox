@@ -38,7 +38,7 @@ const CHANGELOG = join(REPO_ROOT, 'plugin/CHANGELOG.md')
 
 /** Every `## [x.y.z]` heading, in file order, with `## [Unreleased]` deliberately excluded. */
 function releasedHeadings(markdown: string): string[] {
-  return [...markdown.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((m) => m[1])
+  return [...markdown.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)].map((m) => m[1]!)
 }
 
 describe('plugin version and changelog move together', () => {
