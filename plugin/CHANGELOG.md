@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.175.0] - 2026-09-15
+
 ### Added
 - Added lifecycle-phase and model cost receipts for SDK pilot runs, archived report summaries, and
   the complete-only `wt-run-cost.mjs` LITE/FULL/HARD aggregator. Cost receipts use streamed assistant
@@ -16,6 +18,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added a versioned SDK-role rules manifest with strict source/heading validation, additive project
   manifests, and exact standing, phase-entry, and lane-brief delivery.
 - Added required E2E evidence to pilot reports and required independent-review summaries on FULL runs.
+- Added an always-on lane/orphan watcher, owner-mediated timeout decisions, exact-identity orphan
+  cleanup, and an append-only lane-supervisor journal. Live work is never killed merely for age or
+  silence; no-answer extensions are bounded before the recorded default becomes `abandon`.
 
 ### Changed
 - SDK lifecycle plans and pilot reports now quote every folded card Definition-of-done criterion under
@@ -70,13 +75,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The SDK pilot plan check now reads a `### ` heading as a task when no list line sits under it, so a
   plan written with task headings is no longer refused, and a heading task missing its DoD is no longer
   accepted through an unrelated bullet; the refusal names both accepted task shapes.
-
-## [0.175.0] - 2026-09-14
-
-### Added
-- Added an always-on lane/orphan watcher, owner-mediated timeout decisions, exact-identity orphan
-  cleanup, and an append-only lane-supervisor journal. Live work is never killed merely for age or
-  silence; no-answer extensions are bounded before the recorded default becomes `abandon`.
 
 ## [0.174.0] - 2026-09-14
 
