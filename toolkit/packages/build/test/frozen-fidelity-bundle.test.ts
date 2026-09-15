@@ -17,13 +17,23 @@ function canonical(value: unknown): string {
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'wt-fidelity-')); roots.push(root)
-  const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+  // Hermetic: this machine's global git config supplies an SSH signing key, and neutralising it
+  // (GIT_CONFIG_GLOBAL=/dev/null) removes the user identity every commit below needs. Pin both here
+  // so no call site depends on the host's config in either direction.
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
+    GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+  }
+  const git = (...args: string[]) => spawnSync('git', ['-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8', env: gitEnv })
   mkdirSync(join(root, '.lane'), { recursive: true })
   writeFileSync(join(root, '.lane', 'typecheck.log'), 'typecheck\nEXIT=0\n')
   writeFileSync(join(root, '.lane', 'tdd-run.log'), 'lane\nEXIT=0\n')
   writeFileSync(join(root, '.lane', 'tdd-report.md'), '## Implemented\n- lock\n')
   writeFileSync(join(root, '.lane', 'pilot-report.md'), '## Implemented\n- final\n')
-  git('init', '-q'); git('add', '.'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base')
+  git('init', '-q'); git('add', '.'); git('commit', '-qm', 'base')
   const head = git('rev-parse', 'HEAD').stdout.trim()
   writeFileSync(join(root, '.lane', 'summary.json'), JSON.stringify({ commit: head }))
   const bundle = mkdtempSync(join(tmpdir(), 'wt-fidelity-bundle-')); roots.push(bundle)
