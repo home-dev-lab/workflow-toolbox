@@ -134,6 +134,16 @@ function usageOf(message) {
   }
 }
 
+function addModelUsage(target, source) {
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return
+  for (const [model, usage] of Object.entries(source)) {
+    if (!usage || typeof usage !== 'object' || Array.isArray(usage)) continue
+    const total = target[model] ?? { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, thinkingTokens: 0 }
+    for (const field of Object.keys(total)) total[field] += Number(usage[field]) || 0
+    target[model] = total
+  }
+}
+
 function servedModelAgreement({ requestedModel, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen }) {
   if (!initReceiptSeen) return 'unknown (initialization receipt never arrived)'
   if (servedModel === undefined) return 'unknown (init receipt carries no model)'
@@ -179,6 +189,7 @@ export async function runPilot(options, dependencies) {
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   const turns = []
   const messages = []
+  const modelUsage = {}
   const transcript = []
   const tools = []
   let turnTools = []
@@ -324,6 +335,7 @@ export async function runPilot(options, dependencies) {
     }
     if (message.type === 'result') {
       const usage = usageOf(message)
+      addModelUsage(modelUsage, message.modelUsage)
       turns.push({ ...usage, model: servedModelFirstTurn ?? servedModel ?? model.value, ended_at: new Date(now()).toISOString(), tool_names: [...new Set(turnTools)] })
       turnTools = []
       for (const key of Object.keys(totals)) totals[key] += usage[key]
@@ -334,7 +346,7 @@ export async function runPilot(options, dependencies) {
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
   if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
   const freshTokens = totals.input + totals.cache_creation + totals.output
-  const usage = { messages, result_totals: totals, turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
+  const usage = { messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
   let lifecycleSummary = {}
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
   const completedNormally = awaitingFidelityReceipt && exists(report)

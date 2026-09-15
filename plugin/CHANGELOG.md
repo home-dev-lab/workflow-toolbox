@@ -31,6 +31,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- Run-cost receipts now reconcile output tokens present only in the authoritative Claude SDK terminal
+  result into a named `reconciled` field and phase, compare the primary model's SDK usage with that
+  result total, and retain otherwise-unattributed sub-model usage by model without claiming an
+  independent whole-run output instrument.
 - Lane supervision now defaults to warn-only `would-clean` evidence, derives orphanhood only from a
   terminal supervision record plus a gone launcher, bounds default extensions, and stores immutable
   per-run records behind an atomic pointer. Timeout decisions are limited to `extend` and `abandon`;

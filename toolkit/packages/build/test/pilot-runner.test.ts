@@ -331,7 +331,10 @@ describe('SDK pilot runner', () => {
       // on the 2026-09-14 FULL run); a repeat must replace, never add.
       yield { type: 'assistant', message: { id: 'msg_b', model: 'claude-test', usage: { input_tokens: 13, cache_creation_input_tokens: 17, cache_read_input_tokens: 19, output_tokens: 20 }, content: [] } }
       yield { type: 'assistant', message: { id: 'msg_b', model: 'claude-test', usage: { input_tokens: 13, cache_creation_input_tokens: 17, cache_read_input_tokens: 19, output_tokens: 23 }, content: [] } }
-      yield { type: 'result', usage: { input_tokens: 16, cache_creation_input_tokens: 22, cache_read_input_tokens: 26, output_tokens: 35 } }
+      yield { type: 'result', usage: { input_tokens: 16, cache_creation_input_tokens: 22, cache_read_input_tokens: 26, output_tokens: 35 }, modelUsage: {
+        'claude-test': { inputTokens: 16, cacheCreationInputTokens: 22, cacheReadInputTokens: 26, outputTokens: 35 },
+        'claude-haiku-test': { inputTokens: 2, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 1 },
+      } }
     })()
     await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, {
       query,
@@ -343,7 +346,11 @@ describe('SDK pilot runner', () => {
     const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'discovery').models['claude-test']).toMatchObject({ input: 3, cache_write: 5, output: 11, fresh_tokens: 19 })
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'tdd').models['claude-test']).toMatchObject({ input: 13, cache_write: 17, output: 23, fresh_tokens: 53 })
-    expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: false, difference: { input: 0, cache_write: 0, cache_read: 0, output: -1, first_pass_input: 0, fresh_tokens: -1 } })
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'reconciled').models['claude-test']).toMatchObject({ output: 1, fresh_tokens: 1 })
+    expect(cost.reconciled).toEqual([expect.objectContaining({ kind: 'terminal_result_output', tokens: 1 })])
+    expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: true, message_sum: { output: 34 }, attributed_sum: { output: 35 }, difference: { input: 0, cache_write: 0, cache_read: 0, output: 0, first_pass_input: 0, fresh_tokens: 0 } })
+    expect(cost.cross_checks.model_usage).toMatchObject({ agrees: true, primary_model: 'claude-test', difference: { input: 0, output: 0, fresh_tokens: 0 } })
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed').models['claude-haiku-test']).toMatchObject({ input: 2, output: 1, fresh_tokens: 3 })
   })
 
   it('defaults the contract and mailbox paths when called programmatically without them (the orchestrator driver)', async () => {

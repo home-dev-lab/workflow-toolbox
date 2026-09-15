@@ -12,10 +12,10 @@ function readJson(file) {
 }
 
 function tokenColumns(family, usage) {
-  const input = Number(usage.input ?? usage.tokens_input ?? usage.input_tokens) || 0
-  const cacheWrite = family === 'anthropic' ? Number(usage.cache_write ?? usage.cache_creation ?? usage.cache_creation_input_tokens) || 0 : NOT_MEASURED
-  const cacheRead = Number(usage.cache_read ?? usage.tokens_cache_read ?? usage.cache_read_input_tokens) || 0
-  const output = Number(usage.output ?? usage.tokens_output ?? usage.output_tokens) || 0
+  const input = Number(usage.input ?? usage.tokens_input ?? usage.input_tokens ?? usage.inputTokens) || 0
+  const cacheWrite = family === 'anthropic' ? Number(usage.cache_write ?? usage.cache_creation ?? usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens) || 0 : NOT_MEASURED
+  const cacheRead = Number(usage.cache_read ?? usage.tokens_cache_read ?? usage.cache_read_input_tokens ?? usage.cacheReadInputTokens) || 0
+  const output = Number(usage.output ?? usage.tokens_output ?? usage.output_tokens ?? usage.outputTokens) || 0
   const reasoning = family === 'openai' ? Number(usage.reasoning ?? usage.tokens_reasoning) || 0 : NOT_MEASURED
   const firstPass = input + (typeof cacheWrite === 'number' ? cacheWrite : 0)
   return { family, input, cache_write: cacheWrite, cache_read: cacheRead, output, reasoning, first_pass_input: firstPass, fresh_tokens: firstPass + output + (typeof reasoning === 'number' ? reasoning : 0) }
@@ -143,13 +143,29 @@ function archiveWindow(laneDir, timeline, summary, options) {
   return { startedAt, endedAt, inferred: true, basis: Number.isFinite(summaryDuration) && earliest === endedAt ? 'archive mtime and summary minutes' : 'archive record mtimes' }
 }
 
-function usageDifference(messages, resultTotals) {
+function usageDifference(messages, resultTotals, adjustments = []) {
   const messageTotal = emptyFamily('anthropic')
   for (const message of messages) addTokens(messageTotal, tokenColumns('anthropic', message))
+  const attributedTotal = { ...messageTotal }
+  for (const adjustment of adjustments) addTokens(attributedTotal, tokenColumns('anthropic', adjustment))
   const resultTotal = tokenColumns('anthropic', resultTotals ?? {})
   const difference = {}
-  for (const field of TOKEN_FIELDS) if (typeof messageTotal[field] === 'number' && typeof resultTotal[field] === 'number') difference[field] = messageTotal[field] - resultTotal[field]
-  return { agrees: Object.values(difference).every((value) => value === 0), message_sum: messageTotal, result_total: resultTotal, difference }
+  for (const field of TOKEN_FIELDS) if (typeof attributedTotal[field] === 'number' && typeof resultTotal[field] === 'number') difference[field] = attributedTotal[field] - resultTotal[field]
+  return { agrees: Object.values(difference).every((value) => value === 0), message_sum: messageTotal, attributed_sum: attributedTotal, result_total: resultTotal, difference }
+}
+
+function modelUsageDifference(modelUsage, primaryModel, resultTotals) {
+  if (!modelUsage || typeof modelUsage !== 'object' || Array.isArray(modelUsage)) {
+    return { status: 'unavailable', reason: 'SDK result modelUsage unavailable' }
+  }
+  if (!primaryModel || !Object.hasOwn(modelUsage, primaryModel)) {
+    return { status: 'unavailable', reason: `SDK modelUsage has no key matching primary model ${primaryModel ?? 'unknown'}` }
+  }
+  const modelTotal = tokenColumns('anthropic', modelUsage[primaryModel])
+  const resultTotal = tokenColumns('anthropic', resultTotals ?? {})
+  const difference = {}
+  for (const field of TOKEN_FIELDS) if (typeof modelTotal[field] === 'number' && typeof resultTotal[field] === 'number') difference[field] = modelTotal[field] - resultTotal[field]
+  return { agrees: Object.values(difference).every((value) => value === 0), primary_model: primaryModel, model_total: modelTotal, result_total: resultTotal, difference }
 }
 
 export function computeRunCost(options) {
@@ -168,6 +184,39 @@ export function computeRunCost(options) {
   const pilotTurns = attributePilotTurns(pilotMessages.map((message) => ({ ...message, model: message.model ?? summary?.served_model ?? summary?.model })), phases)
   const entries = [...pilotTurns]
   const unknown = []
+  const reconciled = []
+  const resultTotals = usage.result_totals ?? usage.totals ?? {}
+  const rawPilotCheck = usageDifference(pilotMessages, resultTotals)
+  const missingOutput = rawPilotCheck.result_total.output - rawPilotCheck.message_sum.output
+  const outputAdjustments = []
+  if (missingOutput > 0) {
+    const reason = 'The terminal SDK result is the only source for whole-run output; no independent instrument exists today, so undercount cannot be discriminated and only overcount can.'
+    const adjustment = { output: missingOutput }
+    outputAdjustments.push(adjustment)
+    reconciled.push({ kind: 'terminal_result_output', tokens: missingOutput, reason })
+    entries.push({
+      phase: 'reconciled',
+      round: null,
+      model: summary?.served_model ?? summary?.model ?? usage.turns?.at(-1)?.model ?? 'unknown',
+      tokens: tokenColumns('anthropic', adjustment),
+    })
+  }
+  const primaryModel = summary?.served_model ?? summary?.model ?? usage.turns?.at(-1)?.model ?? pilotMessages.at(-1)?.model
+  if (usage.model_usage && typeof usage.model_usage === 'object' && !Array.isArray(usage.model_usage)) {
+    if (!primaryModel || !Object.hasOwn(usage.model_usage, primaryModel)) {
+      unknown.push(`SDK modelUsage has no key matching primary model ${primaryModel ?? 'unknown'}; model rows were not added because the primary cannot be identified safely`)
+    } else {
+      for (const [model, modelTokens] of Object.entries(usage.model_usage)) {
+        if (model === primaryModel) continue
+        entries.push({
+          phase: 'unattributed',
+          round: null,
+          model,
+          tokens: tokenColumns('anthropic', modelTokens),
+        })
+      }
+    }
+  }
   const allSessions = routeReceipt.executor === 'claude-sdk' ? [] : options.sessions ?? queryOpenCodeSessions({ dbPath: options.dbPath ?? process.env.WT_OPENCODE_DB ?? path.join(os.homedir(), '.local/share/opencode/opencode.db'), sqlite: options.sqlite, execFile: options.execFile, directory: worktree, startedAt, endedAt })
   const assignedSessions = new Set()
 
@@ -207,7 +256,6 @@ export function computeRunCost(options) {
     : summary.partial?.reason || !summary.completed
       ? { status: 'partial', reason: summary.partial?.reason ?? summary.reason ?? 'run incomplete' }
       : { status: 'complete' }
-  const resultTotals = usage.result_totals ?? usage.totals ?? {}
   return {
     version: 2,
     card_id: routeReceipt.cardId ?? routeReceipt.card_id ?? null,
@@ -219,7 +267,11 @@ export function computeRunCost(options) {
     families,
     totals: { wall_time_ms: Math.max(0, endedAt - startedAt) },
     unknown,
-    cross_checks: { pilot_result: usageDifference(pilotMessages, resultTotals) },
+    reconciled,
+    cross_checks: {
+      pilot_result: usageDifference(pilotMessages, resultTotals, outputAdjustments),
+      model_usage: modelUsageDifference(usage.model_usage, primaryModel, resultTotals),
+    },
     sources: { pilot: usage.messages ? 'Claude Agent SDK assistant message usage' : 'legacy Claude Agent SDK result usage', lanes: routeReceipt.executor === 'claude-sdk' ? 'Claude Agent SDK result usage' : 'OpenCode session rows via sqlite3', timeline: timeline.inferred ? 'inferred from each lane log' : 'lifecycle transition receipts' },
   }
 }
@@ -237,8 +289,15 @@ export function costReportSection(cost) {
     for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${value.family} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)
     for (const reason of phase.unknown) lines.push(`| ${label} | unknown | unknown (${reason}) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | ${phase.wall_time_ms} |`)
   }
+  lines.push('', 'The terminal SDK result is the only source for whole-run output; no independent instrument exists today, so undercount cannot be discriminated and only overcount can.')
+  const reconciledOutput = (cost.reconciled ?? []).filter((item) => item.kind === 'terminal_result_output').reduce((sum, item) => sum + (Number(item.tokens) || 0), 0)
+  const resultOutput = cost.cross_checks?.pilot_result?.result_total?.output
+  if (reconciledOutput > 0 && typeof resultOutput === 'number') lines.push(`Per-phase output attribution is vacuous for this claude-sdk run: ${reconciledOutput} of ${resultOutput} output tokens sit in reconciled.`)
   const check = cost.cross_checks?.pilot_result
   if (check && !check.agrees) lines.push('', `Pilot assistant/result usage difference: ${JSON.stringify(check.difference)}`)
+  const modelCheck = cost.cross_checks?.model_usage
+  if (modelCheck?.status === 'unavailable') lines.push('', `SDK primary model/result consistency check unavailable: ${modelCheck.reason}`)
+  else if (modelCheck && !modelCheck.agrees) lines.push('', `SDK primary model/result usage disagreement: primary model=${modelCheck.primary_model} model total=${JSON.stringify(modelCheck.model_total)} result total=${JSON.stringify(modelCheck.result_total)} difference=${JSON.stringify(modelCheck.difference)}`)
   lines.push('<!-- /run-cost -->')
   return `${lines.join('\n')}\n`
 }

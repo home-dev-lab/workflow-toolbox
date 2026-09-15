@@ -1,0 +1,44 @@
+{
+  "provenance": {
+    "source": "/home/doublefx/projects/wt-suite/.claude/worktrees/sdk-e2e-1863152845/.lane/sdk-transcript.json",
+    "captured_at": "2026-09-15T00:38:40.268Z",
+    "note": "Static extraction from the real transcript. assistant_message_usage_sum is the latest-copy-per-message_id sum written by the runner."
+  },
+  "assistant_message_usage_sum": {
+    "input": 148,
+    "cache_creation": 253587,
+    "cache_read": 10288682,
+    "output": 1010,
+    "model": "claude-opus-5",
+    "arrived_at": "2026-09-15T00:14:28.895Z",
+    "message_id": "fixture-deduplicated-message-sum"
+  },
+  "terminal_result": {
+    "type": "result",
+    "usage": {
+      "input_tokens": 148,
+      "cache_creation_input_tokens": 253587,
+      "cache_read_input_tokens": 10288682,
+      "output_tokens": 134665,
+      "output_tokens_details": {
+        "thinking_tokens": 28144
+      }
+    },
+    "modelUsage": {
+      "claude-haiku-4-5-20251001": {
+        "inputTokens": 1692,
+        "outputTokens": 14,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+        "thinkingTokens": 0
+      },
+      "claude-opus-5": {
+        "inputTokens": 148,
+        "outputTokens": 134665,
+        "cacheReadInputTokens": 10288682,
+        "cacheCreationInputTokens": 253587,
+        "thinkingTokens": 28144
+      }
+    }
+  }
+}

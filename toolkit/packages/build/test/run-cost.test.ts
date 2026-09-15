@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { aggregateRunCosts, appendCostReport, attributePilotTurns, computeRunCost, formatAggregate, matchLaneSessions } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 
 const CLI = new URL('../../../../plugin/bin/wt-run-cost.mjs', import.meta.url).pathname
+const OUTPUT_UNDERCOUNT_FIXTURE = new URL('./fixtures/run-cost/sdk-output-undercount.json', import.meta.url)
 
 const roots: string[] = []
 const root = () => { const value = mkdtempSync(join(tmpdir(), 'wt-run-cost-')); roots.push(value); return value }
@@ -14,6 +15,126 @@ const root = () => { const value = mkdtempSync(join(tmpdir(), 'wt-run-cost-')); 
 afterEach(() => { for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true }) })
 
 describe('run cost', () => {
+  function realOutputUndercountLane(resultOutput = 134665) {
+    const fixture = JSON.parse(readFileSync(OUTPUT_UNDERCOUNT_FIXTURE, 'utf8'))
+    const lane = root()
+    writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId: '1863152845168052185', route: 'FULL', executor: 'claude-sdk' }))
+    writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, served_model: 'claude-opus-5' }))
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify({
+      messages: [fixture.assistant_message_usage_sum],
+      result_totals: { ...fixture.terminal_result.usage, output_tokens: resultOutput },
+      model_usage: fixture.terminal_result.modelUsage,
+    }))
+    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({
+      started_at: Date.parse('2026-09-14T23:43:20.926Z'),
+      ended_at: Date.parse('2026-09-15T00:38:40.268Z'),
+      phases: [{ phase: 'critic', round: 1, entered_at: Date.parse('2026-09-15T00:00:00.000Z'), exited_at: Date.parse('2026-09-15T00:30:00.000Z') }],
+      lanes: [],
+    }))
+    return lane
+  }
+
+  it('reconciles the real transcript output undercount without marking the run incomplete', () => {
+    const cost = computeRunCost({ laneDir: realOutputUndercountLane(), worktree: '/work/real-run' })
+
+    expect(cost.cross_checks.pilot_result).toMatchObject({
+      agrees: true,
+      message_sum: { output: 1010, fresh_tokens: 254745 },
+      attributed_sum: { output: 134665, fresh_tokens: 388400 },
+      result_total: { output: 134665, fresh_tokens: 388400 },
+      difference: { input: 0, cache_write: 0, cache_read: 0, output: 0, first_pass_input: 0, fresh_tokens: 0 },
+    })
+    expect(cost.cross_checks.model_usage).toMatchObject({
+      agrees: true,
+      primary_model: 'claude-opus-5',
+      model_total: { input: 148, cache_write: 253587, cache_read: 10288682, output: 134665, first_pass_input: 253735, fresh_tokens: 388400 },
+      result_total: { input: 148, cache_write: 253587, cache_read: 10288682, output: 134665, first_pass_input: 253735, fresh_tokens: 388400 },
+      difference: { input: 0, cache_write: 0, cache_read: 0, output: 0, first_pass_input: 0, fresh_tokens: 0 },
+    })
+    expect(cost.families.anthropic).toMatchObject({ input: 1840, output: 134679, fresh_tokens: 390106 })
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'reconciled')).toMatchObject({
+      models: { 'claude-opus-5': { output: 133655, fresh_tokens: 133655 } },
+      unknown: [],
+    })
+    expect(cost.reconciled).toEqual([expect.objectContaining({
+      kind: 'terminal_result_output',
+      tokens: 133655,
+      reason: 'The terminal SDK result is the only source for whole-run output; no independent instrument exists today, so undercount cannot be discriminated and only overcount can.',
+    })])
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed')).toMatchObject({
+      models: { 'claude-haiku-4-5-20251001': { input: 1692, output: 14, fresh_tokens: 1706 } },
+      unknown: [],
+    })
+    expect(cost.unknown).toEqual([])
+    const report = appendCostReport('# Run\n', cost)
+    expect(report).not.toContain('SDK model/result usage disagreement:')
+    expect(report).toContain('The terminal SDK result is the only source for whole-run output; no independent instrument exists today, so undercount cannot be discriminated and only overcount can.')
+    expect(report).toContain('Per-phase output attribution is vacuous for this claude-sdk run: 133655 of 134665 output tokens sit in reconciled.')
+
+    const reports = root()
+    const archiveLane = join(reports, 'real-run', '.lane')
+    mkdirSync(archiveLane, { recursive: true })
+    writeFileSync(join(archiveLane, 'cost.json'), JSON.stringify(cost))
+    const aggregate = spawnSync(process.execPath, [CLI, reports], { encoding: 'utf8' })
+    expect(aggregate.status).toBe(0)
+    expect(aggregate.stdout).toContain('FULL | anthropic | 1 | complete | 1840 | 253587 | 10288682 | 134679 | not measured | 255427 | 390106')
+  })
+
+  it('reconciles a positive terminal-result residual without an arbitrary share cutoff', () => {
+    const cost = computeRunCost({ laneDir: realOutputUndercountLane(1_010_000), worktree: '/work/sparse-messages' })
+    expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: true, attributed_sum: { output: 1_010_000 }, difference: { output: 0, fresh_tokens: 0 } })
+    expect(cost.reconciled).toEqual([expect.objectContaining({ kind: 'terminal_result_output', tokens: 1_008_990 })])
+    expect(cost.unknown).toEqual([])
+  })
+
+  it('reports assistant-message output overcount as a disagreement', () => {
+    const cost = computeRunCost({ laneDir: realOutputUndercountLane(1000), worktree: '/work/altered-run' })
+    expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: false, difference: { output: 10, fresh_tokens: 10 } })
+    expect(cost.reconciled).toEqual([])
+    expect(cost.unknown).toEqual([])
+  })
+
+  it('marks a genuine primary-model/result divergence red', () => {
+    const lane = realOutputUndercountLane()
+    const usage = JSON.parse(readFileSync(join(lane, 'usage.json'), 'utf8'))
+    usage.model_usage['claude-opus-5'].outputTokens -= 1
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify(usage))
+
+    const check = computeRunCost({ laneDir: lane, worktree: '/work/divergent-model-usage' }).cross_checks.model_usage
+    expect(check).toMatchObject({
+      agrees: false,
+      primary_model: 'claude-opus-5',
+      difference: { output: -1, fresh_tokens: -1 },
+    })
+  })
+
+  it('records an unmatched dated primary model key as unknown without double counting it', () => {
+    const lane = realOutputUndercountLane()
+    const usage = JSON.parse(readFileSync(join(lane, 'usage.json'), 'utf8'))
+    usage.model_usage = { 'claude-opus-5-20260915': usage.model_usage['claude-opus-5'] }
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify(usage))
+
+    const cost = computeRunCost({ laneDir: lane, worktree: '/work/dated-primary' })
+    expect(cost.cross_checks.model_usage).toEqual({
+      status: 'unavailable',
+      reason: 'SDK modelUsage has no key matching primary model claude-opus-5',
+    })
+    expect(cost.unknown).toEqual(['SDK modelUsage has no key matching primary model claude-opus-5; model rows were not added because the primary cannot be identified safely'])
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed')).toBeUndefined()
+    expect(cost.families.anthropic).toMatchObject({ input: 148, output: 134665, fresh_tokens: 388400 })
+  })
+
+  it('records when the SDK model-usage cross-check is unavailable', () => {
+    const lane = realOutputUndercountLane()
+    const usage = JSON.parse(readFileSync(join(lane, 'usage.json'), 'utf8'))
+    delete usage.model_usage
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify(usage))
+    expect(computeRunCost({ laneDir: lane, worktree: '/work/legacy-run' }).cross_checks.model_usage).toEqual({
+      status: 'unavailable',
+      reason: 'SDK result modelUsage unavailable',
+    })
+  })
+
   it('attributes streamed assistant usage to lifecycle phases with exact token numbers', () => {
     const phases = [
       { phase: 'discovery', round: null, entered_at: 1000, exited_at: 2000 },
