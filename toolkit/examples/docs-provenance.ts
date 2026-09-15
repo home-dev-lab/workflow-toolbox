@@ -61,6 +61,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The artifact-server skill documents the default-on persistent monitor, registration, discovery, and bind-race startup.',
   },
   {
+    script: 'plugin/bin/wt-artifact-server-context-hook.mjs',
+    status: 'mapped',
+    reason: 'The artifact-server skill documents the conditional SessionStart link-generation announcement.',
+  },
+  {
     script: 'plugin/bin/wt-intake-triage.mjs',
     status: 'missing-doc-surface',
     reason: 'The pilot-orchestrator template is its executable caller; this focused intake helper adds no standalone operator guide.',
@@ -639,6 +644,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     sources: [
       'plugin/bin/wt-artifact-server.mjs',
       'plugin/bin/wt-artifact-server-ensure.mjs',
+      'plugin/bin/wt-artifact-server-context-hook.mjs',
       'plugin/bin/lib/artifact-server.mjs',
       'plugin/skills/artifact-server/',
     ],

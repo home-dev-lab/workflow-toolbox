@@ -438,6 +438,12 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
           content: [{ type: 'text', text: JSON.stringify({ id: 'board-1', lists: [{ name: 'Next', cards: [] }] }) }],
         },
       }
+    case 'wt-artifact-server-context-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        session_id: 'selftest-session',
+        agent_id: 'selftest-subagent',
+      }
     case 'wt-label-intent-producer-hook.mjs':
       // No toolkit/ vendored in this sandbox project — the hook must no-op cleanly rather
       // than crash, exactly what a project that doesn't vendor label-intent-lens.ts should
