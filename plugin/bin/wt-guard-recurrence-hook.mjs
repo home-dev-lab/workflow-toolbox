@@ -72,17 +72,17 @@ const UNCLASSED_LABEL = '(unclassed)'
  * REAL hook as a child process (see the sibling .test.ts) rather than importing hook modules —
  * an import would execute this file's top-level runFailOpenHook(main) call as a side effect,
  * including a stdin read, which is exactly the ambiguity black-box spawning avoids.
- * @returns {Array<{guard:string, label:string, count:number, sessions:number, unknownSessionEvents:number}>} sorted by count, descending.
+ * @returns {Array<{guard:string, label:string, count:number, testCount:number, unknownCount:number, sessions:number, unknownSessionEvents:number}>} sorted by count, descending.
  */
 function recurringGroups(result) {
   if (!result || result.ok !== true) return []
   const groups = []
   for (const row of result.rows) {
-    for (const [cls, count] of Object.entries(row.classes)) {
-      if (count >= RECURRENCE_THRESHOLD) groups.push({ guard: row.guard, label: cls, count, sessions: row.sessions, unknownSessionEvents: row.unknownSessionEvents })
+    for (const [cls, origins] of Object.entries(row.classOrigins)) {
+      if (origins.real >= RECURRENCE_THRESHOLD) groups.push({ guard: row.guard, label: cls, count: origins.real, testCount: origins.test, unknownCount: origins.unknown, sessions: row.sessions, unknownSessionEvents: row.unknownSessionEvents })
     }
-    if (row.unclassedTotal >= RECURRENCE_THRESHOLD) {
-      groups.push({ guard: row.guard, label: UNCLASSED_LABEL, count: row.unclassedTotal, sessions: row.sessions, unknownSessionEvents: row.unknownSessionEvents })
+    if (row.unclassedOrigins.real >= RECURRENCE_THRESHOLD) {
+      groups.push({ guard: row.guard, label: UNCLASSED_LABEL, count: row.unclassedOrigins.real, testCount: row.unclassedOrigins.test, unknownCount: row.unclassedOrigins.unknown, sessions: row.sessions, unknownSessionEvents: row.unknownSessionEvents })
     }
   }
   return groups.sort((a, b) => b.count - a.count)
@@ -90,11 +90,11 @@ function recurringGroups(result) {
 
 function buildMessage(result, groups) {
   const lines = [
-    `[wt] guard recurrence this week — ${RECURRENCE_THRESHOLD}+ firings is the mechanise/fix-` +
+    `[wt] guard recurrence this week — ${RECURRENCE_THRESHOLD}+ real-origin firings is the mechanise/fix-` +
       `the-guard trigger, not a reminder to reflect:`,
   ]
   for (const g of groups) {
-    lines.push(`  ${g.guard} [${g.label}] — ${g.count} firings · ${g.sessions} sessions (+${g.unknownSessionEvents} unattributed) this week`)
+    lines.push(`  ${g.guard} [${g.label}] — ${g.count} firings this week (${g.testCount} from test runs, excluded); ${g.unknownCount} origin unknown · ${g.sessions} sessions across all origins (+${g.unknownSessionEvents} unattributed)`)
   }
   lines.push(
     '⚠ Event count, not a confirmed-defect count: some guards include bounded evidence that ' +
@@ -102,6 +102,7 @@ function buildMessage(result, groups) {
       'Only guards wired to this journal appear here; a defect with no guard is invisible by ' +
       'construction, never evidence nothing went wrong.',
   )
+  lines.push('Records written before origin tracking remain unknown; they are not retroactively classified.')
   lines.push(`Full picture: node <plugin>/bin/wt-guard-journal-scan.mjs --weeks 1 (baseDir: ${result.baseDir})`)
   return lines.join('\n')
 }

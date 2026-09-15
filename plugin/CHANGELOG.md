@@ -10,6 +10,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   processes are alive. It excludes its own process ancestry and reports process-enumeration failure
   as unknown rather than silently treating it as a zero count.
 
+### Fixed
+- Guard journal records now classify firings as real, test-origin, or unknown at the shared write
+  seam. Recurrence and scan reports show test firings as an explicitly excluded population and keep
+  undecidable and pre-change records labelled unknown instead of inflating real recurrence counts.
+
 ## [0.177.0] - 2026-09-15
 
 ### Added

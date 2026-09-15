@@ -85,10 +85,12 @@ afterEach(() => {
 })
 
 function runHook(hookFile: string, payload: Record<string, unknown>, extraEnv: NodeJS.ProcessEnv = {}) {
+  const env: NodeJS.ProcessEnv = { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir, ...extraEnv }
+  for (const [key, value] of Object.entries(env)) if (value === undefined) delete env[key]
   return spawnSync(process.execPath, [join(BIN_DIR, hookFile)], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir, ...extraEnv },
+    env,
   })
 }
 
@@ -179,6 +181,26 @@ describe('guard-journal — live wiring proof across the code-shape spread', () 
       expect(entries[0]).toMatchObject({ guard: 'wt-main-guard-hook.mjs', decision: 'blocked', class: 'publish' })
     } finally {
       rmSync(sandboxHome, { recursive: true, force: true })
+    }
+  })
+
+  it("RED proof: a guard's marked selftest firing is test-origin while its genuine control is real", () => {
+    const home = mkdtempSync(join(tmpdir(), 'wt-main-guard-origin-home-'))
+    const payload = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'npm publish' }, cwd: REPO_ROOT }
+    try {
+      const selftest = runHook('wt-main-guard-hook.mjs', payload, {
+        HOME: home,
+        WT_GUARD_JOURNAL_TEST_ORIGIN: '1',
+      })
+      const genuine = runHook('wt-main-guard-hook.mjs', payload, {
+        HOME: home,
+        WT_GUARD_JOURNAL_TEST_ORIGIN: undefined,
+      })
+      expect(selftest.status).toBe(0)
+      expect(genuine.status).toBe(0)
+      expect(journalEntries().map((entry) => entry.origin)).toEqual(['test', 'real'])
+    } finally {
+      rmSync(home, { recursive: true, force: true })
     }
   })
 

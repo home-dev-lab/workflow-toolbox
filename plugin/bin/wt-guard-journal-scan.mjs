@@ -91,11 +91,12 @@ if (AS_JSON) {
       weekFiles,
       totalEvents: result.totalEvents,
       unreadableLines,
-      guards: rows.map(({ guard, blocked, warned, silent, total, sessions, unknownSessionEvents, classes }) => ({ guard, blocked, warned, silent, total, sessions, unknownSessionEvents, classes })),
+      guards: rows.map(({ guard, blocked, warned, silent, total, origins, sessions, unknownSessionEvents, classes, classOrigins, unclassedOrigins }) => ({ guard, blocked, warned, silent, total, origins, sessions, unknownSessionEvents, classes, classOrigins, unclassedOrigins })),
       caveat:
         'A count is an EVENT count, not a confirmed-defect count. Some guards include bounded ' +
         'evidence that lets a reader classify a firing, but this scanner does not classify it. ' +
-        'Only guards wired to this journal appear here; a defect with no guard is invisible by construction.',
+        'Only guards wired to this journal appear here; a defect with no guard is invisible by construction. ' +
+        'Records written before origin tracking remain unknown and are not retroactively classified.',
     }),
   )
   process.exit(0)
@@ -109,7 +110,7 @@ if (rows.length === 0) {
   console.log('')
   console.log('guard'.padEnd(42) + 'blocked'.padStart(9) + 'warned'.padStart(9) + 'total'.padStart(8))
   for (const r of rows) {
-    console.log(r.guard.padEnd(42) + String(r.blocked).padStart(9) + String(r.warned).padStart(9) + String(r.total).padStart(8) + ` — ${r.total} firings · ${r.sessions} sessions (+${r.unknownSessionEvents} unattributed)`)
+    console.log(r.guard.padEnd(42) + String(r.blocked).padStart(9) + String(r.warned).padStart(9) + String(r.total).padStart(8) + ` — ${r.origins.real} real firings (${r.origins.test} from test runs, excluded); ${r.origins.unknown} origin unknown · ${r.sessions} sessions across all origins (+${r.unknownSessionEvents} unattributed)`)
   }
 }
 if (unreadableLines > 0) {
@@ -120,5 +121,6 @@ console.log(
     'evidence that lets a reader classify a firing, but this scanner does not classify it — read ' +
     'the records before concluding N real mistakes happened. Only ' +
     'guards wired to this journal appear here; a defect nobody has a guard for is absent by ' +
-    'construction, not evidence nothing went wrong.',
+    'construction, not evidence nothing went wrong. Records written before origin tracking remain ' +
+    'unknown and are not retroactively classified.',
 )
