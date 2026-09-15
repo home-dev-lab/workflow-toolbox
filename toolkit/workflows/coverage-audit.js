@@ -2172,6 +2172,7 @@ ${renderClaim(claim)}`;
       sources: [
         "plugin/bin/wt-artifact-server.mjs",
         "plugin/bin/wt-artifact-server-ensure.mjs",
+        "plugin/bin/wt-artifact-server-context-hook.mjs",
         "plugin/bin/lib/artifact-server.mjs",
         "plugin/skills/artifact-server/"
       ],
@@ -2509,6 +2510,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs",
         "plugin/bin/wt-var-colon-modifier-guard-hook.mjs",
         "plugin/bin/wt-merge-chain-guard-hook.mjs",
+        "plugin/bin/wt-concurrent-test-guard-hook.mjs",
         "plugin/bin/wt-piped-gate-exit-code-guard-hook.mjs",
         "plugin/bin/wt-missing-package-script-guard-hook.mjs",
         "plugin/bin/wt-main-guard-hook.mjs",

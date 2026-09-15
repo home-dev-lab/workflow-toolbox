@@ -350,6 +350,12 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'git merge branch && pnpm test' },
       }
+    case 'wt-concurrent-test-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git status' },
+      }
     case 'wt-missing-package-script-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
@@ -431,6 +437,12 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_response: {
           content: [{ type: 'text', text: JSON.stringify({ id: 'board-1', lists: [{ name: 'Next', cards: [] }] }) }],
         },
+      }
+    case 'wt-artifact-server-context-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        session_id: 'selftest-session',
+        agent_id: 'selftest-subagent',
       }
     case 'wt-label-intent-producer-hook.mjs':
       // No toolkit/ vendored in this sandbox project — the hook must no-op cleanly rather

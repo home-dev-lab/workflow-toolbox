@@ -39,8 +39,8 @@ function writeWeek(dir: string, lines: Array<Record<string, unknown>>): void {
   writeFileSync(join(dir, '2026-W32.ndjson'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
 }
 
-function event(guard: string, opts: { decision?: string; class?: string; session?: string } = {}): Record<string, unknown> {
-  return { ts: '2026-08-05T10:00:00.000Z', guard, decision: opts.decision ?? 'blocked', ...(opts.class ? { class: opts.class } : {}), ...(opts.session ? { session: opts.session } : {}) }
+function event(guard: string, opts: { decision?: string; class?: string; session?: string; origin?: string | null } = {}): Record<string, unknown> {
+  return { ts: '2026-08-05T10:00:00.000Z', guard, decision: opts.decision ?? 'blocked', ...(opts.class ? { class: opts.class } : {}), ...(opts.session ? { session: opts.session } : {}), ...(opts.origin === null ? {} : { origin: opts.origin ?? 'real' }) }
 }
 
 function run(journalDir: string | undefined): { out: string; err: string; code: number | null } {
@@ -78,7 +78,8 @@ describe('guard-recurrence-hook — the SessionStart count surface', () => {
     expect(out).toContain('wt-main-guard-hook.mjs')
     expect(out).toContain('publish')
     expect(out).toContain('3 firings')
-    expect(out).toContain('2 sessions (+0 unattributed)')
+    expect(out).toContain('3 firings this week (0 from test runs, excluded); 0 origin unknown')
+    expect(out).toContain('2 sessions across all origins (+0 unattributed)')
     // The card's own wording: the count itself, never an instruction to reflect.
     expect(out).not.toMatch(/reflect on|consider whether|think about/i)
     expect(out).toContain('not a reminder to reflect')
@@ -128,6 +129,32 @@ describe('guard-recurrence-hook — the SessionStart count surface', () => {
     const { out } = run(dir)
     expect(out).toContain('wt-x-hook.mjs')
     expect(out).toContain('3 firings')
+  })
+
+  it('reports real, excluded test, and unknown populations separately', () => {
+    const dir = mkJournalDir()
+    writeWeek(dir, [
+      event('wt-x-hook.mjs', { class: 'c', origin: 'real' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: 'real' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: 'real' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: 'test' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: 'test' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: null }),
+    ])
+    const { out } = run(dir)
+    expect(out).toContain('3 firings this week (2 from test runs, excluded); 1 origin unknown')
+  })
+
+  it('does not let test-origin or unknown firings cross the real recurrence threshold', () => {
+    const dir = mkJournalDir()
+    writeWeek(dir, [
+      event('wt-x-hook.mjs', { class: 'c', origin: 'real' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: 'real' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: 'test' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: 'test' }),
+      event('wt-x-hook.mjs', { class: 'c', origin: null }),
+    ])
+    expect(run(dir).out).toBe('')
   })
 
   it('is SILENT when the journal directory exists but is UNREADABLE — degrades to silence, never an error', () => {

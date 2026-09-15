@@ -6,7 +6,7 @@ import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, deriveArtifactPort } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl } from '../../../../plugin/bin/lib/artifact-server.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SERVER = join(REPO_ROOT, 'plugin/bin/wt-artifact-server.mjs')
@@ -76,9 +76,33 @@ type Discovery = {
   port: number
   baseUrl: string
   remoteUrl: string | null
+  tailnetDetection?: { status: 'available' | 'no-tailnet' | 'unavailable', reason: string | null }
   roots: RootRecord[]
   mounts?: RootRecord[]
   startedAt: string
+}
+
+const CHROME = process.env.CHROME_BIN ?? ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(existsSync)
+
+function renderInChrome(url: string) {
+  if (!CHROME) throw new Error('Chrome/Chromium is unavailable')
+  return new Promise<{ code: number | null, stdout: string, stderr: string }>((resolve, reject) => {
+    const profile = temporaryDir('chrome-profile')
+    const child = spawn(CHROME, [
+      '--headless=new', '--no-sandbox', '--disable-gpu', `--user-data-dir=${profile}`,
+      '--dump-dom', '--virtual-time-budget=2000', url,
+    ], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(child)
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (chunk) => { stdout += String(chunk) })
+    child.stderr?.on('data', (chunk) => { stderr += String(chunk) })
+    child.once('error', reject)
+    child.once('exit', (code) => {
+      children.delete(child)
+      resolve({ code, stdout, stderr })
+    })
+  })
 }
 
 function readState(stateHome: string): Discovery | null {
@@ -1112,6 +1136,42 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect((await rawRequest(port, '/__wt-artifact-server/deregister?session=x', `localhost:${port}`)).status).toBe(404)
   })
 
+  it('keeps root-index links inside a proxy path while preserving the unprefixed destination', async () => {
+    const project = temporaryDir('relative-index-project')
+    const root = temporaryDir('relative-index-root')
+    const stateHome = temporaryDir('relative-index-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `reports=${root}`,
+    }))
+    await waitForState(stateHome, (state) => state.roots.length === 1)
+
+    const proxy = createServer(async (_request, response) => {
+      const upstream = await rawRequest(port, '/', `localhost:${port}`)
+      response.writeHead(upstream.status, { 'content-type': 'text/html' })
+      response.end(upstream.body)
+    })
+    await new Promise<void>((resolve, reject) => {
+      proxy.once('error', reject)
+      proxy.listen(0, '127.0.0.1', resolve)
+    })
+    const proxyAddress = proxy.address()
+    if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy has no TCP port')
+    try {
+      const index = await rawRequest(proxyAddress.port, '/serve-mount/', `localhost:${proxyAddress.port}`)
+      expect(index.status).toBe(200)
+      const href = /<a href="([^"]+)">reports\/<\/a>/.exec(index.body)?.[1]
+      expect(href).toBe('reports/')
+      expect(new URL(href!, `http://localhost:${port}/`).href).toBe(`http://localhost:${port}/reports/`)
+      expect(new URL(href!, 'https://host.tailnet.ts.net/serve-mount/').href)
+        .toBe('https://host.tailnet.ts.net/serve-mount/reports/')
+    } finally {
+      await closeServer(proxy)
+    }
+  })
+
   it('[A-01] defaults to project-unique reports/worktrees names and chooses the longest URL root', async () => {
     const { project, reports, worktrees } = projectWithRoots('defaults')
     const nestedCwd = join(project, 'packages', 'nested')
@@ -1262,19 +1322,38 @@ describe('review decisions: filesystem roots and URLs', () => {
 })
 
 describe('owner decision 5: Tailscale access', () => {
-  function tailscaleStub(mode: 'present' | 'https' | 'absent') {
+  function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent') {
     const bin = temporaryDir(`tailscale-${mode}`)
     const script = join(bin, 'tailscale')
     const serveStatus = mode === 'https'
       ? `printf 'https://host.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
-      : "printf 'No serve config'"
+      : mode === 'https-path'
+        ? `printf 'https://host.tailnet.ts.net\\n|-- /reports proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+        : mode === 'https-port'
+          ? `printf 'https://host.tailnet.ts.net:8443\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+          : mode === 'hijack'
+            ? `printf 'https://host.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:9999\\nhttps://other.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+            : "printf 'No serve config'"
     const body = mode !== 'absent'
-      ? `#!/bin/sh\nif [ "$1 $2" = "ip -4" ]; then printf '127.0.0.2\\n'; exit 0; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then ${serveStatus}; exit 0; fi\nexit 1\n`
+      ? `#!/bin/sh\nif [ "$1 $2" = "ip -4" ]; then ${mode === 'no-tailnet' ? 'exit 0' : "printf '127.0.0.2\\n'; exit 0"}; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then ${serveStatus}; exit 0; fi\nexit 1\n`
       : '#!/bin/sh\nexit 1\n'
     writeFileSync(script, body)
     chmodSync(script, 0o755)
     return bin
   }
+
+  it('parses the URL token from the captured Tailscale Serve header', () => {
+    const served = [
+      'https://desktop-ug8o6r2.tailc54ed8.ts.net (tailnet only)',
+      '|-- /          proxy http://127.0.0.1:47375',
+      '|-- /artifacts proxy http://127.0.0.1:48375',
+    ].join('\n')
+
+    expect(parseTailscaleServeUrl(served, 'desktop-ug8o6r2.tailc54ed8.ts.net', 48375))
+      .toBe('https://desktop-ug8o6r2.tailc54ed8.ts.net/artifacts')
+    expect(parseTailscaleServeUrl('https://% invalid\n|-- / proxy http://127.0.0.1:48375', 'desktop-ug8o6r2.tailc54ed8.ts.net', 48375))
+      .toBeNull()
+  })
 
   it('[B-02] accepts MagicDNS, rejects an evil Host, and reports the tailnet URL', async () => {
     const { project } = projectWithRoots('tailscale')
@@ -1291,7 +1370,12 @@ describe('owner decision 5: Tailscale access', () => {
     expect((await rawRequest(port, '/__wt-artifact-server/health', 'host.tailnet.ts.net')).status).toBe(200)
     expect((await rawRequest(port, '/__wt-artifact-server/health', `127.0.0.2:${port}`, '127.0.0.2')).status).toBe(200)
     expect((await rawRequest(port, '/__wt-artifact-server/register?session=remote&roots=%5B%5D', 'host.tailnet.ts.net')).status).toBe(404)
-    expect((await rawRequest(port, '/__wt-artifact-server/health', 'evil.example')).status).toBe(421)
+    const refused = await rawRequest(port, '/__wt-artifact-server/health', 'evil.example')
+    expect(refused.status).toBe(421)
+    expect(refused.body).toContain('evil.example')
+    expect(refused.body).toMatch(/not in the allow-list/i)
+    expect(refused.body).not.toContain('host.tailnet.ts.net')
+    expect(refused.body).not.toContain('127.0.0.2')
   })
 
   it('[B-02] sets remoteUrl to null when the stubbed tailscale binary is absent', async () => {
@@ -1306,6 +1390,23 @@ describe('owner decision 5: Tailscale access', () => {
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBeNull()
+    expect(state.tailnetDetection).toEqual({ status: 'unavailable', reason: expect.stringMatching(/could not/i) })
+    expect((await rawRequest(port, '/__wt-artifact-server/health', `localhost:${port}`)).status).toBe(200)
+    const status = await runCli(['status'], baseEnv(stateHome))
+    expect(status.stdout).toMatch(/tailnetDetection: unavailable.*could not/i)
+  })
+
+  it('distinguishes a successful no-tailnet result from a failed lookup', async () => {
+    const { project } = projectWithRoots('no-tailnet-result')
+    const stateHome = temporaryDir('no-tailnet-result-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const bin = tailscaleStub('no-tailnet')
+    spawnEnsure(project, baseEnv(stateHome, { PATH: bin, WT_ARTIFACT_SERVER_PORT: String(port) }))
+    const state = await waitForState(stateHome)
+    expect(state.remoteUrl).toBeNull()
+    expect(state.tailnetDetection).toEqual({ status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' })
   })
 
   it('[B-02] uses the HTTPS MagicDNS URL only when the stub reports a matching Serve proxy', async () => {
@@ -1328,9 +1429,105 @@ describe('owner decision 5: Tailscale access', () => {
     expect(remote.status).toBe(0)
     expect(remote.stdout.trim()).toBe(`https://host.tailnet.ts.net/${basename(project)}-reports/phone.md`)
   })
+
+  it('includes a path-mounted Serve mapping in the HTTPS artifact URL', async () => {
+    const { project } = projectWithRoots('tailscale-https-path')
+    const stateHome = temporaryDir('tailscale-https-path-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const bin = tailscaleStub('https-path')
+    spawnEnsure(project, baseEnv(stateHome, {
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+    }))
+    const state = await waitForState(stateHome)
+    expect(state.remoteUrl).toBe('https://host.tailnet.ts.net/reports')
+  })
+
+  it('preserves a non-default HTTPS port from the Serve mapping', async () => {
+    const { project } = projectWithRoots('tailscale-https-port')
+    const stateHome = temporaryDir('tailscale-https-port-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const bin = tailscaleStub('https-port')
+    spawnEnsure(project, baseEnv(stateHome, {
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+    }))
+    const state = await waitForState(stateHome)
+    expect(state.remoteUrl).toBe('https://host.tailnet.ts.net:8443')
+  })
+
+  it('does not claim a MagicDNS name whose mapping belongs to another service', async () => {
+    const { project } = projectWithRoots('tailscale-hijack')
+    const stateHome = temporaryDir('tailscale-hijack-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    const bin = tailscaleStub('hijack')
+    spawnEnsure(project, baseEnv(stateHome, {
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+    }))
+    const state = await waitForState(stateHome)
+    expect(state.remoteUrl).toBe(`http://127.0.0.2:${reservation.port}`)
+  })
+
+  it.skipIf(process.platform !== 'linux')('resolves the Windows Tailscale executable through WSL interop without an install path guess', async () => {
+    const { project } = projectWithRoots('tailscale-wsl')
+    const stateHome = temporaryDir('tailscale-wsl-state')
+    const bin = temporaryDir('tailscale-wsl-bin')
+    const windowsTailscale = join(bin, 'windows-tailscale.exe')
+    writeFileSync(windowsTailscale, '#!/bin/sh\nif [ "$1 $2" = "ip -4" ]; then printf "127.0.0.2\\n"; exit 0; fi\nif [ "$1 $2" = "status --json" ]; then printf \'{"Self":{"DNSName":"host.tailnet.ts.net."}}\'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then printf "No serve config"; exit 0; fi\nexit 1\n')
+    writeFileSync(join(bin, 'powershell.exe'), '#!/bin/sh\nprintf "C:\\\\Resolved\\\\tailscale.exe\\r\\n"\n')
+    writeFileSync(join(bin, 'wslpath'), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(windowsTailscale)}\n`)
+    for (const file of readdirSync(bin)) chmodSync(join(bin, file), 0o755)
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    spawnEnsure(project, baseEnv(stateHome, {
+      PATH: bin, WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_TEST_WSL: '1',
+    }))
+    const state = await waitForState(stateHome)
+    expect(state.remoteUrl).toBe(`http://127.0.0.2:${reservation.port}`)
+    expect(state.tailnetDetection).toEqual({ status: 'available', reason: null })
+  })
 })
 
 describe('review decisions: serving security matrix', () => {
+  it.skipIf(!CHROME)('runs only marked rich HTML scripts while Chrome blocks fetch and external images', async () => {
+    const project = temporaryDir('rich-project')
+    const root = temporaryDir('rich-root')
+    const stateHome = temporaryDir('rich-state')
+    let sinkRequests = 0
+    const sink = createServer((_request, response) => { sinkRequests += 1; response.end('reachable') })
+    await new Promise<void>((resolve, reject) => {
+      sink.once('error', reject)
+      sink.listen(0, '127.0.0.1', resolve)
+    })
+    const sinkAddress = sink.address()
+    if (!sinkAddress || typeof sinkAddress === 'string') throw new Error('sink has no port')
+    const script = `<script>document.body.dataset.script='ran';Promise.all([fetch('http://127.0.0.1:${sinkAddress.port}/fetch').then(()=>document.body.dataset.fetch='allowed',()=>document.body.dataset.fetch='blocked'),new Promise(resolve=>{const image=new Image();image.onload=()=>{document.body.dataset.image='allowed';resolve()};image.onerror=()=>{document.body.dataset.image='blocked';resolve()};image.src='http://127.0.0.1:${sinkAddress.port}/image'})]).then(()=>document.documentElement.dataset.done='yes')</script>`
+    writeFileSync(join(root, 'rich.html'), `<!-- wt-artifact-server: rich --><body data-script="not-run" data-fetch="pending" data-image="pending">${script}</body>`)
+    writeFileSync(join(root, 'plain.html'), `<body data-script="not-run">${script}</body>`)
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    try {
+      spawnEnsure(project, baseEnv(stateHome, {
+        WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
+      }))
+      await waitForState(stateHome, (state) => state.roots.length === 1)
+      const rich = await renderInChrome(`http://localhost:${reservation.port}/artifacts/rich.html`)
+      const plain = await renderInChrome(`http://localhost:${reservation.port}/artifacts/plain.html`)
+      expect(rich.code, rich.stderr).toBe(0)
+      expect(rich.stdout).toContain('data-script="ran"')
+      expect(rich.stdout).toContain('data-fetch="blocked"')
+      expect(rich.stdout).toContain('data-image="blocked"')
+      expect(rich.stdout).toContain('data-done="yes"')
+      expect(plain.code, plain.stderr).toBe(0)
+      expect(plain.stdout).toContain('data-script="not-run"')
+      expect(plain.stdout).not.toContain('data-script="ran"')
+      expect(sinkRequests).toBe(0)
+    } finally {
+      await closeServer(sink)
+    }
+  }, 20_000)
+
   it('[B-02][E-02][E-03] serves each type with CSP and rejects aliases, traversal, hosts, and methods', async () => {
     const project = temporaryDir('security-project')
     const root = temporaryDir('security-root')

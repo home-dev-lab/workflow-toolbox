@@ -49,6 +49,7 @@ describe('guard-journal test-suite isolation', () => {
     // the operator's real journal. After the fix, test-support/guard-journal-isolation.setup.ts
     // (wired via vitest.config.mts's `setupFiles`) sets it before any test in this file runs.
     expect(process.env.WT_GUARD_JOURNAL_DIR).toBeTruthy()
+    expect(process.env.WT_GUARD_JOURNAL_TEST_ORIGIN).toBe('1')
     // And it must NOT itself resolve to the real default location — a redirect that happens to
     // equal the thing it's supposed to redirect away from protects nothing.
     expect(process.env.WT_GUARD_JOURNAL_DIR).not.toBe(realDefaultJournalDir())
@@ -77,7 +78,7 @@ describe('guard-journal test-suite isolation', () => {
     expect(res.stdout).toContain('hookSpecificOutput')
 
     const redirectedEntries = readAllEntries(redirectDir)
-    expect(redirectedEntries.some((e) => e.guard === 'wt-find-newermt-format-guard-hook.mjs')).toBe(true)
+    expect(redirectedEntries.some((e) => e.guard === 'wt-find-newermt-format-guard-hook.mjs' && e.origin === 'test')).toBe(true)
 
     const afterCount = readAllEntries(realDefaultJournalDir()).length
     expect(afterCount).toBe(beforeCount) // the real location is untouched — the discriminating assertion

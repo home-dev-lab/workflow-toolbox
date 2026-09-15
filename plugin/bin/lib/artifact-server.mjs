@@ -220,6 +220,33 @@ export function readArtifactDiscovery(options = {}) {
   }
 }
 
+export function parseTailscaleServeUrl(served, dnsName, port) {
+  if (!dnsName || !Number.isInteger(port)) return null
+  let endpoint = null
+  const candidates = new Set()
+  for (const line of served.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('https://')) {
+      try {
+        const parsed = new URL(trimmed.split(/\s+/, 1)[0])
+        endpoint = parsed.protocol === 'https:' && parsed.hostname.toLowerCase() === dnsName.toLowerCase() &&
+          parsed.pathname === '/' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash
+          ? parsed.origin
+          : null
+      } catch { endpoint = null }
+      continue
+    }
+    const mapping = /^\|--\s+(\/\S*)\s+proxy\s+(http:\/\/127\.0\.0\.1:\d+)\/?\s*$/.exec(trimmed)
+    if (!endpoint || !mapping || mapping[2] !== `http://127.0.0.1:${port}`) continue
+    try {
+      const mounted = new URL(mapping[1], `${endpoint}/`)
+      if (mounted.origin !== endpoint || mounted.search || mounted.hash || mounted.pathname.split('/').includes('..')) continue
+      candidates.add(mounted.pathname === '/' ? endpoint : `${endpoint}${mounted.pathname.replace(/\/$/, '')}`)
+    } catch {}
+  }
+  return candidates.size === 1 ? [...candidates][0] : null
+}
+
 export function artifactUrlResult(absPath, options = {}) {
   if (typeof absPath !== 'string' || !path.isAbsolute(absPath)) return { url: null, reason: 'path must be absolute' }
   const discovery = readArtifactDiscovery(options)
@@ -248,22 +275,54 @@ export function artifactUrl(absPath, options = {}) {
 }
 
 export function detectTailscale(port) {
+  const run = (command, args) => execFileSync(command, args, {
+    encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  let command = 'tailscale'
+  let ipOutput
   try {
-    const ip = execFileSync('tailscale', ['ip', '-4'], { encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] }).trim().split(/\s+/)[0]
-    if (!ip) return { ip: null, dnsName: null, remoteUrl: null }
+    ipOutput = run(command, ['ip', '-4'])
+  } catch {
+    try {
+      const windowsPath = run('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        '(Get-Command tailscale.exe -ErrorAction SilentlyContinue).Source',
+      ]).trim()
+      if (!windowsPath) throw new Error('PowerShell did not resolve tailscale.exe')
+      command = process.platform === 'win32' ? windowsPath : run('wslpath', ['-u', windowsPath]).trim()
+      if (!command) throw new Error('wslpath did not resolve the Windows executable')
+      ipOutput = run(command, ['ip', '-4'])
+    } catch {
+      return {
+        ip: null, dnsName: null, remoteUrl: null,
+        detection: { status: 'unavailable', reason: 'could not run tailscale or resolve it through Windows interop' },
+      }
+    }
+  }
+  try {
+    const ip = ipOutput.trim().split(/\s+/)[0]
+    if (!ip) return {
+      ip: null, dnsName: null, remoteUrl: null,
+      detection: { status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' },
+    }
     let dnsName = null
     try {
-      const status = JSON.parse(execFileSync('tailscale', ['status', '--json'], { encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] }))
+      const status = JSON.parse(run(command, ['status', '--json']))
       dnsName = typeof status?.Self?.DNSName === 'string' ? status.Self.DNSName.replace(/\.$/, '') : null
     } catch {}
-    let https = false
+    let httpsUrl = null
     try {
-      const served = execFileSync('tailscale', ['serve', 'status'], { encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'] })
-      https = Boolean(dnsName && served.includes(`https://${dnsName}`) && served.includes(`http://127.0.0.1:${port}`))
+      httpsUrl = parseTailscaleServeUrl(run(command, ['serve', 'status']), dnsName, port)
     } catch {}
-    return { ip, dnsName, remoteUrl: https ? `https://${dnsName}` : `http://${ip}:${port}` }
+    return {
+      ip, dnsName, remoteUrl: httpsUrl ?? `http://${ip}:${port}`,
+      detection: { status: 'available', reason: null },
+    }
   } catch {
-    return { ip: null, dnsName: null, remoteUrl: null }
+    return {
+      ip: null, dnsName: null, remoteUrl: null,
+      detection: { status: 'unavailable', reason: 'tailscale returned an unreadable IPv4 result' },
+    }
   }
 }
 

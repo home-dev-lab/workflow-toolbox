@@ -2,9 +2,9 @@
 name: artifact-server
 user-invocable: true
 description: >-
-  Use when a local file needs a clickable localhost or tailnet link in chat or a Function Hooks
-  pane, or when the user asks how to configure, inspect, stop, or restart the artifact server.
-argument-hint: "[file-path]"
+  Use when handing the user a report or artifact path and a clickable localhost or tailnet link
+  should be provided, or when the user asks how to configure, inspect, stop, or restart the server.
+argument-hint: "[absolute-file-path]"
 ---
 
 # Artifact server
@@ -13,6 +13,8 @@ The artifact server turns registered local files into clickable links. A persist
 each Claude session starts or attaches to one per-user server and keeps that session registered even
 while idle. It is enabled by default; disable the `artifact_server` plugin option in Claude Code
 settings, or use the `WT_ARTIFACT_SERVER=0` environment fallback when that option is absent.
+A one-line SessionStart notice gives the link command only after probing a live server; otherwise it
+reports status unknown without suggesting a link that may be dead.
 
 The user-facing plugin options are `artifact_server`, `artifact_server_roots`,
 `artifact_server_port`, `artifact_server_idle_grace_s`, and `artifact_server_deny`. A plugin option
@@ -39,15 +41,26 @@ Files mount at `/<name>/...`. Different sessions can register different roots; t
 their deduplicated union. Each monitor owns its registration and removes it when that session exits.
 There is no HTTP registration or other network control endpoint.
 
-Always ask the helper for a link. It picks the longest matching root and exits 3 outside all roots:
+Always ask the helper for a link. Never hand the user a file path: whoever proposes an artifact
+must provide its complete URL. Prefer the remote URL whenever one exists because it works both on
+the server machine and from another tailnet device; `localhost` only works on the server machine.
+Try `--remote` first, then fall back to the local command only when it exits 3. The helper picks the
+longest matching root and exits 3 outside all roots:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md"
 node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md" --remote
+node "${CLAUDE_PLUGIN_ROOT}/bin/wt-artifact-server.mjs" url "/absolute/path/to/report.md"
 ```
 
 `--remote` exits 3 when no tailnet URL is available. In a normal shell, replace
 `${CLAUDE_PLUGIN_ROOT}` with the installed plugin root.
+
+The deliverable is the single file's complete URL, not the root index. Index browsing is only a
+local convenience and does not survive every path-mounted proxy: in particular, a trailing slash on
+a Tailscale Serve mount root such as `/artifacts/` routes to the upstream root handler rather than
+this server. Never construct or hand over such a mount-root link. Root-relative links in rendered
+Markdown, such as `[other](/report.md)`, also target the domain root under a path mount because the
+server cannot infer the proxy-owned prefix; artifact authors must use document-relative links.
 
 ## Lifecycle
 
@@ -86,8 +99,16 @@ weaker identity check and require `--force`. These controls are CLI-only and are
 ## Tailscale
 
 The server always binds `127.0.0.1`. If `tailscale ip -4` detects a local Tailscale address, it also
-binds that address and accepts the machine's MagicDNS name from `tailscale status --json`. Failure
-to detect Tailscale degrades to local-only operation. The server never configures Tailscale Serve.
+binds that address and accepts the machine's MagicDNS name from `tailscale status --json`. On WSL,
+if `tailscale` is unavailable, detection asks PowerShell to resolve `tailscale.exe` and converts that
+returned path with `wslpath`; no Windows install directory is assumed. Discovery distinguishes a
+successful lookup with no tailnet IP from an unavailable lookup, while local serving remains usable.
+The server never configures Tailscale Serve.
+
+Detection is a precondition for proxied access, not an optional convenience. Every Serve request
+presents the MagicDNS Host, and that name enters the server's Host allow-list only when detection
+finds it. A `421 Misdirected Request` therefore means the presented Host was not detected and admitted;
+inspect Tailscale detection and server status before debugging the proxy, DNS, or firewall.
 
 The direct remote URL is `http://<tailscale-ip>:<port>`. Function Hooks `Link` requires HTTPS; an
 operator can configure the tailnet-only proxy manually:
@@ -96,8 +117,10 @@ operator can configure the tailnet-only proxy manually:
 tailscale serve --bg --https=443 http://127.0.0.1:<port>
 ```
 
-When that proxy is detected, `--remote` uses `https://<machine>.<tailnet>.ts.net`. Never use
-`tailscale funnel`, which would expose the server publicly.
+When an exact proxy mapping is detected, `--remote` preserves its HTTPS hostname, non-default port,
+and mount path. Ambiguous tables or mappings to another backend fall back to the direct IP URL rather
+than composing a plausible but wrong HTTPS link. Never use `tailscale funnel`, which would expose
+the server publicly.
 
 There is no password, token, cookie, or authentication beyond Tailscale membership. Every device on
 the tailnet that can reach the server can read every allowed file under every registered root. The
@@ -118,9 +141,14 @@ the tailnet.
   `WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS`, is also env-only. Policy is per registration and
   is checked against canonical path segments plus the root basename, so benign symlink aliases do
   not bypass it.
-- Markdown raw HTML is escaped. `.txt`, `.log`, and `.json` are escaped; `.html` is served unchanged
-  but sandboxed by CSP without scripts or same-origin authority. Raw SVG and unknown content use the
-  same sandbox CSP; generated Markdown and indexes use a strict no-script CSP.
+- Markdown raw HTML is escaped. `.txt`, `.log`, and `.json` are escaped. HTML is unchanged and
+  sandboxed without scripts by default. An HTML file whose first non-whitespace content is the
+  visible `<!-- wt-artifact-server: rich -->` marker opts into inline scripts, still without
+  same-origin authority, network connections, or external images. The marker travels inside the
+  file; an extension can be lost on rename, while a sibling policy file can drift away. Rich mode
+  narrows blast radius but does not make the artifact trusted: opening it still runs unreviewed code
+  the owner chose to open. Raw SVG and unknown content retain the no-script sandbox; generated
+  Markdown and indexes use a strict no-script CSP.
 - Health reports service version and OS uid. UID and Linux command-line checks prevent cross-user
   attachment and accidental stale-PID signalling; they are not cryptographic attestation against a
   malicious process running as the same user. There is no rate limit or file-size limit.

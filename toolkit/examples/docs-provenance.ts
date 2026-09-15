@@ -61,6 +61,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The artifact-server skill documents the default-on persistent monitor, registration, discovery, and bind-race startup.',
   },
   {
+    script: 'plugin/bin/wt-artifact-server-context-hook.mjs',
+    status: 'mapped',
+    reason: 'The artifact-server skill documents the conditional SessionStart link-generation announcement.',
+  },
+  {
     script: 'plugin/bin/wt-intake-triage.mjs',
     status: 'missing-doc-surface',
     reason: 'The pilot-orchestrator template is its executable caller; this focused intake helper adds no standalone operator guide.',
@@ -516,6 +521,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PreToolUse merge-chain warning guard under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-concurrent-test-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse concurrent-test warning guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-piped-gate-exit-code-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this PreToolUse piped control-gate exit-code warning guard under Shipped Hooks, Guards & Monitors.',
@@ -634,6 +644,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     sources: [
       'plugin/bin/wt-artifact-server.mjs',
       'plugin/bin/wt-artifact-server-ensure.mjs',
+      'plugin/bin/wt-artifact-server-context-hook.mjs',
       'plugin/bin/lib/artifact-server.mjs',
       'plugin/skills/artifact-server/',
     ],
@@ -971,6 +982,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-unquoted-tool-glob-guard-hook.mjs',
       'plugin/bin/wt-var-colon-modifier-guard-hook.mjs',
        'plugin/bin/wt-merge-chain-guard-hook.mjs',
+       'plugin/bin/wt-concurrent-test-guard-hook.mjs',
        'plugin/bin/wt-piped-gate-exit-code-guard-hook.mjs',
        'plugin/bin/wt-missing-package-script-guard-hook.mjs',
       'plugin/bin/wt-main-guard-hook.mjs',

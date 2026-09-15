@@ -41,8 +41,14 @@
 //     millisecond, on Windows, is UNVERIFIED here and stated as such rather than assumed safe.
 //     The single-writer case (the overwhelmingly common one — one guard, one hook invocation)
 //     is unaffected on every platform.
-//   - `WT_GUARD_JOURNAL_DIR` / `WT_GUARD_JOURNAL_NOW` env overrides exist for tests only (see
-//     guard-journal.test.ts) — normal operation never sets them.
+//   - Origin: an absolute target under Node's native `os.tmpdir()` is `test`; another absolute
+//     target is `real`; no usable target is `unknown`. Windows drive letters/separators are handled
+//     by the native `path` implementation, and macOS's per-user /var/folders temp root is supplied
+//     by `os.tmpdir()`. A non-native path spelling cannot be recognised safely and stays `unknown`,
+//     never `real`. Selftests set `WT_GUARD_JOURNAL_TEST_ORIGIN=1` so guards that omit cwd are still
+//     marked at this one write seam.
+//   - `WT_GUARD_JOURNAL_DIR` / `WT_GUARD_JOURNAL_NOW` / `WT_GUARD_JOURNAL_TEST_ORIGIN` env
+//     overrides exist for tests only (see guard-journal.test.ts) — normal operation never sets them.
 
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -186,6 +192,37 @@ function journalPath() {
   return path.join(baseDir(), `${isoWeekKey(now())}.ndjson`)
 }
 
+/**
+ * The directory the decision was made in. A guard hook runs in the session's own directory, so
+ * when a call site omits `cwd` the guard PROCESS's cwd is that same directory — not a guess.
+ *
+ * ⚠ Without this fallback the origin split is honest and EMPTY: measured on this tree, 26 of the
+ * 33 files that journal never pass `cwd`, and they include the loudest guards. Their `real` count
+ * would be pinned at zero forever, so the recurrence threshold — which reads `real` only — could
+ * never fire for them. A count structurally unable to reach its threshold is worse than an
+ * inflated one, because the inflated one at least fired sometimes.
+ *
+ * It cannot misclassify a test: the explicit `WT_GUARD_JOURNAL_TEST_ORIGIN` marker is consulted
+ * first, and the test harness sets it for every guard process it spawns.
+ */
+function effectiveCwd(cwd) {
+  if (typeof cwd === 'string' && cwd) return cwd
+  try { return process.cwd() } catch { return null }
+}
+
+function firingOrigin(cwd) {
+  try {
+    const marker = process.env.WT_GUARD_JOURNAL_TEST_ORIGIN
+    if (marker !== undefined) return marker === '1' ? 'test' : 'unknown'
+    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return 'unknown'
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(cwd))
+    const underTempRoot = relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
+    return underTempRoot ? 'test' : 'real'
+  } catch {
+    return 'unknown'
+  }
+}
+
 export function guardMode() {
   const raw = process.env.WT_GUARD_MODE
   return typeof raw === 'string' && raw.trim().toLowerCase() === 'observe' ? 'observe' : 'enforce'
@@ -221,6 +258,10 @@ export function recordGuardEvent(event = {}) {
   try {
     const { guard, decision, class: cls, reason, cwd, session, agent, evidence } = event || {}
     if (!guard || !['blocked', 'warned', 'silent'].includes(decision)) return
+    // Classify from the raw target before secret masking can alter a path segment, and fall back
+    // to this process's own directory when the call site omitted one — see effectiveCwd.
+    const target = effectiveCwd(cwd)
+    const origin = firingOrigin(target)
     const mask = secretGuardMasker()
     const dir = baseDir()
     mkdirSync(dir, { recursive: true })
@@ -237,9 +278,10 @@ export function recordGuardEvent(event = {}) {
       guard,
       decision: recorded,
       mode,
+      origin,
       ...(cls ? { class: mask(String(cls)) } : {}),
       ...(reason ? { reason: mask(String(reason)).slice(0, MAX_REASON_LEN) } : {}),
-      ...(cwd ? { cwd: mask(String(cwd)) } : {}),
+      ...(target ? { cwd: mask(String(target)) } : {}),
       ...(safeSession ? { session: safeSession } : {}),
       ...(safeAgent ? { agent: safeAgent } : {}),
       pid: process.pid,

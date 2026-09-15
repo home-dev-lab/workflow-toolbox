@@ -15,8 +15,14 @@ function fixture() {
   const bundle = mkdtempSync(join(tmpdir(), 'wt-pilot-fidelity-bundle-')); rmSync(bundle, { recursive: true }); roots.push(bundle)
   mkdirSync(join(root, '.lane'), { recursive: true })
   writeFileSync(join(root, '.lane', 'pilot-report.md'), '## Implemented\n- receipt\n')
-  const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
-  git('init', '-q'); git('add', '.'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base')
+  const gitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1',
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t',
+    GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t',
+  }
+  const git = (...args: string[]) => spawnSync('git', ['-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8', env: gitEnv })
+  git('init', '-q'); git('add', '.'); git('commit', '-qm', 'base')
   const run = (args: string[]) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' })
   const head = git('rev-parse', 'HEAD').stdout.trim()
   const freeze = run(['freeze', '--root', root, '--out-dir', bundle, '--card', '186', '--session', 'sdk-1', '--base', 'base', '--head', head, '--file', '.lane/pilot-report.md'])
