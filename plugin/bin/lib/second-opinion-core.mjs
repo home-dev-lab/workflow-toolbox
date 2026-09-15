@@ -47,7 +47,7 @@ function runCodex({ companion, cwd, effort, request, env }) {
   return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 
-function parseProcessLines(stdout) {
+export function parseProcessLines(stdout) {
   const pids = []
   for (const line of stdout.split(/\r?\n/)) {
     if (!/openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(line)) continue
@@ -57,19 +57,33 @@ function parseProcessLines(stdout) {
   return pids
 }
 
-function listBrokers(platform = process.platform) {
+export function listProcessTable(platform = process.platform) {
   try {
     if (['aix', 'darwin', 'freebsd', 'linux', 'sunos'].includes(platform)) {
-      return { supported: true, pids: parseProcessLines(execFileSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf8' })) }
+      const stdout = execFileSync('ps', ['-eo', 'pid=,ppid=,etimes=,args='], { encoding: 'utf8' })
+      const processes = stdout.split(/\r?\n/).flatMap((line) => {
+        const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line)
+        return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: Number(match[3]) * 1000, command: match[4] }] : []
+      })
+      return { supported: true, processes }
     }
     if (platform === 'win32') {
-      const command = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1}' -f $_.ProcessId,$_.CommandLine }"
-      return { supported: true, pids: parseProcessLines(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' })) }
+      const command = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.CommandLine }"
+      const stdout = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' })
+      const processes = stdout.split(/\r?\n/).flatMap((line) => {
+        const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line)
+        return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: null, command: match[3] }] : []
+      })
+      return { supported: true, processes }
     }
-  } catch {
-    return { supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' }
-  }
-  return { supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' }
+  } catch {}
+  return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
+}
+
+export function listBrokers(platform = process.platform) {
+  const table = listProcessTable(platform)
+  if (!table.supported) return { supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' }
+  return { supported: true, pids: table.processes.filter((process) => /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(process.command)).map((process) => process.pid) }
 }
 
 function probeQuota(env) {

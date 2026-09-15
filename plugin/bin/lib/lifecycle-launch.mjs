@@ -6,10 +6,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
-import { launchProcess, launchProcessWithOutput, terminateProcessGroup, waitForLaneReceipt } from './lifecycle-receipts.mjs'
+import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './lifecycle-receipts.mjs'
+import { classifyLane, shellQuote, supervisionPaths } from './lane-supervisor-core.mjs'
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
+const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
+const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
 
 function terminalExit(content) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(content)?.[1] ?? null
@@ -65,6 +68,7 @@ export function createLifecycleLaunch({
   laneLauncher,
   lanePollMs,
   laneWaitMs,
+  lanePlatform,
   gateRunner,
   now = () => Date.now(),
   recordLaneStart = () => null,
@@ -185,7 +189,7 @@ export function createLifecycleLaunch({
       fs.rmSync(canonicalLog, { force: true })
       fs.rmSync(canonicalReport, { force: true })
       let snapshot = null
-      let group = 'already-gone'
+      let group = 'worker-owned'
       let laneRecord = null
       try {
         snapshot = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-lane-launch-'))
@@ -196,6 +200,13 @@ export function createLifecycleLaunch({
         const snapshotBrief = path.join(snapshot, 'brief.md')
         fs.writeFileSync(snapshotBrief, launchBriefs.launch, { flag: 'wx', mode: 0o400 })
         fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
+        const model = phase === 'tdd' || phase === 'harden'
+          ? frozenModels.code
+          : phase === 'refutation'
+            ? frozenModels.refutation
+            : phase === 'critic'
+              ? frozenModels.critic
+              : frozenModels.review
         let launch
         try {
           const launcher = laneLauncher ?? path.join(
@@ -203,13 +214,6 @@ export function createLifecycleLaunch({
             '..',
             executor === 'claude-sdk' ? 'wt-claude-executor.mjs' : 'wt-lane.mjs',
           )
-          const model = phase === 'tdd' || phase === 'harden'
-            ? frozenModels.code
-            : phase === 'refutation'
-              ? frozenModels.refutation
-              : phase === 'critic'
-                ? frozenModels.critic
-              : frozenModels.review
           laneRecord = recordLaneStart({ phase, model, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json` })
           launch = await launchProcessWithOutput(
             process.execPath,
@@ -220,6 +224,7 @@ export function createLifecycleLaunch({
               '--brief', snapshotBrief,
               '--log', log,
               '--timeout', String(timeout),
+              ...(executor === 'claude-sdk' ? [] : ['--owner', 'pilot', '--owner-token', nonce, '--brief-cleanup-dir', snapshot]),
               // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
               ...(executor === 'claude-sdk' ? ['--role', phase] : []),
               ...(executor === 'claude-sdk' && ['critic', 'review', 'refutation'].includes(phase) && knowledgeBaseIndex
@@ -233,7 +238,7 @@ export function createLifecycleLaunch({
         }
         const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
         if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return refusal(`${state.phase}->next`, 'launcher pid', log)
-        const logEntry = await waitForLaneReceipt({
+        let logEntry = await waitForLaneReceipt({
           log,
           nonce,
           timeoutMs: laneWaitMs ?? timeout * 1000,
@@ -242,7 +247,94 @@ export function createLifecycleLaunch({
           readAttestation,
           readRegularFile,
         })
-        group = await terminateProcessGroup(workerPid)
+        if (!logEntry) {
+          const runId = /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null
+          const supervisionFile = runId ? supervisionPaths(root, runId).record : null
+          const supervisionPointer = runId ? supervisionPaths(root).pointer : null
+          let status = supervisionFile ? readRegularFile(supervisionFile) : null
+          if (runId) {
+            let pointerRunId = null
+            try { pointerRunId = JSON.parse(readRegularFile(supervisionPointer)).runId } catch {}
+            const preflightDeadline = Date.now() + LANE_PREFLIGHT_BOUND_MS
+            const workerLaunching = () => { try { return JSON.parse(status).state === 'launching' } catch { return false } }
+            while ((!status || pointerRunId !== runId || workerLaunching()) && Date.now() < preflightDeadline) {
+              await new Promise((resolve) => setTimeout(resolve, 25))
+              try { pointerRunId = JSON.parse(readRegularFile(supervisionPointer)).runId } catch {}
+              status = readRegularFile(supervisionFile)
+            }
+          }
+          let parsed = null
+          const ownerControl = `extend with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision extend --owner-token ${shellQuote(nonce)}, or abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision abandon --owner-token ${shellQuote(nonce)}`
+          const rerun = 'after abandon completes, re-run this lifecycle lane phase to launch a fresh owner-bound lane and brief'
+          try {
+            parsed = JSON.parse(status)
+            let verdict = classifyLane(parsed, { platform: lanePlatform })
+            if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'running') {
+              const transitionDueAt = Date.parse(parsed.decisionTransitionDueAt)
+              while (!logEntry && verdict.status === 'running' && parsed.workerPid === workerPid && Date.now() <= transitionDueAt) {
+                logEntry = await waitForLaneReceipt({
+                  log,
+                  nonce,
+                  timeoutMs: Math.min(25, Math.max(0, transitionDueAt - Date.now())),
+                  launchedAt,
+                  pollMs: lanePollMs,
+                  readAttestation,
+                  readRegularFile,
+                })
+                status = readRegularFile(supervisionFile)
+                parsed = JSON.parse(status)
+                verdict = classifyLane(parsed, { platform: lanePlatform })
+              }
+            }
+            verdict = classifyLane(parsed, { platform: lanePlatform })
+            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'decision-needed') {
+              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; ${ownerControl}; ${rerun}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
+              snapshot = null
+              return `lane ${phase} TIMEOUT: ${detail}`
+            }
+            if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'running') {
+              snapshot = null
+              return `lane ${phase} TIMEOUT: owner=${parsed.owner}; live worker is still completing its bounded timeout transition; ${ownerControl}; ${rerun}; wait for the decision point before choosing; no process was killed`
+            }
+            if (!logEntry && verdict.status === 'worker-gone-child-alive') {
+              snapshot = null
+              return `lane ${phase} TIMEOUT: worker-gone-child-alive; surviving child pid=${parsed.childPid}; ${ownerControl}; ${rerun}; no process was killed`
+            }
+            if (!logEntry && verdict.status === 'unknown') {
+              snapshot = null
+              return `lane ${phase} TIMEOUT: unknown liveness (${verdict.reason}); ${ownerControl}; ${rerun}; no process was killed`
+            }
+            if (!logEntry && verdict.status === 'gone') return `lane ${phase} EXIT=missing`
+            if (!logEntry && verdict.status === 'terminal') return `lane ${phase} TERMINAL receipt=missing`
+            if (!logEntry) {
+              snapshot = null
+              return `lane ${phase} TIMEOUT: ${verdict.status}; ${ownerControl}; ${rerun}; no process was killed`
+            }
+          } catch {}
+          if (!logEntry) {
+            snapshot = null
+            return `lane ${phase} TIMEOUT: unknown liveness; ${ownerControl}; ${rerun}; no process was killed`
+          }
+        }
+        if (logEntry) {
+          const runId = /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null
+          if (runId) {
+            let record = null
+            try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId).record)) } catch {}
+            let verdict = classifyLane(record, { platform: lanePlatform })
+            const settleDeadline = Date.now() + 1_000
+            while (!['terminal', 'gone'].includes(verdict.status) && Date.now() < settleDeadline) {
+              await new Promise((resolve) => setTimeout(resolve, lanePollMs))
+              try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId).record)) } catch {}
+              verdict = classifyLane(record, { platform: lanePlatform })
+            }
+            if (!['terminal', 'gone'].includes(verdict.status)) {
+              const ownerControl = `abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision abandon --owner-token ${shellQuote(nonce)}`
+              snapshot = null
+              return `lane ${phase} TIMEOUT: receipt arrived while liveness is ${verdict.status}; ${ownerControl}; no process was killed`
+            }
+          }
+        }
         recordLaneEnd(laneRecord, now())
         const reportStat = regularFile(report)
         if (!logEntry || !regularFile(log) || !reportStat) return `lane ${phase} EXIT=missing`

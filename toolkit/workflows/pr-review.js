@@ -2287,7 +2287,7 @@ ${renderClaim(claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
-      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/skills/external-lane/"],
+      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-control.mjs", "plugin/bin/wt-lane-orphan-watch.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/bin/lib/lane-supervisor-core.mjs", "plugin/skills/external-lane/"],
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
@@ -2596,6 +2596,7 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-guard-recurrence-hook.mjs",
         "plugin/bin/wt-lane-saturation-hook.mjs",
         "plugin/bin/wt-lane-consent-gate-hook.mjs",
+        "plugin/bin/wt-lane-orphan-watch.mjs",
         "plugin/bin/wt-arc-watch.mjs",
         "plugin/bin/wt-autonomy-arm.mjs",
         "plugin/bin/wt-autonomy-watch.mjs",

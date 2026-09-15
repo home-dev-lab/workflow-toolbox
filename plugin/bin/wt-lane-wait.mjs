@@ -2,8 +2,8 @@
 // wt-lane-wait.mjs -- wait for one detached external lane without reading its log body.
 
 import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
 import path from 'node:path'
+import { classifyLane, readCurrentSupervision } from './lib/lane-supervisor-core.mjs'
 
 const DEFAULT_POLL = 30
 const DEFAULT_TIMEOUT = 5400
@@ -38,22 +38,6 @@ function pidFromFile(file) {
   } catch { return null }
 }
 
-function alive(pid) {
-  if (process.platform === 'win32') {
-    try {
-      return new RegExp(`\\b${pid}\\b`).test(execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH'], { encoding: 'utf8' }))
-    } catch { return false }
-  }
-  try {
-    process.kill(pid, 0)
-    try {
-      const state = execFileSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8' }).trim()
-      if (state.startsWith('Z')) return false
-    } catch { /* kill -0 remains the authoritative liveness check */ }
-    return true
-  } catch (error) { return error?.code === 'EPERM' }
-}
-
 function lastLine(file) {
   let fd
   try {
@@ -85,6 +69,10 @@ function main() {
   const opts = parse(process.argv.slice(2))
   if (opts.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (opts.error) { process.stderr.write(`wt-lane-wait: ${opts.error}\n${usage()}\n`); return 2 }
+  if (typeof classifyLane !== 'function' || typeof readCurrentSupervision !== 'function') {
+    process.stderr.write('wt-lane-wait: Refused: the installed workflow-toolbox plugin is too old for this adopted waiter; update the plugin and re-adopt wt-lane-wait.mjs.\n')
+    return 1
+  }
   const lane = path.join(opts.dir, '.lane')
   const pid = opts.pid === null ? pidFromFile(path.join(lane, 'pid')) : Number(opts.pid)
   if (!pid) { process.stderr.write('wt-lane-wait: no valid lane pid; pass --pid or provide .lane/pid\n'); return 2 }
@@ -92,7 +80,9 @@ function main() {
   const deadline = Date.now() + opts.timeout * 1000
   while (Date.now() <= deadline) {
     const marker = lastLine(log)
-    if (!alive(pid)) {
+    const record = readCurrentSupervision(opts.dir)
+    const verdict = record?.workerPid === pid ? classifyLane(record) : classifyLane(null)
+    if (['terminal', 'gone'].includes(verdict.status)) {
       if (/^EXIT=(-?\d+)$/.test(marker ?? '')) {
         const exit = Number(/^EXIT=(-?\d+)$/.exec(marker)[1])
         process.stdout.write(`LANE DONE exit=${exit} report=${reportSize(path.join(lane, 'report.md'))} log=${log}\n`)

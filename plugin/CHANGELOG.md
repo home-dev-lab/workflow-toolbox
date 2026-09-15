@@ -31,6 +31,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- Lane supervision now defaults to warn-only `would-clean` evidence, derives orphanhood only from a
+  terminal supervision record plus a gone launcher, bounds default extensions, and stores immutable
+  per-run records behind an atomic pointer. Timeout decisions are limited to `extend` and `abandon`;
+  relaunching from retained worktree state is an owner-driven abandon followed by a normal fresh
+  launch. The lifecycle polls a live `running` worker through its recorded timeout-transition bound
+  instead of killing it after a fixed grace. The watcher owner-filters attributable output, emits
+  notices independently of guarded audit writes, reports journal failures and unjournaled kills,
+  rotates its journal, and retries failures. Promote cleanup to `enforce`
+  only after at least 100 audited `would-clean`
+  firings show zero live victims. Codex brokers remain observed only because idleness detection is not
+  implemented. Existing adopted launchers must be re-adopted after this change.
 - The open-work Stop gate now detects project-scoped detached pilot/lane runners and fresh
   non-terminal launcher-owned lane logs; discovers suite worktrees from a non-Git umbrella;
   bounds process and log reads; reports live harness tasks without counting them because the Stop
@@ -39,6 +50,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The SDK pilot plan check now reads a `### ` heading as a task when no list line sits under it, so a
   plan written with task headings is no longer refused, and a heading task missing its DoD is no longer
   accepted through an unrelated bullet; the refusal names both accepted task shapes.
+
+## [0.175.0] - 2026-09-14
+
+### Added
+- Added an always-on lane/orphan watcher, owner-mediated timeout decisions, exact-identity orphan
+  cleanup, and an append-only lane-supervisor journal. Live work is never killed merely for age or
+  silence; no-answer extensions are bounded before the recorded default becomes `abandon`.
 
 ## [0.174.0] - 2026-09-14
 

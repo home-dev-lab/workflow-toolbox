@@ -198,6 +198,7 @@ export function createLifecycleStateMachine({
   laneLauncher = null,
   lanePollMs = 25,
   laneWaitMs = null,
+  lanePlatform = process.platform,
   gateRunner = null,
   git = execFileSync,
   copy = fs.cpSync,
@@ -308,7 +309,7 @@ export function createLifecycleStateMachine({
       const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
       const content = `${authoritative}${authoritative ? '## Pilot instructions\n\n' : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
       return snapshotDir
-        ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; do not rely on background processes surviving the lane.\n` }
+        ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; if another lane is started after this one ends, resume from the existing worktree state and preserve the same report and receipt contract. Do not rely on other background processes surviving the lane.\n` }
         : content
     }
     const artifacts = []
@@ -385,6 +386,7 @@ export function createLifecycleStateMachine({
     laneLauncher,
     lanePollMs,
     laneWaitMs,
+    lanePlatform,
     gateRunner,
     now,
     recordLaneStart: ({ phase, model, startedAt, usageFile }) => {

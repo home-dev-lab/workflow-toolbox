@@ -101,6 +101,16 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
   },
   {
+    script: 'plugin/bin/wt-lane-control.mjs',
+    status: 'mapped',
+    reason: 'Known-issues and the external-lane skill document the owner decision CLI and its identity refusals.',
+  },
+  {
+    script: 'plugin/bin/wt-lane-orphan-watch.mjs',
+    status: 'mapped',
+    reason: 'Known-issues and the monitor README document automatic arming, safe cleanup classes, evidence, and the journal.',
+  },
+  {
     script: 'plugin/bin/wt-claude-executor.mjs',
     status: 'mapped',
     reason: 'PILOT-RUNNER documents this internal SDK lifecycle executor, including its role models, CLI handoff, and knowledge-base Read boundary.',
@@ -617,7 +627,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/skills/external-lane/'],
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
@@ -926,6 +936,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-guard-recurrence-hook.mjs',
       'plugin/bin/wt-lane-saturation-hook.mjs',
       'plugin/bin/wt-lane-consent-gate-hook.mjs',
+      'plugin/bin/wt-lane-orphan-watch.mjs',
       'plugin/bin/wt-arc-watch.mjs',
       'plugin/bin/wt-autonomy-arm.mjs',
        'plugin/bin/wt-autonomy-watch.mjs',

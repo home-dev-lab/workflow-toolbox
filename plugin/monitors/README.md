@@ -35,3 +35,38 @@ The monitor resolves the current transcript as
 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/<absolute-project-slug>/<CLAUDE_CODE_SESSION_ID>.jsonl`
 and scans backward in 64 KiB chunks rather than loading the file. A missing or unreadable transcript
 is journaled and retried; it never produces a wake or terminates the monitor set.
+
+## Lane owner and orphan watch
+
+`lane-orphan-watch` is registered with `when: always`. It reports still-running lanes after 10
+minutes without a worktree write (`lane_stall_minutes` or `WT_LANE_STALL_MINUTES`) and reports each
+launcher decision point with evidence; neither condition kills live work. Attributable decision,
+stall, and `would-clean` notices are restricted to the recorded owning session; unattributable
+warnings remain project-scoped. The default `lane_orphan_cleanup=observe` (env fallback
+`WT_LANE_ORPHAN_CLEANUP`) journals `would-clean` and signals nothing. Each `stalled` and `would-clean`
+event carries its supervision `runId`; promotion audits count distinct runId episodes, not repeated
+sweeps of one episode. Promote to `enforce` only after at least 100 distinct audited episodes show
+zero live victims. Enforcement requires an exact attributed child,
+an `exited` or `abandoned` supervision record, a gone launcher, and immediate argv/cwd identity
+verification. Codex brokers are only `broker-observed`: broker idleness detection is not implemented.
+Unattributed warnings are project-root scoped and never killed.
+
+The append-only version-1 JSONL journal is
+`<plugin-data-dir>/lane-supervisor/lane-supervisor.jsonl`; path resolution follows
+`plugin/bin/lib/plugin-data-dir.mjs`. Session-owned events are delivered on monitor stdout. A pilot
+receives its own lane event synchronously from the lifecycle result instead.
+
+Supervision uses one `.lane/supervision/<runId>.json` record per run and an atomic
+`.lane/supervision/current.json` pointer. Worker and child liveness is classified centrally from each
+recorded pid+argv identity; unavailable identity evidence is `unknown`, never dead. The launcher
+refuses another lane while the current answer is live, decision-needed, orphaned, or unknown. Only an
+unknown record beyond its recorded hard bound may be superseded. Control ownership is an accident guard, not authentication.
+Session and pilot timeout decisions are `extend` or `abandon`. To relaunch from the worktree's current
+state, run `node plugin/bin/wt-lane-control.mjs --dir <worktree> --decision abandon`, then start a fresh
+lane on that worktree with `node <configDir>/scripts/wt-lane.mjs --dir <worktree> --model
+<provider/model> --brief <file>`; the worktree files are retained.
+
+The journal rotates at 10 MiB and keeps one previous file. A notice is emitted even if its journal
+write fails; journal failures are reported once per failing streak and retried. Linux provides the full watcher/control contract; other platforms
+receive one availability notice per session. Detached grandchildren that call `setsid` escape the
+launcher's process group and cannot be reached by group cleanup.
