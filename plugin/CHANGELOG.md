@@ -5,6 +5,27 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Artifact-server Markdown pages now render GitHub-flavoured pipe tables, including inline markup and
+  escaped or code-span pipes, inside a phone-friendly horizontal scroll container.
+- SDK lifecycle plan transitions now warn when a sentence claims an existing test, lock, guard, or
+  behavior provides coverage without a repo-relative `path:line` citation, or when that citation's
+  file or line does not exist. Future-work promises pass untouched. The heuristic remains warn-only
+  until 100 independently sourced candidate warnings are audited with zero false positives, and it
+  states that citation meaning is not mechanically verified.
+- The `delegation-chain` skill no longer calls a `Monitor` persistent. Every watch now carries a
+  deadline — at most 30 minutes, 10 in a single-prompt `-p` run — and the harness notifies the
+  session to re-arm at expiry, so the skill states the expiry, what an event-less expiry means, and
+  that work needing a longer watch belongs in a manifest-declared monitor or a durable record.
+- Bounded the OpenCode skill-fence capability cache to its 64 newest results, pruned inside the same
+  locked operation that publishes a cache miss. The lock cannot be stolen: it has no staleness
+  displacement, so no process can take it from a holder and none can remove a lock it does not own at
+  the moment of removal. A crashed holder therefore leaves a lock nobody steals and waiters time out,
+  which is a deliberate availability trade rather than two writers in the critical section. Pruning
+  refuses any cache directory not carrying the store marker this module writes, and no removal is
+  recursive. Older binary/version results are discarded and may require one capability re-probe if
+  that exact OpenCode installation is used again.
+
 ## [0.175.0] - 2026-09-15
 
 ### Added

@@ -1335,7 +1335,19 @@ describe('review decisions: serving security matrix', () => {
     const project = temporaryDir('security-project')
     const root = temporaryDir('security-root')
     const outside = temporaryDir('security-outside')
-    writeFileSync(join(root, 'report.md'), '# Report\n\n<script>alert(1)</script>')
+    writeFileSync(join(root, 'report.md'), [
+      '# Report',
+      '',
+      '| Method | Signature | Notes |',
+      ':--- | :---: | ---:',
+      '| `notice` | `left|right` | **bold** and [docs](https://example.com?a=1&b=2) |',
+      '| escaped | left \\| right | <b>raw</b> |',
+      '',
+      'prose | remains',
+      'not a separator',
+      '',
+      '<script>alert(1)</script>',
+    ].join('\n'))
     mkdirSync(join(root, 'index'))
     writeFileSync(join(root, 'index', '<script>.txt'), 'index')
     writeFileSync(join(root, 'plain.txt'), '<b>text</b>')
@@ -1367,6 +1379,15 @@ describe('review decisions: serving security matrix', () => {
     expect(markdown.status).toBe(200)
     expect(markdown.body).toContain('&lt;script&gt;')
     expect(markdown.body).not.toContain('<script>')
+    expect(markdown.body.match(/<t[hd]>/g)).toHaveLength(9)
+    expect(markdown.body).toContain('<div class="table-scroll"><table>')
+    expect(markdown.body).toContain('<code>left|right</code>')
+    expect(markdown.body).toContain('<td>left | right</td>')
+    expect(markdown.body).toContain('<strong>bold</strong> and <a href="https://example.com?a=1&amp;b=2">docs</a>')
+    expect(markdown.body).toContain('&lt;b&gt;raw&lt;/b&gt;')
+    expect(markdown.body).not.toContain('&amp;lt;b&amp;gt;')
+    expect(markdown.body).toContain('<p>prose | remains not a separator</p>')
+    expect(markdown.body).toMatch(/\.table-scroll\{[^}]*overflow-x:auto/)
     expect(markdown.headers['content-security-policy']).toMatch(/default-src 'none'/)
     for (const file of ['plain.txt', 'events.log', 'data.json']) {
       const response = await rawRequest(port, `/artifacts/${file}`, `localhost:${port}`)

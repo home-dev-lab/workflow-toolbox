@@ -66,10 +66,45 @@ function escapeHtml(value) {
 function inlineMarkdown(value) {
   return value.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/__([^_]+)__/g, '<strong>$1</strong>').replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, '<a href="$2">$1</a>')
+}
+
+function tableCells(line) {
+  const value = line.trim()
+  const cells = []
+  let cell = ''
+  let delimiterCount = 0
+  let inCode = false
+  let endedWithDelimiter = false
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]
+    if (character === '\\' && value[index + 1] === '|') {
+      cell += '|'
+      index += 1
+      endedWithDelimiter = false
+    } else if (character === '`') {
+      cell += character
+      inCode = !inCode
+      endedWithDelimiter = false
+    } else if (character === '|' && !inCode) {
+      cells.push(cell.trim())
+      cell = ''
+      delimiterCount += 1
+      endedWithDelimiter = true
+    } else {
+      cell += character
+      endedWithDelimiter = false
+    }
+  }
+  cells.push(cell.trim())
+  if (delimiterCount === 0) return null
+  if (value.startsWith('|')) cells.shift()
+  if (endedWithDelimiter) cells.pop()
+  return cells
 }
 
 function htmlPage(title, body) {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(title)}</title><style>body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;color:#202124}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f5;padding:1rem;border-radius:.35rem}code{font-family:ui-monospace,monospace}a{color:#0759b6}</style></head><body>${body}</body></html>`
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(title)}</title><style>body{font:16px/1.55 system-ui,sans-serif;max-width:960px;margin:2rem auto;padding:0 1rem;color:#202124}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f5f5f5;padding:1rem;border-radius:.35rem}code{font-family:ui-monospace,monospace}a{color:#0759b6}.table-scroll{overflow-x:auto}table{border-collapse:collapse;min-width:max-content}th,td{border:1px solid #bbb;padding:.35rem .6rem;text-align:left}</style></head><body>${body}</body></html>`
 }
 
 function renderMarkdown(source) {
@@ -86,12 +121,31 @@ function renderMarkdown(source) {
     if (listOpen) output.push('</ul>')
     listOpen = false
   }
-  for (const line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex]
     if (/^```/.test(line)) {
       flushParagraph(); closeList(); output.push(fenceOpen ? '</code></pre>' : '<pre><code>'); fenceOpen = !fenceOpen
       continue
     }
     if (fenceOpen) { output.push(`${line}\n`); continue }
+    const headers = tableCells(line)
+    const separators = tableCells(lines[lineIndex + 1] ?? '')
+    if (headers && separators && headers.length === separators.length &&
+      separators.every((cell) => /^:?-{3,}:?$/.test(cell))) {
+      flushParagraph(); closeList()
+      const body = []
+      lineIndex += 2
+      while (lineIndex < lines.length) {
+        const cells = tableCells(lines[lineIndex])
+        if (!cells || cells.length > headers.length) break
+        while (cells.length < headers.length) cells.push('')
+        body.push(`<tr>${cells.map((cell) => `<td>${inlineMarkdown(cell)}</td>`).join('')}</tr>`)
+        lineIndex += 1
+      }
+      output.push(`<div class="table-scroll"><table><thead><tr>${headers.map((cell) => `<th>${inlineMarkdown(cell)}</th>`).join('')}</tr></thead><tbody>${body.join('')}</tbody></table></div>`)
+      lineIndex -= 1
+      continue
+    }
     const heading = /^(#{1,6})\s+(.+)$/.exec(line)
     if (heading) {
       flushParagraph(); closeList(); output.push(`<h${heading[1].length}>${inlineMarkdown(heading[2])}</h${heading[1].length}>`)
