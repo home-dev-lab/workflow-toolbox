@@ -1164,6 +1164,7 @@ ${
     // This is an event from the process under test, rather than a wall-clock estimate of
     // when a contended child process will have finished its first cycle.
     const sleepLogPath = join(cfg, 'sleeps.log')
+    const sleepBarrierPath = join(cfg, 'sleep-barrier')
     writeFileSync(sleepLogPath, '')
     const res = await new Promise<{ stdout: string; timedOut: boolean }>((resolve) => {
       const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], {
@@ -1172,6 +1173,7 @@ ${
           CLAUDE_CONFIG_DIR: cfg,
           WT_QUOTA_WATCH_TEST_MAX_CYCLES: '2',
           WT_QUOTA_WATCH_TEST_SLEEP_LOG: sleepLogPath,
+          WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: sleepBarrierPath,
         },
       })
       let stdout = ''
@@ -1183,6 +1185,7 @@ ${
         if (sleeps.length !== 1) return
         sleepWatcher.close()
         writeFileSync(join(cfg, '.quota-cache.json'), JSON.stringify({ at: Date.now(), data: { configDir: cfg, seven_day: { pct: 50 } } })) // five_hour missing
+        writeFileSync(sleepBarrierPath, 'continue')
       })
       child.on('close', () => {
         sleepWatcher.close()
@@ -1441,6 +1444,42 @@ syncBuiltinESMExports()
     expect(res.stdout).toContain('WT_QUOTA_WATCH_TEST_SLEEP_LOG')
     expect(res.stdout).toContain('WT_QUOTA_WATCH_TEST_MAX_CYCLES')
     expect(res.stdout).toContain('Exiting now (cycle 1/1)')
+  })
+
+  it('the sleep barrier alone activates the banner and names the control', async () => {
+    const cfg = tmpRoot('wt-quota-watch-barrier-banner-')
+    const barrier = join(cfg, 'barrier')
+    writeCounterProbe(cfg, join(cfg, 'counter.txt'), 'always-succeed')
+    writeFileSync(barrier, 'open')
+
+    const res = await new Promise<{ stdout: string }>((resolve) => {
+      const child = spawn(process.execPath, [QUOTA_WATCH, '--poll', '5', '--timeout', '1'], {
+        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: barrier },
+      })
+      let stdout = ''
+      child.stdout.on('data', (d) => {
+        stdout += d
+        if (stdout.includes('QUOTA WATCH ARMED')) child.kill('SIGTERM')
+      })
+      child.on('close', () => resolve({ stdout }))
+    })
+
+    expect(res.stdout).toContain('QUOTA WATCH TEST MODE')
+    expect(res.stdout).toContain('WT_QUOTA_WATCH_TEST_SLEEP_BARRIER')
+  })
+
+  it('a missing sleep barrier times out and the real watcher continues', async () => {
+    const cfg = tmpRoot('wt-quota-watch-barrier-bound-')
+    writeCounterProbe(cfg, join(cfg, 'counter.txt'), 'always-succeed')
+
+    const res = await runWatcher(cfg, {
+      maxCycles: 2,
+      sleepLogPath: join(cfg, 'sleeps.log'),
+      extraEnv: { WT_QUOTA_WATCH_TEST_SLEEP_BARRIER: join(cfg, 'never-created') },
+    })
+
+    expect(res.stdout).toContain('QUOTA WATCH TEST BARRIER TIMED OUT after 1000ms')
+    expect(res.stdout).toContain('continuing so this seam cannot stop the real monitor without bound')
   })
 
   it('normal operation (no seam vars set) never mentions TEST MODE', async () => {

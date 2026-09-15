@@ -34,30 +34,48 @@ ${script}\n`)
 function run(f: ReturnType<typeof fixture>, extra: string[] = [], model = 'openai/gpt-5.6-luna') {
   return spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', model, '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: f.env })
 }
-function waitFor(log: string, ms = 3000) {
+function waitFor(log: string, ms = 15_000) {
   const until = Date.now() + ms
   while (Date.now() < until) { if (existsSync(log) && /EXIT=/.test(readFileSync(log, 'utf8'))) return; spawnSync('sleep', ['0.05']) }
 }
-function waitForFile(file: string, ms = 3000) {
+function waitForFile(file: string, ms = 15_000) {
   const until = Date.now() + ms
   while (Date.now() < until) { if (existsSync(file)) return; spawnSync('sleep', ['0.05']) }
 }
-function waitForContent(file: string, pattern: RegExp, ms = 5000) {
+function waitForContent(file: string, pattern: RegExp, ms = 30_000) {
   const until = Date.now() + ms
   while (Date.now() < until) {
     if (existsSync(file) && pattern.test(readFileSync(file, 'utf8'))) return
     spawnSync('sleep', ['0.05'])
   }
+  throw new Error(`timed out waiting for ${pattern} in ${file}`)
 }
 function journalEvents(file: string, event: string) {
   if (!existsSync(file)) return []
   return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((item) => item.event === event)
+}
+function lineCount(file: string) {
+  return existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).length : 0
+}
+function waitForLines(file: string, count: number, ms = 30_000) {
+  const until = Date.now() + ms
+  while (Date.now() < until) { if (lineCount(file) >= count) return; spawnSync('sleep', ['0.05']) }
+  throw new Error(`timed out waiting for ${count} lines in ${file}; received ${lineCount(file)}`)
 }
 function killIdentity(expected: { pid: number, argv: string[], startTime?: number, cwd?: string | null } | null, signal: NodeJS.Signals) {
   if (!expected) throw new Error('expected test process identity is gone')
   const actual = inspectProcess(expected.pid)
   expect(sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, actual)).toBe(true)
   process.kill(expected.pid, signal)
+}
+function waitForIdentityExit(expected: { pid: number, argv: string[], startTime?: number }, ms = 30_000) {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    const actual = inspectProcess(expected.pid)
+    if (!sameIdentity(expected, actual)) return
+    spawnSync('sleep', ['0.05'])
+  }
+  throw new Error(`timed out waiting for owned pid ${expected.pid} to exit`)
 }
 function currentStateFile(dir: string, ms = 3000) {
   const pointer = join(dir, '.lane', 'supervision', 'current.json')
@@ -515,9 +533,33 @@ describe('wt-lane detached launcher', () => {
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForFile(status); waitForFile(pidFile)
     const state = JSON.parse(readFileSync(status, 'utf8'))
+    const workerIdentity = inspectProcess(state.workerPid)
+    if (!workerIdentity) throw new Error('worker identity disappeared before the watcher fixture was ready')
+    let watchedChildIdentity = { pid: state.childPid, argv: state.childArgv, startTime: state.childStartTime, cwd: state.worktree }
     if (event === 'would-clean') {
-      killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGKILL')
-      writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
+      // This test is about watcher episode deduplication, not launcher signal propagation.
+      // Give it a deterministically gone worker and a fresh child whose full identity we own.
+      killIdentity(workerIdentity, 'SIGKILL')
+      waitForIdentityExit(workerIdentity)
+      const replacement = spawn('/bin/sleep', ['30'], { cwd: f.dir, stdio: 'ignore' })
+      const replacementDeadline = Date.now() + 5_000
+      let replacementIdentity = inspectProcess(replacement.pid!)
+      while (!replacementIdentity && Date.now() < replacementDeadline) {
+        spawnSync('sleep', ['0.05'])
+        replacementIdentity = inspectProcess(replacement.pid!)
+      }
+      if (!replacementIdentity) throw new Error('replacement child identity did not become visible')
+      watchedChildIdentity = replacementIdentity
+      writeFileSync(status, JSON.stringify({
+        ...state,
+        state: 'abandoned',
+        workerPid: 2_147_483_647,
+        workerArgv: ['gone-test-worker'],
+        workerStartTime: 0,
+        childPid: replacementIdentity.pid,
+        childArgv: replacementIdentity.argv,
+        childStartTime: replacementIdentity.startTime,
+      }))
     } else {
       const old = new Date(Date.now() - 120_000)
       const ageTree = (dir: string) => {
@@ -531,19 +573,26 @@ describe('wt-lane detached launcher', () => {
       ageTree(f.dir); utimesSync(f.dir, old, old)
     }
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
+    const sweepLog = join(f.root, 'sweeps.log')
     const watcher = spawn(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.05'], {
       stdio: 'ignore',
-      env: { ...f.env, CLAUDE_CODE_SESSION_ID: 'watching-session', WT_LANE_STALL_MINUTES: '1' },
+      env: { ...f.env, CLAUDE_CODE_SESSION_ID: 'watching-session', WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog },
     })
     const watcherIdentity = inspectProcess(watcher.pid!)
-    spawnSync('sleep', ['0.3'])
+    waitForContent(journal, new RegExp(`"event":"${event}"`))
+    waitForLines(sweepLog, 2)
     killIdentity(watcherIdentity, 'SIGTERM')
     expect(existsSync(journal)).toBe(true)
     expect(journalEvents(journal, event)).toHaveLength(1)
     expect(journalEvents(journal, event)[0]).toMatchObject({ runId: state.runId })
-    if (event === 'would-clean') killIdentity({ pid: state.childPid, argv: state.childArgv, cwd: state.worktree }, 'SIGKILL')
-    else killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
-  })
+    if (event === 'would-clean') {
+      killIdentity(watchedChildIdentity, 'SIGKILL')
+      const originalChild = inspectProcess(state.childPid)
+      if (sameIdentity({ pid: state.childPid, argv: state.childArgv, startTime: state.childStartTime }, originalChild)) {
+        killIdentity({ pid: state.childPid, argv: state.childArgv, startTime: state.childStartTime, cwd: state.worktree }, 'SIGKILL')
+      }
+    } else killIdentity(workerIdentity, 'SIGTERM')
+  }, 60_000)
   it('journals a stalled episode again after it clears and recurs for the same runId', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
@@ -561,12 +610,13 @@ describe('wt-lane detached launcher', () => {
     }
     writeFileSync(marker, 'old'); ageTree(f.dir); utimesSync(f.dir, old, old)
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
-    const watcher = spawn(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.1'], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: '1' } })
+    const sweepLog = join(f.root, 'sweeps.log')
+    const watcher = spawn(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.1'], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog } })
     waitForContent(journal, /"event":"stalled"/)
     writeFileSync(marker, 'fresh')
-    spawnSync('sleep', ['0.2'])
+    waitForContent(sweepLog, new RegExp(`${state.runId}:stalled:cleared`))
     ageTree(f.dir); utimesSync(f.dir, old, old)
-    waitForContent(journal, /"event":"stalled".*\n.*"event":"stalled"/s, 3000)
+    waitForContent(journal, /"event":"stalled".*\n.*"event":"stalled"/s)
     killIdentity(inspectProcess(watcher.pid!), 'SIGTERM')
     expect(journalEvents(journal, 'stalled')).toHaveLength(2)
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.runId))).toEqual(new Set([state.runId]))
@@ -599,6 +649,17 @@ describe('wt-lane detached launcher', () => {
     expect(() => process.kill(watcher.pid!, 0)).not.toThrow()
     process.kill(watcher.pid!, 'SIGTERM')
     process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 'SIGKILL')
+  })
+  it('a test sweep receipt failure is reported but cannot fail the sweep', () => {
+    const f = fixture('sleep 1')
+    const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], {
+      encoding: 'utf8',
+      env: { ...f.env, WT_LANE_WATCH_TEST_SWEEP_LOG: f.root },
+    })
+    expect(watcher.status, watcher.stderr).toBe(0)
+    expect(watcher.stderr).toContain('LANE ORPHAN WATCH TEST MODE')
+    expect(watcher.stderr).toContain('WT_LANE_WATCH_TEST_SWEEP_LOG')
+    expect(watcher.stderr).toContain('test sweep log write failed; watcher behavior unchanged')
   })
   it('reports a failed enforce kill journal on stdout', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')

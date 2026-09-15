@@ -48,6 +48,27 @@ const RETRY_ATTEMPTS = 3
 const RETRY_WINDOW_MS = 60_000
 const RETRY_OVERALL_CAP_MS = 5 * 60_000
 const TEST_MODE = process.env.WT_ARTIFACT_SERVER_TEST_MODE === '1'
+const TEST_CONTROL_NAMES = [
+  'WT_ARTIFACT_SERVER_TEST_MODE',
+  'WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS',
+  'WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS',
+  'WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS',
+  'WT_ARTIFACT_SERVER_TEST_READINESS_MS',
+  'WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS',
+  'WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS',
+  'WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS',
+  'WT_ARTIFACT_SERVER_TEST_SPAWN_LOG',
+  'WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG',
+  'WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS',
+  'WT_ARTIFACT_SERVER_TEST_STOP_HEARTBEAT_AFTER_MS',
+  'WT_ARTIFACT_SERVER_TEST_CONTENTION_LOG',
+]
+const TEST_SEAMS_ACTIVE = new Set(TEST_MODE ? TEST_CONTROL_NAMES.filter((name) => process.env[name] !== undefined) : [])
+
+function startupClaimStaleMs() {
+  const override = TEST_MODE ? Number(process.env.WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS) : NaN
+  return Number.isFinite(override) && override >= STARTUP_CLAIM_STALE_MS ? override : STARTUP_CLAIM_STALE_MS
+}
 
 function testLog(name, line) {
   if (!TEST_MODE) return
@@ -119,12 +140,12 @@ function startupClaimIsStale(claimPath) {
       const owner = JSON.parse(readFileSync(staleOwnerPath, 'utf8'))
       const expectedToken = files[0].endsWith('.json') ? files[0].slice(0, -5) : null
       if (typeof owner?.token !== 'string' || owner.token !== expectedToken) throw new Error('invalid startup claim owner')
-      stale = !pidAlive(owner.pid) || Date.now() - statSync(staleOwnerPath).mtimeMs > STARTUP_CLAIM_STALE_MS
+      stale = !pidAlive(owner.pid) || Date.now() - statSync(staleOwnerPath).mtimeMs > startupClaimStaleMs()
     } else {
-      stale = Date.now() - statSync(claimPath).mtimeMs > STARTUP_CLAIM_STALE_MS
+      stale = Date.now() - statSync(claimPath).mtimeMs > startupClaimStaleMs()
     }
   } catch {
-    try { stale = Date.now() - statSync(claimPath).mtimeMs > STARTUP_CLAIM_STALE_MS } catch {}
+    try { stale = Date.now() - statSync(claimPath).mtimeMs > startupClaimStaleMs() } catch {}
   }
   return stale
 }
@@ -434,6 +455,10 @@ if (argv.length > 0) {
   process.stderr.write('usage: wt-artifact-server-ensure\n')
   process.exitCode = 2
 } else {
+  if (TEST_SEAMS_ACTIVE.size > 0) {
+    const controls = [...TEST_SEAMS_ACTIVE].map((name) => `${name}=${process.env[name]}`).join(' ')
+    process.stderr.write(`⚠ ARTIFACT SERVER TEST MODE — ${controls} — named controls may alter startup timing or emit receipts. This must NEVER be set outside the test suite.\n`)
+  }
   process.once('SIGINT', cleanExit)
   process.once('SIGTERM', cleanExit)
   process.once('exit', () => { startupClaim?.release(); removeRegistration() })

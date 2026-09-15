@@ -386,11 +386,18 @@ function initialStateLine(windows, thresholds) {
 // the logged durations directly — deterministic, fast, and no less real: the code path,
 // the cache, the backoff math are all the genuine ones, only the WAITING is skipped.
 const TEST_SLEEP_LOG = process.env.WT_QUOTA_WATCH_TEST_SLEEP_LOG || null
+const TEST_SLEEP_BARRIER = process.env.WT_QUOTA_WATCH_TEST_SLEEP_BARRIER || null
 const TEST_MAX_CYCLES = (() => {
   const n = Number(process.env.WT_QUOTA_WATCH_TEST_MAX_CYCLES)
   return Number.isFinite(n) && n > 0 ? n : null
 })()
-const TEST_SEAM_ACTIVE = TEST_SLEEP_LOG !== null || TEST_MAX_CYCLES !== null
+const TEST_SLEEP_BARRIER_MAX_MS = 1_000
+const TEST_SEAMS_ACTIVE = new Set([
+  ...(TEST_SLEEP_LOG !== null ? ['WT_QUOTA_WATCH_TEST_SLEEP_LOG'] : []),
+  ...(TEST_SLEEP_BARRIER !== null ? ['WT_QUOTA_WATCH_TEST_SLEEP_BARRIER'] : []),
+  ...(TEST_MAX_CYCLES !== null ? ['WT_QUOTA_WATCH_TEST_MAX_CYCLES'] : []),
+])
+const TEST_COMPLETE = Symbol('quota-watch-test-complete')
 let testCyclesCompleted = 0
 
 // The seam is discipline (an env var nobody but the test suite should set), not a
@@ -404,10 +411,11 @@ let testCyclesCompleted = 0
 // to remove. See the header above this constant block for what the seam does; this is
 // what makes it safe to ship with the seam left in.
 function testSeamBanner() {
-  return `⚠ QUOTA WATCH TEST MODE — WT_QUOTA_WATCH_TEST_SLEEP_LOG=${TEST_SLEEP_LOG ?? '(unset)'} WT_QUOTA_WATCH_TEST_MAX_CYCLES=${TEST_MAX_CYCLES ?? '(unset)'} — sleeps are being LOGGED, NOT HONORED, and/or this run will SELF-EXIT after a fixed number of cycles. This must NEVER be set outside the test suite. If you see this in a real deployment, find what set these environment variables and unset them — quota is effectively NOT being watched while this is active.`
+  const controls = [...TEST_SEAMS_ACTIVE].map((name) => `${name}=${process.env[name]}`).join(' ')
+  return `⚠ QUOTA WATCH TEST MODE — ${controls} — sleeps may be LOGGED, NOT HONORED, barrier-gated for at most ${TEST_SLEEP_BARRIER_MAX_MS}ms, and/or this run will SELF-EXIT after a fixed number of cycles. This must NEVER be set outside the test suite. If you see this in a real deployment, unset every named control — quota is effectively NOT being watched while this is active.`
 }
 
-function sleep(ms) {
+async function sleep(ms) {
   if (TEST_SLEEP_LOG) {
     try {
       appendFileSync(TEST_SLEEP_LOG, `${ms}\n`)
@@ -423,10 +431,15 @@ function sleep(ms) {
       // seam's LAST output — not just its startup line, in case that scrolled away — says
       // plainly that this was a test exit, not a healthy watcher finding nothing to report.
       writeLine(`${testSeamBanner()} Exiting now (cycle ${testCyclesCompleted}/${TEST_MAX_CYCLES}).`)
-      process.exit(0)
+      throw TEST_COMPLETE
     }
   }
-  return new Promise((resolve) => {
+  if (TEST_SLEEP_BARRIER) {
+    const deadline = Date.now() + TEST_SLEEP_BARRIER_MAX_MS
+    while (!existsSync(TEST_SLEEP_BARRIER) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10))
+    if (!existsSync(TEST_SLEEP_BARRIER)) writeLine(`⚠ QUOTA WATCH TEST BARRIER TIMED OUT after ${TEST_SLEEP_BARRIER_MAX_MS}ms; continuing so this seam cannot stop the real monitor without bound.`)
+  }
+  await new Promise((resolve) => {
     setTimeout(resolve, TEST_SLEEP_LOG ? 0 : ms)
   })
 }
@@ -556,7 +569,7 @@ function flushArmed() {
   armedPending = false
   writeLine(ARMED_LINE)
 }
-if (TEST_SEAM_ACTIVE) writeLine(testSeamBanner())
+if (TEST_SEAMS_ACTIVE.size > 0) writeLine(testSeamBanner())
 
 while (true) {
   // If a whole cycle passed without producing a reading, the held arming line has waited long
@@ -914,6 +927,7 @@ while (true) {
     state.fingerprint = currentFingerprint
     await sleep(poll * 1000)
   } catch (error) {
+    if (error === TEST_COMPLETE) break
     // ⚠ Without this net, a single unexpected probe output (`null`, a missing
     // field) kills the process. A DEAD watcher is indistinguishable from one
     // that has nothing to report — exactly the failure this whole file exists

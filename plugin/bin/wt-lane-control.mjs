@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { rmSync } from 'node:fs'
 import path from 'node:path'
 import { appendSupervisorJournal, classifyLane, readCurrentSupervision, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
@@ -46,6 +47,7 @@ function main() {
     journal({ event: 'decision', runId: state.runId, decision: 'abandon', source: 'owner', pid: state.childPid, worktree: state.worktree, owner: state.owner, reason: options.reason ?? null })
     const result = terminateLane(state, { source: 'control', journal, recordWorktree: options.dir, markTerminal: (stage) => writeJsonAtomic(stateFile, stage === 'terminal' ? abandoned : { ...state, state: 'terminating', decision: 'abandon', decisionSource: 'owner', decidedAt: abandoned.decidedAt }) })
     if (!result.killed && result.reason !== 'already-gone') { process.stderr.write(`wt-lane-control: refused: ${result.reason}\n`); return 1 }
+    rmSync(path.join(options.dir, '.lane', 'brief-snapshots', `${state.runId}.md`), { force: true })
     process.stdout.write(`decision=abandon\nrun=${state.runId}\n`)
     return 0
   }

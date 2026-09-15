@@ -68,20 +68,15 @@ function git(cwd: string, args: string[], env: Record<string, string> = {}) {
   return res.stdout.trim()
 }
 
-// The tests need REAL SSH signatures verifiable via allowed_signers — reuse this
-// machine's own signing key exactly as the fixture in commit-signature-check.test.ts
-// does, so a genuinely signed commit is genuinely verifiable in the scratch repo.
-const SIGNING_KEY = '/home/doublefx/.ssh/id_ed25519_github.pub'
-const ALLOWED_SIGNERS_LINE = readFileSync('/home/doublefx/.ssh/allowed_signers', 'utf8')
-
 function initSignableRepo(tag: string): string {
   const root = mkRoot(tag)
+  const signingKey = createSigningKey(root, 'fixture-key')
   git(root, ['init', '-q', '-b', 'main'])
   git(root, ['config', 'user.name', 'Test'])
   git(root, ['config', 'user.email', 'webdoublefx@gmail.com'])
   git(root, ['config', 'gpg.format', 'ssh'])
-  git(root, ['config', 'user.signingkey', SIGNING_KEY])
-  writeFileSync(join(root, 'allowed_signers'), ALLOWED_SIGNERS_LINE)
+  git(root, ['config', 'user.signingkey', signingKey.keyPath])
+  writeFileSync(join(root, 'allowed_signers'), `webdoublefx@gmail.com ${signingKey.publicKey}\n`)
   git(root, ['config', 'gpg.ssh.allowedSignersFile', join(root, 'allowed_signers')])
   cpSync(PLUGIN_BIN, join(root, 'plugin', 'bin'), { recursive: true })
   return root
@@ -113,8 +108,8 @@ function writeTrustedFiles(root: string, allowedSigners: string) {
   cpSync(PLUGIN_BIN, join(root, 'trusted', 'plugin', 'bin'), { recursive: true })
 }
 
-function createSigningKey(root: string) {
-  const keyPath = join(root, 'attacker-key')
+function createSigningKey(root: string, name = 'attacker-key') {
+  const keyPath = join(root, name)
   const res = spawnSync('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', keyPath], { encoding: 'utf8' })
   if (res.status !== 0) throw new Error(`ssh-keygen failed: ${res.stderr}`)
   return { keyPath, publicKey: readFileSync(`${keyPath}.pub`, 'utf8').trim() }
@@ -173,7 +168,7 @@ describe('signatures.yml verification step — trusted PR policy and checker', (
     const root = initSignableRepo('trusted-checker')
     const before = commit(root, 'f.txt', 'a', 'base signed', true)
     const tip = commit(root, 'f.txt', 'ab', 'PR UNSIGNED', false)
-    writeTrustedFiles(root, ALLOWED_SIGNERS_LINE)
+    writeTrustedFiles(root, readFileSync(join(root, 'allowed_signers'), 'utf8'))
     writeFileSync(join(root, 'plugin', 'bin', 'wt-check-commit-signatures.mjs'), 'process.exit(0)\n')
 
     const { out, code } = runStep(root, {

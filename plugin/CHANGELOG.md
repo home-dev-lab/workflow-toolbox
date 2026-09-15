@@ -5,6 +5,14 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Bounded the OpenCode skill-fence capability cache to its 64 newest results whenever a miss is
+  written, with serialized publication and pruning so concurrent sessions cannot remove each other's
+  fresh entries. Older binary/version results are discarded and may require one capability re-probe
+  if that exact OpenCode installation is used again.
+
+## [0.175.0] - 2026-09-15
+
 ### Added
 - Added lifecycle-phase and model cost receipts for SDK pilot runs, archived report summaries, and
   the complete-only `wt-run-cost.mjs` LITE/FULL/HARD aggregator. Cost receipts use streamed assistant
@@ -16,6 +24,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added a versioned SDK-role rules manifest with strict source/heading validation, additive project
   manifests, and exact standing, phase-entry, and lane-brief delivery.
 - Added required E2E evidence to pilot reports and required independent-review summaries on FULL runs.
+- Added an always-on lane/orphan watcher, owner-mediated timeout decisions, exact-identity orphan
+  cleanup, and an append-only lane-supervisor journal. Live work is never killed merely for age or
+  silence; no-answer extensions are bounded before the recorded default becomes `abandon`.
 
 ### Changed
 - SDK lifecycle plans and pilot reports now quote every folded card Definition-of-done criterion under
@@ -31,10 +42,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
-- Bounded the OpenCode skill-fence capability cache to its 64 newest results whenever a miss is
-  written, with serialized publication and pruning so concurrent sessions cannot remove each other's
-  fresh entries. Older binary/version results are discarded and may require one capability re-probe
-  if that exact OpenCode installation is used again.
+- Load-sensitive integration tests now synchronize on protocol replies, filesystem state, owned
+  process identities, watcher sweep receipts, and child exit/stream closure instead of ambient
+  process deltas or short sleeps. The load harness verifies every CPU burner by PID and argv before
+  stopping it, and signing fixtures use private keys they create and own. Production test controls
+  now announce every active name, quota barriers are bounded, malformed saturation controls retain
+  real counting, and receipt/cleanup failures cannot mask watcher or suite outcomes.
 - `wt-lane.mjs` now prints and journals the source brief path, age, first Markdown heading,
   and SHA-256 before detaching; refuses briefs older than 10 minutes unless the caller adds
   `--acknowledge-stale-brief`; and gives the worker a hash-verified private snapshot so the
@@ -68,13 +81,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The SDK pilot plan check now reads a `### ` heading as a task when no list line sits under it, so a
   plan written with task headings is no longer refused, and a heading task missing its DoD is no longer
   accepted through an unrelated bullet; the refusal names both accepted task shapes.
-
-## [0.175.0] - 2026-09-14
-
-### Added
-- Added an always-on lane/orphan watcher, owner-mediated timeout decisions, exact-identity orphan
-  cleanup, and an append-only lane-supervisor journal. Live work is never killed merely for age or
-  silence; no-answer extensions are bounded before the recorded default becomes `abandon`.
 
 ## [0.174.0] - 2026-09-14
 
