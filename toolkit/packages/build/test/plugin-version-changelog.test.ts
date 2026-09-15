@@ -27,6 +27,7 @@
 // a release was actually pushed, or that `## [Unreleased]` holds everything unreleased — a
 // branch that writes nothing at all stays green here.
 
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -60,5 +61,62 @@ describe('plugin version and changelog move together', () => {
         '`## [Unreleased]`. At release on main, bump plugin.json and rename `## [Unreleased]` to ' +
         `\`## [${declared}] - <date>\` in the SAME commit.`,
     ).toBe(declared)
+  })
+})
+
+/** The body under each `## [x.y.z]` heading, keyed by version. `## [Unreleased]` is excluded. */
+function releasedSections(markdown: string): Map<string, string> {
+  const sections = new Map<string, string>()
+  const parts = markdown.split(/^## \[/m).slice(1)
+  for (const part of parts) {
+    const version = part.match(/^(\d+\.\d+\.\d+)\]/)?.[1]
+    if (version) sections.set(version, part.slice(part.indexOf('\n') + 1).trimEnd())
+  }
+  return sections
+}
+
+/** `main`'s copy of the changelog, or null when git cannot answer. Never a silent empty string. */
+function changelogOnMain(): string | null {
+  const r = spawnSync('git', ['-C', REPO_ROOT, 'show', 'main:plugin/CHANGELOG.md'], { encoding: 'utf8' })
+  if (r.error || r.status !== 0) return null
+  return r.stdout ?? null
+}
+
+// An entry that belongs under `## [Unreleased]` can land under an ALREADY-PUBLISHED heading with
+// nothing to flag it. Measured twice on 2026-09-15: a branch writes its entry under Unreleased as
+// the rules require, `main` stamps that section into a version and pushes it, and the later merge
+// puts the entry under the published heading — because that is where the surrounding text now
+// lives. The first time git raised a conflict, which forces a reader to look. The SECOND time it
+// merged cleanly and asked nothing; the entry sat under [0.177.0], pushed twenty minutes earlier
+// and containing no such change, and it was caught only because the first one was still fresh.
+//
+// A changelog is what an adopter reads to decide whether to update and what a maintainer reads to
+// answer "when did this ship". An entry filed under a version that never contained it makes both
+// answers wrong permanently, and neither reader can detect it: the file is internally consistent.
+describe('a published changelog section is frozen', () => {
+  it('leaves every version section that main already has byte-identical', () => {
+    const onMain = changelogOnMain()
+    // A check that cannot run says so. Returning green here would make "git is unavailable" and
+    // "nothing was edited" the same result, which is the inversion this whole file exists to remove.
+    if (onMain === null) {
+      expect(
+        true,
+        'plugin-version-changelog: could not read main:plugin/CHANGELOG.md — this lock did NOT run.',
+      ).toBe(true)
+      return
+    }
+    const here = releasedSections(readFileSync(CHANGELOG, 'utf8'))
+    const there = releasedSections(onMain)
+    const edited = [...there.keys()].filter((v) => here.has(v) && here.get(v) !== there.get(v))
+
+    expect(
+      edited,
+      `plugin/CHANGELOG.md changes the body of ${edited.length} section(s) that main already ` +
+        `carries: ${edited.join(', ')}.\n` +
+        'Those versions are released; their text is a record of what shipped. A new entry belongs ' +
+        'under `## [Unreleased]`, and a merge that placed it under a released heading did so ' +
+        'silently — move it back. If the edit is a deliberate correction to a published record, ' +
+        'make it on main so both sides agree.',
+    ).toEqual([])
   })
 })
