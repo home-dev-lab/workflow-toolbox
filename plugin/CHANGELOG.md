@@ -9,11 +9,21 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Upgraded the toolkit test runner from Vitest 3 to Vitest 4.1.11.
 
 ### Added
+- Added per-file rich HTML artifacts via a visible top-of-file marker. Rich pages may run inline
+  scripts in an opaque-origin sandbox, while connections and external images remain blocked.
+- Added a conditional one-line SessionStart notice that teaches fresh sessions to turn absolute
+  report paths into artifact-server links, but reports unknown without link instructions when the
+  server cannot be verified.
 - Added a warn-only, journalled PreToolUse Bash guard for test starts made while other test-runner
   processes are alive. It excludes its own process ancestry and reports process-enumeration failure
   as unknown rather than silently treating it as a zero count.
 
 ### Fixed
+- Artifact-server HTTPS links now preserve the exact Tailscale Serve hostname, port, and mount path,
+  and fall back to the direct tailnet address when the table is ambiguous or maps another service.
+- Artifact-server Tailscale detection now resolves the Windows executable through PowerShell and
+  `wslpath` on WSL without assuming an install directory, and records whether lookup failed or a
+  successful lookup found no tailnet address.
 - Guard journal records now classify firings as real, test-origin, or unknown at the shared write
   seam. Recurrence and scan reports show test firings as an explicitly excluded population and keep
   undecidable and pre-change records labelled unknown instead of inflating real recurrence counts.

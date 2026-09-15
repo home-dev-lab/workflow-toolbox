@@ -2172,6 +2172,7 @@ ${renderClaim(claim)}`;
       sources: [
         "plugin/bin/wt-artifact-server.mjs",
         "plugin/bin/wt-artifact-server-ensure.mjs",
+        "plugin/bin/wt-artifact-server-context-hook.mjs",
         "plugin/bin/lib/artifact-server.mjs",
         "plugin/skills/artifact-server/"
       ],

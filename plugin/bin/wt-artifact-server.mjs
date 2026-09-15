@@ -193,10 +193,15 @@ function send(response, method, statusCode, body, contentType = 'text/plain; cha
 
 const GENERATED_CSP = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
 const RAW_CSP = "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'"
+const RICH_CSP = "sandbox allow-scripts; default-src 'none'; script-src 'unsafe-inline'; img-src data:; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
 const REGISTRATION_OWNERSHIP_MISS_LIMIT = 3
 
 function fileContentType(file) {
   return CONTENT_TYPES.get(path.extname(file).toLowerCase()) ?? 'application/octet-stream'
+}
+
+function richHtml(file) {
+  return /^\s*<!--\s*wt-artifact-server:\s*rich\s*-->/i.test(file.toString('utf8', 0, 256))
 }
 
 async function directoryPage(root, target, urlSegments) {
@@ -371,7 +376,7 @@ async function serve() {
       const file = await readFile(target)
       if (extension === '.md') send(response, method, 200, renderMarkdown(file.toString('utf8')), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
       else if (['.txt', '.log', '.json'].includes(extension)) send(response, method, 200, htmlPage(path.basename(target), `<pre>${escapeHtml(file.toString('utf8'))}</pre>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
-      else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': RAW_CSP })
+      else if (extension === '.html' || extension === '.htm') send(response, method, 200, file, 'text/html; charset=utf-8', { 'Content-Security-Policy': richHtml(file) ? RICH_CSP : RAW_CSP })
       else send(response, method, 200, file, fileContentType(target), { 'Content-Security-Policy': RAW_CSP })
     } catch { send(response, method, 500, 'Internal Server Error\n') }
   }
@@ -434,6 +439,7 @@ async function serve() {
   discovery = {
     version: ARTIFACT_SERVER_VERSION, pid: process.pid, port: requestedPort,
     baseUrl: `http://localhost:${requestedPort}`, remoteUrl: tailscale.remoteUrl,
+    tailnetDetection: tailscale.detection,
     roots: [], mounts: [], startedAt: new Date().toISOString(),
   }
   await scanRegistrations()
@@ -520,7 +526,10 @@ async function statusCommand() {
   const probe = await probeArtifactServer(state.port)
   if (probe.kind !== 'ours' || probe.health.pid !== state.pid) return 'artifact server: stopped (stale state)'
   const roots = state.roots.map((root) => `${root.name}=${root.path}`).join(', ') || '(none)'
-  return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\nroots: ${roots}`
+  const tailnet = state.tailnetDetection
+    ? `${state.tailnetDetection.status}${state.tailnetDetection.reason ? ` (${state.tailnetDetection.reason})` : ''}`
+    : 'unknown (server predates tailnet detection status)'
+  return `artifact server: running\nport: ${state.port}\nbaseUrl: ${state.baseUrl}\nremoteUrl: ${state.remoteUrl ?? 'null'}\ntailnetDetection: ${tailnet}\nroots: ${roots}`
 }
 
 const argv = process.argv.slice(2)
