@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- Upgraded the toolkit test runner from Vitest 3 to Vitest 4.1.11.
+
 ### Added
 - Added a warn-only, journalled PreToolUse Bash guard for test starts made while other test-runner
   processes are alive. It excludes its own process ancestry and reports process-enumeration failure
