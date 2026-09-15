@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
-import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-allowlist.mjs'
@@ -12,8 +12,9 @@ const PROBE_CONTRACT = 'allow-list-v2-two-half'
 const MECHANISM = 'opencode-config-skills-paths'
 const NORMALIZED_REFUSED_LANE_SKILLS = new Set(REFUSED_LANE_SKILLS.map(normalizeOpencodeSkillName))
 export const SKILL_FENCE_CACHE_MAX_ENTRIES = 64
-const CACHE_LOCK_STALE_MS = 5 * 60_000
 const CACHE_LOCK_WAIT_MS = 30_000
+const CACHE_STORE_MARKER = '.workflow-toolbox-opencode-skill-fence-cache'
+const CACHE_STORE_MARKER_CONTENT = 'workflow-toolbox opencode skill-fence cache v1\n'
 
 // Measured 2026-09-13 with installed OpenCode 1.18.30: under --pure,
 // OPENCODE_CONFIG skills.paths exposes a materialised skill while
@@ -187,8 +188,31 @@ function defaultStateDir(env) {
   return path.join(resolvePluginDataDir({ env, fallback }).dir, 'opencode-skill-fence')
 }
 
-function cacheLock(stateDir, operation) {
-  mkdirSync(stateDir, { recursive: true })
+function establishCacheStore(stateDir, allowExistingUnmarked = false) {
+  const created = mkdirSync(stateDir, { recursive: true, mode: 0o700 }) !== undefined
+  const store = lstatSync(stateDir)
+  if (!store.isDirectory() || store.isSymbolicLink()) throw new Error(`refusing unowned OpenCode skill-fence cache directory: ${stateDir}`)
+  const marker = path.join(stateDir, CACHE_STORE_MARKER)
+  let markerEntry = lstatIfExists(marker)
+  if (!created && !markerEntry && !allowExistingUnmarked) {
+    const deadline = Date.now() + 1_000
+    while (!markerEntry && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+      markerEntry = lstatIfExists(marker)
+    }
+  }
+  if (markerEntry) {
+    if (!markerEntry.isFile() || markerEntry.isSymbolicLink() || readFileSync(marker, 'utf8') !== CACHE_STORE_MARKER_CONTENT) {
+      throw new Error(`refusing unowned OpenCode skill-fence cache directory: ${stateDir}`)
+    }
+    return
+  }
+  if (!created && !allowExistingUnmarked) throw new Error(`refusing unowned OpenCode skill-fence cache directory: ${stateDir}`)
+  writeFileSync(marker, CACHE_STORE_MARKER_CONTENT, { flag: 'wx', mode: 0o600 })
+}
+
+function cacheLock(stateDir, operation, { allowExistingUnmarked = false } = {}) {
+  establishCacheStore(stateDir, allowExistingUnmarked)
   const lockDir = path.join(stateDir, '.retention.lock')
   const token = `${process.pid}-${crypto.randomBytes(8).toString('hex')}`
   const ownerFile = path.join(lockDir, 'owner')
@@ -198,17 +222,6 @@ function cacheLock(stateDir, operation) {
       mkdirSync(lockDir, { mode: 0o700 })
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error
-      const lock = lstatIfExists(lockDir)
-      if (lock && Date.now() - lock.mtimeMs > CACHE_LOCK_STALE_MS) {
-        const displaced = `${lockDir}.stale-${token}`
-        try {
-          renameSync(lockDir, displaced)
-          rmSync(displaced, { recursive: true, force: true })
-          continue
-        } catch (renameError) {
-          if (renameError?.code !== 'ENOENT') throw renameError
-        }
-      }
       if (Date.now() >= deadline) throw new Error(`timed out waiting for cache retention lock: ${lockDir}`)
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
       continue
@@ -217,24 +230,17 @@ function cacheLock(stateDir, operation) {
       writeFileSync(ownerFile, token, { flag: 'wx', mode: 0o600 })
       break
     } catch (error) {
-      rmSync(lockDir, { recursive: true, force: true })
+      rmSync(ownerFile, { force: true })
+      rmdirSync(lockDir)
       throw error
     }
   }
   try {
     return operation()
   } finally {
-    let owned = false
-    try { owned = readFileSync(ownerFile, 'utf8') === token } catch { /* a stale-lock recovery may have displaced us */ }
-    if (owned) {
-      const released = `${lockDir}.released-${token}`
-      try {
-        renameSync(lockDir, released)
-        rmSync(released, { recursive: true, force: true })
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error
-      }
-    }
+    if (readFileSync(ownerFile, 'utf8') !== token) throw new Error(`lost ownership of cache retention lock: ${lockDir}`)
+    unlinkSync(ownerFile)
+    rmdirSync(lockDir)
   }
 }
 
@@ -262,7 +268,9 @@ function pruneCacheUnlocked(stateDir, maxEntries, protectedFile) {
 export function pruneOpencodeSkillFenceCache({ stateDir = defaultStateDir(process.env), maxEntries = SKILL_FENCE_CACHE_MAX_ENTRIES } = {}) {
   if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('maxEntries must be a positive integer')
   if (!existsSync(stateDir)) return { removed: 0, retained: 0 }
-  return cacheLock(stateDir, () => pruneCacheUnlocked(stateDir, maxEntries))
+  return cacheLock(stateDir, () => pruneCacheUnlocked(stateDir, maxEntries), {
+    allowExistingUnmarked: path.resolve(stateDir) === path.resolve(defaultStateDir(process.env)),
+  })
 }
 
 function resolvedBinary(bin, env) {
@@ -372,7 +380,7 @@ function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = d
       } finally {
         rmSync(temp, { force: true })
       }
-    })
+    }, { allowExistingUnmarked: path.resolve(stateDir) === path.resolve(defaultStateDir(env)) })
     return { ok, allowOk, cached: false, binary, version, mechanism: MECHANISM, reason, allowReason }
   } finally {
     if (existsSync(fixture)) rmSync(fixture, { recursive: true, force: true })

@@ -1,10 +1,13 @@
 import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
-import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFenceCache, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
+
+const FENCE_MODULE = new URL('../../../../plugin/bin/lib/opencode-skill-fence.mjs', import.meta.url).href
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -20,6 +23,67 @@ if [ ${JSON.stringify(mode)} = ignore ]; then printf '[{"name":"workflow-toolbox
 `)
   chmodSync(bin, 0o755)
   return { root, bin, calls, stateDir: path.join(root, 'state') }
+}
+
+function pruneWorker(stateDir: string, events: string) {
+  const source = `
+    import fs from 'node:fs'
+    import path from 'node:path'
+    import { syncBuiltinESMExports } from 'node:module'
+    const [stateDir, events] = process.argv.slice(1)
+    const remove = fs.rmSync
+    let delayed = false
+    fs.rmSync = (file, options) => {
+      if (!delayed && /^[a-f0-9]{64}\\.json$/.test(path.basename(String(file)))) {
+        delayed = true
+        fs.appendFileSync(events, 'prune-start\\n')
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300)
+        const result = remove(file, options)
+        fs.appendFileSync(events, 'prune-end\\n')
+        return result
+      }
+      return remove(file, options)
+    }
+    syncBuiltinESMExports()
+    const { pruneOpencodeSkillFenceCache } = await import(${JSON.stringify(FENCE_MODULE)})
+    pruneOpencodeSkillFenceCache({ stateDir, maxEntries: 64 })
+  `
+  return spawn(process.execPath, ['--input-type=module', '-e', source, stateDir, events], { stdio: 'inherit' })
+}
+
+function publishWorker(bin: string, stateDir: string, events: string) {
+  const source = `
+    import fs from 'node:fs'
+    import path from 'node:path'
+    import { syncBuiltinESMExports } from 'node:module'
+    const [bin, stateDir, events] = process.argv.slice(1)
+    const rename = fs.renameSync
+    fs.renameSync = (from, to) => {
+      const result = rename(from, to)
+      if (/^[a-f0-9]{64}\\.json$/.test(path.basename(String(to)))) fs.appendFileSync(events, 'publish\\n')
+      return result
+    }
+    syncBuiltinESMExports()
+    const { verifyOpencodeSkillFence } = await import(${JSON.stringify(FENCE_MODULE)})
+    if (!verifyOpencodeSkillFence(bin, { stateDir }).ok) process.exitCode = 1
+  `
+  return spawn(process.execPath, ['--input-type=module', '-e', source, bin, stateDir, events], { stdio: 'inherit' })
+}
+
+function exited(child: ReturnType<typeof spawn>) {
+  return new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', resolve)
+  })
+}
+
+async function waitForFile(file: string) {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    if (readFileSync(file, { encoding: 'utf8', flag: 'a+' }).includes('prune-start')) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`timed out waiting for ${file}`)
 }
 
 describe('OpenCode Claude-skill fence', () => {
@@ -89,14 +153,17 @@ describe('OpenCode Claude-skill fence', () => {
     const f = stub('honor')
     const oldKey = crypto.createHash('sha256').update(`${realpathSync(f.bin)}\0${'1.2.3'}\0opencode-config-skills-paths\0allow-list-v1`).digest('hex')
     // The legacy entry is deliberately stored under the old contract key.
-    mkdirSync(f.stateDir, { recursive: true })
+    expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: true, cached: false })
+    for (const name of readdirSync(f.stateDir)) if (/^[a-f0-9]{64}\.json$/.test(name)) rmSync(path.join(f.stateDir, name))
     writeFileSync(path.join(f.stateDir, oldKey + '.json'), JSON.stringify({ ok: true, binary: realpathSync(f.bin), version: '1.2.3' }))
     expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: true, allowOk: true, cached: false })
   })
 
   it('retains only the newest 64 capability results when writing a cache miss', () => {
     const f = stub('honor')
-    mkdirSync(f.stateDir, { recursive: true })
+    expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: true, cached: false })
+    const currentKey = crypto.createHash('sha256').update(`${realpathSync(f.bin)}\0${'1.2.3'}\0opencode-config-skills-paths\0allow-list-v2-two-half`).digest('hex')
+    rmSync(path.join(f.stateDir, currentKey + '.json'))
     for (let index = 0; index < 80; index += 1) {
       const file = path.join(f.stateDir, `${index.toString(16).padStart(64, '0')}.json`)
       writeFileSync(file, '{}')
@@ -112,5 +179,30 @@ describe('OpenCode Claude-skill fence', () => {
     expect(cacheFiles).not.toContain(`${'0'.repeat(64)}.json`)
     expect(cacheFiles).toContain(`${(79).toString(16).padStart(64, '0')}.json`)
     expect(readFileSync(path.join(f.stateDir, 'keep.txt'), 'utf8')).toBe('not a fence cache entry')
+  })
+
+  it('serializes cache-miss publication against pruning across processes', async () => {
+    const f = stub('honor')
+    const events = path.join(f.root, 'events')
+    expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: true, cached: false })
+    for (const name of readdirSync(f.stateDir)) if (/^[a-f0-9]{64}\.json$/.test(name)) rmSync(path.join(f.stateDir, name))
+    for (let index = 0; index < 80; index += 1) writeFileSync(path.join(f.stateDir, `${index.toString(16).padStart(64, '0')}.json`), '{}')
+
+    const pruner = pruneWorker(f.stateDir, events)
+    await waitForFile(events)
+    const publisher = publishWorker(f.bin, f.stateDir, events)
+
+    expect(await Promise.all([exited(pruner), exited(publisher)])).toEqual([0, 0])
+    expect(readFileSync(events, 'utf8').trim().split('\n')).toEqual(['prune-start', 'prune-end', 'publish'])
+  })
+
+  it('refuses to prune an unmarked directory and leaves an unrelated lock tree intact', () => {
+    const f = stub('honor')
+    const nested = path.join(f.stateDir, '.retention.lock', 'unrelated', 'data')
+    mkdirSync(path.dirname(nested), { recursive: true })
+    writeFileSync(nested, 'keep')
+
+    expect(() => pruneOpencodeSkillFenceCache({ stateDir: f.stateDir })).toThrow(/refusing unowned/)
+    expect(readFileSync(nested, 'utf8')).toBe('keep')
   })
 })
