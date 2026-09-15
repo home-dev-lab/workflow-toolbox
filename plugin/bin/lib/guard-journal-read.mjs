@@ -5,7 +5,7 @@
 // which one is right (a duplicated-shape defect this repo's own step-back rule names directly).
 //
 // Every caller — the CLI and the hook — gets identical: which week-files were read, per-guard
-// blocked/warned/total, and the per-guard `classes` breakdown, from the same code path.
+// blocked/warned/total, origin split, and the per-guard `classes` breakdown, from the same code path.
 //
 // FAIL-OPEN CONTRACT: this module only READS. It never throws for a missing directory, an
 // unreadable directory, an unreadable individual week-file, or a malformed line — each of those
@@ -40,7 +40,9 @@ export function defaultGuardJournalDir() {
  *   {ok:true, baseDir:string, window:string, weekFiles:string[], totalEvents:number,
  *    totalLines:number, unreadableLines:number, rows:Array<{guard:string, blocked:number,
  *    warned:number, total:number, sessions:number, unknownSessionEvents:number,
- *    classes:Record<string,number>, unclassedTotal:number}>}
+ *    origins:{real:number,test:number,unknown:number}, classes:Record<string,number>,
+ *    classOrigins:Record<string,{real:number,test:number,unknown:number}>, unclassedTotal:number,
+ *    unclassedOrigins:{real:number,test:number,unknown:number}>}
  *   |
  *   {ok:false, exitCode:2|3, message:string, baseDir:string}
  * }
@@ -74,7 +76,10 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
 
   const selected = all ? files : files.slice(0, Math.max(1, weeks))
 
-  // guard -> { blocked, warned, classes: Map<class,count>, unclassedTotal, sessions, unknownSessionEvents }
+  const emptyOrigins = () => ({ real: 0, test: 0, unknown: 0 })
+  const originOf = (entry) => entry.origin === 'real' || entry.origin === 'test' ? entry.origin : 'unknown'
+
+  // guard -> decision, origin, class, and session aggregates
   const perGuard = new Map()
   let unreadableLines = 0
   let totalLines = 0
@@ -108,22 +113,33 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
           blocked: 0,
           warned: 0,
           silent: 0,
+          origins: emptyOrigins(),
           classes: new Map(),
+          classOrigins: new Map(),
           unclassedTotal: 0,
+          unclassedOrigins: emptyOrigins(),
           sessions: new Set(),
           unknownSessionEvents: 0,
         })
       }
       const g = perGuard.get(entry.guard)
+      const isFiring = entry.decision === 'blocked' || entry.decision === 'warned' || entry.decision === 'silent'
+      const origin = originOf(entry)
       if (entry.decision === 'blocked') g.blocked += 1
       else if (entry.decision === 'warned') g.warned += 1
       else if (entry.decision === 'silent') g.silent += 1 // observe mode: the guard fired but said nothing
+      if (isFiring) g.origins[origin] += 1
       if (typeof entry.session === 'string' && entry.session) g.sessions.add(entry.session)
       else g.unknownSessionEvents += 1
       if (typeof entry.class === 'string' && entry.class) {
         g.classes.set(entry.class, (g.classes.get(entry.class) || 0) + 1)
-      } else if (entry.decision === 'blocked' || entry.decision === 'warned' || entry.decision === 'silent') {
+        if (isFiring) {
+          if (!g.classOrigins.has(entry.class)) g.classOrigins.set(entry.class, emptyOrigins())
+          g.classOrigins.get(entry.class)[origin] += 1
+        }
+      } else if (isFiring) {
         g.unclassedTotal += 1
+        g.unclassedOrigins[origin] += 1
       }
     }
   }
@@ -135,10 +151,13 @@ export function readGuardJournal({ weeks = 1, all = false, baseDir } = {}) {
       warned: g.warned,
       silent: g.silent,
       total: g.blocked + g.warned + g.silent,
+      origins: g.origins,
       sessions: g.sessions.size,
       unknownSessionEvents: g.unknownSessionEvents,
       classes: Object.fromEntries(g.classes),
+      classOrigins: Object.fromEntries(g.classOrigins),
       unclassedTotal: g.unclassedTotal,
+      unclassedOrigins: g.unclassedOrigins,
     }))
     .sort((a, b) => b.total - a.total)
 

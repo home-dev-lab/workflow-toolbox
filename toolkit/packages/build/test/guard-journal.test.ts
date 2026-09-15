@@ -24,14 +24,18 @@ afterEach(() => {
 function record(
   args: Record<string, unknown>,
   env: Record<string, string | undefined> = {},
+  spawnCwd?: string,
 ) {
   const script = `
     import { recordGuardEvent } from ${JSON.stringify(LIB)}
     recordGuardEvent(${JSON.stringify(args)})
   `
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir, ...env }
+  for (const [key, value] of Object.entries(childEnv)) if (value === undefined) delete childEnv[key]
   return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
-    env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir, ...env },
+    env: childEnv,
+    ...(spawnCwd ? { cwd: spawnCwd } : {}),
   })
 }
 
@@ -176,6 +180,64 @@ describe('guard-journal — recordGuardEvent', () => {
     expect(entries[0]!.mode).toBe('enforce')
   })
 
+  it('classifies a record whose raw target is under the native temp root as test-origin', () => {
+    record(
+      { guard: 'wt-example-guard-hook.mjs', decision: 'blocked', cwd: join(tmpdir(), 'probe-root', 'project') },
+      { WT_GUARD_JOURNAL_TEST_ORIGIN: undefined },
+    )
+    expect(readAllEntries()[0]!.origin).toBe('test')
+  })
+
+  it('classifies a record whose raw target is outside the native temp root as real', () => {
+    record(
+      { guard: 'wt-example-guard-hook.mjs', decision: 'blocked', cwd: REPO_ROOT },
+      { WT_GUARD_JOURNAL_TEST_ORIGIN: undefined },
+    )
+    expect(readAllEntries()[0]!.origin).toBe('real')
+  })
+
+  // A call site that omits `cwd` is the MAJORITY case: measured on this tree, 26 of the 33 files
+  // that journal never pass one, and they include the loudest guards. Classifying those as
+  // `unknown` left the `real` count — the only one the recurrence threshold reads — pinned at zero
+  // for them forever, so the probation could never be reached. The guard PROCESS's own directory is
+  // the session's directory, so it is the answer, not a guess. These two tests are a pair: the
+  // second is what stops the fallback from simply always saying `real`.
+  it('classifies a record with no target from the guard process own directory', () => {
+    const result = record(
+      { guard: 'wt-example-guard-hook.mjs', decision: 'blocked' },
+      { WT_GUARD_JOURNAL_TEST_ORIGIN: undefined },
+      REPO_ROOT,
+    )
+    expect(result.status, result.stderr).toBe(0)
+    const entry = readAllEntries()[0]!
+    expect(entry.origin).toBe('real')
+    expect(entry.cwd).toBe(REPO_ROOT.replace(/\/$/, ''))
+  })
+
+  it('still classifies a record with no target as test when that directory is the temp root', () => {
+    const inTemp = mkdtempSync(join(tmpdir(), 'wt-guard-origin-cwd-'))
+    try {
+      const result = record(
+        { guard: 'wt-example-guard-hook.mjs', decision: 'blocked' },
+        { WT_GUARD_JOURNAL_TEST_ORIGIN: undefined },
+        inTemp,
+      )
+      expect(result.status, result.stderr).toBe(0)
+      expect(readAllEntries()[0]!.origin).toBe('test')
+    } finally {
+      rmSync(inTemp, { recursive: true, force: true })
+    }
+  })
+
+  it('classifies as unknown when the selftest marker is present but not the declared value', () => {
+    record(
+      { guard: 'wt-example-guard-hook.mjs', decision: 'blocked' },
+      { WT_GUARD_JOURNAL_TEST_ORIGIN: 'maybe' },
+      REPO_ROOT,
+    )
+    expect(readAllEntries()[0]!.origin).toBe('unknown')
+  })
+
   it('stamps mode=observe when WT_GUARD_MODE=observe', () => {
     record({ guard: 'wt-example-guard-hook.mjs', decision: 'warned' }, { WT_GUARD_MODE: ' observe ' })
     const entries = readAllEntries()
@@ -280,7 +342,12 @@ describe('guard-journal — recordGuardEvent', () => {
       env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
     })
     expect(result.status).toBe(0)
-    expect(JSON.parse(result.stdout).guards[0]).toMatchObject({ total: 4, sessions: 2, unknownSessionEvents: 1 })
+    expect(JSON.parse(result.stdout).guards[0]).toMatchObject({
+      total: 4,
+      origins: { real: 0, test: 0, unknown: 4 },
+      sessions: 2,
+      unknownSessionEvents: 1,
+    })
   })
 
   it('prints firing and distinct-session counts in the human scan line', () => {
@@ -298,7 +365,8 @@ describe('guard-journal — recordGuardEvent', () => {
       env: { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir },
     })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain('3 firings · 1 sessions (+1 unattributed)')
+    expect(result.stdout).toContain('0 real firings (0 from test runs, excluded); 3 origin unknown')
+    expect(result.stdout).toContain('1 sessions across all origins (+1 unattributed)')
   })
 
   it('truncates an over-long evidence value after coercion', () => {

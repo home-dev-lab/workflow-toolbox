@@ -96,6 +96,7 @@
     { "name": "WT_ARTIFACT_SERVER_ALLOW_UNSAFE_DENYLIST", "where": "plugin/bin/lib/artifact-server.mjs (test/internal env-only explicit default-deny replacement)" },
     { "name": "WT_VERSION_GUARD_MODE", "where": "plugin/bin/lib/plugin-version-alignment.mjs (align is opt-in; refuse is default)" },
     { "name": "WT_GUARD_JOURNAL_DIR", "where": "plugin/bin/lib/guard-journal.mjs and gate-evidence.mjs (test state-root override)" },
+    { "name": "WT_GUARD_JOURNAL_TEST_ORIGIN", "where": "plugin/bin/lib/guard-journal.mjs (explicit selftest-origin marker)" },
     { "name": "WT_ENVELOPE_WORKDIR", "where": "plugin/bin/wt-opencode-envelope.mjs (per-invocation envelope artifact directory override)" },
     { "name": "WT_QUOTA_PROXY_ORIGINS", "where": "plugin/bin/lib/quota-route.mjs (comma-separated trusted CLI Proxy origins)" },
     { "name": "WT_FINDINGS_DISPOSITION_MODE", "where": "plugin/bin/wt-report-findings-check.mjs (block override for the Findings disposition probation)" },

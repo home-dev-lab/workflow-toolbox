@@ -15,9 +15,9 @@
 // WT_GUARD_JOURNAL_DIR: journalDir, ...env }` spread simply overrides this default with a
 // narrower one for that one call, same as it always did.
 //
-// Deliberately NOT a change to guard-journal.mjs itself: the production writer must never guess
-// "am I under test" (see the module's own header) — this file is entirely test-harness-side, the
-// production code is unchanged and has no idea a test suite exists.
+// The explicit origin marker is inherited by every spawned guard, including guards whose journal
+// call omits cwd. The production writer does not infer test origin from command prose or process
+// names: this harness declares its own status at the shared write seam.
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,6 +25,7 @@ import { afterAll } from 'vitest'
 
 const dir = mkdtempSync(join(tmpdir(), 'wt-guard-journal-suite-default-'))
 process.env.WT_GUARD_JOURNAL_DIR = dir
+process.env.WT_GUARD_JOURNAL_TEST_ORIGIN = '1'
 
 afterAll(() => {
   rmSync(dir, { recursive: true, force: true })
