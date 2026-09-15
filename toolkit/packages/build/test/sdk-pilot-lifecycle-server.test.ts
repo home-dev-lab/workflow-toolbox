@@ -586,6 +586,50 @@ printf 'report\n' > "$report"
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')).toContain(`plan sha256: ${createHash('sha256').update(plan).digest('hex')}`)
   })
 
+  it('warns on uncited existing coverage, checks citation targets, and leaves future coverage untouched', async () => {
+    const plan = (claim: string) => `## ADR\nDecision: x\nRejected: y\n## Tasks\n- ${claim} DoD: green\n## Gates\n- test\n`
+
+    const uncited = testLifecycle('FULL')
+    await uncited.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await uncited.artifact({ kind: 'plan', content: plan('The existing test proves the guard remains active.') })
+    const warning = await text(uncited.transition({ phase: 'plan', tool_use_id: 'plan' }))
+    expect(warning).toMatch(/^accepted phase=critic/)
+    expect(warning).toContain('WARN ONLY')
+    expect(warning).toContain('The existing test proves the guard remains active.')
+    expect(warning).toContain('must carry a repo-relative `path:line` citation')
+
+    const cited = testLifecycle('FULL')
+    writeFileSync(join(cited.root, 'guard.test.ts'), 'setup\nassert guard\n')
+    await cited.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await cited.artifact({ kind: 'plan', content: plan('The existing test proves the guard remains active (`guard.test.ts:2`).') })
+    const citedResult = await text(cited.transition({ phase: 'plan', tool_use_id: 'plan' }))
+    expect(citedResult).toMatch(/^accepted phase=critic/)
+    expect(citedResult).not.toContain('WARN ONLY')
+    expect(citedResult).toContain('whether the cited text supports the claim was not verified mechanically')
+
+    for (const [name, citation, problem] of [
+      ['missing', 'missing.test.ts:1', 'does not exist'],
+      ['short', 'guard.test.ts:3', 'has only 2 lines'],
+    ]) {
+      const invalid = testLifecycle('FULL')
+      writeFileSync(join(invalid.root, 'guard.test.ts'), 'setup\nassert guard\n')
+      await invalid.transition({ phase: 'discovery', tool_use_id: 'start' })
+      await invalid.artifact({ kind: 'plan', content: plan(`The existing test proves the guard remains active (\`${citation}\`).`) })
+      const result = await text(invalid.transition({ phase: 'plan', tool_use_id: name }))
+      expect(result).toMatch(/^accepted phase=critic/)
+      expect(result).toContain('WARN ONLY')
+      expect(result).toContain(problem)
+    }
+
+    const future = testLifecycle('FULL')
+    await future.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await future.artifact({ kind: 'plan', content: plan('A test will prove the guard remains active.') })
+    const futureResult = await text(future.transition({ phase: 'plan', tool_use_id: 'plan' }))
+    expect(futureResult).toMatch(/^accepted phase=critic/)
+    expect(futureResult).not.toContain('WARN ONLY')
+    expect(futureResult).toContain('no existing-coverage claims detected; coverage was not verified')
+  })
+
   it('requires byte-identical card DoD bullets with named proofs in plan Acceptance', async () => {
     const cardText = 'Route: FULL\n## Definition of done\n- Preserve exact punctuation.\n- Run the real e2e.\n\n## Notes\n- not acceptance\n'
     const lifecycle = testLifecycle('FULL', [], null, null, { cardText })
@@ -598,7 +642,7 @@ printf 'report\n' > "$report"
     await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation.\n  Proof: evidence someday\n- Run the real e2e.\n  Proof: e2e fixture\n` })
     expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'proof' }))).toContain('expected `Proof: <task, test, e2e, test file, or gate>` after `- Preserve exact punctuation.`')
     await lifecycle.artifact({ kind: 'plan', content: `${base}## Acceptance\n- Preserve exact punctuation.\n  Proof: task 1 and test\n- Run the real e2e.\n  Proof: e2e fixture\n` })
-    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'complete' }))).toBe('accepted phase=critic')
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'complete' }))).toMatch(/^accepted phase=critic/)
   })
 
   it('uses the routing DoD grammar for headings, inline fields, numbering, wrapping, fences, nesting, CRLF, and duplicates', async () => {
@@ -621,12 +665,12 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('FULL', [], null, null, { cardText })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Acceptance\n- Keep the first criterion\n  wrapped exactly.\n  - nested detail\n  - Proof: tasks 1 and 2\n- Repeat me.\n- Proof: src/unit.spec.ts\n- Repeat me.\n  Proof: lint gate\n' })
-    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toBe('accepted phase=critic')
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toMatch(/^accepted phase=critic/)
 
     const inline = testLifecycle('FULL', [], null, null, { cardText: 'Route: FULL\r\nDefinition of done: ship inline bytes\r\n' })
     await inline.transition({ phase: 'discovery', tool_use_id: 'start' })
     await inline.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Acceptance\n- ship inline bytes\n  Proof: typecheck gate\n' })
-    expect(await text(inline.transition({ phase: 'plan', tool_use_id: 'inline' }))).toBe('accepted phase=critic')
+    expect(await text(inline.transition({ phase: 'plan', tool_use_id: 'inline' }))).toMatch(/^accepted phase=critic/)
   })
 
   it('requires every card DoD bullet and outcome in pilot report Acceptance', async () => {
@@ -663,7 +707,7 @@ printf 'report\n' > "$report"
     expect(refused).toContain('missing valid plan artifact')
     expect(refused).toContain('`### ` heading')
     await lifecycle.artifact({ kind: 'plan', content: headed })
-    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-headed' }))).toContain('accepted phase=critic')
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-headed' }))).toMatch(/^accepted phase=critic/)
   })
 
   it('keeps adversarial pilot context after the server-owned critic instructions', async () => {
@@ -1052,11 +1096,11 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('FULL')
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     expect(await text(lifecycle.artifact({ kind: 'plan', content: readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8') }))).toBe('wrote plan')
-    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toBe('accepted phase=critic')
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toMatch(/^accepted phase=critic/)
     const nested = testLifecycle('FULL')
     await nested.transition({ phase: 'discovery', tool_use_id: 'start' })
     await nested.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task\n  DoD: green\n  - nested detail\n## Gates\n- test\n' })
-    expect(await text(nested.transition({ phase: 'plan', tool_use_id: 'plan' }))).toBe('accepted phase=critic')
+    expect(await text(nested.transition({ phase: 'plan', tool_use_id: 'plan' }))).toMatch(/^accepted phase=critic/)
   })
 
   it('refuses an unsafe card id at server construction', () => {

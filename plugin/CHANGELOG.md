@@ -6,6 +6,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- SDK lifecycle plan transitions now warn when a sentence claims an existing test, lock, guard, or
+  behavior provides coverage without a repo-relative `path:line` citation, or when that citation's
+  file or line does not exist. Future-work promises pass untouched. The heuristic remains warn-only
+  until 100 independently sourced candidate warnings are audited with zero false positives, and it
+  states that citation meaning is not mechanically verified.
 - The `delegation-chain` skill no longer calls a `Monitor` persistent. Every watch now carries a
   deadline — at most 30 minutes, 10 in a single-prompt `-p` run — and the harness notifies the
   session to re-arm at expiry, so the skill states the expiry, what an event-less expiry means, and

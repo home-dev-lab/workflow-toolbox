@@ -142,6 +142,68 @@ const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
   '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`',
   '`Outcome: proven by tests/unit.test.ts`',
 )
+function planCoverageCitationResult(content, root) {
+  const sentences = []
+  let fenced = false
+  for (const line of content.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(line)) { fenced = !fenced; continue }
+    if (fenced || /^\s*#/.test(line)) continue
+    const prose = line.replace(/^\s*(?:[-*+] |\d+\. )/, '').trim()
+    if (prose) sentences.push(...prose.split(/(?<=[.!?])\s+/))
+  }
+
+  const existingReference = /(?:\b(?:existing|current|present|already(?:[- ]implemented)?)\b[^.!?]{0,100}\b(?:tests?|locks?|guards?|behaviou?rs?|checks?|assertions?|coverage)\b|\b(?:this|these|the)\b[^.!?]{0,100}\b(?:tests?|locks?|guards?|checks?)\b)/i
+  const coverageAssertion = /\b(?:proves?|covers?|verifies?|ensures?|guards?|enforces?|prevents?|demonstrates?|exercises?|confirms?|remains?|keeps?|is|are)\b/i
+  const futureWork = /\b(?:will|shall|would|is going to|are going to|plans? to|planned to)\b|^(?:add|create|write|implement|update|extend)\b/i
+  const claims = sentences.filter((sentence) => {
+    const assertion = coverageAssertion.exec(sentence)
+    if (!assertion || !existingReference.test(sentence)) return false
+    const future = futureWork.exec(sentence)
+    return !future || future.index > assertion.index
+  })
+  if (claims.length === 0) {
+    return 'Coverage citation check: no existing-coverage claims detected; coverage was not verified.'
+  }
+
+  const warnings = []
+  const citationPattern = /(?:^|[\s([`])((?:\.{0,2}\/)?[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*):(\d+)(?:-(\d+))?/g
+  for (const claim of claims) {
+    const citations = [...claim.matchAll(citationPattern)]
+    if (citations.length === 0) {
+      warnings.push(`"${claim}" must carry a repo-relative \`path:line\` citation for the existing coverage it claims.`)
+      continue
+    }
+    for (const citation of citations) {
+      const citedPath = citation[1]
+      const startLine = Number(citation[2])
+      const endLine = Number(citation[3] ?? citation[2])
+      const absolute = path.resolve(root, citedPath)
+      let resolved = absolute
+      try { resolved = fs.realpathSync(absolute) } catch {}
+      if (path.relative(root, resolved).startsWith('..')) {
+        warnings.push(`"${claim}" cites \`${citedPath}:${citation[2]}\`, which is outside the worktree.`)
+        continue
+      }
+      let citedContent
+      try {
+        if (!fs.statSync(absolute).isFile()) throw new Error('not a file')
+        citedContent = fs.readFileSync(absolute, 'utf8')
+      } catch {
+        warnings.push(`"${claim}" cites \`${citedPath}:${citation[2]}\`, but \`${citedPath}\` does not exist as a file.`)
+        continue
+      }
+      const splitLines = citedContent.split(/\r?\n/)
+      const lineCount = citedContent.endsWith('\n') ? splitLines.length - 1 : splitLines.length
+      if (startLine < 1 || endLine < startLine || endLine > lineCount) {
+        warnings.push(`"${claim}" cites \`${citedPath}:${citation[2]}${citation[3] ? `-${citation[3]}` : ''}\`, but \`${citedPath}\` has only ${lineCount} lines.`)
+      }
+    }
+  }
+  if (warnings.length > 0) {
+    return `Coverage citation check — WARN ONLY (the heuristic is not precise enough to refuse plans):\n- ${warnings.join('\n- ')}\nWhether cited text supports the claim was not verified mechanically.`
+  }
+  return 'Coverage citation check: citation files and line bounds exist; whether the cited text supports the claim was not verified mechanically.'
+}
 function changelogSkillBody(file) {
   let content
   try { content = fs.readFileSync(file, 'utf8') } catch (error) { throw new Error(`changelog skill unavailable at ${file}: ${error instanceof Error ? error.message : String(error)}`) }
@@ -441,6 +503,7 @@ export function createLifecycleStateMachine({
         const acceptanceProblem = planAcceptanceProblem(planContent, dodBullets)
         if (acceptanceProblem) return refusal('plan->critic', acceptanceProblem, plan)
       }
+      resultDetail = `\n\n${planCoverageCitationResult(planContent, root)}`
       next = 'critic'
     } else if (state.phase === 'critic') {
       const report = path.join(laneDir, 'critic-report.md')
