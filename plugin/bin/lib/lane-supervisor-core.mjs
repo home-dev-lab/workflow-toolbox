@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
@@ -86,10 +86,15 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     return { killed: false, reason, verdict }
   }
   if (['control', 'watcher'].includes(source)) {
-    if (typeof record.worktree !== 'string' || typeof recordWorktree !== 'string' || path.resolve(record.worktree) !== path.resolve(recordWorktree)) return refuse('record-worktree-mismatch')
-    const relative = child?.cwd ? path.relative(path.resolve(record.worktree), path.resolve(child.cwd)) : null
-    if (child && (relative === null || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) return refuse('child-cwd-outside-worktree')
     if (child && !child.cwd) return refuse('child-cwd-unreadable')
+    let recordRoot
+    let sourceRoot
+    let childCwd
+    try { recordRoot = realpathSync(record.worktree); sourceRoot = realpathSync(recordWorktree) } catch { return refuse('record-worktree-mismatch') }
+    if (recordRoot !== sourceRoot) return refuse('record-worktree-mismatch')
+    try { childCwd = child ? realpathSync(child.cwd) : null } catch { return refuse('child-cwd-unreadable') }
+    const relative = child ? path.relative(recordRoot, childCwd) : null
+    if (child && (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) return refuse('child-cwd-outside-worktree')
   }
   if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, worker))
     || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, child))) {
@@ -226,6 +231,15 @@ export function writeJsonAtomic(file, value) {
   const temporary = `${file}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
   renameSync(temporary, file)
+}
+
+export function claimCurrentSupervision(paths, runId, { writePointer = writeJsonAtomic } = {}) {
+  writePointer(paths.pointer, { version: 1, runId })
+  let currentRunId = null
+  try { currentRunId = JSON.parse(readFileSync(paths.pointer, 'utf8')).runId } catch {}
+  if (currentRunId === runId) return true
+  rmSync(paths.record, { force: true })
+  return false
 }
 
 export function supervisionPaths(root, runId = null) {

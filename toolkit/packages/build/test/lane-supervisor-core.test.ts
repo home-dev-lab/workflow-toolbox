@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -39,6 +39,11 @@ describe('lane supervisor safety core', () => {
   it('keeps an unreadable live identity unknown through the injected process-existence seam', () => {
     const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node'], workerStartTime: 400, childPid: 41, childArgv: ['opencode'], childStartTime: 410, worktree: '/work' }
     expect(classifyLane(record, { inspect: () => null, processExists: () => true })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable' })
+  })
+
+  it('classifies a live pid with an unavailable recorded start time as unknown, never gone', () => {
+    const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node'], workerStartTime: null, childPid: null, childArgv: null, childStartTime: null, worktree: '/work' }
+    expect(classifyLane(record, { inspect: () => ({ pid: 40, argv: ['node'], startTime: 400 }), processExists: () => true })).toMatchObject({ status: 'unknown', worker: 'unknown' })
   })
 
   it('is unknown off Linux even when neither pid can be inspected', () => {
@@ -86,12 +91,23 @@ describe('lane supervisor safety core', () => {
   it('refuses an external kill when the record origin or child cwd is outside the worktree', () => {
     const kill = vi.fn()
     const journal = vi.fn()
+    const root = mkdtempSync(join(tmpdir(), 'lane-paths-'))
+    const lane = join(root, 'lane'); const other = join(root, 'other'); const forged = join(root, 'forged')
+    mkdirSync(lane); mkdirSync(other); mkdirSync(forged)
+    try {
+      const record = { runId: '76-1', state: 'abandoned', worktree: lane, workerPid: 76, workerArgv: ['node'], workerStartTime: 760, childPid: 77, childArgv: ['opencode'], childStartTime: 770 }
+      const inspect = (pid: number) => pid === 76 ? null : { pid, argv: ['opencode'], startTime: 770, groupId: 76, cwd: other }
+      expect(terminateLane(record, { inspect, kill, journal, graceMs: 0, source: 'control', recordWorktree: lane })).toMatchObject({ killed: false, reason: 'child-cwd-outside-worktree' })
+      expect(terminateLane({ ...record, worktree: forged }, { inspect, kill, journal, graceMs: 0, source: 'watcher', recordWorktree: lane })).toMatchObject({ killed: false, reason: 'record-worktree-mismatch' })
+      expect(kill).not.toHaveBeenCalled()
+      expect(journal).toHaveBeenCalledWith(expect.objectContaining({ event: 'termination-refused' }))
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('distinguishes an unreadable child cwd from an outside cwd', () => {
     const record = { runId: '76-1', state: 'abandoned', worktree: '/lane', workerPid: 76, workerArgv: ['node'], workerStartTime: 760, childPid: 77, childArgv: ['opencode'], childStartTime: 770 }
-    const inspect = (pid: number) => pid === 76 ? null : { pid, argv: ['opencode'], startTime: 770, groupId: 76, cwd: '/other' }
-    expect(terminateLane(record, { inspect, kill, journal, graceMs: 0, source: 'control', recordWorktree: '/lane' })).toMatchObject({ killed: false, reason: 'child-cwd-outside-worktree' })
-    expect(terminateLane({ ...record, worktree: '/forged' }, { inspect, kill, journal, graceMs: 0, source: 'watcher', recordWorktree: '/lane' })).toMatchObject({ killed: false, reason: 'record-worktree-mismatch' })
-    expect(kill).not.toHaveBeenCalled()
-    expect(journal).toHaveBeenCalledWith(expect.objectContaining({ event: 'termination-refused' }))
+    const inspect = (pid: number) => pid === 76 ? null : { pid, argv: ['opencode'], startTime: 770, groupId: 76, cwd: null }
+    expect(terminateLane(record, { inspect, kill: vi.fn(), graceMs: 0, source: 'control', recordWorktree: '/lane' })).toMatchObject({ killed: false, reason: 'child-cwd-unreadable' })
   })
 
   it('refuses an in-worktree Linux target when identity evidence changes', () => {

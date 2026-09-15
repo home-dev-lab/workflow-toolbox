@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { claimCurrentSupervision, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
@@ -143,6 +143,60 @@ describe('wt-lane detached launcher', () => {
       killIdentity({ pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }, 'SIGTERM')
     })
   })
+  it('never recovers an old launch lock while its recorded owner is still alive', async () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    f.env.SLOW_PREFLIGHT_AT_COUNT = '1'
+    const argv = [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', '--timeout', '60']
+    const first = spawn(process.execPath, argv, { env: f.env })
+    const lock = join(f.dir, '.lane', 'supervision', 'launch.lock')
+    waitForFile(join(lock, 'owner.json'))
+    const old = new Date(Date.now() - 121_000)
+    utimesSync(lock, old, old)
+    const second = spawnSync(process.execPath, argv, { encoding: 'utf8', env: f.env })
+    await new Promise<void>((resolve) => first.on('close', () => resolve()))
+    try {
+      expect(second.status).toBe(1)
+      expect(second.stderr).toContain('another lane launch is in progress')
+    } finally {
+      for (const name of readdirSync(join(f.dir, '.lane', 'supervision')).filter((item) => /^\d+-\d+\.json$/.test(item))) {
+        const state = JSON.parse(readFileSync(join(f.dir, '.lane', 'supervision', name), 'utf8'))
+        const identity = inspectProcess(state.workerPid)
+        if (sameIdentity({ pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }, identity)) process.kill(state.workerPid, 'SIGTERM')
+      }
+    }
+  }, 15_000)
+  it('does not release a launch lock after its owner record has been replaced', async () => {
+    const f = fixture('sleep 0.2')
+    f.env.SLOW_PREFLIGHT_AT_COUNT = '1'
+    const first = spawn(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { env: f.env })
+    const ownerFile = join(f.dir, '.lane', 'supervision', 'launch.lock', 'owner.json')
+    waitForFile(ownerFile)
+    writeFileSync(ownerFile, JSON.stringify({ runId: 'foreign', pid: process.pid, argv: process.argv, startTime: inspectProcess(process.pid)?.startTime ?? null }))
+    await new Promise<void>((resolve) => first.on('close', () => resolve()))
+    expect(existsSync(ownerFile)).toBe(true)
+    const state = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))
+    killIdentity({ pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }, 'SIGTERM')
+  }, 15_000)
+  it('removes only its own placeholder when another run wins the current pointer', () => {
+    const f = fixture('true')
+    const paths = supervisionPaths(f.dir, '10-1')
+    mkdirSync(paths.dir, { recursive: true })
+    writeFileSync(paths.record, '{}')
+    const claimed = claimCurrentSupervision(paths, '10-1', {
+      writePointer: (file: string, value: unknown) => {
+        writeJsonAtomic(file, value)
+        writeJsonAtomic(file, { version: 1, runId: '20-2' })
+      },
+    })
+    expect(claimed).toBe(false)
+    expect(existsSync(paths.record)).toBe(false)
+    expect(JSON.parse(readFileSync(paths.pointer, 'utf8'))).toMatchObject({ runId: '20-2' })
+  })
+  it('uses null, not an unrelated clock, when a process start time cannot be read', () => {
+    const source = readFileSync(LAUNCHER, 'utf8')
+    expect(source).not.toContain('performance.timeOrigin')
+    expect(source).toContain('startTime: null')
+  })
   it('recovers and journals a stale launch lock whose recorded owner is gone', () => {
     const f = fixture('sleep 0.2')
     const lock = join(f.dir, '.lane', 'supervision', 'launch.lock')
@@ -265,6 +319,21 @@ describe('wt-lane detached launcher', () => {
     waitForContent(journal, /"decision":"abandon"/)
     expect(readFileSync(journal, 'utf8')).toContain('"decision":"abandon"')
     expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ state: 'abandoned', decision: 'abandon', decisionSource: 'owner', timeoutAt: expect.any(String) })
+  })
+  it('abandons a lane launched through a symlinked worktree path', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
+    const target = f.dir
+    const linked = join(f.root, 'linked-worktree')
+    symlinkSync(target, linked, 'dir')
+    f.dir = linked
+    const result = run(f, ['--timeout', '0.2', '--decision-grace', '10'])
+    expect(result.status, result.stderr).toBe(0)
+    const status = currentStateFile(f.dir)
+    waitForContent(status, /decision-needed/)
+    const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'abandon'], { encoding: 'utf8', env: f.env })
+    expect(control.status, control.stderr).toBe(0)
+    expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ state: 'abandoned' })
   })
   it('does not treat an old EXIT marker as an orphan while the current launcher is alive', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
