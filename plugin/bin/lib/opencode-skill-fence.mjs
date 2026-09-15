@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
-import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-allowlist.mjs'
@@ -273,13 +273,42 @@ export function pruneOpencodeSkillFenceCache({ stateDir = defaultStateDir(proces
   })
 }
 
-function resolvedBinary(bin, env) {
+function resolvedBinary(bin, env, { accessSyncFn = accessSync, platform = process.platform, realpathSyncFn = realpathSync, statSyncFn = statSync } = {}) {
+  const pathApi = platform === 'win32' ? path.win32 : path
   if (bin.includes('/') || bin.includes('\\')) {
-    try { return realpathSync(bin) } catch { return path.resolve(bin) }
+    try { return realpathSyncFn(bin) } catch { return pathApi.resolve(bin) }
   }
-  const found = spawnSync(`command -v ${bin}`, { shell: true, encoding: 'utf8', env })
-  if (found.status !== 0 || !found.stdout?.trim()) return null
-  try { return realpathSync(found.stdout.trim().split('\n')[0]) } catch { return found.stdout.trim().split('\n')[0] }
+  const pathKey = platform === 'win32' ? Object.keys(env).find((key) => key.toUpperCase() === 'PATH') : 'PATH'
+  const pathExtKey = platform === 'win32' ? Object.keys(env).find((key) => key.toUpperCase() === 'PATHEXT') : undefined
+  const searchPath = pathKey === undefined ? undefined : env[pathKey]
+  if (!searchPath) return null
+  const extensions = platform === 'win32' && pathApi.extname(bin) === ''
+    ? String((pathExtKey === undefined ? undefined : env[pathExtKey]) || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+    : ['']
+  const delimiter = platform === 'win32' ? ';' : ':'
+  for (const directory of searchPath.split(delimiter)) {
+    for (const extension of extensions) {
+      const candidate = pathApi.resolve(directory || '.', `${bin}${extension}`)
+      try {
+        if (!statSyncFn(candidate).isFile()) continue
+      } catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue
+        throw new Error(`could not search PATH for ${bin}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+      if (platform !== 'win32') {
+        try { accessSyncFn(candidate, constants.X_OK) } catch (error) {
+          if (error?.code === 'EACCES') continue
+          if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue
+          throw new Error(`could not inspect PATH result for ${bin}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      try { return realpathSyncFn(candidate) } catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue
+        throw new Error(`could not resolve PATH result for ${bin}: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+  return null
 }
 
 export function verifyOpencodeSkillFence(bin, options = {}) {
@@ -287,13 +316,13 @@ export function verifyOpencodeSkillFence(bin, options = {}) {
     return verifyOpencodeSkillFenceInternal(bin, options)
   } catch (error) {
     const reason = `could not complete the OpenCode Claude-skill fence capability probe (${error instanceof Error ? error.message : String(error)})`
-    return { ok: false, allowOk: false, cached: false, reason, allowReason: reason, mechanism: MECHANISM }
+    return { ok: false, allowOk: false, unavailable: true, cached: false, reason, allowReason: reason, mechanism: MECHANISM }
   }
 }
 
-function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = defaultStateDir(env), spawnSyncFn = spawnSync } = {}) {
+function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = defaultStateDir(env), spawnSyncFn = spawnSync, accessSyncFn = accessSync, platform = process.platform, realpathSyncFn = realpathSync, statSyncFn = statSync } = {}) {
   const childEnv = opencodeChildEnv(env)
-  const binary = resolvedBinary(bin, childEnv)
+  const binary = resolvedBinary(bin, childEnv, { accessSyncFn, platform, realpathSyncFn, statSyncFn })
   if (binary === null) return { ok: true, allowOk: true, missing: true, cached: false, mechanism: MECHANISM }
 
   const versionResult = spawnSyncFn(binary, ['--version'], { encoding: 'utf8', env: childEnv, timeout: 30_000 })

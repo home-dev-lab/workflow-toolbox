@@ -132,6 +132,54 @@ describe('OpenCode Claude-skill fence', () => {
     expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout: 'nope', stderr: '' }) })).toMatchObject({ ok: false, reason: expect.stringContaining('invalid JSON') })
   })
 
+  it('does not report a verified fence when bare-binary discovery itself fails', () => {
+    const f = stub('honor')
+    const discoveryError = Object.assign(new Error('simulated lookup I/O failure'), { code: 'EIO' })
+    const result = verifyOpencodeSkillFence('opencode', {
+      env: { ...process.env, PATH: f.root },
+      stateDir: f.stateDir,
+      accessSyncFn: () => { throw discoveryError },
+    })
+
+    expect(result).toMatchObject({ ok: false, allowOk: false, unavailable: true, reason: expect.stringContaining('simulated lookup I/O failure') })
+  })
+
+  it('keeps an exhaustive bare-binary miss distinct from unavailable discovery', () => {
+    const missing = Object.assign(new Error('not found'), { code: 'ENOENT' })
+    expect(verifyOpencodeSkillFence('opencode', {
+      env: { PATH: '/nowhere' },
+      accessSyncFn: () => { throw missing },
+    })).toMatchObject({ ok: true, allowOk: true, missing: true })
+  })
+
+  it('resolves a bare Windows executable through Path and PATHEXT', () => {
+    const f = stub('honor')
+    const calls: string[] = []
+    const missing = Object.assign(new Error('not found'), { code: 'ENOENT' })
+    const binary = 'C:\\tools\\opencode.EXE'
+    const spawnSyncFn = (command: string, args: string[]) => {
+      expect(command).toBe(binary)
+      return args[0] === '--version'
+        ? { status: 0, stdout: '1.2.3\n', stderr: '' }
+        : { status: 0, stdout: '[{"name":"workflow-toolbox-allowed-sentinel"}]', stderr: '' }
+    }
+    const result = verifyOpencodeSkillFence('opencode', {
+      env: { Path: 'C:\\tools', PATHEXT: '.EXE;.CMD' },
+      stateDir: f.stateDir,
+      platform: 'win32',
+      statSyncFn: (candidate: string) => {
+        calls.push(candidate)
+        if (candidate !== binary) throw missing
+        return { isFile: () => true }
+      },
+      realpathSyncFn: (candidate: string) => candidate,
+      spawnSyncFn,
+    })
+
+    expect(calls).toEqual([binary])
+    expect(result).toMatchObject({ ok: true, allowOk: true, binary })
+  })
+
   it('refuses a binary that still lists the synthetic Claude skill', () => {
     const f = stub('ignore')
     expect(verifyOpencodeSkillFence(f.bin, { stateDir: f.stateDir })).toMatchObject({ ok: false, reason: expect.stringContaining('still listed') })
