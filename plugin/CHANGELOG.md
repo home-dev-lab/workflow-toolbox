@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.177.0] - 2026-09-15
+
 ### Added
 - Added the on-demand `/wir` What is running pane as a shipped function-hook module. Its generic
   collector carries explicit available, partial, or unknown verdicts, and workflow-toolbox lane,
