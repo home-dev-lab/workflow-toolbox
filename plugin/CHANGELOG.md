@@ -10,6 +10,14 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   deadline — at most 30 minutes, 10 in a single-prompt `-p` run — and the harness notifies the
   session to re-arm at expiry, so the skill states the expiry, what an event-less expiry means, and
   that work needing a longer watch belongs in a manifest-declared monitor or a durable record.
+- Bounded the OpenCode skill-fence capability cache to its 64 newest results, pruned inside the same
+  locked operation that publishes a cache miss. The lock cannot be stolen: it has no staleness
+  displacement, so no process can take it from a holder and none can remove a lock it does not own at
+  the moment of removal. A crashed holder therefore leaves a lock nobody steals and waiters time out,
+  which is a deliberate availability trade rather than two writers in the critical section. Pruning
+  refuses any cache directory not carrying the store marker this module writes, and no removal is
+  recursive. Older binary/version results are discarded and may require one capability re-probe if
+  that exact OpenCode installation is used again.
 
 ## [0.175.0] - 2026-09-15
 

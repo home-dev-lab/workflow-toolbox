@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import crypto from 'node:crypto'
-import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-allowlist.mjs'
@@ -11,6 +11,10 @@ const ALLOW_SENTINEL = 'workflow-toolbox-allowed-sentinel'
 const PROBE_CONTRACT = 'allow-list-v2-two-half'
 const MECHANISM = 'opencode-config-skills-paths'
 const NORMALIZED_REFUSED_LANE_SKILLS = new Set(REFUSED_LANE_SKILLS.map(normalizeOpencodeSkillName))
+export const SKILL_FENCE_CACHE_MAX_ENTRIES = 64
+const CACHE_LOCK_WAIT_MS = 30_000
+const CACHE_STORE_MARKER = '.workflow-toolbox-opencode-skill-fence-cache'
+const CACHE_STORE_MARKER_CONTENT = 'workflow-toolbox opencode skill-fence cache v1\n'
 
 // Measured 2026-09-13 with installed OpenCode 1.18.30: under --pure,
 // OPENCODE_CONFIG skills.paths exposes a materialised skill while
@@ -184,6 +188,91 @@ function defaultStateDir(env) {
   return path.join(resolvePluginDataDir({ env, fallback }).dir, 'opencode-skill-fence')
 }
 
+function establishCacheStore(stateDir, allowExistingUnmarked = false) {
+  const created = mkdirSync(stateDir, { recursive: true, mode: 0o700 }) !== undefined
+  const store = lstatSync(stateDir)
+  if (!store.isDirectory() || store.isSymbolicLink()) throw new Error(`refusing unowned OpenCode skill-fence cache directory: ${stateDir}`)
+  const marker = path.join(stateDir, CACHE_STORE_MARKER)
+  let markerEntry = lstatIfExists(marker)
+  if (!created && !markerEntry && !allowExistingUnmarked) {
+    const deadline = Date.now() + 1_000
+    while (!markerEntry && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+      markerEntry = lstatIfExists(marker)
+    }
+  }
+  if (markerEntry) {
+    if (!markerEntry.isFile() || markerEntry.isSymbolicLink() || readFileSync(marker, 'utf8') !== CACHE_STORE_MARKER_CONTENT) {
+      throw new Error(`refusing unowned OpenCode skill-fence cache directory: ${stateDir}`)
+    }
+    return
+  }
+  if (!created && !allowExistingUnmarked) throw new Error(`refusing unowned OpenCode skill-fence cache directory: ${stateDir}`)
+  writeFileSync(marker, CACHE_STORE_MARKER_CONTENT, { flag: 'wx', mode: 0o600 })
+}
+
+function cacheLock(stateDir, operation, { allowExistingUnmarked = false } = {}) {
+  establishCacheStore(stateDir, allowExistingUnmarked)
+  const lockDir = path.join(stateDir, '.retention.lock')
+  const token = `${process.pid}-${crypto.randomBytes(8).toString('hex')}`
+  const ownerFile = path.join(lockDir, 'owner')
+  const deadline = Date.now() + CACHE_LOCK_WAIT_MS
+  while (true) {
+    try {
+      mkdirSync(lockDir, { mode: 0o700 })
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for cache retention lock: ${lockDir}`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+      continue
+    }
+    try {
+      writeFileSync(ownerFile, token, { flag: 'wx', mode: 0o600 })
+      break
+    } catch (error) {
+      rmSync(ownerFile, { force: true })
+      rmdirSync(lockDir)
+      throw error
+    }
+  }
+  try {
+    return operation()
+  } finally {
+    if (readFileSync(ownerFile, 'utf8') !== token) throw new Error(`lost ownership of cache retention lock: ${lockDir}`)
+    unlinkSync(ownerFile)
+    rmdirSync(lockDir)
+  }
+}
+
+function pruneCacheUnlocked(stateDir, maxEntries, protectedFile) {
+  const cacheFiles = []
+  for (const name of readdirSync(stateDir)) {
+    if (!/^[a-f0-9]{64}\.json$/.test(name)) continue
+    const file = path.join(stateDir, name)
+    try {
+      const entry = lstatSync(file)
+      if (entry.isFile()) cacheFiles.push({ file, mtimeMs: entry.mtimeMs })
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
+  cacheFiles.sort((left, right) => {
+    if (left.file === protectedFile) return -1
+    if (right.file === protectedFile) return 1
+    return right.mtimeMs - left.mtimeMs || right.file.localeCompare(left.file)
+  })
+  for (const { file } of cacheFiles.slice(maxEntries)) rmSync(file, { force: true })
+  return { removed: Math.max(0, cacheFiles.length - maxEntries), retained: Math.min(cacheFiles.length, maxEntries) }
+}
+
+export function pruneOpencodeSkillFenceCache({ stateDir = defaultStateDir(process.env), maxEntries = SKILL_FENCE_CACHE_MAX_ENTRIES } = {}) {
+  if (!Number.isSafeInteger(maxEntries) || maxEntries < 1) throw new Error('maxEntries must be a positive integer')
+  if (!existsSync(stateDir)) return { removed: 0, retained: 0 }
+  return cacheLock(stateDir, () => pruneCacheUnlocked(stateDir, maxEntries), {
+    allowExistingUnmarked: path.resolve(stateDir) === path.resolve(defaultStateDir(process.env)),
+  })
+}
+
 function resolvedBinary(bin, env) {
   if (bin.includes('/') || bin.includes('\\')) {
     try { return realpathSync(bin) } catch { return path.resolve(bin) }
@@ -269,10 +358,29 @@ function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = d
       ? reason
       : !allowOk ? `the allow-list half did not expose the synthetic allowed skill via ${MECHANISM}`
         : undefined
-    mkdirSync(stateDir, { recursive: true })
-    const temp = `${cacheFile}.${process.pid}.tmp`
-    writeFileSync(temp, JSON.stringify({ ok, allowOk, reason, allowReason, binary, version, mechanism: MECHANISM, contract: PROBE_CONTRACT }))
-    renameSync(temp, cacheFile)
+    cacheLock(stateDir, () => {
+      const temp = `${cacheFile}.${process.pid}-${crypto.randomBytes(8).toString('hex')}.tmp`
+      try {
+        let published = false
+        try {
+          const concurrent = JSON.parse(readFileSync(cacheFile, 'utf8'))
+          published = concurrent.binary === binary && concurrent.version === version && typeof concurrent.ok === 'boolean' && typeof concurrent.allowOk === 'boolean'
+        } catch { /* this process still needs to publish its probe result */ }
+        if (!published) {
+          writeFileSync(temp, JSON.stringify({ ok, allowOk, reason, allowReason, binary, version, mechanism: MECHANISM, contract: PROBE_CONTRACT }), { flag: 'wx', mode: 0o600 })
+          try {
+            renameSync(temp, cacheFile)
+          } catch (error) {
+            if (error?.code !== 'EEXIST' && error?.code !== 'EPERM') throw error
+            rmSync(cacheFile, { force: true })
+            renameSync(temp, cacheFile)
+          }
+        }
+        pruneCacheUnlocked(stateDir, SKILL_FENCE_CACHE_MAX_ENTRIES, cacheFile)
+      } finally {
+        rmSync(temp, { force: true })
+      }
+    }, { allowExistingUnmarked: path.resolve(stateDir) === path.resolve(defaultStateDir(env)) })
     return { ok, allowOk, cached: false, binary, version, mechanism: MECHANISM, reason, allowReason }
   } finally {
     if (existsSync(fixture)) rmSync(fixture, { recursive: true, force: true })
