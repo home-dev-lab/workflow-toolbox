@@ -19,6 +19,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   as unknown rather than silently treating it as a zero count.
 
 ### Fixed
+- Artifact-server discovery now parses the URL token in real Tailscale Serve status headers that
+  carry trailing annotations, while retaining strict endpoint and proxy-mapping validation.
+- Artifact-server root indexes now emit relative links so navigation remains under a proxy path
+  mount, and Host refusals identify the presented Host without exposing the allow-list.
 - Artifact-server HTTPS links now preserve the exact Tailscale Serve hostname, port, and mount path,
   and fall back to the direct tailnet address when the table is ambiguous or maps another service.
 - Artifact-server Tailscale detection now resolves the Windows executable through PowerShell and

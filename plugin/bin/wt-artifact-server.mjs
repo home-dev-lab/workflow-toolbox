@@ -327,7 +327,9 @@ async function serve() {
     const allowedHosts = new Set([`localhost:${requestedPort}`, `127.0.0.1:${requestedPort}`])
     if (tailscale.ip) { allowedHosts.add(tailscale.ip); allowedHosts.add(`${tailscale.ip}:${requestedPort}`) }
     if (tailscale.dnsName) { allowedHosts.add(tailscale.dnsName.toLowerCase()); allowedHosts.add(`${tailscale.dnsName.toLowerCase()}:${requestedPort}`) }
-    if (!host || !allowedHosts.has(host)) { send(response, method, 421, 'Misdirected Request\n'); return }
+    if (!host || !allowedHosts.has(host)) {
+      send(response, method, 421, `Misdirected Request: Host "${host ?? '<missing>'}" is not in the allow-list\n`); return
+    }
     if (method !== 'GET' && method !== 'HEAD') {
       send(response, method, 405, 'Method Not Allowed\n', 'text/plain; charset=utf-8', { Allow: 'GET, HEAD' }); return
     }
@@ -348,7 +350,7 @@ async function serve() {
     if (segments === null) { send(response, method, 403, 'Forbidden\n'); return }
     const roots = liveRoots()
     if (segments.length === 0) {
-      const links = roots.map((root) => `<li><a href="/${encodeURIComponent(root.name)}/">${escapeHtml(root.name)}/</a></li>`).join('')
+      const links = roots.map((root) => `<li><a href="${encodeURIComponent(root.name)}/">${escapeHtml(root.name)}/</a></li>`).join('')
       send(response, method, 200, htmlPage('Artifact roots', `<h1>Artifact roots</h1><ul>${links}</ul>`), 'text/html; charset=utf-8', { 'Content-Security-Policy': GENERATED_CSP })
       return
     }

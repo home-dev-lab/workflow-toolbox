@@ -228,7 +228,7 @@ export function parseTailscaleServeUrl(served, dnsName, port) {
     const trimmed = line.trim()
     if (trimmed.startsWith('https://')) {
       try {
-        const parsed = new URL(trimmed)
+        const parsed = new URL(trimmed.split(/\s+/, 1)[0])
         endpoint = parsed.protocol === 'https:' && parsed.hostname.toLowerCase() === dnsName.toLowerCase() &&
           parsed.pathname === '/' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash
           ? parsed.origin

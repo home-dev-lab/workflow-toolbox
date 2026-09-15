@@ -6,7 +6,7 @@ import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, deriveArtifactPort } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl } from '../../../../plugin/bin/lib/artifact-server.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SERVER = join(REPO_ROOT, 'plugin/bin/wt-artifact-server.mjs')
@@ -1136,6 +1136,42 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect((await rawRequest(port, '/__wt-artifact-server/deregister?session=x', `localhost:${port}`)).status).toBe(404)
   })
 
+  it('keeps root-index links inside a proxy path while preserving the unprefixed destination', async () => {
+    const project = temporaryDir('relative-index-project')
+    const root = temporaryDir('relative-index-root')
+    const stateHome = temporaryDir('relative-index-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `reports=${root}`,
+    }))
+    await waitForState(stateHome, (state) => state.roots.length === 1)
+
+    const proxy = createServer(async (_request, response) => {
+      const upstream = await rawRequest(port, '/', `localhost:${port}`)
+      response.writeHead(upstream.status, { 'content-type': 'text/html' })
+      response.end(upstream.body)
+    })
+    await new Promise<void>((resolve, reject) => {
+      proxy.once('error', reject)
+      proxy.listen(0, '127.0.0.1', resolve)
+    })
+    const proxyAddress = proxy.address()
+    if (!proxyAddress || typeof proxyAddress === 'string') throw new Error('proxy has no TCP port')
+    try {
+      const index = await rawRequest(proxyAddress.port, '/serve-mount/', `localhost:${proxyAddress.port}`)
+      expect(index.status).toBe(200)
+      const href = /<a href="([^"]+)">reports\/<\/a>/.exec(index.body)?.[1]
+      expect(href).toBe('reports/')
+      expect(new URL(href!, `http://localhost:${port}/`).href).toBe(`http://localhost:${port}/reports/`)
+      expect(new URL(href!, 'https://host.tailnet.ts.net/serve-mount/').href)
+        .toBe('https://host.tailnet.ts.net/serve-mount/reports/')
+    } finally {
+      await closeServer(proxy)
+    }
+  })
+
   it('[A-01] defaults to project-unique reports/worktrees names and chooses the longest URL root', async () => {
     const { project, reports, worktrees } = projectWithRoots('defaults')
     const nestedCwd = join(project, 'packages', 'nested')
@@ -1306,6 +1342,19 @@ describe('owner decision 5: Tailscale access', () => {
     return bin
   }
 
+  it('parses the URL token from the captured Tailscale Serve header', () => {
+    const served = [
+      'https://desktop-ug8o6r2.tailc54ed8.ts.net (tailnet only)',
+      '|-- /          proxy http://127.0.0.1:47375',
+      '|-- /artifacts proxy http://127.0.0.1:48375',
+    ].join('\n')
+
+    expect(parseTailscaleServeUrl(served, 'desktop-ug8o6r2.tailc54ed8.ts.net', 48375))
+      .toBe('https://desktop-ug8o6r2.tailc54ed8.ts.net/artifacts')
+    expect(parseTailscaleServeUrl('https://% invalid\n|-- / proxy http://127.0.0.1:48375', 'desktop-ug8o6r2.tailc54ed8.ts.net', 48375))
+      .toBeNull()
+  })
+
   it('[B-02] accepts MagicDNS, rejects an evil Host, and reports the tailnet URL', async () => {
     const { project } = projectWithRoots('tailscale')
     const stateHome = temporaryDir('tailscale-state')
@@ -1321,7 +1370,12 @@ describe('owner decision 5: Tailscale access', () => {
     expect((await rawRequest(port, '/__wt-artifact-server/health', 'host.tailnet.ts.net')).status).toBe(200)
     expect((await rawRequest(port, '/__wt-artifact-server/health', `127.0.0.2:${port}`, '127.0.0.2')).status).toBe(200)
     expect((await rawRequest(port, '/__wt-artifact-server/register?session=remote&roots=%5B%5D', 'host.tailnet.ts.net')).status).toBe(404)
-    expect((await rawRequest(port, '/__wt-artifact-server/health', 'evil.example')).status).toBe(421)
+    const refused = await rawRequest(port, '/__wt-artifact-server/health', 'evil.example')
+    expect(refused.status).toBe(421)
+    expect(refused.body).toContain('evil.example')
+    expect(refused.body).toMatch(/not in the allow-list/i)
+    expect(refused.body).not.toContain('host.tailnet.ts.net')
+    expect(refused.body).not.toContain('127.0.0.2')
   })
 
   it('[B-02] sets remoteUrl to null when the stubbed tailscale binary is absent', async () => {
