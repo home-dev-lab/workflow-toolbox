@@ -1,0 +1,50 @@
+  What's next: either take the card if I receive direction to         │
+  continue, or wait for the user's input.                             │
+                                                                      │
+● Ran 11 stop hooks                                                   │
+  ⎿  Stop hook feedback: [for Claude, not the user]                   │
+  Actionability gate: Producer heartbeat is stale: no recent          │
+  board read (normal during a conversation) — nothing, normal.        │
+  Next: unknown. Block 2 of 3.                                        │
+                                                                      │
+  Thought for 3s                                                      │
+                                                                      │
+● Waiting for user input. No autonomous mandate to continue. ✓        │
+                                                                      │
+● Ran 11 stop hooks                                                   │
+  ⎿  Stop hook feedback: [for Claude, not the user]                   │
+  Actionability gate: Producer heartbeat is stale: no recent          │
+  board read (normal during a conversation) — nothing, normal.        │
+  Next: unknown. Block 3 of 3.                                        │
+                                                                      │
+  Thought for 2s                                                      │
+                                                                      │
+● Gate 3 of 3 complete. Waiting for user direction. Ready to resume. ✓│
+                                                                      │
+✻ Baked for 31s · done 8:19 PM · 5 monitors still running             │
+                                                                      │
+● Monitor "Account quota watch — reports five-hour/seven-day usage    │
+crossing a threshold and window resets, so a long delegated arc gets a│
+wake-up before hitting the wall" stream ended                         │
+                                                                      │
+● Monitor event: "Autonomy watch — wakes a mandated session that still│
+has queued work, nothing in flight, and no new turn for long enough"  │
+                                                                      │
+  Thought for 4s                                                      │
+                                                                      │
+● Status noted. Quota watch completed; autonomy watch armed but       │
+  awaiting mandate. Idle, ready for next user input. ✓                │
+                                                                      │
+✻ Churned for 5s · done 8:19 PM · 5 monitors still running            │
+                                                                      │
+❯ /wir                                                                │
+  ⎿  wt-what-is-running: What is running: opened.                     │
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Haiku 4.5 | [█████████████░░░░░░░] | 69.7% | 139K/200K | 5h 3% ↻ 21:10 (52min) · wk 60% ↻ ven. 18/09 05:00 · fable 100% | wt-suite | None | Java 17.0.9 | N…
+  OpenAI wk 7% ↻ 19/09 09:14
+  Antigravity 12% ↻ 14/09 00:18
+  ⏵⏵ bypass permissions on · 5 monitors
+  what is running

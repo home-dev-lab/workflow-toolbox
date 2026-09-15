@@ -37,15 +37,16 @@
       { "name": "silent exit 0 (allow)", "where": "plugin/bin/wt-main-guard-hook.mjs:42-45" }
     ]
   },
-  "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 7 },
+  "monitors": { "file": "plugin/monitors/monitors.json", "fields": ["name", "command", "description", "when"], "count": 8, "consumedBy": "plugin/hooks/snapshot-program.js service-process collector" },
   "shippedSkills": {
     "count": 16,
     "names": ["adopt", "artifact-server", "changelog", "deep-grounding", "delegation-chain", "external-lane", "independent-analysis", "lesson-harvest", "pilot-wave", "planka-tracking", "stale-card-sweep", "toolkit-scaffold", "upgrade-canary", "what-next", "workflow-composer", "workflow-debugger"]
   },
   "functionHooks": {
-    "status": "spike only (worktrees/fh-spike); function modules cannot import Node APIs needed to inspect a staged Git diff",
-    "events": ["tool.call"],
-    "capabilities": ["$.ui.log", "$.store.get", "$.store.set"]
+    "status": "shipped",
+    "manifest": "plugin/hooks/hooks.json",
+    "events": ["session.start", "command.run", "ui.render"],
+    "capabilities": ["$.command.register", "$.process.run", "$.ui.open", "$.ui.close", "$.ui.invalidate", "$.ui.resolve", "$.clock.every", "$.store.get", "$.store.set"]
   },
   "sdk": {
     "package": "@anthropic-ai/claude-agent-sdk",
@@ -107,7 +108,7 @@
     { "name": "node plugin/bin/wt-plugin-eval-gate.mjs", "where": "docs/public/known-issues.md" },
     { "name": "claude plugin validate", "where": "README.md" },
     { "name": "claude --plugin-dir / --debug-file / --allowedTools / -p", "where": "worktrees/fh-spike (spike only)" },
-    { "name": "/plugin-types", "where": "worktrees/fh-spike/types (spike only)" },
+    { "name": "/wir", "where": "plugin/hooks/hooks.js" },
     { "name": "node plugin/bin/wt-report-findings-check.mjs", "where": "plugin/agent-templates/pilot-orchestrator.md and plugin/skills/lesson-harvest/SKILL.md" }
   ],
   "invariants": [

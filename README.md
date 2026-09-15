@@ -346,6 +346,7 @@ what happened and whether resuming is safe.
 | `skills/toolkit-scaffold` | **Start** a new composition: generates a build-clean `.workflow.ts` skeleton wired to the chosen `@workflow-toolbox` pattern, so you fill in prompts instead of boilerplate. | Automatically, or `/workflow-toolbox:toolkit-scaffold` |
 | `skills/workflow-debugger` | **Diagnose** a finished or failed run from its journal: why an agent died, whether schema retries fired, whether resuming is safe. | Automatically, or `/workflow-toolbox:workflow-debugger` |
 | `skills/artifact-server` | **Link** registered project reports in chat or a Function Hooks pane through the default-on per-user artifact server, locally or over Tailscale. | Automatically, or `/workflow-toolbox:artifact-server` |
+| `hooks` | **Inspect** current sessions, cards, lanes, services, and helper processes with explicit availability when a host probe cannot run. | `/wir` or the `what is running` prompt-hint button |
 | `skills/upgrade-canary` | **Re-verify** the Workflow runtime still behaves the way the toolkit depends on after a Claude Code (or SDK) upgrade, and report what changed. | Automatically, or `/workflow-toolbox:upgrade-canary` |
 | `skills/adopt` | **Adopt** editable, versioned copies of the plugin's cross-cutting rule files (and the pilot agent definitions) into your project or config — on explicit request only, never automatically; each copy is fingerprinted so a later `--check` detects when the plugin has moved ahead. | Automatically when you ask, or `/workflow-toolbox:adopt` |
 

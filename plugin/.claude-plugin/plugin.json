@@ -97,6 +97,42 @@
       "default": 10,
       "required": false,
       "description": "Minutes without a worktree write before a still-running supervised lane is reported to its owner with evidence; it is never killed for this condition."
+    },
+    "configDir": {
+      "type": "string", "title": "Claude configuration directory", "default": "", "required": false,
+      "description": "Absolute plugin-store root. Empty uses CLAUDE_CONFIG_DIR, then the session home."
+    },
+    "livenessDir": {
+      "type": "string", "title": "Running-work liveness directory", "default": "", "required": false,
+      "description": "Absolute liveness-record directory. Empty uses XDG_STATE_HOME/wt-liveness or the home state directory."
+    },
+    "suiteRoot": {
+      "type": "string", "title": "Running-work suite root", "default": "", "required": false,
+      "description": "Absolute root containing configured worktrees and reports. Empty uses .claude under the session project."
+    },
+    "extraRoots": {
+      "type": "string", "title": "Additional running-work roots", "default": "", "required": false,
+      "description": "Comma- or newline-separated absolute roots trusted for external lanes."
+    },
+    "pollMs": {
+      "type": "number", "title": "Running-view polling interval", "default": 2000, "required": false,
+      "description": "Milliseconds between snapshots while the What is running pane is open."
+    },
+    "activeWindowMin": {
+      "type": "number", "title": "Running-work activity window", "default": 10, "required": false,
+      "description": "Minutes for which durable activity evidence remains current."
+    },
+    "linkBase": {
+      "type": "string", "title": "Running-work artifact URL", "default": "", "required": false,
+      "description": "Optional https: or http://localhost static server base URL serving artifacts below suiteRoot."
+    },
+    "plankaBaseUrl": {
+      "type": "string", "title": "Planka browser URL", "default": "", "required": false,
+      "description": "Optional browser-facing Planka base URL used for card links."
+    },
+    "plankaConfigFile": {
+      "type": "string", "title": "Planka environment file", "default": "", "required": false,
+      "description": "Optional absolute environment file from which BASE_URL is read when Planka browser URL is empty."
     }
   },
   "hooks": {

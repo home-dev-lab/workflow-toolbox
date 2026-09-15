@@ -5,6 +5,16 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Added the on-demand `/wir` What is running pane as a shipped function-hook module. Its generic
+  collector carries explicit available, partial, or unknown verdicts, and workflow-toolbox lane,
+  executable, service, and branch conventions attach through one registered layout descriptor.
+
+### Fixed
+- Process discovery now renders a legible unavailable verdict on unsupported platforms instead of a
+  confident empty list. Failed clock-tick, directory, process-record, executable-lookup, and Git
+  probes no longer become guessed ages, empty scans, dead processes, or unmerged branches.
+
 ## [0.176.0] - 2026-09-15
 
 ### Fixed
