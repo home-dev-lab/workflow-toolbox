@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- The `delegation-chain` skill no longer calls a `Monitor` persistent. Every watch now carries a
+  deadline — at most 30 minutes, 10 in a single-prompt `-p` run — and the harness notifies the
+  session to re-arm at expiry, so the skill states the expiry, what an event-less expiry means, and
+  that work needing a longer watch belongs in a manifest-declared monitor or a durable record.
+
 ## [0.175.0] - 2026-09-15
 
 ### Added
