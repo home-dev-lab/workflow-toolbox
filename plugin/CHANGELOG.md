@@ -9,6 +9,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added the on-demand `/wir` What is running pane as a shipped function-hook module. Its generic
   collector carries explicit available, partial, or unknown verdicts, and workflow-toolbox lane,
   executable, service, and branch conventions attach through one registered layout descriptor.
+- Added a warn-only, journalled PreToolUse Bash guard for test starts made while other test-runner
+  processes are alive. It excludes its own process ancestry and reports process-enumeration failure
+  as unknown rather than silently treating it as a zero count.
 
 ### Fixed
 - Process discovery now renders a legible unavailable verdict on unsupported platforms instead of a
