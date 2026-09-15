@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.176.0] - 2026-09-15
+
 ### Fixed
 - Artifact-server Markdown pages now render GitHub-flavoured pipe tables, including inline markup and
   escaped or code-span pipes, inside a phone-friendly horizontal scroll container.
