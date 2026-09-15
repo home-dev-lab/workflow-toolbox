@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Run the installed OpenCode skill-fence integration file after parallel tests have drained, preventing CPU starvation without weakening its cold-cache probes.
 - Workflow config schemas now reject unknown top-level arguments and unknown role-map keys with a nearest-key suggestion.
 
 ## 0.4.0
