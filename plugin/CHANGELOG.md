@@ -31,6 +31,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   contained Markdown fiches; OpenCode lanes state when that external index is unavailable.
 
 ### Fixed
+- Concurrent artifact-server session monitors now coordinate startup through a recoverable filesystem
+  claim, preventing duplicate `serve` spawns while allowing a later monitor to replace a dead holder.
 - The open-work Stop gate now detects project-scoped detached pilot/lane runners and fresh
   non-terminal launcher-owned lane logs; discovers suite worktrees from a non-Git umbrella;
   bounds process and log reads; reports live harness tasks without counting them because the Stop
