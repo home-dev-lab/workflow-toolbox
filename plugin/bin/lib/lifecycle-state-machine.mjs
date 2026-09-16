@@ -333,12 +333,11 @@ export function createLifecycleStateMachine({
       required.push(archiveRoot, path.join(archiveRoot, '.claude'), path.join(archiveRoot, '.claude', 'reports'))
     }
     for (const directory of required) {
-      let stat
-      try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      let stat; try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
       const expectedRoot = directory === laneDir ? root : archiveRoot
-      if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory || path.relative(expectedRoot, directory).startsWith('..')) {
-        throw new Error(`lane directory replaced: ${directory}`)
-      }
+      let resolvedDirectory; let resolvedRoot
+      try { [resolvedDirectory, resolvedRoot] = [fs.realpathSync(directory), fs.realpathSync(expectedRoot)] } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      if (!stat.isDirectory() || stat.isSymbolicLink() || path.relative(resolvedRoot, resolvedDirectory).startsWith('..')) throw new Error(`lane directory replaced: ${directory}`)
     }
     if (archive) {
       try {

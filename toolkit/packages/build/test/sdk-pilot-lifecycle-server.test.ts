@@ -1259,6 +1259,22 @@ printf 'report\n' > "$report"
     const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
     expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd'])
   })
+
+  it('accepts lifecycle and archive directories reached through a symlinked temporary ancestor', () => {
+    const physical = mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-')); roots.push(physical)
+    const linked = join(tmpdir(), `wt-lifecycle-link-${Date.now()}`)
+    roots.push(linked)
+    symlinkSync(physical, linked, 'dir')
+    const worktree = mkdtempSync(join(linked, 'worktree-'))
+    const archiveRoot = mkdtempSync(join(linked, 'archive-'))
+    mkdirSync(join(worktree, '.lane'))
+    writeFileSync(join(worktree, '.gitignore'), '.lane/\n')
+    writeFileSync(join(archiveRoot, '.gitignore'), '.claude/reports/\n')
+    expect(spawnSync('git', ['init', '-q'], { cwd: worktree }).status).toBe(0)
+    expect(spawnSync('git', ['init', '-q'], { cwd: archiveRoot }).status).toBe(0)
+
+    expect(() => createLifecycleServer({ worktree, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', rules: [] })).not.toThrow()
+  })
 })
 
 const roots: string[] = []

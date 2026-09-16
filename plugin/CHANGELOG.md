@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Cross-platform lifecycle tests now compare canonical directory identities at archive boundaries, inject their process-liveness evidence, and derive assertion paths from the host rather than POSIX literals.
+
 ### Changed
 - Claude SDK roles now expose optional TypeScript/JavaScript LSP navigation through their generated
   role plugin when `typescript-language-server` resolves, and record a visible non-fatal absent state
