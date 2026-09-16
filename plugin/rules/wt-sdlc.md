@@ -86,7 +86,8 @@ what survives, not defeating the reviewer.
 
 Consolidate claim, evidence, refuter verdict, severity, confidence, and action; merge duplicates
 but retain real disagreement. The implementer decides per finding: **fix**, **partially address**,
-**reject**, or **defer**. A rejection or deferral gets a one-line justification.
+**reject with justification**, or **route** immediately to a card created now and named in the report
+with its L4 reason. Never defer: a bare deferral is not a disposition.
 
 Review-driven changes invalidate prior verification. Re-run focused and affected tests, relevant
 integration checks, build, types, lint, affected end-to-end checks, and another review round when
@@ -108,5 +109,5 @@ one hundred lines, no untested caller, and no risk category. Otherwise use the h
 Write one final report, not a running dump. Where wired, `wt-report-findings-check.mjs` checks
 these five sections: **Implemented** (what and why), **Verification** (each executed check and
 outcome), **Independent Review** (lenses, confirmed and refuted findings), **Decisions**
-(fixed, rejected, or deferred with justification), and **Remaining Risks** (unverified or
+(fixed, partially addressed, rejected with justification, or routed to a named card), and **Remaining Risks** (unverified or
 uncertain). Do not claim completion while omitting a failed or unexecuted mandatory check.

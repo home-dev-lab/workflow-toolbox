@@ -30,7 +30,7 @@ const receiptExit = (file, fallback = 1) => {
 }
 
 export function parseOrchestratorArgs(argv) {
-  const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null, knowledgeBaseIndex: null, pluginDirs: [] }
+  const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null, boardContract: null, knowledgeBaseIndex: null, pluginDirs: [] }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     const next = () => argv[++i]
@@ -45,6 +45,7 @@ export function parseOrchestratorArgs(argv) {
     else if (arg === '--worktrees-dir') options.worktreesDir = next()
     else if (arg === '--report') options.report = next()
     else if (arg === '--profile-env') options.profileEnv = next()
+    else if (arg === '--board-contract') options.boardContract = next()
     else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = next()
     else if (arg === '--plugin-dir') {
       const pluginDir = next() ?? ''
@@ -182,7 +183,8 @@ function renderReport({ waveId, options, rows, stopReason, fatal, judgment, boar
   }
   const modelSections = judgment?.trim() || '## Independent Review\nsession ended before judgment\n\n## Decisions\nsession ended before judgment'
   const bases = rows.map((row) => `card=${row.id}; base=${row.base ?? '<missing>'}; baseRef=${options.base}`).join('\n') || `baseRef=${options.base}; no card base SHA recorded`
-  return `## Implemented\nwave=${waveId}; baseRef=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}; skipped=${skipped.length ? skipped.map((entry) => `${entry.id} (${entry.reason})`).join('; ') : 'none'}\n${bases}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
+  const routed = rows.flatMap((row) => (row.routedCards ?? []).map((card) => `- origin card ${row.id}: card ${card.id} — ${card.title} — ${card.l4Reason}${card.contested ? ' — contested' : ''}${card.missionAssessment ? ` — mission re-scan: ${card.missionAssessment}` : ''}`)).join('\n') || 'None.'
+  return `## Implemented\nwave=${waveId}; baseRef=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}; skipped=${skipped.length ? skipped.map((entry) => `${entry.id} (${entry.reason})`).join('; ') : 'none'}\n${bases}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Routed cards\n${routed}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
 }
 
 export function reviewBase(row) {
@@ -313,13 +315,21 @@ export async function runOrchestrator(input, dependencies = {}) {
       row.install = await (dependencies.install ?? defaultInstall)(worktree, cardDir)
       if (!fs.existsSync(path.join(cardDir, 'install.log'))) writeFile(path.join(cardDir, 'install.log'), `EXIT=${row.install ?? 1}\n`)
       if (row.install !== 0) { row.pilot = 1; row.reason = `dependency install failed (EXIT=${row.install})`; writeFile(path.join(cardDir, 'pilot.log'), 'EXIT=1\n'); return row }
-      const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, knowledgeBaseIndex: options.knowledgeBaseIndex, knowledgeBaseProjectRoot: repo, pluginDirs: options.pluginDirs, timeout: options.pilotTimeout, boardMoves: false }, pilotDependencies)
+      const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, boardContract: options.boardContract, knowledgeBaseIndex: options.knowledgeBaseIndex, knowledgeBaseProjectRoot: repo, pluginDirs: options.pluginDirs, timeout: options.pilotTimeout, boardMoves: false }, { ...pilotDependencies, board })
       row.pilot = pilot.exitCode
       row.route = /^route=(LITE|FULL)\b/.exec(fs.existsSync(runnerLog) ? fs.readFileSync(runnerLog, 'utf8') : '')?.[1] ?? pilot.summary?.route ?? '-'
       writeFile(path.join(cardDir, 'pilot.log'), `EXIT=${pilot.exitCode}\n`)
-      for (const name of ['summary.json', 'usage.json', 'cost.json', 'sdk-transcript.json', 'pilot-report.md']) {
+      for (const name of ['summary.json', 'usage.json', 'cost.json', 'sdk-transcript.json', 'pilot-report.md', 'lifecycle.json']) {
         const source = path.join(worktree, '.lane', name)
         if (fs.existsSync(source)) fs.copyFileSync(source, path.join(cardDir, name))
+      }
+      try { row.routedCards = JSON.parse(fs.readFileSync(path.join(worktree, '.lane', 'lifecycle.json'), 'utf8')).routed_cards ?? [] } catch { row.routedCards = [] }
+      for (const routed of row.routedCards) {
+        if (!options.missionList) continue
+        try {
+          const routedCard = validateBoardCard(await board.getCard(String(routed.id)))
+          routed.missionAssessment = await ineligibleReason(routedCard, options.missionLabels, board, new Map([[String(routed.id), routedCard]])) ?? 'eligible for mission'
+        } catch (error) { routed.missionAssessment = `board unavailable: ${errorText(error)}` }
       }
       const beforeGates = treeSignature(worktree)
       const gateResult = await (dependencies.gates ?? defaultGates)(worktree, cardDir)

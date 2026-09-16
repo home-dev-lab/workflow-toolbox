@@ -90,7 +90,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(deriveRoute(readFileSync(new URL('./fixtures/intake-triage-card.md', import.meta.url), 'utf8')).route).toBe('FULL')
   })
 
-  it('builds the immutable three-tool MCP server', () => {
+  it('builds the immutable four-tool MCP server', () => {
     const worktree = new URL('../../../..', import.meta.url).pathname
     rmSync(`${worktree}/.lane/route.json`, { force: true })
     const server = createLifecycleServer({ worktree, archiveRoot: archiveProject(), route: 'LITE', executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' }, cardId: '123', sessionTag: 's' })
@@ -100,7 +100,31 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(server.lifecycle.route).toBe('LITE')
     expect(server.lifecycle.executor).toBe('claude-sdk')
     expect(JSON.parse(readFileSync(`${worktree}/.lane/route.json`, 'utf8'))).toMatchObject({ executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } })
-    expect(Object.keys(server.instance._registeredTools).sort()).toEqual(['run', 'transition', 'write_artifact'])
+    expect(Object.keys(server.instance._registeredTools).sort()).toEqual(['route_finding', 'run', 'transition', 'write_artifact'])
+  })
+
+  it('refuses route_finding without the runner board contract and names the launch remedy', async () => {
+    const lifecycle = testLifecycle('LITE')
+    expect(await text(lifecycle.routeFinding({ title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'S' })))
+      .toContain('route_finding refused: no board contract; relaunch with --board-contract <json file>')
+  })
+
+  it('routes an L4 finding through the runner and persists its trusted lifecycle record', async () => {
+    const created: Array<Record<string, unknown>> = []
+    const boardContract = {
+      boardId: 'board', listId: 'backlog',
+      labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 'small', M: 'medium', L: 'large' }, category: 'project' },
+    }
+    const lifecycle = testLifecycle('LITE', [], null, null, {
+      boardContract,
+      routeFinding: async (input: Record<string, unknown>) => { created.push(input); return { id: '987654321', title: input.title } },
+      now: () => Date.parse('2026-09-16T10:00:00.000Z'),
+    })
+    expect(await text(lifecycle.routeFinding({ title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore' }))).toBe('routed card 987654321 — Memory store migration')
+    expect(created).toEqual([expect.objectContaining({ originCardId: '1', sessionTag: 'test', title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore', boardContract })])
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([
+      { id: '987654321', title: 'Memory store migration', l4Reason: 'different subsystem: memory store' },
+    ])
   })
 
   it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'harden-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
@@ -440,14 +464,17 @@ printf 'report\n' > "$report"
   it('records the commit, archive manifest digest, and lifecycle implementation', async () => {
     let revisions = 0
     const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
-    const lifecycle = await lifecycleReadyForReport({ git })
+    const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+    const lifecycle = await lifecycleReadyForReport({ git, boardContract, routeFinding: async () => ({ id: '42', title: 'Late route' }) })
+    expect(await text(lifecycle.routeFinding({ title: 'Late route', l4Reason: 'different subsystem', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Late route')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Late route — different subsystem')
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
     expect(summary).toMatchObject({ commit: 'next', partial: null, lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
     expect(summary.archive).toMatchObject({ path: expect.stringContaining('.claude/reports/1-'), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
     expect(summary.archive.path.startsWith(lifecycle.archiveRoot)).toBe(true)
     expect(summary.archive.path.startsWith(lifecycle.root)).toBe(false)
-    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8')).partial).toBeNull()
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: null, routed_cards: [{ id: '42', title: 'Late route', l4Reason: 'different subsystem' }] })
   })
 
   it('refuses at CONSTRUCTION an archive root inside the worktree, before any phase can run', () => {
@@ -726,12 +753,29 @@ printf 'report\n' > "$report"
     const cardText = 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n- Keep tests green.\n'
     const lifecycle = await lifecycleReadyForReport({ cardText })
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n` })
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing' }))).toContain('expected `- Keep tests green.` followed by `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`')
-    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'outcome' }))).toContain('example: `- Ship exact bytes.` then `Outcome: proven by tests/unit.test.ts`')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing' }))).toContain('expected `- Keep tests green.` followed by `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`')
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })))
+      .toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
     // A proven outcome may carry its evidence on the same line; refusing that shape would loop a pilot on wording.
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven — byte lock in rules-manifest.test.ts\n- Keep tests green.\n  Outcome: proven: pnpm test EXIT=0\n` })
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'proven-with-evidence' }))).toContain('missing commit')
+  })
+
+  it('refuses bare and unknown-card deferrals and mechanically appends routed cards', async () => {
+    const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification' }) })
+    expect(await text(lifecycle.routeFinding({ title: 'Host verification', l4Reason: 'unavailable dependency: real host', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Host verification')
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: unavailable dependency\n` }))).toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 99 — unavailable dependency\n` }))).toContain('card 99 is not in lifecycle routed_cards')
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n` }))).toBe('wrote pilot-report')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Host verification — unavailable dependency: real host')
+  })
+
+  it('refuses a plan task marked deferred without a routed card id', async () => {
+    const lifecycle = testLifecycle('FULL')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n  Outcome: deferred: later\n## Gates\n- test\n' })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
   })
 
   it('keeps bullet Proof and Outcome lines in the preceding Acceptance entry and accepts proven evidence without a separator', async () => {
@@ -797,6 +841,22 @@ printf 'report\n' > "$report"
     expect(roundTwo).toContain('## Prior rounds (runner-owned, trusted)')
     expect(roundTwo).toContain('### Round 1\n- preserve exact wording\n- keep the release gate')
     expect(roundTwo).toContain('may not reopen a point a prior round demanded, or reverse a prior round\'s accepted position, unless you cite new evidence')
+  })
+
+  it('allows exactly one plan round for a routed-card contest, then escalates the maintained disagreement', async () => {
+    const finding = '[blocking] CONTEST routed card 42: this is in scope'
+    const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+    const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher([[`- ${finding}`], [`- ${finding}`]]), 100, { boardContract, routeFinding: async () => ({ id: '42', title: 'L4 item' }) })
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.routeFinding({ title: 'L4 item', l4Reason: 'different subsystem', risk: 'P1', effort: 'M' })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'maintain L4 with citation src/other.ts:1' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-2' }))).toBe('accepted phase=tdd')
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([{ id: '42', title: 'L4 item', l4Reason: 'different subsystem', contested: true }])
   })
 
   it('A-1 requires defined blocking and non-blocking severity policy in the critic report contract', async () => {
@@ -1203,7 +1263,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args)
-  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, run: tools.run!.handler, state: server.state }
+  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
 }
 function realGitLifecycle() {
   const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-')); roots.push(root)
@@ -1221,7 +1281,7 @@ function realGitLifecycle() {
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args)
-  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, run: tools.run!.handler, state: server.state }
+  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
 }
 function archiveProject() {
   const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-archive-')); roots.push(root)

@@ -138,10 +138,25 @@ const planAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
 const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
   content,
   dodBullets,
-  (line) => /^Outcome:\s*(?:proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?|not done:\s*\S.*|deferred:\s*\S.*)\s*$/i.test(line),
-  '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`',
+  (line) => /^Outcome:\s*(?:proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?|not done:\s*\S.*|deferred:\s*card\s+\S+\s+[—–-]\s+\S.*)\s*$/i.test(line),
+  '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`',
   '`Outcome: proven by tests/unit.test.ts`',
 )
+function deferredOutcomeProblem(content, routedCards) {
+  for (const line of content.split(/\r?\n/)) {
+    if (!/^\s*(?:[-*+]\s+)?(?:Outcome|Status):\s*deferred:/i.test(line)) continue
+    const match = /^\s*(?:[-*+]\s+)?(?:Outcome|Status):\s*deferred:\s*card\s+([^\s]+)\s+[—–-]\s+(\S.*)\s*$/i.exec(line)
+    if (!match) return 'deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`'
+    if (!routedCards.some((card) => card.id === match[1])) return `deferred outcome card ${match[1]} is not in lifecycle routed_cards`
+  }
+  return null
+}
+function withRoutedCardsSection(content, cards) {
+  const without = content.replace(/(?:^|\n)## Routed cards\s*\r?\n[\s\S]*?(?=\r?\n## |$)/i, '').replace(/\s*$/, '')
+  if (cards.length === 0) return `${without}\n`
+  const rows = cards.map((card) => `- card ${card.id} — ${card.title} — ${card.l4Reason}${card.contested ? ` — critic position: in scope; pilot position: maintains L4 (${card.l4Reason}); order-giver decides` : ''}`)
+  return `${without}\n\n## Routed cards\n${rows.join('\n')}\n`
+}
 function planCoverageCitationResult(content, root) {
   const sentences = []
   let fenced = false
@@ -270,6 +285,9 @@ export function createLifecycleStateMachine({
   cardText = null,
   now = () => Date.now(),
   timelineWriter = null,
+  boardContract = null,
+  routeFinding = null,
+  resolveRoutedFinding = null,
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
@@ -363,11 +381,12 @@ export function createLifecycleStateMachine({
     lastLaneMtime: 0,
     verifySnapshot: null,
     pendingControl: null,
+    resolvedRoutedCards: new Set(),
     report: { stage: 'idle', base: null, head: null, tree: null },
   }
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
-  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [] }
+  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? ((file, content) => {
     const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
     try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { fs.rmSync(temporary, { force: true }) }
@@ -497,6 +516,7 @@ export function createLifecycleStateMachine({
       evidence: sha256(readRegularFile(evidencePath) ?? ''),
       partial: state.partial,
       implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' },
+      routedCards: timeline.routed_cards,
       assertDirectories: () => assertLaneDir(true),
       copy,
       git,
@@ -541,6 +561,8 @@ export function createLifecycleStateMachine({
       const planContent = readRegularFile(plan)
       if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
         return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
+      const deferredProblem = deferredOutcomeProblem(planContent, timeline.routed_cards)
+      if (deferredProblem) return refusal('plan->critic', deferredProblem, plan)
       if (dodBullets !== undefined) {
         const acceptanceProblem = planAcceptanceProblem(planContent, dodBullets)
         if (acceptanceProblem) return refusal('plan->critic', acceptanceProblem, plan)
@@ -562,9 +584,30 @@ export function createLifecycleStateMachine({
       if (event.findings && JSON.stringify(event.findings) !== JSON.stringify(verdict.findings)) {
         return refusal('critic->next', 'findings do not match the lane report', report)
       }
-      const allNonBlocking = verdict.outcome === 'changes-requested' && verdict.severities.every((severity) => severity === 'non-blocking')
+      const contestedThisRound = new Set()
+      const repeatedContests = new Set()
+      for (const finding of verdict.findings) {
+        const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(finding)?.[1]
+        if (!id) continue
+        const routed = timeline.routed_cards.find((card) => card.id === id)
+        if (!routed) return refusal('critic->next', `contest names routed card ${id}`, report)
+        if (routed.contested) repeatedContests.add(id)
+        else contestedThisRound.add(id)
+      }
+      const effectiveSeverities = verdict.severities.filter((_severity, index) => {
+        const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(verdict.findings[index])?.[1]
+        return !id || !repeatedContests.has(id)
+      })
+      if (repeatedContests.size > 0 && !/(?:^|\s)(?:\.?\.?[/\\])?[A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)*:\d+(?:-\d+)?\b/.test(laneBriefContexts.get('critic') ?? '')) {
+        return refusal('critic->next', 'pilot citation supporting maintained L4 reason', path.join(laneDir, 'critic-brief.md'))
+      }
+      const allNonBlocking = verdict.outcome === 'changes-requested' && effectiveSeverities.every((severity) => severity === 'non-blocking')
       const receipt = laneEvidence('critic', verdict.outcome === 'changes-requested' && !allNonBlocking)
       if (receipt) return receipt
+      if (contestedThisRound.size > 0) {
+        for (const id of contestedThisRound) timeline.routed_cards.find((card) => card.id === id).contested = true
+        persistTimeline()
+      }
       const newNonBlockingFindings = verdict.findings.filter((_finding, index) => verdict.severities[index] === 'non-blocking')
       for (const finding of newNonBlockingFindings) {
         if (!state.nonBlockingFindings.includes(finding)) state.nonBlockingFindings.push(finding)
@@ -676,6 +719,7 @@ export function createLifecycleStateMachine({
         evidencePath,
         phases: [...state.handled.values()].map((item) => item.result).concat(AWAITING_FIDELITY_RESULT),
         implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' },
+        routedCards: timeline.routed_cards,
         assertDirectories: () => assertLaneDir(true),
         copy,
         git,
@@ -731,6 +775,15 @@ export function createLifecycleStateMachine({
     if (kind === 'pilot-report') {
       const problem = pilotReportProblem(content)
       if (problem) return problem
+      if (typeof resolveRoutedFinding === 'function') {
+        for (const card of timeline.routed_cards.filter((item) => item.contested && !new RegExp(`Outcome:\\s*deferred:\\s*card\\s+${item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(content))) {
+          if (!state.resolvedRoutedCards.has(card.id)) {
+            await resolveRoutedFinding(card)
+            state.resolvedRoutedCards.add(card.id)
+          }
+        }
+      }
+      content = withRoutedCardsSection(content, timeline.routed_cards)
     }
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let laneContext = content
@@ -768,6 +821,8 @@ export function createLifecycleStateMachine({
     if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) {
       return 'pilot-report: this run is not partial'
     }
+    const deferredProblem = deferredOutcomeProblem(content, timeline.routed_cards)
+    if (deferredProblem) return `pilot-report: ${deferredProblem}`
     if (!enforceSchema) return null
     if (dodBullets !== undefined) {
       const acceptanceProblem = reportAcceptanceProblem(content, dodBullets)
@@ -805,6 +860,29 @@ export function createLifecycleStateMachine({
       return await work()
     } finally {
       release()
+    }
+  }
+  async function routeFindingTool(args) {
+    if (!boardContract || typeof routeFinding !== 'function') return 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
+    try {
+      const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })
+      const id = String(created?.id ?? '')
+      if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('board returned no valid card id')
+      const record = { id, title: String(created.title ?? args.title), l4Reason: args.l4Reason }
+      timeline.routed_cards.push(record)
+      if (state.phase === 'report' && state.pilotReportDigest) {
+        const reportPath = path.join(laneDir, 'pilot-report.md')
+        const report = readRegularFile(reportPath)
+        if (report !== null) {
+          const updated = withRoutedCardsSection(report, timeline.routed_cards)
+          writeRegularFile(reportPath, updated)
+          state.pilotReportDigest = sha256(updated)
+        }
+      }
+      persistTimeline()
+      return `routed card ${id} — ${record.title}`
+    } catch (error) {
+      return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
     }
   }
   const server = createSdkMcpServer({
@@ -846,6 +924,18 @@ export function createLifecycleStateMachine({
             },
           ],
         }),
+      ),
+      tool(
+        'route_finding',
+        'Route a genuinely L4 finding to a runner-created board card.',
+        {
+          title: z.string().min(1),
+          l4Reason: z.string().min(1),
+          risk: z.enum(['P0', 'P1', 'P2']),
+          effort: z.enum(['S', 'M', 'L']),
+          type: z.enum(['bug', 'chore', 'feature', 'research']).optional(),
+        },
+        async (args) => ({ content: [{ type: 'text', text: await queued(() => routeFindingTool(args)) }] }),
       ),
       tool(
         'run',
