@@ -31,13 +31,14 @@ export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, he
   let wroteLaneSummary = false
   try {
     assertDirectories()
+    const statusBefore = git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' })
     copy(laneDir, temporary, { recursive: true, dereference: false })
     writeRegularFile(path.join(temporary, 'manifest.json'), manifestContent)
     writeRegularFile(path.join(temporary, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)
     writeRegularFile(path.join(laneDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)
     wroteLaneSummary = true
     // The external copy cannot dirty root, but the lane summary still must remain ignored.
-    if (git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) throw new Error('archive dirtied the tree')
+    if (git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }) !== statusBefore) throw new Error('archive dirtied the tree')
     fs.renameSync(temporary, target)
   } catch (error) {
     fs.rmSync(temporary, { recursive: true, force: true })

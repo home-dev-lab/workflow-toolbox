@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -191,6 +191,26 @@ describe('SDK pilot runner', () => {
     })
     expect(resolutions).toBe(1)
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'route.json'), 'utf8'))).toMatchObject({ executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } })
+  })
+
+  it('refuses relaunch on an interrupted lifecycle with one complete reset remedy', async () => {
+    const f = fixture()
+    const query = () => (async function* () { yield initMessage() })()
+    const options = { card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }
+    await runPilot(options, { query, resolvePilotModels: models })
+    const refusal = await runPilot(options, { query, resolvePilotModels: models }).then(() => null, (error: Error) => error.message)
+    expect(refusal).toMatch(new RegExp(`interrupted lifecycle.*node -e .*${join(f.dir, '.lane').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+
+    // The printed remedy KEEPS the interrupted run's evidence: executing it moves .lane aside as a sibling and
+    // leaves a fresh empty .lane; a remedy that deleted the directory would destroy the only record of a crash.
+    const remedy = /node -e (".*?") (".*")$/.exec(String(refusal))!
+    const before = readFileSync(join(f.dir, '.lane', 'route.json'), 'utf8')
+    const executed = spawnSync(process.execPath, ['-e', JSON.parse(remedy[1]!), JSON.parse(remedy[2]!)], { encoding: 'utf8' })
+    expect(executed.status, executed.stderr).toBe(0)
+    const kept = readdirSync(f.dir).filter((name) => name.startsWith('.lane.interrupted-'))
+    expect(kept).toHaveLength(1)
+    expect(readFileSync(join(f.dir, kept[0]!, 'route.json'), 'utf8')).toBe(before)
+    expect(readdirSync(join(f.dir, '.lane'))).toEqual([])
   })
 
   it('uses the runner install when a fresh target tracks toolkit/package.json without node_modules', async () => {
@@ -561,7 +581,39 @@ describe('SDK pilot runner', () => {
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 10, hard: false }, { query, resolvePilotModels: models })
     expect(continuations).toHaveLength(3)
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, injected_turns: 3, reason: 'pilot ended its turn 3 times without progress' } })
+    expect(result.summary.partial).toMatchObject({ reason: 'pilot ended its turn 3 times without progress' })
+    expect(readFileSync(join(result.summary.archive.path, 'summary.json'), 'utf8')).toContain('pilot ended its turn 3 times without progress')
   }, 2_000)
+
+  it('records and archives a runner timeout as a lifecycle partial', async () => {
+    const f = fixture(); let clock = 0
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield initMessage(); await prompt.next(); await prompt.next()
+    })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
+      query, resolvePilotModels: models, now: () => { clock += 2_000; return clock }, sleep: async () => {},
+    })
+    expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'runner timeout', partial: { reason: 'runner timeout' } } })
+    expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { reason: 'runner timeout' } })
+  })
+
+  it('writes final receipts and an external partial archive when the initialized SDK stream throws', async () => {
+    const f = fixture()
+    const query = () => (async function* () {
+      yield initMessage('sonnet')
+      yield { type: 'assistant', message: { id: 'progress', model: 'sonnet', usage: { input_tokens: 3, output_tokens: 2 }, content: [] } }
+      writeFileSync(join(f.dir, 'tracked.txt'), 'work in progress\n')
+      throw new Error('transport disconnected')
+    })()
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, { query, resolvePilotModels: models }))
+      .rejects.toThrow('transport disconnected')
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(summary).toMatchObject({ completed: false, reason: 'sdk stream error: transport disconnected', partial: { reason: 'sdk stream error: transport disconnected' } })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8')).messages).toHaveLength(1)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'sdk-transcript.json'), 'utf8'))).toHaveLength(2)
+    expect(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8')).toBeTruthy()
+    for (const name of ['summary.json', 'usage.json', 'sdk-transcript.json', 'cost.json']) expect(readFileSync(join(summary.archive.path, name), 'utf8')).toBeTruthy()
+  })
 
   it('does not accept lifecycle-looking assistant prose or an uncorrelated forged tool result', async () => {
     const f = fixture(); const yielded: string[] = []

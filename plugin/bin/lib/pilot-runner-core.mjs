@@ -224,6 +224,7 @@ export async function runPilot(options, dependencies) {
   let servedModel
   let servedModelFirstTurn
   let firstAssistantSeen = false
+  let streamError = null
   const pluginRoot = resolve(MODULE_DIR, '../..')
   const guardPlugin = join(pluginRoot, 'hooks-modules', 'pilot-guard')
   const configuredPlugins = options.pluginDirs ?? []
@@ -276,6 +277,7 @@ export async function runPilot(options, dependencies) {
       else await sleep(POLL_MS)
     }
     if (!completed) {
+      incompleteReason = 'runner timeout'
       const content = 'Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.'
       injectedTurns += 1
       log(`injected: timeout ${content}`)
@@ -283,26 +285,27 @@ export async function runPilot(options, dependencies) {
     }
   }
 
-  const stream = query({ prompt: prompt(), options: {
-    model: model.value,
-    systemPrompt,
-    settingSources: [],
-    maxTurns: 120,
-    cwd: options.dir,
-    plugins: pluginPaths.map((path) => ({ type: 'local', path })),
-    tools: ['Read', 'Glob', 'Grep'],
-    // No Planka endpoint configured means no board tools, never a guessed local port.
-    mcpServers: { ...(resolveWorkflowToolboxOption('planka_mcp_url', { env }).value ? { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
-    canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path }),
-    permissionMode: 'default',
-    env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
-  } })
-  for await (const message of stream) {
-    transcript.push(message)
-    if (!initReceiptSeen && !(message.type === 'system' && message.subtype === 'init')) {
-      throw new Error('SDK pilot initialization receipt never arrived: the first message was ' + message.type + '/' + (message.subtype ?? 'none'))
-    }
-    if (message.type === 'system' && message.subtype === 'init') {
+  try {
+    const stream = query({ prompt: prompt(), options: {
+      model: model.value,
+      systemPrompt,
+      settingSources: [],
+      maxTurns: 120,
+      cwd: options.dir,
+      plugins: pluginPaths.map((path) => ({ type: 'local', path })),
+      tools: ['Read', 'Glob', 'Grep'],
+      // No Planka endpoint configured means no board tools, never a guessed local port.
+      mcpServers: { ...(resolveWorkflowToolboxOption('planka_mcp_url', { env }).value ? { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
+      canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path }),
+      permissionMode: 'default',
+      env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+    } })
+    for await (const message of stream) {
+      transcript.push(message)
+      if (!initReceiptSeen && !(message.type === 'system' && message.subtype === 'init')) {
+        throw new Error('SDK pilot initialization receipt never arrived: the first message was ' + message.type + '/' + (message.subtype ?? 'none'))
+      }
+      if (message.type === 'system' && message.subtype === 'init') {
       initReceiptSeen = true
       servedModel = message.model
       const initTools = Array.isArray(message.tools) ? message.tools : []
@@ -312,7 +315,7 @@ export async function runPilot(options, dependencies) {
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
       }
-    }
+      }
     if (!firstAssistantSeen && message.type === 'assistant') {
       firstAssistantSeen = true
       servedModelFirstTurn = message.message?.model
@@ -355,16 +358,25 @@ export async function runPilot(options, dependencies) {
       for (const key of Object.keys(totals)) totals[key] += usage[key]
       if (!completed) pendingTurnEnds += 1
     }
+    }
+    if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
+  } catch (error) {
+    streamError = error
+    if (initReceiptSeen) incompleteReason = `sdk stream error: ${error instanceof Error ? error.message : String(error)}`
   }
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
-  if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
+  if (!initReceiptSeen) throw streamError
   const freshTokens = totals.input + totals.cache_creation + totals.output
   const usage = { messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
+  const completedNormally = awaitingFidelityReceipt && exists(report)
+  let finalizationError = null
+  if (!completedNormally) {
+    try { lifecycleServer.finalizePartial(incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt') } catch (error) { finalizationError = error }
+  }
   let lifecycleSummary = {}
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
-  const completedNormally = awaitingFidelityReceipt && exists(report)
-  const partial = lifecycleSummary.partial ?? null
+  const partial = lifecycleSummary.partial ?? lifecycleServer.state().partial ?? null
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
   const summary = { ...lifecycleSummary, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
@@ -387,6 +399,9 @@ export async function runPilot(options, dependencies) {
     }
     const archive = lifecycleSummary.archive?.path
     if (archive) {
+      writeFile(join(archive, 'usage.json'), `${JSON.stringify(usage, null, 2)}\n`)
+      writeFile(join(archive, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)
+      writeFile(join(archive, 'sdk-transcript.json'), `${JSON.stringify(transcript, null, 2)}\n`)
       writeFile(join(archive, 'cost.json'), costContent)
       if (costReport !== null) writeFile(join(archive, 'pilot-report.md'), costReport)
     }
@@ -394,5 +409,7 @@ export async function runPilot(options, dependencies) {
     log(`cost receipt unavailable: ${error instanceof Error ? error.message : String(error)}`)
   }
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
+  if (finalizationError) throw finalizationError
+  if (streamError) throw streamError
   return { usage, summary, exitCode: completedNormally ? (partial ? 2 : 0) : 1 }
 }

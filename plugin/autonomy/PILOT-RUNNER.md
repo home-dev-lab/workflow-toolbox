@@ -129,7 +129,9 @@ unproductive end turns the prompt stream closes, the runner exits 1, and `summar
 `completed:false`, `injected_turns` counting every injection (the three continuations plus any owner
 message or earlier continuation that was followed by progress), and reason
 `pilot ended its turn 3 times without progress`. Any other stream ending first exits 1 and writes
-`summary.completed=false`. A completed full run exits 0. A completed partial run exits 2 with
+`summary.completed=false`. Runner timeout, repeated no-progress turns, and initialized SDK stream errors
+also record a lifecycle partial with the specific reason and publish the standard external archive; final
+summary, usage, transcript, and cost receipts are refreshed there. A completed full run exits 0. A completed partial run exits 2 with
 `summary.completed=true` and the lifecycle's non-null `partial` object; full-run summaries carry
 `partial:null`. `.lane/usage.json`, `.lane/summary.json`, `.lane/cost.json`, and
 `.lane/sdk-transcript.json` record the run. The summary records `requested_model` with its resolver
