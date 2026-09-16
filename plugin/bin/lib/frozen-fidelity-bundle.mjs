@@ -89,6 +89,15 @@ function gitHead(root) {
   return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
 }
 
+function validBase(root, base) {
+  if (typeof base !== 'string' || !/^[a-f0-9]{40}$/.test(base)) throw new Error('fidelity bundle base must be a full 40-hex commit SHA')
+  try {
+    execFileSync('git', ['cat-file', '-e', `${base}^{commit}`], { cwd: root, stdio: 'ignore' })
+  } catch {
+    throw new Error(`fidelity bundle base commit does not exist in repository: ${base}`)
+  }
+}
+
 function readEntry(root, name, snapshot, otherFiles = new Set()) {
   const rootReal = fs.realpathSync(root)
   const parentReal = fs.realpathSync(path.dirname(path.join(root, name)))
@@ -131,6 +140,7 @@ function validEntry(file, snapshot) {
 
 export function freezeFidelityBundle({ root, outDir, card, session, base, head, files, otherFiles = [] }) {
   if ([card, session, base, head].some((value) => typeof value !== 'string' || value.length === 0)) throw new Error('fidelity bundle requires card, session, base, and head as non-empty strings')
+  validBase(root, base)
   if (!Array.isArray(files) || files.length === 0 || files.some((file) => !safeName(file)) || new Set(files).size !== files.length) throw new Error('fidelity bundle files must be unique safe relative names')
   if (!Array.isArray(otherFiles) || otherFiles.some((file) => !files.includes(file))) throw new Error('fidelity bundle otherFiles must name explicit inputs')
   fs.mkdirSync(outDir, { recursive: true })
@@ -155,6 +165,7 @@ export function verifyFidelityBundle({ root, dir, requireSameTree = false, requi
   const manifest = JSON.parse(raw)
   if (canonicalJson(manifest) !== raw) throw new Error('fidelity manifest is not canonical JSON')
   if (manifest?.version !== 2 || [manifest.card, manifest.session, manifest.base, manifest.head, manifest.tree, manifest.snapshot, manifest.signature].some((value) => typeof value !== 'string' || value.length === 0) || typeof manifest.dirty !== 'boolean' || !Array.isArray(manifest.files)) throw new Error('invalid fidelity manifest')
+  validBase(root, manifest.base)
   const names = manifest.files.map((file) => file?.name)
   if (new Set(names).size !== names.length) throw new Error('duplicate fidelity manifest entry name')
   for (const file of manifest.files) {

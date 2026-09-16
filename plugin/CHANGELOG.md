@@ -6,6 +6,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Orchestrator waves now freeze each card worktree's base as a full commit SHA. Archived diffs,
+  fidelity manifests, and wave reports keep using that SHA if the configured base branch advances.
 - Lifecycle reports are now archived under the project root instead of inside the card worktree,
   so removing the completed worktree does not destroy its audit archive. `wt-pilot-runner` takes
   `--archive-root <project root>` and defaults to the checkout that owns the worktree; an archive
