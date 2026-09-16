@@ -72,6 +72,7 @@ function roleProfile(role) {
 }
 
 function resolveContextModeRoot(env = process.env) {
+  if (env.WT_CONTEXT_MODE_ROOT) return env.WT_CONTEXT_MODE_ROOT
   const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || homedir(), '.claude')
   return path.join(configDir, 'plugins', 'cache', 'context-mode', 'context-mode', CONTEXT_MODE_VERSION)
 }

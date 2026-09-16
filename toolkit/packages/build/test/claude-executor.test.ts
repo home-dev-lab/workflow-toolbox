@@ -4,8 +4,11 @@ import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from '../../../../plugin/bin/lib/claude-executor-core.mjs'
+
+prepareContextModeFixture()
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const roots: string[] = []

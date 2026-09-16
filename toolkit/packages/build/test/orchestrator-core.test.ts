@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
+import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { BoardUnavailable, createBoardClient } from '../../../../plugin/bin/lib/board-http-client.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -20,7 +21,8 @@ const CONTEXT_MODE_TOOLS = {
   executeFile: `${CONTEXT_PREFIX}ctx_execute_file`, fetchAndIndex: `${CONTEXT_PREFIX}ctx_fetch_and_index`, index: `${CONTEXT_PREFIX}ctx_index`,
   insight: `${CONTEXT_PREFIX}ctx_insight`, purge: `${CONTEXT_PREFIX}ctx_purge`, search: `${CONTEXT_PREFIX}ctx_search`, stats: `${CONTEXT_PREFIX}ctx_stats`,
 }
-const resolveContextModeRoot = (env: NodeJS.ProcessEnv) => join(env.CLAUDE_CONFIG_DIR || join(env.HOME ?? '', '.claude'), 'plugins', 'cache', 'context-mode', 'context-mode', '1.0.177')
+prepareContextModeFixture()
+const resolveContextModeRoot = (env: NodeJS.ProcessEnv) => env.WT_CONTEXT_MODE_ROOT || join(env.CLAUDE_CONFIG_DIR || join(env.HOME ?? '', '.claude'), 'plugins', 'cache', 'context-mode', 'context-mode', '1.0.177')
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-run-orchestrator.mjs')
