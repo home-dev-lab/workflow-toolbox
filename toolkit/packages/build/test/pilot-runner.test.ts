@@ -347,6 +347,7 @@ describe('SDK pilot runner', () => {
     })
     expect(logged).toEqual([
       'route=LITE reasons=human Route: LITE model=sonnet effective=sonnet executor=gpt-lane',
+      'SDK role pilot: LSP absent: typescript-language-server not found on PATH',
       'injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.',
       'served model: unknown (requested sonnet)',
     ])
@@ -785,7 +786,7 @@ describe('SDK pilot runner', () => {
       yield initMessage()})() }
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
     expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot'))])
-    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS)])
+    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...Object.values(CONTEXT_MODE_TOOLS)])
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(options!.permissionMode).toBe('default')
     expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
@@ -839,6 +840,7 @@ describe('SDK pilot runner', () => {
     const f = fixture()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models })
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: expect.stringContaining('without awaiting_fidelity') } })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8')).lsp).toEqual({ available: false, reason: 'typescript-language-server not found on PATH' })
   })
 
   it('confines real Read, Glob, and Grep authorization inputs', () => {

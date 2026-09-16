@@ -138,6 +138,6 @@ describe('Claude SDK executor', () => {
     waitFor(log); const until = Date.now() + 3000
     while (readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1) !== 'EXIT=124' && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
     expect(readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1)).toBe('EXIT=124')
-    expect(JSON.parse(readFileSync(receipt, 'utf8')).tools).toEqual(['Read', 'Glob', 'Grep', 'mcp__plugin_context-mode_context-mode__ctx_search'])
+    expect(JSON.parse(readFileSync(receipt, 'utf8')).tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', 'mcp__plugin_context-mode_context-mode__ctx_search'])
   })
 })

@@ -297,7 +297,7 @@ export function createLifecycleStateMachine({
   copy = fs.cpSync,
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
   rules = null,
-  cardText = null,
+  cardText = null, lsp = { available: false, reason: 'not prepared' },
   now = () => Date.now(),
   timelineWriter = null,
   boardContract = null,
@@ -401,7 +401,7 @@ export function createLifecycleStateMachine({
   }
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
-  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
+  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? ((file, content) => {
     const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
     try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { fs.rmSync(temporary, { force: true }) }
