@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
-import { completeLifecycleReport } from './lifecycle-report-edge.mjs'
+import { assertArchiveOutsideWorktree, completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
@@ -247,6 +247,7 @@ function verdictFromReport(phase, content) {
 
 export function createLifecycleStateMachine({
   worktree,
+  archiveRoot,
   route,
   reasons = [],
   executor = 'gpt-lane',
@@ -293,31 +294,36 @@ export function createLifecycleStateMachine({
   }
   function assertLaneDir(archive = false) {
     const required = [laneDir]
-    if (archive) required.push(path.join(root, '.claude'), path.join(root, '.claude', 'reports'))
+    if (archive) {
+      if (typeof archiveRoot !== 'string' || !path.isAbsolute(archiveRoot)) throw new Error('lifecycle archiveRoot must be an absolute path')
+      fs.mkdirSync(path.join(archiveRoot, '.claude', 'reports'), { recursive: true })
+      required.push(archiveRoot, path.join(archiveRoot, '.claude'), path.join(archiveRoot, '.claude', 'reports'))
+    }
     for (const directory of required) {
       let stat
       try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
-      if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory || path.relative(root, directory).startsWith('..')) {
+      const expectedRoot = directory === laneDir ? root : archiveRoot
+      if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory || path.relative(expectedRoot, directory).startsWith('..')) {
         throw new Error(`lane directory replaced: ${directory}`)
+      }
+    }
+    if (archive) {
+      try {
+        execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], { cwd: archiveRoot, stdio: 'ignore' })
+      } catch {
+        throw new Error('lifecycle archiveRoot .claude/reports must be git-ignored')
       }
     }
   }
   assertLaneDir()
+  // Preflight, before any phase runs: a misconfigured archive root must fail here, not after hours of work.
+  assertArchiveOutsideWorktree({ root, archiveRoot })
+  assertLaneDir(true)
   if (typeof cardText === 'string') {
     const cardPath = path.join(laneDir, 'card.md')
     const existingCard = readRegularFile(cardPath)
     if (existingCard === null) writeRegularFile(cardPath, cardText, { flag: 'wx' })
     else if (existingCard !== cardText) throw new Error(`lifecycle card snapshot ${JSON.stringify(existingCard)} differs from runner card text ${JSON.stringify(cardText)}; remove ${cardPath} to restart the lifecycle on the new card`)
-  }
-  fs.mkdirSync(path.join(root, '.claude', 'reports'), { recursive: true })
-  assertLaneDir(true)
-  try {
-    execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], {
-      cwd: root,
-      stdio: 'ignore',
-    })
-  } catch {
-    throw new Error('lifecycle .claude/reports must be git-ignored')
   }
   const frozenRoute = String(route)
   const frozenModels = Object.freeze(models.code
@@ -625,6 +631,7 @@ export function createLifecycleStateMachine({
       if (receipt) return receipt
       const reportReceipt = completeLifecycleReport({
         root,
+        archiveRoot,
         laneDir,
         cardId,
         sessionTag,

@@ -5,6 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Lifecycle reports are now archived under the project root instead of inside the card worktree,
+  so removing the completed worktree does not destroy its audit archive. `wt-pilot-runner` takes
+  `--archive-root <project root>` and defaults to the checkout that owns the worktree; an archive
+  root that resolves inside the worktree is refused at construction, before any phase runs.
+
 ## [0.178.0] - 2026-09-15
 
 ### Changed

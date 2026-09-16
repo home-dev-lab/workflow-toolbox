@@ -131,7 +131,10 @@ function lifecycleWithRules(rules: unknown[], route = 'FULL', options: Record<st
   const root = mkdtempSync(join(tmpdir(), 'wt-rules-lifecycle-')); roots.push(root)
   mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: root })
-  const server = createLifecycleServer({ worktree: root, route, models: { lane: 'test', review: 'test' }, cardId: 'rules', sessionTag: 'test', rules, ...options })
+  // The archive root must sit OUTSIDE the worktree and ignore .claude/reports there (construction preflight).
+  const archiveRoot = mkdtempSync(join(tmpdir(), 'wt-rules-archive-')); roots.push(archiveRoot)
+  writeFileSync(join(archiveRoot, '.gitignore'), '.claude/reports/\n'); spawnSync('git', ['init', '-q'], { cwd: archiveRoot })
+  const server = createLifecycleServer({ worktree: root, archiveRoot, route, models: { lane: 'test', review: 'test' }, cardId: 'rules', sessionTag: 'test', rules, ...options })
   const tools = server.instance._registeredTools
   const text = async (result: Promise<{ content: Array<{ text: string }> }>) => (await result).content[0]!.text
   return { root, transition: (args: Record<string, unknown>) => text(tools.transition.handler(args)), artifact: (args: Record<string, unknown>) => text(tools.write_artifact.handler(args)) }

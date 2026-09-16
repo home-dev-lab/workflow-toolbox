@@ -3,9 +3,28 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { treeSignature } from './gate-evidence.mjs'
-export function archiveLifecycle({ root, laneDir, cardId, route, head, phases, evidence, partial, implementation, assertDirectories, copy, git, sha256, writeRegularFile }) {
+function resolveThroughExisting(requested) {
+  let probe = path.resolve(requested)
+  const suffix = []
+  while (!fs.existsSync(probe)) { suffix.unshift(path.basename(probe)); probe = path.dirname(probe) }
+  return path.resolve(fs.realpathSync(probe), ...suffix)
+}
+
+// The archive must never land inside the tree it archives: `git worktree remove` would destroy the run
+// and its record in one act. Checked at construction (preflight) AND at archive time, on the resolved path.
+export function assertArchiveOutsideWorktree({ root, archiveRoot, target = path.join(archiveRoot ?? '', '.claude', 'reports') }) {
+  if (typeof archiveRoot !== 'string' || !path.isAbsolute(archiveRoot)) throw new Error('lifecycle archiveRoot must be an absolute path')
+  const resolved = resolveThroughExisting(target)
+  const relativeTarget = path.relative(fs.realpathSync(root), resolved)
+  if (relativeTarget === '' || (relativeTarget !== '..' && !relativeTarget.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeTarget))) {
+    throw new Error(`archive destination must be outside the lifecycle worktree: ${resolved} (pass --archive-root <project root>)`)
+  }
+  return resolved
+}
+
+export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, implementation, assertDirectories, copy, git, sha256, writeRegularFile }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-  const target = path.join(root, '.claude', 'reports', `${cardId}-${stamp}`)
+  const target = assertArchiveOutsideWorktree({ root, archiveRoot, target: path.join(archiveRoot ?? '', '.claude', 'reports', `${cardId}-${stamp}`) })
   const temporary = `${target}.tmp-${randomUUID()}`
   const manifestContent = `${JSON.stringify({ cardId, route, commit: head, phases, evidence, partial: partial ?? null }, null, 2)}\n`
   const summary = { commit: head, archive: { path: target, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: implementation, partial: partial ?? null }
@@ -17,6 +36,7 @@ export function archiveLifecycle({ root, laneDir, cardId, route, head, phases, e
     writeRegularFile(path.join(temporary, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)
     writeRegularFile(path.join(laneDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)
     wroteLaneSummary = true
+    // The external copy cannot dirty root, but the lane summary still must remain ignored.
     if (git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) throw new Error('archive dirtied the tree')
     fs.renameSync(temporary, target)
   } catch (error) {
@@ -29,6 +49,7 @@ export function archiveLifecycle({ root, laneDir, cardId, route, head, phases, e
 
 export function completeLifecycleReport({
   root,
+  archiveRoot,
   laneDir,
   cardId,
   sessionTag,
@@ -116,6 +137,7 @@ export function completeLifecycleReport({
     }
     archiveLifecycle({
       root,
+      archiveRoot,
       laneDir,
       cardId,
       route,

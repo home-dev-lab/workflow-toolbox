@@ -1,12 +1,12 @@
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -28,8 +28,14 @@ const initMessage = (model?: string) => ({
 const roots: string[] = []
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'wt-pilot-runner-')); roots.push(root)
-  const dir = join(root, 'worktree'); mkdirSync(join(dir, '.lane'), { recursive: true }); writeFileSync(join(dir, '.gitignore'), '.lane/\n.claude/reports/\n')
-  spawnSync('git', ['init', '-q'], { cwd: dir })
+  // The card tree is a real WORKTREE of the project, as in production: the runner's default archive
+  // root is the checkout that owns the worktree, and a nested standalone repo would have no outside.
+  writeFileSync(join(root, '.gitignore'), '.claude/reports/\n.lane/\n'); writeFileSync(join(root, 'tracked.txt'), 'base\n')
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+  git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Pilot Runner'); git('config', 'commit.gpgSign', 'false')
+  git('add', '-A'); git('commit', '-qm', 'base')
+  const dir = join(root, 'worktree'); git('worktree', 'add', '-q', '-b', 'card', dir)
+  mkdirSync(join(dir, '.lane'), { recursive: true })
   const contract = join(root, 'contract.md'); writeFileSync(contract, '# contract\n')
   const cardFile = join(root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\n## Definition of done\n- exercise the runner\n')
   return { root, dir, contract, cardFile }
@@ -95,6 +101,22 @@ describe('SDK pilot runner', () => {
       .toMatchObject({ pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', 'relative/plugin']))
       .toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
+  })
+
+  it('parses --archive-root as an absolute path and defaults the archive root to the checkout that owns the worktree', () => {
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--archive-root', 'rel/project'])).toMatchObject({ archiveRoot: resolve('rel/project') })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ archiveRoot: null })
+    // An explicit project root wins outright.
+    expect(defaultArchiveRoot({ dir: '/tmp/a', projectRoot: '/srv/project' })).toBe('/srv/project')
+    // A real worktree resolves to the main checkout that owns it, never to itself.
+    const main = mkdtempSync(join(tmpdir(), 'wt-archive-root-main-')); roots.push(main)
+    const git = (...args: string[]) => spawnSync('git', args, { cwd: main, encoding: 'utf8' })
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Archive Root'); git('config', 'commit.gpgSign', 'false')
+    writeFileSync(join(main, 'tracked.txt'), 'base\n'); git('add', '-A'); git('commit', '-qm', 'base')
+    const worktree = join(main, 'wt'); expect(git('worktree', 'add', '-q', '-b', 'archive-root-proof', worktree).status).toBe(0)
+    expect(realpathSync(defaultArchiveRoot({ dir: worktree }))).toBe(realpathSync(main))
+    // A plain repository has no outside: it resolves to itself, and the preflight refuses it.
+    expect(realpathSync(defaultArchiveRoot({ dir: main }))).toBe(realpathSync(main))
   })
 
   it('rejects the removed lane-silence option and omits it from usage', () => {
@@ -447,7 +469,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'real-lifecycle', content: receipt }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
-    const result = await runPilot({ card: '1', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {} })
+    const result = await runPilot({ card: '1', cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {} })
     expect(registeredServer).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
@@ -492,7 +514,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
-    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
       query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
@@ -520,7 +542,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
-    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
       query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' },
     })
     expect(result).toMatchObject({ exitCode: 0, summary: { completed: true, injected_turns: 1 } })

@@ -38,7 +38,7 @@ const PLANKA_TOOLS = new Set([
 ])
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, pluginDirs: [], timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -48,6 +48,7 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--contract') options.contract = argv[++i] ?? null
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
     else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
+    else if (arg === '--archive-root') options.archiveRoot = argv[++i] ?? null
     else if (arg === '--plugin-dir') {
       const pluginDir = argv[++i] ?? ''
       if (!isAbsolute(pluginDir)) return { error: `--plugin-dir must be an absolute path: ${pluginDir}` }
@@ -66,7 +67,20 @@ export function parsePilotRunnerArgs(argv) {
   options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
   if (options.profileEnv) options.profileEnv = resolve(options.profileEnv)
   if (options.cardFile) options.cardFile = resolve(options.cardFile)
+  if (options.archiveRoot) options.archiveRoot = resolve(options.archiveRoot)
   return options
+}
+
+// Where a lifecycle archive lands when nothing names it: the project root when the caller resolved one,
+// else the main checkout that OWNS the worktree (`--git-common-dir` is `<main>/.git` from any worktree).
+// A plain repository resolves to itself and is refused at preflight — there is no outside to archive to.
+export function defaultArchiveRoot({ dir, projectRoot = null }) {
+  if (projectRoot) return resolve(projectRoot)
+  try {
+    const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    if (common) return dirname(common)
+  } catch {}
+  return resolve(dir)
 }
 
 export function loadProfileEnv(file) {
@@ -226,7 +240,7 @@ export async function runPilot(options, dependencies) {
   for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
   }
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, ...lifecycleOptions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, ...lifecycleOptions })
 
   async function* prompt() {
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
