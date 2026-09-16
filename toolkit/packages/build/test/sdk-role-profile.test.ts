@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
+import { resolveContextModeRoot, assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
 
 prepareContextModeFixture()
 
@@ -170,5 +170,20 @@ describe('SDK command-guard callback adapter', () => {
       'SDK role tdd: LSP absent: typescript-language-server not found on PATH',
       expect.stringContaining('wt-unquoted-tool-glob-guard-hook.mjs exited 7: boom'),
     ])
+  })
+})
+
+describe('context-mode root resolution follows the installed plugin, not a pinned version', () => {
+  it('prefers the recorded install path, then the highest cached version, then the last known version', () => {
+    const env = { CLAUDE_CONFIG_DIR: '/cfg' }
+    const cache = '/cfg/plugins/cache/context-mode/context-mode'
+    const registry = JSON.stringify({ plugins: { 'context-mode@context-mode': [{ installPath: `${cache}/1.0.178`, version: '1.0.178' }] } })
+    expect(resolveContextModeRoot(env, { readFile: () => registry, exists: (p: string) => p.endsWith('1.0.178'), readDir: () => ['1.0.177', '1.0.178'] })).toBe(`${cache}/1.0.178`)
+    // recorded path gone from disk → highest cached version wins
+    expect(resolveContextModeRoot(env, { readFile: () => registry, exists: () => false, readDir: () => ['1.0.9', '1.0.177', '1.0.10'] })).toBe(`${cache}/1.0.177`)
+    // no registry, no cache → the last known version (the fail-closed message names it)
+    expect(resolveContextModeRoot(env, { readFile: () => { throw new Error('ENOENT') }, exists: () => false, readDir: () => { throw new Error('ENOENT') } })).toBe(`${cache}/1.0.177`)
+    // explicit override always wins
+    expect(resolveContextModeRoot({ WT_CONTEXT_MODE_ROOT: '/pinned' }, { readFile: () => registry, exists: () => true, readDir: () => ['9.9.9'] })).toBe('/pinned')
   })
 })

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { accessSync, constants, cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -84,10 +84,35 @@ function roleProfile(role) {
   }
 }
 
-function resolveContextModeRoot(env = process.env) {
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map(Number); const pb = String(b).split('.').map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (d !== 0) return d
+  }
+  return 0
+}
+
+// The INSTALLED context-mode is the authority: the harness records it in installed_plugins.json and a
+// plugin update moves the cache to a new version directory, so a pinned version fails closed on the
+// first session after every update. Order: explicit override → the recorded install path (when it
+// still exists) → the highest version directory in the cache → the last known version (fail-closed
+// message names that path).
+export function resolveContextModeRoot(env = process.env, { readFile = readFileSync, readDir = readdirSync, exists = existsSync } = {}) {
   if (env.WT_CONTEXT_MODE_ROOT) return env.WT_CONTEXT_MODE_ROOT
   const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || homedir(), '.claude')
-  return path.join(configDir, 'plugins', 'cache', 'context-mode', 'context-mode', CONTEXT_MODE_VERSION)
+  const cacheDir = path.join(configDir, 'plugins', 'cache', 'context-mode', 'context-mode')
+  try {
+    const registry = JSON.parse(readFile(path.join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'))
+    const entries = registry?.plugins?.['context-mode@context-mode'] ?? registry?.['context-mode@context-mode']
+    const recorded = (Array.isArray(entries) ? entries : [entries]).find((entry) => typeof entry?.installPath === 'string' && exists(entry.installPath))
+    if (recorded) return recorded.installPath
+  } catch { /* no registry, or unreadable: fall through to the cache listing */ }
+  try {
+    const versions = readDir(cacheDir).filter((name) => /^\d+\.\d+\.\d+$/.test(name)).sort(compareVersions)
+    if (versions.length) return path.join(cacheDir, versions.at(-1))
+  } catch { /* no cache directory: fall through */ }
+  return path.join(cacheDir, CONTEXT_MODE_VERSION)
 }
 
 function isExecutable(file, platform) {
