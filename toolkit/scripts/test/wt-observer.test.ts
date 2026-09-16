@@ -10,6 +10,7 @@ import { queueSnapshotFileName, resolveQueueSnapshotPath } from '../../../plugin
 import { boundDeltaLines, readTranscriptDelta, summarizeTranscriptRecords } from '../../../plugin/bin/lib/transcript-delta.mjs'
 
 const observerScript = fileURLToPath(new URL('../../../plugin/bin/wt-observer.mjs', import.meta.url))
+const fakeOpencodeScript = fileURLToPath(new URL('../../packages/build/test/fixtures/fake-opencode.mjs', import.meta.url))
 const children: ChildProcessWithoutNullStreams[] = []
 const tempDirs: string[] = []
 
@@ -24,10 +25,12 @@ function tempRoot(prefix: string) {
   return root
 }
 
-function writeExecutable(filePath: string, body: string) {
-  const fenceAware = body.replace(/^#![^\n]*\n/, (shebang) => `${shebang}if [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf '[]\\n'; exit 0; fi\nif [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\\n'; exit 0; fi\n`)
-  writeFileSync(filePath, fenceAware, 'utf8')
-  chmodSync(filePath, 0o755)
+function writeFake(root: string, action: Record<string, unknown>) {
+  const bin = path.join(root, 'fake-opencode')
+  writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeOpencodeScript)} opencode "$@"\n`, 'utf8')
+  writeFileSync(`${bin}.cmd`, `@echo off\r\n"${process.execPath}" "${fakeOpencodeScript}" opencode %*\r\n`, 'utf8')
+  chmodSync(bin, 0o755)
+  return { bin: process.platform === 'win32' ? `${bin}.cmd` : bin, action: `observer:${JSON.stringify(action)}` }
 }
 
 function waitFor(predicate: () => boolean): Promise<void> {
@@ -178,8 +181,7 @@ describe('wt-observer CLI', () => {
   it('does not report a premature stop while the transcript is freshly written', async () => {
     const root = tempRoot('wt-observer-active-')
     const session = setupSession(root)
-    const fakeBin = path.join(root, 'fake-opencode.sh')
-    writeExecutable(fakeBin, `#!/bin/sh\nprintf '%s\\n' '{"status":"clean"}'\n`)
+    const fake = writeFake(root, {})
 
     writeTranscript(session.transcriptPath, [
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash' }] } },
@@ -197,7 +199,8 @@ describe('wt-observer CLI', () => {
       WT_QUEUE_GATE_DIR: session.stateDir,
       WT_AUTONOMY_WATCH_MANDATE_DIR: session.stateDir,
       WT_WAKE_SPOOL: session.spoolDir,
-      WT_OBSERVER_BIN: fakeBin,
+      WT_OBSERVER_BIN: fake.bin,
+      WT_FAKE_OPENCODE_ACTION: fake.action,
       WT_OBSERVER_IDLE_MINUTES: '0',
     }, ['--project', session.projectDir, '--once'])
 
@@ -210,20 +213,7 @@ describe('wt-observer CLI', () => {
     const session = setupSession(root)
     const calls = path.join(root, 'lane-calls')
     const capture = path.join(root, 'last-task.md')
-    const fakeBin = path.join(root, 'fake-opencode.sh')
-    writeExecutable(fakeBin, `#!/bin/sh
-task=''
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-f" ]; then
-    shift
-    task="$1"
-  fi
-  shift
-done
-cp "$task" ${JSON.stringify(capture)}
-printf 'call\\n' >> ${JSON.stringify(calls)}
-printf '%s\\n' '{"status":"clean"}'
-`)
+    const fake = writeFake(root, { calls, capture })
     writeTranscript(session.transcriptPath, [
       { type: 'user', message: { content: [{ type: 'text', text: 'first change' }] } },
     ])
@@ -234,7 +224,8 @@ printf '%s\\n' '{"status":"clean"}'
       WT_QUEUE_GATE_DIR: session.stateDir,
       WT_AUTONOMY_WATCH_MANDATE_DIR: session.stateDir,
       WT_WAKE_SPOOL: session.spoolDir,
-      WT_OBSERVER_BIN: fakeBin,
+      WT_OBSERVER_BIN: fake.bin,
+      WT_FAKE_OPENCODE_ACTION: fake.action,
       WT_OBSERVER_LANE_INTERVAL_MINUTES: '0.01',
     }, ['--project', session.projectDir, '--poll', '1'])
 
@@ -254,8 +245,7 @@ printf '%s\\n' '{"status":"clean"}'
     const root = tempRoot('wt-observer-shared-rate-')
     const session = setupSession(root)
     const calls = path.join(root, 'lane-calls')
-    const fakeBin = path.join(root, 'fake-opencode.sh')
-    writeExecutable(fakeBin, `#!/bin/sh\nprintf 'call\\n' >> ${JSON.stringify(calls)}\nprintf '%s\\n' '{"status":"clean"}'\n`)
+    const fake = writeFake(root, { calls })
     writeTranscript(session.transcriptPath, [
       { type: 'user', message: { content: [{ type: 'text', text: 'shared interval' }] } },
     ])
@@ -265,7 +255,8 @@ printf '%s\\n' '{"status":"clean"}'
       WT_QUEUE_GATE_DIR: session.stateDir,
       WT_AUTONOMY_WATCH_MANDATE_DIR: session.stateDir,
       WT_WAKE_SPOOL: session.spoolDir,
-      WT_OBSERVER_BIN: fakeBin,
+      WT_OBSERVER_BIN: fake.bin,
+      WT_FAKE_OPENCODE_ACTION: fake.action,
       WT_OBSERVER_LANE_INTERVAL_MINUTES: '30',
     }
 
@@ -279,8 +270,7 @@ printf '%s\\n' '{"status":"clean"}'
     const root = tempRoot('wt-observer-stop-')
     const session = setupSession(root)
     const touched = path.join(root, 'lane-touched')
-    const fakeBin = path.join(root, 'fake-opencode.sh')
-    writeExecutable(fakeBin, `#!/bin/sh\nprintf x > ${JSON.stringify(touched)}\nexit 0\n`)
+    const fake = writeFake(root, { touch: touched })
 
     writeTranscript(session.transcriptPath, [
       { type: 'assistant', message: { content: [{ type: 'text', text: 'done with this batch' }] } },
@@ -300,7 +290,8 @@ printf '%s\\n' '{"status":"clean"}'
       WT_QUEUE_GATE_DIR: session.stateDir,
       WT_AUTONOMY_WATCH_MANDATE_DIR: session.stateDir,
       WT_WAKE_SPOOL: session.spoolDir,
-      WT_OBSERVER_BIN: fakeBin,
+      WT_OBSERVER_BIN: fake.bin,
+      WT_FAKE_OPENCODE_ACTION: fake.action,
     }, ['--project', session.projectDir, '--once'])
 
     await waitFor(() => run.child.exitCode !== null)
@@ -334,8 +325,7 @@ printf '%s\\n' '{"status":"clean"}'
     const root = tempRoot('wt-observer-no-index-')
     const session = setupSession(root)
     const touched = path.join(root, 'lane-touched')
-    const fakeBin = path.join(root, 'fake-opencode.sh')
-    writeExecutable(fakeBin, `#!/bin/sh\nprintf x > ${JSON.stringify(touched)}\nprintf '%s\\n' '{"status":"clean"}'\n`)
+    const fake = writeFake(root, { touch: touched })
     rmSync(session.lessonIndexPath, { force: true })
     writeTranscript(session.transcriptPath, [
       { type: 'user', message: { content: [{ type: 'text', text: 'inspect the repo' }] } },
@@ -347,7 +337,8 @@ printf '%s\\n' '{"status":"clean"}'
       WT_QUEUE_GATE_DIR: session.stateDir,
       WT_AUTONOMY_WATCH_MANDATE_DIR: session.stateDir,
       WT_WAKE_SPOOL: session.spoolDir,
-      WT_OBSERVER_BIN: fakeBin,
+      WT_OBSERVER_BIN: fake.bin,
+      WT_FAKE_OPENCODE_ACTION: fake.action,
     }, ['--project', session.projectDir, '--once'])
 
     await waitFor(() => run.child.exitCode !== null)
@@ -360,20 +351,7 @@ printf '%s\\n' '{"status":"clean"}'
     const root = tempRoot('wt-observer-finding-')
     const session = setupSession(root)
     const capture = path.join(root, 'task.md')
-    const fakeBin = path.join(root, 'fake-opencode.sh')
-    writeExecutable(fakeBin, `#!/bin/sh
-task=''
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-f" ]; then
-    shift
-    task="$1"
-  fi
-  shift
-done
-cp "$task" ${JSON.stringify(capture)}
-printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"finding\\",\\"observation\\":\\"recorded lesson matched\\",\\"fiche\\":\\"sample-lesson\\",\\"evidence\\":\\"assistant: [tool Bash]\\"}"}}'
-printf '%s\n' '{"type":"step_finish","part":{"tokens":{"input":100,"output":20,"reasoning":5,"total":125,"cache":{"read":80,"write":10}}}}'
-`)
+    const fake = writeFake(root, { capture, finding: { status: 'finding', observation: 'recorded lesson matched', fiche: 'sample-lesson', evidence: 'assistant: [tool Bash]' } })
 
     writeTranscript(session.transcriptPath, [
       { type: 'user', message: { content: [{ type: 'text', text: 'inspect the repo' }] } },
@@ -395,7 +373,8 @@ printf '%s\n' '{"type":"step_finish","part":{"tokens":{"input":100,"output":20,"
       WT_QUEUE_GATE_DIR: session.stateDir,
       WT_AUTONOMY_WATCH_MANDATE_DIR: session.stateDir,
       WT_WAKE_SPOOL: session.spoolDir,
-      WT_OBSERVER_BIN: fakeBin,
+      WT_OBSERVER_BIN: fake.bin,
+      WT_FAKE_OPENCODE_ACTION: fake.action,
       WT_OBSERVER_MAX_DELTA_BYTES: '30',
     }, ['--project', session.projectDir, '--once'])
 
