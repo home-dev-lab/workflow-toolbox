@@ -3,6 +3,8 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
+const WINDOWS_PROCESS_TABLE_TTL_MS = 500
+const windowsProcessTableCache = new WeakMap()
 
 export function sameIdentity(expected, actual) {
   return Boolean(actual
@@ -27,14 +29,29 @@ function runEvidence(command, args, execFile) {
   } catch { return { status: 'unavailable' } }
 }
 
+function powershellProcessTable(execFile, now = Date.now()) {
+  const cached = windowsProcessTableCache.get(execFile)
+  if (cached && now - cached.readAt <= WINDOWS_PROCESS_TABLE_TTL_MS) return cached.result
+  const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,CreationDate,CommandLine,ParentProcessId | ConvertTo-Json -Compress'
+  const evidence = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile)
+  let result = evidence
+  if (evidence.status === 0) {
+    try {
+      const parsed = evidence.stdout.trim() ? JSON.parse(evidence.stdout) : []
+      result = { status: 0, value: Array.isArray(parsed) ? parsed : [parsed] }
+    } catch { result = { status: 'unavailable' } }
+  }
+  windowsProcessTableCache.set(execFile, { readAt: now, result })
+  return result
+}
+
 function powershellProcess(pid, execFile) {
   // The pid is interpolated into a PowerShell command string: refuse anything that is not a plain process id.
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return { status: 1, stdout: '' }
-  const script = `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,CreationDate,CommandLine,ParentProcessId | ConvertTo-Json -Compress`
-  const result = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile)
-  if (result.status === 'unavailable' || result.status !== 0) return result
-  if (!result.stdout.trim()) return { status: 1, stdout: '' }
-  try { return { status: 0, value: JSON.parse(result.stdout) } } catch { return { status: 'unavailable' } }
+  const table = powershellProcessTable(execFile)
+  if (table.status === 'unavailable' || table.status !== 0) return table
+  const value = table.value.find((row) => Number(row?.ProcessId) === Number(pid))
+  return value ? { status: 0, value } : { status: 1, stdout: '' }
 }
 
 function processStartSeconds(value) {
@@ -196,7 +213,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
 }
 
 function inspectDarwinProcess(pid, execFile) {
-  const result = runEvidence('ps', ['-p', String(pid), '-o', 'lstart=,pgid=,command='], execFile)
+  const result = runEvidence('ps', ['-ww', '-p', String(pid), '-o', 'lstart=,pgid=,command='], execFile)
   if (result.status !== 0) return null
   const match = /^(.{24})\s+(\d+)\s+([\s\S]+?)\s*$/.exec(result.stdout)
   if (!match) return null

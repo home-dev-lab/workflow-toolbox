@@ -64,7 +64,7 @@ function installFakeOpencode(root: string) {
   writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`)
   chmodSync(bin, 0o755)
   // The product resolves npm-installed OpenCode as opencode.cmd on Windows.
-  writeFileSync(`${bin}.cmd`, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
+  writeFileSync(`${bin}.cmd`, `@echo off\r\ncall "${process.execPath}" "${script}" %*\r\nexit /b %errorlevel%\r\n`)
 }
 
 describe('wt-opencode-envelope generated task sources', () => {
@@ -114,7 +114,7 @@ describe('wt-opencode-envelope generated task sources', () => {
 
   it('help documents explicit source modes and numeric default cap', () => {
     const result = spawnSync(process.execPath, [SCRIPT, '--help'], { encoding: 'utf8' })
-    expect(result.status).toBe(0)
+    expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toContain('--each-json <path>')
     expect(result.stdout).toContain('--each-lines <path>')
     expect(result.stdout).toContain('--max-tasks <n>')
@@ -212,9 +212,9 @@ describe('wt-opencode-envelope generated task sources', () => {
     const first = runEach()
     const second = runEach()
     const inline = spawnSync(process.execPath, [SCRIPT, inlineSource, '--dir', workdir], { encoding: 'utf8', env })
-    expect(first.status).toBe(0)
-    expect(second.status).toBe(0)
-    expect(inline.status).toBe(0)
+    expect(first.status, first.stderr).toBe(0)
+    expect(second.status, second.stderr).toBe(0)
+    expect(inline.status, inline.stderr).toBe(0)
     const manifests = [first, second, inline].map((run) => manifestPathFromStdout(run.stdout))
     expect(manifests.every((manifest) => typeof manifest === 'string')).toBe(true)
     expect(new Set(manifests).size).toBe(3)

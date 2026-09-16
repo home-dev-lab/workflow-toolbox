@@ -74,7 +74,8 @@ async function runIdleRegistryScenario(records: unknown[], runForMs = 11_000): P
     let stdout = ''
     const timer = setTimeout(() => {
       child.kill('SIGKILL')
-      resolve(stdout)
+      if (child.exitCode !== null || child.signalCode !== null) resolve(stdout)
+      else child.once('exit', () => resolve(stdout))
     }, runForMs)
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => { stdout += chunk })
@@ -175,7 +176,8 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
     } catch {
       // already dead
     }
-    resolve(value)
+    if (child.exitCode !== null || child.signalCode !== null) resolve(value)
+    else child.once('exit', () => resolve(value))
   }
 
   return await new Promise<string>((resolve, reject) => {
@@ -209,16 +211,19 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
   })
 }
 
-afterEach(() => {
+afterEach(async () => {
+  const exits: Promise<void>[] = []
   for (const child of spawned.splice(0)) {
+    if (child.exitCode === null && child.signalCode === null) exits.push(new Promise((resolve) => child.once('exit', () => resolve())))
     try {
-      child.kill('SIGKILL')
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
     } catch {
       // already dead
     }
   }
+  await Promise.all(exits)
   for (const root of roots.splice(0)) {
-    rmSync(root, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
   }
 })
 

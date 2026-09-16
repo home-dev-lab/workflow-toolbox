@@ -203,7 +203,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane', async () => {
+  it.skipIf(process.platform === 'win32')('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane [POSIX shell fixture]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
@@ -244,7 +244,7 @@ printf 'report\n' > "$report"
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-restart-count'), 'utf8')).toBe('2')
   }, 60_000)
 
-  it('derives the lifecycle wait from a real worker timeout recorded after delayed preflight', async () => {
+  it.skipIf(process.platform === 'win32')('derives the lifecycle wait from a real worker timeout recorded after delayed preflight [POSIX shell fixture]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+process.env.PATH,CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
     const lifecycle = testLifecycle('LITE', [], wrapper, 30, { executor: 'gpt-lane' })
@@ -256,7 +256,7 @@ printf 'report\n' > "$report"
     try { process.kill(-supervision.workerPid, 'SIGTERM') } catch {}
   }, 15_000)
 
-  it('does not terminate a live real worker while its timeout evidence scan is still completing', async () => {
+  it.skipIf(process.platform === 'win32')('does not terminate a live real worker while its timeout evidence scan is still completing [requires POSIX SIGSTOP/SIGCONT]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = '#!/bin/sh\nif [ "$1" = "--version" ]; then printf \'fixture-1\\n\'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf \'[{"name":"workflow-toolbox-allowed-sentinel"}]\\n\'; exit 0; fi\nif [ "$1" = "debug" ]; then printf \'[]\\n\'; exit 0; fi\nsleep 30\n'
     const helperSource = "const fs=require('fs');const path=require('path');const root=process.argv[1],pid=Number(process.argv[2]);const pointer=path.join(root,'.lane','supervision','current.json');const poll=setInterval(()=>{try{const run=JSON.parse(fs.readFileSync(pointer)).runId;const record=path.join(root,'.lane','supervision',run+'.json');const state=JSON.parse(fs.readFileSync(record));if(state.state==='running'&&Date.parse(state.timeoutAt)){clearInterval(poll);setTimeout(()=>{process.kill(pid,'SIGSTOP');setTimeout(()=>{try{process.kill(pid,'SIGCONT')}catch{}},1500)},Math.max(0,Date.parse(state.timeoutAt)-Date.now()-25))}}catch{}},10)"
@@ -373,7 +373,7 @@ printf 'report\n' > "$report"
     const append = fs.appendFileSync.bind(fs)
     const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
       append(file, data, options)
-      if (typeof file === 'string' && /\/(?:typecheck|lint|test)\.log$/.test(file)) utimesSync(file, laneMtime / 1000, laneMtime / 1000)
+      if (typeof file === 'string' && /[\\/](?:typecheck|lint|test)\.log$/.test(file)) utimesSync(file, laneMtime / 1000, laneMtime / 1000)
     }) as typeof fs.appendFileSync)
     syncBuiltinESMExports()
     try { await writeGates(lifecycle) } finally { spy.mockRestore(); syncBuiltinESMExports() }
@@ -471,7 +471,7 @@ printf 'report\n' > "$report"
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
     expect(summary).toMatchObject({ commit: 'next', partial: null, lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
-    expect(summary.archive).toMatchObject({ path: expect.stringContaining('.claude/reports/1-'), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
+    expect(summary.archive).toMatchObject({ path: expect.stringMatching(/[\\/]\.claude[\\/]reports[\\/]1-/), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
     expect(summary.archive.path.startsWith(lifecycle.archiveRoot)).toBe(true)
     expect(summary.archive.path.startsWith(lifecycle.root)).toBe(false)
     expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: null, routed_cards: [{ id: '42', title: 'Late route', l4Reason: 'different subsystem' }] })
@@ -536,7 +536,7 @@ printf 'report\n' > "$report"
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
     const call = readFileSync(join(lifecycle.root, 'calls'), 'utf8')
-    expect(call).toMatch(/--brief \S+\/wt-lane-launch-[^/]+\/brief\.md/)
+    expect(call).toMatch(/--brief \S+[\\/]wt-lane-launch-[^\\/]+[\\/]brief\.md/)
     expect(call).not.toContain(`--brief ${join(lifecycle.root, '.lane', 'tdd-brief.md')}`)
     expect(fs.existsSync(/--brief (\S+)/.exec(call)![1]!)).toBe(false)
   })
@@ -589,7 +589,7 @@ printf 'report\n' > "$report"
     expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].group).toBe('worker-owned')
   })
 
-  it('the shipped launcher keeps ordinary descendants in the terminated lane group', async () => {
+  it.skipIf(process.platform === 'win32')('the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]', async () => {
     const bin = mkdtempSync(join(tmpdir(), 'wt-h10-bin-')); roots.push(bin)
     const config = mkdtempSync(join(tmpdir(), 'wt-h10-config-')); roots.push(config)
     const watcher = join(bin, 'watcher.mjs')
@@ -804,8 +804,13 @@ printf 'report\n' > "$report"
 
   it('refuses stale lifecycle state before comparing individual artifacts and gives one complete reset action', () => {
     const first = testLifecycle('LITE', [], null, null, { cardText: 'DoD: old text\n' })
-    expect(() => createLifecycleServer({ worktree: first.root, archiveRoot: first.archiveRoot, route: 'LITE', models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'new', rules: [], cardText: 'DoD: new text\n' }))
-      .toThrow(new RegExp(`interrupted lifecycle.*node -e .*${join(first.root, '.lane').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    let message = ''
+    try {
+      createLifecycleServer({ worktree: first.root, archiveRoot: first.archiveRoot, route: 'LITE', models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'new', rules: [], cardText: 'DoD: new text\n' })
+    } catch (error) { message = error instanceof Error ? error.message : String(error) }
+    expect(message).toContain('interrupted lifecycle')
+    expect(message).toContain('node -e')
+    expect(message).toContain(JSON.stringify(join(first.root, '.lane')))
   })
 
   it('accepts ### task headings with indented body bullets, refuses one without DoD, and names both item shapes', async () => {

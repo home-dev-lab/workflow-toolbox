@@ -607,7 +607,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(text).toContain('5 open')
   })
 
-  it('discovers live work in suite worktrees when cwd is a non-git umbrella', () => {
+  it.skipIf(process.platform !== 'linux')('discovers live work in suite worktrees when cwd is a non-git umbrella [fixture supplies Linux /proc]', () => {
     const root = mkRoot('umbrella-live-lane')
     const stateDir = join(root, 'queue-gate-state')
     const procRoot = join(root, 'fake-proc')
