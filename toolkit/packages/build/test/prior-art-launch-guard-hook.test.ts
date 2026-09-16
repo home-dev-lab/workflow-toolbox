@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -66,7 +66,7 @@ function run(command: string, env: NodeJS.ProcessEnv, cwd: string) {
 describe('prior-art-launch-guard-core', () => {
   it('matchLaunchCommand: recognizes wt-observe launch', () => {
     const script = [
-      `import { matchLaunchCommand } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { matchLaunchCommand } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `process.stdout.write(JSON.stringify(matchLaunchCommand('node plugin/bin/wt-observe.mjs launch pr-review.js')))`,
     ].join('\n')
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
@@ -75,7 +75,7 @@ describe('prior-art-launch-guard-core', () => {
 
   it('matchLaunchCommand: recognizes a curl against /api/scripted-run', () => {
     const script = [
-      `import { matchLaunchCommand } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { matchLaunchCommand } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `process.stdout.write(JSON.stringify(matchLaunchCommand("curl -X POST http://localhost:5174/api/scripted-run")))`,
     ].join('\n')
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
@@ -84,7 +84,7 @@ describe('prior-art-launch-guard-core', () => {
 
   it('matchLaunchCommand: a non-launch wt-observe subcommand is not matched', () => {
     const script = [
-      `import { matchLaunchCommand } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { matchLaunchCommand } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `process.stdout.write(JSON.stringify(matchLaunchCommand('node plugin/bin/wt-observe.mjs stop')))`,
     ].join('\n')
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
@@ -93,7 +93,7 @@ describe('prior-art-launch-guard-core', () => {
 
   it('deriveKeywords: pulls the workflow basename and stem words', () => {
     const script = [
-      `import { deriveKeywords } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { deriveKeywords } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `process.stdout.write(JSON.stringify(deriveKeywords('node plugin/bin/wt-observe.mjs launch docs-audit.js')))`,
     ].join('\n')
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
@@ -105,7 +105,7 @@ describe('prior-art-launch-guard-core', () => {
 
   it('matchCards: matches on name substring, case-insensitively', () => {
     const script = [
-      `import { matchCards } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { matchCards } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const cards = [{id:'1', name:'Prove it: run a fully-scripted pipeline', listName:'Backlog'}, {id:'2', name:'Unrelated card', listName:'Next'}]`,
       `process.stdout.write(JSON.stringify(matchCards(cards, ['scripted'])))`,
     ].join('\n')

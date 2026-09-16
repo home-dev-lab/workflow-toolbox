@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -27,7 +27,7 @@ function record(
   spawnCwd?: string,
 ) {
   const script = `
-    import { recordGuardEvent } from ${JSON.stringify(LIB)}
+    import { recordGuardEvent } from ${JSON.stringify(pathToFileURL(LIB).href)}
     recordGuardEvent(${JSON.stringify(args)})
   `
   const childEnv: NodeJS.ProcessEnv = { ...process.env, WT_GUARD_JOURNAL_DIR: journalDir, ...env }
@@ -41,7 +41,7 @@ function record(
 
 function emitNotice(payload: Record<string, unknown>) {
   const script = `
-    import { emitGuardNotice } from ${JSON.stringify(LIB)}
+    import { emitGuardNotice } from ${JSON.stringify(pathToFileURL(LIB).href)}
     emitGuardNotice({ payload: ${JSON.stringify(payload)}, stdoutText: 'warning' })
   `
   return spawnSync(process.execPath, ['--input-type=module', '-e', script], {

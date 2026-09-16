@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -58,7 +58,7 @@ function readIndex(priorArtDir: string, cwd: string): Record<string, unknown> | 
 describe('prior-art-index-core', () => {
   it('buildCardIndex: keeps only id/name/listName, records the true scanned count', () => {
     const script = [
-      `import { buildCardIndex } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { buildCardIndex } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const r = buildCardIndex([{id:'1', name:'A', listName:'Next', description:'secret', position: 0}], 5000)`,
       'process.stdout.write(JSON.stringify(r))',
     ].join('\n')
@@ -73,7 +73,7 @@ describe('prior-art-index-core', () => {
 
   it('buildCardIndex: caps at MAX_CARDS and marks truncated', () => {
     const script = [
-      `import { buildCardIndex, MAX_CARDS } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { buildCardIndex, MAX_CARDS } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const cards = Array.from({length: MAX_CARDS + 10}, (_, i) => ({id: String(i), name: 'c'+i, listName: 'Backlog'}))`,
       `const r = buildCardIndex(cards, 1)`,
       `process.stdout.write(JSON.stringify({ scanned: r.scanned, truncated: r.truncated, kept: r.cards.length, cap: r.cap }))`,
@@ -87,7 +87,7 @@ describe('prior-art-index-core', () => {
 
   it('buildCardIndex: an empty card list is a legitimate empty index, not a degraded one', () => {
     const script = [
-      `import { buildCardIndex } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { buildCardIndex } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `process.stdout.write(JSON.stringify(buildCardIndex([], 1)))`,
     ].join('\n')
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })

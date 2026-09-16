@@ -109,7 +109,8 @@ function extractBlocks(root: string, dir: string): Block[] {
   for (const abs of walkMd(dir)) {
     const text = readFileSync(abs, 'utf8')
     for (const m of text.matchAll(MARKER_RE)) {
-      blocks.push({ file: relative(root, abs), id: m[1] ?? '', body: m[2] ?? '' })
+      // Marker file names are report identifiers, canonically slash-spelled on every host.
+      blocks.push({ file: relative(root, abs).replace(/\\/g, '/'), id: m[1] ?? '', body: m[2] ?? '' })
     }
   }
   return blocks
@@ -120,7 +121,7 @@ function inspectEmbeddedCopies(root: string) {
   const rulesDir = join(pluginRoot, 'rules')
   const canonicalBlocks = extractBlocks(root, rulesDir)
   const allBlocks = extractBlocks(root, pluginRoot)
-  const rulesPrefix = `${relative(root, rulesDir)}/`
+  const rulesPrefix = `${relative(root, rulesDir).replace(/\\/g, '/')}/`
   const embeddedBlocks = allBlocks.filter((b) => !b.file.startsWith(rulesPrefix))
   const failures: string[] = []
 

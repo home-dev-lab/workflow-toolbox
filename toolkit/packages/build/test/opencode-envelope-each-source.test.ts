@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error -- runtime .mjs helper intentionally has no declaration file.
@@ -34,6 +34,10 @@ function manifestPathFromStdout(stdout: string) {
   return /^MANIFEST: ([^\s]+)/m.exec(stdout)?.[1]
 }
 
+function portablePath(filePath: string) {
+  return filePath.replace(/\\/g, '/')
+}
+
 function installFakeOpencode(root: string) {
   const bin = join(root, 'opencode')
   writeFileSync(bin, [
@@ -58,6 +62,8 @@ function installFakeOpencode(root: string) {
     '',
   ].join('\n'))
   chmodSync(bin, 0o755)
+  // The product resolves npm-installed OpenCode as opencode.cmd on Windows.
+  writeFileSync(`${bin}.cmd`, '@node "%~dp0opencode" %*\r\n')
 }
 
 describe('wt-opencode-envelope generated task sources', () => {
@@ -135,7 +141,7 @@ describe('wt-opencode-envelope generated task sources', () => {
 
     expect(result.status).toBe(0)
     const outputManifest = manifestPathFromStdout(result.stdout)
-     expect(outputManifest).toMatch(/^.*\/wt-envelope\/[^/]+\/envelope\.manifest\.json$/)
+     expect(portablePath(outputManifest!)).toMatch(/^.*\/wt-envelope\/[^/]+\/envelope\.manifest\.json$/)
     const manifest = JSON.parse(readFileSync(outputManifest!, 'utf8'))
     expect(manifest).toMatchObject({ status: 'nothing_to_do', nothingToDo: true, total: 0, dropped: 0, tasks: [] })
   })
@@ -162,7 +168,7 @@ describe('wt-opencode-envelope generated task sources', () => {
 
     expect(result.status).toBe(0)
     const outputManifest = manifestPathFromStdout(result.stdout)
-    expect(outputManifest).toMatch(/\/envelope\.manifest\.json$/)
+    expect(portablePath(outputManifest!)).toMatch(/\/envelope\.manifest\.json$/)
     expect(result.stdout).toBe(`MANIFEST: ${outputManifest} ANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
     expect(readFileSync(modelCapture, 'utf8')).toBe('nonexistent/provider-model')
     expect(JSON.parse(readFileSync(outputManifest!, 'utf8')).tasks[0]).toMatchObject({
@@ -212,11 +218,11 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(manifests.every((manifest) => typeof manifest === 'string')).toBe(true)
     expect(new Set(manifests).size).toBe(3)
     for (const manifestPath of manifests) {
-       expect(manifestPath).toMatch(new RegExp(`^${root}/wt-envelope/[^/]+/envelope\\.manifest\\.json$`))
+       expect(portablePath(manifestPath!)).toMatch(new RegExp(`^${portablePath(root)}/wt-envelope/[^/]+/envelope\\.manifest\\.json$`))
        const manifest = JSON.parse(readFileSync(manifestPath!, 'utf8'))
-       expect(manifest.outDir).toBe(join(root, 'wt-envelope', manifestPath!.split('/').at(-2)!))
-       expect(manifest.tasks[0].answerFile).toMatch(new RegExp(`^${root}/wt-envelope/`))
-       expect(manifest.tasks[0].answerFile.replace(/\.answer\.txt$/, '.task.md')).toMatch(new RegExp(`^${root}/wt-envelope/`))
+       expect(manifest.outDir).toBe(join(root, 'wt-envelope', basename(dirname(manifestPath!))))
+       expect(portablePath(manifest.tasks[0].answerFile)).toMatch(new RegExp(`^${portablePath(root)}/wt-envelope/`))
+       expect(portablePath(manifest.tasks[0].answerFile.replace(/\.answer\.txt$/, '.task.md'))).toMatch(new RegExp(`^${portablePath(root)}/wt-envelope/`))
     }
     expect(manifests[2]).not.toContain(sourceDir)
   })

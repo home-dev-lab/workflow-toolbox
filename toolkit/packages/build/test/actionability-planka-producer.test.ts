@@ -165,7 +165,7 @@ function readFailureRecords(stateDir: string): Array<Record<string, unknown>> {
 describe('actionability-planka-producer-core', () => {
   it('extractCards: get_board with a full lists[] array is accepted', () => {
     const script = [
-      `import { extractCards } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { extractCards } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const r = extractCards({ toolName: 'mcp__planka__get_board', toolInput: {}, toolResponse: ${JSON.stringify(
         boardResponse([{ name: 'Next', cards: [{ id: '1', name: 'A', position: 1 }] }]),
       )} })`,
@@ -180,7 +180,7 @@ describe('actionability-planka-producer-core', () => {
 
   it('extractCards: a FILTERED find_cards call is refused, not treated as complete', () => {
     const script = [
-      `import { extractCards } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { extractCards } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const r = extractCards({ toolName: 'mcp__planka__find_cards', toolInput: { list: 'Next' }, toolResponse: ${JSON.stringify(
         findCardsResponse([{ id: '1', name: 'A', listName: 'Next' }]),
       )} })`,
@@ -201,7 +201,7 @@ describe('actionability-planka-producer-core', () => {
     writeFileSync(join(project, '.claude/planka.json'), '{}', 'utf8')
     const script = [
       `import { existsSync } from 'node:fs'`,
-      `import { resolveBoardProjectDir } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { resolveBoardProjectDir } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `process.stdout.write(resolveBoardProjectDir(${JSON.stringify(nested)}, existsSync) ?? '')`,
     ].join('\n')
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
@@ -215,7 +215,7 @@ describe('actionability-planka-producer-core', () => {
     mkdirSync(nested, { recursive: true })
     const script = [
       `import { existsSync } from 'node:fs'`,
-      `import { resolveBoardProjectDir } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { resolveBoardProjectDir } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `process.stdout.write(JSON.stringify(resolveBoardProjectDir(${JSON.stringify(nested)}, existsSync)))`,
     ].join('\n')
     const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
@@ -225,7 +225,7 @@ describe('actionability-planka-producer-core', () => {
 
   it('extractCards: a get_board LIST WITH NO cards[] ARRAY is refused (truncated, not "empty") — review finding 1', () => {
     const script = [
-      `import { extractCards } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { extractCards } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const r = extractCards({ toolName: 'mcp__planka__get_board', toolInput: {}, toolResponse: ${JSON.stringify(
         { content: [{ type: 'text', text: JSON.stringify({ id: 'b1', lists: [{ name: 'Next' }] }) }] },
       )} })`,
@@ -238,7 +238,7 @@ describe('actionability-planka-producer-core', () => {
 
   it('extractCards: an UNREADABLE CARD (no id) makes the whole extraction fail, never a silently-shrunk set — review finding 2', () => {
     const script = [
-      `import { extractCards } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { extractCards } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const r = extractCards({ toolName: 'mcp__planka__get_board', toolInput: {}, toolResponse: ${JSON.stringify(
         boardResponse([{ name: 'Done', cards: [{ id: '', name: 'no id here', position: 0 }] }]),
       )} })`,
@@ -251,7 +251,7 @@ describe('actionability-planka-producer-core', () => {
 
   it('extractCards: an UNFILTERED find_cards call is accepted', () => {
     const script = [
-      `import { extractCards } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { extractCards } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const r = extractCards({ toolName: 'mcp__planka__find_cards', toolInput: {}, toolResponse: ${JSON.stringify(
         findCardsResponse([{ id: '1', name: 'A', listName: 'Next' }]),
       )} })`,
@@ -272,7 +272,7 @@ describe('actionability-planka-producer-core', () => {
       { id: '23', name: 'Unparseable', description: 'Depends-on: the other thing', listName: 'Backlog', position: 4 },
     ]
     const script = [
-      `import { computeSnapshot } from ${JSON.stringify(new URL(CORE, 'file://').href)}`,
+      `import { computeSnapshot } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
       `const parseDependsOn = (d) => {`,
       `  const ids = []; const un = []`,
       `  const m = /Depends-on:\\s*#(\\d+)/.exec(d)`,
@@ -696,7 +696,7 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
 describe('producer output is consumable by the real consumer decide()', () => {
   function runDecide(input: unknown): Record<string, unknown> {
     const script = [
-      `import { decide } from ${JSON.stringify(new URL(join(REPO_ROOT, 'plugin/bin/lib/actionability-core.mjs'), 'file://').href)}`,
+      `import { decide } from ${JSON.stringify(pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/actionability-core.mjs')).href)}`,
       `const result = decide(${JSON.stringify(input)})`,
       'process.stdout.write(JSON.stringify(result))',
     ].join('\n')
