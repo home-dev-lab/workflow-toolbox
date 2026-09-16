@@ -219,7 +219,7 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
       "import { resolveConsent } from './lib/lane-consent-check-core.mjs'",
       "import { resolveConsent as resolveLaneConsent } from './lib/lane-consent-check-core.mjs'",
     ), false)
-    const install = spawnSync(process.execPath, [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], { encoding: 'utf8' })
+    const install = spawnSync(process.execPath, [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], { encoding: 'utf8', env: f.env })
 
     expect(install.status).not.toBe(0)
     expect(`${install.stdout}${install.stderr}`).toContain('launcher transformation expected exactly one occurrence')
