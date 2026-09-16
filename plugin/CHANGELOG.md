@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Windows OpenCode launches now resolve npm `.cmd`/`.bat` shims and invoke them through the command shell across lane, observer, fence, and envelope paths.
 - Cross-platform lifecycle tests now compare canonical directory identities at archive boundaries, inject their process-liveness evidence, and derive assertion paths from the host rather than POSIX literals.
 - Lane launcher and observer tests now provide their OpenCode fake through Node-backed POSIX and Windows command shims instead of assuming a `.sh` file on `PATH` is executable.
 
