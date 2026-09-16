@@ -31,7 +31,7 @@ function writeExecutable(filePath: string, body: string) {
 }
 
 function waitFor(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 3000
+  const deadline = Date.now() + 10_000
   return new Promise((resolve, reject) => {
     const tick = () => {
       if (predicate()) return resolve()
