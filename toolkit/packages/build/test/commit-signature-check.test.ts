@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -100,11 +100,12 @@ process.exit(99)
 `,
     { mode: 0o755 },
   )
+  writeFileSync(join(bin, 'git.cmd'), '@node "%~dp0git" %*\r\n')
   return {
     repo,
     env: {
       ...process.env,
-      PATH: `${bin}:${process.env.PATH || ''}`,
+      PATH: `${bin}${delimiter}${process.env.PATH || ''}`,
       ...vars,
     },
   }

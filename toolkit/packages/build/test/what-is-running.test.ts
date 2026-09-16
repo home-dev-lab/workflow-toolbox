@@ -99,7 +99,7 @@ describe('What is running collector seam', () => {
   it('renders unknown process age when getconf is unavailable', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-clock-'))
     try {
-      const paths = collector(root)
+      const paths = collector(root, { executablePlatform: 'linux' })
       writeFileSync(join(paths.procRoot, 'uptime'), '20000.00 1000.00\n')
       mkdirSync(join(paths.procRoot, '500'))
       writeFileSync(join(paths.procRoot, '500', 'status'), 'Name:\tcodex\nPPid:\t1\n')
@@ -113,7 +113,7 @@ describe('What is running collector seam', () => {
   it('finds a lane launched by opencode.cmd on a simulated win32 executable surface', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-win32-'))
     try {
-      const paths = collector(root, { executablePlatform: 'win32' })
+      const paths = collector(root, { executablePlatform: 'win32', processEnv: { PATH: '', PATHEXT: '.CMD;.EXE' } })
       const worktree = join(paths.suiteRoot, 'worktrees', 'cmd-lane')
       const lane = join(worktree, '.lane')
       mkdirSync(lane, { recursive: true })

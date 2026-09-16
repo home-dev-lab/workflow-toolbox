@@ -70,7 +70,7 @@ function record(root: string, exit = 0) {
 }
 
 function recordFile(root: string) {
-  const repoId = createHash('sha256').update(root).digest('hex')
+  const repoId = createHash('sha256').update(realpathSync.native(root)).digest('hex')
   return join(states.get(root)!, 'wt-gate-records', repoId, 'test.json')
 }
 

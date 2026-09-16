@@ -34,7 +34,7 @@ function gitFixture(tag: string) {
   const home = join(root, 'home')
   const rulesDir = join(home, '.claude', 'rules')
   mkdirSync(join(rulesDir, '.git'), { recursive: true })
-  return { root, home, rulesDir, env: withoutRealConfigDir({ ...process.env, HOME: home }) }
+  return { root, home, rulesDir, env: withoutRealConfigDir({ ...process.env, HOME: home, USERPROFILE: home }) }
 }
 
 /** A fixture where `<home>/.claude/rules` exists but is NOT a git working tree. */
@@ -44,7 +44,7 @@ function nonGitFixture(tag: string) {
   const home = join(root, 'home')
   const rulesDir = join(home, '.claude', 'rules')
   mkdirSync(rulesDir, { recursive: true })
-  return { root, home, rulesDir, env: withoutRealConfigDir({ ...process.env, HOME: home }) }
+  return { root, home, rulesDir, env: withoutRealConfigDir({ ...process.env, HOME: home, USERPROFILE: home }) }
 }
 
 function runHook(

@@ -176,7 +176,7 @@ describe('wt-lane-postdiff-check CLI', () => {
     expect(res.stdout).toContain('README.md')
   })
 
-  it('does not mistake a literal backslash in a filename for a directory separator', () => {
+  it.skipIf(process.platform === 'win32')('POSIX-only filename lock: does not mistake a literal backslash in a filename for a directory separator', () => {
     const wt = makeWorktree('literal-backslash')
     const before = join(wt, 'before.txt')
     run(['snapshot', '--worktree', wt, '--out', before])

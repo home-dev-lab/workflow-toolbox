@@ -67,6 +67,7 @@ function createBranchSweepRepo(): string {
   runGit(root, ['init', '-b', 'main'])
   runGit(root, ['config', 'user.name', 'Test User'])
   runGit(root, ['config', 'user.email', 'test@example.com'])
+  runGit(root, ['config', 'core.autocrlf', 'false'])
 
   writeCitationFixture(root, 'Canonical text that is still current.')
   commitAll(root, 'seed clean citation')

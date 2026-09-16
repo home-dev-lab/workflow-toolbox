@@ -18,6 +18,8 @@
 //       "None." — a report missing the section entirely is malformed and needs a human to
 //       read it directly, not a silent skip)
 
+import { pathToFileURL } from 'node:url'
+
 import { readFileSync } from 'node:fs'
 
 const HEADING_DEFAULT = 'Lessons for the memory'
@@ -132,6 +134,6 @@ function main() {
   process.exit(result.sectionFound ? 0 : 2)
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main()
 }

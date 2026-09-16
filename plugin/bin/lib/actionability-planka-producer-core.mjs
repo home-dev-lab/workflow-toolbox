@@ -57,7 +57,7 @@ export function resolveBoardProjectDir(cwd, pathExists) {
 function spilledResponsePath(text) {
   // Accept only the harness's explicit spill sentence. The named path is still
   // untrusted: relative paths never cross this boundary.
-  const match = text.match(/Output has been saved to (\/[^\r\n]+)\.(?:\r?\n|$)/)
+  const match = text.match(/Output has been saved to ([^\r\n]+)\.(?:\r?\n|$)/)
   return match && isAbsolute(match[1]) ? match[1] : null
 }
 

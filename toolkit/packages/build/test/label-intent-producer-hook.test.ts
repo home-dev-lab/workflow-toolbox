@@ -14,7 +14,7 @@
 //      is exactly the defect class this card exists to close.
 
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -122,6 +122,7 @@ describe('label-intent-runner core', () => {
 function makeFakeToolkit(root: string, scriptBody: string): string {
   const toolkitDir = join(root, 'toolkit')
   mkdirSync(join(toolkitDir, 'node_modules', '.bin'), { recursive: true })
+  mkdirSync(join(toolkitDir, 'node_modules', 'tsx', 'dist'), { recursive: true })
   mkdirSync(join(toolkitDir, 'scripts'), { recursive: true })
 
   const scriptPath = join(toolkitDir, 'scripts', 'label-intent-lens.ts')
@@ -134,10 +135,11 @@ function makeFakeToolkit(root: string, scriptBody: string): string {
   const tsxPath = join(toolkitDir, 'node_modules', '.bin', 'tsx')
   writeFileSync(
     tsxPath,
-    `#!/usr/bin/env node\nconst path = process.argv[2];\nconst rest = process.argv.slice(3);\nprocess.argv = [process.argv[0], path, ...rest];\nawait import('file://' + path);\n`,
+    `#!/usr/bin/env node\nimport { pathToFileURL } from 'node:url';\nconst path = process.argv[2];\nconst rest = process.argv.slice(3);\nprocess.argv = [process.argv[0], path, ...rest];\nawait import(pathToFileURL(path).href);\n`,
     'utf8',
   )
-  chmodSync(tsxPath, 0o755)
+  if (process.platform !== 'win32') chmodSync(tsxPath, 0o755)
+  writeFileSync(join(toolkitDir, 'node_modules', 'tsx', 'dist', 'cli.mjs'), readFileSync(tsxPath, 'utf8'), 'utf8')
 
   return toolkitDir
 }
