@@ -73,6 +73,31 @@ function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: 
 }
 
 describe('orchestrator board HTTP client', () => {
+  it('creates a routed card with the real Planka MCP shape: a closed-schema create_card, then one add_label_to_card per required label', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const fetch = async (_url: string, options: { body: string }) => {
+      const body = JSON.parse(options.body); calls.push(body)
+      const result = body.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify({ id: '42' }) }] } : {}
+      return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
+    }
+    const client = createBoardClient({ url: 'http://board', boardId: 'board', fetch })
+    const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'project' } }
+    await client.createRoutedCard({ boardContract, originCardId: '1', sessionTag: 'run-1', timestamp: '2026-09-16T10:00:00.000Z', title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })
+    const toolsCalls = calls.filter((call) => call.method === 'tools/call') as Array<{ params: { name: string, arguments: Record<string, unknown> } }>
+    // The Planka MCP create_card schema is CLOSED (listId, name, description, dependsOn, dueDate, position): the server
+    // refuses unknown fields, so labels travel as separate add_label_to_card calls — this lock pins the real wire shape.
+    expect(toolsCalls).toHaveLength(5)
+    expect(toolsCalls[0]).toMatchObject({ params: { name: 'create_card', arguments: { listId: 'backlog', name: 'Follow up', dependsOn: { cardId: '1' } } } })
+    expect(Object.keys(toolsCalls[0]!.params.arguments).sort()).toEqual(['dependsOn', 'description', 'listId', 'name'])
+    expect(toolsCalls[0]!.params.arguments.description).toContain('## Provenance\nOrigin card: 1; run/session: run-1; L4 reason: different subsystem; timestamp: 2026-09-16T10:00:00.000Z')
+    expect(toolsCalls.slice(1).map((call) => call.params)).toEqual([
+      { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'p1' } },
+      { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'chore' } },
+      { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'm' } },
+      { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'project' } },
+    ])
+  })
+
   it('O1-6 lock: sends notifications/initialized before the first tools/call', async () => {
     const offsets: number[] = []
     let notified = false
@@ -203,6 +228,17 @@ describe('orchestrator driver', () => {
     expect(readFileSync(join(receiptDir, 'pilot.log'), 'utf8')).toBe('EXIT=0\n')
     expect(result.rows[0].receiptDir).toBe(receiptDir)
     expect(readFileSync(f.report, 'utf8')).toContain(`| ${receiptDir} |`)
+  })
+
+  it('lists each pilot lifecycle routed card mechanically in a static wave report', async () => {
+    const f = repoFixture()
+    const runPilot = async (...args: Parameters<typeof f.runPilot>) => {
+      const result = await f.runPilot(...args)
+      writeFileSync(join(args[0].dir, '.lane', 'lifecycle.json'), JSON.stringify({ routed_cards: [{ id: '42', title: 'Follow up', l4Reason: 'different subsystem' }] }))
+      return result
+    }
+    await runOrchestrator(f.options, { ...f, runPilot })
+    expect(readFileSync(f.report, 'utf8')).toContain('## Routed cards\n- origin card 1: card 42 — Follow up — different subsystem')
   })
 
   it('O1-3 lock: rejects a malformed board card id before deriving any path', async () => {

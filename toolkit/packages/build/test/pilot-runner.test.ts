@@ -22,7 +22,7 @@ const initMessage = (model?: string) => ({
   type: 'system',
   subtype: 'init',
   ...(model === undefined ? {} : { model }),
-  tools: ['Read', 'Glob', 'Grep', lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('run')],
+  tools: ['Read', 'Glob', 'Grep', lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }],
 })
 const roots: string[] = []
@@ -101,6 +101,12 @@ describe('SDK pilot runner', () => {
       .toMatchObject({ pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', 'relative/plugin']))
       .toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
+  })
+
+  it('parses --board-contract and leaves it optional until route_finding is called', () => {
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--board-contract', 'board.json']))
+      .toMatchObject({ boardContract: resolve('board.json') })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ boardContract: null })
   })
 
   it('parses --archive-root as an absolute path and defaults the archive root to the checkout that owns the worktree', () => {

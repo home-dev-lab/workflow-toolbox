@@ -6,6 +6,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- SDK lifecycle work can no longer be silently deferred. The runner-owned `route_finding` tool creates
+  a labelled, dependent, provenance-bearing card from `--board-contract`, records it in lifecycle
+  receipts, enforces named-card report grammar, handles one-round scope contests, and mechanically
+  surfaces routed cards in pilot and orchestrator reports.
 - SDK pilot runs now record a lifecycle partial, publish the standard external archive, and finalize
   summary, usage, transcript, and cost receipts after runner timeouts, repeated no-progress turns,
   or initialized SDK stream failures. Interrupted lifecycle relaunches refuse with one complete reset

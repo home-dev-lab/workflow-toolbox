@@ -12,6 +12,7 @@ import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
+import { createBoardClient } from './board-http-client.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -38,7 +39,7 @@ const PLANKA_TOOLS = new Set([
 ])
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: DEFAULT_TIMEOUT }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -46,6 +47,7 @@ export function parsePilotRunnerArgs(argv) {
     else if (arg === '--dir') options.dir = argv[++i] ?? null
     else if (arg === '--profile-env') options.profileEnv = argv[++i] ?? null
     else if (arg === '--contract') options.contract = argv[++i] ?? null
+    else if (arg === '--board-contract') options.boardContract = argv[++i] ?? null
     else if (arg === '--mailbox') options.mailbox = argv[++i] ?? null
     else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
     else if (arg === '--archive-root') options.archiveRoot = argv[++i] ?? null
@@ -68,7 +70,25 @@ export function parsePilotRunnerArgs(argv) {
   if (options.profileEnv) options.profileEnv = resolve(options.profileEnv)
   if (options.cardFile) options.cardFile = resolve(options.cardFile)
   if (options.archiveRoot) options.archiveRoot = resolve(options.archiveRoot)
+  if (options.boardContract) options.boardContract = resolve(options.boardContract)
   return options
+}
+
+export function loadBoardContract(value, readFile = readFileSync) {
+  if (!value) return null
+  let contract = value
+  if (typeof value === 'string') {
+    try { contract = JSON.parse(readFile(value, 'utf8')) } catch (error) { throw new Error(`cannot read --board-contract: ${error.message}`) }
+  }
+  const fields = [
+    ['boardId', contract?.boardId], ['listId', contract?.listId], ['labels.category', contract?.labels?.category],
+    ...['P0', 'P1', 'P2'].map((key) => [`labels.priority.${key}`, contract?.labels?.priority?.[key]]),
+    ...['bug', 'chore', 'feature', 'research'].map((key) => [`labels.type.${key}`, contract?.labels?.type?.[key]]),
+    ...['S', 'M', 'L'].map((key) => [`labels.effort.${key}`, contract?.labels?.effort?.[key]]),
+  ]
+  const invalid = fields.find(([, field]) => typeof field !== 'string' || !field)
+  if (invalid) throw new Error(`--board-contract requires non-empty ${invalid[0]}`)
+  return contract
 }
 
 // Where a lifecycle archive lands when nothing names it: the project root when the caller resolved one,
@@ -118,7 +138,7 @@ export function confinedToWorktree(root, requested) {
 }
 
 export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true, knowledgeBaseIndex = null } = {}) {
-  if (['transition', 'write_artifact', 'run'].map(lifecycleToolName).includes(toolName)) return { behavior: 'allow' }
+  if (['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).includes(toolName)) return { behavior: 'allow' }
   if (toolName === 'mcp__planka__move_card' && !boardMoves) return { behavior: 'deny', message: 'board moves are the orchestrator\'s' }
   if (PLANKA_TOOLS.has(toolName)) return { behavior: 'allow' }
   if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused: ${toolName}` }
@@ -191,6 +211,7 @@ export async function runPilot(options, dependencies) {
   const systemPrompt = composeStandingPrompt(contract, rules)
   if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
   const cardText = readFile(options.cardFile, 'utf8')
+  const boardContract = loadBoardContract(options.boardContract, readFile)
   if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
   const routing = deriveRoute(cardText)
   const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
@@ -241,7 +262,15 @@ export async function runPilot(options, dependencies) {
   for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
     if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
   }
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, ...lifecycleOptions })
+  const boardUrl = resolveWorkflowToolboxOption('planka_mcp_url', { env: effectiveEnv }).value
+  const board = dependencies.board ?? (boardContract && boardUrl ? createBoardClient({ url: boardUrl, boardId: boardContract.boardId }) : null)
+  const routeFinding = boardContract
+    ? board && typeof board.createRoutedCard === 'function'
+      ? (args) => board.createRoutedCard(args)
+      : async () => { throw new Error('board unavailable: planka_mcp_url is not configured') }
+    : null
+  const resolveRoutedFinding = boardContract && board && typeof board.resolveRoutedCard === 'function' ? (card) => board.resolveRoutedCard(card) : null
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, boardContract, routeFinding, resolveRoutedFinding, ...lifecycleOptions })
 
   async function* prompt() {
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
@@ -295,7 +324,7 @@ export async function runPilot(options, dependencies) {
       plugins: pluginPaths.map((path) => ({ type: 'local', path })),
       tools: ['Read', 'Glob', 'Grep'],
       // No Planka endpoint configured means no board tools, never a guessed local port.
-      mcpServers: { ...(resolveWorkflowToolboxOption('planka_mcp_url', { env }).value ? { planka: { type: 'http', url: resolveWorkflowToolboxOption('planka_mcp_url', { env }).value } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
+      mcpServers: { ...(boardUrl ? { planka: { type: 'http', url: boardUrl } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
       canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path }),
       permissionMode: 'default',
       env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
@@ -310,7 +339,7 @@ export async function runPilot(options, dependencies) {
       servedModel = message.model
       const initTools = Array.isArray(message.tools) ? message.tools : []
       const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
-      const missing = ['transition', 'write_artifact', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
+      const missing = ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
       const absent = absentPluginPaths(pluginPaths, initPlugins)
       if (missing.length > 0 || absent.length > 0) {
         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
@@ -335,7 +364,7 @@ export async function runPilot(options, dependencies) {
         tools.push(item.name)
         turnTools.push(item.name)
           if (item.id) startedTools.set(item.id, now())
-          if (item.id && ['transition', 'write_artifact', 'run'].map(lifecycleToolName).includes(item.name)) lifecycleCalls.set(item.id, item.name)
+          if (item.id && ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).includes(item.name)) lifecycleCalls.set(item.id, item.name)
       }
         if (item.type === 'tool_result' && item.tool_use_id && startedTools.has(item.tool_use_id)) {
         longestToolCallMs = Math.max(longestToolCallMs, now() - startedTools.get(item.tool_use_id))

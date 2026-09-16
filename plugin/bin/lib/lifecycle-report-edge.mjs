@@ -22,11 +22,11 @@ export function assertArchiveOutsideWorktree({ root, archiveRoot, target = path.
   return resolved
 }
 
-export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, implementation, assertDirectories, copy, git, sha256, writeRegularFile }) {
+export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, implementation, routedCards = [], assertDirectories, copy, git, sha256, writeRegularFile }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const target = assertArchiveOutsideWorktree({ root, archiveRoot, target: path.join(archiveRoot ?? '', '.claude', 'reports', `${cardId}-${stamp}`) })
   const temporary = `${target}.tmp-${randomUUID()}`
-  const manifestContent = `${JSON.stringify({ cardId, route, commit: head, phases, evidence, partial: partial ?? null }, null, 2)}\n`
+  const manifestContent = `${JSON.stringify({ cardId, route, commit: head, phases, evidence, partial: partial ?? null, routed_cards: routedCards }, null, 2)}\n`
   const summary = { commit: head, archive: { path: target, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: implementation, partial: partial ?? null }
   let wroteLaneSummary = false
   try {
@@ -59,6 +59,7 @@ export function completeLifecycleReport({
   evidencePath,
   phases,
   implementation,
+  routedCards = [],
   assertDirectories,
   copy,
   git,
@@ -147,6 +148,7 @@ export function completeLifecycleReport({
       evidence: sha256(readRegularFile(evidencePath) ?? ''),
       partial: state.partial,
       implementation,
+      routedCards,
       assertDirectories,
       copy,
       git,
