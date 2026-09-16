@@ -41,6 +41,8 @@ jobs:
         run: pnpm test
       - name: Typecheck
         run: pnpm typecheck
+      - name: Quality
+        run: pnpm quality
       - name: Lint
         run: pnpm lint
       - name: wt-observe lifecycle smoke (native state root, PID identity, portable spawn)

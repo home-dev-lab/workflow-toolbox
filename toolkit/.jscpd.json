@@ -1,0 +1,14 @@
+{
+  "threshold": 3,
+  "minTokens": 50,
+  "minLines": 5,
+  "pattern": "**/*.{ts,mjs,js}",
+  "ignore": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/fixtures/**",
+    "**/plugin/hooks/snapshot-program.js"
+  ],
+  "reporters": ["console", "json"],
+  "output": ".lane/jscpd"
+}

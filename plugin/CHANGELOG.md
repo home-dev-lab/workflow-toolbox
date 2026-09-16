@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Tooling
+- Added a ratcheted local quality gate for complexity, source size, duplication, dead code, and dependency layering across the toolkit and plugin sources.
+
 ## [0.180.0] - 2026-09-16
 
 ### Fixed

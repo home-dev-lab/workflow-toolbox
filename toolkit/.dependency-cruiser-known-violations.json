@@ -1,0 +1,62 @@
+[
+  {
+    "type": "cycle",
+    "from": "packages/debugger/src/project-registry.ts",
+    "to": "packages/debugger/src/source.ts",
+    "unresolvedTo": "./source.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "error",
+      "name": "no-circular"
+    },
+    "cycle": [
+      {
+        "name": "packages/debugger/src/source.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "packages/debugger/src/project-registry.ts",
+        "dependencyTypes": [
+          "local",
+          "export"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "cycle",
+    "from": "packages/patterns/src/envelope-contract.ts",
+    "to": "packages/patterns/src/structured-salvage.ts",
+    "unresolvedTo": "./structured-salvage.js",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "error",
+      "name": "no-circular"
+    },
+    "cycle": [
+      {
+        "name": "packages/patterns/src/structured-salvage.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "packages/patterns/src/envelope-contract.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      }
+    ]
+  }
+]
