@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.180.0] - 2026-09-16
+
 ### Fixed
 - The lane-orphan watcher now detects an orphan of its OWN kind — a `wt-lane-orphan-watch` process whose
   working directory was deleted and whose parent is init — and terminates it by exact PID after re-reading
