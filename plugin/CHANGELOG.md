@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.181.0] - 2026-09-16
+
 ### Tooling
 - Added a ratcheted local quality gate for complexity, source size, duplication, dead code, and dependency layering across the toolkit and plugin sources.
 
@@ -19,6 +21,21 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   `SubagentStop` / `SessionStart` hook callback that times out now counts as no decision instead of a hook
   failure (0.3.273), and plan-mode writes route through `canUseTool` even under
   `allowDangerouslySkipPermissions` (0.3.269).
+
+### Fixed
+- Windows runner: citation candidate/marker reports and the cross-repo typecheck gate print repository-relative
+  paths with `/` whatever the host separator (filesystem I/O untouched); the label-intent lens test spawns
+  `pnpm.cmd` on Windows.
+- The four SDK role test suites are hermetic on a clean machine: `WT_CONTEXT_MODE_ROOT` is honoured only when set
+  (the fail-closed check on the resolved root is unchanged) and the tests install a minimal context-mode fixture.
+
+### Quality
+- First measured baseline (the ratchets `pnpm quality` enforces from this release on; the next release reports the
+  delta): worst cyclomatic complexity 127 (`plugin/bin/lib/lifecycle-launch.mjs` `run`), worst cognitive complexity
+  282 (`plugin/bin/lib/pilot-runner-core.mjs` `runPilot`), biggest file 2,729 lines (`plugin/bin/wt-observe.mjs`),
+  longest function 709 lines (`plugin/bin/lib/lifecycle-state-machine.mjs`), max depth 7, max params 7, 687 ESLint
+  warnings (528 SonarJS), duplication 2.90 % (tests included), 221 knip issues (124 unused exports), 2 frozen
+  dependency cycles. SDK Runner status unchanged: EXPERIMENTAL.
 
 ## [0.180.0] - 2026-09-16
 
