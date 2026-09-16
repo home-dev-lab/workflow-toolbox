@@ -17,16 +17,26 @@ through the runner mailbox and owner-facing output only through the pilot report
 ## What an SDK session receives
 
 Every Claude SDK query uses the table in `plugin/bin/lib/sdk-role-profile.mjs`; GPT lanes and
-`lane_skills` are unchanged. `LSP` is omitted because SDK 0.3.273 accepted it in `tools` but did not
-list or expose it in the initialization receipt. Context-mode 1.0.177 is loaded from the active
+`lane_skills` are unchanged. `LSP` is listed for every role and becomes available only when the
+generated role plugin has a resolved language server. Context-mode 1.0.177 is loaded from the active
 profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
 other nine MCP tools do not enter their receipt.
 
-| Role | Tools | Selected workflow-toolbox skills | Shipped command guards |
-| --- | --- | --- | --- |
-| pilot | Read, Glob, Grep, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |
-| tdd, harden | Read, Glob, Grep, Edit, Write, Bash, all ten context-mode MCP tools | changelog | writer set |
-| judge, critic, review, refutation | Read, Glob, Grep, `ctx_search` only | none | none; no Bash |
+| Role | Tools | LSP | Selected workflow-toolbox skills | Shipped command guards |
+| --- | --- | --- | --- | --- |
+| pilot | Read, Glob, Grep, LSP, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | optional, visible | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |
+| tdd, harden | Read, Glob, Grep, LSP, Edit, Write, Bash, all ten context-mode MCP tools | optional, visible | changelog | writer set |
+| judge, critic, review, refutation | Read, Glob, Grep, LSP, `ctx_search` only | optional, visible | none | none; no Bash |
+
+The initial implementation detects TypeScript and JavaScript from a root `tsconfig.json` or
+`package.json`, or a `.ts` or `.mjs` file in the worktree. It resolves
+`typescript-language-server` on `PATH`; an absolute `WT_LSP_TYPESCRIPT_SERVER` overrides PATH only
+when set. The generated `.lsp.json` carries the resolved absolute command and only the detected
+language mappings. Missing binaries never refuse a session: the init log and `lifecycle.json` state
+`LSP absent: typescript-language-server not found on PATH`, and the closing report states
+`LSP navigation: absent (...)`; availability is stated with the command and the report says
+`LSP navigation: available`. When available, omission of `LSP` from the SDK init receipt refuses the
+incomplete receipt; when absent, the SDK is expected to omit it.
 
 The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
 unquoted globs, merge chains, concurrent tests, piped gate status, process-environment dumps,
@@ -50,6 +60,10 @@ plugin, or context-mode 1.0.177 path refuses startup and names the path.
 Resolution uses Node's native path APIs and the active `CLAUDE_CONFIG_DIR`, including Windows paths
 such as a profile beneath `%APPDATA%`; generated files are copies, not symlinks. If that profile does
 not have context-mode 1.0.177, the session refuses to start rather than degrading to an unguarded run.
+LSP PATH lookup uses `.cmd` and `.exe` shims on Windows. On macOS it searches the PATH actually
+provided to the runner, so `/usr/local/bin` and Homebrew locations are considered only when present
+there; no install prefix is guessed. Linux likewise uses the supplied PATH. On every platform an
+absent binary produces the same visible absent receipt and never a startup refusal.
 
 ## Route and phases
 

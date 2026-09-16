@@ -478,7 +478,7 @@ describe('SDK orchestrator judge', () => {
     const plugins = [join(f.root, 'rules-plugin'), join(f.root, 'lsp-plugin')]; plugins.forEach((plugin) => mkdirSync(plugin))
     const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex, pluginDirs: plugins }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
     expect(calls).toBe(1)
-    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', CONTEXT_MODE_TOOLS.search] })
+    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', 'LSP', CONTEXT_MODE_TOOLS.search] })
     expect(queryOptions.plugins).toEqual([
       { type: 'local', path: expect.stringContaining('pilot-guard') },
       { type: 'local', path: resolveContextModeRoot(process.env) },
