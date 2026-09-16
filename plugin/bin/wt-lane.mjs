@@ -112,12 +112,16 @@ function briefEvidenceLines(receipt, upper = false) {
 
 function inspectStartedProcess(inspect, pid, fallback, timeoutMs = 1000) {
   const deadline = Date.now() + timeoutMs
+  let candidate = null
   do {
     const identity = inspect(pid)
-    if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) return identity
+    if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) {
+      candidate = identity
+      if (!['sh', 'bash', 'dash', 'zsh', 'ksh'].includes(path.basename(identity.argv[0]))) return identity
+    } else if (candidate) return candidate
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
   } while (Date.now() < deadline)
-  return fallback
+  return candidate ?? fallback
 }
 
 function checkGitWorktree(dir) {
@@ -447,8 +451,10 @@ async function main() {
   // OpenCode honours this runtime flag by skipping ~/.claude/skills and project .claude/skills,
   // preserving its own and .agents skills while fencing the harness's single-writer memory skills.
   let child
+  let earlyChildClose = null
   try {
     child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd] }, process.platform)
+    child.once('close', (code, signal) => { earlyChildClose = [code, signal] })
     await new Promise((resolve, reject) => {
       child.once('spawn', resolve)
       child.once('error', reject)
@@ -575,7 +581,10 @@ async function main() {
   }, 100)
   decisions.unref()
   child.on('error', () => { clearTimeout(timer); clearTimeout(graceTimer); clearInterval(decisions); cleanupBrief(); finish(1) })
-  child.on('close', (code, signal) => {
+  let closeHandled = false
+  const onChildClose = (code, signal) => {
+    if (closeHandled) return
+    closeHandled = true
     clearTimeout(timer); clearTimeout(graceTimer); clearInterval(decisions)
     const exit = signal ? 124 : (code ?? 1)
     try {
@@ -586,7 +595,10 @@ async function main() {
     journal({ event: 'exited', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: signal ?? `exit ${exit}` })
     cleanupBrief()
     endGroup(exit)
-  })
+  }
+  child.on('close', onChildClose)
+  if (earlyChildClose) onChildClose(...earlyChildClose)
+  else if (child.exitCode !== null || child.signalCode !== null) onChildClose(child.exitCode, child.signalCode)
   return 0
 }
 

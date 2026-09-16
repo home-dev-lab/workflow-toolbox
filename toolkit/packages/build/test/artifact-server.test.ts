@@ -1335,7 +1335,7 @@ describe('owner decision 5: Tailscale access', () => {
             ? `printf 'https://host.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:9999\\nhttps://other.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
             : "printf 'No serve config'"
     const body = mode !== 'absent'
-      ? `#!/bin/sh\nif [ "$1 $2" = "ip -4" ]; then ${mode === 'no-tailnet' ? 'exit 0' : "printf '127.0.0.2\\n'; exit 0"}; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then ${serveStatus}; exit 0; fi\nexit 1\n`
+      ? `#!/bin/sh\nif [ "$1 $2" = "ip -4" ]; then ${mode === 'no-tailnet' ? 'exit 0' : "printf '127.0.0.1\\n'; exit 0"}; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then ${serveStatus}; exit 0; fi\nexit 1\n`
       : '#!/bin/sh\nexit 1\n'
     writeFileSync(script, body)
     chmodSync(script, 0o755)
@@ -1366,16 +1366,16 @@ describe('owner decision 5: Tailscale access', () => {
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome)
-    expect(state.remoteUrl).toBe(`http://127.0.0.2:${port}`)
+    expect(state.remoteUrl).toBe(`http://127.0.0.1:${port}`)
     expect((await rawRequest(port, '/__wt-artifact-server/health', 'host.tailnet.ts.net')).status).toBe(200)
-    expect((await rawRequest(port, '/__wt-artifact-server/health', `127.0.0.2:${port}`, '127.0.0.2')).status).toBe(200)
+    expect((await rawRequest(port, '/__wt-artifact-server/health', `127.0.0.1:${port}`, '127.0.0.1')).status).toBe(200)
     expect((await rawRequest(port, '/__wt-artifact-server/register?session=remote&roots=%5B%5D', 'host.tailnet.ts.net')).status).toBe(404)
     const refused = await rawRequest(port, '/__wt-artifact-server/health', 'evil.example')
     expect(refused.status).toBe(421)
     expect(refused.body).toContain('evil.example')
     expect(refused.body).toMatch(/not in the allow-list/i)
     expect(refused.body).not.toContain('host.tailnet.ts.net')
-    expect(refused.body).not.toContain('127.0.0.2')
+    expect(refused.body).not.toContain('127.0.0.1')
   })
 
   it('[B-02] sets remoteUrl to null when the stubbed tailscale binary is absent', async () => {
@@ -1466,7 +1466,7 @@ describe('owner decision 5: Tailscale access', () => {
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
-    expect(state.remoteUrl).toBe(`http://127.0.0.2:${reservation.port}`)
+    expect(state.remoteUrl).toBe(`http://127.0.0.1:${reservation.port}`)
   })
 
   it.skipIf(process.platform !== 'linux')('resolves the Windows Tailscale executable through WSL interop without an install path guess', async () => {
