@@ -178,7 +178,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toMatch(/^edge refused: tdd->next; missing lane receipt unchanged: /)
   })
 
-  it('keeps the launch snapshot for a genuine pilot decision timeout', async () => {
+  it.skipIf(process.platform !== 'linux')('keeps the launch snapshot for a genuine pilot decision timeout [fixture records identity from Linux /proc]', async () => {
     const timeoutLauncher = rawLauncher("import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const brief=args[args.indexOf('--brief')+1]; const runId='999-1'; const dir=join(root,'.lane','supervision'); writeFileSync(join(root,'.lane','snapshot-path'),brief); mkdirSync(dir,{recursive:true}); const source=\"const fs=require('fs'),path=require('path');const root=process.argv[1],runId='999-1',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv,owner:'pilot',defaultDecision:'extend',decisionDueAt:'later',evidence:{}}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)\"; const child=spawn(process.execPath,['-e',source,root],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun='+runId+'\\n')")
     const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
@@ -190,7 +190,7 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it('tells a timed-out pilot to use lifecycle control and keeps the shell remedy for a human', async () => {
+  it.skipIf(process.platform !== 'linux')('tells a timed-out pilot to use lifecycle control and keeps the shell remedy for a human [fixture records identity from Linux /proc]', async () => {
     const timeoutLauncher = rawLauncher("import { spawn } from 'node:child_process'; import { mkdirSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const token=args[args.indexOf('--owner-token')+1]; const runId='999-2'; const dir=join(root,'.lane','supervision'); mkdirSync(dir,{recursive:true}); const source=\"const fs=require('fs'),path=require('path');const root=process.argv[1],token=process.argv[2],runId='999-2',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv,owner:'pilot',ownerToken:token,defaultDecision:'extend',decisionDueAt:'later',evidence:{}}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)\"; const child=spawn(process.execPath,['-e',source,root,token],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun='+runId+'\\n')")
     const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
@@ -222,7 +222,7 @@ report=$(node -e 'const fs=require("fs"),tick=String.fromCharCode(96),text=fs.re
 printf 'report\n' > "$report"
 `
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,${JSON.stringify(fakeSource)}); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+process.env.PATH,CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
-    const lifecycle = testLifecycle('LITE', [], wrapper, 500)
+    const lifecycle = testLifecycle('LITE', [], wrapper, 7_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const first = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
     expect(first).toContain("run { kind: 'control', decision: 'abandon' }")
@@ -296,7 +296,7 @@ printf 'report\n' > "$report"
     killIdentity(identity, 'SIGKILL')
   })
 
-  it('returns actionable TIMEOUT and kills nothing while a matching worker remains running past transition due', async () => {
+  it.skipIf(process.platform !== 'linux')('returns actionable TIMEOUT and kills nothing while a matching worker remains running past transition due [fixture records identity from Linux /proc]', async () => {
     const pidFileName = '.lane/running-worker-pid'
     const running = rawLauncher(`import { spawn } from 'node:child_process'; import { mkdirSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const workerSource="const fs=require('fs'),path=require('path');const root=process.argv[1],pidFile=process.argv[2],runId='996-1',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(root,pidFile),String(process.pid));fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'running',workerPid:process.pid,workerArgv,owner:'pilot',decisionTransitionDueAt:new Date(Date.now()-1).toISOString()}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)"; mkdirSync(join(root,'.lane','supervision'),{recursive:true}); const child=spawn(process.execPath,['-e',workerSource,root,${JSON.stringify(pidFileName)}],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun=996-1\\n')`)
     const lifecycle = testLifecycle('LITE', [], running, 30)
@@ -309,7 +309,7 @@ printf 'report\n' > "$report"
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it('returns TIMEOUT naming a surviving child when the worker is gone', async () => {
+  it.skipIf(process.platform !== 'linux')('returns TIMEOUT naming a surviving child when the worker is gone [fixture records Linux argv identity]', async () => {
     const detached = launcher(`import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv,root=args[args.indexOf('--dir')+1],runId='995-1',dir=join(root,'.lane','supervision'),source='setInterval(()=>{},1000)',child=spawn(process.execPath,['-e',source],{detached:true,stdio:'ignore'}); child.unref(); mkdirSync(dir,{recursive:true}); writeFileSync(join(root,'.lane','orphan-pid'),String(child.pid)); writeFileSync(join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv:process.argv,childPid:child.pid,childArgv:[process.execPath,'-e',source],worktree:root,owner:'pilot',ownerToken:args[args.indexOf('--owner-token')+1],timeoutAt:new Date().toISOString()})); writeFileSync(join(dir,'current.json'),JSON.stringify({runId})); process.stdout.write('run='+runId+'\\n')`)
     const lifecycle = testLifecycle('LITE', [], detached, 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })

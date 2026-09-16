@@ -40,8 +40,8 @@ function portablePath(filePath: string) {
 
 function installFakeOpencode(root: string) {
   const bin = join(root, 'opencode')
-  writeFileSync(bin, [
-    '#!/usr/bin/env node',
+  const script = `${bin}.cjs`
+  writeFileSync(script, [
     "if (process.argv[2] === '--version') { console.log('fixture-1'); process.exit(0) }",
     "if (process.argv[2] === '--pure') { console.log('[]'); process.exit(0) }",
     "if (process.argv[2] === 'debug' && process.argv[3] === 'skill') { console.log('[]'); process.exit(0) }",
@@ -61,9 +61,10 @@ function installFakeOpencode(root: string) {
     "process.stdout.write(JSON.stringify({ part: { type: 'text', text: process.env.FAKE_ANSWER ?? 'answer' } }) + '\\n')",
     '',
   ].join('\n'))
+  writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`)
   chmodSync(bin, 0o755)
   // The product resolves npm-installed OpenCode as opencode.cmd on Windows.
-  writeFileSync(`${bin}.cmd`, '@node "%~dp0opencode" %*\r\n')
+  writeFileSync(`${bin}.cmd`, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
 }
 
 describe('wt-opencode-envelope generated task sources', () => {
