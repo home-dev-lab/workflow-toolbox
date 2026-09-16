@@ -960,6 +960,25 @@ await test('[WIR5-06] unreadable and capped proc scans report partial process di
   assert.equal(capped.processDiscovery, 'partial'); assert.equal(capped.processPartialReason, 'capped');
 });
 
+await test('[WIR5-07] a process that exits mid-scan is not a read failure; a record that exists and cannot be read is one', async () => {
+  // Field case 2026-09-15 (card 1864810463074714727): the pane read `process list partial (unreadable process records)`
+  // on a quiet machine. Measured on the real host: 1 collector run in 10 met a process that exited between the
+  // /proc listing and its record reads. That race is complete discovery of what exists, never a degraded scan.
+  const isolated = join(root, 'vanished-proc');
+  const procFixture = join(isolated, 'proc'); mkdirSync(procFixture, { recursive: true });
+  const base = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: procFixture, now: paths.now, platform: 'linux' };
+  mkdirSync(join(base.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(base.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(base.livenessDir, { recursive: true }); mkdirSync(join(base.suiteRoot, 'worktrees'), { recursive: true });
+  writeFileSync(join(procFixture, 'uptime'), '20000.00 1000.00\n');
+  // 4242 is listed, then gone before its records are read: a dangling entry stands in for the race.
+  symlinkSync(join(isolated, 'no-such-process'), join(procFixture, '4242'));
+  const vanished = await readSnapshot({ process: processCapability }, base);
+  assert.equal(vanished.processDiscovery, 'available'); assert.equal(vanished.processPartialReason, null); assert.equal(vanished.processVanished, 1);
+  // 4343 still exists and its cmdline cannot be read (a directory where a file is expected): that IS a failure.
+  mkdirSync(join(procFixture, '4343', 'cmdline'), { recursive: true });
+  const unreadable = await readSnapshot({ process: processCapability }, base);
+  assert.equal(unreadable.processDiscovery, 'partial'); assert.equal(unreadable.processPartialReason, 'unreadable process records'); assert.equal(unreadable.processVanished, 1);
+});
+
 await test('[Step 5 DoD 1] proc ancestry emits separate Session and linked Card levels', async () => {
   const isolated = join(root, 'process-hierarchy');
   const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', plankaBaseUrl: 'https://boards.example.test' };

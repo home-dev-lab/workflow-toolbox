@@ -53,6 +53,8 @@ export function markdownToHtml(markdown) {
 
 // Kept as source text because a Function Hook module may only import its own files and
 // "claude-code". The collector runs through $.process.run, the module's audited door to disk.
+// The program below is ONE String.raw template literal: a backtick anywhere in it, a comment included, ends
+// the literal and the module stops loading (measured 2026-09-16 on a comment quoting a JSON value).
 export const SNAPSHOT_PROGRAM = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');
@@ -120,6 +122,17 @@ const DIR_SCAN_CAP = Number.isSafeInteger(config.scanEntryCap) && config.scanEnt
 const cappedScans = [];
 const unreadableScans = [];
 const processReadFailures = [];
+// A process that exits between the /proc listing and its record reads leaves no directory behind.
+// That is the ordinary race of scanning a live machine, not a read failure: the listing was complete
+// for everything that still exists, so it must not degrade process discovery to partial. A record
+// whose directory still exists and cannot be read IS a failure, and stays one.
+let processVanished = 0;
+function processGone(pid) {
+  let gone = false;
+  try { fs.statSync(path.join(procRoot, pid)); } catch (error) { gone = error?.code === 'ENOENT'; }
+  if (gone) processVanished += 1;
+  return gone;
+}
 const pathRefusals = [];
 const suiteWorktreeInput = path.join(config.suiteRoot, worktreesDirName);
 const configuredActorRoots = [suiteWorktreeInput, ...(Array.isArray(config.extraRoots) ? config.extraRoots : [])]
@@ -630,11 +643,11 @@ const processListing = processScanAvailable ? listed(procRoot) : { entries: [], 
 if (processScanAvailable) for (const pid of processListing.entries.filter(name => /^\d+$/.test(name))) {
   try {
     const cmdline = slice(path.join(procRoot, pid, 'cmdline'), LOG_TAIL_BYTES);
-    if (cmdline === null) { processReadFailures.push(pid + '/cmdline'); continue; }
+    if (cmdline === null) { if (processGone(pid)) continue; processReadFailures.push(pid + '/cmdline'); continue; }
     const args = cmdline.split('\0').filter(Boolean);
     if (!args.length) continue;
     const status = slice(path.join(procRoot, pid, 'status'), 64 * 1024);
-    if (status === null) { processReadFailures.push(pid + '/status'); continue; }
+    if (status === null) { if (processGone(pid)) continue; processReadFailures.push(pid + '/status'); continue; }
     const ppid = Number(status.match(/^PPid:\s*(\d+)/m)?.[1]);
     const processName = status.match(/^Name:\s*([^\n]+)/m)?.[1]?.trim() || '';
     processes.set(Number(pid), { pid: Number(pid), ppid: Number.isSafeInteger(ppid) ? ppid : null, args, processName });
@@ -1224,5 +1237,5 @@ const collectors = {
   processes: { value: { services, helpers }, availability: { status: processDiscovery, ...(processReason ? { reason: processReason } : {}) } },
   clockTicks: { value: clockTicks, availability: clockTicksAvailability },
 };
-process.stdout.write(JSON.stringify({ collectors, discovery, rows, sessions, services, helpers, processDiscovery, processPartialReason: processReason, cappedScans: [...new Set(cappedScans)], unreadableScans: [...new Set(unreadableScans)], pathRefusals, collectedAt: new Date(now).toISOString() }));
+process.stdout.write(JSON.stringify({ collectors, discovery, rows, sessions, services, helpers, processDiscovery, processPartialReason: processReason, processVanished, cappedScans: [...new Set(cappedScans)], unreadableScans: [...new Set(unreadableScans)], pathRefusals, collectedAt: new Date(now).toISOString() }));
 `;
