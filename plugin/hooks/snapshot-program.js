@@ -125,7 +125,10 @@ const processReadFailures = [];
 // A process that exits between the /proc listing and its record reads leaves no directory behind.
 // That is the ordinary race of scanning a live machine, not a read failure: the listing was complete
 // for everything that still exists, so it must not degrade process discovery to partial. A record
-// whose directory still exists and cannot be read IS a failure, and stays one.
+// whose directory still exists and cannot be read IS a failure, and stays one. processVanished counts
+// pid directories found ABSENT (ENOENT) after a null record read; it cannot tell a genuine exit from
+// a source that disappeared under the scan, so when every listed pid is absent the scan is reported
+// as unreadable rather than as an empty machine (the scanner's own process is always listed).
 let processVanished = 0;
 function processGone(pid) {
   let gone = false;
@@ -640,7 +643,8 @@ function briefFromArgs(args) {
   return null;
 }
 const processListing = processScanAvailable ? listed(procRoot) : { entries: [], readable: false, capped: false };
-if (processScanAvailable) for (const pid of processListing.entries.filter(name => /^\d+$/.test(name))) {
+const listedPids = processScanAvailable ? processListing.entries.filter(name => /^\d+$/.test(name)) : [];
+if (processScanAvailable) for (const pid of listedPids) {
   try {
     const cmdline = slice(path.join(procRoot, pid, 'cmdline'), LOG_TAIL_BYTES);
     if (cmdline === null) { if (processGone(pid)) continue; processReadFailures.push(pid + '/cmdline'); continue; }
@@ -1227,7 +1231,8 @@ for (const item of [...helperItems, ...serviceItems]) delete item.ageSeconds;
 const services = { count: serviceItems.length, items: serviceItems };
 const helpers = { count: helperItems.length, oldest: helperItems.length ? oldestHelper?.age || UNKNOWN : 'none', items: helperItems };
 const discovery = ![lifecycleFiles, livenessFiles, registryListing, worktreeListing].every(source => source.readable) ? UNKNOWN : cappedScans.length || pathRefusals.length || unreadableScans.length ? 'partial' : 'available';
-const processPartialReason = processScanAvailable && !processListing.readable ? 'unreadable' : processListing.capped ? 'capped' : processReadFailures.length ? 'unreadable process records' : executableLookupFailures.length ? 'executable lookup unavailable' : null;
+const allListedVanished = listedPids.length > 0 && processVanished === listedPids.length;
+const processPartialReason = processScanAvailable && !processListing.readable ? 'unreadable' : processListing.capped ? 'capped' : allListedVanished ? 'unreadable' : processReadFailures.length ? 'unreadable process records' : executableLookupFailures.length ? 'executable lookup unavailable' : null;
 const processDiscovery = !processScanAvailable ? UNKNOWN : processPartialReason ? 'partial' : 'available';
 const processReason = !processScanAvailable ? 'unavailable on this platform' : processPartialReason;
 const requiredDiscoveryRoots = [['lifecycle store', lifecycleFiles], ['liveness records', livenessFiles], ['spawn registry', registryListing], ['worktrees', worktreeListing]];

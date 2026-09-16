@@ -970,13 +970,24 @@ await test('[WIR5-07] a process that exits mid-scan is not a read failure; a rec
   mkdirSync(join(base.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(base.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(base.livenessDir, { recursive: true }); mkdirSync(join(base.suiteRoot, 'worktrees'), { recursive: true });
   writeFileSync(join(procFixture, 'uptime'), '20000.00 1000.00\n');
   // 4242 is listed, then gone before its records are read: a dangling entry stands in for the race.
-  symlinkSync(join(isolated, 'no-such-process'), join(procFixture, '4242'));
-  const vanished = await readSnapshot({ process: processCapability }, base);
-  assert.equal(vanished.processDiscovery, 'available'); assert.equal(vanished.processPartialReason, null); assert.equal(vanished.processVanished, 1);
+  // Windows refuses symlinks without a privilege; that half of the lock is then skipped, and says so.
+  let dangling = true;
+  try { symlinkSync(join(isolated, 'no-such-process'), join(procFixture, '4242')); } catch (error) { if (error?.code !== 'EPERM') throw error; dangling = false; console.log('  (symlink refused on this host; the vanished half of WIR5-07 is not exercised here)'); }
+  if (dangling) {
+    // Only vanished entries: that is not a race, it is the source going away under the scan → unreadable.
+    const sourceLost = await readSnapshot({ process: processCapability }, base);
+    assert.equal(sourceLost.processDiscovery, 'partial'); assert.equal(sourceLost.processPartialReason, 'unreadable'); assert.equal(sourceLost.processVanished, 1);
+  }
+  // 4141 is a live, readable process: with a survivor in the listing, a vanished entry is the ordinary race.
+  mkdirSync(join(procFixture, '4141'), { recursive: true });
+  writeFileSync(join(procFixture, '4141', 'cmdline'), 'sleep\x00600\x00');
+  writeFileSync(join(procFixture, '4141', 'status'), 'Name:\tsleep\nPPid:\t1\n');
+  const survivor = await readSnapshot({ process: processCapability }, base);
+  assert.equal(survivor.processDiscovery, 'available'); assert.equal(survivor.processPartialReason, null); assert.equal(survivor.processVanished, dangling ? 1 : 0);
   // 4343 still exists and its cmdline cannot be read (a directory where a file is expected): that IS a failure.
   mkdirSync(join(procFixture, '4343', 'cmdline'), { recursive: true });
   const unreadable = await readSnapshot({ process: processCapability }, base);
-  assert.equal(unreadable.processDiscovery, 'partial'); assert.equal(unreadable.processPartialReason, 'unreadable process records'); assert.equal(unreadable.processVanished, 1);
+  assert.equal(unreadable.processDiscovery, 'partial'); assert.equal(unreadable.processPartialReason, 'unreadable process records'); assert.equal(unreadable.processVanished, dangling ? 1 : 0);
 });
 
 await test('[Step 5 DoD 1] proc ancestry emits separate Session and linked Card levels', async () => {
