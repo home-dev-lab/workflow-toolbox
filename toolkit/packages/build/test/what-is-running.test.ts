@@ -15,7 +15,7 @@ function runSelftest(filter?: string) {
   return spawnSync(process.execPath, [SELFTEST], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
-    env: filter ? { ...process.env, WT_WIR_SELFTEST_FILTER: filter } : process.env,
+    env: { ...process.env, ...(filter ? { WT_WIR_SELFTEST_FILTER: filter } : {}), NODE_NO_WARNINGS: '1' },
   })
 }
 

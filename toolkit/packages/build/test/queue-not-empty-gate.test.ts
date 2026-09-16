@@ -43,11 +43,18 @@ type Scaffold = {
 function scaffold(tag: string): Scaffold {
   const root = mkRoot(tag)
   const stateDir = join(root, 'queue-gate-state')
+  const configDir = join(root, 'config')
   const procRoot = join(root, 'fake-proc')
   const cwd = join(root, 'project')
   const transcriptPath = join(root, 'transcript.jsonl')
   mkdirSync(cwd, { recursive: true })
   mkdirSync(procRoot)
+  mkdirSync(join(configDir, 'plugins', 'store'), { recursive: true })
+  // The guard journal masks with this installed-store contract. Pin it here so this
+  // output-shape test does not inherit whether the host has a Claude config directory.
+  writeFileSync(join(configDir, 'plugins', 'store', 'wt-secret-guard.json'), JSON.stringify({
+    salt: 'fixture-salt', detections: { entries: [] },
+  }))
   if (spawnSync('git', ['init', '--quiet'], { cwd }).status !== 0) throw new Error('git init failed')
   writeFileSync(transcriptPath, '')
   const env: NodeJS.ProcessEnv = {
@@ -55,6 +62,7 @@ function scaffold(tag: string): Scaffold {
     WT_QUEUE_GATE_DIR: stateDir,
     WT_QUEUE_GATE_PROC_ROOT: procRoot,
     HOME: root,
+    CLAUDE_CONFIG_DIR: configDir,
   }
   const payload = {
     hook_event_name: 'Stop',

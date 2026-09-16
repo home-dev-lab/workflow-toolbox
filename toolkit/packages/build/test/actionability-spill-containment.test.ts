@@ -12,7 +12,7 @@
 // allow-list does not name, created and removed by the test itself.
 
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs'
-import { tmpdir, homedir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -31,7 +31,10 @@ function tempDirInsideAllowedRoot(): string {
 
 /** A directory that is deliberately NOT under tmp, the state root, or <config>/projects. */
 function dirOutsideAllowedRoots(): string {
-  const d = mkdtempSync(join(realpathSync(homedir()), '.wt-spill-outside-'))
+  // A clean CI HOME can itself be under /tmp, which would make this fixture silently
+  // fall inside the temp allow-list. The test's own working directory (the repository) is
+  // never under the temp root and exists on every OS, unlike /var/tmp.
+  const d = mkdtempSync(join(realpathSync(process.cwd()), '.wt-spill-outside-'))
   made.push(d)
   return d
 }
