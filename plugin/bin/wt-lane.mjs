@@ -110,6 +110,16 @@ function briefEvidenceLines(receipt, upper = false) {
   ]
 }
 
+function inspectStartedProcess(inspect, pid, fallback, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs
+  do {
+    const identity = inspect(pid)
+    if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) return identity
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+  } while (Date.now() < deadline)
+  return fallback
+}
+
 function checkGitWorktree(dir) {
   const result = spawnSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
     encoding: 'utf8',
@@ -395,7 +405,7 @@ async function main() {
       const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
-      const identity = consentModules.inspectProcess(child.pid) ?? { argv: [process.execPath, ...workerArgs], startTime: null }
+      const identity = inspectStartedProcess(consentModules.inspectProcess, child.pid, { argv: [process.execPath, ...workerArgs], startTime: null })
       const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
       try {
         writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: null, childArgv: null, childStartTime: null, worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
@@ -453,8 +463,8 @@ async function main() {
   const decisionFile = statePaths.decision
   const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const journal = (event) => { try { consentModules.appendSupervisorJournal(dataDir, event) } catch { /* supervision must remain bounded when its audit sink is unavailable */ } }
-  const childIdentity = consentModules.inspectProcess(child.pid) ?? { argv: ['opencode', ...args], cwd: opts.dir, startTime: null }
-  const workerIdentity = consentModules.inspectProcess(process.pid) ?? { argv: process.argv, startTime: null }
+  const childIdentity = inspectStartedProcess(consentModules.inspectProcess, child.pid, { argv: ['opencode', ...args], cwd: opts.dir, startTime: null })
+  const workerIdentity = inspectStartedProcess(consentModules.inspectProcess, process.pid, { argv: process.argv, startTime: null })
   const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity.argv, workerStartTime: workerIdentity.startTime, childPid: child.pid, childArgv: childIdentity.argv, childStartTime: childIdentity.startTime, worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
   let currentState = baseState
   const writeState = (extra) => {
