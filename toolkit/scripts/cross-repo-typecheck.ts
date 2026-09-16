@@ -11,6 +11,10 @@ const SOURCE_EXTENSIONS = /\.(?:cts|mts|tsx?|svelte)$/
 const TYPESCRIPT_EXTENSIONS = /\.(?:cts|mts|tsx?)$/
 const SKIP_DIRS = new Set(['.git', '.svelte-kit', 'build', 'coverage', 'dist', 'node_modules'])
 
+function displayPath(filePath: string): string {
+  return filePath.replaceAll('\\', '/')
+}
+
 export interface CrossRepoGateOptions {
   cwd?: string
   env?: Record<string, string | undefined>
@@ -77,7 +81,7 @@ function formatDiagnostic(diagnostic: ts.Diagnostic, consumerRoot: string): stri
   const message = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n')
   if (diagnostic.file === undefined || diagnostic.start === undefined) return message
   const position = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start)
-  return `${relative(consumerRoot, diagnostic.file.fileName)}:${position.line + 1}:${position.character + 1}: ${message}`
+  return `${displayPath(relative(consumerRoot, diagnostic.file.fileName))}:${position.line + 1}:${position.character + 1}: ${message}`
 }
 
 function commonAncestor(a: string, b: string): string {
@@ -131,7 +135,7 @@ function checkSvelteSurface(
       }
       const packages = [...new Set(files.flatMap((file) => importedLinkedPackages(readFileSync(file, 'utf8'), new Set(Object.keys(paths).map((name) => name.split('/').slice(0, 2).join('/'))))))].sort()
       for (const file of files) {
-        log(`cross-repo gate: TYPE ERROR: package ${packages.join(', ')}; consumer ${relative(consumerRoot, file)}`)
+        log(`cross-repo gate: TYPE ERROR: package ${packages.join(', ')}; consumer ${displayPath(relative(consumerRoot, file))}`)
       }
       for (const line of checkerOutput.trim().split('\n')) log(`cross-repo gate: ${line}`)
       return 2
@@ -230,7 +234,7 @@ export function runCrossRepoTypecheck(options: CrossRepoGateOptions = {}): numbe
           ? undefined
           : packageNames.find((name) => diagnostic.file?.fileName.startsWith(join(toolkitRoot, 'packages', name.slice('@workflow-toolbox/'.length))))
         const namedPackages = directPackages.length > 0 ? directPackages : producerPackage === undefined ? packages : [producerPackage]
-        log(`cross-repo gate: TYPE ERROR: package ${namedPackages.join(', ')}; consumer ${consumerFile}`)
+        log(`cross-repo gate: TYPE ERROR: package ${namedPackages.join(', ')}; consumer ${displayPath(consumerFile)}`)
         log(`cross-repo gate: ${formatDiagnostic(diagnostic, consumerRoot)}`)
       }
       return 2

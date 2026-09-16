@@ -271,11 +271,12 @@ describe('label-intent-lens — CLI exit code gate', () => {
       'utf8',
     )
 
-    const badRun = spawnSync('pnpm', ['exec', 'tsx', script, bad], {
+    const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+    const badRun = spawnSync(pnpm, ['exec', 'tsx', script, bad], {
       cwd: fileURLToPath(new URL('../../', import.meta.url)),
       encoding: 'utf8',
     })
-    const goodRun = spawnSync('pnpm', ['exec', 'tsx', script, good], {
+    const goodRun = spawnSync(pnpm, ['exec', 'tsx', script, good], {
       cwd: fileURLToPath(new URL('../../', import.meta.url)),
       encoding: 'utf8',
     })

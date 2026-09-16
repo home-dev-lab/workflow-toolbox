@@ -88,6 +88,10 @@ const CLAUSE_START_RES = [
   /<!--\s*embedded-copy:([A-Za-z0-9._/-]+):start\s*-->/g,
 ]
 
+function portablePath(filePath: string): string {
+  return filePath.replaceAll('\\', '/')
+}
+
 /**
  * Citation markers make declared copies checkable; they do NOT make undeclared
  * copies discoverable. An unmarked paraphrase stays invisible, which is why the
@@ -112,7 +116,7 @@ export function checkCitationMarkers(rootDir: string, trees: string[]): Citation
     const content = readFileSync(absPath, 'utf8')
     for (const match of content.matchAll(CITE_RE)) {
       citations.push({
-        citedFile: relative(rootDir, absPath),
+        citedFile: portablePath(relative(rootDir, absPath)),
         sourceFile: match[1],
         clauseId: match[2],
         expectedSha256: match[3],
@@ -172,7 +176,7 @@ export function checkCitationMarkers(rootDir: string, trees: string[]): Citation
 
   return {
     scannedTrees: [...trees],
-    scannedFiles: scannedFiles.map((absPath) => relative(rootDir, absPath)),
+    scannedFiles: scannedFiles.map((absPath) => portablePath(relative(rootDir, absPath))),
     citations,
     findings,
   }
