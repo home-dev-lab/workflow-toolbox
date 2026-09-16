@@ -10,6 +10,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   a labelled, dependent, provenance-bearing card from `--board-contract`, records it in lifecycle
   receipts, enforces named-card report grammar, handles one-round scope contests, and mechanically
   surfaces routed cards in pilot and orchestrator reports.
+- Claude executor Bash permissions now reject explicit parent-directory operands such as `cd ..` and
+  interpreter `resolve('..', ...)` calls as defense in depth. A real-SDK regression fixture locks the
+  SDK sandbox as the filesystem confinement boundary for paths computed beyond lexical inspection.
 - SDK pilot runs now record a lifecycle partial, publish the standard external archive, and finalize
   summary, usage, transcript, and cost receipts after runner timeouts, repeated no-progress turns,
   or initialized SDK stream failures. Interrupted lifecycle relaunches refuse with one complete reset
