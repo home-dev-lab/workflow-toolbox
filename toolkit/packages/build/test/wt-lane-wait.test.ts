@@ -10,9 +10,15 @@ import { inspectProcess } from '../../../../plugin/bin/lib/lane-supervisor-core.
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const WAITER = join(ROOT, 'plugin/bin/wt-lane-wait.mjs')
 const roots: string[] = []
+const workers: ReturnType<typeof spawn>[] = []
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const worker of workers.splice(0)) {
+    if (worker.exitCode !== null) continue
+    if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(worker.pid), '/t', '/f'])
+    else try { process.kill(-worker.pid!, 'SIGKILL') } catch { /* fixture may already be gone */ }
+  }
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 function fixture(script: string) {
@@ -22,6 +28,7 @@ function fixture(script: string) {
   mkdirSync(lane)
   writeFileSync(join(lane, 'run.log'), '')
   const worker = spawn('sh', ['-c', script], { cwd: root, detached: true, stdio: 'ignore' })
+  workers.push(worker)
   worker.unref()
   writeFileSync(join(lane, 'pid'), String(worker.pid))
   const runId = `${worker.pid}-1`
@@ -58,7 +65,10 @@ describe('wt-lane-wait', () => {
     const f = fixture('sleep 30')
     const result = run(f.root, '--timeout', '0.08')
     expect(result.status).toBe(124)
-    try { process.kill(-f.pid, 'SIGTERM') } catch { /* fixture may already be gone */ }
+    try {
+      if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(f.pid), '/t', '/f'])
+      else process.kill(-f.pid, 'SIGTERM')
+    } catch { /* fixture may already be gone */ }
   })
 
   it('reports a dead lane without inventing an exit code', () => {
