@@ -86,6 +86,29 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
       return call('move_card', { cardId: String(id), listId: target.id })
     },
     async addComment(id, text) { return call('add_comment', { cardId: String(id), text }) },
+    async createRoutedCard({ boardContract, originCardId, sessionTag, timestamp, title, l4Reason, risk, effort, type }) {
+      // The Planka MCP `create_card` schema is closed (listId, name, description, dependsOn, dueDate, position):
+      // labels are NOT create_card fields — an unknown field is refused by the server. The four labels the board
+      // rules require (priority, type, effort, category) are therefore added one call each, after creation.
+      const created = await call('create_card', {
+        listId: boardContract.listId,
+        name: title,
+        description: `## Provenance\nOrigin card: ${originCardId}; run/session: ${sessionTag}; L4 reason: ${l4Reason}; timestamp: ${timestamp}`,
+        dependsOn: { cardId: String(originCardId) },
+      })
+      const cardId = String(created?.id ?? created?.card?.id ?? '')
+      if (!cardId) throw new BoardUnavailable('create_card returned no card id')
+      for (const labelId of [boardContract.labels.priority[risk], boardContract.labels.type[type], boardContract.labels.effort[effort], boardContract.labels.category]) {
+        await call('add_label_to_card', { cardId, labelId: String(labelId) })
+      }
+      return created
+    },
+    async resolveRoutedCard(card) {
+      await call('add_comment', { cardId: String(card.id), text: 'Closed by the originating pilot run: the contested item was completed in scope.' })
+      const target = (await lists()).find((item) => item.name === 'NotDoing')
+      if (!target) throw new BoardUnavailable(`no list named NotDoing on board ${boardId}`)
+      return call('move_card', { cardId: String(card.id), listId: target.id })
+    },
     async listNames() { return (await lists()).map((item) => item.name) },
     async listNameOf(listId) { return (await lists()).find((item) => item.id === String(listId))?.name ?? null },
   }

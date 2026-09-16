@@ -13,7 +13,7 @@ import { createWaveServer } from '../../../../plugin/bin/lib/wave-lifecycle-serv
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSdkJudge, waveCanUseTool } from '../../../../plugin/bin/lib/orchestrator-judge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { parseOrchestratorArgs, runOrchestrator } from '../../../../plugin/bin/lib/orchestrator-runner-core.mjs'
+import { parseOrchestratorArgs, reviewBase, runOrchestrator } from '../../../../plugin/bin/lib/orchestrator-runner-core.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-run-orchestrator.mjs')
@@ -73,6 +73,31 @@ function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: 
 }
 
 describe('orchestrator board HTTP client', () => {
+  it('creates a routed card with the real Planka MCP shape: a closed-schema create_card, then one add_label_to_card per required label', async () => {
+    const calls: Array<Record<string, unknown>> = []
+    const fetch = async (_url: string, options: { body: string }) => {
+      const body = JSON.parse(options.body); calls.push(body)
+      const result = body.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify({ id: '42' }) }] } : {}
+      return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
+    }
+    const client = createBoardClient({ url: 'http://board', boardId: 'board', fetch })
+    const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'project' } }
+    await client.createRoutedCard({ boardContract, originCardId: '1', sessionTag: 'run-1', timestamp: '2026-09-16T10:00:00.000Z', title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })
+    const toolsCalls = calls.filter((call) => call.method === 'tools/call') as Array<{ params: { name: string, arguments: Record<string, unknown> } }>
+    // The Planka MCP create_card schema is CLOSED (listId, name, description, dependsOn, dueDate, position): the server
+    // refuses unknown fields, so labels travel as separate add_label_to_card calls — this lock pins the real wire shape.
+    expect(toolsCalls).toHaveLength(5)
+    expect(toolsCalls[0]).toMatchObject({ params: { name: 'create_card', arguments: { listId: 'backlog', name: 'Follow up', dependsOn: { cardId: '1' } } } })
+    expect(Object.keys(toolsCalls[0]!.params.arguments).sort()).toEqual(['dependsOn', 'description', 'listId', 'name'])
+    expect(toolsCalls[0]!.params.arguments.description).toContain('## Provenance\nOrigin card: 1; run/session: run-1; L4 reason: different subsystem; timestamp: 2026-09-16T10:00:00.000Z')
+    expect(toolsCalls.slice(1).map((call) => call.params)).toEqual([
+      { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'p1' } },
+      { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'chore' } },
+      { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'm' } },
+      { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'project' } },
+    ])
+  })
+
   it('O1-6 lock: sends notifications/initialized before the first tools/call', async () => {
     const offsets: number[] = []
     let notified = false
@@ -159,6 +184,37 @@ describe('orchestrator driver', () => {
     expect(f.gitCalls.flat().some((arg) => ['merge', 'push', 'branch -D'].includes(arg))).toBe(false)
   }, 60_000)
 
+  it('freezes each card base SHA when its worktree is added even if the base branch advances', async () => {
+    const f = repoFixture()
+    const originalBase = execFileSync('git', ['rev-parse', 'develop'], { cwd: f.root, encoding: 'utf8' }).trim()
+    const git = (program: string, args: string[], options: Record<string, unknown>) => {
+      const result = f.git(program, args, options)
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        writeFileSync(join(f.root, 'advanced-after-worktree.txt'), 'not part of the card\n')
+        execFileSync('git', ['add', 'advanced-after-worktree.txt'], { cwd: f.root })
+        execFileSync('git', ['commit', '-qm', 'advance develop'], { cwd: f.root })
+      }
+      return result
+    }
+    const fidelity = async ({ cardDir, base }: { cardDir: string, base: string }) => {
+      mkdirSync(join(cardDir, 'fidelity'), { recursive: true })
+      writeFileSync(join(cardDir, 'fidelity', 'fidelity-manifest.json'), JSON.stringify({ base }))
+      writeFileSync(join(cardDir, 'fidelity-verify.log'), 'EXIT=0\n')
+      return 0
+    }
+
+    const result = await runOrchestrator(f.options, { ...f, git, fidelity })
+
+    expect(result.rows[0].base).toBe(originalBase)
+    expect(readFileSync(join(result.waveDir, 'cards/1/diff.patch'), 'utf8')).not.toContain('advanced-after-worktree.txt')
+    expect(JSON.parse(readFileSync(join(result.waveDir, 'cards/1/fidelity/fidelity-manifest.json'), 'utf8')).base).toBe(originalBase)
+    expect(readFileSync(f.report, 'utf8')).toContain(`base=${originalBase}; baseRef=develop`)
+  })
+
+  it('refuses an older per-card record with no frozen base at review', () => {
+    expect(() => reviewBase({ id: '1' })).toThrow('orchestrator review refused: card 1 missing field base')
+  })
+
   it('refuses each card with no DoD criterion before moving it or starting its pilot', async () => {
     const f = repoFixture([{ id: '1', listName: 'Next', description: 'Route: LITE\n## Notes\n- no acceptance here\n' }])
     const result = await runOrchestrator(f.options, f)
@@ -172,6 +228,17 @@ describe('orchestrator driver', () => {
     expect(readFileSync(join(receiptDir, 'pilot.log'), 'utf8')).toBe('EXIT=0\n')
     expect(result.rows[0].receiptDir).toBe(receiptDir)
     expect(readFileSync(f.report, 'utf8')).toContain(`| ${receiptDir} |`)
+  })
+
+  it('lists each pilot lifecycle routed card mechanically in a static wave report', async () => {
+    const f = repoFixture()
+    const runPilot = async (...args: Parameters<typeof f.runPilot>) => {
+      const result = await f.runPilot(...args)
+      writeFileSync(join(args[0].dir, '.lane', 'lifecycle.json'), JSON.stringify({ routed_cards: [{ id: '42', title: 'Follow up', l4Reason: 'different subsystem' }] }))
+      return result
+    }
+    await runOrchestrator(f.options, { ...f, runPilot })
+    expect(readFileSync(f.report, 'utf8')).toContain('## Routed cards\n- origin card 1: card 42 — Follow up — different subsystem')
   })
 
   it('O1-3 lock: rejects a malformed board card id before deriving any path', async () => {
@@ -298,9 +365,11 @@ describe('orchestrator driver', () => {
     if (guard.startsWith('dirty')) expect(readFileSync(join(result.waveDir, 'cards/1/clean-tree.log'), 'utf8')).toContain('EXIT=1')
   })
 
-  it('uses archived gate EXIT lines and mechanically escalates every nonzero pilot outcome', async () => {
-    const f = repoFixture(); const runPilot = async (...args: Parameters<typeof f.runPilot>) => ({ ...(await f.runPilot(...args)), exitCode: 2 }); const gates = async (worktree: string, cardDir: string) => { await f.gates(worktree, cardDir); writeFileSync(join(cardDir, 'test.log'), 'EXIT=1\n'); return { typecheck: 0, lint: 0, test: 0 } }; const judge = async ({ row }: { row: { decision: string } }) => { row.decision = 'rejected' }
-    const result = await runOrchestrator(f.options, { ...f, runPilot, gates, judge }); expect(result.rows[0]).toMatchObject({ pilot: 2, gates: '0/0/1', decision: 'escalated', reason: 'pilot EXIT=2 requires escalate' })
+  it('uses archived gate EXIT lines and records pilot exit 2 as partial, never accepted', async () => {
+    const f = repoFixture(); const runPilot = async (...args: Parameters<typeof f.runPilot>) => ({ ...(await f.runPilot(...args)), exitCode: 2, summary: { partial: { phase: 'report', reason: 'delivered partially: 1 unmet criteria', findings: ['ship'] } } }); const gates = async (worktree: string, cardDir: string) => { await f.gates(worktree, cardDir); writeFileSync(join(cardDir, 'test.log'), 'EXIT=1\n'); return { typecheck: 0, lint: 0, test: 0 } }; const judge = async ({ row }: { row: { decision: string, reason?: string } }) => { row.decision = 'accepted'; row.reason = 'judge tried to accept' }
+    const result = await runOrchestrator(f.options, { ...f, runPilot, gates, judge })
+    expect(result.rows[0]).toMatchObject({ pilot: 2, gates: '0/0/1', decision: 'partial', reason: 'pilot EXIT=2: delivered partially: 1 unmet criteria; unmet: ship' })
+    expect(readFileSync(f.report, 'utf8')).toContain('delivered partially: 1 unmet criteria; unmet: ship')
   })
 
   it('overlaps two pilots at concurrency 2 but judges and reports in card order', async () => {

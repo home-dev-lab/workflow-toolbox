@@ -20,8 +20,10 @@ not alter `pilot-wave`, adoption, or its behavior.
 ## Prepare
 
 Create a dedicated Git worktree for the card. Write the complete tracker card to a regular card file;
-the runner derives its LITE/FULL route from those exact bytes. Ensure `.lane/` and
-`.claude/reports/` are ignored. Resolve the optional knowledge-base index explicitly when known;
+the runner derives its LITE/FULL route from those exact bytes. Ensure `.lane/` is ignored in the
+worktree. The run's archive lands OUTSIDE the worktree, under `<archive root>/.claude/reports/`, so it
+survives `git worktree remove`: pass `--archive-root <project root>` (its `.claude/reports/` must be
+ignored there), or let the runner default to the main checkout that owns the worktree. Resolve the optional knowledge-base index explicitly when known;
 otherwise the runner checks `WT_KNOWLEDGE_BASE_INDEX`, then the project-derived Claude memory path.
 
 ## Launch detached

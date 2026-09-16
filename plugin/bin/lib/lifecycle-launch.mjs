@@ -77,6 +77,12 @@ export function createLifecycleLaunch({
   const evidencePath = path.join(laneDir, 'evidence.json')
   const attestations = new Map()
 
+  const controlRemedy = (token) => `pilot: run { kind: 'control', decision: 'abandon' } or run { kind: 'control', decision: 'extend' }; human: extend with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision extend --owner-token ${shellQuote(token)}, or abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision abandon --owner-token ${shellQuote(token)}`
+  const timeoutResult = (phase, detail, token) => {
+    state.pendingControl = { phase, token }
+    return `lane ${phase} TIMEOUT: ${detail}; ${controlRemedy(token)}; after abandon completes, re-run this lifecycle lane phase to launch a fresh owner-bound lane and brief`
+  }
+
   function audit() {
     assertLaneDir()
     writeRegularFile(
@@ -264,8 +270,6 @@ export function createLifecycleLaunch({
             }
           }
           let parsed = null
-          const ownerControl = `extend with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision extend --owner-token ${shellQuote(nonce)}, or abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision abandon --owner-token ${shellQuote(nonce)}`
-          const rerun = 'after abandon completes, re-run this lifecycle lane phase to launch a fresh owner-bound lane and brief'
           try {
             parsed = JSON.parse(status)
             let verdict = classifyLane(parsed, { platform: lanePlatform })
@@ -288,32 +292,32 @@ export function createLifecycleLaunch({
             }
             verdict = classifyLane(parsed, { platform: lanePlatform })
             if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'decision-needed') {
-              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; ${ownerControl}; ${rerun}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
+              const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
               snapshot = null
-              return `lane ${phase} TIMEOUT: ${detail}`
+              return timeoutResult(phase, detail, nonce)
             }
             if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'running') {
               snapshot = null
-              return `lane ${phase} TIMEOUT: owner=${parsed.owner}; live worker is still completing its bounded timeout transition; ${ownerControl}; ${rerun}; wait for the decision point before choosing; no process was killed`
+              return timeoutResult(phase, `owner=${parsed.owner}; live worker is still completing its bounded timeout transition; wait for the decision point before choosing; no process was killed`, nonce)
             }
             if (!logEntry && verdict.status === 'worker-gone-child-alive') {
               snapshot = null
-              return `lane ${phase} TIMEOUT: worker-gone-child-alive; surviving child pid=${parsed.childPid}; ${ownerControl}; ${rerun}; no process was killed`
+              return timeoutResult(phase, `worker-gone-child-alive; surviving child pid=${parsed.childPid}; no process was killed`, nonce)
             }
             if (!logEntry && verdict.status === 'unknown') {
               snapshot = null
-              return `lane ${phase} TIMEOUT: unknown liveness (${verdict.reason}); ${ownerControl}; ${rerun}; no process was killed`
+              return timeoutResult(phase, `unknown liveness (${verdict.reason}); no process was killed`, nonce)
             }
             if (!logEntry && verdict.status === 'gone') return `lane ${phase} EXIT=missing`
             if (!logEntry && verdict.status === 'terminal') return `lane ${phase} TERMINAL receipt=missing`
             if (!logEntry) {
               snapshot = null
-              return `lane ${phase} TIMEOUT: ${verdict.status}; ${ownerControl}; ${rerun}; no process was killed`
+              return timeoutResult(phase, `${verdict.status}; no process was killed`, nonce)
             }
           } catch {}
           if (!logEntry) {
             snapshot = null
-            return `lane ${phase} TIMEOUT: unknown liveness; ${ownerControl}; ${rerun}; no process was killed`
+            return timeoutResult(phase, 'unknown liveness; no process was killed', nonce)
           }
         }
         if (logEntry) {
@@ -329,9 +333,8 @@ export function createLifecycleLaunch({
               verdict = classifyLane(record, { platform: lanePlatform })
             }
             if (!['terminal', 'gone'].includes(verdict.status)) {
-              const ownerControl = `abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(root)} --decision abandon --owner-token ${shellQuote(nonce)}`
               snapshot = null
-              return `lane ${phase} TIMEOUT: receipt arrived while liveness is ${verdict.status}; ${ownerControl}; no process was killed`
+              return timeoutResult(phase, `receipt arrived while liveness is ${verdict.status}; no process was killed`, nonce)
             }
           }
         }
@@ -396,6 +399,21 @@ export function createLifecycleLaunch({
       attest(log, { tree: treeSignature(root) })
       return `gate ${args.name} EXIT=${code}`
     }
+    if (args.kind === 'control') {
+      if (!['abandon', 'extend'].includes(args.decision)) return refusal(`${state.phase}->next`, 'control decision abandon|extend', laneDir)
+      const pending = state.pendingControl
+      if (!pending || pending.phase !== state.phase) return refusal(`${state.phase}->next`, 'timed-out lane owned by this lifecycle', laneDir)
+      const command = ['--dir', root, '--decision', args.decision, '--owner-token', pending.token]
+      if (args.decision === 'extend' && args.extendSeconds !== undefined) command.push('--extend', String(args.extendSeconds))
+      try {
+        const output = execFileSync(process.execPath, [CONTROL, ...command], { cwd: root, encoding: 'utf8' })
+        state.pendingControl = null
+        return `control ${args.decision} accepted: ${output.trim()}`
+      } catch (error) {
+        const detail = error?.stderr?.toString().trim() || (error instanceof Error ? error.message : String(error))
+        return refusal(`${state.phase}->next`, `control ${args.decision} (${detail})`, laneDir)
+      }
+    }
     if (args.kind === 'inspect') {
       const allowed = [...gates]
         .map((name) => `${name}.log`)
@@ -415,7 +433,7 @@ export function createLifecycleLaunch({
         { cwd: root, encoding: 'utf8' },
       )
     }
-    return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect', laneDir)
+    return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect|control', laneDir)
   }
 
   return { audit, evidencePath, laneEvidence, run, snapshotEvidence, verifySnapshot }

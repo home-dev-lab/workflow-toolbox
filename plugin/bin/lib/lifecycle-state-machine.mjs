@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
-import { completeLifecycleReport } from './lifecycle-report-edge.mjs'
+import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
@@ -138,10 +138,40 @@ const planAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
 const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
   content,
   dodBullets,
-  (line) => /^Outcome:\s*(?:proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?|not done:\s*\S.*|deferred:\s*\S.*)\s*$/i.test(line),
-  '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`',
+  (line) => /^Outcome:\s*(?:proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?|not done:\s*\S.*|deferred:\s*card\s+\S+\s+[—–-]\s+\S.*)\s*$/i.test(line),
+  '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`',
   '`Outcome: proven by tests/unit.test.ts`',
 )
+function reportDeliveryUnmet(content, dodBullets) {
+  const entries = acceptanceEntries(content)
+  const used = new Map()
+  const unmet = []
+  for (const bullet of dodBullets ?? []) {
+    const index = used.get(bullet) ?? 0
+    const lines = entries.get(bullet)?.[index] ?? []
+    used.set(bullet, index + 1)
+    const outcomes = lines.filter((line) => /^Outcome:/i.test(line))
+    if (!outcomes.every((line) => /^Outcome:\s*proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?\s*$/i.test(line))) unmet.push(bullet)
+  }
+  const e2e = /(?:^|\n)## E2E\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)?.[1].trim() ?? ''
+  if (/^e2e not run: \S[^\r\n]*$/i.test(e2e)) unmet.push(`E2E: ${e2e}`)
+  return unmet
+}
+function deferredOutcomeProblem(content, routedCards) {
+  for (const line of content.split(/\r?\n/)) {
+    if (!/^\s*(?:[-*+]\s+)?(?:Outcome|Status):\s*deferred:/i.test(line)) continue
+    const match = /^\s*(?:[-*+]\s+)?(?:Outcome|Status):\s*deferred:\s*card\s+([^\s]+)\s+[—–-]\s+(\S.*)\s*$/i.exec(line)
+    if (!match) return 'deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`'
+    if (!routedCards.some((card) => card.id === match[1])) return `deferred outcome card ${match[1]} is not in lifecycle routed_cards`
+  }
+  return null
+}
+function withRoutedCardsSection(content, cards) {
+  const without = content.replace(/(?:^|\n)## Routed cards\s*\r?\n[\s\S]*?(?=\r?\n## |$)/i, '').replace(/\s*$/, '')
+  if (cards.length === 0) return `${without}\n`
+  const rows = cards.map((card) => `- card ${card.id} — ${card.title} — ${card.l4Reason}${card.contested ? ` — critic position: in scope; pilot position: maintains L4 (${card.l4Reason}); order-giver decides` : ''}`)
+  return `${without}\n\n## Routed cards\n${rows.join('\n')}\n`
+}
 function planCoverageCitationResult(content, root) {
   const sentences = []
   let fenced = false
@@ -247,6 +277,7 @@ function verdictFromReport(phase, content) {
 
 export function createLifecycleStateMachine({
   worktree,
+  archiveRoot,
   route,
   reasons = [],
   executor = 'gpt-lane',
@@ -269,6 +300,9 @@ export function createLifecycleStateMachine({
   cardText = null,
   now = () => Date.now(),
   timelineWriter = null,
+  boardContract = null,
+  routeFinding = null,
+  resolveRoutedFinding = null,
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
@@ -293,31 +327,43 @@ export function createLifecycleStateMachine({
   }
   function assertLaneDir(archive = false) {
     const required = [laneDir]
-    if (archive) required.push(path.join(root, '.claude'), path.join(root, '.claude', 'reports'))
+    if (archive) {
+      if (typeof archiveRoot !== 'string' || !path.isAbsolute(archiveRoot)) throw new Error('lifecycle archiveRoot must be an absolute path')
+      fs.mkdirSync(path.join(archiveRoot, '.claude', 'reports'), { recursive: true })
+      required.push(archiveRoot, path.join(archiveRoot, '.claude'), path.join(archiveRoot, '.claude', 'reports'))
+    }
     for (const directory of required) {
       let stat
       try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
-      if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory || path.relative(root, directory).startsWith('..')) {
+      const expectedRoot = directory === laneDir ? root : archiveRoot
+      if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory || path.relative(expectedRoot, directory).startsWith('..')) {
         throw new Error(`lane directory replaced: ${directory}`)
+      }
+    }
+    if (archive) {
+      try {
+        execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], { cwd: archiveRoot, stdio: 'ignore' })
+      } catch {
+        throw new Error('lifecycle archiveRoot .claude/reports must be git-ignored')
       }
     }
   }
   assertLaneDir()
+  // Preflight, before any phase runs: a misconfigured archive root must fail here, not after hours of work.
+  assertArchiveOutsideWorktree({ root, archiveRoot })
+  assertLaneDir(true)
+  const routePath = path.join(laneDir, 'route.json')
+  if (fs.existsSync(routePath)) {
+    // The interrupted run's .lane is the ONLY evidence a crash left (no process ran the archive), so the remedy
+    // moves it aside as a sibling — never deletes it — and recreates an empty .lane for the relaunch.
+    const resetScript = "const fs=require('node:fs'),p=process.argv[1],k=p+'.interrupted-'+new Date().toISOString().replace(/[:.]/g,'-');fs.renameSync(p,k);fs.mkdirSync(p,{recursive:true});console.log('interrupted lifecycle kept at '+k)"
+    throw new Error(`lifecycle startup refused: ${routePath} belongs to an interrupted lifecycle; keep its evidence aside and relaunch on a fresh .lane: node -e ${JSON.stringify(resetScript)} ${JSON.stringify(laneDir)}`)
+  }
   if (typeof cardText === 'string') {
     const cardPath = path.join(laneDir, 'card.md')
     const existingCard = readRegularFile(cardPath)
     if (existingCard === null) writeRegularFile(cardPath, cardText, { flag: 'wx' })
     else if (existingCard !== cardText) throw new Error(`lifecycle card snapshot ${JSON.stringify(existingCard)} differs from runner card text ${JSON.stringify(cardText)}; remove ${cardPath} to restart the lifecycle on the new card`)
-  }
-  fs.mkdirSync(path.join(root, '.claude', 'reports'), { recursive: true })
-  assertLaneDir(true)
-  try {
-    execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], {
-      cwd: root,
-      stdio: 'ignore',
-    })
-  } catch {
-    throw new Error('lifecycle .claude/reports must be git-ignored')
   }
   const frozenRoute = String(route)
   const frozenModels = Object.freeze(models.code
@@ -334,7 +380,7 @@ export function createLifecycleStateMachine({
   const { createSdkMcpServer, tool } = sdk ?? require('@anthropic-ai/claude-agent-sdk')
   const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
   writeRegularFile(
-    path.join(laneDir, 'route.json'),
+    routePath,
     `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, models: frozenModels, base: constructionBase }, null, 2)}\n`,
     { flag: 'wx' },
   )
@@ -349,11 +395,13 @@ export function createLifecycleStateMachine({
     handled: new Map(),
     lastLaneMtime: 0,
     verifySnapshot: null,
+    pendingControl: null,
+    resolvedRoutedCards: new Set(),
     report: { stage: 'idle', base: null, head: null, tree: null },
   }
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
-  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [] }
+  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? ((file, content) => {
     const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
     try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { fs.rmSync(temporary, { force: true }) }
@@ -462,6 +510,35 @@ export function createLifecycleStateMachine({
       persistTimeline()
     },
   })
+  function finalizePartial(reason) {
+    if (state.phase === 'awaiting_fidelity') return JSON.parse(readRegularFile(path.join(laneDir, 'summary.json')) ?? '{}')
+    state.partial = { phase: state.phase, reason, findings: [] }
+    const endedAt = now()
+    timeline.phases.at(-1).exited_at ??= endedAt
+    timeline.ended_at = endedAt
+    persistTimeline()
+    audit()
+    let head = constructionBase
+    try { head = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() } catch {}
+    return archiveLifecycle({
+      root,
+      archiveRoot,
+      laneDir,
+      cardId,
+      route: frozenRoute,
+      head,
+      phases: [...state.handled.values()].map((item) => item.result).concat(`partial: ${reason}`),
+      evidence: sha256(readRegularFile(evidencePath) ?? ''),
+      partial: state.partial,
+      implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' },
+      routedCards: timeline.routed_cards,
+      assertDirectories: () => assertLaneDir(true),
+      copy,
+      git,
+      sha256,
+      writeRegularFile,
+    })
+  }
   function transition(event) {
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!event || typeof event !== 'object' || !PHASES.includes(event.phase)) {
@@ -499,6 +576,8 @@ export function createLifecycleStateMachine({
       const planContent = readRegularFile(plan)
       if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
         return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
+      const deferredProblem = deferredOutcomeProblem(planContent, timeline.routed_cards)
+      if (deferredProblem) return refusal('plan->critic', deferredProblem, plan)
       if (dodBullets !== undefined) {
         const acceptanceProblem = planAcceptanceProblem(planContent, dodBullets)
         if (acceptanceProblem) return refusal('plan->critic', acceptanceProblem, plan)
@@ -520,9 +599,30 @@ export function createLifecycleStateMachine({
       if (event.findings && JSON.stringify(event.findings) !== JSON.stringify(verdict.findings)) {
         return refusal('critic->next', 'findings do not match the lane report', report)
       }
-      const allNonBlocking = verdict.outcome === 'changes-requested' && verdict.severities.every((severity) => severity === 'non-blocking')
+      const contestedThisRound = new Set()
+      const repeatedContests = new Set()
+      for (const finding of verdict.findings) {
+        const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(finding)?.[1]
+        if (!id) continue
+        const routed = timeline.routed_cards.find((card) => card.id === id)
+        if (!routed) return refusal('critic->next', `contest names routed card ${id}`, report)
+        if (routed.contested) repeatedContests.add(id)
+        else contestedThisRound.add(id)
+      }
+      const effectiveSeverities = verdict.severities.filter((_severity, index) => {
+        const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(verdict.findings[index])?.[1]
+        return !id || !repeatedContests.has(id)
+      })
+      if (repeatedContests.size > 0 && !/(?:^|\s)(?:\.?\.?[/\\])?[A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)*:\d+(?:-\d+)?\b/.test(laneBriefContexts.get('critic') ?? '')) {
+        return refusal('critic->next', 'pilot citation supporting maintained L4 reason', path.join(laneDir, 'critic-brief.md'))
+      }
+      const allNonBlocking = verdict.outcome === 'changes-requested' && effectiveSeverities.every((severity) => severity === 'non-blocking')
       const receipt = laneEvidence('critic', verdict.outcome === 'changes-requested' && !allNonBlocking)
       if (receipt) return receipt
+      if (contestedThisRound.size > 0) {
+        for (const id of contestedThisRound) timeline.routed_cards.find((card) => card.id === id).contested = true
+        persistTimeline()
+      }
       const newNonBlockingFindings = verdict.findings.filter((_finding, index) => verdict.severities[index] === 'non-blocking')
       for (const finding of newNonBlockingFindings) {
         if (!state.nonBlockingFindings.includes(finding)) state.nonBlockingFindings.push(finding)
@@ -621,10 +721,17 @@ export function createLifecycleStateMachine({
       }
       const reportProblem = pilotReportProblem(pilotReport, true)
       if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
+      const unmet = reportDeliveryUnmet(pilotReport, dodBullets)
+      if (unmet.length > 0 && !state.partial) {
+        state.partial = { phase: 'report', round: null, reason: `delivered partially: ${unmet.length} unmet criteria`, findings: unmet }
+        const partialProblem = pilotReportProblem(pilotReport, true)
+        if (partialProblem) return refusal('report->awaiting_fidelity', partialProblem, pilotReportPath)
+      }
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
       const reportReceipt = completeLifecycleReport({
         root,
+        archiveRoot,
         laneDir,
         cardId,
         sessionTag,
@@ -633,6 +740,7 @@ export function createLifecycleStateMachine({
         evidencePath,
         phases: [...state.handled.values()].map((item) => item.result).concat(AWAITING_FIDELITY_RESULT),
         implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' },
+        routedCards: timeline.routed_cards,
         assertDirectories: () => assertLaneDir(true),
         copy,
         git,
@@ -688,6 +796,15 @@ export function createLifecycleStateMachine({
     if (kind === 'pilot-report') {
       const problem = pilotReportProblem(content)
       if (problem) return problem
+      if (typeof resolveRoutedFinding === 'function') {
+        for (const card of timeline.routed_cards.filter((item) => item.contested && !new RegExp(`Outcome:\\s*deferred:\\s*card\\s+${item.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(content))) {
+          if (!state.resolvedRoutedCards.has(card.id)) {
+            await resolveRoutedFinding(card)
+            state.resolvedRoutedCards.add(card.id)
+          }
+        }
+      }
+      content = withRoutedCardsSection(content, timeline.routed_cards)
     }
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let laneContext = content
@@ -725,6 +842,8 @@ export function createLifecycleStateMachine({
     if (!partialLine && lines.some((line) => line.startsWith('Partial:'))) {
       return 'pilot-report: this run is not partial'
     }
+    const deferredProblem = deferredOutcomeProblem(content, timeline.routed_cards)
+    if (deferredProblem) return `pilot-report: ${deferredProblem}`
     if (!enforceSchema) return null
     if (dodBullets !== undefined) {
       const acceptanceProblem = reportAcceptanceProblem(content, dodBullets)
@@ -762,6 +881,29 @@ export function createLifecycleStateMachine({
       return await work()
     } finally {
       release()
+    }
+  }
+  async function routeFindingTool(args) {
+    if (!boardContract || typeof routeFinding !== 'function') return 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
+    try {
+      const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })
+      const id = String(created?.id ?? '')
+      if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('board returned no valid card id')
+      const record = { id, title: String(created.title ?? args.title), l4Reason: args.l4Reason }
+      timeline.routed_cards.push(record)
+      if (state.phase === 'report' && state.pilotReportDigest) {
+        const reportPath = path.join(laneDir, 'pilot-report.md')
+        const report = readRegularFile(reportPath)
+        if (report !== null) {
+          const updated = withRoutedCardsSection(report, timeline.routed_cards)
+          writeRegularFile(reportPath, updated)
+          state.pilotReportDigest = sha256(updated)
+        }
+      }
+      persistTimeline()
+      return `routed card ${id} — ${record.title}`
+    } catch (error) {
+      return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
     }
   }
   const server = createSdkMcpServer({
@@ -805,6 +947,18 @@ export function createLifecycleStateMachine({
         }),
       ),
       tool(
+        'route_finding',
+        'Route a genuinely L4 finding to a runner-created board card.',
+        {
+          title: z.string().min(1),
+          l4Reason: z.string().min(1),
+          risk: z.enum(['P0', 'P1', 'P2']),
+          effort: z.enum(['S', 'M', 'L']),
+          type: z.enum(['bug', 'chore', 'feature', 'research']).optional(),
+        },
+        async (args) => ({ content: [{ type: 'text', text: await queued(() => routeFindingTool(args)) }] }),
+      ),
+      tool(
         'run',
         'Run a fixed lane, gate, or inspection command.',
         {
@@ -812,6 +966,8 @@ export function createLifecycleStateMachine({
           phase: z.string().optional(),
           name: z.string().optional(),
           what: z.string().optional(),
+          decision: z.string().optional(),
+          extendSeconds: z.number().int().positive().optional(),
           timeout: z.number().int().positive().optional(),
         },
         async (args) => ({
@@ -834,5 +990,6 @@ export function createLifecycleStateMachine({
         : null,
     }),
   })
+  Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })
   return server
 }

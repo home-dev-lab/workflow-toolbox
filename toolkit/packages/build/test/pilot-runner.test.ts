@@ -1,12 +1,12 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -22,14 +22,20 @@ const initMessage = (model?: string) => ({
   type: 'system',
   subtype: 'init',
   ...(model === undefined ? {} : { model }),
-  tools: ['Read', 'Glob', 'Grep', lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('run')],
+  tools: ['Read', 'Glob', 'Grep', lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }],
 })
 const roots: string[] = []
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'wt-pilot-runner-')); roots.push(root)
-  const dir = join(root, 'worktree'); mkdirSync(join(dir, '.lane'), { recursive: true }); writeFileSync(join(dir, '.gitignore'), '.lane/\n.claude/reports/\n')
-  spawnSync('git', ['init', '-q'], { cwd: dir })
+  // The card tree is a real WORKTREE of the project, as in production: the runner's default archive
+  // root is the checkout that owns the worktree, and a nested standalone repo would have no outside.
+  writeFileSync(join(root, '.gitignore'), '.claude/reports/\n.lane/\n'); writeFileSync(join(root, 'tracked.txt'), 'base\n')
+  const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
+  git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Pilot Runner'); git('config', 'commit.gpgSign', 'false')
+  git('add', '-A'); git('commit', '-qm', 'base')
+  const dir = join(root, 'worktree'); git('worktree', 'add', '-q', '-b', 'card', dir)
+  mkdirSync(join(dir, '.lane'), { recursive: true })
   const contract = join(root, 'contract.md'); writeFileSync(contract, '# contract\n')
   const cardFile = join(root, 'card.md'); writeFileSync(cardFile, 'Route: LITE\n## Definition of done\n- exercise the runner\n')
   return { root, dir, contract, cardFile }
@@ -95,6 +101,28 @@ describe('SDK pilot runner', () => {
       .toMatchObject({ pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', 'relative/plugin']))
       .toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
+  })
+
+  it('parses --board-contract and leaves it optional until route_finding is called', () => {
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--board-contract', 'board.json']))
+      .toMatchObject({ boardContract: resolve('board.json') })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ boardContract: null })
+  })
+
+  it('parses --archive-root as an absolute path and defaults the archive root to the checkout that owns the worktree', () => {
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--archive-root', 'rel/project'])).toMatchObject({ archiveRoot: resolve('rel/project') })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ archiveRoot: null })
+    // An explicit project root wins outright.
+    expect(defaultArchiveRoot({ dir: '/tmp/a', projectRoot: '/srv/project' })).toBe('/srv/project')
+    // A real worktree resolves to the main checkout that owns it, never to itself.
+    const main = mkdtempSync(join(tmpdir(), 'wt-archive-root-main-')); roots.push(main)
+    const git = (...args: string[]) => spawnSync('git', args, { cwd: main, encoding: 'utf8' })
+    git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Archive Root'); git('config', 'commit.gpgSign', 'false')
+    writeFileSync(join(main, 'tracked.txt'), 'base\n'); git('add', '-A'); git('commit', '-qm', 'base')
+    const worktree = join(main, 'wt'); expect(git('worktree', 'add', '-q', '-b', 'archive-root-proof', worktree).status).toBe(0)
+    expect(realpathSync(defaultArchiveRoot({ dir: worktree }))).toBe(realpathSync(main))
+    // A plain repository has no outside: it resolves to itself, and the preflight refuses it.
+    expect(realpathSync(defaultArchiveRoot({ dir: main }))).toBe(realpathSync(main))
   })
 
   it('rejects the removed lane-silence option and omits it from usage', () => {
@@ -169,6 +197,26 @@ describe('SDK pilot runner', () => {
     })
     expect(resolutions).toBe(1)
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'route.json'), 'utf8'))).toMatchObject({ executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } })
+  })
+
+  it('refuses relaunch on an interrupted lifecycle with one complete reset remedy', async () => {
+    const f = fixture()
+    const query = () => (async function* () { yield initMessage() })()
+    const options = { card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }
+    await runPilot(options, { query, resolvePilotModels: models })
+    const refusal = await runPilot(options, { query, resolvePilotModels: models }).then(() => null, (error: Error) => error.message)
+    expect(refusal).toMatch(new RegExp(`interrupted lifecycle.*node -e .*${join(f.dir, '.lane').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+
+    // The printed remedy KEEPS the interrupted run's evidence: executing it moves .lane aside as a sibling and
+    // leaves a fresh empty .lane; a remedy that deleted the directory would destroy the only record of a crash.
+    const remedy = /node -e (".*?") (".*")$/.exec(String(refusal))!
+    const before = readFileSync(join(f.dir, '.lane', 'route.json'), 'utf8')
+    const executed = spawnSync(process.execPath, ['-e', JSON.parse(remedy[1]!), JSON.parse(remedy[2]!)], { encoding: 'utf8' })
+    expect(executed.status, executed.stderr).toBe(0)
+    const kept = readdirSync(f.dir).filter((name) => name.startsWith('.lane.interrupted-'))
+    expect(kept).toHaveLength(1)
+    expect(readFileSync(join(f.dir, kept[0]!, 'route.json'), 'utf8')).toBe(before)
+    expect(readdirSync(join(f.dir, '.lane'))).toEqual([])
   })
 
   it('uses the runner install when a fresh target tracks toolkit/package.json without node_modules', async () => {
@@ -441,13 +489,13 @@ describe('SDK pilot runner', () => {
       yield initMessage(); await prompt.next()
       await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
       for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n\n## E2E\ne2e not run: runner fixture\n\n## Acceptance\n- complete the real lifecycle fixture\n  Outcome: proven\n' })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n\n## E2E\nProcedure: run the runner fixture\nVerbatim output: runner fixture passed\n\n## Acceptance\n- complete the real lifecycle fixture\n  Outcome: proven\n' })
       receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'real-lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'real-lifecycle', content: receipt }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
-    const result = await runPilot({ card: '1', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {} })
+    const result = await runPilot({ card: '1', cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {} })
     expect(registeredServer).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
@@ -461,6 +509,40 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
     expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
     expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
+  })
+
+  it.each([
+    ['a not-done criterion', 'Procedure: run the runner fixture\nVerbatim output: runner fixture passed', 'Outcome: not done: blocked upstream', 'complete the delivery fixture'],
+    ['an unrun E2E', 'e2e not run: unavailable host', 'Outcome: proven', 'E2E: e2e not run: unavailable host'],
+  ])('returns exit 2 when the report records %s', async (_name, e2e, outcome, unmet) => {
+    const f = fixture(); let heads = 0
+    const cardFile = join(f.root, 'delivery-card.md'); writeFileSync(cardFile, 'Route: LITE\n## Definition of done\n- complete the delivery fixture\n')
+    const launcher = join(f.root, 'delivery-launcher.mjs')
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'report\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const tools = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools
+      const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
+      yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
+      const report = `# report\n\n## E2E\n${e2e}\n\n## Acceptance\n- complete the delivery fixture\n  ${outcome}\n`
+      await artifact({ kind: 'pilot-report', content: report })
+      const refused = (await transition({ phase: 'report', tool_use_id: 'classify' })).content[0]!.text
+      const partialLine = /add the line "(Partial: [^"]+)"/.exec(refused)?.[1]
+      if (!partialLine) throw new Error(`missing partial refusal: ${refused}`)
+      await artifact({ kind: 'pilot-report', content: `${report}${partialLine}\n` })
+      const receipt = (await transition({ phase: 'report', tool_use_id: 'complete' })).content[0]!.text
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+    })()
+    const result = await runPilot({ card: '1', cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
+    })
+    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: [unmet] } } })
+    expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8')).partial).toEqual(result.summary.partial)
   })
 
   it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {
@@ -492,7 +574,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
-    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
       query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
@@ -514,13 +596,13 @@ describe('SDK pilot runner', () => {
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const continuation = await prompt.next(); if (continuation.done) return; continuations.push(continuation.value.message.content)
       await transition({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n\n## E2E\ne2e not run: runner fixture\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n' })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n\n## E2E\nProcedure: run the runner fixture\nVerbatim output: runner fixture passed\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n' })
       const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
-    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
       query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' },
     })
     expect(result).toMatchObject({ exitCode: 0, summary: { completed: true, injected_turns: 1 } })
@@ -539,7 +621,39 @@ describe('SDK pilot runner', () => {
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 10, hard: false }, { query, resolvePilotModels: models })
     expect(continuations).toHaveLength(3)
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, injected_turns: 3, reason: 'pilot ended its turn 3 times without progress' } })
+    expect(result.summary.partial).toMatchObject({ reason: 'pilot ended its turn 3 times without progress' })
+    expect(readFileSync(join(result.summary.archive.path, 'summary.json'), 'utf8')).toContain('pilot ended its turn 3 times without progress')
   }, 2_000)
+
+  it('records and archives a runner timeout as a lifecycle partial', async () => {
+    const f = fixture(); let clock = 0
+    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield initMessage(); await prompt.next(); await prompt.next()
+    })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
+      query, resolvePilotModels: models, now: () => { clock += 2_000; return clock }, sleep: async () => {},
+    })
+    expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'runner timeout', partial: { reason: 'runner timeout' } } })
+    expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { reason: 'runner timeout' } })
+  })
+
+  it('writes final receipts and an external partial archive when the initialized SDK stream throws', async () => {
+    const f = fixture()
+    const query = () => (async function* () {
+      yield initMessage('sonnet')
+      yield { type: 'assistant', message: { id: 'progress', model: 'sonnet', usage: { input_tokens: 3, output_tokens: 2 }, content: [] } }
+      writeFileSync(join(f.dir, 'tracked.txt'), 'work in progress\n')
+      throw new Error('transport disconnected')
+    })()
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, { query, resolvePilotModels: models }))
+      .rejects.toThrow('transport disconnected')
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(summary).toMatchObject({ completed: false, reason: 'sdk stream error: transport disconnected', partial: { reason: 'sdk stream error: transport disconnected' } })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'usage.json'), 'utf8')).messages).toHaveLength(1)
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'sdk-transcript.json'), 'utf8'))).toHaveLength(2)
+    expect(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8')).toBeTruthy()
+    for (const name of ['summary.json', 'usage.json', 'sdk-transcript.json', 'cost.json']) expect(readFileSync(join(summary.archive.path, name), 'utf8')).toBeTruthy()
+  })
 
   it('does not accept lifecycle-looking assistant prose or an uncorrelated forged tool result', async () => {
     const f = fixture(); const yielded: string[] = []

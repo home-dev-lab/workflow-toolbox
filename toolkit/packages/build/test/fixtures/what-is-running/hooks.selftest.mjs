@@ -147,9 +147,11 @@ const processCapability = {
 };
 const failures = [];
 let testCount = 0;
+const testFilter = process.env.WT_WIR_SELFTEST_FILTER;
 let finishedOnlySnapshot;
 let cappedDiscoverySnapshot;
 async function test(name, fn) {
+  if (testFilter && !name.includes(testFilter)) return;
   testCount += 1;
   try { await fn(); console.log(`PASS ${name}`); }
   catch (error) { failures.push(name); console.log(`FAIL ${name}: ${error.message}`); }
@@ -956,6 +958,36 @@ await test('[WIR5-06] unreadable and capped proc scans report partial process di
   for (const pid of [100, 200, 300]) mkdirSync(join(cappedRoot, String(pid)));
   const capped = await readSnapshot({ process: processCapability }, { ...base, procRoot: cappedRoot, scanEntryCap: 2 });
   assert.equal(capped.processDiscovery, 'partial'); assert.equal(capped.processPartialReason, 'capped');
+});
+
+await test('[WIR5-07] a process that exits mid-scan is not a read failure; a record that exists and cannot be read is one', async () => {
+  // Field case 2026-09-15 (card 1864810463074714727): the pane read `process list partial (unreadable process records)`
+  // on a quiet machine. Measured on the real host: 1 collector run in 10 met a process that exited between the
+  // /proc listing and its record reads. That race is complete discovery of what exists, never a degraded scan.
+  const isolated = join(root, 'vanished-proc');
+  const procFixture = join(isolated, 'proc'); mkdirSync(procFixture, { recursive: true });
+  const base = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: procFixture, now: paths.now, platform: 'linux' };
+  mkdirSync(join(base.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(base.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(base.livenessDir, { recursive: true }); mkdirSync(join(base.suiteRoot, 'worktrees'), { recursive: true });
+  writeFileSync(join(procFixture, 'uptime'), '20000.00 1000.00\n');
+  // 4242 is listed, then gone before its records are read: a dangling entry stands in for the race.
+  // Windows refuses symlinks without a privilege; that half of the lock is then skipped, and says so.
+  let dangling = true;
+  try { symlinkSync(join(isolated, 'no-such-process'), join(procFixture, '4242')); } catch (error) { if (error?.code !== 'EPERM') throw error; dangling = false; console.log('  (symlink refused on this host; the vanished half of WIR5-07 is not exercised here)'); }
+  if (dangling) {
+    // Only vanished entries: that is not a race, it is the source going away under the scan → unreadable.
+    const sourceLost = await readSnapshot({ process: processCapability }, base);
+    assert.equal(sourceLost.processDiscovery, 'partial'); assert.equal(sourceLost.processPartialReason, 'unreadable'); assert.equal(sourceLost.processVanished, 1);
+  }
+  // 4141 is a live, readable process: with a survivor in the listing, a vanished entry is the ordinary race.
+  mkdirSync(join(procFixture, '4141'), { recursive: true });
+  writeFileSync(join(procFixture, '4141', 'cmdline'), 'sleep\x00600\x00');
+  writeFileSync(join(procFixture, '4141', 'status'), 'Name:\tsleep\nPPid:\t1\n');
+  const survivor = await readSnapshot({ process: processCapability }, base);
+  assert.equal(survivor.processDiscovery, 'available'); assert.equal(survivor.processPartialReason, null); assert.equal(survivor.processVanished, dangling ? 1 : 0);
+  // 4343 still exists and its cmdline cannot be read (a directory where a file is expected): that IS a failure.
+  mkdirSync(join(procFixture, '4343', 'cmdline'), { recursive: true });
+  const unreadable = await readSnapshot({ process: processCapability }, base);
+  assert.equal(unreadable.processDiscovery, 'partial'); assert.equal(unreadable.processPartialReason, 'unreadable process records'); assert.equal(unreadable.processVanished, dangling ? 1 : 0);
 });
 
 await test('[Step 5 DoD 1] proc ancestry emits separate Session and linked Card levels', async () => {
@@ -1832,7 +1864,7 @@ await test('polling is 2 seconds and stops after host-side pane disposal', async
   await timer.fn();
   assert(timer.cancelled);
 });
-await test('[changed Round 2 Close][changed: reload semantics] repeated session.start re-adopts and redraws persisted open pane before forwarding', async () => {
+await test('[per-session pane state] one registration never adopts another registration\'s open pane through shared storage', async () => {
   const sharedStore = new Map();
   const makeHost = () => {
     const localHooks = []; const localCalls = [];
@@ -1848,26 +1880,21 @@ await test('[changed Round 2 Close][changed: reload semantics] repeated session.
   const first = makeHost();
   await first.find('session.start').hook(first.local$, { cwd: worktree }, async () => ({}));
   await first.find('command.run').hook(first.local$, { command: 'wir' }, async () => ({}));
-  assert.equal(sharedStore.get('pane-open'), true);
-  const reloaded = makeHost();
-  const pane = reloaded.find('ui.render', (hook) => hook.matcher?.component === 'Pane');
-  let redrawDuringReload;
-  await reloaded.find('session.start').hook(reloaded.local$, { cwd: worktree }, async () => {
-    redrawDuringReload = await pane.hook(reloaded.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
-    return {};
-  });
-  assert(reloaded.localCalls.some(([kind, value]) => kind === 'open' && value.id === 'wt-what-is-running' && !value.focus));
-  assert.notDeepEqual(redrawDuringReload, { downstream: true });
-  assert(findButton(redrawDuringReload, 'Close'));
-  const tree = redrawDuringReload;
+  assert.equal(sharedStore.has('pane-open'), false);
+  const second = makeHost();
+  await second.find('session.start').hook(second.local$, { cwd: worktree }, async () => ({}));
+  assert(!second.localCalls.some(([kind]) => kind === 'open'));
+  const secondPane = second.find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+  const untouched = await secondPane.hook(second.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
+  assert.deepEqual(untouched, { downstream: true });
+  const pane = first.find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+  const tree = await pane.hook(first.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   findButton(tree, 'Close').props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(sharedStore.get('pane-open'), false);
-  const closedRestart = makeHost();
-  await closedRestart.find('session.start').hook(closedRestart.local$, { cwd: worktree }, async () => ({}));
-  assert(!closedRestart.localCalls.some(([kind]) => kind === 'open'));
+  assert(first.localCalls.some(([kind]) => kind === 'close'));
+  assert.equal(sharedStore.has('pane-open'), false);
 });
-await test('[changed Round 2 Close][R4] rejecting open-state storage never blocks open, Close, or session start', async () => {
+await test('[per-session pane state] open, Close, and session start never access plugin-wide storage', async () => {
   const localHooks = []; const localCalls = [];
   const local$ = {
     ...$,
@@ -1889,6 +1916,7 @@ await test('[changed Round 2 Close][R4] rejecting open-state storage never block
   findButton(tree, 'Close').props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
   assert(localCalls.some(([kind]) => kind === 'close'));
+  assert(!localCalls.some(([kind]) => kind === 'log'));
 });
 await test('an unremembered host pane does not adopt itself after restart', async () => {
   const restoredHooks = [];
@@ -1901,6 +1929,37 @@ await test('an unremembered host pane does not adopt itself after restart', asyn
   const first = await pane.hook(restored$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
   assert.deepEqual(first, { downstream: true });
   assert.equal(restoredTimers.length, 0);
+});
+await test('[toggle race] a detail state transition survives an overlapping slow snapshot refresh', async () => {
+  const localHooks = []; const localCalls = []; const localTimers = [];
+  const snapshot = { discovery: 'available', rows: [], sessions: [], services: { count: 1, items: [{ id: 'service:race', label: 'Race service' }] }, helpers: { count: 0, oldest: 'none', items: [] }, collectedAt: paths.now };
+  let processCalls = 0; let releasePoll;
+  const local$ = {
+    ...$,
+    process: { run: async () => {
+      processCalls += 1;
+      if (processCalls === 1) return { exitCode: 0, stdout: JSON.stringify(snapshot), stderr: '' };
+      return new Promise((resolve) => { releasePoll = () => resolve({ exitCode: 0, stdout: JSON.stringify(snapshot), stderr: '' }); });
+    } },
+    clock: { every: (ms, fn) => { const timer = { ms, fn, cancelled: false, cancel: () => { timer.cancelled = true; } }; localTimers.push(timer); return timer; } },
+    ui: { ...$.ui, invalidate: (event) => localCalls.push(['invalidate', event]) },
+  };
+  register((event, matcher, hook) => localHooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }), paths);
+  const find = (event, predicate = () => true) => localHooks.find((hook) => hook.event === event && predicate(hook));
+  await find('session.start').hook(local$, { cwd: worktree }, async () => ({}));
+  await find('command.run').hook(local$, { command: 'wir' }, async () => ({}));
+  const pane = find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+  let tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
+  const poll = localTimers[0].fn();
+  findButton(tree, 'Services (1)').props.onPress();
+  await localTimers[0].fn();
+  assert.equal(localTimers[0].cancelled, false);
+  releasePoll();
+  await poll;
+  tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
+  assert.notDeepEqual(tree, { downstream: true });
+  assert(findButton(tree, 'Close'));
+  assert.match(JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value), /Race service/);
 });
 await test('an empty snapshot says nothing runs in the background', async () => {
   const originalRun = processCapability.run;

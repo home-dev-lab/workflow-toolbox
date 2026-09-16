@@ -1,35 +1,32 @@
 # SDK pilot contract
 
-Pilot one tracked card in the named worktree. Do not implement its executor increment. You may read
+Pilot one tracked card in the named worktree. You may read
 the worktree with Read, Glob, and Grep; call `sdk-pilot-lifecycle` tools `transition`,
-`write_artifact`, and `run`; and use only these Planka tools: `mcp__planka__get_card`,
+`write_artifact`, `route_finding`, and `run`; and use only these Planka tools: `mcp__planka__get_card`,
 `mcp__planka__get_comments`, `mcp__planka__add_comment`, `mcp__planka__update_card`,
 `mcp__planka__move_card`, and `mcp__planka__add_label_to_card`. You have no Bash, Write, or Edit.
-The runner uses the SDK's `default` permission mode, and its `canUseTool` callback enforces this
-complete allow-list and worktree confinement on every tool request, plus Read access to the exact
-`KNOWLEDGE_BASE_INDEX` path named in the prompt when it exists, and to the Markdown fiches under that
-index's directory; all other tools are denied. Read that index before discovery when present, then open
-the fiches that bear on the card. They are read-only; an explicit absence is not an error.
-
-After this contract, the system prompt carries the exact standing sections selected by the shipped
-`rules-manifest.json` plus optional project `.claude/wt-rules-manifest.json`. Transition receipts carry
-exact pilot rules for the new phase. Missing mapped sources or headings refuse startup.
+The SDK uses `default` permission mode; `canUseTool` enforces this list and worktree confinement.
+It also permits Read of the named `KNOWLEDGE_BASE_INDEX` and its Markdown fiches. Read relevant fiches
+before discovery; they are read-only claims, not evidence. All other tools are denied.
 
 ## Lifecycle tools
 
-Use `write_artifact` only for its phase-bound kinds: `plan` (plan), `critic-brief` (critic), `brief`
-(tdd), `review-brief` (review), `refutation-brief` (refutation), `harden-brief` (harden), and
-`pilot-report` (report). Use `run { kind: 'lane', phase, timeout }` only for tdd, critic, review,
+« on ne diffère pas »: fix every task, criterion, and finding now. L4 alone permits routing: more than
+one hop from changed files; different module/subsystem; separate planning or unavailable dependency;
+or owner agreement. Immediately call `route_finding { title, l4Reason, risk: 'P0'|'P1'|'P2', effort:
+'S'|'M'|'L', type?: 'bug'|'chore'|'feature'|'research' }`. The runner uses `--board-contract`, or
+refuses naming that remedy. Never call raw `create_card`.
+
+`write_artifact` kinds are `plan`, `critic-brief`, `brief` (tdd), `review-brief`, `refutation-brief`,
+`harden-brief`, and `pilot-report`, each only in its named phase. Use `run { kind: 'lane', phase, timeout }` only for tdd, critic, review,
 refutation, or harden; timeout is at most 5400 seconds. Use `run { kind: 'gate', name }` only for
 `typecheck`, `lint`, or `test`. Use `run { kind: 'inspect', what }` only for `diff`, `status`, or
-the allow-listed receipt/log names.
+the allow-listed receipt/log names. When a lane returns `TIMEOUT`, use the receipt's
+`run { kind: 'control', decision: 'abandon'|'extend' }` remedy; the runner supplies its private owner token.
 
-For every lane: write its brief, run it, then transition. The server recreates launch inputs in a
-read-only external snapshot and puts mapped authoritative rules before fenced pilot context.
-Independent briefs name `KNOWLEDGE_BASE_INDEX`. Claude SDK allows Read of that index and contained
-Markdown fiches; Glob/Grep stay confined. OpenCode lanes are told to read it and to report a refused
-read. Fiches are claims to verify against code, not evidence; a finding
-resting only on a fiche is not a finding.
+For every lane: write its brief, run it, then transition. The server recreates a read-only input
+snapshot with authoritative rules before fenced pilot context. Independent briefs name the knowledge
+index; a fiche-only claim is not a finding.
 
 For a critic, review, or refutation lane, `content` is context only. The server writes the
 authoritative independent-review instructions first, names the evidence to judge, fences your text
@@ -55,19 +52,23 @@ carries the plan's `## Tasks` block byte-identically.
 | verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
 | review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
 | refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
-| report | Write the pilot report and transition; the runner commits and archives. |
+| report | Write/transition it; non-proven DoD or unrun E2E makes archive partial. |
 
 Outcomes and findings are read from the lane report: any declared value must match it. Review and
 refutation changes-requested outcomes need findings; there are at most three harden rounds. When a
 critic, review, or refutation bound is spent, the server routes to report and records the run as
 partial. A refusal names missing evidence: produce that evidence, do not retry the denied call.
+The critic accepts routed L4 and refuses bare deferral. One blocking `CONTEST routed card <id>:` gets
+one plan round. Do it (runner closes the card) or maintain cited L4; disagreement is then reported to
+the order-giver, never looped.
 
 ## Completion and boundaries
 
 Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`, `## E2E`,
 `## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. Under Acceptance,
 quote every folded card Definition-of-done criterion exactly and follow each with `Outcome: proven`, `Outcome: not done: <reason>`,
-or `Outcome: deferred: <reason>`. E2E contains command/procedure
+or `Outcome: deferred: card <id> — <L4 reason>` where the id is in runner-owned `routed_cards`. The
+runner appends `## Routed cards`; pilot prose is not its source of truth. E2E contains command/procedure
 plus verbatim output, or exactly `e2e not run: <reason>`. FULL also requires `## Independent Review`
 with lenses and confirmed/refuted findings. Keep exact `Partial: <reason>` only on partial runs; the
 owner decides how to proceed from a completed partial run. The report edge refuses a report not written

@@ -11,11 +11,13 @@ import { deriveRoute } from '../../../../plugin/bin/lib/route-from-card.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { archiveLifecycle } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
-const liteReport = '# report\n\n## E2E\ne2e not run: lifecycle fixture\n'
+const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n'
 
 describe('runner-hosted SDK pilot lifecycle', () => {
   it.each([
@@ -88,17 +90,41 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(deriveRoute(readFileSync(new URL('./fixtures/intake-triage-card.md', import.meta.url), 'utf8')).route).toBe('FULL')
   })
 
-  it('builds the immutable three-tool MCP server', () => {
+  it('builds the immutable four-tool MCP server', () => {
     const worktree = new URL('../../../..', import.meta.url).pathname
     rmSync(`${worktree}/.lane/route.json`, { force: true })
-    const server = createLifecycleServer({ worktree, route: 'LITE', executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' }, cardId: '123', sessionTag: 's' })
+    const server = createLifecycleServer({ worktree, archiveRoot: archiveProject(), route: 'LITE', executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' }, cardId: '123', sessionTag: 's' })
     expect(server.type).toBe('sdk')
     expect(server.name).toBe('sdk-pilot-lifecycle')
     expect(Object.isFrozen(server.lifecycle)).toBe(true)
     expect(server.lifecycle.route).toBe('LITE')
     expect(server.lifecycle.executor).toBe('claude-sdk')
     expect(JSON.parse(readFileSync(`${worktree}/.lane/route.json`, 'utf8'))).toMatchObject({ executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' } })
-    expect(Object.keys(server.instance._registeredTools).sort()).toEqual(['run', 'transition', 'write_artifact'])
+    expect(Object.keys(server.instance._registeredTools).sort()).toEqual(['route_finding', 'run', 'transition', 'write_artifact'])
+  })
+
+  it('refuses route_finding without the runner board contract and names the launch remedy', async () => {
+    const lifecycle = testLifecycle('LITE')
+    expect(await text(lifecycle.routeFinding({ title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'S' })))
+      .toContain('route_finding refused: no board contract; relaunch with --board-contract <json file>')
+  })
+
+  it('routes an L4 finding through the runner and persists its trusted lifecycle record', async () => {
+    const created: Array<Record<string, unknown>> = []
+    const boardContract = {
+      boardId: 'board', listId: 'backlog',
+      labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 'small', M: 'medium', L: 'large' }, category: 'project' },
+    }
+    const lifecycle = testLifecycle('LITE', [], null, null, {
+      boardContract,
+      routeFinding: async (input: Record<string, unknown>) => { created.push(input); return { id: '987654321', title: input.title } },
+      now: () => Date.parse('2026-09-16T10:00:00.000Z'),
+    })
+    expect(await text(lifecycle.routeFinding({ title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore' }))).toBe('routed card 987654321 — Memory store migration')
+    expect(created).toEqual([expect.objectContaining({ originCardId: '1', sessionTag: 'test', title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore', boardContract })])
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([
+      { id: '987654321', title: 'Memory store migration', l4Reason: 'different subsystem: memory store' },
+    ])
   })
 
   it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'harden-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
@@ -164,19 +190,20 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it('tells a timed-out pilot to abandon through absolute control and rerun the lifecycle phase', async () => {
+  it('tells a timed-out pilot to use lifecycle control and keeps the shell remedy for a human', async () => {
     const timeoutLauncher = rawLauncher("import { spawn } from 'node:child_process'; import { mkdirSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const token=args[args.indexOf('--owner-token')+1]; const runId='999-2'; const dir=join(root,'.lane','supervision'); mkdirSync(dir,{recursive:true}); const source=\"const fs=require('fs'),path=require('path');const root=process.argv[1],token=process.argv[2],runId='999-2',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv,owner:'pilot',ownerToken:token,defaultDecision:'extend',decisionDueAt:'later',evidence:{}}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)\"; const child=spawn(process.execPath,['-e',source,root,token],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun='+runId+'\\n')")
     const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-    expect(result).toMatch(/abandon with node '\/.*wt-lane-control\.mjs' .*--decision abandon --owner-token '[0-9a-f-]+'/)
+    expect(result).toContain("run { kind: 'control', decision: 'abandon' }")
+    expect(result).toMatch(/human: .*abandon with node '\/.*wt-lane-control\.mjs' .*--decision abandon --owner-token '[0-9a-f-]+'/)
     expect(result).toContain('re-run this lifecycle lane phase')
     expect(result).not.toContain('wt-lane.mjs --dir')
     const record = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', '999-2.json'), 'utf8'))
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it('abandons a timed-out pilot lane through its printed command and reruns the lifecycle phase with a fresh owner-bound lane', async () => {
+  it('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
@@ -198,12 +225,10 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('LITE', [], wrapper, 500)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const first = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-    const command = /abandon with (node .*? --decision abandon --owner-token '[0-9a-f-]+')/.exec(first)?.[1]
-    expect(command).toBeTruthy()
+    expect(first).toContain("run { kind: 'control', decision: 'abandon' }")
     const firstBrief = readFileSync(join(lifecycle.root, '.lane', 'launch-brief-1'), 'utf8')
     expect(existsSync(firstBrief)).toBe(true)
-    const abandon = spawnSync(command!, { cwd: tmpdir(), shell: true, encoding: 'utf8' })
-    expect(abandon.status, abandon.stderr).toBe(0)
+    expect(await text(lifecycle.run({ kind: 'control', decision: 'abandon' }))).toMatch(/^control abandon accepted: decision=abandon/m)
     const firstPointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
     const firstRecordPath = join(lifecycle.root, '.lane', 'supervision', `${firstPointer.runId}.json`)
     for (let i = 0; i < 80 && !readFileSync(firstRecordPath, 'utf8').includes('abandoned'); i += 1) await new Promise((resolve) => setTimeout(resolve, 25))
@@ -340,6 +365,10 @@ printf 'report\n' > "$report"
   it('refuses verify when every gate mtime equals the lane receipt mtime', async () => {
     const lifecycle = await lifecycleAtVerify()
     const nonceLog = readdirSync(join(lifecycle.root, '.lane')).find((name) => /^tdd-run\..+\.log$/.test(name))!
+    // Pin the receipt to a whole second first: utimes takes SECONDS, and a sub-millisecond mtimeMs does not
+    // round-trip through the division (measured: 1789547251756.7688 came back as .768 and the lock went red).
+    const wholeSecond = Math.floor(Date.now() / 1000)
+    utimesSync(join(lifecycle.root, '.lane', nonceLog), wholeSecond, wholeSecond)
     const laneMtime = fs.statSync(join(lifecycle.root, '.lane', nonceLog)).mtimeMs
     const append = fs.appendFileSync.bind(fs)
     const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
@@ -407,13 +436,13 @@ printf 'report\n' > "$report"
   it('does not publish an archive when post-copy validation dirties the tree', async () => {
     let revisions = 0; let statusReads = 0
     const git = (_program: string, call: string[]) => {
-      if (call[0] === 'status') return ++statusReads === 1 ? '' : ' M tracked.txt\n'
+      if (call[0] === 'status') return ++statusReads <= 2 ? '' : ' M tracked.txt\n'
       return call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
     }
     const lifecycle = await lifecycleReadyForReport({ git })
     await expect(text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' })))
       .resolves.toMatch(/missing archive \(archive dirtied the tree\)/)
-    expect(readdirSync(join(lifecycle.root, '.claude', 'reports'))).toEqual([])
+    expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports'))).toEqual([])
     expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
@@ -429,18 +458,65 @@ printf 'report\n' > "$report"
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toBe('accepted phase=awaiting_fidelity')
     expect(commits).toBe(1)
     expect(copies).toBe(2)
-    expect(readdirSync(join(lifecycle.root, '.claude', 'reports')).filter((name) => !name.includes('.tmp-'))).toHaveLength(1)
+    expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports')).filter((name) => !name.includes('.tmp-'))).toHaveLength(1)
   })
 
   it('records the commit, archive manifest digest, and lifecycle implementation', async () => {
     let revisions = 0
     const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
-    const lifecycle = await lifecycleReadyForReport({ git })
+    const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+    const lifecycle = await lifecycleReadyForReport({ git, boardContract, routeFinding: async () => ({ id: '42', title: 'Late route' }) })
+    expect(await text(lifecycle.routeFinding({ title: 'Late route', l4Reason: 'different subsystem', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Late route')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Late route — different subsystem')
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
     expect(summary).toMatchObject({ commit: 'next', partial: null, lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
     expect(summary.archive).toMatchObject({ path: expect.stringContaining('.claude/reports/1-'), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
-    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8')).partial).toBeNull()
+    expect(summary.archive.path.startsWith(lifecycle.archiveRoot)).toBe(true)
+    expect(summary.archive.path.startsWith(lifecycle.root)).toBe(false)
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: null, routed_cards: [{ id: '42', title: 'Late route', l4Reason: 'different subsystem' }] })
+  })
+
+  it('refuses at CONSTRUCTION an archive root inside the worktree, before any phase can run', () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'wt-lifecycle-preflight-')); roots.push(worktree); mkdirSync(join(worktree, '.lane'))
+    expect(() => createLifecycleServer({ worktree, archiveRoot: worktree, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'preflight', sessionTag: 'test', rules: [] }))
+      .toThrow(/archive destination must be outside the lifecycle worktree/)
+    expect(() => createLifecycleServer({ worktree, archiveRoot: 'relative/root', route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'preflight', sessionTag: 'test', rules: [] }))
+      .toThrow(/lifecycle archiveRoot must be an absolute path/)
+  })
+
+  it('refuses an archive destination resolved inside the lifecycle worktree', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-confined-')); roots.push(root)
+    expect(() => archiveLifecycle({ root, archiveRoot: root, cardId: '1' }))
+      .toThrow(/archive destination must be outside the lifecycle worktree/)
+  })
+
+  it('keeps the lifecycle archive readable after removing its real git worktree', async () => {
+    const container = mkdtempSync(join(tmpdir(), 'wt-lifecycle-removal-')); roots.push(container)
+    const project = join(container, 'project'); const worktree = join(container, 'card-worktree')
+    mkdirSync(project); writeFileSync(join(project, '.gitignore'), '.claude/reports/\n.lane/\n'); writeFileSync(join(project, 'tracked.txt'), 'base\n')
+    const projectGit = (...args: string[]) => spawnSync('git', args, { cwd: project, encoding: 'utf8' })
+    expect(projectGit('init', '-q').status).toBe(0)
+    expect(projectGit('config', 'user.email', 'test@example.invalid').status).toBe(0)
+    expect(projectGit('config', 'user.name', 'Lifecycle Test').status).toBe(0)
+    expect(projectGit('config', 'commit.gpgSign', 'false').status).toBe(0)
+    expect(projectGit('add', '-A').status).toBe(0); expect(projectGit('commit', '-qm', 'base').status).toBe(0)
+    expect(projectGit('worktree', 'add', '-q', '-b', 'archive-proof', worktree).status).toBe(0)
+    mkdirSync(join(worktree, '.lane'))
+    const server = createLifecycleServer({ worktree, archiveRoot: project, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'removal-proof', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [] })
+    const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
+    const transition = (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' ? { ...args, record: 'test discovery\n' } : args)
+    await transition({ phase: 'discovery', tool_use_id: 'start' }); await tools.write_artifact!.handler({ kind: 'brief', content: 'brief\n' })
+    await tools.run!.handler({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+    writeFileSync(join(worktree, 'tracked.txt'), 'changed by lifecycle\n')
+    for (const name of ['typecheck', 'lint', 'test']) await tools.run!.handler({ kind: 'gate', name })
+    await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await tools.write_artifact!.handler({ kind: 'pilot-report', content: liteReport })
+    expect(await text(transition({ phase: 'report', tool_use_id: 'report' }))).toBe('accepted phase=awaiting_fidelity')
+    const summary = JSON.parse(readFileSync(join(worktree, '.lane', 'summary.json'), 'utf8'))
+    expect(projectGit('worktree', 'remove', '--force', worktree).status).toBe(0)
+    expect(existsSync(worktree)).toBe(false)
+    const manifestContent = readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8')
+    expect(createHash('sha256').update(manifestContent).digest('hex')).toBe(summary.archive.manifest_sha256)
   })
 
   it('H14-2 lock: refuses a Partial line on a full run and exposes null partial state', async () => {
@@ -677,24 +753,59 @@ printf 'report\n' > "$report"
     const cardText = 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n- Keep tests green.\n'
     const lifecycle = await lifecycleReadyForReport({ cardText })
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n` })
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing' }))).toContain('expected `- Keep tests green.` followed by `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`')
-    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'outcome' }))).toContain('example: `- Ship exact bytes.` then `Outcome: proven by tests/unit.test.ts`')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing' }))).toContain('expected `- Keep tests green.` followed by `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`')
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })))
+      .toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
     // A proven outcome may carry its evidence on the same line; refusing that shape would loop a pilot on wording.
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven — byte lock in rules-manifest.test.ts\n- Keep tests green.\n  Outcome: proven: pnpm test EXIT=0\n` })
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'proven-with-evidence' }))).toContain('missing commit')
   })
 
+  it.each([
+    ['a not-done criterion', 'Procedure: run delivery fixture\nVerbatim output: fixture passed', 'Outcome: not done: blocked upstream', 'Ship exact bytes.'],
+    ['mixed proven and not-done outcomes', 'Procedure: run delivery fixture\nVerbatim output: fixture passed', 'Outcome: proven\n  Outcome: not done: blocked upstream', 'Ship exact bytes.'],
+    ['an unrun E2E', 'e2e not run: unavailable host', 'Outcome: proven', 'E2E: e2e not run: unavailable host'],
+  ])('classifies %s as a report partial before archive', async (_name, e2e, outcome, unmet) => {
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n' })
+    const report = `# report\n\n## E2E\n${e2e}\n\n## Acceptance\n- Ship exact bytes.\n  ${outcome}\n`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'partial' })))
+      .toContain('pilot-report: partial run, add the line "Partial: delivered partially: 1 unmet criteria"')
+    expect(lifecycle.state()).toEqual({
+      phase: 'report',
+      partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: [unmet] },
+    })
+  })
+
+  it('refuses bare and unknown-card deferrals and mechanically appends routed cards', async () => {
+    const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification' }) })
+    expect(await text(lifecycle.routeFinding({ title: 'Host verification', l4Reason: 'unavailable dependency: real host', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Host verification')
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: unavailable dependency\n` }))).toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 99 — unavailable dependency\n` }))).toContain('card 99 is not in lifecycle routed_cards')
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n` }))).toBe('wrote pilot-report')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Host verification — unavailable dependency: real host')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'deferred-partial' }))).toContain('Partial: delivered partially: 1 unmet criteria')
+    expect(lifecycle.state().partial).toEqual({ phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: ['Ship.'] })
+  })
+
+  it('refuses a plan task marked deferred without a routed card id', async () => {
+    const lifecycle = testLifecycle('FULL')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n  Outcome: deferred: later\n## Gates\n- test\n' })
+    expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }))).toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
+  })
+
   it('keeps bullet Proof and Outcome lines in the preceding Acceptance entry and accepts proven evidence without a separator', async () => {
     const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship exact bytes.\n- Keep tests green.\n' })
-    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n- Outcome: proven by tests/unit.test.ts\n- Keep tests green.\n  Outcome: not done: blocked upstream\n` })
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n- Outcome: proven by tests/unit.test.ts\n- Keep tests green.\n  Outcome: proven by lint gate\n` })
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'bullet-outcome' }))).toContain('missing commit')
   })
 
-  it('names both stale card texts and the one restart action', () => {
+  it('refuses stale lifecycle state before comparing individual artifacts and gives one complete reset action', () => {
     const first = testLifecycle('LITE', [], null, null, { cardText: 'DoD: old text\n' })
-    expect(() => createLifecycleServer({ worktree: first.root, route: 'LITE', models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'new', rules: [], cardText: 'DoD: new text\n' }))
-      .toThrow(`lifecycle card snapshot "DoD: old text\\n" differs from runner card text "DoD: new text\\n"; remove ${join(first.root, '.lane', 'card.md')} to restart the lifecycle on the new card`)
+    expect(() => createLifecycleServer({ worktree: first.root, archiveRoot: first.archiveRoot, route: 'LITE', models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'new', rules: [], cardText: 'DoD: new text\n' }))
+      .toThrow(new RegExp(`interrupted lifecycle.*node -e .*${join(first.root, '.lane').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   })
 
   it('accepts ### task headings with indented body bullets, refuses one without DoD, and names both item shapes', async () => {
@@ -748,6 +859,22 @@ printf 'report\n' > "$report"
     expect(roundTwo).toContain('## Prior rounds (runner-owned, trusted)')
     expect(roundTwo).toContain('### Round 1\n- preserve exact wording\n- keep the release gate')
     expect(roundTwo).toContain('may not reopen a point a prior round demanded, or reverse a prior round\'s accepted position, unless you cite new evidence')
+  })
+
+  it('allows exactly one plan round for a routed-card contest, then escalates the maintained disagreement', async () => {
+    const finding = '[blocking] CONTEST routed card 42: this is in scope'
+    const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+    const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher([[`- ${finding}`], [`- ${finding}`]]), 100, { boardContract, routeFinding: async () => ({ id: '42', title: 'L4 item' }) })
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.routeFinding({ title: 'L4 item', l4Reason: 'different subsystem', risk: 'P1', effort: 'M' })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'maintain L4 with citation src/other.ts:1' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-2' }))).toBe('accepted phase=tdd')
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([{ id: '42', title: 'L4 item', l4Reason: 'different subsystem', contested: true }])
   })
 
   it('A-1 requires defined blocking and non-blocking severity policy in the critic report contract', async () => {
@@ -1040,7 +1167,7 @@ printf 'report\n' > "$report"
     let revisions = 0
     const archive = await lifecycleReadyForReport({ git: (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : '', copy: () => { throw new Error('copy failed') } })
     await archive.transition({ phase: 'report', tool_use_id: 'report' })
-    expect(readdirSync(join(archive.root, '.claude', 'reports')).filter((name) => name.includes('.tmp-'))).toEqual([])
+    expect(readdirSync(join(archive.archiveRoot, '.claude', 'reports')).filter((name) => name.includes('.tmp-'))).toEqual([])
   })
 
   it('does not commit again after post-commit status throws', async () => {
@@ -1080,14 +1207,15 @@ printf 'report\n' > "$report"
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'retry' }))).toContain('missing changed HEAD')
     expect(commits).toBe(2)
     expect(resets).toBe(2)
-    expect(readdirSync(join(lifecycle.root, '.claude', 'reports'))).toEqual([])
+    expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports'))).toEqual([])
   })
 
   it('refuses an archive whose reports ancestor becomes a symlink', async () => {
     let revisions = 0
     const lifecycle = await lifecycleReadyForReport({ git: (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : '' })
     const outside = mkdtempSync(join(tmpdir(), 'wt-lifecycle-outside-')); roots.push(outside)
-    rmSync(join(lifecycle.root, '.claude', 'reports'), { recursive: true }); symlinkSync(outside, join(lifecycle.root, '.claude', 'reports'))
+    // The preflight created <archiveRoot>/.claude/reports at construction; the ancestor BECOMES a symlink afterwards.
+    rmSync(join(lifecycle.archiveRoot, '.claude', 'reports'), { recursive: true, force: true }); symlinkSync(outside, join(lifecycle.archiveRoot, '.claude', 'reports'))
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'archive' }))).toContain('lane directory replaced')
     expect(readdirSync(outside)).toEqual([])
   })
@@ -1105,7 +1233,7 @@ printf 'report\n' > "$report"
 
   it('refuses an unsafe card id at server construction', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-card-')); roots.push(root); mkdirSync(join(root, '.lane'))
-    expect(() => createLifecycleServer({ worktree: root, route: 'LITE', models: {}, cardId: '../bad', sessionTag: 'x' })).toThrow(/cardId/)
+    expect(() => createLifecycleServer({ worktree: root, archiveRoot: archiveProject(), route: 'LITE', models: {}, cardId: '../bad', sessionTag: 'x' })).toThrow(/cardId/)
   })
 
   it('serializes concurrent transitions and rejects a changed idempotency shape', async () => {
@@ -1143,19 +1271,21 @@ function killIdentity(expected: { pid: number, argv: string[], startTime?: numbe
 }
 function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null, options: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-')); roots.push(root)
+  const archiveRoot = archiveProject()
   mkdirSync(join(root, '.lane'))
   writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: root })
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
   const gateRunner = ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') }
-  const server = createLifecycleServer({ worktree: root, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs, gateRunner, rules: [], ...options })
+  const server = createLifecycleServer({ worktree: root, archiveRoot, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs, gateRunner, rules: [], ...options })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args)
-  return { root, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, run: tools.run!.handler, state: server.state }
+  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
 }
 function realGitLifecycle() {
   const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-')); roots.push(root)
+  const archiveRoot = archiveProject()
   mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n'); writeFileSync(join(root, 'tracked.txt'), 'tracked\n')
   const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
   expect(git('init', '-q').status).toBe(0)
@@ -1165,11 +1295,17 @@ function realGitLifecycle() {
   expect(git('add', '-A').status).toBe(0)
   expect(git('commit', '-qm', 'base').status).toBe(0)
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
-  const server = createLifecycleServer({ worktree: root, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: 100, gateRunner: ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') }, rules: [] })
+  const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: 100, gateRunner: ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') }, rules: [] })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args)
-  return { root, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, run: tools.run!.handler, state: server.state }
+  return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
+}
+function archiveProject() {
+  const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-archive-')); roots.push(root)
+  writeFileSync(join(root, '.gitignore'), '.claude/reports/\n')
+  spawnSync('git', ['init', '-q'], { cwd: root })
+  return root
 }
 function text(result: Promise<{ content: Array<{ text: string }> }>) { return result.then((value) => value.content[0]!.text) }
 function launcher(source: string) {

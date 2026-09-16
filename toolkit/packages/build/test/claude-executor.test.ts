@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -15,6 +15,17 @@ function waitFor(file: string, timeoutMs = 3000) {
   const until = Date.now() + timeoutMs
   while (!existsSync(file) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
   expect(existsSync(file), `timed out waiting for ${file}`).toBe(true)
+}
+
+function waitForExit(log: string, timeoutMs: number) {
+  const until = Date.now() + timeoutMs
+  let tail = ''
+  while (Date.now() < until) {
+    if (existsSync(log)) tail = readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1) ?? ''
+    if (/^EXIT=\d+$/.test(tail)) return tail
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+  }
+  return tail
 }
 
 function fixture() {
@@ -59,10 +70,33 @@ describe('Claude SDK executor', () => {
     expect(executorCanUseTool(root, report, true, 'Write', { file_path: join(root, 'source.ts') }).behavior).toBe('deny')
     expect(executorCanUseTool(root, report, false, 'Edit', { file_path: join(root, 'source.ts') }).behavior).toBe('allow')
     expect(executorCanUseTool(root, report, false, 'Bash', { command: 'touch /tmp/outside' }).behavior).toBe('deny')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: 'cd .. && touch escaped' }).behavior).toBe('deny')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: `node -e "require('fs').writeFileSync(require('path').resolve('..','escaped-computed'),'x')"` }).behavior).toBe('deny')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: `node -e "require('fs').writeFileSync(Buffer.from('2e2e2f65736361706564','hex').toString(),'x')"` }).behavior).toBe('allow')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: `p=$(printf '\\056\\056\\057escaped'); : > "$p"` }).behavior).toBe('allow')
     expect(executorCanUseTool(root, report, false, 'Bash', { command: 'pnpm test' }).behavior).toBe('allow')
     const outside = mkdtempSync(join(tmpdir(), 'wt-executor-outside-')); roots.push(outside); symlinkSync(outside, join(root, 'link'))
     expect(executorCanUseTool(root, report, false, 'Write', { file_path: join(root, 'link', 'escaped') }).behavior).toBe('deny')
   })
+
+  it.runIf(process.env.WT_CLAUDE_EXECUTOR_REAL_E2E === 'true')('keeps real SDK Bash writes inside the worktree', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-executor-real-')); roots.push(root)
+    const worktree = join(root, 'worktree'); mkdirSync(join(worktree, '.lane'), { recursive: true }); spawnSync('git', ['init', '-q'], { cwd: worktree })
+    const marker = `cd-escape-${process.pid}`; const computedMarker = `computed-escape-${process.pid}`; const nodeSandboxMarker = `node-sandbox-escape-${process.pid}`; const sandboxMarker = `sandbox-escape-${process.pid}`
+    const encodedSandboxPath = Buffer.from(`../${nodeSandboxMarker}`).toString('hex')
+    const report = join(worktree, '.lane', 'tdd-report.confinement.md'); const brief = join(worktree, '.lane', 'brief.md'); const log = join(worktree, '.lane', 'real-sdk.log')
+    writeFileSync(brief, `This is a confinement regression fixture. Use Bash to run each command exactly once and record each tool result verbatim in the report. Do not try alternative commands.\n\n1. \`cd .. && touch ${marker}\`\n2. \`node -e "require('fs').writeFileSync(require('path').resolve('..','${computedMarker}'),'x')"\`\n3. \`node -e "require('fs').writeFileSync(Buffer.from('${encodedSandboxPath}','hex').toString(),'x')"\`\n4. \`p=$(printf '\\056\\056\\057${sandboxMarker}'); : > "$p"\`\n\nWrite the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), '--dir', worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '120', '--role', 'tdd'], { encoding: 'utf8', env: process.env })
+    expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+/)
+    expect(waitForExit(log, 150_000)).toBe('EXIT=0')
+    const toolResults = readFileSync(report, 'utf8')
+    if (process.env.WT_EXECUTOR_E2E_OUTPUT === 'true') process.stdout.write(`CLAUDE_EXECUTOR_CONFINEMENT report=${JSON.stringify(toolResults)} cd=${existsSync(join(root, marker))} computed=${existsSync(join(root, computedMarker))} nodeSandbox=${existsSync(join(root, nodeSandboxMarker))} sandbox=${existsSync(join(root, sandboxMarker))}\n`)
+    expect(toolResults).toContain(marker); expect(toolResults).toContain(computedMarker); expect(toolResults).toMatch(/read-only file system/i)
+    expect(existsSync(join(root, marker)), `${basename(report)}: cd escape marker exists`).toBe(false)
+    expect(existsSync(join(root, computedMarker)), `${basename(report)}: computed escape marker exists`).toBe(false)
+    expect(existsSync(join(root, nodeSandboxMarker)), `${basename(report)}: encoded Node escape marker exists`).toBe(false)
+    expect(existsSync(join(root, sandboxMarker)), `${basename(report)}: sandbox escape marker exists`).toBe(false)
+  }, 160_000)
 
   it('allows read-only review roles to Read the configured knowledge-base index and its Markdown fiches only', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-executor-kb-worktree-')); roots.push(root); mkdirSync(join(root, '.lane'))

@@ -30,7 +30,7 @@ const receiptExit = (file, fallback = 1) => {
 }
 
 export function parseOrchestratorArgs(argv) {
-  const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null, knowledgeBaseIndex: null, pluginDirs: [] }
+  const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null, boardContract: null, knowledgeBaseIndex: null, pluginDirs: [] }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     const next = () => argv[++i]
@@ -45,6 +45,7 @@ export function parseOrchestratorArgs(argv) {
     else if (arg === '--worktrees-dir') options.worktreesDir = next()
     else if (arg === '--report') options.report = next()
     else if (arg === '--profile-env') options.profileEnv = next()
+    else if (arg === '--board-contract') options.boardContract = next()
     else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = next()
     else if (arg === '--plugin-dir') {
       const pluginDir = next() ?? ''
@@ -181,7 +182,14 @@ function renderReport({ waveId, options, rows, stopReason, fatal, judgment, boar
     }
   }
   const modelSections = judgment?.trim() || '## Independent Review\nsession ended before judgment\n\n## Decisions\nsession ended before judgment'
-  return `## Implemented\nwave=${waveId}; base=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}; skipped=${skipped.length ? skipped.map((entry) => `${entry.id} (${entry.reason})`).join('; ') : 'none'}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
+  const bases = rows.map((row) => `card=${row.id}; base=${row.base ?? '<missing>'}; baseRef=${options.base}`).join('\n') || `baseRef=${options.base}; no card base SHA recorded`
+  const routed = rows.flatMap((row) => (row.routedCards ?? []).map((card) => `- origin card ${row.id}: card ${card.id} — ${card.title} — ${card.l4Reason}${card.contested ? ' — contested' : ''}${card.missionAssessment ? ` — mission re-scan: ${card.missionAssessment}` : ''}`)).join('\n') || 'None.'
+  return `## Implemented\nwave=${waveId}; baseRef=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}; skipped=${skipped.length ? skipped.map((entry) => `${entry.id} (${entry.reason})`).join('; ') : 'none'}\n${bases}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Routed cards\n${routed}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
+}
+
+export function reviewBase(row) {
+  if (typeof row.base !== 'string' || !/^[a-f0-9]{40}$/.test(row.base)) throw new Error(`orchestrator review refused: card ${row.id} missing field base`)
+  return row.base
 }
 
 export async function runOrchestrator(input, dependencies = {}) {
@@ -292,7 +300,10 @@ export async function runOrchestrator(input, dependencies = {}) {
       writeFile(snapshot, cardText(card))
       await board.moveCard(id, 'In Progress')
       boardMutations.push({ type: 'moveCard', id, listName: 'In Progress' })
-      git('git', ['worktree', 'add', '-b', branch, worktree, options.base], { cwd: repo })
+      const base = String(git('git', ['rev-parse', '--verify', `${options.base}^{commit}`], { cwd: repo, encoding: 'utf8' })).trim()
+      if (!/^[a-f0-9]{40}$/.test(base)) throw new Error(`base ${options.base} did not resolve to a full commit SHA`)
+      row.base = base
+      git('git', ['worktree', 'add', '-b', branch, worktree, base], { cwd: repo })
       git('git', ['config', '--worktree', 'core.hooksPath', hooks], { cwd: worktree })
       git('git', ['config', '--worktree', 'merge.ff', 'false'], { cwd: worktree })
       const refusedPush = path.join(waveDir, 'refused-push')
@@ -304,13 +315,22 @@ export async function runOrchestrator(input, dependencies = {}) {
       row.install = await (dependencies.install ?? defaultInstall)(worktree, cardDir)
       if (!fs.existsSync(path.join(cardDir, 'install.log'))) writeFile(path.join(cardDir, 'install.log'), `EXIT=${row.install ?? 1}\n`)
       if (row.install !== 0) { row.pilot = 1; row.reason = `dependency install failed (EXIT=${row.install})`; writeFile(path.join(cardDir, 'pilot.log'), 'EXIT=1\n'); return row }
-      const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, knowledgeBaseIndex: options.knowledgeBaseIndex, knowledgeBaseProjectRoot: repo, pluginDirs: options.pluginDirs, timeout: options.pilotTimeout, boardMoves: false }, pilotDependencies)
+      const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, boardContract: options.boardContract, knowledgeBaseIndex: options.knowledgeBaseIndex, knowledgeBaseProjectRoot: repo, pluginDirs: options.pluginDirs, timeout: options.pilotTimeout, boardMoves: false }, { ...pilotDependencies, board })
       row.pilot = pilot.exitCode
+      row.partial = pilot.summary?.partial ?? null
       row.route = /^route=(LITE|FULL)\b/.exec(fs.existsSync(runnerLog) ? fs.readFileSync(runnerLog, 'utf8') : '')?.[1] ?? pilot.summary?.route ?? '-'
       writeFile(path.join(cardDir, 'pilot.log'), `EXIT=${pilot.exitCode}\n`)
-      for (const name of ['summary.json', 'usage.json', 'cost.json', 'sdk-transcript.json', 'pilot-report.md']) {
+      for (const name of ['summary.json', 'usage.json', 'cost.json', 'sdk-transcript.json', 'pilot-report.md', 'lifecycle.json']) {
         const source = path.join(worktree, '.lane', name)
         if (fs.existsSync(source)) fs.copyFileSync(source, path.join(cardDir, name))
+      }
+      try { row.routedCards = JSON.parse(fs.readFileSync(path.join(worktree, '.lane', 'lifecycle.json'), 'utf8')).routed_cards ?? [] } catch { row.routedCards = [] }
+      for (const routed of row.routedCards) {
+        if (!options.missionList) continue
+        try {
+          const routedCard = validateBoardCard(await board.getCard(String(routed.id)))
+          routed.missionAssessment = await ineligibleReason(routedCard, options.missionLabels, board, new Map([[String(routed.id), routedCard]])) ?? 'eligible for mission'
+        } catch (error) { routed.missionAssessment = `board unavailable: ${errorText(error)}` }
       }
       const beforeGates = treeSignature(worktree)
       const gateResult = await (dependencies.gates ?? defaultGates)(worktree, cardDir)
@@ -326,10 +346,11 @@ export async function runOrchestrator(input, dependencies = {}) {
       row.reportCheck = receiptExit(path.join(cardDir, 'report-findings-check.log'))
       const head = String(git('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' })).trim()
       row.head = head
-      const diff = String(git('git', ['diff', `${options.base}..${head}`], { cwd: worktree, encoding: 'utf8' }))
+      const reviewBaseSha = reviewBase(row)
+      const diff = String(git('git', ['diff', `${reviewBaseSha}..${head}`], { cwd: worktree, encoding: 'utf8' }))
       writeFile(path.join(cardDir, 'diff.patch'), diff)
-      row.files = String(git('git', ['diff', '--name-only', `${options.base}..${head}`], { cwd: worktree, encoding: 'utf8' })).trim().split('\n').filter(Boolean)
-      row.fidelity = await (dependencies.fidelity ?? ((context) => defaultFidelity(repo, context)))({ worktree, cardDir, id, waveId, base: options.base, head })
+      row.files = String(git('git', ['diff', '--name-only', `${reviewBaseSha}..${head}`], { cwd: worktree, encoding: 'utf8' })).trim().split('\n').filter(Boolean)
+      row.fidelity = await (dependencies.fidelity ?? ((context) => defaultFidelity(repo, context)))({ worktree, cardDir, id, waveId, base: reviewBaseSha, head })
       if (!fs.existsSync(path.join(cardDir, 'fidelity-verify.log'))) writeFile(path.join(cardDir, 'fidelity-verify.log'), `EXIT=${row.fidelity ?? 1}\n`)
       row.fidelity = receiptExit(path.join(cardDir, 'fidelity-verify.log'))
       return row
@@ -383,7 +404,13 @@ export async function runOrchestrator(input, dependencies = {}) {
         row.reason = 'orchestrator session ended after 3 turns without progress'
       }
       const receiptsGreen = row.pilot === 0 && row.gates === '0/0/0' && row.clean === 0 && row.reportCheck === 0 && row.fidelity === 0 && fs.readFileSync(path.join(row.cardDir, 'diff.patch'), 'utf8').trim()
-      if ((row.pilot === 1 || row.pilot === 2) && row.decision !== 'escalated') { row.decision = 'escalated'; row.reason = row.reason ?? `pilot EXIT=${row.pilot} requires escalate` }
+      if (row.pilot === 2) {
+        const findings = Array.isArray(row.partial?.findings) ? row.partial.findings.filter((finding) => typeof finding === 'string' && finding) : []
+        const detail = row.partial?.reason ?? 'partial delivery'
+        row.decision = 'partial'
+        row.reason = `pilot EXIT=2: ${detail}${findings.length ? `; ${row.partial?.phase === 'report' ? 'unmet' : 'findings'}: ${findings.join('; ')}` : ''}`
+      }
+      else if (row.pilot === 1 && row.decision !== 'escalated') { row.decision = 'escalated'; row.reason = row.reason ?? 'pilot EXIT=1 requires escalate' }
       else if (row.decision === 'accepted' && !receiptsGreen) { row.decision = 'escalated'; row.reason = 'accept refused: required receipt failed' }
       const comment = row.decision === 'accepted'
         ? `accepted by wave ${waveId} — awaiting main integration (branch ${row.branch}, head ${row.head})`
@@ -399,5 +426,5 @@ export async function runOrchestrator(input, dependencies = {}) {
     stopReason = fatal.startsWith('board unavailable:') ? 'board unavailable' : fatal
   }
   emit()
-  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations, skipped: skipped.filter((entry) => !rows.some((row) => row.id === entry.id)) }
+  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'partial', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations, skipped: skipped.filter((entry) => !rows.some((row) => row.id === entry.id)) }
 }

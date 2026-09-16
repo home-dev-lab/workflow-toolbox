@@ -5,6 +5,35 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- SDK pilot exit 0 now means delivered: every card criterion is proven and E2E records a real
+  procedure and output. Non-proven outcomes and unrun E2E checks are archived as partial, exit 2,
+  and remain partial rather than accepted in orchestrator wave reports.
+- SDK lifecycle work can no longer be silently deferred. The runner-owned `route_finding` tool creates
+  a labelled, dependent, provenance-bearing card from `--board-contract`, records it in lifecycle
+  receipts, enforces named-card report grammar, handles one-round scope contests, and mechanically
+  surfaces routed cards in pilot and orchestrator reports.
+- Claude executor Bash permissions now reject explicit parent-directory operands such as `cd ..` and
+  interpreter `resolve('..', ...)` calls as defense in depth. A real-SDK regression fixture locks the
+  SDK sandbox as the filesystem confinement boundary for paths computed beyond lexical inspection.
+- The What is running pane now keeps open state inside each session instead of the plugin-wide
+  store, and a slow snapshot refresh can no longer make the pane disappear after a toggle click.
+- The What is running process section no longer reports `partial (unreadable process records)` when a
+  process merely exited between the `/proc` listing and its record reads: a pid directory found absent
+  after a null read is counted in `processVanished` and discovery stays complete (every listed pid absent
+  still reports `unreadable`: that is the source going away, not a race); a record that still exists and cannot be
+  read is still a read failure.
+- SDK pilot runs now record a lifecycle partial, publish the standard external archive, and finalize
+  summary, usage, transcript, and cost receipts after runner timeouts, repeated no-progress turns,
+  or initialized SDK stream failures. Interrupted lifecycle relaunches refuse with one complete reset
+  command, and timed-out lanes can be abandoned or extended through the runner-hosted lifecycle tool.
+- Orchestrator waves now freeze each card worktree's base as a full commit SHA. Archived diffs,
+  fidelity manifests, and wave reports keep using that SHA if the configured base branch advances.
+- Lifecycle reports are now archived under the project root instead of inside the card worktree,
+  so removing the completed worktree does not destroy its audit archive. `wt-pilot-runner` takes
+  `--archive-root <project root>` and defaults to the checkout that owns the worktree; an archive
+  root that resolves inside the worktree is refused at construction, before any phase runs.
+
 ## [0.178.0] - 2026-09-15
 
 ### Changed

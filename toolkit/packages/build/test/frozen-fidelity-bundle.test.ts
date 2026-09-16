@@ -38,7 +38,7 @@ function fixture() {
   writeFileSync(join(root, '.lane', 'summary.json'), JSON.stringify({ commit: head }))
   const bundle = mkdtempSync(join(tmpdir(), 'wt-fidelity-bundle-')); roots.push(bundle)
   const files = ['.lane/typecheck.log', '.lane/tdd-run.log', '.lane/tdd-report.md', '.lane/pilot-report.md', '.lane/summary.json']
-  const manifest = freezeFidelityBundle({ root, outDir: bundle, card: '186', session: 'sdk-1', base: 'base', head, files })
+  const manifest = freezeFidelityBundle({ root, outDir: bundle, card: '186', session: 'sdk-1', base: head, head, files })
   return { root, bundle, manifest, files, git }
 }
 
@@ -51,6 +51,21 @@ it('round-trips canonical typed fidelity evidence', () => {
   expect(readFileSync(join(bundle, 'fidelity-manifest.json'), 'utf8')).toBe(canonical(manifest))
   expect(manifest.files.map((file: { kind: string }) => file.kind)).toEqual(['report', 'commit', 'report', 'lane', 'gate'])
   expect(verifyFidelityBundle({ root, dir: bundle, requireCleanTree: true, requireHead: true })).toMatchObject({ card: '186', session: 'sdk-1' })
+})
+
+it('requires the fidelity base to be a full commit SHA that exists in the repository', () => {
+  const { root, bundle, manifest, files } = fixture()
+  const symbolic = mkdtempSync(join(tmpdir(), 'wt-fidelity-symbolic-base-')); roots.push(symbolic)
+  expect(() => freezeFidelityBundle({ root, outDir: symbolic, card: '186', session: 'sdk-1', base: 'develop', head: manifest.head, files })).toThrow('base must be a full 40-hex commit SHA')
+  const absent = 'f'.repeat(40)
+  const missing = mkdtempSync(join(tmpdir(), 'wt-fidelity-missing-base-')); roots.push(missing)
+  expect(() => freezeFidelityBundle({ root, outDir: missing, card: '186', session: 'sdk-1', base: absent, head: manifest.head, files })).toThrow(`base commit does not exist in repository: ${absent}`)
+
+  const forged = JSON.parse(readFileSync(join(bundle, 'fidelity-manifest.json'), 'utf8'))
+  forged.base = 'develop'; writeManifest(bundle, forged)
+  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow('base must be a full 40-hex commit SHA')
+  forged.base = absent; writeManifest(bundle, forged)
+  expect(() => verifyFidelityBundle({ root, dir: bundle })).toThrow(`base commit does not exist in repository: ${absent}`)
 })
 
 it('B1 lock: refuses a typed entry whose fields no longer match its receipt', () => {
@@ -79,17 +94,17 @@ it('refuses unknown freeze inputs unless explicitly classified as other', () => 
   const { root, manifest } = fixture()
   writeFileSync(join(root, '.lane', 'notes.txt'), 'notes\n')
   const refused = mkdtempSync(join(tmpdir(), 'wt-fidelity-refused-')); roots.push(refused)
-  expect(() => freezeFidelityBundle({ root, outDir: refused, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/notes.txt'] })).toThrow('unknown fidelity bundle input')
+  expect(() => freezeFidelityBundle({ root, outDir: refused, card: '186', session: 'sdk-1', base: manifest.base, head: manifest.head, files: ['.lane/notes.txt'] })).toThrow('unknown fidelity bundle input')
   const accepted = mkdtempSync(join(tmpdir(), 'wt-fidelity-other-')); roots.push(accepted)
-  expect(freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/notes.txt'], otherFiles: ['.lane/notes.txt'] }).files[0].kind).toBe('other')
+  expect(freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: manifest.base, head: manifest.head, files: ['.lane/notes.txt'], otherFiles: ['.lane/notes.txt'] }).files[0].kind).toBe('other')
 })
 
 it('H5 semantic lock: refuses custom gate logs at freeze unless explicitly classified as other', () => {
   const { root, manifest } = fixture(); writeFileSync(join(root, '.lane', 'custom.log'), 'custom\nEXIT=0\n')
   const refused = mkdtempSync(join(tmpdir(), 'wt-fidelity-custom-refused-')); roots.push(refused)
-  expect(() => freezeFidelityBundle({ root, outDir: refused, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/custom.log'] })).toThrow('unknown fidelity bundle input')
+  expect(() => freezeFidelityBundle({ root, outDir: refused, card: '186', session: 'sdk-1', base: manifest.base, head: manifest.head, files: ['.lane/custom.log'] })).toThrow('unknown fidelity bundle input')
   const accepted = mkdtempSync(join(tmpdir(), 'wt-fidelity-custom-other-')); roots.push(accepted)
-  expect(freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/custom.log'], otherFiles: ['.lane/custom.log'] }).files[0].kind).toBe('other')
+  expect(freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: manifest.base, head: manifest.head, files: ['.lane/custom.log'], otherFiles: ['.lane/custom.log'] }).files[0].kind).toBe('other')
 })
 
 it.each([
@@ -135,21 +150,22 @@ it('B4 lock: records a contained link and refuses an escaping input link without
   const { root, files } = fixture()
   symlinkSync('typecheck.log', join(root, '.lane', 'inside.log'))
   const contained = mkdtempSync(join(tmpdir(), 'wt-fidelity-contained-')); roots.push(contained)
-  const manifest = freezeFidelityBundle({ root, outDir: contained, card: '186', session: 'sdk-1', base: 'base', head: readFileSync(join(root, '.lane', 'summary.json'), 'utf8').match(/[a-f0-9]{40,64}/)![0], files: [...files, '.lane/inside.log'], otherFiles: ['.lane/inside.log'] })
+  const head = readFileSync(join(root, '.lane', 'summary.json'), 'utf8').match(/[a-f0-9]{40,64}/)![0]
+  const manifest = freezeFidelityBundle({ root, outDir: contained, card: '186', session: 'sdk-1', base: head, head, files: [...files, '.lane/inside.log'], otherFiles: ['.lane/inside.log'] })
   expect(manifest.files.find((file: { name: string }) => file.name === '.lane/inside.log')).toMatchObject({ kind: 'symlink', target: 'typecheck.log' })
   expect(verifyFidelityBundle({ root, dir: contained })).toBeTruthy()
   symlinkSync('/etc/passwd', join(root, '.lane', 'outside.log'))
   const escaped = mkdtempSync(join(tmpdir(), 'wt-fidelity-escaped-')); roots.push(escaped)
-  expect(() => freezeFidelityBundle({ root, outDir: escaped, card: '186', session: 'sdk-1', base: 'base', head: 'head', files: ['.lane/outside.log'], otherFiles: ['.lane/outside.log'] })).toThrow('symlink escapes root: .lane/outside.log')
+  expect(() => freezeFidelityBundle({ root, outDir: escaped, card: '186', session: 'sdk-1', base: head, head, files: ['.lane/outside.log'], otherFiles: ['.lane/outside.log'] })).toThrow('symlink escapes root: .lane/outside.log')
 })
 
 it('H6-2 lock: symlinks require the same explicit other-file classification as regular files', () => {
   const { root, manifest } = fixture()
   symlinkSync('typecheck.log', join(root, '.lane', 'custom.log'))
   const refused = mkdtempSync(join(tmpdir(), 'wt-fidelity-symlink-refused-')); roots.push(refused)
-  expect(() => freezeFidelityBundle({ root, outDir: refused, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/custom.log'] })).toThrow('unknown fidelity bundle input')
+  expect(() => freezeFidelityBundle({ root, outDir: refused, card: '186', session: 'sdk-1', base: manifest.base, head: manifest.head, files: ['.lane/custom.log'] })).toThrow('unknown fidelity bundle input')
   const accepted = mkdtempSync(join(tmpdir(), 'wt-fidelity-symlink-other-')); roots.push(accepted)
-  const frozen = freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/custom.log'], otherFiles: ['.lane/custom.log'] })
+  const frozen = freezeFidelityBundle({ root, outDir: accepted, card: '186', session: 'sdk-1', base: manifest.base, head: manifest.head, files: ['.lane/custom.log'], otherFiles: ['.lane/custom.log'] })
   expect(frozen.files[0]).toMatchObject({ kind: 'symlink', evidence: 'other', target: 'typecheck.log' })
   expect(verifyFidelityBundle({ root, dir: accepted })).toBeTruthy()
   const forged = JSON.parse(readFileSync(join(accepted, 'fidelity-manifest.json'), 'utf8'))
@@ -157,7 +173,7 @@ it('H6-2 lock: symlinks require the same explicit other-file classification as r
   expect(() => verifyFidelityBundle({ root, dir: accepted })).toThrow('invalid fidelity manifest entry')
   symlinkSync('typecheck.log', join(root, '.lane', 'lint.log'))
   const recognized = mkdtempSync(join(tmpdir(), 'wt-fidelity-symlink-recognized-')); roots.push(recognized)
-  const recognizedManifest = freezeFidelityBundle({ root, outDir: recognized, card: '186', session: 'sdk-1', base: 'base', head: manifest.head, files: ['.lane/lint.log'] })
+  const recognizedManifest = freezeFidelityBundle({ root, outDir: recognized, card: '186', session: 'sdk-1', base: manifest.base, head: manifest.head, files: ['.lane/lint.log'] })
   expect(recognizedManifest.files[0]).toMatchObject({ kind: 'symlink', evidence: 'gate', target: 'typecheck.log' })
   expect(verifyFidelityBundle({ root, dir: recognized })).toBeTruthy()
 })

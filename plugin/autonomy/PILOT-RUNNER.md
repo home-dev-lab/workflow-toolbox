@@ -3,12 +3,12 @@
 `node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <card.md>` runs the pilot with `query()`,
 `permissionMode: 'default'`, and `settingSources: []`. The SDK routes every tool request through
 `canUseTool`: it allows Read, Glob, and Grep only inside the worktree after real-path confinement,
-the three lifecycle tools, and the six Planka tools below, and denies everything else. Supplying the
+the four lifecycle tools, and the six Planka tools below, and denies everything else. Supplying the
 callback makes the SDK use its stdio permission-prompt transport, so the callback response resolves
 requests headlessly rather than opening an interactive prompt. The remaining surface is the local
 `pilot-guard` plugin, the Planka HTTP MCP, and the
 in-process `sdk-pilot-lifecycle` MCP server. The lifecycle server exposes `transition`,
-`write_artifact`, and `run`; it owns phases, artifacts, lanes, gates, and the report-edge commit.
+`write_artifact`, `route_finding`, and `run`; it owns phases, artifacts, lanes, gates, and the report-edge commit.
 The only admitted Planka tools are `mcp__planka__get_card`, `mcp__planka__get_comments`,
 `mcp__planka__add_comment`, `mcp__planka__update_card`, `mcp__planka__move_card`, and
 `mcp__planka__add_label_to_card`; every other Planka operation is denied. Owner input arrives only
@@ -43,12 +43,12 @@ form and Node path APIs for resolution and real-path containment on each host.
 | --- | --- |
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
 | plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing/reworded criterion is refused with an example. |
-| critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. A fourth changes-requested verdict after three plan rounds reaches a partial report. |
+| critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. `CONTEST routed card <id>:` gets exactly one plan round; a repeated maintained scope disagreement proceeds and is reported. A fourth other changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd or harden -> verify | Attested lane receipt and non-empty report. On FULL, `tdd-brief.md` has the plan `## Tasks` block byte-identically. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
 | review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
 | refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
-| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: <reason>`, plus `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and archive under `.claude/reports/<card>-<stamp>/` with a manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
+| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
@@ -129,7 +129,9 @@ unproductive end turns the prompt stream closes, the runner exits 1, and `summar
 `completed:false`, `injected_turns` counting every injection (the three continuations plus any owner
 message or earlier continuation that was followed by progress), and reason
 `pilot ended its turn 3 times without progress`. Any other stream ending first exits 1 and writes
-`summary.completed=false`. A completed full run exits 0. A completed partial run exits 2 with
+`summary.completed=false`. Runner timeout, repeated no-progress turns, and initialized SDK stream errors
+also record a lifecycle partial with the specific reason and publish the standard external archive; final
+summary, usage, transcript, and cost receipts are refreshed there. A completed run exits 0 only when every DoD outcome is proven and E2E has a real procedure and output. A completed partial run exits 2 with
 `summary.completed=true` and the lifecycle's non-null `partial` object; full-run summaries carry
 `partial:null`. `.lane/usage.json`, `.lane/summary.json`, `.lane/cost.json`, and
 `.lane/sdk-transcript.json` record the run. The summary records `requested_model` with its resolver
@@ -173,11 +175,17 @@ complete runs enter totals by default; partial and unknown-outcome runs are alwa
 and enter totals only with `--include-partial`. Mirrored receipts deduplicate by card id plus runner
 start, never by archive path. Malformed usage exits 2.
 
-`--card`, `--dir`, and `--card-file` are required. Optional flags are `--knowledge-base-index`, repeatable
+`--card`, `--dir`, and `--card-file` are required. Optional flags are `--board-contract <json file>`, `--knowledge-base-index`, repeatable
 `--plugin-dir <absolute-path>`, `--profile-env`, `--contract`,
 `--hard`, `--mailbox`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
 Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.
+The board contract is `{ boardId, listId, labels: { priority: {P0,P1,P2}, type:
+{bug,chore,feature,research}, effort: {S,M,L}, category } }`. `route_finding` is the only card-creation
+surface: the runner makes one `create_card` MCP call with the three selected label ids, category,
+`dependsOn: {cardId: <origin>}`, and a `## Provenance` line containing origin, session, L4 reason, and
+timestamp. It records `routed_cards` in `lifecycle.json` and the archive manifest. A contested item
+completed in-run gets a runner comment and move to `NotDoing`; maintained disagreement stays named.
 Configured plugin directories are passed as local SDK plugins beside `pilot-guard`; the initialization
 receipt must name every one or the pilot run is refused. No plugin name or host path is built in.
 
@@ -223,9 +231,10 @@ under the wave directory.
 One SDK orchestrator session reads each snapshot, pilot report, and diff through the wave lifecycle
 server. It records `accept`, `escalate`, or `reject` against the card's definition of done; it cannot
 merge, push, edit files, or move cards. The driver renders `Implemented`, `Verification`, the
-session's verbatim `Independent Review` and `Decisions`, `Remaining Risks`, `Escalations for main`,
-and `Findings`. Exit 0 means every card was accepted, exit 2 means every card was decided but at
-least one was escalated or rejected, and exit 1 means the wave did not complete.
+session's verbatim `Independent Review` and `Decisions`, `Routed cards`, `Remaining Risks`,
+`Escalations for main`, and `Findings`. Static waves list each lifecycle record; mission waves re-read
+each routed card against mission eligibility. Exit 0 means every card was accepted, exit 2 means every card was decided but at
+least one was partial, escalated, or rejected, and exit 1 means the wave did not complete. Pilot exit 2 is always rendered as partial and cannot be accepted.
 The judge reads the evidence copy retained under the real-path-confined wave directory. On every
 report emit, the driver also copies available receipts to `<report-dir>/cards/<id>/` and prints that
 path in the per-card table.
