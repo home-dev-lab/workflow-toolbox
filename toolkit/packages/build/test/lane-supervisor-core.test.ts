@@ -56,18 +56,20 @@ describe('lane supervisor safety core', () => {
     expect(classifyLane(record, { platform: 'win32', inspect: () => null, processExists: () => null })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-powershell', worker: 'unknown', child: 'unknown' })
   })
 
-  it('reads Darwin ps and lsof transcripts into the common identity contract', () => {
+  it('reads repeated Darwin ps and lsof transcripts into one stable identity', () => {
     const execFile = vi.fn((command: string) => command === 'ps'
       ? { status: 0, stdout: 'Wed Sep 16 12:34:56 2026   431 /usr/local/bin/node worker.mjs --flag\n' }
       : { status: 0, stdout: 'p432\nfcwd\nn/Users/runner/work/lane\n' })
-    expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toEqual({
+    const expected = {
       pid: 432,
       argv: ['/usr/local/bin/node worker.mjs --flag'],
       startTime: Math.floor(Date.parse('Wed Sep 16 12:34:56 2026') / 1000),
       groupId: 431,
       cwd: '/Users/runner/work/lane',
-    })
-    expect(execFile).toHaveBeenCalledWith('ps', ['-p', '432', '-o', 'lstart=,pgid=,command='], expect.any(Object))
+    }
+    expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toEqual(expected)
+    expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toEqual(expected)
+    expect(execFile).toHaveBeenCalledWith('ps', ['-p', '432', '-o', 'lstart=,pgid=,command='], expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C' }) }))
   })
 
   it('keeps a Darwin identity readable when lsof is absent and marks cwd unreadable', () => {
@@ -91,6 +93,14 @@ describe('lane supervisor safety core', () => {
       expect.arrayContaining(['-Command', expect.stringContaining('Get-CimInstance Win32_Process -Filter "ProcessId=432"')]),
       expect.any(Object),
     )
+  })
+
+  it.each([
+    '2026-09-16T19:34:56.000Z',
+    '/Date(1789587296000)/',
+  ])('normalizes the Windows CreationDate encoding %s', (creationDate) => {
+    const execFile = vi.fn(() => ({ status: 0, stdout: JSON.stringify({ ProcessId: 432, CreationDate: creationDate, CommandLine: 'node.exe worker.mjs', ParentProcessId: 431 }) }))
+    expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile })?.startTime).toBe(1_789_587_296)
   })
 
   it.each(['darwin', 'win32'])('classifies %s running and gone from injected provider evidence', (platform) => {

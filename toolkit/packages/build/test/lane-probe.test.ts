@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -62,10 +62,7 @@ function runProbeViaShellWrapper(args: string[]): Verdict {
 // test runs (and unrelated processes on the machine) never collide.
 function spawnFixtureProcess(cwd: string): { child: ChildProcess; marker: string } {
   const marker = `wt-lane-probe-fixture-${randomUUID()}`
-  const fixtureDir = mkdtempSync(join(tmpdir(), 'wt-lane-probe-fixture-'))
-  const fixtureScript = join(fixtureDir, 'sleep.mjs')
-  writeFileSync(fixtureScript, 'setInterval(() => {}, 1000)\n')
-  const child = spawn(process.execPath, [fixtureScript, marker], { cwd, stdio: 'ignore' })
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', marker], { cwd, stdio: 'ignore' })
   return { child, marker }
 }
 

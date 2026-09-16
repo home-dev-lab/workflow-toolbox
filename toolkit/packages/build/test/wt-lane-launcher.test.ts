@@ -118,7 +118,7 @@ function waitForVerdict(status: string, expected: string, ms = 15_000) {
   const until = Date.now() + ms
   let verdict = 'unknown'
   while (Date.now() < until) {
-    verdict = classifyLane(JSON.parse(readFileSync(status, 'utf8')), { platform: 'linux' }).status
+    verdict = classifyLane(JSON.parse(readFileSync(status, 'utf8')), { platform: process.platform }).status
     if (verdict === expected) return
     spawnSync('sleep', ['0.05'])
   }

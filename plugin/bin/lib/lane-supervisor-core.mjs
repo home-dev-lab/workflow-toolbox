@@ -21,7 +21,7 @@ function evidenceSource(platform) {
 
 function runEvidence(command, args, execFile) {
   try {
-    const result = execFile(command, args, { encoding: 'utf8', windowsHide: true })
+    const result = execFile(command, args, { encoding: 'utf8', windowsHide: true, env: { ...process.env, LC_ALL: 'C' } })
     if (result.error) return { status: 'unavailable' }
     return { status: result.status, stdout: result.stdout ?? '' }
   } catch { return { status: 'unavailable' } }

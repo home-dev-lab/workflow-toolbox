@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- macOS lane lifecycle fixtures now classify live processes through the Darwin provider instead of forcing Linux `/proc`; process evidence pins the C locale, and cross-OS fixtures no longer assume an unconfigured loopback alias, a non-canonical temp spelling, or a short executable path.
 - Lane supervision now reads process identity from `ps`/`lsof` on macOS and `Win32_Process` through PowerShell on Windows, while reporting source-specific unknown evidence and refusing unsupported external Windows tree termination legibly.
 - Windows OpenCode launches now resolve npm `.cmd`/`.bat` shims and invoke them through the command shell across lane, observer, fence, and envelope paths.
 - macOS test fixtures now use canonical temporary roots, Tailscale detection accepts a pinned binary for hermetic probes, and `/proc`-dependent coverage skips explicitly outside Linux.

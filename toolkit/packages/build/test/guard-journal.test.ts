@@ -181,8 +181,10 @@ describe('guard-journal — recordGuardEvent', () => {
   })
 
   it('classifies a record whose raw target is under the native temp root as test-origin', () => {
+    const target = join(journalDir, 'project')
+    mkdirSync(target)
     record(
-      { guard: 'wt-example-guard-hook.mjs', decision: 'blocked', cwd: join(tmpdir(), 'probe-root', 'project') },
+      { guard: 'wt-example-guard-hook.mjs', decision: 'blocked', cwd: target },
       { WT_GUARD_JOURNAL_TEST_ORIGIN: undefined },
     )
     expect(readAllEntries()[0]!.origin).toBe('test')
