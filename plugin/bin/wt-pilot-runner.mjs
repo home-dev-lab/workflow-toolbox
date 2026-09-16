@@ -6,7 +6,7 @@ import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 import { recordSessionEnvLog } from './lib/session-env-log.mjs'
 
 function usage() {
-  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--knowledge-base-index <path>] [--plugin-dir <absolute-path>]... [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--timeout 5400]'
+  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--knowledge-base-index <path>] [--archive-root <project root>] [--plugin-dir <absolute-path>]... [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--timeout 5400]'
 }
 
 async function main() {

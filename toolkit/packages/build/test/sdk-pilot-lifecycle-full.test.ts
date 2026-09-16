@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -218,9 +218,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout.trim()).toBe('2')
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
     expect(summary.partial).toEqual({ phase: 'critic', round: 4, reason, findings: ['tighten the proof'] })
-    const archives = readdirSync(join(lifecycle.root, '.claude', 'reports'))
-    expect(archives).toHaveLength(1)
-    const manifest = JSON.parse(readFileSync(join(lifecycle.root, '.claude', 'reports', archives[0]!, 'manifest.json'), 'utf8'))
+    const manifest = JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))
     expect(manifest.partial).toEqual(summary.partial)
   })
 
@@ -323,15 +321,17 @@ function laneLauncher() {
 }
 function fullLifecycle(options: Record<string, unknown> = {}) {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
+  const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
-  const server = createLifecycleServer({ worktree, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [], ...options })
+  const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [], ...options })
   return { ...handlers(server), calls, base, root: worktree, state: server.state }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
+  const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); process.env.WT_FULL_CALLS = calls; process.env.WT_FULL_COUNTS = counts
-  const server = createLifecycleServer({ worktree, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [] })
+  const server = createLifecycleServer({ worktree, archiveRoot, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [] })
   return { ...handlers(server), root: worktree }
 }
 async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }) { for (const name of ['typecheck', 'lint', 'test']) await lifecycle.run({ kind: 'gate', name }) }
