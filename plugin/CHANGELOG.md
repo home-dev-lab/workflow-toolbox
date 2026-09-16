@@ -5,6 +5,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- The lane-orphan watcher now detects an orphan of its OWN kind — a `wt-lane-orphan-watch` process whose
+  working directory was deleted and whose parent is init — and terminates it by exact PID after re-reading
+  its identity; a live sibling, an unreadable identity or a non-init parent is reported, never signalled;
+  off Linux the detector says `unavailable: /proc required` instead of reporting zero orphans.
+
+### Changed
+- The SDK pilot runner documentation now states its EXPERIMENTAL status and the three proofs still
+  missing (a complete real FULL cycle, a no-GPT real run, a green cross-OS matrix), so a green
+  exit is read as evidence about one run rather than approval of the runner.
+
 ## [0.179.0] - 2026-09-16
 
 ### Fixed

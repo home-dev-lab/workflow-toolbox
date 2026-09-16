@@ -34,12 +34,21 @@ function readJournal(journalDir: string): Array<Record<string, unknown>> {
 
 function runHook(hookFile: string, payload: Record<string, unknown>, extraEnv: NodeJS.ProcessEnv = {}) {
   const journalDir = mkRoot(`journal-${hookFile}`)
+  const configDir = extraEnv.CLAUDE_CONFIG_DIR ?? join(journalDir, 'config')
+  if (!extraEnv.CLAUDE_CONFIG_DIR) {
+    const secretStore = join(configDir, 'plugins', 'store', 'wt-secret-guard.json')
+    mkdirSync(join(secretStore, '..'), { recursive: true })
+    // Most cases assert the guard's own output. Supply the valid, empty store a clean
+    // installation would receive so the journal's unrelated fallback warning is absent.
+    writeFileSync(secretStore, JSON.stringify({ salt: 'fixture-salt', detections: { entries: [] } }))
+  }
   const res = spawnSync(process.execPath, [join(BIN_DIR, hookFile)], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
     env: {
       ...process.env,
       ...extraEnv,
+      CLAUDE_CONFIG_DIR: configDir,
       WT_GUARD_JOURNAL_DIR: journalDir,
     },
   })

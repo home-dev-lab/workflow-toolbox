@@ -325,6 +325,7 @@ describe('SDK pilot runner', () => {
     const result = await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, {
       query,
       resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
+      resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }),
       now: () => calls++ === 0 ? 0 : 1001,
       log: (line: string) => logged.push(line),
     })
@@ -495,7 +496,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'real-lifecycle', content: receipt }] } }
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
-    const result = await runPilot({ card: '1', cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {} })
+    const result = await runPilot({ card: '1', cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }), resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }), costSessions: [], lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {} })
     expect(registeredServer).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(receipt).toBe(AWAITING_FIDELITY_RESULT)
     expect(result).toMatchObject({ exitCode: 0, summary: { awaiting_fidelity_receipt: true } })
@@ -852,7 +853,7 @@ describe('SDK pilot runner', () => {
       permission = await options.canUseTool('mcp__planka__move_card', {})
       yield initMessage()
     })()
-    await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, boardMoves: false }, { query, resolvePilotModels: models, log: (line: string) => logged.push(line) })
+    await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, boardMoves: false }, { query, resolvePilotModels: models, resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }), log: (line: string) => logged.push(line) })
     expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet executor=gpt-lane')
     expect(permission).toEqual({ behavior: 'deny', message: "board moves are the orchestrator's" })
     expect(lifecycleCanUseTool(f.dir, 'mcp__planka__move_card', {}, { boardMoves: true }).behavior).toBe('allow')

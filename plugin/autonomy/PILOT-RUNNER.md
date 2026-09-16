@@ -1,5 +1,7 @@
 # SDK pilot runner
 
+> **Status: EXPERIMENTAL.** The runner's phases and exit codes are locked by unit and real-runner tests, but as of 2026-09-16 no FULL run has completed a whole cycle on a real card (the three observed runs ended at the plan gate), the no-GPT profile has no real end-to-end run, and the cross-OS CI matrix is not green. Treat a green exit as evidence about the run it reports, not as approval of the runner.
+
 `node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <card.md>` runs the pilot with `query()`,
 `permissionMode: 'default'`, and `settingSources: []`. The SDK routes every tool request through
 `canUseTool`: it allows Read, Glob, and Grep only inside the worktree after real-path confinement,

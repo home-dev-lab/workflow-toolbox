@@ -4,6 +4,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionUnavailableMessage, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { registeredWorktrees, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
+import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
 import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
@@ -99,6 +100,23 @@ async function main() {
   }
   if (process.platform !== 'linux') process.stdout.write(`${supervisionUnavailableMessage()}\n`)
   const sweep = () => {
+    const watcherOrphans = terminateOrphanWatchers()
+    if (watcherOrphans.status === 'unavailable') {
+      const key = 'watcher-orphans:unavailable'
+      if (!notified.has(key)) notice(key, watcherOrphans.reason)
+    } else {
+      for (const item of watcherOrphans.orphans) {
+        const key = `watcher-orphan:${item.pid}:${item.startTime}`
+        if (watcherOrphans.killed.includes(item.pid) && !notified.has(key)) {
+          journal({ event: 'watcher-orphan-signaled', pid: item.pid, argv: argvSummary(item.argv), worktree: item.cwd.slice(0, -' (deleted)'.length), owner: null, reason: 'deleted cwd and ppid=1; SIGTERM sent by exact PID' })
+          notice(key, `LANE watcher-orphan signaled: pid=${item.pid} cwd=${JSON.stringify(item.cwd)} ppid=1; SIGTERM sent by exact PID`)
+        }
+      }
+      for (const item of watcherOrphans.reports) {
+        const key = `watcher-orphan-report:${item.pid}:${item.startTime ?? 'unknown'}:${item.reason}`
+        if (!notified.has(key)) notice(key, `WARNING: wt-lane-orphan-watch pid=${item.pid} requires review: ${item.reason}`)
+      }
+    }
     const known = records(options.project)
     for (const record of known) {
       const verdict = classifyLane(record)
