@@ -66,16 +66,18 @@ describe('lane supervisor safety core', () => {
     expect(kill).not.toHaveBeenCalled()
   })
 
-  it('terminates the verified worker group and journals what it killed', () => {
+  it('terminates the verified worker group and journals what it killed without reading host pids', () => {
     const kill = vi.fn()
     const journal = vi.fn()
-    const record = { runId: '76-1', state: 'running', worktree: '/lane', workerPid: 76, workerArgv: ['node'], workerStartTime: 760, childPid: 77, childArgv: ['opencode'], childStartTime: 770 }
+    const workerPid = process.pid
+    const childPid = workerPid + 1
+    const record = { runId: `${workerPid}-1`, state: 'running', worktree: '/lane', workerPid, workerArgv: ['node'], workerStartTime: workerPid * 10, childPid, childArgv: ['opencode'], childStartTime: childPid * 10 }
     let live = true
-    const inspect = (pid: number) => live ? { pid, argv: pid === 76 ? ['node'] : ['opencode'], startTime: pid * 10, groupId: 76, cwd: '/lane' } : null
+    const inspect = (pid: number) => live ? { pid, argv: pid === workerPid ? ['node'] : ['opencode'], startTime: pid * 10, groupId: workerPid, cwd: '/lane' } : null
     kill.mockImplementation((_pid, signal) => { if (signal === 'SIGKILL') live = false })
-    expect(terminateLane(record, { inspect, kill, journal, graceMs: 0, source: 'test', recordWorktree: '/lane' })).toMatchObject({ killed: true, reason: 'terminated' })
-    expect(kill.mock.calls).toEqual([[-76, 'SIGTERM'], [-76, 'SIGKILL']])
-    expect(journal).toHaveBeenCalledWith(expect.objectContaining({ event: 'terminated', runId: '76-1', source: 'test', workerPid: 76, childPid: 77 }))
+    expect(terminateLane(record, { inspect, kill, journal, graceMs: 0, processExists: () => false, source: 'test', recordWorktree: '/lane' })).toMatchObject({ killed: true, reason: 'terminated' })
+    expect(kill.mock.calls).toEqual([[-workerPid, 'SIGTERM'], [-workerPid, 'SIGKILL']])
+    expect(journal).toHaveBeenCalledWith(expect.objectContaining({ event: 'terminated', runId: `${workerPid}-1`, source: 'test', workerPid, childPid }))
   })
 
   it('worker-owned clean termination journals completion without SIGKILLing its own group', () => {
@@ -97,8 +99,8 @@ describe('lane supervisor safety core', () => {
     try {
       const record = { runId: '76-1', state: 'abandoned', worktree: lane, workerPid: 76, workerArgv: ['node'], workerStartTime: 760, childPid: 77, childArgv: ['opencode'], childStartTime: 770 }
       const inspect = (pid: number) => pid === 76 ? null : { pid, argv: ['opencode'], startTime: 770, groupId: 76, cwd: other }
-      expect(terminateLane(record, { inspect, kill, journal, graceMs: 0, source: 'control', recordWorktree: lane })).toMatchObject({ killed: false, reason: 'child-cwd-outside-worktree' })
-      expect(terminateLane({ ...record, worktree: forged }, { inspect, kill, journal, graceMs: 0, source: 'watcher', recordWorktree: lane })).toMatchObject({ killed: false, reason: 'record-worktree-mismatch' })
+      expect(terminateLane(record, { inspect, kill, journal, graceMs: 0, processExists: () => false, source: 'control', recordWorktree: lane })).toMatchObject({ killed: false, reason: 'child-cwd-outside-worktree' })
+      expect(terminateLane({ ...record, worktree: forged }, { inspect, kill, journal, graceMs: 0, processExists: () => false, source: 'watcher', recordWorktree: lane })).toMatchObject({ killed: false, reason: 'record-worktree-mismatch' })
       expect(kill).not.toHaveBeenCalled()
       expect(journal).toHaveBeenCalledWith(expect.objectContaining({ event: 'termination-refused' }))
     } finally { rmSync(root, { recursive: true, force: true }) }
@@ -107,7 +109,7 @@ describe('lane supervisor safety core', () => {
   it('distinguishes an unreadable child cwd from an outside cwd', () => {
     const record = { runId: '76-1', state: 'abandoned', worktree: '/lane', workerPid: 76, workerArgv: ['node'], workerStartTime: 760, childPid: 77, childArgv: ['opencode'], childStartTime: 770 }
     const inspect = (pid: number) => pid === 76 ? null : { pid, argv: ['opencode'], startTime: 770, groupId: 76, cwd: null }
-    expect(terminateLane(record, { inspect, kill: vi.fn(), graceMs: 0, source: 'control', recordWorktree: '/lane' })).toMatchObject({ killed: false, reason: 'child-cwd-unreadable' })
+    expect(terminateLane(record, { inspect, kill: vi.fn(), graceMs: 0, processExists: () => false, source: 'control', recordWorktree: '/lane' })).toMatchObject({ killed: false, reason: 'child-cwd-unreadable' })
   })
 
   it('refuses an in-worktree Linux target when identity evidence changes', () => {

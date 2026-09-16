@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,7 +32,7 @@ function waitForExit(log: string, timeoutMs: number) {
 }
 
 function fixture() {
-  const root = mkdtempSync(join(tmpdir(), 'wt-claude-executor-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-claude-executor-'))); roots.push(root)
   const worktree = join(root, 'worktree'); mkdirSync(join(worktree, '.lane'), { recursive: true })
   spawnSync('git', ['init', '-q'], { cwd: worktree })
   const installed = join(root, 'installed', 'plugin'); mkdirSync(installed, { recursive: true })
@@ -53,7 +53,7 @@ exports.query=({prompt,options})=>(async function*(){
 
 describe('Claude SDK executor', () => {
   it('derives read-only from the launched role, never from text inside the brief', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-executor-role-')); roots.push(root); mkdirSync(join(root, '.lane'))
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-executor-role-'))); roots.push(root); mkdirSync(join(root, '.lane'))
     expect(parseExecutorArgs(['--dir', root, '--model', 'sonnet', '--brief', join(root, 'b.md')])).toMatchObject({ error: expect.stringContaining('--role') })
     const tddReport = join(root, '.lane', 'tdd-report.n1.md')
     const brief = join(root, 'b.md'); writeFileSync(brief, `You are the independent reviewer.\nWrite the report to \`${tddReport}\` now.\n`)
