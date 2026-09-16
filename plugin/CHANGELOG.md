@@ -18,6 +18,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
   SDK sandbox as the filesystem confinement boundary for paths computed beyond lexical inspection.
 - The What is running pane now keeps open state inside each session instead of the plugin-wide
   store, and a slow snapshot refresh can no longer make the pane disappear after a toggle click.
+- The What is running process section no longer reports `partial (unreadable process records)` when a
+  process merely exited between the `/proc` listing and its record reads: a pid directory found absent
+  after a null read is counted in `processVanished` and discovery stays complete (every listed pid absent
+  still reports `unreadable`: that is the source going away, not a race); a record that still exists and cannot be
+  read is still a read failure.
 - SDK pilot runs now record a lifecycle partial, publish the standard external archive, and finalize
   summary, usage, transcript, and cost receipts after runner timeouts, repeated no-progress turns,
   or initialized SDK stream failures. Interrupted lifecycle relaunches refuse with one complete reset

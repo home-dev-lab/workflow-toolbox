@@ -960,6 +960,36 @@ await test('[WIR5-06] unreadable and capped proc scans report partial process di
   assert.equal(capped.processDiscovery, 'partial'); assert.equal(capped.processPartialReason, 'capped');
 });
 
+await test('[WIR5-07] a process that exits mid-scan is not a read failure; a record that exists and cannot be read is one', async () => {
+  // Field case 2026-09-15 (card 1864810463074714727): the pane read `process list partial (unreadable process records)`
+  // on a quiet machine. Measured on the real host: 1 collector run in 10 met a process that exited between the
+  // /proc listing and its record reads. That race is complete discovery of what exists, never a degraded scan.
+  const isolated = join(root, 'vanished-proc');
+  const procFixture = join(isolated, 'proc'); mkdirSync(procFixture, { recursive: true });
+  const base = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: procFixture, now: paths.now, platform: 'linux' };
+  mkdirSync(join(base.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(base.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(base.livenessDir, { recursive: true }); mkdirSync(join(base.suiteRoot, 'worktrees'), { recursive: true });
+  writeFileSync(join(procFixture, 'uptime'), '20000.00 1000.00\n');
+  // 4242 is listed, then gone before its records are read: a dangling entry stands in for the race.
+  // Windows refuses symlinks without a privilege; that half of the lock is then skipped, and says so.
+  let dangling = true;
+  try { symlinkSync(join(isolated, 'no-such-process'), join(procFixture, '4242')); } catch (error) { if (error?.code !== 'EPERM') throw error; dangling = false; console.log('  (symlink refused on this host; the vanished half of WIR5-07 is not exercised here)'); }
+  if (dangling) {
+    // Only vanished entries: that is not a race, it is the source going away under the scan → unreadable.
+    const sourceLost = await readSnapshot({ process: processCapability }, base);
+    assert.equal(sourceLost.processDiscovery, 'partial'); assert.equal(sourceLost.processPartialReason, 'unreadable'); assert.equal(sourceLost.processVanished, 1);
+  }
+  // 4141 is a live, readable process: with a survivor in the listing, a vanished entry is the ordinary race.
+  mkdirSync(join(procFixture, '4141'), { recursive: true });
+  writeFileSync(join(procFixture, '4141', 'cmdline'), 'sleep\x00600\x00');
+  writeFileSync(join(procFixture, '4141', 'status'), 'Name:\tsleep\nPPid:\t1\n');
+  const survivor = await readSnapshot({ process: processCapability }, base);
+  assert.equal(survivor.processDiscovery, 'available'); assert.equal(survivor.processPartialReason, null); assert.equal(survivor.processVanished, dangling ? 1 : 0);
+  // 4343 still exists and its cmdline cannot be read (a directory where a file is expected): that IS a failure.
+  mkdirSync(join(procFixture, '4343', 'cmdline'), { recursive: true });
+  const unreadable = await readSnapshot({ process: processCapability }, base);
+  assert.equal(unreadable.processDiscovery, 'partial'); assert.equal(unreadable.processPartialReason, 'unreadable process records'); assert.equal(unreadable.processVanished, dangling ? 1 : 0);
+});
+
 await test('[Step 5 DoD 1] proc ancestry emits separate Session and linked Card levels', async () => {
   const isolated = join(root, 'process-hierarchy');
   const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', plankaBaseUrl: 'https://boards.example.test' };
