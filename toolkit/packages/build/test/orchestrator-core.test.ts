@@ -14,12 +14,19 @@ import { createWaveServer } from '../../../../plugin/bin/lib/wave-lifecycle-serv
 import { createSdkJudge, waveCanUseTool } from '../../../../plugin/bin/lib/orchestrator-judge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { parseOrchestratorArgs, reviewBase, runOrchestrator } from '../../../../plugin/bin/lib/orchestrator-runner-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { CONTEXT_MODE_TOOLS, resolveContextModeRoot } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-run-orchestrator.mjs')
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-const judgeInit = (plugins: Array<{ path: string }> = []) => ({ type: 'system', subtype: 'init', plugins })
+const judgeInit = (plugins?: Array<{ path: string }>) => ({
+  type: 'system', subtype: 'init',
+  tools: ['Read', 'Glob', 'Grep', CONTEXT_MODE_TOOLS.search],
+  plugins: plugins ?? [{ path: join(ROOT, 'plugin', 'hooks-modules', 'pilot-guard') }, { path: resolveContextModeRoot(process.env) }],
+  skills: [],
+})
 type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> }, setCardState: (id: string, state: string) => void, state: () => unknown }
 const text = (server: RegisteredServer, name: string, input: Record<string, unknown>) => server.instance._registeredTools[name]!.handler(input).then((result) => result.content[0]!.text)
 function fakeSdk(root: string) {
@@ -464,8 +471,12 @@ describe('SDK orchestrator judge', () => {
     const plugins = [join(f.root, 'rules-plugin'), join(f.root, 'lsp-plugin')]; plugins.forEach((plugin) => mkdirSync(plugin))
     const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex, pluginDirs: plugins }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
     expect(calls).toBe(1)
-    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep'] })
-    expect(queryOptions.plugins).toEqual(plugins.map((plugin) => ({ type: 'local', path: plugin })))
+    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', CONTEXT_MODE_TOOLS.search] })
+    expect(queryOptions.plugins).toEqual([
+      { type: 'local', path: expect.stringContaining('pilot-guard') },
+      { type: 'local', path: resolveContextModeRoot(process.env) },
+      ...plugins.map((plugin) => ({ type: 'local', path: plugin })),
+    ])
     expect(f.launches).toHaveLength(2)
     expect(f.launches.every((launch) => JSON.stringify(launch).includes(JSON.stringify(plugins)))).toBe(true)
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
@@ -491,7 +502,7 @@ describe('SDK orchestrator judge', () => {
 
     const acceptedServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer
     acceptedServer.setCardState('1', 'piloting'); acceptedServer.setCardState('1', 'judging')
-    const accepted = createSdkJudge({ query: () => (async function* () { yield judgeInit([{ path: `${realpathSync(target)}/` }]); yield { type: 'result' }; yield { type: 'result' }; yield { type: 'result' } })(), models: { orchestrator: { value: 'test' } }, waveDir, waveServer: acceptedServer, contract: '# contract', pluginDirs: [linked] })
+    const accepted = createSdkJudge({ query: ({ options }: { options: { plugins: Array<{ path: string }> } }) => (async function* () { yield judgeInit([...options.plugins.slice(0, 2), { path: `${realpathSync(target)}/` }]); yield { type: 'result' }; yield { type: 'result' }; yield { type: 'result' } })(), models: { orchestrator: { value: 'test' } }, waveDir, waveServer: acceptedServer, contract: '# contract', pluginDirs: [linked] })
     await expect(accepted({ row: { id: '1' } })).resolves.toBe(false)
   })
 

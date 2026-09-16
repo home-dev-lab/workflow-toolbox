@@ -6,6 +6,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Claude SDK pilot, judge, and executor sessions now derive guards, tools, and copied skills from one
+  role table: writers receive the selected shipped command guards and context tools, readers receive
+  bounded reads plus context search without write/execute tools, and missing profile dependencies
+  fail closed instead of starting an unguarded session.
 - `@anthropic-ai/claude-agent-sdk` moved from 0.3.260 to 0.3.273 (no code adaptation needed; the upgrade
   canary passed its 66 checks on the new runtime). Notable upstream changes for the SDK runner's design:
   `omitClaudeMd` on an `AgentDefinition` (0.3.271), `pluginDelivery: 'initialize'` (0.3.261), a `Stop` /

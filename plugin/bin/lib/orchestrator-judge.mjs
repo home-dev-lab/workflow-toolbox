@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { confinedToWorktree } from './pilot-runner-core.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
-import { absentPluginPaths } from './plugin-receipt.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './sdk-role-profile.mjs'
 
 const MAX_UNPRODUCTIVE_TURNS = 3
 const WAVE_TOOLS = new Set([
@@ -14,8 +14,9 @@ const WAVE_TOOLS = new Set([
   'write_judgment',
 ].map((name) => `mcp__sdk-wave-lifecycle__${name}`))
 
-export function waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex = null } = {}) {
+export function waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex = null, profile = null } = {}) {
   if (WAVE_TOOLS.has(toolName)) return { behavior: 'allow' }
+  if (profile?.tools.includes(toolName) && !['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'allow' }
   if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused by wave judge: ${toolName}` }
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? waveDir
@@ -45,8 +46,10 @@ function messageQueue() {
   }
 }
 
-export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir, pluginDirs = [] }) {
+export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir, pluginDirs = [], prepareRole = prepareSdkRole }) {
   const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: knowledgeBaseIndex, env, projectRoot })
+  const sdkRole = prepareRole('judge', { worktree: waveDir, env })
+  sdkRole.pluginPaths.push(...pluginDirs)
   let knowledgeBaseSent = false
   const withKnowledgeBase = (content) => {
     if (knowledgeBaseSent) return content
@@ -93,29 +96,26 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
   }
   const start = () => {
     if (consumePromise) return
-    const stream = query({ prompt: prompt(), options: {
+    const queryOptions = composeSdkRoleQueryOptions({
       model: (models.sdkOrchestrator ?? models.orchestrator).value,
       systemPrompt: contract,
       settingSources: [],
       permissionMode: 'default',
       cwd: waveDir,
-      plugins: pluginDirs.map((pluginPath) => ({ type: 'local', path: pluginPath })),
-      tools: ['Read', 'Glob', 'Grep'],
       mcpServers: { 'sdk-wave-lifecycle': waveServer },
-      canUseTool: async (toolName, input) => waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex: knowledgeBase.path }),
-      env,
-    } })
+      canUseTool: async (toolName, input) => waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex: knowledgeBase.path, profile: sdkRole.profile }),
+      env: { ...env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+    }, sdkRole)
+    const stream = query({ prompt: prompt(), options: queryOptions })
     consumePromise = (async () => {
       try {
         for await (const message of stream) {
-          if (!initReceiptSeen && !(message.type === 'system' && message.subtype === 'init')) {
+          if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) {
             throw new Error(`SDK judge initialization receipt never arrived: the first message was ${message.type}/${message.subtype ?? 'none'}`)
           }
           if (message.type === 'system' && message.subtype === 'init') {
             initReceiptSeen = true
-            const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
-            const absent = absentPluginPaths(pluginDirs, initPlugins)
-            if (absent.length > 0) throw new Error(`SDK judge initialization receipt is missing configured plugins: ${JSON.stringify({ absentPlugins: absent, plugins: initPlugins })}`)
+            assertSdkRoleReceipt('judge', message, sdkRole)
           }
           if (settleProgress()) {
             if (message.type !== 'result') completedTurnPending = true
@@ -130,6 +130,7 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
           queue.push(active.continuation)
           if (consecutiveWithoutProgress === MAX_UNPRODUCTIVE_TURNS) stopIncomplete()
         }
+        if (!initReceiptSeen) throw new Error('SDK judge run ended without an initialization receipt')
       } catch (error) {
         failure = error
         exhausted = true
