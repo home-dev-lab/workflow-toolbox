@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { spawnOpencode as spawnCommand } from './lib/opencode-skill-fence.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const RESULT = process.env.WT_PLUGIN_EVAL_RESULT || join(ROOT, '.lane/plugin-eval-result.json')
@@ -89,7 +90,7 @@ function main() {
   const useRecordedResult = Boolean(process.env.WT_PLUGIN_EVAL_RESULT) && existsSync(RESULT)
   if (!useRecordedResult) {
     const claude = claudeBinary()
-    const run = spawnSync(claude, [
+    const run = spawnCommand(spawnSync, claude, [
       'plugin', 'eval', './plugin', '--runs', '3', '--ablation', 'none', '--no-publish',
       '--model', 'haiku', '--json', RESULT, '--report', join(ROOT, '.lane/plugin-eval-report.html'),
     ], { cwd: ROOT, encoding: 'utf8', stdio: 'inherit' })

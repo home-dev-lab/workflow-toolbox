@@ -69,7 +69,7 @@ describe('all toolbox-owned OpenCode launch paths', () => {
     ])
   })
 
-  it('uses one sanitized cwd/environment/config context for observer probe and direct spawn', () => {
+  it.skipIf(process.platform === 'win32')('uses one sanitized cwd/environment/config context for observer probe and direct spawn [POSIX JSON-stream fixture]', () => {
     const f = fixture()
     const keys = ['PATH', 'RECORD', 'IDENTITY_MARKER', 'OPENCODE_CONFIG', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))

@@ -54,7 +54,7 @@
 // no package.json in the tree) degrades to silence via runFailOpenHook, never to a thrown error.
 
 import { readFileSync, existsSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join } from 'node:path'
 import { homedir } from 'node:os'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
@@ -166,7 +166,7 @@ function resolveCd(target, currentCwd, cwdTrusted) {
     candidate = homedir()
   } else if (target.startsWith('~/')) {
     candidate = join(homedir(), target.slice(2))
-  } else if (target.startsWith('/')) {
+  } else if (isAbsolute(target)) {
     candidate = target
   } else {
     if (!cwdTrusted) return { unresolvable: true }

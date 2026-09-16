@@ -103,6 +103,8 @@ function scaffoldProject(tag: string, opts: { withParser: boolean; withBoardPoin
       XDG_STATE_HOME: state,
       CLAUDE_CONFIG_DIR: configDir,
       TMPDIR: hookTmp,
+      TEMP: hookTmp,
+      TMP: hookTmp,
       WT_AUTONOMY_WATCH_MANDATE_DIR: mandateDir,
     },
   }

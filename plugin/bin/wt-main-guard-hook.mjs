@@ -63,7 +63,7 @@ import { stripHeredocs, stripQuotedSpans } from './lib/command-invocation.mjs'
 import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
 const STATE_DIR = resolvePluginDataDir({
-  fallback: path.join(os.homedir(), '.local', 'state', 'wt-main-guard'),
+  fallback: path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), '.local', 'state'), 'wt-main-guard'),
   pluginName: pluginName(),
 }).dir
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')

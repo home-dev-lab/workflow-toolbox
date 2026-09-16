@@ -211,7 +211,7 @@ describe('guard-journal — recordGuardEvent', () => {
     expect(result.status, result.stderr).toBe(0)
     const entry = readAllEntries()[0]!
     expect(entry.origin).toBe('real')
-    expect(entry.cwd).toBe(REPO_ROOT.replace(/\/$/, ''))
+    expect(entry.cwd).toBe(REPO_ROOT.replace(/[\\/]$/, ''))
   })
 
   it('still classifies a record with no target as test when that directory is the temp root', () => {

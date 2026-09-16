@@ -357,7 +357,7 @@ describe('wt-autonomy-watch', () => {
     expect(existsSync(s.markerPath)).toBe(false)
   })
 
-  it('stays silent while an external lane process is running', () => {
+  it.skipIf(process.platform === 'win32')('stays silent while an external lane process is running [requires bash exec -a process evidence]', () => {
     const s = scaffold('lane-active')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)

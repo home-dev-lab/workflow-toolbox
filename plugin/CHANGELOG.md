@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Windows CI fixtures now preserve native PATH/config semantics, use file URLs for dynamic SDK imports, compare canonical path identities, and skip only tests whose evidence is inherently POSIX-only.
 - Lane supervision now reads process identity from `ps`/`lsof` on macOS and `Win32_Process` through PowerShell on Windows, while reporting source-specific unknown evidence and refusing unsupported external Windows tree termination legibly.
 - Remaining Windows-only test and runtime paths now use file URLs for ESM entry points, canonical path identities and display separators, Node-backed command fixtures, pinned home/config directories, and explicit skips for POSIX-only signal, mode, and permission semantics.
 - Windows OpenCode launches now resolve npm `.cmd`/`.bat` shims and invoke them through the command shell across lane, observer, fence, and envelope paths.

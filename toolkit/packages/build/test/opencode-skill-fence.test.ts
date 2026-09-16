@@ -158,6 +158,7 @@ describe('OpenCode Claude-skill fence', () => {
     const result = verifyOpencodeSkillFence('opencode', {
       env: { ...process.env, PATH: f.root },
       stateDir: f.stateDir,
+      platform: 'linux',
       accessSyncFn: () => { throw discoveryError },
     })
 
