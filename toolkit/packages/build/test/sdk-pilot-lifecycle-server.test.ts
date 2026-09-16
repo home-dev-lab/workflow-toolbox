@@ -166,19 +166,20 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it('tells a timed-out pilot to abandon through absolute control and rerun the lifecycle phase', async () => {
+  it('tells a timed-out pilot to use lifecycle control and keeps the shell remedy for a human', async () => {
     const timeoutLauncher = rawLauncher("import { spawn } from 'node:child_process'; import { mkdirSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const token=args[args.indexOf('--owner-token')+1]; const runId='999-2'; const dir=join(root,'.lane','supervision'); mkdirSync(dir,{recursive:true}); const source=\"const fs=require('fs'),path=require('path');const root=process.argv[1],token=process.argv[2],runId='999-2',dir=path.join(root,'.lane','supervision'),workerArgv=fs.readFileSync('/proc/self/cmdline').toString().split('\\\\0').filter(Boolean);fs.writeFileSync(path.join(dir,runId+'.json'),JSON.stringify({runId,state:'decision-needed',workerPid:process.pid,workerArgv,owner:'pilot',ownerToken:token,defaultDecision:'extend',decisionDueAt:'later',evidence:{}}));fs.writeFileSync(path.join(dir,'current.json'),JSON.stringify({runId}));setInterval(()=>{},1000)\"; const child=spawn(process.execPath,['-e',source,root,token],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\nrun='+runId+'\\n')")
     const lifecycle = testLifecycle('LITE', [], timeoutLauncher, 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const result = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-    expect(result).toMatch(/abandon with node '\/.*wt-lane-control\.mjs' .*--decision abandon --owner-token '[0-9a-f-]+'/)
+    expect(result).toContain("run { kind: 'control', decision: 'abandon' }")
+    expect(result).toMatch(/human: .*abandon with node '\/.*wt-lane-control\.mjs' .*--decision abandon --owner-token '[0-9a-f-]+'/)
     expect(result).toContain('re-run this lifecycle lane phase')
     expect(result).not.toContain('wt-lane.mjs --dir')
     const record = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', '999-2.json'), 'utf8'))
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it('abandons a timed-out pilot lane through its printed command and reruns the lifecycle phase with a fresh owner-bound lane', async () => {
+  it('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
@@ -200,12 +201,10 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('LITE', [], wrapper, 500)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     const first = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))
-    const command = /abandon with (node .*? --decision abandon --owner-token '[0-9a-f-]+')/.exec(first)?.[1]
-    expect(command).toBeTruthy()
+    expect(first).toContain("run { kind: 'control', decision: 'abandon' }")
     const firstBrief = readFileSync(join(lifecycle.root, '.lane', 'launch-brief-1'), 'utf8')
     expect(existsSync(firstBrief)).toBe(true)
-    const abandon = spawnSync(command!, { cwd: tmpdir(), shell: true, encoding: 'utf8' })
-    expect(abandon.status, abandon.stderr).toBe(0)
+    expect(await text(lifecycle.run({ kind: 'control', decision: 'abandon' }))).toMatch(/^control abandon accepted: decision=abandon/m)
     const firstPointer = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', 'current.json'), 'utf8'))
     const firstRecordPath = join(lifecycle.root, '.lane', 'supervision', `${firstPointer.runId}.json`)
     for (let i = 0; i < 80 && !readFileSync(firstRecordPath, 'utf8').includes('abandoned'); i += 1) await new Promise((resolve) => setTimeout(resolve, 25))
@@ -413,7 +412,7 @@ printf 'report\n' > "$report"
   it('does not publish an archive when post-copy validation dirties the tree', async () => {
     let revisions = 0; let statusReads = 0
     const git = (_program: string, call: string[]) => {
-      if (call[0] === 'status') return ++statusReads === 1 ? '' : ' M tracked.txt\n'
+      if (call[0] === 'status') return ++statusReads <= 2 ? '' : ' M tracked.txt\n'
       return call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
     }
     const lifecycle = await lifecycleReadyForReport({ git })
@@ -741,10 +740,10 @@ printf 'report\n' > "$report"
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'bullet-outcome' }))).toContain('missing commit')
   })
 
-  it('names both stale card texts and the one restart action', () => {
+  it('refuses stale lifecycle state before comparing individual artifacts and gives one complete reset action', () => {
     const first = testLifecycle('LITE', [], null, null, { cardText: 'DoD: old text\n' })
     expect(() => createLifecycleServer({ worktree: first.root, archiveRoot: first.archiveRoot, route: 'LITE', models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'new', rules: [], cardText: 'DoD: new text\n' }))
-      .toThrow(`lifecycle card snapshot "DoD: old text\\n" differs from runner card text "DoD: new text\\n"; remove ${join(first.root, '.lane', 'card.md')} to restart the lifecycle on the new card`)
+      .toThrow(new RegExp(`interrupted lifecycle.*node -e .*${join(first.root, '.lane').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   })
 
   it('accepts ### task headings with indented body bullets, refuses one without DoD, and names both item shapes', async () => {

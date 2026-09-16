@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
-import { assertArchiveOutsideWorktree, completeLifecycleReport } from './lifecycle-report-edge.mjs'
+import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
@@ -319,6 +319,13 @@ export function createLifecycleStateMachine({
   // Preflight, before any phase runs: a misconfigured archive root must fail here, not after hours of work.
   assertArchiveOutsideWorktree({ root, archiveRoot })
   assertLaneDir(true)
+  const routePath = path.join(laneDir, 'route.json')
+  if (fs.existsSync(routePath)) {
+    // The interrupted run's .lane is the ONLY evidence a crash left (no process ran the archive), so the remedy
+    // moves it aside as a sibling — never deletes it — and recreates an empty .lane for the relaunch.
+    const resetScript = "const fs=require('node:fs'),p=process.argv[1],k=p+'.interrupted-'+new Date().toISOString().replace(/[:.]/g,'-');fs.renameSync(p,k);fs.mkdirSync(p,{recursive:true});console.log('interrupted lifecycle kept at '+k)"
+    throw new Error(`lifecycle startup refused: ${routePath} belongs to an interrupted lifecycle; keep its evidence aside and relaunch on a fresh .lane: node -e ${JSON.stringify(resetScript)} ${JSON.stringify(laneDir)}`)
+  }
   if (typeof cardText === 'string') {
     const cardPath = path.join(laneDir, 'card.md')
     const existingCard = readRegularFile(cardPath)
@@ -340,7 +347,7 @@ export function createLifecycleStateMachine({
   const { createSdkMcpServer, tool } = sdk ?? require('@anthropic-ai/claude-agent-sdk')
   const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
   writeRegularFile(
-    path.join(laneDir, 'route.json'),
+    routePath,
     `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, models: frozenModels, base: constructionBase }, null, 2)}\n`,
     { flag: 'wx' },
   )
@@ -355,6 +362,7 @@ export function createLifecycleStateMachine({
     handled: new Map(),
     lastLaneMtime: 0,
     verifySnapshot: null,
+    pendingControl: null,
     report: { stage: 'idle', base: null, head: null, tree: null },
   }
   const timelinePath = path.join(laneDir, 'lifecycle.json')
@@ -468,6 +476,34 @@ export function createLifecycleStateMachine({
       persistTimeline()
     },
   })
+  function finalizePartial(reason) {
+    if (state.phase === 'awaiting_fidelity') return JSON.parse(readRegularFile(path.join(laneDir, 'summary.json')) ?? '{}')
+    state.partial = { phase: state.phase, reason, findings: [] }
+    const endedAt = now()
+    timeline.phases.at(-1).exited_at ??= endedAt
+    timeline.ended_at = endedAt
+    persistTimeline()
+    audit()
+    let head = constructionBase
+    try { head = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() } catch {}
+    return archiveLifecycle({
+      root,
+      archiveRoot,
+      laneDir,
+      cardId,
+      route: frozenRoute,
+      head,
+      phases: [...state.handled.values()].map((item) => item.result).concat(`partial: ${reason}`),
+      evidence: sha256(readRegularFile(evidencePath) ?? ''),
+      partial: state.partial,
+      implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' },
+      assertDirectories: () => assertLaneDir(true),
+      copy,
+      git,
+      sha256,
+      writeRegularFile,
+    })
+  }
   function transition(event) {
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!event || typeof event !== 'object' || !PHASES.includes(event.phase)) {
@@ -819,6 +855,8 @@ export function createLifecycleStateMachine({
           phase: z.string().optional(),
           name: z.string().optional(),
           what: z.string().optional(),
+          decision: z.string().optional(),
+          extendSeconds: z.number().int().positive().optional(),
           timeout: z.number().int().positive().optional(),
         },
         async (args) => ({
@@ -841,5 +879,6 @@ export function createLifecycleStateMachine({
         : null,
     }),
   })
+  Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })
   return server
 }

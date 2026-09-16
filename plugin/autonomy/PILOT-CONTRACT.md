@@ -22,7 +22,8 @@ Use `write_artifact` only for its phase-bound kinds: `plan` (plan), `critic-brie
 `pilot-report` (report). Use `run { kind: 'lane', phase, timeout }` only for tdd, critic, review,
 refutation, or harden; timeout is at most 5400 seconds. Use `run { kind: 'gate', name }` only for
 `typecheck`, `lint`, or `test`. Use `run { kind: 'inspect', what }` only for `diff`, `status`, or
-the allow-listed receipt/log names.
+the allow-listed receipt/log names. When a lane returns `TIMEOUT`, use the receipt's
+`run { kind: 'control', decision: 'abandon'|'extend' }` remedy; the runner supplies its private owner token.
 
 For every lane: write its brief, run it, then transition. The server recreates launch inputs in a
 read-only external snapshot and puts mapped authoritative rules before fenced pilot context.

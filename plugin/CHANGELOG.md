@@ -6,6 +6,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- SDK pilot runs now record a lifecycle partial, publish the standard external archive, and finalize
+  summary, usage, transcript, and cost receipts after runner timeouts, repeated no-progress turns,
+  or initialized SDK stream failures. Interrupted lifecycle relaunches refuse with one complete reset
+  command, and timed-out lanes can be abandoned or extended through the runner-hosted lifecycle tool.
 - Lifecycle reports are now archived under the project root instead of inside the card worktree,
   so removing the completed worktree does not destroy its audit archive. `wt-pilot-runner` takes
   `--archive-root <project root>` and defaults to the checkout that owns the worktree; an archive
