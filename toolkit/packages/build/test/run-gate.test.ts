@@ -18,7 +18,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, realpathSync, writeFileSync, chmodSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,7 +34,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 function mkDir(): string {
-  const d = mkdtempSync(join(tmpdir(), 'wt-run-gate-'))
+  const d = realpathSync(mkdtempSync(join(tmpdir(), 'wt-run-gate-')))
   dirs.push(d)
   return d
 }

@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer, request as httpRequest, type Server } from 'node:http'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -17,7 +17,7 @@ const children = new Set<ChildProcess>()
 const detachedPids = new Set<number>()
 
 function temporaryDir(tag: string) {
-  const dir = mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`)))
   temporaryDirs.push(dir)
   return dir
 }
@@ -1339,7 +1339,7 @@ describe('owner decision 5: Tailscale access', () => {
       : '#!/bin/sh\nexit 1\n'
     writeFileSync(script, body)
     chmodSync(script, 0o755)
-    return bin
+    return realpathSync(bin)
   }
 
   it('parses the URL token from the captured Tailscale Serve header', () => {
@@ -1363,7 +1363,7 @@ describe('owner decision 5: Tailscale access', () => {
     await closeServer(reservation.server)
     const bin = tailscaleStub('present')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe(`http://127.0.0.2:${port}`)
@@ -1419,7 +1419,7 @@ describe('owner decision 5: Tailscale access', () => {
     await closeServer(reservation.server)
     const bin = tailscaleStub('https')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome, (value) => value.roots.length > 0)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net')
@@ -1437,7 +1437,7 @@ describe('owner decision 5: Tailscale access', () => {
     await closeServer(reservation.server)
     const bin = tailscaleStub('https-path')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net/reports')
@@ -1450,7 +1450,7 @@ describe('owner decision 5: Tailscale access', () => {
     await closeServer(reservation.server)
     const bin = tailscaleStub('https-port')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net:8443')
@@ -1463,7 +1463,7 @@ describe('owner decision 5: Tailscale access', () => {
     await closeServer(reservation.server)
     const bin = tailscaleStub('hijack')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe(`http://127.0.0.2:${reservation.port}`)

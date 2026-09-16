@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -19,7 +19,7 @@ afterEach(() => {
 })
 
 function mkRoot(tag: string): string {
-  const root = mkdtempSync(join(tmpdir(), `wt-actionable-producer-${tag}-`))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-actionable-producer-${tag}-`)))
   roots.push(root)
   return root
 }

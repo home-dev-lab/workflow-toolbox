@@ -15,6 +15,7 @@ import {
   rmSync,
   existsSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
   symlinkSync,
   lstatSync,
@@ -38,7 +39,7 @@ afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
 })
 function mkDir(): string {
-  const r = mkdtempSync(join(tmpdir(), 'wt-adopt-'))
+  const r = realpathSync(mkdtempSync(join(tmpdir(), 'wt-adopt-')))
   roots.push(r)
   return r
 }
