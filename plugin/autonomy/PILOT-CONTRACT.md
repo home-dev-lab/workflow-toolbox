@@ -52,7 +52,7 @@ carries the plan's `## Tasks` block byte-identically.
 | verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
 | review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
 | refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
-| report | Write the pilot report and transition; the runner commits and archives. |
+| report | Write/transition it; non-proven DoD or unrun E2E makes archive partial. |
 
 Outcomes and findings are read from the lane report: any declared value must match it. Review and
 refutation changes-requested outcomes need findings; there are at most three harden rounds. When a

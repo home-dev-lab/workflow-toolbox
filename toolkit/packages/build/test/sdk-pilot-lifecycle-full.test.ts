@@ -9,7 +9,7 @@ import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-life
 import { MAX_CRITIC_ROUNDS } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
-const liteReport = '# report\n\n## E2E\ne2e not run: lifecycle fixture\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
+const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
 const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
 const roots: string[] = []
 

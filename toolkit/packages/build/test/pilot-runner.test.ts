@@ -489,7 +489,7 @@ describe('SDK pilot runner', () => {
       yield initMessage(); await prompt.next()
       await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
       for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n\n## E2E\ne2e not run: runner fixture\n\n## Acceptance\n- complete the real lifecycle fixture\n  Outcome: proven\n' })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n\n## E2E\nProcedure: run the runner fixture\nVerbatim output: runner fixture passed\n\n## Acceptance\n- complete the real lifecycle fixture\n  Outcome: proven\n' })
       receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'real-lifecycle', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'real-lifecycle', content: receipt }] } }
@@ -509,6 +509,40 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
     expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
     expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
+  })
+
+  it.each([
+    ['a not-done criterion', 'Procedure: run the runner fixture\nVerbatim output: runner fixture passed', 'Outcome: not done: blocked upstream', 'complete the delivery fixture'],
+    ['an unrun E2E', 'e2e not run: unavailable host', 'Outcome: proven', 'E2E: e2e not run: unavailable host'],
+  ])('returns exit 2 when the report records %s', async (_name, e2e, outcome, unmet) => {
+    const f = fixture(); let heads = 0
+    const cardFile = join(f.root, 'delivery-card.md'); writeFileSync(cardFile, 'Route: LITE\n## Definition of done\n- complete the delivery fixture\n')
+    const launcher = join(f.root, 'delivery-launcher.mjs')
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'report\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const tools = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools
+      const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
+      yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
+      const report = `# report\n\n## E2E\n${e2e}\n\n## Acceptance\n- complete the delivery fixture\n  ${outcome}\n`
+      await artifact({ kind: 'pilot-report', content: report })
+      const refused = (await transition({ phase: 'report', tool_use_id: 'classify' })).content[0]!.text
+      const partialLine = /add the line "(Partial: [^"]+)"/.exec(refused)?.[1]
+      if (!partialLine) throw new Error(`missing partial refusal: ${refused}`)
+      await artifact({ kind: 'pilot-report', content: `${report}${partialLine}\n` })
+      const receipt = (await transition({ phase: 'report', tool_use_id: 'complete' })).content[0]!.text
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+    })()
+    const result = await runPilot({ card: '1', cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
+    })
+    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: [unmet] } } })
+    expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8')).partial).toEqual(result.summary.partial)
   })
 
   it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {
@@ -562,7 +596,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const continuation = await prompt.next(); if (continuation.done) return; continuations.push(continuation.value.message.content)
       await transition({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
-      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n\n## E2E\ne2e not run: runner fixture\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n' })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# report\n\n## E2E\nProcedure: run the runner fixture\nVerbatim output: runner fixture passed\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n' })
       const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
       yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
       yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
