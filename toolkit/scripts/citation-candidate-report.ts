@@ -15,6 +15,10 @@ const MIN_NON_TRIVIAL_WORD_LENGTH = 4
 const WORD_RE = /[A-Za-z0-9]+(?:['/-][A-Za-z0-9]+)*/g
 const HTML_COMMENT_RE = /<!--([\s\S]*?)-->/g
 
+function portablePath(filePath: string): string {
+  return filePath.replaceAll('\\', '/')
+}
+
 export interface Token {
   word: string
   line: number
@@ -169,7 +173,7 @@ export function collectProseFiles(rootDir: string): ProseFile[] {
     .map((absPath) => {
       const content = readFileSync(absPath, 'utf8')
       return {
-        path: relative(rootDir, absPath),
+        path: portablePath(relative(rootDir, absPath)),
         content,
         tokens: tokenizeNonTrivialWords(content),
       }
