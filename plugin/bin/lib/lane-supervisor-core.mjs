@@ -1,4 +1,5 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
@@ -12,11 +13,57 @@ export function sameIdentity(expected, actual) {
     && (!expected.cwd || expected.cwd === actual.cwd))
 }
 
-function processExists(pid, { procRoot = '/proc' } = {}) {
-  return existsSync(path.join(procRoot, String(pid)))
+function evidenceSource(platform) {
+  if (platform === 'darwin') return 'ps'
+  if (platform === 'win32') return 'powershell'
+  return 'proc'
 }
 
-function processState(pid, { procRoot = '/proc' } = {}) {
+function runEvidence(command, args, execFile) {
+  try {
+    const result = execFile(command, args, { encoding: 'utf8', windowsHide: true })
+    if (result.error) return { status: 'unavailable' }
+    return { status: result.status, stdout: result.stdout ?? '' }
+  } catch { return { status: 'unavailable' } }
+}
+
+function powershellProcess(pid, execFile) {
+  // The pid is interpolated into a PowerShell command string: refuse anything that is not a plain process id.
+  if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return { status: 1, stdout: '' }
+  const script = `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,CreationDate,CommandLine,ParentProcessId | ConvertTo-Json -Compress`
+  const result = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile)
+  if (result.status === 'unavailable' || result.status !== 0) return result
+  if (!result.stdout.trim()) return { status: 1, stdout: '' }
+  try { return { status: 0, value: JSON.parse(result.stdout) } } catch { return { status: 'unavailable' } }
+}
+
+function processStartSeconds(value) {
+  const dotNet = /^\/Date\((\d+)(?:[+-]\d+)?\)\/$/.exec(String(value))
+  const milliseconds = dotNet ? Number(dotNet[1]) : Date.parse(value)
+  return Math.floor(milliseconds / 1000)
+}
+
+function processExists(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
+  if (platform === 'linux') return existsSync(path.join(procRoot, String(pid)))
+  if (platform === 'darwin') {
+    const result = runEvidence('ps', ['-p', String(pid), '-o', 'pid='], execFile)
+    if (result.status === 'unavailable') return null
+    return result.status === 0 && result.stdout.trim() === String(pid)
+  }
+  if (platform === 'win32') {
+    const result = powershellProcess(pid, execFile)
+    if (result.status === 'unavailable') return null
+    return result.status === 0
+  }
+  return null
+}
+
+function processState(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
+  if (platform === 'darwin') {
+    const result = runEvidence('ps', ['-p', String(pid), '-o', 'state='], execFile)
+    return result.status === 0 ? result.stdout.trim().charAt(0) || null : null
+  }
+  if (platform !== 'linux') return null
   try {
     const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
     return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]
@@ -24,14 +71,15 @@ function processState(pid, { procRoot = '/proc' } = {}) {
 }
 
 function identityStatus(expected, { inspect, platform, procRoot, processExists: exists, processState: state }) {
-  if (platform !== 'linux') return 'unknown'
   if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv) || !Number.isFinite(expected.startTime)) return 'unknown'
   const actual = inspect(expected.pid, { platform, procRoot })
   if (actual) {
     if (actual.startTime !== expected.startTime) return 'gone'
     return sameIdentity(expected, actual) ? 'running' : 'unknown'
   }
-  if (!exists(expected.pid, { platform, procRoot })) return 'gone'
+  const existence = exists(expected.pid, { platform, procRoot })
+  if (existence === false) return 'gone'
+  if (existence === null) return 'unknown'
   if (state(expected.pid, { platform, procRoot }) === 'Z') return 'gone'
   return 'unknown'
 }
@@ -41,7 +89,6 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
     return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
   if (record.state === 'launch-failed') return { status: 'terminal', reason: 'launch-failed', worker: 'gone', child: 'gone' }
-  if (platform !== 'linux') return { status: 'unknown', reason: `identity-unavailable-${platform}`, worker: 'unknown', child: 'unknown' }
   const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, { inspect, platform, procRoot, processExists: exists, processState: state })
   const child = record.childPid === null && record.childArgv === null
     ? 'not-spawned'
@@ -50,7 +97,7 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
   if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
   if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
   if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
-  if (worker === 'unknown' || child === 'unknown') return { status: 'unknown', reason: 'identity-unreadable', worker, child }
+  if (worker === 'unknown' || child === 'unknown') return { status: 'unknown', reason: platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`, worker, child }
   if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
   if (worker === 'running' && child === 'running' && ['running', 'decision-needed'].includes(record.state)) {
     return { status: record.state, reason: record.state, worker, child }
@@ -88,6 +135,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     journal({ ...event, event: 'termination-refused', reason })
     return { killed: false, reason, verdict }
   }
+  if (platform === 'win32') return refuse('external-tree-termination-unavailable-win32')
   if (['control', 'watcher'].includes(source)) {
     if (child && !child.cwd) return refuse('child-cwd-unreadable')
     let recordRoot
@@ -140,8 +188,33 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
   }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform } = {}) {
-  if (platform !== 'linux' || !Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
+function inspectDarwinProcess(pid, execFile) {
+  const result = runEvidence('ps', ['-p', String(pid), '-o', 'lstart=,pgid=,command='], execFile)
+  if (result.status !== 0) return null
+  const match = /^(.{24})\s+(\d+)\s+([\s\S]+?)\s*$/.exec(result.stdout)
+  if (!match) return null
+  const startTime = processStartSeconds(match[1])
+  if (!Number.isFinite(startTime)) return null
+  const state = runEvidence('ps', ['-p', String(pid), '-o', 'state='], execFile)
+  if (state.status === 0 && state.stdout.trim().startsWith('Z')) return null
+  const cwdResult = runEvidence('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], execFile)
+  const cwd = cwdResult.status === 0 ? cwdResult.stdout.split(/\r?\n/).find((line) => line.startsWith('n'))?.slice(1) ?? null : null
+  return { pid, argv: [match[3]], startTime, groupId: Number(match[2]), cwd }
+}
+
+function inspectWindowsProcess(pid, execFile) {
+  const result = powershellProcess(pid, execFile)
+  if (result.status !== 0 || !result.value) return null
+  const startTime = processStartSeconds(result.value.CreationDate)
+  if (!Number.isFinite(startTime) || typeof result.value.CommandLine !== 'string') return null
+  return { pid, argv: [result.value.CommandLine], startTime, groupId: Number(result.value.ParentProcessId), cwd: null }
+}
+
+export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync } = {}) {
+  if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
+  if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile)
+  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile)
+  if (platform !== 'linux') return null
   try {
     const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
     const cwd = readlinkSync(path.join(procRoot, String(pid), 'cwd'))
@@ -160,9 +233,10 @@ export function inspectProcess(pid, { procRoot = '/proc', platform = process.pla
   }
 }
 
-export function processEvidenceStatus(pid, { platform = process.platform, inspect = inspectProcess } = {}) {
-  if (platform !== 'linux') return 'unknown'
-  return inspect(pid, { platform }) ? 'running' : 'gone'
+export function processEvidenceStatus(pid, { platform = process.platform, inspect = inspectProcess, processExists: exists = processExists } = {}) {
+  if (inspect(pid, { platform })) return 'running'
+  const existence = exists(pid, { platform })
+  return existence === false ? 'gone' : 'unknown'
 }
 
 export function laneHardBoundAt(record) {
