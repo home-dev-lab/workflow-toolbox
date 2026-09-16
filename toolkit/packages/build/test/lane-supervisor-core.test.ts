@@ -18,16 +18,16 @@ describe('lane supervisor safety core', () => {
     expect(classifyLane(record, { inspect })).toMatchObject({ status: 'running', worker: 'running', child: 'running' })
     expect(classifyLane({ ...record, state: 'decision-needed' }, { inspect })).toMatchObject({ status: 'decision-needed' })
     expect(classifyLane({ ...record, state: 'abandoned' }, { inspect })).toMatchObject({ status: 'unknown', reason: 'inconsistent-record' })
-    expect(classifyLane({ ...record, state: 'abandoned' }, { inspect: (pid: number) => pid === worker.pid ? worker : null })).toMatchObject({ status: 'terminal' })
-    expect(classifyLane(record, { inspect: (pid: number) => pid === child.pid ? child : null })).toMatchObject({ status: 'worker-gone-child-alive' })
-    expect(classifyLane(record, { inspect: () => null })).toMatchObject({ status: 'gone' })
+    expect(classifyLane({ ...record, state: 'abandoned' }, { inspect: (pid: number) => pid === worker.pid ? worker : null, processExists: () => false })).toMatchObject({ status: 'terminal' })
+    expect(classifyLane(record, { inspect: (pid: number) => pid === child.pid ? child : null, processExists: () => false })).toMatchObject({ status: 'worker-gone-child-alive' })
+    expect(classifyLane(record, { inspect: () => null, processExists: () => false })).toMatchObject({ status: 'gone' })
     expect(classifyLane(record, { inspect: (pid: number) => pid === worker.pid ? { ...worker, argv: ['unrelated'] } : child })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable' })
     expect(classifyLane(record, { inspect: (pid: number) => pid === worker.pid ? { ...worker, startTime: 401 } : child })).toMatchObject({ status: 'worker-gone-child-alive' })
   })
 
   it('classifies a gone worker that never spawned a child as gone', () => {
     const record = { runId: '40-1', state: 'launching', workerPid: 40, workerArgv: ['node'], workerStartTime: 400, childPid: null, childArgv: null, childStartTime: null, worktree: '/work' }
-    expect(classifyLane(record, { inspect: () => null })).toMatchObject({ status: 'gone', reason: 'worker-gone-no-child' })
+    expect(classifyLane(record, { inspect: () => null, processExists: () => false })).toMatchObject({ status: 'gone', reason: 'worker-gone-no-child' })
   })
 
   it('classifies a live worker that has not spawned its child as launching', () => {

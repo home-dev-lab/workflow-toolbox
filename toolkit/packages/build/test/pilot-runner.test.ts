@@ -96,10 +96,11 @@ describe('SDK pilot runner', () => {
   })
 
   it('parses required arguments and refuses absent card, bad timeout, and malformed profile env', () => {
-    expect(parsePilotRunnerArgs(['--dir', '/tmp/a'])).toMatchObject({ error: 'missing required --card or --dir' })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).toMatchObject({ error: '--card-file is required: the route is derived from the card' })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--timeout', '0'])).toMatchObject({ error: '--timeout must be a positive number of seconds' })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ cardFile: '/tmp/card.md' })
+    const dir = resolve('/tmp/a'); const cardFile = resolve('/tmp/card.md')
+    expect(parsePilotRunnerArgs(['--dir', dir])).toMatchObject({ error: 'missing required --card or --dir' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir])).toMatchObject({ error: '--card-file is required: the route is derived from the card' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir, '--card-file', cardFile, '--timeout', '0'])).toMatchObject({ error: '--timeout must be a positive number of seconds' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir, '--card-file', cardFile])).toMatchObject({ cardFile })
     const f = fixture(); const profile = join(f.root, 'profile.json'); writeFileSync(profile, '{"env":{"X":3}}')
     expect(() => loadProfileEnv(profile)).toThrow('--profile-env env.X must be a string')
     const result = spawnSync(process.execPath, [CLI, '--dir', f.dir], { encoding: 'utf8' })
@@ -107,8 +108,9 @@ describe('SDK pilot runner', () => {
   })
 
   it('parses repeatable absolute plugin directories and refuses a relative one', () => {
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp']))
-      .toMatchObject({ pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
+    const dir = resolve('/tmp/a'); const cardFile = resolve('/tmp/card.md'); const rules = resolve('/tmp/rules'); const lsp = resolve('/tmp/lsp')
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir, '--card-file', cardFile, '--plugin-dir', rules, '--plugin-dir', lsp]))
+      .toMatchObject({ pluginDirs: [rules, lsp] })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', 'relative/plugin']))
       .toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
   })
@@ -123,7 +125,7 @@ describe('SDK pilot runner', () => {
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--archive-root', 'rel/project'])).toMatchObject({ archiveRoot: resolve('rel/project') })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ archiveRoot: null })
     // An explicit project root wins outright.
-    expect(defaultArchiveRoot({ dir: '/tmp/a', projectRoot: '/srv/project' })).toBe('/srv/project')
+    expect(defaultArchiveRoot({ dir: resolve('/tmp/a'), projectRoot: resolve('/srv/project') })).toBe(resolve('/srv/project'))
     // A real worktree resolves to the main checkout that owns it, never to itself.
     const main = mkdtempSync(join(tmpdir(), 'wt-archive-root-main-')); roots.push(main)
     const git = (...args: string[]) => spawnSync('git', args, { cwd: main, encoding: 'utf8' })
