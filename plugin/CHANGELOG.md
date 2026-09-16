@@ -5,15 +5,17 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- Claude SDK roles now expose optional TypeScript/JavaScript LSP navigation through their generated
+  role plugin when `typescript-language-server` resolves, and record a visible non-fatal absent state
+  in logs, lifecycle evidence, and closing-report instructions otherwise.
+
 ## [0.181.0] - 2026-09-16
 
 ### Tooling
 - Added a ratcheted local quality gate for complexity, source size, duplication, dead code, and dependency layering across the toolkit and plugin sources.
 
 ### Changed
-- Claude SDK roles now expose optional TypeScript/JavaScript LSP navigation through their generated
-  role plugin when `typescript-language-server` resolves, and record a visible non-fatal absent state
-  in logs, lifecycle evidence, and closing-report instructions otherwise.
 - Claude SDK pilot, judge, and executor sessions now derive guards, tools, and copied skills from one
   role table: writers receive the selected shipped command guards and context tools, readers receive
   bounded reads plus context search without write/execute tools, and missing profile dependencies
