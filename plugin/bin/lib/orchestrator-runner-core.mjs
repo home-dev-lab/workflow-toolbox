@@ -181,7 +181,13 @@ function renderReport({ waveId, options, rows, stopReason, fatal, judgment, boar
     }
   }
   const modelSections = judgment?.trim() || '## Independent Review\nsession ended before judgment\n\n## Decisions\nsession ended before judgment'
-  return `## Implemented\nwave=${waveId}; base=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}; skipped=${skipped.length ? skipped.map((entry) => `${entry.id} (${entry.reason})`).join('; ') : 'none'}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
+  const bases = rows.map((row) => `card=${row.id}; base=${row.base ?? '<missing>'}; baseRef=${options.base}`).join('\n') || `baseRef=${options.base}; no card base SHA recorded`
+  return `## Implemented\nwave=${waveId}; baseRef=${options.base}; cards=${rows.map((row) => row.id).join(',') || 'none'}; stop=${stopReason}; skipped=${skipped.length ? skipped.map((entry) => `${entry.id} (${entry.reason})`).join('; ') : 'none'}\n${bases}\n\n## Verification\n| Card | Route | Pilot exit | Gates | Clean | Findings | Fidelity | Files touched | Decision | Reason | Receipts |\n| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n${verification}\n\n${modelSections}\n\n## Remaining Risks\n${risks.join('\n') || 'None.'}\n\n## Escalations for main\n${escalations.join('\n') || 'None.'}\n\n## Findings\nNone.\n`
+}
+
+export function reviewBase(row) {
+  if (typeof row.base !== 'string' || !/^[a-f0-9]{40}$/.test(row.base)) throw new Error(`orchestrator review refused: card ${row.id} missing field base`)
+  return row.base
 }
 
 export async function runOrchestrator(input, dependencies = {}) {
@@ -292,7 +298,10 @@ export async function runOrchestrator(input, dependencies = {}) {
       writeFile(snapshot, cardText(card))
       await board.moveCard(id, 'In Progress')
       boardMutations.push({ type: 'moveCard', id, listName: 'In Progress' })
-      git('git', ['worktree', 'add', '-b', branch, worktree, options.base], { cwd: repo })
+      const base = String(git('git', ['rev-parse', '--verify', `${options.base}^{commit}`], { cwd: repo, encoding: 'utf8' })).trim()
+      if (!/^[a-f0-9]{40}$/.test(base)) throw new Error(`base ${options.base} did not resolve to a full commit SHA`)
+      row.base = base
+      git('git', ['worktree', 'add', '-b', branch, worktree, base], { cwd: repo })
       git('git', ['config', '--worktree', 'core.hooksPath', hooks], { cwd: worktree })
       git('git', ['config', '--worktree', 'merge.ff', 'false'], { cwd: worktree })
       const refusedPush = path.join(waveDir, 'refused-push')
@@ -326,10 +335,11 @@ export async function runOrchestrator(input, dependencies = {}) {
       row.reportCheck = receiptExit(path.join(cardDir, 'report-findings-check.log'))
       const head = String(git('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' })).trim()
       row.head = head
-      const diff = String(git('git', ['diff', `${options.base}..${head}`], { cwd: worktree, encoding: 'utf8' }))
+      const reviewBaseSha = reviewBase(row)
+      const diff = String(git('git', ['diff', `${reviewBaseSha}..${head}`], { cwd: worktree, encoding: 'utf8' }))
       writeFile(path.join(cardDir, 'diff.patch'), diff)
-      row.files = String(git('git', ['diff', '--name-only', `${options.base}..${head}`], { cwd: worktree, encoding: 'utf8' })).trim().split('\n').filter(Boolean)
-      row.fidelity = await (dependencies.fidelity ?? ((context) => defaultFidelity(repo, context)))({ worktree, cardDir, id, waveId, base: options.base, head })
+      row.files = String(git('git', ['diff', '--name-only', `${reviewBaseSha}..${head}`], { cwd: worktree, encoding: 'utf8' })).trim().split('\n').filter(Boolean)
+      row.fidelity = await (dependencies.fidelity ?? ((context) => defaultFidelity(repo, context)))({ worktree, cardDir, id, waveId, base: reviewBaseSha, head })
       if (!fs.existsSync(path.join(cardDir, 'fidelity-verify.log'))) writeFile(path.join(cardDir, 'fidelity-verify.log'), `EXIT=${row.fidelity ?? 1}\n`)
       row.fidelity = receiptExit(path.join(cardDir, 'fidelity-verify.log'))
       return row

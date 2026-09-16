@@ -13,7 +13,7 @@ import { createWaveServer } from '../../../../plugin/bin/lib/wave-lifecycle-serv
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSdkJudge, waveCanUseTool } from '../../../../plugin/bin/lib/orchestrator-judge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { parseOrchestratorArgs, runOrchestrator } from '../../../../plugin/bin/lib/orchestrator-runner-core.mjs'
+import { parseOrchestratorArgs, reviewBase, runOrchestrator } from '../../../../plugin/bin/lib/orchestrator-runner-core.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-run-orchestrator.mjs')
@@ -158,6 +158,37 @@ describe('orchestrator driver', () => {
     expect(readFileSync(join(result.waveDir, 'cards/1/runner.log'), 'utf8').split('\n')[0]).toMatch(/^route=LITE /)
     expect(f.gitCalls.flat().some((arg) => ['merge', 'push', 'branch -D'].includes(arg))).toBe(false)
   }, 60_000)
+
+  it('freezes each card base SHA when its worktree is added even if the base branch advances', async () => {
+    const f = repoFixture()
+    const originalBase = execFileSync('git', ['rev-parse', 'develop'], { cwd: f.root, encoding: 'utf8' }).trim()
+    const git = (program: string, args: string[], options: Record<string, unknown>) => {
+      const result = f.git(program, args, options)
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        writeFileSync(join(f.root, 'advanced-after-worktree.txt'), 'not part of the card\n')
+        execFileSync('git', ['add', 'advanced-after-worktree.txt'], { cwd: f.root })
+        execFileSync('git', ['commit', '-qm', 'advance develop'], { cwd: f.root })
+      }
+      return result
+    }
+    const fidelity = async ({ cardDir, base }: { cardDir: string, base: string }) => {
+      mkdirSync(join(cardDir, 'fidelity'), { recursive: true })
+      writeFileSync(join(cardDir, 'fidelity', 'fidelity-manifest.json'), JSON.stringify({ base }))
+      writeFileSync(join(cardDir, 'fidelity-verify.log'), 'EXIT=0\n')
+      return 0
+    }
+
+    const result = await runOrchestrator(f.options, { ...f, git, fidelity })
+
+    expect(result.rows[0].base).toBe(originalBase)
+    expect(readFileSync(join(result.waveDir, 'cards/1/diff.patch'), 'utf8')).not.toContain('advanced-after-worktree.txt')
+    expect(JSON.parse(readFileSync(join(result.waveDir, 'cards/1/fidelity/fidelity-manifest.json'), 'utf8')).base).toBe(originalBase)
+    expect(readFileSync(f.report, 'utf8')).toContain(`base=${originalBase}; baseRef=develop`)
+  })
+
+  it('refuses an older per-card record with no frozen base at review', () => {
+    expect(() => reviewBase({ id: '1' })).toThrow('orchestrator review refused: card 1 missing field base')
+  })
 
   it('refuses each card with no DoD criterion before moving it or starting its pilot', async () => {
     const f = repoFixture([{ id: '1', listName: 'Next', description: 'Route: LITE\n## Notes\n- no acceptance here\n' }])

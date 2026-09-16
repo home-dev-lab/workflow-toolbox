@@ -25,7 +25,7 @@ function fixture() {
   git('init', '-q'); git('add', '.'); git('commit', '-qm', 'base')
   const run = (args: string[]) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8' })
   const head = git('rev-parse', 'HEAD').stdout.trim()
-  const freeze = run(['freeze', '--root', root, '--out-dir', bundle, '--card', '186', '--session', 'sdk-1', '--base', 'base', '--head', head, '--file', '.lane/pilot-report.md'])
+  const freeze = run(['freeze', '--root', root, '--out-dir', bundle, '--card', '186', '--session', 'sdk-1', '--base', head, '--head', head, '--file', '.lane/pilot-report.md'])
   expect(freeze.status, freeze.stderr).toBe(0)
   return { root, bundle, run }
 }
