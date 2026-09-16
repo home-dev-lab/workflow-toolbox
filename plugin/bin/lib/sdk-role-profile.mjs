@@ -10,7 +10,7 @@ const DEFAULT_PLUGIN_ROOT = path.resolve(MODULE_DIR, '../..')
 const CONTEXT_MODE_VERSION = '1.0.177'
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
 
-export const CONTEXT_MODE_TOOLS = Object.freeze({
+const CONTEXT_MODE_TOOLS = Object.freeze({
   batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`,
   doctor: `${CONTEXT_PREFIX}ctx_doctor`,
   execute: `${CONTEXT_PREFIX}ctx_execute`,
@@ -59,7 +59,7 @@ const PROFILES = Object.freeze({
   refutation: reader,
 })
 
-export function roleProfile(role) {
+function roleProfile(role) {
   const profile = PROFILES[role]
   if (!profile) throw new Error(`unknown SDK role: ${role}`)
   return {
@@ -71,7 +71,7 @@ export function roleProfile(role) {
   }
 }
 
-export function resolveContextModeRoot(env = process.env) {
+function resolveContextModeRoot(env = process.env) {
   const configDir = env.CLAUDE_CONFIG_DIR || path.join(env.HOME || homedir(), '.claude')
   return path.join(configDir, 'plugins', 'cache', 'context-mode', 'context-mode', CONTEXT_MODE_VERSION)
 }
@@ -94,7 +94,7 @@ function defaultRunScript(script, input, { signal, env = process.env } = {}) {
   })
 }
 
-export function createGuardHook(script, { runScript = defaultRunScript, log = (line) => process.stderr.write(`${line}\n`), env = process.env } = {}) {
+function createGuardHook(script, { runScript = defaultRunScript, log = (line) => process.stderr.write(`${line}\n`), env = process.env } = {}) {
   return async (input, _toolUseId, options = {}) => {
     let result
     try { result = await runScript(script, input, { ...options, env }) } catch (error) {

@@ -3,12 +3,29 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { CONTEXT_MODE_TOOLS, composeSdkRoleQueryOptions, createGuardHook, prepareSdkRole, roleProfile } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
+import { composeSdkRoleQueryOptions, prepareSdkRole } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
+
+const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
+const CONTEXT_MODE_TOOLS = {
+  batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`, doctor: `${CONTEXT_PREFIX}ctx_doctor`, execute: `${CONTEXT_PREFIX}ctx_execute`,
+  executeFile: `${CONTEXT_PREFIX}ctx_execute_file`, fetchAndIndex: `${CONTEXT_PREFIX}ctx_fetch_and_index`, index: `${CONTEXT_PREFIX}ctx_index`,
+  insight: `${CONTEXT_PREFIX}ctx_insight`, purge: `${CONTEXT_PREFIX}ctx_purge`, search: `${CONTEXT_PREFIX}ctx_search`, stats: `${CONTEXT_PREFIX}ctx_stats`,
+}
+// The callback adapter is reached the way the runner reaches it: through a prepared role's hooks (first writer guard).
+const guardHook = (adapterOptions: Record<string, unknown>) => {
+  const root = mkdtempSync(join(tmpdir(), 'wt-guard-hook-')); roots.push(root)
+  const prepared = prepareSdkRole('tdd', { worktree: root, adapterOptions })
+  return prepared.hooks.PreToolUse[0].hooks[0] as (input: unknown) => Promise<Record<string, unknown>>
+}
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const roles = ['pilot', 'judge', 'tdd', 'harden', 'critic', 'review', 'refutation'] as const
+const roleProfile = (role: string) => {
+  const root = mkdtempSync(join(tmpdir(), 'wt-role-profile-')); roots.push(root)
+  return prepareSdkRole(role, { worktree: root, exists: () => true }).profile
+}
 const readers = ['judge', 'critic', 'review', 'refutation'] as const
 const writers = ['tdd', 'harden'] as const
 const requiredGuards = [
@@ -88,17 +105,17 @@ describe('SDK command-guard callback adapter', () => {
     const payload = { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'find . -name *.ts' }, session_id: 's' }
     let received: unknown
     const output = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'refused' } }
-    const hook = createGuardHook('/guard.mjs', { runScript: async (_script: string, input: unknown) => { received = input; return { code: 0, stdout: JSON.stringify(output), stderr: '' } } })
+    const hook = guardHook({ runScript: async (_script: string, input: unknown) => { received = input; return { code: 0, stdout: JSON.stringify(output), stderr: '' } } })
     await expect(hook(payload)).resolves.toEqual(output)
     expect(received).toBe(payload)
   })
 
   it('returns no decision and logs when a guard exits non-zero', async () => {
     const lines: string[] = []
-    const hook = createGuardHook('/broken-guard.mjs', { runScript: async () => ({ code: 7, stdout: '', stderr: 'boom' }), log: (line: string) => lines.push(line) })
+    const hook = guardHook({ runScript: async () => ({ code: 7, stdout: '', stderr: 'boom' }), log: (line: string) => lines.push(line) })
     const result = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'true' } })
     expect(result).not.toHaveProperty('hookSpecificOutput')
     expect(result).not.toHaveProperty('continue')
-    expect(lines).toEqual([expect.stringContaining('/broken-guard.mjs exited 7: boom')])
+    expect(lines).toEqual([expect.stringContaining('wt-unquoted-tool-glob-guard-hook.mjs exited 7: boom')])
   })
 })

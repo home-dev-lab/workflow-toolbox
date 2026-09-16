@@ -11,8 +11,13 @@ import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunn
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
-// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { CONTEXT_MODE_TOOLS, resolveContextModeRoot } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
+const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
+const CONTEXT_MODE_TOOLS = {
+  batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`, doctor: `${CONTEXT_PREFIX}ctx_doctor`, execute: `${CONTEXT_PREFIX}ctx_execute`,
+  executeFile: `${CONTEXT_PREFIX}ctx_execute_file`, fetchAndIndex: `${CONTEXT_PREFIX}ctx_fetch_and_index`, index: `${CONTEXT_PREFIX}ctx_index`,
+  insight: `${CONTEXT_PREFIX}ctx_insight`, purge: `${CONTEXT_PREFIX}ctx_purge`, search: `${CONTEXT_PREFIX}ctx_search`, stats: `${CONTEXT_PREFIX}ctx_stats`,
+}
+const resolveContextModeRoot = (env: NodeJS.ProcessEnv) => join(env.CLAUDE_CONFIG_DIR || join(env.HOME ?? '', '.claude'), 'plugins', 'cache', 'context-mode', 'context-mode', '1.0.177')
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')

@@ -1,7 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { knowledgeBaseReadAllowed } from './knowledge-base-index.mjs'
-import { roleProfile } from './sdk-role-profile.mjs'
 
 const READ_TOOLS = ['Read', 'Glob', 'Grep']
 const WRITE_TOOLS = ['Edit', 'Write', 'Bash']
@@ -29,10 +28,6 @@ function bashConfined(root, command) {
   if (/(?:^|[\s'"=(:,])\.\.(?=$|[\s'"),;&|\\/])/.test(command)) return false
   const absolutePaths = command.match(/(?:[A-Za-z]:[\\/]|\/)[^\s'";|&<>)]*/g) ?? []
   return absolutePaths.every((candidate) => confined(root, candidate))
-}
-
-export function executorTools(readOnly) {
-  return roleProfile(readOnly ? 'review' : 'tdd').tools
 }
 
 export function executorCanUseTool(root, report, readOnly, toolName, input, { knowledgeBaseIndex = null, profile = null } = {}) {

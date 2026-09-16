@@ -5,7 +5,7 @@ import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { executorBrief, executorCanUseTool, executorTools, parseExecutorArgs } from '../../../../plugin/bin/lib/claude-executor-core.mjs'
+import { executorBrief, executorCanUseTool, parseExecutorArgs } from '../../../../plugin/bin/lib/claude-executor-core.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const roots: string[] = []
@@ -65,8 +65,6 @@ describe('Claude SDK executor', () => {
   it('fences writable tools to the worktree and read-only writes to the nonce report', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-executor-fence-')); roots.push(root); mkdirSync(join(root, '.lane'))
     const report = join(root, '.lane', 'review-report.nonce.md')
-    expect(executorTools(false)).toEqual(expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']))
-    expect(executorTools(true)).toEqual(['Read', 'Glob', 'Grep', 'mcp__plugin_context-mode_context-mode__ctx_search'])
     expect(executorCanUseTool(root, report, true, 'Write', { file_path: report })).toEqual({ behavior: 'allow' })
     expect(executorCanUseTool(root, report, true, 'Write', { file_path: join(root, 'source.ts') }).behavior).toBe('deny')
     expect(executorCanUseTool(root, report, false, 'Edit', { file_path: join(root, 'source.ts') }).behavior).toBe('allow')
