@@ -160,6 +160,7 @@ describe('OpenCode Claude-skill fence', () => {
       stateDir: f.stateDir,
       platform: process.platform,
       accessSyncFn: () => { throw discoveryError },
+      statSyncFn: () => { throw discoveryError },
     })
 
     expect(result).toMatchObject({ ok: false, allowOk: false, unavailable: true, reason: expect.stringContaining('simulated lookup I/O failure') })

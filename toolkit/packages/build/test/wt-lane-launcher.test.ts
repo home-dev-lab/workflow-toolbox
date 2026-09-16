@@ -20,10 +20,12 @@ const spawnedWatchers: ReturnType<typeof spawn>[] = []
 const spawnedChildren: ReturnType<typeof spawn>[] = []
 const spawnedGroups: number[] = []
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-afterEach(() => {
-  for (const watcher of spawnedWatchers.splice(0)) if (watcher.exitCode === null) watcher.kill('SIGKILL')
-  for (const child of spawnedChildren.splice(0)) if (child.exitCode === null) child.kill('SIGKILL')
+afterEach(async () => {
+  const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
+  const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve) => child.once('exit', () => resolve())))
+  for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
   for (const group of spawnedGroups.splice(0)) try { process.kill(-group, 'SIGKILL') } catch {}
+  await Promise.all(exits)
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
 
@@ -340,7 +342,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const result = inspectStartedProcess(() => {
       calls += 1
       return calls < 3 ? null : expected
-    }, 42, { platform: 'darwin', timeoutMs: 100 })
+    }, 42, { platform: 'darwin', timeoutMs: 500 })
     expect(calls).toBe(3)
     expect(result).toEqual({ identity: expected, unavailable: null })
   })

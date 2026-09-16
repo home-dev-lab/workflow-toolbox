@@ -69,7 +69,21 @@ describe('lane supervisor safety core', () => {
     }
     expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toEqual(expected)
     expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toEqual(expected)
-    expect(execFile).toHaveBeenCalledWith('ps', ['-p', '432', '-o', 'lstart=,pgid=,command='], expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C' }) }))
+    expect(execFile).toHaveBeenCalledWith('ps', ['-ww', '-p', '432', '-o', 'lstart=,pgid=,command='], expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C' }) }))
+  })
+
+  it('keeps a long Darwin argv identical across wide two-read transcripts', () => {
+    const command = `/usr/local/bin/node worker.mjs --brief-receipt ${'a'.repeat(500)}`
+    const execFile = vi.fn((program: string, args: string[]) => program === 'ps' && args.includes('lstart=,pgid=,command=')
+      ? { status: 0, stdout: `Wed Sep 16 12:34:56 2026   431 ${command}\n` }
+      : program === 'ps'
+        ? { status: 0, stdout: 'S\n' }
+        : { status: 0, stdout: 'p432\nfcwd\nn/Users/runner/work/lane\n' })
+    const first = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })
+    const second = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })
+    expect(first?.argv).toEqual([command])
+    expect(second).toEqual(first)
+    expect(execFile.mock.calls.filter(([program, args]) => program === 'ps' && args[0] === '-ww')).toHaveLength(2)
   })
 
   it('keeps a Darwin identity readable when lsof is absent and marks cwd unreadable', () => {
@@ -90,9 +104,37 @@ describe('lane supervisor safety core', () => {
     })
     expect(execFile).toHaveBeenCalledWith(
       'powershell.exe',
-      expect.arrayContaining(['-Command', expect.stringContaining('Get-CimInstance Win32_Process -Filter "ProcessId=432"')]),
+      expect.arrayContaining(['-Command', expect.stringContaining('Get-CimInstance Win32_Process |')]),
       expect.any(Object),
     )
+  })
+
+  it('shares one cached Windows table read and refreshes after its 500 ms staleness bound', () => {
+    vi.useFakeTimers()
+    try {
+      const row = { ProcessId: 432, CreationDate: '2026-09-16T19:34:56.000Z', CommandLine: 'node.exe worker.mjs', ParentProcessId: 431 }
+      const execFile = vi.fn()
+        .mockReturnValueOnce({ status: 0, stdout: JSON.stringify([row]) })
+        .mockReturnValueOnce({ status: 0, stdout: '[]' })
+      expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile })).not.toBeNull()
+      expect(inspectProcess(999, { platform: 'win32', spawnSync: execFile })).toBeNull()
+      expect(execFile).toHaveBeenCalledTimes(1)
+      vi.advanceTimersByTime(501)
+      expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile })).toBeNull()
+      expect(execFile).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('classifies both Windows lane pids from one process-table read', () => {
+    const rows = [
+      { ProcessId: 40, CreationDate: '2026-09-16T19:34:56.000Z', CommandLine: 'node.exe worker.mjs', ParentProcessId: 39 },
+      { ProcessId: 41, CreationDate: '2026-09-16T19:34:57.000Z', CommandLine: 'opencode.cmd run', ParentProcessId: 40 },
+    ]
+    const execFile = vi.fn(() => ({ status: 0, stdout: JSON.stringify(rows) }))
+    const inspect = (pid: number, options: Record<string, unknown>) => inspectProcess(pid, { ...options, spawnSync: execFile })
+    const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node.exe worker.mjs'], workerStartTime: 1_789_587_296, childPid: 41, childArgv: ['opencode.cmd run'], childStartTime: 1_789_587_297 }
+    expect(classifyLane(record, { platform: 'win32', inspect })).toMatchObject({ status: 'running', worker: 'running', child: 'running' })
+    expect(execFile).toHaveBeenCalledTimes(1)
   })
 
   it.each([
