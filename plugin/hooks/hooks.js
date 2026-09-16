@@ -1,7 +1,6 @@
 import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 
 const PANE_ID = 'wt-what-is-running';
-const OPEN_STATE_KEY = 'pane-open';
 export const WORKFLOW_TOOLBOX_LAYOUT = Object.freeze({
   laneDirName: '.lane',
   worktreesDirName: 'worktrees',
@@ -402,6 +401,7 @@ export const registerWithLayout = (on, options, layout) => {
   let snapshot = UNKNOWN_SNAPSHOT;
   let generation = 0;
   let paneObserved = false;
+  let refreshing = false;
   let processRefusalStreaks = new Map();
   let currentProject = null;
   let allProjects = false;
@@ -415,36 +415,45 @@ export const registerWithLayout = (on, options, layout) => {
     timer?.cancel?.(); timer = null; open = false; paneObserved = false;
   };
   const refresh = async (request = generation) => {
-    if (!host || !open || request !== generation) return;
-    let nextSnapshot = await host.readSnapshot(host.paths);
-    if (!open || request !== generation) return;
-    const refusals = Array.isArray(nextSnapshot.pathRefusals) ? nextSnapshot.pathRefusals : [];
-    const nextStreaks = new Map();
-    const visibleRefusals = refusals.filter((reason) => {
-      if (!reason.startsWith('process live actor ')) return true;
-      const count = (processRefusalStreaks.get(reason) || 0) + 1;
-      nextStreaks.set(reason, count);
-      return count >= 2;
-    });
-    processRefusalStreaks = nextStreaks;
-    if (visibleRefusals.length !== refusals.length) {
-      const onlyDebouncedRefusalsMadePartial = nextSnapshot.discovery === 'partial'
-        && visibleRefusals.length === 0 && refusals.length > 0 && !nextSnapshot.cappedScans?.length;
-      nextSnapshot = { ...nextSnapshot, pathRefusals: visibleRefusals, ...(onlyDebouncedRefusalsMadePartial ? { discovery: 'available' } : {}) };
+    if (!host || !open || request !== generation || refreshing) return;
+    refreshing = true;
+    try {
+      let nextSnapshot = await host.readSnapshot(host.paths);
+      if (!open || request !== generation) return;
+      const refusals = Array.isArray(nextSnapshot.pathRefusals) ? nextSnapshot.pathRefusals : [];
+      const nextStreaks = new Map();
+      const visibleRefusals = refusals.filter((reason) => {
+        if (!reason.startsWith('process live actor ')) return true;
+        const count = (processRefusalStreaks.get(reason) || 0) + 1;
+        nextStreaks.set(reason, count);
+        return count >= 2;
+      });
+      processRefusalStreaks = nextStreaks;
+      if (visibleRefusals.length !== refusals.length) {
+        const onlyDebouncedRefusalsMadePartial = nextSnapshot.discovery === 'partial'
+          && visibleRefusals.length === 0 && refusals.length > 0 && !nextSnapshot.cappedScans?.length;
+        nextSnapshot = { ...nextSnapshot, pathRefusals: visibleRefusals, ...(onlyDebouncedRefusalsMadePartial ? { discovery: 'available' } : {}) };
+      }
+      snapshot = nextSnapshot;
+      host.invalidate();
+    } finally {
+      refreshing = false;
     }
-    snapshot = nextSnapshot;
-    host.invalidate();
   };
   const close = async () => {
     if (!host) return;
     stopPolling();
     const closing = host.close({ id: PANE_ID });
-    await persistOpenState(false);
     await closing;
   };
   const startPolling = (request) => {
     timer = host.every(pollMs, async () => {
-      if (!open || request !== generation || !paneObserved) {
+      if (!open || request !== generation) {
+        stopPolling(request);
+        return;
+      }
+      if (refreshing) return;
+      if (!paneObserved) {
         stopPolling(request);
         return;
       }
@@ -460,17 +469,8 @@ export const registerWithLayout = (on, options, layout) => {
     open = true;
     allProjects = false;
     await host.open({ id: PANE_ID, title: 'What is running', ...(focus ? { focus: true } : {}) });
-    await persistOpenState(true);
     await refresh(request);
     startPolling(request);
-  };
-  const persistOpenState = async (value) => {
-    try { await host.store.set(OPEN_STATE_KEY, value); }
-    catch { try { await host.log('wt-what-is-running: pane state unavailable'); } catch {} }
-  };
-  const rememberedOpen = async () => {
-    try { return await host.store.get(OPEN_STATE_KEY) === true; }
-    catch { try { await host.log('wt-what-is-running: pane state unavailable'); } catch {} return false; }
   };
   on('session.start', async ($, event, next) => {
     currentProject = pathBase(projectRootOf(event.cwd));
@@ -481,12 +481,9 @@ export const registerWithLayout = (on, options, layout) => {
       open: (pane) => $.ui.open(pane),
       close: (pane) => $.ui.close(pane),
       every: (ms, fn) => $.clock.every(ms, fn),
-      store: { get: (key) => $.store.get(key), set: (key, value) => $.store.set(key, value) },
-      log: (message) => $.ui.log(message),
     };
     try { await $.command.register({ name: 'wir', description: 'Open the What is running view' }); }
     catch { await $.ui.log('wt-what-is-running: /wir unavailable'); }
-    if (await rememberedOpen()) await show(false);
     return next(event);
   });
 

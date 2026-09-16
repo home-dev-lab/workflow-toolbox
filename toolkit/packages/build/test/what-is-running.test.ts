@@ -9,6 +9,15 @@ import { describe, expect, it } from 'vitest'
 import { readSnapshot, register } from '../../../../plugin/hooks/hooks.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
+const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
+
+function runSelftest(filter?: string) {
+  return spawnSync(process.execPath, [SELFTEST], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    env: filter ? { ...process.env, WT_WIR_SELFTEST_FILTER: filter } : process.env,
+  })
+}
 
 function collector(root: string, extra: Record<string, unknown> = {}) {
   const paths = {
@@ -60,10 +69,22 @@ function renderedText(snapshot: unknown) {
 
 describe('What is running collector seam', () => {
   it('runs every assertion from the ported hardened selftest', () => {
-    const result = spawnSync(process.execPath, [join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')], { cwd: REPO_ROOT, encoding: 'utf8' })
+    const result = runSelftest()
     expect(result.status, result.stderr || result.stdout).toBe(0)
     expect(result.stdout).toContain('tests: ')
   }, 60_000)
+
+  it('keeps pane-open state local to one session registration', () => {
+    const result = runSelftest('[per-session pane state] one registration')
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('tests: 1/1')
+  })
+
+  it('keeps a detail toggle open while a slow snapshot poll overlaps it', () => {
+    const result = runSelftest('[toggle race]')
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('tests: 1/1')
+  })
 
   it('renders non-Linux process discovery as unavailable instead of an empty process list', async () => {
     const text = await renderedText({

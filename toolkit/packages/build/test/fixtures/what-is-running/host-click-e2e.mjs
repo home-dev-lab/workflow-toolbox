@@ -12,6 +12,11 @@ const pluginDir = path.resolve(args['plugin-dir'] ?? path.join(path.dirname(new 
 const cwd = args.cwd ?? process.cwd()
 const cols = Number(args.cols ?? 160)
 const out = args.out ?? fs.mkdtempSync('/tmp/wir-click-')
+const settings = args.settings ? path.resolve(args.settings) : null
+const waitMs = Number(args['wait-ms'] ?? 2500)
+const scopeWaitMs = Number(args['scope-wait-ms'] ?? waitMs)
+const closeDetails = args['close-details'] === 'true'
+const allScopeOnly = args['all-scope-only'] === 'true'
 fs.mkdirSync(out, { recursive: true })
 const session = `wir-click-${process.pid}-${Date.now()}`
 const sleep = (ms) => execFileSync('sleep', [String(ms / 1000)])
@@ -52,7 +57,7 @@ function buttons(text) {
 }
 function click(b) {
   tmux('send-keys', '-t', session, '-l', `\x1b[<0;${b.col};${b.row}M\x1b[<0;${b.col};${b.row}m`)
-  sleep(2500)
+  sleep(b.label.startsWith('[Show ') ? scopeWaitMs : waitMs)
 }
 
 const results = []
@@ -60,7 +65,8 @@ let exit = 0
 try {
   const validation = spawnSync('claude', ['plugin', 'validate', pluginDir, '--strict'], { encoding: 'utf8' })
   if (validation.status !== 0) throw new Error(`plugin manifest invalid (claude plugin validate --strict): ${(validation.stdout + validation.stderr).split('\n').filter((l) => /✘|❯ .*:/.test(l)).join(' | ')}`)
-  tmux('new-session', '-d', '-s', session, '-c', cwd, '-x', String(cols), '-y', '50', `claude --model haiku --setting-sources '' --tools '' --strict-mcp-config --plugin-dir "${pluginDir}"`)
+  const command = `env -u ATRIUM_IDENTITY claude --model haiku --setting-sources '' --tools '' --strict-mcp-config --plugin-dir "${pluginDir}"${settings ? ` --settings "${settings}"` : ''}`
+  tmux('new-session', '-d', '-s', session, '-c', cwd, '-x', String(cols), '-y', '50', command)
   let sent = false, trusted = false, opened = false
   for (let i = 0; i < 360 && !opened; i += 1) {
     const c = capture()
@@ -89,7 +95,7 @@ try {
   for (let guard = 0; guard < 80; guard += 1) {
     const before = capture()
     const counts = new Map()
-    const next = buttons(before).map((b) => { const k = norm(b.label); const n = (counts.get(k) ?? 0) + 1; counts.set(k, n); return { ...b, key: `${k}#${n}` } }).find((b) => !seen.has(b.key) && !/close/i.test(b.label))
+    const next = buttons(before).map((b) => { const k = norm(b.label); const n = (counts.get(k) ?? 0) + 1; counts.set(k, n); return { ...b, key: `${k}#${n}` } }).find((b) => !seen.has(b.key) && !/close/i.test(b.label) && (!allScopeOnly || b.label !== '[Show this project]'))
     if (!next) break
     seen.add(next.key)
     // `[Open report]` is a Link (hooks.js renders it with Link, never a Button): it opens the report outside the pane, so an
@@ -102,6 +108,18 @@ try {
     const changed = paneText(before) !== paneText(after)
     results.push({ label: next.key, changed })
     if (!changed) exit = 1
+    const detailClose = closeDetails ? buttons(after).find((button) => button.label === '[Close]') : null
+    if (detailClose) {
+      const closeCount = buttons(after).filter((button) => button.label === '[Close]').length
+      click(detailClose)
+      const afterClose = capture()
+      step += 1
+      fs.writeFileSync(path.join(out, `${String(step).padStart(2, '0')}-detail-close.txt`), afterClose)
+      const remaining = buttons(afterClose).filter((button) => button.label === '[Close]').length
+      const paneStayed = paneLines(afterClose) !== null
+      results.push({ label: '[Close] detail', changed: paneStayed && remaining === closeCount - 1, note: paneStayed ? 'detail closed, pane stayed' : 'pane disappeared' })
+      if (!paneStayed || remaining !== closeCount - 1) exit = 1
+    }
     if (!/^\[(▸|▾|Show|Hide)\]/.test(norm(next.label))) phaseBodies.set(next.key, paneText(after).split('\n').filter((l) => !/\[[^\]]+\]\s*(done|skipped|running|not started|waiting)/.test(l)).join('\n'))
   }
   const bodies = [...phaseBodies.entries()]

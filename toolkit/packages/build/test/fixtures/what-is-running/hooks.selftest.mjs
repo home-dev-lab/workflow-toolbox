@@ -147,9 +147,11 @@ const processCapability = {
 };
 const failures = [];
 let testCount = 0;
+const testFilter = process.env.WT_WIR_SELFTEST_FILTER;
 let finishedOnlySnapshot;
 let cappedDiscoverySnapshot;
 async function test(name, fn) {
+  if (testFilter && !name.includes(testFilter)) return;
   testCount += 1;
   try { await fn(); console.log(`PASS ${name}`); }
   catch (error) { failures.push(name); console.log(`FAIL ${name}: ${error.message}`); }
@@ -1832,7 +1834,7 @@ await test('polling is 2 seconds and stops after host-side pane disposal', async
   await timer.fn();
   assert(timer.cancelled);
 });
-await test('[changed Round 2 Close][changed: reload semantics] repeated session.start re-adopts and redraws persisted open pane before forwarding', async () => {
+await test('[per-session pane state] one registration never adopts another registration\'s open pane through shared storage', async () => {
   const sharedStore = new Map();
   const makeHost = () => {
     const localHooks = []; const localCalls = [];
@@ -1848,26 +1850,21 @@ await test('[changed Round 2 Close][changed: reload semantics] repeated session.
   const first = makeHost();
   await first.find('session.start').hook(first.local$, { cwd: worktree }, async () => ({}));
   await first.find('command.run').hook(first.local$, { command: 'wir' }, async () => ({}));
-  assert.equal(sharedStore.get('pane-open'), true);
-  const reloaded = makeHost();
-  const pane = reloaded.find('ui.render', (hook) => hook.matcher?.component === 'Pane');
-  let redrawDuringReload;
-  await reloaded.find('session.start').hook(reloaded.local$, { cwd: worktree }, async () => {
-    redrawDuringReload = await pane.hook(reloaded.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
-    return {};
-  });
-  assert(reloaded.localCalls.some(([kind, value]) => kind === 'open' && value.id === 'wt-what-is-running' && !value.focus));
-  assert.notDeepEqual(redrawDuringReload, { downstream: true });
-  assert(findButton(redrawDuringReload, 'Close'));
-  const tree = redrawDuringReload;
+  assert.equal(sharedStore.has('pane-open'), false);
+  const second = makeHost();
+  await second.find('session.start').hook(second.local$, { cwd: worktree }, async () => ({}));
+  assert(!second.localCalls.some(([kind]) => kind === 'open'));
+  const secondPane = second.find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+  const untouched = await secondPane.hook(second.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
+  assert.deepEqual(untouched, { downstream: true });
+  const pane = first.find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+  const tree = await pane.hook(first.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   findButton(tree, 'Close').props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(sharedStore.get('pane-open'), false);
-  const closedRestart = makeHost();
-  await closedRestart.find('session.start').hook(closedRestart.local$, { cwd: worktree }, async () => ({}));
-  assert(!closedRestart.localCalls.some(([kind]) => kind === 'open'));
+  assert(first.localCalls.some(([kind]) => kind === 'close'));
+  assert.equal(sharedStore.has('pane-open'), false);
 });
-await test('[changed Round 2 Close][R4] rejecting open-state storage never blocks open, Close, or session start', async () => {
+await test('[per-session pane state] open, Close, and session start never access plugin-wide storage', async () => {
   const localHooks = []; const localCalls = [];
   const local$ = {
     ...$,
@@ -1889,6 +1886,7 @@ await test('[changed Round 2 Close][R4] rejecting open-state storage never block
   findButton(tree, 'Close').props.onPress();
   await new Promise((resolve) => setImmediate(resolve));
   assert(localCalls.some(([kind]) => kind === 'close'));
+  assert(!localCalls.some(([kind]) => kind === 'log'));
 });
 await test('an unremembered host pane does not adopt itself after restart', async () => {
   const restoredHooks = [];
@@ -1901,6 +1899,37 @@ await test('an unremembered host pane does not adopt itself after restart', asyn
   const first = await pane.hook(restored$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
   assert.deepEqual(first, { downstream: true });
   assert.equal(restoredTimers.length, 0);
+});
+await test('[toggle race] a detail state transition survives an overlapping slow snapshot refresh', async () => {
+  const localHooks = []; const localCalls = []; const localTimers = [];
+  const snapshot = { discovery: 'available', rows: [], sessions: [], services: { count: 1, items: [{ id: 'service:race', label: 'Race service' }] }, helpers: { count: 0, oldest: 'none', items: [] }, collectedAt: paths.now };
+  let processCalls = 0; let releasePoll;
+  const local$ = {
+    ...$,
+    process: { run: async () => {
+      processCalls += 1;
+      if (processCalls === 1) return { exitCode: 0, stdout: JSON.stringify(snapshot), stderr: '' };
+      return new Promise((resolve) => { releasePoll = () => resolve({ exitCode: 0, stdout: JSON.stringify(snapshot), stderr: '' }); });
+    } },
+    clock: { every: (ms, fn) => { const timer = { ms, fn, cancelled: false, cancel: () => { timer.cancelled = true; } }; localTimers.push(timer); return timer; } },
+    ui: { ...$.ui, invalidate: (event) => localCalls.push(['invalidate', event]) },
+  };
+  register((event, matcher, hook) => localHooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }), paths);
+  const find = (event, predicate = () => true) => localHooks.find((hook) => hook.event === event && predicate(hook));
+  await find('session.start').hook(local$, { cwd: worktree }, async () => ({}));
+  await find('command.run').hook(local$, { command: 'wir' }, async () => ({}));
+  const pane = find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+  let tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
+  const poll = localTimers[0].fn();
+  findButton(tree, 'Services (1)').props.onPress();
+  await localTimers[0].fn();
+  assert.equal(localTimers[0].cancelled, false);
+  releasePoll();
+  await poll;
+  tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({ downstream: true }));
+  assert.notDeepEqual(tree, { downstream: true });
+  assert(findButton(tree, 'Close'));
+  assert.match(JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value), /Race service/);
 });
 await test('an empty snapshot says nothing runs in the background', async () => {
   const originalRun = processCapability.run;
