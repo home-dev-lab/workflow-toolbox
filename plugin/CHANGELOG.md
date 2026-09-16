@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Remaining Windows-only test and runtime paths now use file URLs for ESM entry points, canonical path identities and display separators, Node-backed command fixtures, pinned home/config directories, and explicit skips for POSIX-only signal, mode, and permission semantics.
 - Windows OpenCode launches now resolve npm `.cmd`/`.bat` shims and invoke them through the command shell across lane, observer, fence, and envelope paths.
 - macOS test fixtures now use canonical temporary roots, Tailscale detection accepts a pinned binary for hermetic probes, and `/proc`-dependent coverage skips explicitly outside Linux.
 - Cross-platform lifecycle tests now compare canonical directory identities at archive boundaries, inject their process-liveness evidence, and derive assertion paths from the host rather than POSIX literals.

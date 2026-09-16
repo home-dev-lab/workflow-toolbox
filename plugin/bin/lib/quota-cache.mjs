@@ -162,5 +162,13 @@ export async function writeQuotaCacheAtomic(cachePath, data, expectedConfigDir) 
   const dir = path.dirname(cachePath)
   const tmp = path.join(dir, `.quota-cache.${process.pid}.${randomUUID()}.tmp`)
   await writeFile(tmp, JSON.stringify({ at: Date.now(), data }), 'utf8')
-  await rename(tmp, cachePath)
+  for (let attempt = 0;; attempt += 1) {
+    try {
+      await rename(tmp, cachePath)
+      break
+    } catch (error) {
+      if (process.platform !== 'win32' || error?.code !== 'EPERM' || attempt === 9) throw error
+      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)))
+    }
+  }
 }

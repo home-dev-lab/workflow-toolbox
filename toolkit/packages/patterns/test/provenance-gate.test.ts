@@ -261,7 +261,7 @@ describe('scanner e2e — drift-lock against the shipped signal', () => {
     makeRunDir(nonce, posLabel, negLabel, profile)
     const source = buildProvenanceScannerSource(opencode, nonce, [posLabel, negLabel])
 
-    const out = runScanner(source, explicit, { HOME: home })
+    const out = runScanner(source, explicit, { HOME: home, USERPROFILE: home })
 
     expect(out.anchored).toBe(true)
   })

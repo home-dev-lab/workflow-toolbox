@@ -176,9 +176,10 @@ export function runCrossRepoTypecheck(options: CrossRepoGateOptions = {}): numbe
       if (imports.length > 0) sourceImports.set(file, imports)
     }
 
-    const configs = walk(consumerRoot, (path) =>
-      /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/.test(path) && !path.endsWith('/tsconfig.base.json'),
-    )
+    const configs = walk(consumerRoot, (path) => {
+      const portablePath = displayPath(path)
+      return /(?:^|\/)tsconfig(?:\.[^/]+)?\.json$/.test(portablePath) && !portablePath.endsWith('/tsconfig.base.json')
+    })
     const covered = new Set<string>()
     const diagnostics: Array<{ diagnostic: ts.Diagnostic; roots: string[]; packages: string[] }> = []
     for (const configPath of configs) {

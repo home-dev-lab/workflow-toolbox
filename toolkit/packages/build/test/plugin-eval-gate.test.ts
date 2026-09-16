@@ -209,17 +209,12 @@ describe('wt-plugin-eval-gate', () => {
     const dir = mkdtempSync(join(tmpdir(), 'wt-eval-gate-launch-'))
     try {
       const target = join(dir, 'fresh-result.json')
-      const fake = join(dir, 'fake-claude.sh')
-      writeFileSync(fake, [
-        '#!/bin/sh',
-        'out=""',
-        'while [ $# -gt 0 ]; do if [ "$1" = "--json" ]; then out="$2"; fi; shift; done',
-        `printf '%s' '{"cases":[{"name":"fresh-case","arms":{"with":[{"passed":true},{"passed":true},{"passed":false}]}}]}' > "$out"`,
-        'exit 0',
-        '',
-      ].join('\n'), 'utf8')
+      const fake = join(dir, 'fake-claude.mjs')
+      writeFileSync(fake, `#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs'\nconst args=process.argv.slice(2), out=args[args.indexOf('--json')+1]\nwriteFileSync(out, '{"cases":[{"name":"fresh-case","arms":{"with":[{"passed":true},{"passed":true},{"passed":false}]}}]}')\n`, 'utf8')
       chmodSync(fake, 0o755)
-      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: target, CLAUDE_BIN: fake })
+      const fakeCmd = join(dir, 'fake-claude.cmd')
+      writeFileSync(fakeCmd, `@node "%~dp0fake-claude.mjs" %*\r\n`)
+      const result = run({ CLAUDE_CODE_WALNUT_SPIRE: '1', WT_PLUGIN_EVAL_RESULT: target, CLAUDE_BIN: process.platform === 'win32' ? fakeCmd : fake })
       expect(result.status).toBe(0)
       expect(result.stdout).toContain('fresh-case passed 2/3')
     } finally {

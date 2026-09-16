@@ -24,6 +24,10 @@ import { join } from 'node:path'
 const TOTAL_LINE = /^TOTAL: (\d+) finding\(s\), (\d+) advisory\/advisories, (\d+) card\(s\)$/m
 
 export function locateTsxBinary(toolkitDir) {
+  if (process.platform === 'win32') {
+    const cli = join(toolkitDir, 'node_modules', 'tsx', 'dist', 'cli.mjs')
+    if (existsSync(cli)) return cli
+  }
   const candidate = join(toolkitDir, 'node_modules', '.bin', 'tsx')
   return existsSync(candidate) ? candidate : null
 }
@@ -69,7 +73,9 @@ export function runLabelIntentLens({ toolkitDir, boardId, execFileImpl, timeoutM
 
   let stdout
   try {
-    stdout = execFileImpl(tsxBin, [scriptPath, '--board', boardId], {
+    const command = process.platform === 'win32' ? process.execPath : tsxBin
+    const args = process.platform === 'win32' ? [tsxBin, scriptPath, '--board', boardId] : [scriptPath, '--board', boardId]
+    stdout = execFileImpl(command, args, {
       timeout: timeoutMs,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],

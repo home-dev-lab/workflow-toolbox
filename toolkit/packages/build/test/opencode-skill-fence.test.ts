@@ -14,14 +14,25 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 function stub(mode: 'honor' | 'ignore' | 'invisible-allow') {
   const root = mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-')); roots.push(root)
-  const bin = path.join(root, 'opencode')
+  const bin = path.join(root, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')
   const calls = path.join(root, 'calls')
-  writeFileSync(bin, `#!/bin/sh
+  if (process.platform === 'win32') {
+    const script = path.join(root, 'opencode.mjs')
+    writeFileSync(script, `
+import { appendFileSync } from 'node:fs'
+if (process.argv[2] === '--version') { console.log('1.2.3'); process.exit(0) }
+appendFileSync(${JSON.stringify(calls)}, 'probe\\n')
+console.log(${JSON.stringify(mode === 'ignore' ? '[{"name":"workflow-toolbox-fence-sentinel"}]' : mode === 'invisible-allow' ? '[]' : '[{"name":"workflow-toolbox-allowed-sentinel"}]')})
+`)
+    writeFileSync(bin, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
+  } else {
+    writeFileSync(bin, `#!/bin/sh
 if [ "$1" = "--version" ]; then printf '1.2.3\\n'; exit 0; fi
 printf 'probe\\n' >> ${JSON.stringify(calls)}
 if [ ${JSON.stringify(mode)} = ignore ]; then printf '[{"name":"workflow-toolbox-fence-sentinel"}]\\n'; elif [ ${JSON.stringify(mode)} = invisible-allow ]; then printf '[]\\n'; else printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; fi
 `)
-  chmodSync(bin, 0o755)
+    chmodSync(bin, 0o755)
+  }
   return { root, bin, calls, stateDir: path.join(root, 'state') }
 }
 

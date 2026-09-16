@@ -46,7 +46,7 @@ describe('lane skill allow-list', () => {
     writeFileSync(path.join(home, '.claude', 'skills', 'one', 'SKILL.md'), '---\nname: one\ndescription: ok\n---\n')
     const before = readdirSync(lane, { recursive: true }).sort()
     materialiseAllowedSkills({ names: ['one'], laneDir: lane, homeDir: home, env: {} })
-    const outsideLaneMetadata = readdirSync(lane, { recursive: true }).map(String).filter((entry) => entry !== '.lane' && !entry.startsWith('.lane/')).sort()
+    const outsideLaneMetadata = readdirSync(lane, { recursive: true }).map(String).filter((entry) => entry !== '.lane' && !entry.startsWith('.lane/') && !entry.startsWith('.lane\\')).sort()
     expect(outsideLaneMetadata).toEqual(before)
   })
 

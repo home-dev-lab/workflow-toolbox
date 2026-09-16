@@ -177,7 +177,7 @@ export function verifyFidelityBundle({ root, dir, requireSameTree = false, requi
   const actual = new Set()
   function walk(relative = '') {
     for (const entry of fs.readdirSync(path.join(dir, relative), { withFileTypes: true })) {
-      const name = path.join(relative, entry.name)
+      const name = path.join(relative, entry.name).replaceAll('\\', '/')
       if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory())) throw new Error(`unsafe fidelity bundle entry: ${name}`)
       if (entry.isDirectory()) walk(name)
       else actual.add(name)

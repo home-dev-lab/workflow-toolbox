@@ -121,7 +121,7 @@ describe('wt-run-gate — the exit code written is the GATE\'s own, never a wrap
     }
   })
 
-  it('a command killed by a SIGNAL (never returns its own exit code) is recorded as SIGNAL, never silently coerced to a numeric code', () => {
+  it.skipIf(process.platform === 'win32')('POSIX-only: a command killed by a SIGNAL is recorded as SIGNAL, never silently coerced to a numeric code', () => {
     const d = mkDir()
     const res = run(['--name', 'g', '--out-dir', d, '--', process.execPath, '-e', "process.kill(process.pid, 'SIGTERM')"])
     expect(res.status).not.toBe(0)
@@ -245,7 +245,7 @@ describe('wt-run-gate --check', () => {
     expect(result.stdout).toBe('test: missing\n')
   })
 
-  it('keeps names unambiguous and invalidates binary bytes, tracked deletion, symlink targets, and modes', () => {
+  it.skipIf(process.platform === 'win32')('POSIX-only filename/mode lock: keeps names unambiguous and invalidates binary bytes, deletion, symlinks, and modes', () => {
     const { root, env } = gateRepo()
     writeFileSync(join(root, 'space name\nnext'), Buffer.from([0, 1, 2]))
     writeFileSync(join(root, 'binary.bin'), Buffer.from([0, 255, 1]))

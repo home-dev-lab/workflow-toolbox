@@ -2,10 +2,11 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, 
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const roots: string[] = []
-const REPO_ROOT = new URL('../../../..', import.meta.url).pathname
+const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(REPO_ROOT, 'plugin/bin/wt-pilot-fidelity.mjs')
 
 afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })))

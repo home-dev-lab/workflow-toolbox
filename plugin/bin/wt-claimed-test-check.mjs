@@ -111,7 +111,7 @@ for (const file of markdownFiles(root)) {
     for (const claim of claimsIn(line)) {
       if (hasPlausibleTest(claim.subject, tests)) continue
       process.stdout.write(
-        `${relative(root, file)}:${offset + 1}: ${line.trim()} (searched: ${claim.subject})\n`,
+        `${relative(root, file).replaceAll('\\', '/')}:${offset + 1}: ${line.trim()} (searched: ${claim.subject})\n`,
       )
     }
   }

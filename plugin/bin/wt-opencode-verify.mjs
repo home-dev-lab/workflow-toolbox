@@ -5,6 +5,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { laneTextFromOutput } from './wt-verifier-cli-guard-hook.mjs'
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
@@ -134,4 +135,4 @@ async function main() {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) void main()
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) void main()

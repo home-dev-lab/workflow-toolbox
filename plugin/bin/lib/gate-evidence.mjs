@@ -15,7 +15,7 @@ function gitOrEmpty(root, args) {
 }
 
 export function repoRoot(cwd) {
-  return git(cwd, ['rev-parse', '--show-toplevel']).trim()
+  return (fs.realpathSync.native ?? fs.realpathSync)(git(cwd, ['rev-parse', '--show-toplevel']).trim())
 }
 
 /** null when the repository declares no gates — the guard is opt-in by that file, and an absent file

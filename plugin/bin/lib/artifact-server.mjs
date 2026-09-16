@@ -209,10 +209,11 @@ function parseDiscovery(text) {
 
 export function readArtifactDiscovery(options = {}) {
   const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
   try {
     const discoveryPath = artifactDiscoveryPath(env, options.home, options.platform)
     const info = statSync(discoveryPath)
-    if (!info.isFile() || (info.mode & 0o777) !== 0o600) return null
+    if (!info.isFile() || (platform !== 'win32' && (info.mode & 0o777) !== 0o600)) return null
     if (typeof process.getuid === 'function' && info.uid !== process.getuid()) return null
     return parseDiscovery(readFileSync(discoveryPath, 'utf8'))
   } catch {

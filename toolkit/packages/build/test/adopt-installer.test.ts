@@ -639,7 +639,7 @@ describe('adopt installer — --global targets the config dir, resolved not type
     const env = { ...INSTALLER_ENV }
     if (opts.configDir === null) delete env.CLAUDE_CONFIG_DIR
     else env.CLAUDE_CONFIG_DIR = opts.configDir
-    if (opts.home) env.HOME = opts.home
+    if (opts.home) { env.HOME = opts.home; env.USERPROFILE = opts.home }
     const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd: opts.cwd, env, encoding: 'utf8' })
     return (res.stdout ?? '') + (res.stderr ?? '')
   }

@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
@@ -64,7 +64,7 @@ function fakeSdk(root: string, marker: string) {
   writeFileSync(join(packageDir, 'index.cjs'), `module.exports = { marker: ${JSON.stringify(marker)} }\n`)
 }
 function resolveSdkInChild(options: Record<string, unknown>) {
-  const script = `const { resolveAgentSdkRequire } = await import(${JSON.stringify(SDK_RESOLVER)}); try { const require = resolveAgentSdkRequire(${JSON.stringify(options)}); process.stdout.write(JSON.stringify({ marker: require('@anthropic-ai/claude-agent-sdk').marker, path: require.resolve('@anthropic-ai/claude-agent-sdk') })) } catch (error) { process.stdout.write(error.message) }`
+  const script = `const { resolveAgentSdkRequire } = await import(${JSON.stringify(pathToFileURL(SDK_RESOLVER).href)}); try { const require = resolveAgentSdkRequire(${JSON.stringify(options)}); process.stdout.write(JSON.stringify({ marker: require('@anthropic-ai/claude-agent-sdk').marker, path: require.resolve('@anthropic-ai/claude-agent-sdk') })) } catch (error) { process.stdout.write(error.message) }`
   const env = { ...process.env }
   delete env.NODE_PATH
   return spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env })
@@ -132,9 +132,9 @@ describe('SDK pilot runner', () => {
     git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Archive Root'); git('config', 'commit.gpgSign', 'false')
     writeFileSync(join(main, 'tracked.txt'), 'base\n'); git('add', '-A'); git('commit', '-qm', 'base')
     const worktree = join(main, 'wt'); expect(git('worktree', 'add', '-q', '-b', 'archive-root-proof', worktree).status).toBe(0)
-    expect(realpathSync(defaultArchiveRoot({ dir: worktree }))).toBe(realpathSync(main))
+    expect(realpathSync.native(defaultArchiveRoot({ dir: worktree }))).toBe(realpathSync.native(main))
     // A plain repository has no outside: it resolves to itself, and the preflight refuses it.
-    expect(realpathSync(defaultArchiveRoot({ dir: main }))).toBe(realpathSync(main))
+    expect(realpathSync.native(defaultArchiveRoot({ dir: main }))).toBe(realpathSync.native(main))
   })
 
   it('rejects the removed lane-silence option and omits it from usage', () => {
@@ -223,7 +223,9 @@ describe('SDK pilot runner', () => {
     const options = { card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }
     await runPilot(options, { query, resolvePilotModels: models })
     const refusal = await runPilot(options, { query, resolvePilotModels: models }).then(() => null, (error: Error) => error.message)
-    expect(refusal).toMatch(new RegExp(`interrupted lifecycle.*node -e .*${join(f.dir, '.lane').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    expect(refusal).toContain('interrupted lifecycle')
+    expect(refusal).toContain('node -e')
+    expect(refusal).toContain(JSON.stringify(join(f.dir, '.lane')).slice(1, -1))
 
     // The printed remedy KEEPS the interrupted run's evidence: executing it moves .lane aside as a sibling and
     // leaves a fresh empty .lane; a remedy that deleted the directory would destroy the only record of a crash.

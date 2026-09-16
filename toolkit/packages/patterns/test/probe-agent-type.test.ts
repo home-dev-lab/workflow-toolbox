@@ -99,7 +99,7 @@ describe('probeAgentType — file-based bridge', () => {
   }
 
   function manifestRuntime(reply: string) {
-    const manifestPath = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)/m.exec(reply)?.[1] ?? ''
+    const manifestPath = /^MANIFEST: (.+?\.manifest\.json)(?: ANSWER:|$)/m.exec(reply)?.[1] ?? ''
     return new FakeRuntime({
       onAgent: ({ opts }) => {
         if (opts?.label === 'probeAgentType:read-manifest') {

@@ -52,7 +52,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     const reviewDiff = readFileSync(join(lifecycle.calls, '..', 'review-input.diff'), 'utf8')
     expect(reviewDiff).toContain('+modified by tdd')
     expect(reviewDiff).toContain('+created by tdd')
-    expect(reviewDiff).toContain('old mode 100644\nnew mode 100755')
+    if (process.platform !== 'win32') expect(reviewDiff).toContain('old mode 100644\nnew mode 100755')
     expect(reviewDiff).toContain('rename from renamed.txt\nrename to renamed-new.txt')
     expect(reviewDiff).toContain('# - "doomed.txt"')
     expect(reviewDiff).toContain('deleted file mode 100644')
