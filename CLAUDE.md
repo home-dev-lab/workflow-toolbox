@@ -72,7 +72,9 @@ pnpm test && pnpm typecheck && pnpm lint
   byte-identity copies of `toolkit/examples/` (same gate).
 - **Validate the plugin** before shipping a plugin change:
   `claude plugin validate . --strict` and `claude plugin validate ./plugin --strict`.
-  Bump `plugin/.claude-plugin/plugin.json` `version` on any release-worthy change.
+  The plugin `version` in `plugin/.claude-plugin/plugin.json` moves ONLY on `main`, once, at the
+  `develop` → `main` release merge — never on `develop` or a branch (a branch inherits `main`'s
+  number; its changelog entry goes under `## [Unreleased]`).
 
 ## Editing workflow scripts (the sandbox contract)
 
