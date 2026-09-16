@@ -1,0 +1,26 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreWorkspaces": ["toolkit/examples"],
+  "workspaces": {
+    ".": {
+      "entry": ["plugin/bin/*.mjs", "plugin/hooks/hooks.js", "plugin/monitors/*.mjs"],
+      "project": ["plugin/**/*.{mjs,js}"],
+      "ignore": ["plugin/hooks/snapshot-program.js", "plugin/**/fixtures/**"]
+    },
+    "toolkit/packages/runtime": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
+    "toolkit/packages/patterns": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
+    "toolkit/packages/build": { "entry": ["src/{index,define-workflow,define-pipeline,cli}.ts"], "project": ["src/**/*.ts"] },
+    "toolkit/packages/std": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
+    "toolkit/packages/pipeline-spec": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
+    "toolkit/packages/comm": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
+    "toolkit/packages/debugger": {
+      "entry": ["src/{index,source,capabilities,capability-registry,observer-def,audit-folder,tool-denial,external-delegation,transcript-usage,cli-args,observe-lifecycle,launch-enable-state,observe-config,observe-identity,card-cost,card-cost-scan,delegation-hop-cost,cli,report-cli,card-cost-cli}.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "toolkit/packages/scaffold": { "entry": ["src/{index,spec-io,dispatch,cli}.ts"], "project": ["src/**/*.ts"] },
+    "toolkit/packages/smoke": {
+      "entry": ["src/{runtimes,least-privilege,calibrate,run,canary-all,edge-canaries,nesting-canaries,budget-canaries,check-version,sdk-agent-probe,observer-canaries}.ts"],
+      "project": ["src/**/*.ts"]
+    }
+  }
+}

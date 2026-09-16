@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Tooling
+- Added a ratcheted local quality gate for complexity, source size, duplication, dead code, and dependency layering across the toolkit and plugin sources.
+
 ### Changed
 - `@anthropic-ai/claude-agent-sdk` moved from 0.3.260 to 0.3.273 (no code adaptation needed; the upgrade
   canary passed its 66 checks on the new runtime). Notable upstream changes for the SDK runner's design:

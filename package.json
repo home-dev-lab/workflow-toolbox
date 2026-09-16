@@ -1,0 +1,8 @@
+{
+  "name": "workflow-toolbox-repository",
+  "private": true,
+  "workspaces": [
+    "toolkit/packages/*",
+    "toolkit/examples"
+  ]
+}
