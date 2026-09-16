@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { knowledgeBaseReadAllowed } from './knowledge-base-index.mjs'
+import { roleProfile } from './sdk-role-profile.mjs'
 
 const READ_TOOLS = ['Read', 'Glob', 'Grep']
 const WRITE_TOOLS = ['Edit', 'Write', 'Bash']
@@ -31,11 +32,12 @@ function bashConfined(root, command) {
 }
 
 export function executorTools(readOnly) {
-  return readOnly ? [...READ_TOOLS, 'Write'] : [...READ_TOOLS, ...WRITE_TOOLS]
+  return roleProfile(readOnly ? 'review' : 'tdd').tools
 }
 
-export function executorCanUseTool(root, report, readOnly, toolName, input, { knowledgeBaseIndex = null } = {}) {
+export function executorCanUseTool(root, report, readOnly, toolName, input, { knowledgeBaseIndex = null, profile = null } = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
+  if (profile?.tools.includes(toolName) && ![...READ_TOOLS, ...WRITE_TOOLS].includes(toolName)) return { behavior: 'allow' }
   if (READ_TOOLS.includes(toolName)) {
     const requested = input.file_path ?? input.path ?? root
     let allowed = confined(root, requested) || (readOnly && toolName === 'Read' && knowledgeBaseReadAllowed(knowledgeBaseIndex, requested))

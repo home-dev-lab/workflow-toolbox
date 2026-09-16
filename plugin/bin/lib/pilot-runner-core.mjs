@@ -7,12 +7,12 @@ import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lif
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-machine.mjs'
 import { deriveRoute } from './route-from-card.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
-import { absentPluginPaths } from './plugin-receipt.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 import { createBoardClient } from './board-http-client.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './sdk-role-profile.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -137,10 +137,11 @@ export function confinedToWorktree(root, requested) {
   return relative(realpathSync(root), resolved) === '' || !relative(realpathSync(root), resolved).startsWith('..')
 }
 
-export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true, knowledgeBaseIndex = null } = {}) {
+export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true, knowledgeBaseIndex = null, profile = null } = {}) {
   if (['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).includes(toolName)) return { behavior: 'allow' }
   if (toolName === 'mcp__planka__move_card' && !boardMoves) return { behavior: 'deny', message: 'board moves are the orchestrator\'s' }
   if (PLANKA_TOOLS.has(toolName)) return { behavior: 'allow' }
+  if (profile?.tools.includes(toolName) && !['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'].includes(toolName)) return { behavior: 'allow' }
   if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused: ${toolName}` }
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? worktree
@@ -247,9 +248,9 @@ export async function runPilot(options, dependencies) {
   let firstAssistantSeen = false
   let streamError = null
   const pluginRoot = resolve(MODULE_DIR, '../..')
-  const guardPlugin = join(pluginRoot, 'hooks-modules', 'pilot-guard')
   const configuredPlugins = options.pluginDirs ?? []
-  const pluginPaths = [guardPlugin, ...configuredPlugins]
+  const sdkRole = (dependencies.prepareSdkRole ?? prepareSdkRole)('pilot', { worktree: options.dir, env: effectiveEnv, pluginRoot, adapterOptions: { log } })
+  sdkRole.pluginPaths.push(...configuredPlugins)
 
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
   // run would satisfy it without this session ever writing one. Refuse to start on a dirty lane.
@@ -259,9 +260,6 @@ export async function runPilot(options, dependencies) {
   // or a fresh worktree fails the preflight (real wave a2adf9e2).
   mkdirSync(join(options.dir, '.lane'), { recursive: true })
   try { execFileSync('git', ['check-ignore', '.lane'], { cwd: options.dir, stdio: 'ignore' }) } catch { throw new Error('SDK pilot preflight failed: .lane must be git-ignored') }
-  for (const file of [join(guardPlugin, 'hooks', 'hooks.json'), join(guardPlugin, 'hooks', 'hooks.js')]) {
-    if (!existsSync(file)) throw new Error(`SDK pilot preflight failed: required plugin file is absent: ${file}`)
-  }
   const boardUrl = resolveWorkflowToolboxOption('planka_mcp_url', { env: effectiveEnv }).value
   const board = dependencies.board ?? (boardContract && boardUrl ? createBoardClient({ url: boardUrl, boardId: boardContract.boardId }) : null)
   const routeFinding = boardContract
@@ -315,34 +313,34 @@ export async function runPilot(options, dependencies) {
   }
 
   try {
-    const stream = query({ prompt: prompt(), options: {
+    const queryOptions = composeSdkRoleQueryOptions({
       model: model.value,
       systemPrompt,
       settingSources: [],
       maxTurns: 120,
       cwd: options.dir,
-      plugins: pluginPaths.map((path) => ({ type: 'local', path })),
-      tools: ['Read', 'Glob', 'Grep'],
       // No Planka endpoint configured means no board tools, never a guessed local port.
       mcpServers: { ...(boardUrl ? { planka: { type: 'http', url: boardUrl } } : {}), [LIFECYCLE_MCP_KEY]: lifecycleServer },
-      canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path }),
+      canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path, profile: sdkRole.profile }),
       permissionMode: 'default',
       env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
-    } })
+    }, sdkRole)
+    const stream = query({ prompt: prompt(), options: queryOptions })
     for await (const message of stream) {
       transcript.push(message)
-      if (!initReceiptSeen && !(message.type === 'system' && message.subtype === 'init')) {
+      if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) {
         throw new Error('SDK pilot initialization receipt never arrived: the first message was ' + message.type + '/' + (message.subtype ?? 'none'))
       }
       if (message.type === 'system' && message.subtype === 'init') {
       initReceiptSeen = true
       servedModel = message.model
-      const initTools = Array.isArray(message.tools) ? message.tools : []
-      const initPlugins = Array.isArray(message.plugins) ? message.plugins : []
-      const missing = ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
-      const absent = absentPluginPaths(pluginPaths, initPlugins)
-      if (missing.length > 0 || absent.length > 0) {
-        throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, absentPlugins: absent, tools: initTools, plugins: initPlugins })}`)
+       const initTools = Array.isArray(message.tools) ? message.tools : []
+       const missing = ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
+       try { assertSdkRoleReceipt('pilot', message, sdkRole) } catch (error) {
+         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${error instanceof Error ? error.message : String(error)}`)
+       }
+       if (missing.length > 0) {
+         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, tools: initTools })}`)
       }
       }
     if (!firstAssistantSeen && message.type === 'assistant') {

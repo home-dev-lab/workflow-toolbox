@@ -35,6 +35,7 @@ function fixture() {
   const installed = join(root, 'installed', 'plugin'); mkdirSync(installed, { recursive: true })
   cpSync(join(ROOT, 'plugin', 'bin'), join(installed, 'bin'), { recursive: true })
   cpSync(join(ROOT, 'plugin', 'hooks-modules'), join(installed, 'hooks-modules'), { recursive: true })
+  cpSync(join(ROOT, 'plugin', 'skills'), join(installed, 'skills'), { recursive: true })
   const sdk = join(worktree, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(sdk, { recursive: true })
   writeFileSync(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
   writeFileSync(join(sdk, 'index.cjs'), `
@@ -42,7 +43,7 @@ const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
   fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE})}));
   if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
-  else { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test'}; yield {type:'result',subtype:'success',is_error:false,usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11}}; }
+  else { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':plugin.path.endsWith('/harden')?'wt-sdk-harden':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; yield {type:'result',subtype:'success',is_error:false,usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:'executor report'}; }
 })()`)
   return { root, worktree, cli: join(installed, 'bin', 'wt-claude-executor.mjs') }
 }
@@ -64,8 +65,8 @@ describe('Claude SDK executor', () => {
   it('fences writable tools to the worktree and read-only writes to the nonce report', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-executor-fence-')); roots.push(root); mkdirSync(join(root, '.lane'))
     const report = join(root, '.lane', 'review-report.nonce.md')
-    expect(executorTools(false)).toEqual(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'])
-    expect(executorTools(true)).toEqual(['Read', 'Glob', 'Grep', 'Write'])
+    expect(executorTools(false)).toEqual(expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']))
+    expect(executorTools(true)).toEqual(['Read', 'Glob', 'Grep', 'mcp__plugin_context-mode_context-mode__ctx_search'])
     expect(executorCanUseTool(root, report, true, 'Write', { file_path: report })).toEqual({ behavior: 'allow' })
     expect(executorCanUseTool(root, report, true, 'Write', { file_path: join(root, 'source.ts') }).behavior).toBe('deny')
     expect(executorCanUseTool(root, report, false, 'Edit', { file_path: join(root, 'source.ts') }).behavior).toBe('allow')
@@ -117,13 +118,13 @@ describe('Claude SDK executor', () => {
     writeFileSync(brief, `Implement the task.\n\nWrite the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...process.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: outside } })
     expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+\nlog=.+\n$/); expect(result.stderr).toBe('')
-    waitFor(report); waitFor(receipt)
+    waitFor(report); waitFor(receipt); waitFor(log)
     expect(readFileSync(report, 'utf8')).toBe('executor report\n')
     expect(readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1)).toBe('EXIT=0')
     waitFor(`${log}.usage.json`)
     expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
     expect(existsSync(outside)).toBe(false)
-    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ tools: ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'], settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
+    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
     expect(JSON.parse(readFileSync(receipt, 'utf8')).plugins[0].path).toContain(join('hooks-modules', 'pilot-guard'))
     if (process.env.WT_EXECUTOR_E2E_OUTPUT === 'true') process.stdout.write(`CLAUDE_EXECUTOR_E2E ${result.stdout.trim()} EXIT=0 report=${readFileSync(report, 'utf8').trim()} outside=${existsSync(outside)}\n`)
   })
@@ -136,6 +137,6 @@ describe('Claude SDK executor', () => {
     waitFor(log); const until = Date.now() + 3000
     while (readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1) !== 'EXIT=124' && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
     expect(readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1)).toBe('EXIT=124')
-    expect(JSON.parse(readFileSync(receipt, 'utf8')).tools).toEqual(['Read', 'Glob', 'Grep', 'Write'])
+    expect(JSON.parse(readFileSync(receipt, 'utf8')).tools).toEqual(['Read', 'Glob', 'Grep', 'mcp__plugin_context-mode_context-mode__ctx_search'])
   })
 })

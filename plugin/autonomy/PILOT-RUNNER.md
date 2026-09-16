@@ -4,17 +4,52 @@
 
 `node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <card.md>` runs the pilot with `query()`,
 `permissionMode: 'default'`, and `settingSources: []`. The SDK routes every tool request through
-`canUseTool`: it allows Read, Glob, and Grep only inside the worktree after real-path confinement,
-the four lifecycle tools, and the six Planka tools below, and denies everything else. Supplying the
-callback makes the SDK use its stdio permission-prompt transport, so the callback response resolves
-requests headlessly rather than opening an interactive prompt. The remaining surface is the local
-`pilot-guard` plugin, the Planka HTTP MCP, and the
-in-process `sdk-pilot-lifecycle` MCP server. The lifecycle server exposes `transition`,
+`canUseTool`, which applies real-path confinement to filesystem tools and denies tools outside the
+pilot role profile. Supplying the callback makes the SDK use its stdio permission-prompt transport,
+so the callback response resolves requests headlessly rather than opening an interactive prompt.
+The lifecycle surface is the Planka HTTP MCP and the in-process `sdk-pilot-lifecycle` MCP server. The lifecycle server exposes `transition`,
 `write_artifact`, `route_finding`, and `run`; it owns phases, artifacts, lanes, gates, and the report-edge commit.
 The only admitted Planka tools are `mcp__planka__get_card`, `mcp__planka__get_comments`,
 `mcp__planka__add_comment`, `mcp__planka__update_card`, `mcp__planka__move_card`, and
 `mcp__planka__add_label_to_card`; every other Planka operation is denied. Owner input arrives only
 through the runner mailbox and owner-facing output only through the pilot report.
+
+## What an SDK session receives
+
+Every Claude SDK query uses the table in `plugin/bin/lib/sdk-role-profile.mjs`; GPT lanes and
+`lane_skills` are unchanged. `LSP` is omitted because SDK 0.3.273 accepted it in `tools` but did not
+list or expose it in the initialization receipt. Context-mode 1.0.177 is loaded from the active
+profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
+other nine MCP tools do not enter their receipt.
+
+| Role | Tools | Selected workflow-toolbox skills | Shipped command guards |
+| --- | --- | --- | --- |
+| pilot | Read, Glob, Grep, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |
+| tdd, harden | Read, Glob, Grep, Edit, Write, Bash, all ten context-mode MCP tools | changelog | writer set |
+| judge, critic, review, refutation | Read, Glob, Grep, `ctx_search` only | none | none; no Bash |
+
+The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
+unquoted globs, merge chains, concurrent tests, piped gate status, process-environment dumps,
+commit backticks, zsh colon modifiers, `find -newermt`, `PIPESTATUS`, and absent package scripts;
+plus main, gate-evidence, stale-date, rule-convention, and shipped-twin checks. Each SDK callback
+spawns the original shipped script with the native hook payload unchanged and returns its JSON
+decision unchanged. A non-zero exit or invalid JSON is logged and produces no decision, never an
+unreported allow. The `pilot-guard` function plugin remains loaded for confinement, and
+context-mode supplies the read bound. Spawn guards are excluded because these sessions have no
+Agent tool; Stop and SessionStart workflow-toolbox hooks are excluded because lifecycle servers own
+transitions; Planka producers are excluded because executors do not write the board.
+
+Only selected skills are copied into generated `.lane/sdk-plugins/<role>/` directories; the full
+workflow-toolbox plugin, its workflows, monitors, statusline, and unrelated skills are never loaded.
+The initialization receipt must contain the confinement plugin, context-mode plugin, generated skill
+plugin where applicable, every role tool, and every selected skill. Callback registration is not a
+receipt field, so startup proves every script exists and registers one callback per selected table
+entry; the refusal probe proves that callback execution works. A missing guard, skill, confinement
+plugin, or context-mode 1.0.177 path refuses startup and names the path.
+
+Resolution uses Node's native path APIs and the active `CLAUDE_CONFIG_DIR`, including Windows paths
+such as a profile beneath `%APPDATA%`; generated files are copies, not symlinks. If that profile does
+not have context-mode 1.0.177, the session refuses to start rather than degrading to an unguarded run.
 
 ## Route and phases
 

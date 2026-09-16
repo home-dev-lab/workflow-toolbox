@@ -11,6 +11,8 @@ import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunn
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { CONTEXT_MODE_TOOLS, resolveContextModeRoot } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
@@ -22,8 +24,9 @@ const initMessage = (model?: string) => ({
   type: 'system',
   subtype: 'init',
   ...(model === undefined ? {} : { model }),
-  tools: ['Read', 'Glob', 'Grep', lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
-  plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }],
+  tools: ['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS), lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
+  plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }, { path: resolveContextModeRoot(process.env) }, { name: 'wt-sdk-pilot' }],
+  skills: ['wt-sdk-pilot:stale-card-sweep', 'wt-sdk-pilot:lesson-harvest', 'wt-sdk-pilot:deep-grounding'],
 })
 const roots: string[] = []
 function fixture() {
@@ -139,13 +142,18 @@ describe('SDK pilot runner', () => {
   ])('names the %s knowledge-base index in the pilot prompt and allows Read for that index and its fiches only', async (_source, setup) => {
     const f = fixture()
     const configured = setup(f) as { option?: string, env: Record<string, string> }
+    if (configured.env.CLAUDE_CONFIG_DIR) {
+      const parent = join(configured.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'context-mode', 'context-mode')
+      mkdirSync(parent, { recursive: true })
+      symlinkSync(resolveContextModeRoot(process.env), join(parent, '1.0.177'))
+    }
     const derived = join(configured.env.CLAUDE_CONFIG_DIR ?? '', 'projects', f.dir.replace(/[^A-Za-z0-9-]/g, '-'), 'memory', 'MEMORY.md')
     const index = configured.option ?? configured.env.WT_KNOWLEDGE_BASE_INDEX ?? derived
     mkdirSync(join(index, '..'), { recursive: true }); writeFileSync(index, '# Memory\n')
     const prompts: string[] = []; let canUseTool: ((name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>) | undefined
-    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { canUseTool: typeof canUseTool } }) => (async function* () {
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { canUseTool: typeof canUseTool, plugins: Array<{ path: string }> } }) => (async function* () {
       canUseTool = options.canUseTool
-      yield initMessage()
+      yield { ...initMessage(), plugins: options.plugins }
       prompts.push((await prompt.next()).value.message.content)
     })()
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false, knowledgeBaseIndex: configured.option }, { query, resolvePilotModels: models, env: configured.env })
@@ -762,14 +770,14 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(ROOT, 'plugin/skills/adopt/scripts/install.mjs'), 'utf8')).toContain("{ file: 'PILOT-CONTRACT.md' }")
   })
 
-  it('registers the runner-hosted lifecycle server and exposes no Bash tool', async () => {
+  it('registers the runner-hosted lifecycle server and composes the pilot role profile', async () => {
     type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], mcpServers: Record<string, unknown>, permissionMode?: string, allowDangerouslySkipPermissions?: boolean }
     const f = fixture(); let options: QueryOptions | undefined
     const query = ({ options: received }: { options: QueryOptions }) => { options = received; return (async function* () {
       yield initMessage()})() }
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
-    expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard')])
-    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep'])
+    expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot'))])
+    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS)])
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(options!.permissionMode).toBe('default')
     expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
@@ -784,7 +792,7 @@ describe('SDK pilot runner', () => {
       yield { ...initMessage(), plugins: options.plugins }
     })()
     await runPilot({ card: '1', cardFile: complete.cardFile, dir: complete.dir, contract: complete.contract, mailbox: join(complete.root, 'none'), timeout: 1, hard: false, pluginDirs: [first, second] }, { query, resolvePilotModels: models })
-    expect(queryPlugins).toEqual([expect.stringContaining('pilot-guard'), first, second])
+    expect(queryPlugins).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot')), first, second])
 
     const missing = fixture(); const omitted = join(missing.root, 'omitted-plugin'); mkdirSync(omitted)
     await expect(runPilot({ card: '1', cardFile: missing.cardFile, dir: missing.dir, contract: missing.contract, mailbox: join(missing.root, 'none'), timeout: 1, hard: false, pluginDirs: [omitted] }, {
@@ -796,7 +804,7 @@ describe('SDK pilot runner', () => {
     const f = fixture(); const target = join(f.root, 'plugin-target'); const linked = join(f.root, 'plugin-link')
     mkdirSync(target); symlinkSync(target, linked)
     const query = ({ options }: { options: { plugins: Array<{ path: string }> } }) => (async function* () {
-      yield { ...initMessage(), plugins: [options.plugins[0], { path: `${realpathSync(target)}/` }] }
+      yield { ...initMessage(), plugins: [...options.plugins.slice(0, 3), { path: `${realpathSync(target)}/` }] }
     })()
     await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, pluginDirs: [linked] }, { query, resolvePilotModels: models })).resolves.toBeDefined()
   })
@@ -811,8 +819,9 @@ describe('SDK pilot runner', () => {
 
   it('points the Planka MCP at the planka_mcp_url setting, not a hard-coded port', async () => {
     const f = fixture(); let options: { mcpServers: Record<string, { url?: string }> } | undefined
-    const configDir = join(f.root, 'config'); mkdirSync(configDir)
-    const query = ({ options: received }: { options: { mcpServers: Record<string, { url?: string }> } }) => { options = received; return (async function* () { yield initMessage() })() }
+    const configDir = join(f.root, 'config'); mkdirSync(join(configDir, 'plugins', 'cache', 'context-mode', 'context-mode'), { recursive: true })
+    symlinkSync(resolveContextModeRoot(process.env), join(configDir, 'plugins', 'cache', 'context-mode', 'context-mode', '1.0.177'))
+    const query = ({ options: received }: { options: { mcpServers: Record<string, { url?: string }>, plugins: Array<{ path: string }> } }) => { options = received; return (async function* () { yield { ...initMessage(), plugins: received.plugins } })() }
     const env = { CLAUDE_CONFIG_DIR: configDir, WT_PLANKA_MCP_URL: 'http://board.example:9999/mcp' }
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { env, query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
     expect(options!.mcpServers.planka?.url).toBe('http://board.example:9999/mcp')

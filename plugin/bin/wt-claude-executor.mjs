@@ -3,9 +3,10 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFil
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { executorBrief, executorCanUseTool, executorTools, parseExecutorArgs } from './lib/claude-executor-core.mjs'
+import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './lib/sdk-role-profile.mjs'
 
 const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
@@ -21,10 +22,7 @@ async function worker(options) {
   mkdirSync(path.dirname(options.log), { recursive: true })
   const launch = executorBrief(options)
   const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-  const guardPlugin = path.join(pluginRoot, 'hooks-modules', 'pilot-guard')
-  for (const file of [path.join(guardPlugin, 'hooks', 'hooks.json'), path.join(guardPlugin, 'hooks', 'hooks.js')]) {
-    if (!existsSync(file)) throw new Error(`required pilot-guard file is absent: ${file}`)
-  }
+  const sdkRole = prepareSdkRole(options.role, { worktree: options.dir, env: process.env, pluginRoot, adapterOptions: { log: (line) => appendFileSync(options.log, `${line}\n`) } })
   const require = resolveAgentSdkRequire({ projectDir: options.dir })
   const { query } = require('@anthropic-ai/claude-agent-sdk')
   const abortController = new AbortController()
@@ -36,26 +34,33 @@ async function worker(options) {
   const stop = (code) => { clearTimeout(timer); abortController.abort(); finish(options.log, code); process.exitCode = code }
   process.once('SIGTERM', () => stop(143)); process.once('SIGINT', () => stop(130))
   let failed = false
+  let initReceiptSeen = false
+  let readOnlyReport = ''
   let servedModel = options.model
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   try {
-    const stream = query({ prompt: launch.prompt, options: {
+    const queryOptions = composeSdkRoleQueryOptions({
       model: options.model,
       cwd: options.dir,
       settingSources: [],
-      plugins: [{ type: 'local', path: guardPlugin }],
-      tools: executorTools(launch.readOnly),
-      canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex }),
+      canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex, profile: sdkRole.profile }),
       permissionMode: 'default',
       sandbox: { enabled: true, autoAllowBashIfSandboxed: false },
       settings: { permissions: { blockReadsOutsideWorkingDirectories: true, disableBypassPermissionsMode: 'disable' } },
       abortController,
-      env: process.env,
-    } })
+      env: { ...process.env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+    }, sdkRole)
+    const stream = query({ prompt: launch.prompt, options: queryOptions })
     for await (const message of stream) {
-      if (message.type === 'system' && message.subtype === 'init' && message.model) servedModel = message.model
+      if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) throw new Error(`SDK executor initialization receipt never arrived: the first message was ${message.type}/${message.subtype ?? 'none'}`)
+      if (message.type === 'system' && message.subtype === 'init') {
+        initReceiptSeen = true
+        if (message.model) servedModel = message.model
+        assertSdkRoleReceipt(options.role, message, sdkRole)
+      }
       if (message.type === 'result') {
         if (message.is_error) failed = true
+        if (launch.readOnly && typeof message.result === 'string' && message.result.trim()) readOnlyReport = message.result
         const value = message.usage ?? {}
         totals.input += value.input_tokens ?? 0
         totals.cache_creation += value.cache_creation_input_tokens ?? 0
@@ -63,6 +68,8 @@ async function worker(options) {
         totals.output += value.output_tokens ?? 0
       }
     }
+    if (!initReceiptSeen) throw new Error('SDK executor run ended without an initialization receipt')
+    if (launch.readOnly && !existsSync(launch.report) && readOnlyReport) writeFileSync(launch.report, `${readOnlyReport.trim()}\n`)
   } catch (error) {
     if (!timedOut) { failed = true; appendFileSync(options.log, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`) }
   } finally {
