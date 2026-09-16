@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const EXPIRY = join(REPO_ROOT, 'plugin/bin/lib/queue-gate-marker-expiry.mjs')
@@ -30,7 +30,7 @@ function marker(dir: string, name: string, record: unknown) {
 }
 
 function invokeHelper(action: 'scan' | 'one', args: unknown, throwUnlink = false) {
-  const program = `import { expireMarker, expireOwnedMarkers } from ${JSON.stringify(EXPIRY)};
+  const program = `import { expireMarker, expireOwnedMarkers } from ${JSON.stringify(pathToFileURL(EXPIRY).href)};
 const { action, args, throwUnlink } = JSON.parse(process.env.WT_MARKER_TEST);
 const options = { ...(args.options || {}), ...(throwUnlink ? { unlinkSync: () => { throw new Error('read-only directory') } } : {}) };
 const result = action === 'scan'

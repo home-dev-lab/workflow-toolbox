@@ -17,7 +17,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -43,7 +43,7 @@ function mkRoot(tag: string): string {
 function runCoreSnippet(snippet: string): { stdout: string; stderr: string; status: number | null } {
   const res = spawnSync(
     process.execPath,
-    ['--input-type=module', '-e', `import * as core from ${JSON.stringify(new URL(CORE, 'file://').href)};\n${snippet}`],
+    ['--input-type=module', '-e', `import * as core from ${JSON.stringify(pathToFileURL(CORE).href)};\n${snippet}`],
     { encoding: 'utf8' },
   )
   return { stdout: res.stdout ?? '', stderr: res.stderr ?? '', status: res.status }
