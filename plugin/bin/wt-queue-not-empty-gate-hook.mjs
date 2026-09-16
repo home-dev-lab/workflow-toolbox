@@ -236,7 +236,10 @@ const activityStatus = registeredWorktreeActivity(worktreeScan, activityCutoff)
 if (activityStatus === 'recent') runningBail()
 if (hasActiveLaneLog(worktreeScan, activityCutoff)) runningBail()
 
-const processScan = scanLiveLaneProcesses({ procRoot: process.env.WT_QUEUE_GATE_PROC_ROOT || '/proc' })
+const processScan = scanLiveLaneProcesses({
+  procRoot: process.env.WT_QUEUE_GATE_PROC_ROOT || '/proc',
+  platform: process.env.WT_QUEUE_GATE_PROCESS_PLATFORM || process.platform,
+})
 const processScopeRoot = activityRoot || (worktreeScan.status === 'known' ? cwd : null)
 function underProjectRoot(path) {
   if (!processScopeRoot || !isAbsolute(path)) return false

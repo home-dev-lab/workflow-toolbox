@@ -61,6 +61,8 @@ function scaffold(tag: string): Scaffold {
     ...process.env,
     WT_QUEUE_GATE_DIR: stateDir,
     WT_QUEUE_GATE_PROC_ROOT: procRoot,
+    // These fixtures provide a synthetic /proc tree; do not inherit the host OS provider.
+    WT_QUEUE_GATE_PROCESS_PLATFORM: 'linux',
     HOME: root,
     CLAUDE_CONFIG_DIR: configDir,
   }
@@ -142,6 +144,7 @@ describe('scanLiveLaneProcesses', () => {
 
   it('ignores a matching process whose --dir is not absolute', () => {
     expect(scanLiveLaneProcesses({
+      platform: 'linux',
       readdirImpl: () => ['101'],
       readFileImpl: () => Buffer.from('node\0wt-lane.mjs\0--dir\0relative/lane\0'),
     })).toEqual({ status: 'known', processes: [] })
@@ -151,6 +154,7 @@ describe('scanLiveLaneProcesses', () => {
     const entries = Array.from({ length: 5_001 }, (_, index) => String(index + 1))
     let reads = 0
     const result = scanLiveLaneProcesses({
+      platform: 'linux',
       readdirImpl: () => entries,
       readFileImpl: () => {
         reads += 1
@@ -159,6 +163,36 @@ describe('scanLiveLaneProcesses', () => {
     })
     expect(result).toEqual({ status: 'capped', processes: [] })
     expect(reads).toBe(5_000)
+  })
+
+  it('uses one PowerShell CIM table query and preserves a drive-qualified lane directory', () => {
+    const calls: unknown[][] = []
+    const result = scanLiveLaneProcesses({
+      platform: 'win32',
+      spawnSyncImpl: (...args: unknown[]) => {
+        calls.push(args)
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            ProcessId: 404,
+            CommandLine: '"C:\\Program Files\\nodejs\\node.exe" "D:\\tools\\wt-lane.mjs" --dir "D:\\work trees\\lane-14"',
+          }),
+        }
+      },
+    })
+    expect(calls).toHaveLength(1)
+    expect(String(calls[0]?.[1])).toContain('Get-CimInstance Win32_Process')
+    expect(result).toEqual({
+      status: 'known',
+      processes: [{ pid: '404', dir: 'D:\\work trees\\lane-14', command: 'node.exe wt-lane.mjs' }],
+    })
+  })
+
+  it('names PowerShell when Windows process enumeration is unavailable', () => {
+    expect(scanLiveLaneProcesses({
+      platform: 'win32',
+      spawnSyncImpl: () => ({ error: new Error('ENOENT'), status: null }),
+    })).toEqual({ status: 'unknown', processes: [], source: 'powershell' })
   })
 })
 

@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Windows lane supervision now preserves drive-qualified lifecycle fixture paths, enumerates lane processes with one PowerShell CIM query in the queue gate, installs adopted launchers against native `.cmd`/PATH fixtures, and reliably terminates waiter fixture children before bounded cleanup retries.
 - macOS lane lifecycle fixtures now classify live processes through the Darwin provider instead of forcing Linux `/proc`; process evidence pins the C locale, and cross-OS fixtures no longer assume an unconfigured loopback alias, a non-canonical temp spelling, or a short executable path.
 - Windows CI fixtures now preserve native PATH/config semantics, use file URLs for dynamic SDK imports, compare canonical path identities, and skip only tests whose evidence is inherently POSIX-only.
 - Lane supervision now reads process identity from `ps`/`lsof` on macOS and `Win32_Process` through PowerShell on Windows, while reporting source-specific unknown evidence and refusing unsupported external Windows tree termination legibly.

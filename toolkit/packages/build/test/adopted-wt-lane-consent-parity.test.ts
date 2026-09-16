@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { resolveConsent } from '../../../../plugin/bin/lib/lane-consent-check-core.mjs'
@@ -36,7 +36,16 @@ if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel
 if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\n'; exit 0; fi
 exit 0
 `)
-  spawnSync('chmod', ['+x', join(bin, 'opencode')])
+  writeFileSync(join(bin, 'opencode.cmd'), `@echo off\r\n"${process.execPath}" "${join(bin, 'opencode-fixture.mjs')}" %*\r\n`)
+  writeFileSync(join(bin, 'opencode-fixture.mjs'), `
+import fs from 'node:fs'
+const args = process.argv.slice(2)
+if (args[0] === '--version') process.stdout.write('fixture-1\\n')
+else if (args[0] === '--pure') process.stdout.write('[{"name":"workflow-toolbox-allowed-sentinel"}]\\n')
+else if (args[0] === 'debug' && args[1] === 'skill') process.stdout.write('[]\\n')
+else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOPTED_SEEN_FENCE, String(process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS) + '\\n')
+`)
+  chmodSync(join(bin, 'opencode'), 0o755)
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
   for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'resolved-binary.mjs']) {
@@ -51,7 +60,7 @@ exit 0
   }))
   // The launcher resolves consent solely through these fixture-owned locations. Do not
   // inherit a developer's config, home, or lane settings into the child process.
-  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}:/usr/bin:/bin`, XDG_STATE_HOME: join(root, 'state') }
+  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: join(root, 'state') }
   if (install) {
     const result = spawnSync(process.execPath, [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
     expect(result.status, result.stderr).toBe(0)
@@ -198,19 +207,20 @@ describe('adopted wt-lane consent resolver', () => {
     const f = fixture()
     const bin = join(f.root, 'bin')
     const seen = join(f.root, 'seen-fence')
-    writeFileSync(join(bin, 'opencode'), `#!/bin/sh
+    if (process.platform !== 'win32') writeFileSync(join(bin, 'opencode'), `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
 if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
 if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\n'; exit 0; fi
 printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
 `)
-    spawnSync('chmod', ['+x', join(bin, 'opencode')])
-    f.env.PATH = `${bin}:/usr/bin:/bin`
+    chmodSync(join(bin, 'opencode'), 0o755)
+    f.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ''}`
+    f.env.WT_ADOPTED_SEEN_FENCE = seen
     f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     expect(launch(f).status).toBe(0)
     const until = Date.now() + 3000
-    while (!existsSync(seen) && Date.now() < until) spawnSync('sleep', ['0.05'])
+    while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     expect(readFileSync(seen, 'utf8')).toBe('true\n')
   })
 
