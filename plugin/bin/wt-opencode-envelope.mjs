@@ -22,7 +22,8 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { laneTextFromOutput, laneUsageFromOutput, verifierStreamDirForEnv } from './wt-verifier-cli-guard-hook.mjs'
 import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/opencode-envelope-tasks.mjs'
-import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
+import { resolvedBinary } from './lib/resolved-binary.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-5.6-luna' // gpt-5.4 withdrawn from Codex/ChatGPT accounts 2026-08-31
 const DEFAULT_AGENT = 'plan'
@@ -175,10 +176,15 @@ function parseArgs(argv) {
 }
 
 function resolveBinarySync() {
-  const which = preflightSpawnSync('command -v opencode', { shell: true, encoding: 'utf8' })
-  if (which.status === 0 && typeof which.stdout === 'string' && which.stdout.trim().length > 0) {
-    return which.stdout.trim().split('\n')[0]
-  }
+  const fromPath = resolvedBinary('opencode', process.env, {
+    accessSyncFn: fs.accessSync,
+    constants: fs.constants,
+    platform: process.platform,
+    realpathSyncFn: fs.realpathSync,
+    statSyncFn: fs.statSync,
+    pathApi: process.platform === 'win32' ? path.win32 : path,
+  })
+  if (fromPath !== null) return fromPath
   const candidates = [
     path.join(os.homedir(), '.opencode', 'bin', 'opencode'),
     path.join(os.homedir(), '.local', 'bin', 'opencode'),
@@ -197,7 +203,7 @@ function resolveBinarySync() {
 }
 
 function providerAuthenticatedSync(bin, cwd, env) {
-  const res = preflightSpawnSync(bin, ['providers', 'list'], { cwd, encoding: 'utf8', timeout: 30000, env })
+  const res = spawnOpencode(preflightSpawnSync, bin, ['providers', 'list'], { cwd, encoding: 'utf8', timeout: 30000, env }, process.platform)
   return res.status === 0
 }
 
@@ -298,7 +304,7 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
     // show it. Signalling the GROUP is what closes both — a survivor cannot hold the pipe if no
     // survivor exists. The invariant, stated so a later reader can check the body against it:
     // WHEN THIS FUNCTION STOPS A CALL, NOTHING THAT CALL STARTED IS STILL RUNNING.
-    const child = spawn(bin, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: childEnv })
+    const child = spawnOpencode(spawn, bin, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: childEnv }, process.platform)
     let stdout = ''
     let stderr = ''
     let timedOut = false
@@ -510,13 +516,13 @@ async function reduceManifest(opts) {
     process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
     return 1
   }
-  const fence = verifyOpencodeSkillFence(bin)
+  const fence = verifyOpencodeSkillFence(bin, { platform: process.platform })
   if (!fence.ok) {
     process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
     return 1
   }
   const childEnv = opencodeChildEnv()
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv })
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform })
   if (!discovery.ok) {
     process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
     return 1
@@ -652,13 +658,13 @@ async function main() {
     process.stdout.write('OPENCODE_UNAVAILABLE: opencode binary not found on PATH or known install locations\n')
     return 1
   }
-  const fence = verifyOpencodeSkillFence(bin)
+  const fence = verifyOpencodeSkillFence(bin, { platform: process.platform })
   if (!fence.ok) {
     process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
     return 1
   }
   const childEnv = opencodeChildEnv()
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv })
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform })
   if (!discovery.ok) {
     process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
     return 1

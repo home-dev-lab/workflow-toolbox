@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Windows OpenCode launches now resolve npm `.cmd`/`.bat` shims and invoke them through the command shell across lane, observer, fence, and envelope paths.
 - Cross-platform lifecycle tests now compare canonical directory identities at archive boundaries, inject their process-liveness evidence, and derive assertion paths from the host rather than POSIX literals.
 - Lane launcher and observer tests now provide their OpenCode fake through Node-backed POSIX and Windows command shims instead of assuming a `.sh` file on `PATH` is executable.
 - Lane supervision routes every process read (`/proc` existence and state) through the injected seam, `wt-lane-wait` canonicalises its `--dir`, and the lifecycle, executor, adoption and waiter fixtures canonicalise their temporary roots, so a symlinked `TMPDIR` (macOS) and a fake pid that exists on the host no longer split a path or an identity.

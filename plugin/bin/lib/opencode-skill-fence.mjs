@@ -29,6 +29,16 @@ export function opencodeChildEnv(env = process.env) {
   return childEnv
 }
 
+export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform) {
+  if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(bin)) {
+    // Windows command shims require cmd.exe. Callers keep argv to product-built flags and paths;
+    // with shell: true Node joins argv unquoted, so any element carrying whitespace is quoted here.
+    const quoted = args.map((arg) => /[\s"]/.test(arg) ? `"${String(arg).replace(/"/g, '\\"')}"` : arg)
+    return spawnFn(`"${bin}"`, quoted, { ...options, shell: true })
+  }
+  return spawnFn(bin, args, options)
+}
+
 export function opencodeSkillFenceRefusal(reason) {
   return `OPENCODE_SKILL_FENCE_UNAVAILABLE: ${reason}; update OpenCode or workflow-toolbox before launching.`
 }
@@ -158,11 +168,11 @@ export function materialiseAllowedSkills({ names, laneDir, env = process.env, ho
 
 // `--pure` excludes external plugins, while toolbox runs currently allow them. The
 // discovery command therefore deliberately omits `--pure` so its flags match the run.
-export function verifyEffectiveOpencodeSkillDiscovery(bin, { cwd, env, spawnSyncFn = spawnSync, timeoutMs = 30_000 } = {}) {
+export function verifyEffectiveOpencodeSkillDiscovery(bin, { cwd, env, spawnSyncFn = spawnSync, timeoutMs = 30_000, platform = process.platform } = {}) {
   const startedAt = Date.now()
   let probe
   try {
-    probe = spawnSyncFn(bin, ['debug', 'skill'], { cwd, env, encoding: 'utf8', timeout: timeoutMs })
+    probe = spawnOpencode(spawnSyncFn, bin, ['debug', 'skill'], { cwd, env, encoding: 'utf8', timeout: timeoutMs }, platform)
   } catch (error) {
     return { ok: false, reason: `effective OpenCode skill discovery failed (${error instanceof Error ? error.message : String(error)})`, durationMs: Date.now() - startedAt }
   }
@@ -288,7 +298,7 @@ function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = d
   const binary = resolvedBinary(bin, childEnv, { accessSyncFn, constants, platform, realpathSyncFn, statSyncFn, pathApi: platform === 'win32' ? path.win32 : path })
   if (binary === null) return { ok: true, allowOk: true, missing: true, cached: false, mechanism: MECHANISM }
 
-  const versionResult = spawnSyncFn(binary, ['--version'], { encoding: 'utf8', env: childEnv, timeout: 30_000 })
+  const versionResult = spawnOpencode(spawnSyncFn, binary, ['--version'], { encoding: 'utf8', env: childEnv, timeout: 30_000 }, platform)
   if (versionResult.error?.code === 'ENOENT') return { ok: true, allowOk: true, missing: true, cached: false, mechanism: MECHANISM }
   const version = versionResult.status === 0 ? String(versionResult.stdout || '').trim() : ''
   if (!version) {
@@ -329,7 +339,7 @@ function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = d
     OPENCODE_CONFIG: allowedFixture.configPath,
   }
   try {
-    const probe = spawnSyncFn(binary, ['--pure', 'debug', 'skill'], { cwd: worktree, encoding: 'utf8', env: probeEnv, timeout: 30_000 })
+    const probe = spawnOpencode(spawnSyncFn, binary, ['--pure', 'debug', 'skill'], { cwd: worktree, encoding: 'utf8', env: probeEnv, timeout: 30_000 }, platform)
     if (probe.status !== 0) {
       const reason = 'the OpenCode Claude-skill fence capability probe failed'
       return { ok: false, allowOk: false, cached: false, reason, allowReason: reason, mechanism: MECHANISM }

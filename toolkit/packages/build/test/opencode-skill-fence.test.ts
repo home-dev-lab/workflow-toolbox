@@ -132,6 +132,15 @@ describe('OpenCode Claude-skill fence', () => {
     expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout: 'nope', stderr: '' }) })).toMatchObject({ ok: false, reason: expect.stringContaining('invalid JSON') })
   })
 
+  it('keeps the missing-binary discovery refusal legible', () => {
+    const missing = Object.assign(new Error('spawnSync opencode ENOENT'), { code: 'ENOENT' })
+    const result = verifyEffectiveOpencodeSkillDiscovery('opencode', {
+      cwd: '/lane', env: {}, spawnSyncFn: () => ({ error: missing, status: null, stdout: '', stderr: '' }),
+    })
+
+    expect(effectiveSkillDiscoveryRefusal(result)).toBe('wt-lane: Refused: effective OpenCode skill discovery failed (spawnSync opencode ENOENT); refusing to launch.')
+  })
+
   it('does not report a verified fence when bare-binary discovery itself fails', () => {
     const f = stub('honor')
     const discoveryError = Object.assign(new Error('simulated lookup I/O failure'), { code: 'EIO' })
@@ -150,6 +159,45 @@ describe('OpenCode Claude-skill fence', () => {
       env: { PATH: '/nowhere' },
       accessSyncFn: () => { throw missing },
     })).toMatchObject({ ok: true, allowOk: true, missing: true })
+  })
+
+  it('splits a Windows-shaped PATH with the caller platform and reports a clean miss', () => {
+    const missing = Object.assign(new Error('not found'), { code: 'ENOENT' })
+    const result = verifyOpencodeSkillFence('opencode', {
+      env: { PATH: 'C:\\a;C:\\b', PATHEXT: '.CMD' },
+      platform: 'win32',
+      statSyncFn: () => { throw missing },
+    })
+
+    expect(result).toMatchObject({ ok: true, allowOk: true, missing: true })
+    expect(result).not.toHaveProperty('reason')
+  })
+
+  it('quotes and shell-spawns a resolved Windows command shim', () => {
+    const f = stub('honor')
+    const missing = Object.assign(new Error('not found'), { code: 'ENOENT' })
+    const binary = 'C:\\Program Files\\nodejs\\opencode.CMD'
+    const spawnSyncFn = (command: string, args: string[], options: Record<string, unknown>) => {
+      expect(command).toBe(`"${binary}"`)
+      expect(options).toMatchObject({ shell: true })
+      for (const arg of args) if (/\s/.test(arg)) expect(arg).toMatch(/^".*"$/)
+      return args[0] === '--version'
+        ? { status: 0, stdout: '1.2.3\n', stderr: '' }
+        : { status: 0, stdout: '[{"name":"workflow-toolbox-allowed-sentinel"}]', stderr: '' }
+    }
+    const result = verifyOpencodeSkillFence('opencode', {
+      env: { PATH: 'C:\\Program Files\\nodejs;C:\\other', PATHEXT: '.CMD' },
+      stateDir: f.stateDir,
+      platform: 'win32',
+      statSyncFn: (candidate: string) => {
+        if (candidate !== binary) throw missing
+        return { isFile: () => true }
+      },
+      realpathSyncFn: (candidate: string) => candidate,
+      spawnSyncFn,
+    })
+
+    expect(result).toMatchObject({ ok: true, allowOk: true, binary })
   })
 
   it('resolves a bare Windows executable through Path and PATHEXT', () => {
