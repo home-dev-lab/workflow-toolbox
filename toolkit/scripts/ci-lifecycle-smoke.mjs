@@ -41,7 +41,20 @@ const fail = (msg) => {
 
 // ── start ──
 console.log('[smoke] start…')
-const startOut = run(['start', '--source', fakeConfig])
+let startOut
+try {
+  startOut = run(['start', '--source', fakeConfig])
+} catch (error) {
+  // The observe server is the closed-source companion (workflow-observatory). A runner without that
+  // checkout cannot exercise this lifecycle at all: say so and skip, never fail or fake a pass. The
+  // observatory's own CI runs this smoke against the real server.
+  const stderr = String(error?.stderr ?? '')
+  if (/cannot locate the observe server/.test(stderr)) {
+    console.log(`[smoke] SKIPPED on ${process.platform} — no workflow-observatory checkout on this runner (closed-source companion; set DWT_OBSERVE_ROOT to run it). The observatory CI owns this smoke.`)
+    process.exit(0)
+  }
+  throw error
+}
 console.log(startOut.trim())
 if (!/started|adopted/.test(startOut)) fail(`unexpected start output`)
 
