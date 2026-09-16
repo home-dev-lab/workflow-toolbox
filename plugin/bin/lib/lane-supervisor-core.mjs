@@ -97,7 +97,14 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
   if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
   if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
   if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
-  if (worker === 'unknown' || child === 'unknown') return { status: 'unknown', reason: platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`, worker, child }
+  if (worker === 'unknown' || child === 'unknown') {
+    const unavailable = worker === 'unknown' && typeof record.workerIdentity === 'string'
+      ? `worker identity ${record.workerIdentity}`
+      : child === 'unknown' && typeof record.childIdentity === 'string'
+        ? `child identity ${record.childIdentity}`
+        : null
+    return { status: 'unknown', reason: unavailable ?? (platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`), worker, child }
+  }
   if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
   if (worker === 'running' && child === 'running' && ['running', 'decision-needed'].includes(record.state)) {
     return { status: record.state, reason: record.state, worker, child }

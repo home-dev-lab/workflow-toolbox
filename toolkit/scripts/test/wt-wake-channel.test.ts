@@ -32,9 +32,18 @@ let barrierId = 10_000
 afterEach(async () => {
   const children = processes.splice(0)
   for (const child of children) child.kill('SIGTERM')
-  await Promise.all(children.map((child) => child.exitCode !== null
-    ? Promise.resolve()
-    : new Promise<void>((resolve) => { child.once('exit', () => resolve()); setTimeout(resolve, 5_000) })))
+  await Promise.all(children.map(async (child) => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    await Promise.race([
+      new Promise<void>((resolve) => child.once('exit', () => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+    ])
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+      child.kill('SIGKILL')
+      await exited
+    }
+  }))
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -161,7 +170,7 @@ describe('wt-wake-channel MCP server', () => {
     expect(stderr()).toBe('')
   })
 
-  it('does not emit before initialized, then moves and emits one deposited message exactly once', async () => {
+  it.skipIf(process.platform === 'win32')('does not emit before initialized, then moves and emits one deposited message exactly once [requires reliable fs.watch directory delivery]', async () => {
     const { child, spool, messages, stderr } = startServer()
     mkdirSync(spool, { recursive: true })
     writeFileSync(join(spool, 'wake.txt'), '  inspect the finished run  \n', 'utf8')
@@ -188,7 +197,7 @@ describe('wt-wake-channel MCP server', () => {
     expect(stderr()).toBe('')
   })
 
-  it('silently consumes empty files and skips malformed entries without blocking later messages', async () => {
+  it.skipIf(process.platform === 'win32')('silently consumes empty files and skips malformed entries without blocking later messages [requires reliable fs.watch directory delivery]', async () => {
     const { child, spool, messages, stderr } = startServer()
     await initialize(child, messages)
     mkdirSync(join(spool, 'a-malformed.txt'))
@@ -215,7 +224,7 @@ describe('wt-wake-channel MCP server', () => {
   // The poll is pinned to 60 s here, far beyond this test's patience, so the ONLY mechanism that
   // can satisfy the assertion is the filesystem watch. Disable the watch and this goes red;
   // that is what makes it a lock rather than a demonstration.
-  it('delivers a message deposited AFTER initialization, without waiting for the poll', async () => {
+  it.skipIf(process.platform === 'win32')('delivers a message deposited AFTER initialization, without waiting for the poll [requires reliable fs.watch directory delivery]', async () => {
     const { child, spool, messages, stderr } = startServer('60000')
     await initialize(child, messages)
     expect(channelMessages(messages)).toEqual([])

@@ -1,12 +1,14 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+// @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
+import { inspectStartedProcess } from '../../../../plugin/bin/wt-lane.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
@@ -26,7 +28,7 @@ afterEach(() => {
 })
 
 function fixture(script: string) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-lane-launcher-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-launcher-'))); roots.push(root)
   const dir = join(root, 'worktree'); const bin = join(root, 'bin'); const config = join(root, 'config')
   mkdirSync(join(dir, '.lane'), { recursive: true }); mkdirSync(bin); mkdirSync(config)
   writeFileSync(join(dir, 'brief.md'), '# brief\n')
@@ -331,6 +333,21 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const source = readFileSync(LAUNCHER, 'utf8')
     expect(source).not.toContain('performance.timeOrigin')
     expect(source).toContain('startTime: null')
+  })
+  it('captures the provider identity when a Darwin process becomes readable on the third call', () => {
+    let calls = 0
+    const expected = { pid: 42, argv: ['/usr/local/bin/node lane.mjs'], startTime: 123, groupId: 42, cwd: '/lane' }
+    const result = inspectStartedProcess(() => {
+      calls += 1
+      return calls < 3 ? null : expected
+    }, 42, { platform: 'darwin', timeoutMs: 100 })
+    expect(calls).toBe(3)
+    expect(result).toEqual({ identity: expected, unavailable: null })
+  })
+  it('records a source-specific unavailable state instead of a synthetic identity', () => {
+    expect(inspectStartedProcess(() => null, 42, { platform: 'darwin', timeoutMs: 20 })).toEqual({ identity: null, unavailable: 'unavailable (ps)' })
+    expect(classifyLane({ runId: '42-1', state: 'running', workerPid: 42, workerArgv: null, workerStartTime: null, workerIdentity: 'unavailable (ps)', childPid: null, childArgv: null }, { platform: 'darwin' }))
+      .toMatchObject({ status: 'unknown', reason: 'worker identity unavailable (ps)' })
   })
   it('recovers and journals a stale launch lock whose recorded owner is gone', () => {
     const f = fixture('sleep 0.2')
@@ -772,7 +789,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect((watcher.stderr.match(/journal write failed/g) ?? [])).toHaveLength(1)
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
   })
-  it('prints an unattributed warning even when the journal is unavailable', () => {
+  it.skipIf(process.platform !== 'linux')('prints an unattributed warning even when the journal is unavailable [requires Linux /proc orphan enumeration]', async () => {
     const f = fixture('true')
     const child = spawn('bash', ['-c', 'exec -a opencode sleep 30'], { cwd: f.dir, stdio: 'ignore' })
     try {
@@ -783,6 +800,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       expect((watcher.stderr.match(/journal write failed/g) ?? [])).toHaveLength(1)
     } finally {
       try { process.kill(child.pid!, 'SIGKILL') } catch {}
+      if (child.exitCode === null) await new Promise<void>((resolve) => child.once('exit', () => resolve()))
     }
   })
   it('refuses control from a session other than the recorded owner', () => {

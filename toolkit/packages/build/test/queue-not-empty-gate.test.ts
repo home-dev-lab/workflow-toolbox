@@ -138,8 +138,27 @@ describe('registeredWorktrees', () => {
 })
 
 describe('scanLiveLaneProcesses', () => {
-  it('reports process inspection as unknown off Linux', () => {
-    expect(scanLiveLaneProcesses({ platform: 'darwin' })).toEqual({ status: 'unknown', processes: [] })
+  it('enumerates Darwin lanes from one quote-aware ps transcript', () => {
+    const calls: unknown[][] = []
+    const result = scanLiveLaneProcesses({
+      platform: 'darwin',
+      spawnSyncImpl: (...args: unknown[]) => {
+        calls.push(args)
+        return { status: 0, stdout: '  101 /usr/local/bin/node /tools/wt-lane.mjs --dir "/tmp/work trees/lane 15"\n  102 node worker.mjs\n' }
+      },
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.slice(0, 2)).toEqual(['ps', ['-axo', 'pid=,command=']])
+    expect(result).toEqual({ status: 'known', processes: [{ pid: '101', dir: '/tmp/work trees/lane 15', command: 'node wt-lane.mjs' }] })
+  })
+
+  it('names ps when Darwin process enumeration is unavailable', () => {
+    expect(scanLiveLaneProcesses({ platform: 'darwin', spawnSyncImpl: () => ({ error: new Error('ENOENT'), status: null }) }))
+      .toEqual({ status: 'unknown', processes: [], source: 'ps' })
+  })
+
+  it('reports process inspection as unknown on unsupported platforms', () => {
+    expect(scanLiveLaneProcesses({ platform: 'freebsd' })).toEqual({ status: 'unknown', processes: [] })
   })
 
   it('ignores a matching process whose --dir is not absolute', () => {

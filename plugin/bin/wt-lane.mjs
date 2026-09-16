@@ -6,6 +6,7 @@ import { readFileSync as readLaneLog } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
 import { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
@@ -100,6 +101,23 @@ function parseBriefReceipt(encoded) {
   }
 }
 
+export function inspectStartedProcess(inspect, pid, { platform = process.platform, timeoutMs = platform === 'linux' ? 1_000 : 5_000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  let candidate = null
+  do {
+    const identity = inspect(pid, { platform })
+    if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) {
+      candidate = identity
+      const command = path.basename(identity.argv[0]).toLowerCase()
+      if (!['sh', 'bash', 'dash', 'zsh', 'ksh'].includes(command)) return { identity, unavailable: null }
+    } else if (candidate) return { identity: candidate, unavailable: null }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+  } while (Date.now() < deadline)
+  if (candidate) return { identity: candidate, unavailable: null }
+  const source = platform === 'darwin' ? 'ps' : platform === 'win32' ? 'powershell' : 'proc'
+  return { identity: null, unavailable: `unavailable (${source})` }
+}
+
 function briefEvidenceLines(receipt, upper = false) {
   if (!upper) return [`brief=${receipt.path}`, `brief_age=${receipt.age}`, `brief_heading=${receipt.heading}`, `brief_sha256=${receipt.sha256}`]
   return [
@@ -108,20 +126,6 @@ function briefEvidenceLines(receipt, upper = false) {
     `BRIEF_HEADING=${receipt.heading}`,
     `BRIEF_SHA256=${receipt.sha256}`,
   ]
-}
-
-function inspectStartedProcess(inspect, pid, fallback, timeoutMs = 1000) {
-  const deadline = Date.now() + timeoutMs
-  let candidate = null
-  do {
-    const identity = inspect(pid)
-    if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) {
-      candidate = identity
-      if (!['sh', 'bash', 'dash', 'zsh', 'ksh'].includes(path.basename(identity.argv[0]))) return identity
-    } else if (candidate) return candidate
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
-  } while (Date.now() < deadline)
-  return candidate ?? fallback
 }
 
 function checkGitWorktree(dir) {
@@ -409,10 +413,11 @@ async function main() {
       const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
-      const identity = inspectStartedProcess(consentModules.inspectProcess, child.pid, { argv: [process.execPath, ...workerArgs], startTime: null })
+      const captured = inspectStartedProcess(consentModules.inspectProcess, child.pid)
+      const identity = captured.identity
       const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
       try {
-        writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: null, childArgv: null, childStartTime: null, worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+        writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity?.argv ?? null, workerStartTime: identity?.startTime ?? null, ...(captured.unavailable ? { workerIdentity: captured.unavailable } : {}), childPid: null, childArgv: null, childStartTime: null, worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
       } catch (error) {
         child.kill('SIGTERM')
         rmSync(briefSnapshot, { force: true })
@@ -469,9 +474,11 @@ async function main() {
   const decisionFile = statePaths.decision
   const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const journal = (event) => { try { consentModules.appendSupervisorJournal(dataDir, event) } catch { /* supervision must remain bounded when its audit sink is unavailable */ } }
-  const childIdentity = inspectStartedProcess(consentModules.inspectProcess, child.pid, { argv: ['opencode', ...args], cwd: opts.dir, startTime: null })
-  const workerIdentity = inspectStartedProcess(consentModules.inspectProcess, process.pid, { argv: process.argv, startTime: null })
-  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity.argv, workerStartTime: workerIdentity.startTime, childPid: child.pid, childArgv: childIdentity.argv, childStartTime: childIdentity.startTime, worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
+  const childCapture = inspectStartedProcess(consentModules.inspectProcess, child.pid)
+  const workerCapture = inspectStartedProcess(consentModules.inspectProcess, process.pid)
+  const childIdentity = childCapture.identity
+  const workerIdentity = workerCapture.identity
+  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
   let currentState = baseState
   const writeState = (extra) => {
     currentState = { ...currentState, ...extra }
@@ -602,4 +609,6 @@ async function main() {
   return 0
 }
 
-main().then((code) => { process.exitCode = code }).catch((error) => { process.stderr.write(`wt-lane: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 })
+let isMain = false
+try { isMain = realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch {}
+if (isMain) main().then((code) => { process.exitCode = code }).catch((error) => { process.stderr.write(`wt-lane: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 })

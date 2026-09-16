@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
@@ -11,16 +11,18 @@ const WATCH = join(REPO_ROOT, 'plugin/bin/wt-autonomy-watch.mjs')
 const MONITORS_JSON = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 
 const roots: string[] = []
-const laneProcesses: number[] = []
+const laneProcesses: ChildProcess[] = []
 
-afterEach(() => {
-  for (const pid of laneProcesses.splice(0)) {
+afterEach(async () => {
+  const children = laneProcesses.splice(0)
+  for (const child of children) {
     try {
-      process.kill(pid, 'SIGKILL')
+      child.kill('SIGKILL')
     } catch {
       // already dead
     }
   }
+  await Promise.all(children.map((child) => child.exitCode !== null ? Promise.resolve() : new Promise<void>((resolve) => child.once('exit', () => resolve()))))
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -48,7 +50,7 @@ function launchLane(args0: string, cwd: string): number {
   })
   child.unref()
   if (!child.pid) throw new Error('lane did not start')
-  laneProcesses.push(child.pid)
+  laneProcesses.push(child)
   return child.pid
 }
 
@@ -357,7 +359,7 @@ describe('wt-autonomy-watch', () => {
     expect(existsSync(s.markerPath)).toBe(false)
   })
 
-  it.skipIf(process.platform === 'win32')('stays silent while an external lane process is running [requires bash exec -a process evidence]', () => {
+  it.skipIf(process.platform !== 'linux')('stays silent while an external lane process is running [requires Linux /proc plus bash exec -a process evidence]', () => {
     const s = scaffold('lane-active')
     const now = Date.now()
     touch(s.transcriptPath, now - 20 * 60_000)

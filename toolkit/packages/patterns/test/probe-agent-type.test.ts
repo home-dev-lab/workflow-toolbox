@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { probeAgentType, LOCAL_AGENT_PROBE_PROMPT } from '../src/probe-agent-type.js'
@@ -190,7 +190,7 @@ describe('probeAgentType — file-based bridge', () => {
   })
 
   it.each([
-    { pathFor: (absolute: string) => relative(process.cwd(), absolute), caseName: 'relative' },
+    { pathFor: () => join('relative', 'probe.manifest.json'), caseName: 'relative' },
     { pathFor: (absolute: string) => absolute, caseName: 'non-manifest suffix', manifestName: 'probe.json' },
   ])('rejects a $caseName path without spawning a file reader', async ({ pathFor, manifestName }) => {
     const fixture = writeEnvelope({ ...(manifestName !== undefined ? { manifestName } : {}) })

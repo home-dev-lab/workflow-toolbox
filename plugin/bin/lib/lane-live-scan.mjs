@@ -170,6 +170,31 @@ function windowsCommandArgs(commandLine) {
   return args
 }
 
+function posixCommandArgs(commandLine) {
+  const args = []
+  const pattern = /"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|((?:\\.|[^\s])+)/g
+  for (const match of String(commandLine).matchAll(pattern)) args.push((match[1] ?? match[2] ?? match[3]).replace(/\\([\\"' ])/g, '$1'))
+  return args
+}
+
+function scanDarwinLaneProcesses(spawnSyncImpl) {
+  let result
+  try {
+    result = spawnSyncImpl('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 5_000, env: { ...process.env, LC_ALL: 'C' } })
+  } catch {
+    return { status: 'unknown', processes: [], source: 'ps' }
+  }
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return { status: 'unknown', processes: [], source: 'ps' }
+  const rows = result.stdout.split(/\r?\n/).map((line) => /^\s*(\d+)\s+(.+)$/.exec(line)).filter(Boolean)
+  const processes = []
+  for (const row of rows.slice(0, PROCESS_SCAN_MAX_ENTRIES)) {
+    const args = posixCommandArgs(row[2])
+    const dir = laneDirFromArgs(args)
+    if (dir) processes.push({ pid: row[1], dir, command: args.map((arg) => basename(arg)).slice(0, 2).join(' ') })
+  }
+  return { status: rows.length > PROCESS_SCAN_MAX_ENTRIES ? 'capped' : 'known', processes }
+}
+
 function scanWindowsLaneProcesses(spawnSyncImpl) {
   const script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -or $_.Name -eq 'node' } | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
   let result
@@ -212,6 +237,7 @@ export function scanLiveLaneProcesses({
   spawnSyncImpl = spawnSync,
 } = {}) {
   if (platform === 'win32') return scanWindowsLaneProcesses(spawnSyncImpl)
+  if (platform === 'darwin') return scanDarwinLaneProcesses(spawnSyncImpl)
   if (platform !== 'linux') return { status: 'unknown', processes: [] }
 
   let entries
