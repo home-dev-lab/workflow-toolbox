@@ -96,7 +96,7 @@ describe('What is running collector seam', () => {
     expect(text).not.toContain('Nothing running in the background.')
   })
 
-  it('renders unknown process age when getconf is unavailable', async () => {
+  it.skipIf(process.platform === 'win32')('renders unknown process age when getconf is unavailable [synthetic Linux /proc collector]', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-clock-'))
     try {
       const paths = collector(root, { executablePlatform: 'linux' })
@@ -110,7 +110,7 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('finds a lane launched by opencode.cmd on a simulated win32 executable surface', async () => {
+  it.skipIf(process.platform === 'win32')('finds a lane launched by opencode.cmd on a simulated win32 executable surface [synthetic Linux /proc evidence]', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-win32-'))
     try {
       const paths = collector(root, { executablePlatform: 'win32', processEnv: { PATH: '', PATHEXT: '.CMD;.EXE' } })

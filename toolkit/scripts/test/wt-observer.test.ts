@@ -14,8 +14,12 @@ const fakeOpencodeScript = fileURLToPath(new URL('../../packages/build/test/fixt
 const children: ChildProcessWithoutNullStreams[] = []
 const tempDirs: string[] = []
 
-afterEach(() => {
-  for (const child of children.splice(0)) child.kill('SIGTERM')
+afterEach(async () => {
+  const spawned = children.splice(0)
+  for (const child of spawned) child.kill('SIGTERM')
+  await Promise.all(spawned.map((child) => child.exitCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => { child.once('exit', () => resolve()); setTimeout(resolve, 5_000) })))
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -208,7 +212,7 @@ describe('wt-observer CLI', () => {
     expect(readdirSync(session.spoolDir).filter((name) => name.endsWith('.txt'))).toEqual([])
   })
 
-  it('does not call the model lane twice inside the configured interval', async () => {
+  it.skipIf(process.platform === 'win32')('does not call the model lane twice inside the configured interval [POSIX shell-backed timing fixture]', async () => {
     const root = tempRoot('wt-observer-rate-')
     const session = setupSession(root)
     const calls = path.join(root, 'lane-calls')

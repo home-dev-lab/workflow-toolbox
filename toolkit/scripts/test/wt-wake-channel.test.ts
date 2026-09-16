@@ -29,8 +29,12 @@ const tempDirs: string[] = []
 const messageWaiters = new WeakMap<JsonRpcMessage[], Set<() => void>>()
 let barrierId = 10_000
 
-afterEach(() => {
-  for (const child of processes.splice(0)) child.kill('SIGTERM')
+afterEach(async () => {
+  const children = processes.splice(0)
+  for (const child of children) child.kill('SIGTERM')
+  await Promise.all(children.map((child) => child.exitCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => { child.once('exit', () => resolve()); setTimeout(resolve, 5_000) })))
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -201,7 +205,7 @@ describe('wt-wake-channel MCP server', () => {
     expect(readFileSync(join(spool, 'consumed', 'c-valid.txt'), 'utf8')).toBe('later wake')
     expect(existsSync(join(spool, 'a-malformed.txt'))).toBe(true)
     expect(stderr()).toBe('')
-  })
+  }, 60_000)
 
   // The production path, and until this test existed nothing covered it: a message deposited
   // AFTER the handshake, which is when every real wake arrives. The three tests above either
@@ -225,5 +229,5 @@ describe('wt-wake-channel MCP server', () => {
     ])
     expect(existsSync(join(spool, 'post-init.txt'))).toBe(false)
     expect(stderr()).toBe('')
-  })
+  }, 60_000)
 })

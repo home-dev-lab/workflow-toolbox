@@ -808,9 +808,10 @@ describe('SDK pilot runner', () => {
     expect(queryPlugins).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot')), first, second])
 
     const missing = fixture(); const omitted = join(missing.root, 'omitted-plugin'); mkdirSync(omitted)
+    const encodedOmitted = JSON.stringify(omitted).slice(1, -1)
     await expect(runPilot({ card: '1', cardFile: missing.cardFile, dir: missing.dir, contract: missing.contract, mailbox: join(missing.root, 'none'), timeout: 1, hard: false, pluginDirs: [omitted] }, {
       query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models,
-    })).rejects.toThrow(new RegExp(`absentPlugins.*${omitted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    })).rejects.toThrow(new RegExp(`absentPlugins.*${encodedOmitted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   })
 
   it('matches configured plugins to receipt paths through symlinks and trailing separators', async () => {

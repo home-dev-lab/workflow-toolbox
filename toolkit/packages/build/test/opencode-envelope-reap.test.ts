@@ -70,7 +70,7 @@ describe('wt-opencode-envelope reaps the process group of a stopped call', () =>
   // measured pre-fix behaviour was "alive past 45s on a 5s timeout, zero bytes of output".
   // Proven RED against the pre-change file before this test was accepted: rc=124, 0-byte log,
   // no manifest. Do not weaken the timeout below without re-establishing that.
-  it('completes its timeout even when a descendant holds the child stdout pipe', () => {
+  it.skipIf(process.platform === 'win32')('completes its timeout even when a descendant holds the child stdout pipe [POSIX process-group fixture]', () => {
     const { root, bin } = makeStubRoot()
     const started = Date.now()
     const run = spawnSync(

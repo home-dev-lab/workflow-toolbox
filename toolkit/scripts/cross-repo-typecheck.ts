@@ -15,6 +15,12 @@ function displayPath(filePath: string): string {
   return filePath.replaceAll('\\', '/')
 }
 
+function samePath(left: string, right: string): boolean {
+  const a = resolve(left)
+  const b = resolve(right)
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
+}
+
 export interface CrossRepoGateOptions {
   cwd?: string
   env?: Record<string, string | undefined>
@@ -175,6 +181,12 @@ export function runCrossRepoTypecheck(options: CrossRepoGateOptions = {}): numbe
       const imports = importedLinkedPackages(readFileSync(file, 'utf8'), packageSet)
       if (imports.length > 0) sourceImports.set(file, imports)
     }
+    const importsFor = (file: string): string[] | undefined => {
+      const direct = sourceImports.get(file)
+      if (direct !== undefined) return direct
+      for (const [candidate, imports] of sourceImports) if (samePath(candidate, file)) return imports
+      return undefined
+    }
 
     const configs = walk(consumerRoot, (path) => {
       const portablePath = displayPath(path)
@@ -187,10 +199,10 @@ export function runCrossRepoTypecheck(options: CrossRepoGateOptions = {}): numbe
       if (read.error !== undefined) throw new Error(formatDiagnostic(read.error, consumerRoot))
       const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configPath), undefined, configPath)
       if (parsed.errors.length > 0) throw new Error(parsed.errors.map((item) => formatDiagnostic(item, consumerRoot)).join('\n'))
-      const roots = parsed.fileNames.filter((file) => TYPESCRIPT_EXTENSIONS.test(file) && sourceImports.has(file))
+      const roots = parsed.fileNames.filter((file) => TYPESCRIPT_EXTENSIONS.test(file) && importsFor(file) !== undefined)
       if (roots.length === 0) continue
       roots.forEach((file) => covered.add(file))
-      const usedPackages = [...new Set(roots.flatMap((file) => sourceImports.get(file) ?? []))].sort()
+      const usedPackages = [...new Set(roots.flatMap((file) => importsFor(file) ?? []))].sort()
       const compilerOptions: ts.CompilerOptions = {
         ...parsed.options,
         composite: false,
@@ -230,7 +242,7 @@ export function runCrossRepoTypecheck(options: CrossRepoGateOptions = {}): numbe
         const consumerFile = diagnostic.file?.fileName.startsWith(consumerRoot)
           ? relative(consumerRoot, diagnostic.file.fileName)
           : relative(consumerRoot, roots[0] ?? consumerRoot)
-        const directPackages = diagnostic.file === undefined ? [] : sourceImports.get(diagnostic.file.fileName) ?? []
+        const directPackages = diagnostic.file === undefined ? [] : importsFor(diagnostic.file.fileName) ?? []
         const producerPackage = diagnostic.file === undefined
           ? undefined
           : packageNames.find((name) => diagnostic.file?.fileName.startsWith(join(toolkitRoot, 'packages', name.slice('@workflow-toolbox/'.length))))

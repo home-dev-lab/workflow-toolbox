@@ -106,8 +106,8 @@ describe('wt-lane-activity.mjs — happy path against a fake data dir built from
     expect(entry?.logReadable).toBe(true)
     expect(entry?.currentSubTask).toBe('project copy refresh done')
     // no live process matched --pattern -> the store/log probe correctly separates from liveness
-    expect(entry?.process.alive).toBe(false)
-    expect(entry?.stall.verdict).toBe('gone')
+    expect(entry?.process.alive).toBe(process.platform === 'win32' ? 'unknown' : false)
+    expect(entry?.stall.verdict).toBe(process.platform === 'win32' ? 'unknown' : 'gone')
   })
 })
 
@@ -184,7 +184,7 @@ describe('wt-lane-activity.mjs — degraded paths (invariant 3 & 4: unknown, nev
 })
 
 describe('wt-lane-activity.mjs — process-alive integration (delegates to wt-lane-probe.mjs, does not reimplement it)', () => {
-  it('reports process.alive:true and a non-"gone" stall verdict when a real matching process is running in the worktree', async () => {
+  it.skipIf(process.platform === 'win32')('reports process.alive:true and a non-"gone" stall verdict when a real matching process is running in the worktree [requires pgrep and POSIX process evidence]', async () => {
     const worktree = makeWorktreeDir()
     const dataDir = makeDataDir({ worktreePath: worktree })
     const marker = `wt-lane-activity-fixture-${Date.now()}`

@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
@@ -181,7 +181,7 @@ describe('wave lifecycle server', () => {
 
 describe('orchestrator driver', () => {
   it('parses the complete CLI surface and rejects invalid launch shapes', () => {
-    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md', pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
+    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md', pluginDirs: [resolve('/tmp/rules'), resolve('/tmp/lsp')] })
     expect(parseOrchestratorArgs(['--cards', '1', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--plugin-dir', 'relative/plugin'])).toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
     expect(parseOrchestratorArgs(['--cards', '1', '--mission-list', 'Next', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r']).error).toContain('exactly one')
   })
@@ -432,7 +432,7 @@ describe('orchestrator driver', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') }
     delete env.CLAUDE_PLUGIN_DATA
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env })
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...env, NODE_NO_WARNINGS: '1' } })
     expect(result.status).toBe(1)
     expect(result.stderr.trim().split(/\r?\n/)).toEqual(['wt-run-orchestrator: @anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk'])
     expect(result.stdout).toBe('')
@@ -534,7 +534,7 @@ describe('SDK orchestrator judge', () => {
     const gates = async (worktree: string, cardDir: string) => { const result = await f.gates(worktree, cardDir); symlinkSync(join(f.root, 'base.txt'), join(cardDir, 'planted-link')); return result }
     const query = () => { launched = true; return (async function* () {})() }
     const result = await runOrchestrator(f.options, { ...f, judge: undefined, gates, query, models: { orchestrator: { value: 'sonnet' } }, contract: '# contract' })
-    expect(result).toMatchObject({ exitCode: 1, stopReason: 'judge refused: symlink under wave directory: cards/1/planted-link' })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: `judge refused: symlink under wave directory: ${join('cards', '1', 'planted-link')}` })
     expect(launched).toBe(false)
     expect(readFileSync(f.report, 'utf8')).toContain('judge refused: symlink under wave directory')
   })

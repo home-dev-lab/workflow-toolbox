@@ -198,7 +198,7 @@ describe('commit-signature-core', () => {
   })
 })
 
-describe('wt-check-commit-signatures.mjs', () => {
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [fake git is a script shim that bare spawnSync cannot execute on Windows]', () => {
   it('signing not configured + unsigned HEAD → exit 0 and empty output', () => {
     const { repo, env } = makeFakeGitEnv('cli-silent-unsigned', {
       FAKE_GIT_LOG: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tN\tunsigned head\n',
@@ -344,7 +344,7 @@ describe('wt-check-commit-signatures.mjs', () => {
   })
 })
 
-describe('wt-check-commit-signatures-hook.mjs', () => {
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures-hook.mjs [fake git is a script shim that bare spawnSync cannot execute on Windows]', () => {
   it('does not run on a non-commit Bash command', () => {
     const { env } = makeFakeGitEnv('hook-non-commit')
     const res = runHook(

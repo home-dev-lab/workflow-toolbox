@@ -1037,6 +1037,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
   function escapeRegExp(literal) {
     return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
+  function isAbsoluteArtifactPath(value) {
+    return /^\/[^\r\n]*$/.test(value) || /^[A-Za-z]:[\\/][^\r\n]*$/.test(value);
+  }
   async function readProbeFile(rt, path, kind, phase) {
     try {
       const read = await rt.agent(
@@ -1089,8 +1092,8 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       } else if (endsWithToken) {
         available = true;
       } else {
-        const manifestReply = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)(?: ANSWER: [^\r\n]*)?$/m.exec(stripped);
-        if (manifestReply === null) {
+        const manifestReply = /^MANIFEST: ([^\r\n]*\.manifest\.json)(?: ANSWER: [^\r\n]*)?$/m.exec(stripped);
+        if (manifestReply === null || !isAbsoluteArtifactPath(manifestReply[1])) {
           reason = `unexpected probe reply: ${head(stripped)}`;
         } else {
           const manifestPath = manifestReply[1];
@@ -1113,7 +1116,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
             const answeredTasks = Array.isArray(tasks) ? tasks.filter((task) => {
               if (task === null || typeof task !== "object") return false;
               const record = task;
-              return record["status"] === "answer" && typeof record["answerFile"] === "string" && /^\/[^\r\n]+$/.test(record["answerFile"]);
+              return record["status"] === "answer" && typeof record["answerFile"] === "string" && isAbsoluteArtifactPath(record["answerFile"]);
             }) : [];
             if (!countsValid || !Array.isArray(tasks) || answeredTasks.length !== answered) {
               reason = `invalid probe manifest: ${head(manifestPath)}`;
