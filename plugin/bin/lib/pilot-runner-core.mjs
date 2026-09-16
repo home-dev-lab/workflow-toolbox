@@ -192,6 +192,17 @@ function servedModelAgreement({ requestedModel, servedModel, servedModelFirstTur
   return `false (served_model=${servedModel}, served_model_first_turn=${servedModelFirstTurn}; requested_model=${requestedModel})`
 }
 
+const RECEIPT_ERROR = 'SDK pilot initialization receipt is missing plugins or lifecycle tools: '
+
+function assertPilotInitReceipt(message, sdkRole) {
+  const initTools = Array.isArray(message.tools) ? message.tools : []
+  const missing = ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
+  try { assertSdkRoleReceipt('pilot', message, sdkRole) } catch (error) {
+    throw new Error(RECEIPT_ERROR + (error instanceof Error ? error.message : String(error)), { cause: error })
+  }
+  if (missing.length > 0) throw new Error(RECEIPT_ERROR + JSON.stringify({ missingTools: missing, tools: initTools }))
+}
+
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
@@ -334,14 +345,7 @@ export async function runPilot(options, dependencies) {
       if (message.type === 'system' && message.subtype === 'init') {
       initReceiptSeen = true
       servedModel = message.model
-       const initTools = Array.isArray(message.tools) ? message.tools : []
-       const missing = ['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).filter((tool) => !initTools.includes(tool))
-       try { assertSdkRoleReceipt('pilot', message, sdkRole) } catch (error) {
-         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${error instanceof Error ? error.message : String(error)}`)
-       }
-       if (missing.length > 0) {
-         throw new Error(`SDK pilot initialization receipt is missing plugins or lifecycle tools: ${JSON.stringify({ missingTools: missing, tools: initTools })}`)
-      }
+      assertPilotInitReceipt(message, sdkRole)
       }
     if (!firstAssistantSeen && message.type === 'assistant') {
       firstAssistantSeen = true

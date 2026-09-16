@@ -104,7 +104,7 @@ export function createGuardHook(script, { runScript = defaultRunScript, log = (l
     }
     const detail = result.stderr.trim()
     if (result.code !== 0) {
-      const line = `SDK guard ${script} exited ${String(result.code)}${detail ? `: ${detail}` : ''}`
+      const line = `SDK guard ${script} exited ${String(result.code)}` + (detail ? `: ${detail}` : '')
       log(line)
       return { systemMessage: line }
     }
@@ -153,7 +153,7 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
       if (!exists(path.join(source, 'SKILL.md'))) throw new Error(`SDK role ${role} refuses to start: selected skill path is absent: ${source}`)
       cpSync(source, path.join(skillsDir, skill), { recursive: true })
     }
-    writeFileSync(path.join(skillPlugin, '.claude-plugin', 'plugin.json'), `${JSON.stringify({ name: `wt-sdk-${role}`, version: '0.0.0', skills: './skills/' }, null, 2)}\n`)
+    writeFileSync(path.join(skillPlugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: `wt-sdk-${role}`, version: '0.0.0', skills: './skills/' }, null, 2) + '\n')
   }
 
   const pluginPaths = [pilotGuard, contextMode, ...(skillPlugin ? [skillPlugin] : [])]
