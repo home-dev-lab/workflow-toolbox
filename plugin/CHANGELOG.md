@@ -6,6 +6,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- SDK pilot exit 0 now means delivered: every card criterion is proven and E2E records a real
+  procedure and output. Non-proven outcomes and unrun E2E checks are archived as partial, exit 2,
+  and remain partial rather than accepted in orchestrator wave reports.
 - SDK lifecycle work can no longer be silently deferred. The runner-owned `route_finding` tool creates
   a labelled, dependent, provenance-bearing card from `--board-contract`, records it in lifecycle
   receipts, enforces named-card report grammar, handles one-round scope contests, and mechanically

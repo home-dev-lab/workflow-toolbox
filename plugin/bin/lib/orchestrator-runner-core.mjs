@@ -317,6 +317,7 @@ export async function runOrchestrator(input, dependencies = {}) {
       if (row.install !== 0) { row.pilot = 1; row.reason = `dependency install failed (EXIT=${row.install})`; writeFile(path.join(cardDir, 'pilot.log'), 'EXIT=1\n'); return row }
       const pilot = await runPilot({ card: id, cardFile: snapshot, dir: worktree, hard: options.hard.includes(id), profileEnv: options.profileEnv, boardContract: options.boardContract, knowledgeBaseIndex: options.knowledgeBaseIndex, knowledgeBaseProjectRoot: repo, pluginDirs: options.pluginDirs, timeout: options.pilotTimeout, boardMoves: false }, { ...pilotDependencies, board })
       row.pilot = pilot.exitCode
+      row.partial = pilot.summary?.partial ?? null
       row.route = /^route=(LITE|FULL)\b/.exec(fs.existsSync(runnerLog) ? fs.readFileSync(runnerLog, 'utf8') : '')?.[1] ?? pilot.summary?.route ?? '-'
       writeFile(path.join(cardDir, 'pilot.log'), `EXIT=${pilot.exitCode}\n`)
       for (const name of ['summary.json', 'usage.json', 'cost.json', 'sdk-transcript.json', 'pilot-report.md', 'lifecycle.json']) {
@@ -403,7 +404,13 @@ export async function runOrchestrator(input, dependencies = {}) {
         row.reason = 'orchestrator session ended after 3 turns without progress'
       }
       const receiptsGreen = row.pilot === 0 && row.gates === '0/0/0' && row.clean === 0 && row.reportCheck === 0 && row.fidelity === 0 && fs.readFileSync(path.join(row.cardDir, 'diff.patch'), 'utf8').trim()
-      if ((row.pilot === 1 || row.pilot === 2) && row.decision !== 'escalated') { row.decision = 'escalated'; row.reason = row.reason ?? `pilot EXIT=${row.pilot} requires escalate` }
+      if (row.pilot === 2) {
+        const findings = Array.isArray(row.partial?.findings) ? row.partial.findings.filter((finding) => typeof finding === 'string' && finding) : []
+        const detail = row.partial?.reason ?? 'partial delivery'
+        row.decision = 'partial'
+        row.reason = `pilot EXIT=2: ${detail}${findings.length ? `; ${row.partial?.phase === 'report' ? 'unmet' : 'findings'}: ${findings.join('; ')}` : ''}`
+      }
+      else if (row.pilot === 1 && row.decision !== 'escalated') { row.decision = 'escalated'; row.reason = row.reason ?? 'pilot EXIT=1 requires escalate' }
       else if (row.decision === 'accepted' && !receiptsGreen) { row.decision = 'escalated'; row.reason = 'accept refused: required receipt failed' }
       const comment = row.decision === 'accepted'
         ? `accepted by wave ${waveId} — awaiting main integration (branch ${row.branch}, head ${row.head})`
@@ -419,5 +426,5 @@ export async function runOrchestrator(input, dependencies = {}) {
     stopReason = fatal.startsWith('board unavailable:') ? 'board unavailable' : fatal
   }
   emit()
-  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations, skipped: skipped.filter((entry) => !rows.some((row) => row.id === entry.id)) }
+  return { exitCode: fatal || rows.length === 0 ? 1 : rows.every((row) => row.decision === 'accepted') ? 0 : rows.every((row) => ['accepted', 'partial', 'escalated', 'rejected'].includes(row.decision)) ? 2 : 1, waveId, report, waveDir, rows, stopReason, boardMutations, skipped: skipped.filter((entry) => !rows.some((row) => row.id === entry.id)) }
 }

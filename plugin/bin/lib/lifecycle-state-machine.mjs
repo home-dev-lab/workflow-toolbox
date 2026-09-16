@@ -142,6 +142,21 @@ const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
   '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`',
   '`Outcome: proven by tests/unit.test.ts`',
 )
+function reportDeliveryUnmet(content, dodBullets) {
+  const entries = acceptanceEntries(content)
+  const used = new Map()
+  const unmet = []
+  for (const bullet of dodBullets ?? []) {
+    const index = used.get(bullet) ?? 0
+    const lines = entries.get(bullet)?.[index] ?? []
+    used.set(bullet, index + 1)
+    const outcomes = lines.filter((line) => /^Outcome:/i.test(line))
+    if (!outcomes.every((line) => /^Outcome:\s*proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?\s*$/i.test(line))) unmet.push(bullet)
+  }
+  const e2e = /(?:^|\n)## E2E\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)?.[1].trim() ?? ''
+  if (/^e2e not run: \S[^\r\n]*$/i.test(e2e)) unmet.push(`E2E: ${e2e}`)
+  return unmet
+}
 function deferredOutcomeProblem(content, routedCards) {
   for (const line of content.split(/\r?\n/)) {
     if (!/^\s*(?:[-*+]\s+)?(?:Outcome|Status):\s*deferred:/i.test(line)) continue
@@ -706,6 +721,12 @@ export function createLifecycleStateMachine({
       }
       const reportProblem = pilotReportProblem(pilotReport, true)
       if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
+      const unmet = reportDeliveryUnmet(pilotReport, dodBullets)
+      if (unmet.length > 0 && !state.partial) {
+        state.partial = { phase: 'report', round: null, reason: `delivered partially: ${unmet.length} unmet criteria`, findings: unmet }
+        const partialProblem = pilotReportProblem(pilotReport, true)
+        if (partialProblem) return refusal('report->awaiting_fidelity', partialProblem, pilotReportPath)
+      }
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
       const reportReceipt = completeLifecycleReport({

@@ -48,7 +48,7 @@ form and Node path APIs for resolution and real-path containment on each host.
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
 | review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
 | refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
-| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
+| report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
@@ -131,7 +131,7 @@ message or earlier continuation that was followed by progress), and reason
 `pilot ended its turn 3 times without progress`. Any other stream ending first exits 1 and writes
 `summary.completed=false`. Runner timeout, repeated no-progress turns, and initialized SDK stream errors
 also record a lifecycle partial with the specific reason and publish the standard external archive; final
-summary, usage, transcript, and cost receipts are refreshed there. A completed full run exits 0. A completed partial run exits 2 with
+summary, usage, transcript, and cost receipts are refreshed there. A completed run exits 0 only when every DoD outcome is proven and E2E has a real procedure and output. A completed partial run exits 2 with
 `summary.completed=true` and the lifecycle's non-null `partial` object; full-run summaries carry
 `partial:null`. `.lane/usage.json`, `.lane/summary.json`, `.lane/cost.json`, and
 `.lane/sdk-transcript.json` record the run. The summary records `requested_model` with its resolver
@@ -234,7 +234,7 @@ merge, push, edit files, or move cards. The driver renders `Implemented`, `Verif
 session's verbatim `Independent Review` and `Decisions`, `Routed cards`, `Remaining Risks`,
 `Escalations for main`, and `Findings`. Static waves list each lifecycle record; mission waves re-read
 each routed card against mission eligibility. Exit 0 means every card was accepted, exit 2 means every card was decided but at
-least one was escalated or rejected, and exit 1 means the wave did not complete.
+least one was partial, escalated, or rejected, and exit 1 means the wave did not complete. Pilot exit 2 is always rendered as partial and cannot be accepted.
 The judge reads the evidence copy retained under the real-path-confined wave directory. On every
 report emit, the driver also copies available receipts to `<report-dir>/cards/<id>/` and prints that
 path in the per-card table.

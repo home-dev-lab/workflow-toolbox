@@ -365,9 +365,11 @@ describe('orchestrator driver', () => {
     if (guard.startsWith('dirty')) expect(readFileSync(join(result.waveDir, 'cards/1/clean-tree.log'), 'utf8')).toContain('EXIT=1')
   })
 
-  it('uses archived gate EXIT lines and mechanically escalates every nonzero pilot outcome', async () => {
-    const f = repoFixture(); const runPilot = async (...args: Parameters<typeof f.runPilot>) => ({ ...(await f.runPilot(...args)), exitCode: 2 }); const gates = async (worktree: string, cardDir: string) => { await f.gates(worktree, cardDir); writeFileSync(join(cardDir, 'test.log'), 'EXIT=1\n'); return { typecheck: 0, lint: 0, test: 0 } }; const judge = async ({ row }: { row: { decision: string } }) => { row.decision = 'rejected' }
-    const result = await runOrchestrator(f.options, { ...f, runPilot, gates, judge }); expect(result.rows[0]).toMatchObject({ pilot: 2, gates: '0/0/1', decision: 'escalated', reason: 'pilot EXIT=2 requires escalate' })
+  it('uses archived gate EXIT lines and records pilot exit 2 as partial, never accepted', async () => {
+    const f = repoFixture(); const runPilot = async (...args: Parameters<typeof f.runPilot>) => ({ ...(await f.runPilot(...args)), exitCode: 2, summary: { partial: { phase: 'report', reason: 'delivered partially: 1 unmet criteria', findings: ['ship'] } } }); const gates = async (worktree: string, cardDir: string) => { await f.gates(worktree, cardDir); writeFileSync(join(cardDir, 'test.log'), 'EXIT=1\n'); return { typecheck: 0, lint: 0, test: 0 } }; const judge = async ({ row }: { row: { decision: string, reason?: string } }) => { row.decision = 'accepted'; row.reason = 'judge tried to accept' }
+    const result = await runOrchestrator(f.options, { ...f, runPilot, gates, judge })
+    expect(result.rows[0]).toMatchObject({ pilot: 2, gates: '0/0/1', decision: 'partial', reason: 'pilot EXIT=2: delivered partially: 1 unmet criteria; unmet: ship' })
+    expect(readFileSync(f.report, 'utf8')).toContain('delivered partially: 1 unmet criteria; unmet: ship')
   })
 
   it('overlaps two pilots at concurrency 2 but judges and reports in card order', async () => {
