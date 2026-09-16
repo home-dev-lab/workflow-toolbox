@@ -141,9 +141,18 @@ describe('published CLI bundle — undeclared workspace deps are inlined, declar
 
   for (const cmd of ['scaffold', 'debug', 'report', 'pipeline']) {
     it(`\`${cmd}\` loads from the bundle and dispatches (no MODULE_NOT_FOUND)`, () => {
+      // Hermetic: `debug` and `report` with no argument look for the latest run of the project the
+      // cwd belongs to (and under $CLAUDE_CONFIG_DIR). On a developer machine or a runner where a
+      // workflow just ran, they then print that run's analysis and never the word `debug`. Spawn from
+      // an empty directory with an empty config dir so the dispatch itself is what gets asserted.
+      const hermetic = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-cli-smoke-'))
+      fs.mkdirSync(path.join(hermetic, '.claude'), { recursive: true })
       const res = cp.spawnSync(process.execPath, [consumerSandbox(), cmd], {
         encoding: 'utf8',
+        cwd: hermetic,
+        env: { ...process.env, HOME: hermetic, CLAUDE_CONFIG_DIR: path.join(hermetic, '.claude') },
       })
+      fs.rmSync(hermetic, { recursive: true, force: true })
       const out = `${res.stdout ?? ''}${res.stderr ?? ''}`
       expect(out).not.toMatch(/MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND|Cannot find (package|module)/i)
       // Positive check: dispatch actually reached the subcommand's bundled handler.
