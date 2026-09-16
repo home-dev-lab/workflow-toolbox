@@ -1083,7 +1083,7 @@ await test('[WIR5-01 missed nesting] a card-matched lane uses its own process se
 
 await test('[changed Arbiter service split][Step 5 DoD 4] idle helpers are counted once with their oldest age and details', async () => {
   const isolated = join(root, 'idle-helpers');
-  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux' };
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', processEnv: { PATH: '/missing' } };
   mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(isolatedPaths.livenessDir, { recursive: true }); mkdirSync(join(isolatedPaths.suiteRoot, 'worktrees'), { recursive: true });
   for (const [pid, ppid, args] of [[500, 1, ['codex', 'app-server']], [510, 1, ['python3', '-m', 'http.server', '8765']], [520, 1, ['node', '/tools/codex-companion.mjs', 'task', 'active consultation']], [521, 520, ['codex', 'app-server']]]) { mkdirSync(join(isolatedPaths.procRoot, String(pid)), { recursive: true }); writeFileSync(join(isolatedPaths.procRoot, String(pid), 'status'), `PPid:\t${ppid}\n`); writeFileSync(join(isolatedPaths.procRoot, String(pid), 'cmdline'), args.join('\0') + '\0'); }
   const snapshot = await readSnapshot({ process: processCapability }, isolatedPaths);
@@ -1092,7 +1092,7 @@ await test('[changed Arbiter service split][Step 5 DoD 4] idle helpers are count
 
 await test('[Arbiter fix 1 proc age] Linux helper ages use fixture stat starttime and uptime', async () => {
   const isolated = join(root, 'proc-ages');
-  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', clockTicks: 100 };
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', clockTicks: 100, processEnv: { PATH: '/missing' } };
   mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(isolatedPaths.livenessDir, { recursive: true }); mkdirSync(join(isolatedPaths.suiteRoot, 'worktrees'), { recursive: true }); mkdirSync(isolatedPaths.procRoot, { recursive: true });
   writeFileSync(join(isolatedPaths.procRoot, 'uptime'), '20000.00 1000.00\n');
   for (const [pid, startTicks] of [[500, 1880000], [501, 860000]]) {
@@ -1110,7 +1110,7 @@ await test('[Arbiter fix 1 proc age] Linux helper ages use fixture stat starttim
 
 await test('[WIR5-03 changed][Arbiter fix 2 services] executable identities classify services without argv substring decoys', async () => {
   const isolated = join(root, 'service-classification');
-  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', clockTicks: 100 };
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), procRoot: join(isolated, 'proc'), now: paths.now, platform: 'linux', clockTicks: 100, processEnv: { PATH: '/missing' } };
   mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(isolatedPaths.livenessDir, { recursive: true }); mkdirSync(join(isolatedPaths.suiteRoot, 'worktrees'), { recursive: true }); mkdirSync(isolatedPaths.procRoot, { recursive: true });
   writeFileSync(join(isolatedPaths.procRoot, 'uptime'), '20000.00 1000.00\n');
   const brokerRoot = join(isolated, 'atr-clean-test'); mkdirSync(join(brokerRoot, 'bin'), { recursive: true }); writeFileSync(join(brokerRoot, 'package.json'), JSON.stringify({ name: 'atrium' })); writeFileSync(join(brokerRoot, 'bin', 'broker.js'), '');
@@ -1180,6 +1180,7 @@ await test('[Arbiter fix 4 lane title] duplicate brief and card titles collapse 
 await test('[WIR5-04 changed][Step 5 DoD 6] failed tmux creation never kills a foreign session', async () => {
   const script = join(fileURLToPath(new URL('.', import.meta.url)), 'host-e2e.sh');
   const mockDir = join(root, 'mock-tmux'); const log = join(mockDir, 'calls.log'); mkdirSync(mockDir, { recursive: true });
+  const claude = join(mockDir, 'claude'); writeFileSync(claude, '#!/usr/bin/env bash\nexit 0\n'); chmodSync(claude, 0o755);
   const tmux = join(mockDir, 'tmux'); writeFileSync(tmux, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$MOCK_TMUX_LOG"\n[[ "$1" != "new-session" ]]\n'); chmodSync(tmux, 0o755);
   assert.throws(() => execFileSync('bash', [script], { env: { ...process.env, PATH: `${mockDir}:${process.env.PATH}`, MOCK_TMUX_LOG: log }, stdio: 'pipe' }));
   const calls = readFileSync(log, 'utf8');

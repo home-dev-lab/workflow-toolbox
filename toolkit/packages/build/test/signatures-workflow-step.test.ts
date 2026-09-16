@@ -60,7 +60,7 @@ function git(cwd: string, args: string[], env: Record<string, string> = {}) {
   const res = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, HOME: cwd, GIT_CONFIG_NOSYSTEM: '1', ...env },
+    env: { ...process.env, HOME: cwd, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...env },
   })
   if (res.status !== 0) {
     throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`)
@@ -96,7 +96,7 @@ function runStep(root: string, env: Record<string, string>) {
   const res = spawnSync('bash', ['-e', scriptPath], {
     cwd: root,
     encoding: 'utf8',
-    env: { ...process.env, HOME: root, GIT_CONFIG_NOSYSTEM: '1', GITHUB_WORKSPACE: root, ...env },
+    env: { ...process.env, HOME: root, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GITHUB_WORKSPACE: root, ...env },
   })
   return { out: `${res.stdout ?? ''}${res.stderr ?? ''}`, code: res.status }
 }

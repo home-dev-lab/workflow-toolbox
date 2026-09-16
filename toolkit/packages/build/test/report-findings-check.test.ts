@@ -16,9 +16,11 @@ function run(markdown: string, env: Record<string, string> = {}, args: string[] 
   roots.push(root)
   const report = join(root, 'report.md')
   writeFileSync(report, markdown)
+  const childEnv = { ...process.env }
+  delete childEnv.WT_FINDINGS_DISPOSITION_MODE
   const result = spawnSync(process.execPath, [SCRIPT, ...args, report], {
     encoding: 'utf8',
-    env: { ...process.env, WT_FINDINGS_DISPOSITION_NOW: '2026-09-13', ...env },
+    env: { ...childEnv, WT_FINDINGS_DISPOSITION_NOW: '2026-09-13', ...env },
   })
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
