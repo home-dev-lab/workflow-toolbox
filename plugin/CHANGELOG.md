@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.179.0] - 2026-09-16
+
 ### Fixed
 - SDK pilot exit 0 now means delivered: every card criterion is proven and E2E records a real
   procedure and output. Non-proven outcomes and unrun E2E checks are archived as partial, exit 2,
