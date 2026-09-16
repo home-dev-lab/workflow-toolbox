@@ -22,7 +22,10 @@ function confined(root, requested) {
 
 function bashConfined(root, command) {
   if (typeof command !== 'string' || !command.trim()) return false
+  // The SDK sandbox is the filesystem boundary. This lexical filter is defense in depth for
+  // obvious escapes; an interpreter can always construct a path without spelling it here.
   if (/(?:^|[\s'"=])(?:\.\.[\\/]|~[\\/]|\$(?:HOME|TMPDIR|TEMP|TMP)\b|\$\{)/.test(command)) return false
+  if (/(?:^|[\s'"=(:,])\.\.(?=$|[\s'"),;&|\\/])/.test(command)) return false
   const absolutePaths = command.match(/(?:[A-Za-z]:[\\/]|\/)[^\s'";|&<>)]*/g) ?? []
   return absolutePaths.every((candidate) => confined(root, candidate))
 }

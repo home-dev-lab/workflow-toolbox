@@ -1,4 +1,4 @@
-// The SDK permission callback is the exhaustive fence; this hook adds defense in depth for Bash.
+// The SDK sandbox is the filesystem fence; its permission callback and this hook add defense in depth.
 /** @type {import('claude-code').Register} */
 export const register = (on) => {
   on('tool.call', { tool: 'Bash' }, async ($, event, next) => {
