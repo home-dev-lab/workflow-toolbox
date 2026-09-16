@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,7 +16,7 @@ afterEach(() => {
 })
 
 function fixture(script: string) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-lane-wait-'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-wait-')))
   roots.push(root)
   const lane = join(root, '.lane')
   mkdirSync(lane)

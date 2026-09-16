@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -52,7 +52,7 @@ afterEach(() => {
 })
 
 function makeWorktreeDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'wt-lane-activity-worktree-'))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-activity-worktree-')))
   dirs.push(dir)
   return dir
 }

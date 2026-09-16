@@ -16,7 +16,14 @@ function processExists(pid, { procRoot = '/proc' } = {}) {
   return existsSync(path.join(procRoot, String(pid)))
 }
 
-function identityStatus(expected, { inspect, platform, procRoot, processExists: exists }) {
+function processState(pid, { procRoot = '/proc' } = {}) {
+  try {
+    const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]
+  } catch { return null }
+}
+
+function identityStatus(expected, { inspect, platform, procRoot, processExists: exists, processState: state }) {
   if (platform !== 'linux') return 'unknown'
   if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv) || !Number.isFinite(expected.startTime)) return 'unknown'
   const actual = inspect(expected.pid, { platform, procRoot })
@@ -24,25 +31,21 @@ function identityStatus(expected, { inspect, platform, procRoot, processExists: 
     if (actual.startTime !== expected.startTime) return 'gone'
     return sameIdentity(expected, actual) ? 'running' : 'unknown'
   }
-  const processDir = path.join(procRoot, String(expected.pid))
   if (!exists(expected.pid, { platform, procRoot })) return 'gone'
-  try {
-    const stat = readFileSync(path.join(processDir, 'stat'), 'utf8')
-    if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] === 'Z') return 'gone'
-  } catch {}
+  if (state(expected.pid, { platform, procRoot }) === 'Z') return 'gone'
   return 'unknown'
 }
 
-export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc', processExists: exists = processExists } = {}) {
+export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc', processExists: exists = processExists, processState: state = processState } = {}) {
   if (!record || typeof record !== 'object' || typeof record.runId !== 'string') {
     return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
   if (record.state === 'launch-failed') return { status: 'terminal', reason: 'launch-failed', worker: 'gone', child: 'gone' }
   if (platform !== 'linux') return { status: 'unknown', reason: `identity-unavailable-${platform}`, worker: 'unknown', child: 'unknown' }
-  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, { inspect, platform, procRoot, processExists: exists })
+  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, { inspect, platform, procRoot, processExists: exists, processState: state })
   const child = record.childPid === null && record.childArgv === null
     ? 'not-spawned'
-    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, { inspect, platform, procRoot, processExists: exists })
+    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, { inspect, platform, procRoot, processExists: exists, processState: state })
   if (worker === 'gone' && child === 'not-spawned') return { status: 'gone', reason: 'worker-gone-no-child', worker, child: 'gone' }
   if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
   if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
@@ -55,7 +58,7 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
   return { status: 'unknown', reason: 'inconsistent-record', worker, child }
 }
 
-export function terminateLane(record, { inspect = inspectProcess, kill = process.kill, graceMs = 1000, platform = process.platform, journal = () => {}, source = 'unknown', markTerminal = null, ownedChild = null, recordWorktree = null } = {}) {
+export function terminateLane(record, { inspect = inspectProcess, kill = process.kill, graceMs = 1000, platform = process.platform, procRoot = '/proc', processExists: exists = processExists, processState: state = processState, journal = () => {}, source = 'unknown', markTerminal = null, ownedChild = null, recordWorktree = null } = {}) {
   const event = { event: 'termination-signaled', runId: record.runId, source, workerPid: record.workerPid, childPid: record.childPid, pid: record.childPid, argv: argvSummary(record.childArgv ?? []), worktree: record.worktree, owner: record.owner ?? null, reason: 'verified lane process group' }
   // The worker owns this ChildProcess handle and its detached group. This path deliberately does
   // not consult /proc and never sends SIGKILL to the group leader (itself).
@@ -74,7 +77,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     journal({ ...event, event: 'terminated', reason: 'terminated' })
     return { killed: true, reason: 'terminated', verdict: { status: 'gone', reason: 'worker-owned-child-ended' } }
   }
-  const verdict = classifyLane(record, { inspect, platform })
+  const verdict = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
   if (verdict.status === 'gone') return { killed: false, reason: 'already-gone', verdict }
   if (!['running', 'decision-needed', 'terminal', 'worker-gone-child-alive'].includes(verdict.status)) {
     return { killed: false, reason: verdict.reason, verdict }
@@ -118,7 +121,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     }
     if (markTerminal) markTerminal('terminal')
     if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-    const afterTerm = classifyLane(record, { inspect, platform })
+    const afterTerm = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
     if (afterTerm.status === 'gone') {
       journal({ ...event, event: 'terminated', reason: 'terminated' })
       return { killed: true, reason: 'terminated', verdict: afterTerm }
@@ -126,7 +129,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     if (afterTerm.status === 'unknown' && afterTerm.reason === 'identity-unreadable') return { killed: false, reason: 'identity-unreadable-after-sigterm', verdict: afterTerm }
     if (!signal('SIGKILL')) return { killed: true, reason: 'terminated', verdict: afterTerm }
     if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-    const afterKill = classifyLane(record, { inspect, platform })
+    const afterKill = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
     if (afterKill.status === 'gone') {
       journal({ ...event, event: 'terminated', reason: 'terminated' })
       return { killed: true, reason: 'terminated', verdict: afterKill }

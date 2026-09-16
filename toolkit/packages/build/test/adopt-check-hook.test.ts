@@ -7,7 +7,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,7 +23,7 @@ afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
 })
 function mkRoot(tag: string): string {
-  const r = mkdtempSync(join(tmpdir(), `wt-adopt-check-${tag}-`))
+  const r = realpathSync(mkdtempSync(join(tmpdir(), `wt-adopt-check-${tag}-`)))
   roots.push(r)
   return r
 }

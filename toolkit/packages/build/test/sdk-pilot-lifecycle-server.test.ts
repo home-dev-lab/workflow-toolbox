@@ -1,4 +1,4 @@
-import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { syncBuiltinESMExports } from 'node:module'
@@ -536,7 +536,7 @@ printf 'report\n' > "$report"
     await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
     await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
     const call = readFileSync(join(lifecycle.root, 'calls'), 'utf8')
-    expect(call).toMatch(/--brief \/tmp\/wt-lane-launch-[^/]+\/brief\.md/)
+    expect(call).toMatch(/--brief \S+\/wt-lane-launch-[^/]+\/brief\.md/)
     expect(call).not.toContain(`--brief ${join(lifecycle.root, '.lane', 'tdd-brief.md')}`)
     expect(fs.existsSync(/--brief (\S+)/.exec(call)![1]!)).toBe(false)
   })
@@ -1286,7 +1286,7 @@ function killIdentity(expected: { pid: number, argv: string[], startTime?: numbe
   process.kill(expected.pid, signal)
 }
 function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null, options: Record<string, unknown> = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-'))); roots.push(root)
   const archiveRoot = archiveProject()
   mkdirSync(join(root, '.lane'))
   writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n')
@@ -1300,7 +1300,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
 }
 function realGitLifecycle() {
-  const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-'))); roots.push(root)
   const archiveRoot = archiveProject()
   mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n'); writeFileSync(join(root, 'tracked.txt'), 'tracked\n')
   const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
@@ -1318,7 +1318,7 @@ function realGitLifecycle() {
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
 }
 function archiveProject() {
-  const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-archive-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-archive-'))); roots.push(root)
   writeFileSync(join(root, '.gitignore'), '.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: root })
   return root
@@ -1329,7 +1329,7 @@ function launcher(source: string) {
   return rawLauncher(`process.stdout.write('pid='+process.pid+'\\n');${source}`)
 }
 function rawLauncher(source: string) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-lifecycle-launcher-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-launcher-'))); roots.push(root)
   const file = join(root, 'launcher.mjs'); writeFileSync(file, source)
   return file
 }
