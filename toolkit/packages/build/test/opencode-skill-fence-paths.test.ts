@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -13,7 +13,7 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function fixture() {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-paths-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-paths-'))); roots.push(root)
   const binDir = path.join(root, 'bin'); const bin = path.join(binDir, 'opencode'); const record = path.join(root, 'record')
   mkdirSync(binDir)
   writeFileSync(bin, `#!/bin/sh

@@ -68,7 +68,7 @@ function renderedText(snapshot: unknown) {
 }
 
 describe('What is running collector seam', () => {
-  it('runs every assertion from the ported hardened selftest', () => {
+  it.skipIf(process.platform !== 'linux')('runs every assertion from the ported hardened selftest (requires /proc)', () => {
     const result = runSelftest()
     expect(result.status, result.stderr || result.stdout).toBe(0)
     expect(result.stdout).toContain('tests: ')

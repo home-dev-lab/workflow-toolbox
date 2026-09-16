@@ -170,7 +170,7 @@ describeIfSupported('wt-lane-probe.mjs', () => {
     expect(typeof entry?.pid).toBe('number')
     // argsTruncated is deliberately capped at 120 chars (see the script's header) — on a long
     // tmp path the full UUID marker can fall past the cutoff, so assert on its stable prefix.
-    expect(entry?.argsTruncated).toContain(marker.slice(0, 24))
+    expect(entry?.argsTruncated).toContain('wt-lane-probe-fixture-')
   })
 
   // Regression for a real bug found while validating this script against a live wave on

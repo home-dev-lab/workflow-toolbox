@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -17,7 +17,7 @@ afterEach(() => {
 })
 
 function mkRoot(tag: string): string {
-  const root = mkdtempSync(join(tmpdir(), `wt-actionable-${tag}-`))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-actionable-${tag}-`)))
   roots.push(root)
   return root
 }

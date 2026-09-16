@@ -44,7 +44,7 @@ function fakeSdk(root: string) {
 }
 
 function waveFixture(bullets = 1) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-wave-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-wave-'))); roots.push(root)
   const cardDir = join(root, 'cards', '1'); mkdirSync(cardDir, { recursive: true })
   writeFileSync(join(cardDir, 'card.md'), `## Definition of done\n${Array.from({ length: bullets }, (_, index) => `- item ${index + 1}`).join('\n')}\n`)
   writeFileSync(join(cardDir, 'pilot-report.md'), '# report\n'); writeFileSync(join(cardDir, 'diff.patch'), 'diff\n')
@@ -58,7 +58,7 @@ function receipts(cardDir: string, overrides: Record<string, number> = {}) {
 }
 
 function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship\n' }]) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-orchestrator-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-orchestrator-'))); roots.push(root)
   spawnSync('git', ['init', '-q', '-b', 'develop'], { cwd: root }); spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root }); spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root })
   writeFileSync(join(root, '.gitignore'), '.waves/\n.lane/\n'); writeFileSync(join(root, 'base.txt'), 'base\n'); spawnSync('git', ['add', '.'], { cwd: root }); spawnSync('git', ['commit', '-qm', 'base'], { cwd: root })
   const worktreesDir = join(root, '.waves'); const report = join(worktreesDir, 'report.md'); const moves: string[] = []; const comments: string[] = []; const gitCalls: string[][] = []; const launches: Array<{ card: string, hard?: boolean }> = []
@@ -154,7 +154,7 @@ describe('wave lifecycle server', () => {
   })
 
   it('enforces every state edge and exposes state()', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-wave-state-')); roots.push(root); const server = createWaveServer({ waveDir: root, cards: [{ id: '1' }] }) as RegisteredServer
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-wave-state-'))); roots.push(root); const server = createWaveServer({ waveDir: root, cards: [{ id: '1' }] }) as RegisteredServer
     expect(() => server.setCardState('1', 'judging')).toThrow('pending->judging'); server.setCardState('1', 'piloting'); server.setCardState('1', 'judging'); server.setCardState('1', 'undecided')
     expect(server.state()).toEqual({ cards: { 1: 'undecided' }, judgmentWritten: false, allDecided: true }); expect(() => server.setCardState('1', 'accepted')).toThrow('undecided->accepted')
   })

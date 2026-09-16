@@ -16,7 +16,7 @@
 // key) would refuse a second PROJECT, leaving that project silently unwatched. That failure
 // looks exactly like success from inside the first project, which is why it is locked here.
 import { spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,7 +27,7 @@ const WATCH = join(REPO_ROOT, 'plugin/bin/wt-quota-watch.mjs')
 
 const roots: string[] = []
 function tmpDir(prefix: string): string {
-  const d = mkdtempSync(join(tmpdir(), prefix))
+  const d = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   roots.push(d)
   return d
 }

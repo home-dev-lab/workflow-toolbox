@@ -50,7 +50,7 @@
 //   - `WT_GUARD_JOURNAL_DIR` / `WT_GUARD_JOURNAL_NOW` / `WT_GUARD_JOURNAL_TEST_ORIGIN` env
 //     overrides exist for tests only (see guard-journal.test.ts) — normal operation never sets them.
 
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeSync } from 'node:fs'
+import { appendFileSync, mkdirSync, realpathSync, readdirSync, readFileSync, statSync, writeSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
@@ -215,7 +215,10 @@ function firingOrigin(cwd) {
     const marker = process.env.WT_GUARD_JOURNAL_TEST_ORIGIN
     if (marker !== undefined) return marker === '1' ? 'test' : 'unknown'
     if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return 'unknown'
-    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(cwd))
+    const canonical = (value) => {
+      try { return realpathSync(value) } catch { return path.resolve(value) }
+    }
+    const relative = path.relative(canonical(os.tmpdir()), canonical(cwd))
     const underTempRoot = relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))
     return underTempRoot ? 'test' : 'real'
   } catch {

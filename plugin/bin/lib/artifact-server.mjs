@@ -278,7 +278,8 @@ export function detectTailscale(port) {
   const run = (command, args) => execFileSync(command, args, {
     encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'],
   })
-  let command = 'tailscale'
+  // Tests and managed launchers can pin the binary instead of relying on PATH discovery.
+  let command = process.env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY || 'tailscale'
   let ipOutput
   try {
     ipOutput = run(command, ['ip', '-4'])

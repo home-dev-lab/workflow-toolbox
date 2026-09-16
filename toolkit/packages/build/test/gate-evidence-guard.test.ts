@@ -1,7 +1,7 @@
 // Hermetic real-git selftests: the guard's evidence is the index and tree, not a mocked diff.
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -32,9 +32,9 @@ function write(root: string, file: string, body: string) {
 }
 
 function repo(withDeclaration = true) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-gate-evidence-'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-gate-evidence-')))
   made.push(root)
-  const state = join(tmpdir(), `wt-gate-evidence-state-${basename(root)}`)
+  const state = realpathSync(mkdtempSync(join(tmpdir(), `wt-gate-evidence-state-${basename(root)}-`)))
   made.push(state)
   states.set(root, state)
   git(root, 'init', '-q')
