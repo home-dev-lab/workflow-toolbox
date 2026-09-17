@@ -57,6 +57,7 @@ jobs:
         run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
         timeout-minutes: 8
       - name: Test (macOS shard 1/2)
+        id: mac_shard_1
         if: ${{ runner.os == 'macOS' }}
         continue-on-error: true
         env:
@@ -66,6 +67,7 @@ jobs:
           pnpm test:shard --shard=1/2 2>&1 | tee ci-diagnostics/vitest-shard-1-of-2.log
         timeout-minutes: 12
       - name: Test (macOS shard 2/2)
+        id: mac_shard_2
         if: ${{ runner.os == 'macOS' }}
         continue-on-error: true
         env:
@@ -74,6 +76,15 @@ jobs:
           mkdir -p ci-diagnostics
           pnpm test:shard --shard=2/2 2>&1 | tee ci-diagnostics/vitest-shard-2-of-2.log
         timeout-minutes: 12
+      # The shards are continue-on-error so BOTH always run and both logs reach the artifact; this step is what
+      # makes the JOB red when either failed. Measured 2026-09-17: two lifecycle cases were red on every macOS
+      # shard from run 28 to run 34 while the job reported success, because nothing read the shard outcomes.
+      - name: macOS shard results
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          echo "shard 1/2: ${{ steps.mac_shard_1.outcome }} · shard 2/2: ${{ steps.mac_shard_2.outcome }}"
+          test "${{ steps.mac_shard_1.outcome }}" = "success" && test "${{ steps.mac_shard_2.outcome }}" = "success"
+        timeout-minutes: 1
       - name: Test (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
