@@ -225,6 +225,14 @@ function writeLaneStage(file, stage, { reset = false, runId = null, header = [] 
   } catch { /* best effort diagnostic */ }
 }
 
+// The launcher's own identity when the provider cannot read it: on win32 the spawn-time estimate
+// is flagged approximate (sameIdentity allows a bounded skew); elsewhere the start time is unknown.
+function fallbackLauncherIdentity() {
+  return process.platform === 'win32'
+    ? { argv: process.argv, startTime: PROCESS_STARTED_AT, startTimeApproximate: true, image: windowsImage(process.execPath) }
+    : { argv: process.argv, startTime: null }
+}
+
 async function main() {
   const worker = process.argv[2] === '--worker'
   const opts = parse(process.argv.slice(worker ? 3 : 2))
@@ -297,9 +305,7 @@ async function main() {
     mkdirSync(paths.dir, { recursive: true })
     writeLaneStage(opts.log, 'inspect-launcher-start', { reset: true, runId, header: briefEvidenceLines(briefEvidence, true) })
     const launcherInspect = (pid, options = {}) => inspectLauncherProcess(consentModules.inspectProcess, pid, { ...options, platform: process.platform })
-    const identity = launcherInspect(process.pid, { recordedArgv: process.argv }) ?? (process.platform === 'win32'
-      ? { argv: process.argv, startTime: PROCESS_STARTED_AT, startTimeApproximate: true, image: windowsImage(process.execPath) }
-      : { argv: process.argv, startTime: null })
+    const identity = launcherInspect(process.pid, { recordedArgv: process.argv }) ?? fallbackLauncherIdentity()
     writeLaneStage(opts.log, 'inspect-launcher-done')
     const lockOwner = { version: 1, runId, pid: process.pid, argv: identity.argv, startTime: identity.startTime, ...(process.platform === 'win32' ? { startTimeApproximate: identity.startTimeApproximate ?? false, image: identity.image ?? null } : {}), createdAt: new Date().toISOString() }
     const lockStatus = (lockPath) => {
