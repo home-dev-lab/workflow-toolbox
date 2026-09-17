@@ -2172,6 +2172,10 @@ ${renderClaim(claim)}`;
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
+      sources: ["plugin/bin/wt-suite-lock.mjs", "plugin/bin/lib/suite-lock.mjs"],
+      docs: ["docs/public/known-issues.md"]
+    },
+    {
       sources: [
         "plugin/bin/wt-artifact-server.mjs",
         "plugin/bin/wt-artifact-server-ensure.mjs",

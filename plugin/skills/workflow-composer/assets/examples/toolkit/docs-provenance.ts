@@ -106,6 +106,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
   },
   {
+    script: 'plugin/bin/wt-suite-lock.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the machine-wide suite lock, bounded wait, stale recovery, bypass, and operator controls.',
+  },
+  {
     script: 'plugin/bin/wt-lane-control.mjs',
     status: 'mapped',
     reason: 'Known-issues and the external-lane skill document the owner decision CLI and its identity refusals.',
@@ -649,6 +654,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
+  },
+  {
+    sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/lib/suite-lock.mjs'],
+    docs: ['docs/public/known-issues.md'],
   },
   {
     sources: [
