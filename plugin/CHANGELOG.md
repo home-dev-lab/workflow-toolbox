@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Tooling
+- Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
+
 ### Fixed
 - SDK roles resolve the INSTALLED context-mode plugin (the harness's `installed_plugins.json` entry, then the highest cached version) instead of a pinned version directory, so the first session after a context-mode update no longer fails closed on an absent path.
 - macOS supervision now reads untruncated command identities with wide `ps`; Windows supervision reuses one full `Win32_Process` snapshot for 500 ms per worker/child classification, and cross-OS fixtures pin their actual process, path, executable, and signal assumptions.
