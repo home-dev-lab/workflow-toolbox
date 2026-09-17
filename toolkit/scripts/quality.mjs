@@ -55,6 +55,16 @@ function pnpm(...args) {
   return run(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm', args, { allowFailure: true })
 }
 
+// pnpm prefixes a workspace-root `exec` with banner lines on stdout ("Scope: all 11 workspace
+// projects", "[WARN] There are cyclic workspace dependencies: …"), so a tool's JSON report is
+// parsed from the first bracket at which the rest of the output IS a JSON document.
+export function parseJsonOutput(text) {
+  for (const match of text.matchAll(/[{[]/g)) {
+    try { return JSON.parse(text.slice(match.index)) } catch { /* not the document start */ }
+  }
+  throw new Error(`no JSON document in tool output:\n${text.slice(0, 200)}`)
+}
+
 function issueCount(report) {
   return report.issues.reduce((total, issue) => total + Object.entries(issue)
     .filter(([key, value]) => key !== 'file' && Array.isArray(value))
@@ -176,7 +186,7 @@ function readKnip() {
 }
 
 function readCycles() {
-  const report = JSON.parse(pnpm('exec', 'depcruise', ...SOURCE_DIRS, '--config', '.dependency-cruiser.cjs', '--output-type', 'json'))
+  const report = parseJsonOutput(pnpm('exec', 'depcruise', ...SOURCE_DIRS, '--config', '.dependency-cruiser.cjs', '--output-type', 'json'))
   const cycles = report.summary.violations.filter((violation) => violation.type === 'cycle')
   const offenders = cycles.map((cycle) => ({ value: 1, file: slash(join('toolkit', cycle.from)), exact: `${cycle.from} -> ${cycle.to}` }))
   return metric(cycles.length, offenders)
@@ -285,7 +295,9 @@ async function main() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
+    // A report that cannot be produced says so by exit code; a silent exit 0 on `delta` once hid a
+    // parse failure behind an empty report.
     console.error(error.message)
-    process.exitCode = process.argv[2] === 'delta' ? 0 : 1
+    process.exitCode = 1
   })
 }
