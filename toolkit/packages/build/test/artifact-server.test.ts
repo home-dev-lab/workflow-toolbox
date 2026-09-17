@@ -6,7 +6,7 @@ import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl, registrationPidStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
@@ -172,24 +172,11 @@ function readState(stateHome: string): Discovery | null {
   try { return JSON.parse(readFileSync(statePath(stateHome), 'utf8')) as Discovery } catch { return null }
 }
 
-function commandShim(bin: string, name: string, source: string) {
-  const implementation = join(bin, `${name}.cjs`)
-  writeFileSync(implementation, source)
-  const posix = join(bin, name)
-  writeFileSync(posix, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(implementation)} "$@"\n`)
-  chmodSync(posix, 0o755)
-  const windows = join(bin, `${name}.cmd`)
-  writeFileSync(windows, `@"${process.execPath}" "${implementation}" %*\r\n`)
-  return process.platform === 'win32' ? windows : posix
-}
-
 function baseEnv(stateHome: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const bin = temporaryDir('tailscale-default-absent')
-  const tailscale = commandShim(bin, 'tailscale', 'process.exitCode = 1\n')
-  commandShim(bin, 'git', "if (process.env.WT_TEST_GIT_ROOT && process.argv.slice(2).join(' ') === 'rev-parse --show-toplevel') process.stdout.write(process.env.WT_TEST_GIT_ROOT + '\\n'); else process.exitCode = 1\n")
   return {
     ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: stateHome,
-    WT_ARTIFACT_SERVER_TAILSCALE_BINARY: tailscale,
+    WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
     WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1', ...extra,
   }
 }
@@ -393,6 +380,15 @@ describe('review test infrastructure', () => {
       ['/PID', '123', '/T', '/F'],
       { timeout: 5_000, windowsHide: true, stdio: 'ignore' },
     ]])
+  })
+
+  it('uses process-table evidence instead of a retained Windows process handle for registration liveness', () => {
+    expect(registrationPidStatus(123, {
+      platform: 'win32', inspect: () => null, processExists: () => false,
+    })).toBe('gone')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', inspect: () => null, processExists: () => null,
+    })).toBe('unknown')
   })
 })
 
@@ -964,14 +960,17 @@ describe('owner decision 2: discovery and one instance', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
+    const shutdownFile = join(temporaryDir('startup-shutdown-request'), 'shutdown')
     const holder = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+      ...(process.platform === 'win32' ? { WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE: shutdownFile } : {}),
     }))
     const output = childOutput(holder)
     await waitFor(() => {
       try { return readdirSync(startupClaimPath(stateHome)).length === 1 ? true : null } catch { return null }
     })
-    holder.kill('SIGTERM')
+    if (process.platform === 'win32') writeFileSync(shutdownFile, 'shutdown\n')
+    else holder.kill('SIGTERM')
     await waitFor(() => /startup stopped during shutdown/i.test(output.stdout()) ? true : null)
     expect(output.stdout()).not.toMatch(/no available port/i)
   })
@@ -1335,7 +1334,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    spawnEnsure(nestedCwd, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port), WT_TEST_GIT_ROOT: project }))
+    spawnEnsure(nestedCwd, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_GIT_ROOT: project }))
     const state = await waitForState(stateHome, (value) => value.roots.length === 2)
     const prefix = basename(project)
     expect(state.roots).toEqual(expect.arrayContaining([
@@ -1405,8 +1404,8 @@ describe('review decisions: filesystem roots and URLs', () => {
     const port = reservation.port
     await closeServer(reservation.server)
     const common = { WT_ARTIFACT_SERVER_PORT: String(port) }
-    spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectOne }))
-    spawnEnsure(projectTwo, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectTwo }))
+    spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
+    spawnEnsure(projectTwo, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectTwo }))
     const state = await waitForState(stateHome, (value) => value.roots.length === 4)
     const reportNames = state.roots.filter((root) => root.path.endsWith(join('.claude', 'reports'))).map((root) => root.name)
     expect(reportNames).toHaveLength(2)
@@ -1430,12 +1429,12 @@ describe('review decisions: filesystem roots and URLs', () => {
     const port = reservation.port
     await closeServer(reservation.server)
     const common = { WT_ARTIFACT_SERVER_PORT: String(port) }
-    const monitorOne = spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectOne }))
+    const monitorOne = spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
     const first = await waitForState(stateHome, (state) => state.roots.length === 1)
     const firstName = first.roots[0]!.name
     const firstUrl = `${first.baseUrl}/${firstName}/one.txt`
 
-    const monitorTwo = spawnEnsure(projectTwo, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectTwo }))
+    const monitorTwo = spawnEnsure(projectTwo, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectTwo }))
     const joined = await waitForState(stateHome, (state) => state.roots.length === 2)
     const secondName = joined.roots.find((root) => root.path === join(projectTwo, '.claude', 'reports'))?.name
     expect(joined.roots.find((root) => root.path === join(projectOne, '.claude', 'reports'))?.name).toBe(firstName)
@@ -1451,7 +1450,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     ]))
     if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
 
-    spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectOne }))
+    spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
     const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2)
     expect(rejoined.roots.find((root) => root.path === join(projectOne, '.claude', 'reports'))?.name).toBe(firstName)
     expect(rejoined.roots.find((root) => root.path === join(projectTwo, '.claude', 'reports'))?.name).toBe(secondName)
@@ -1473,7 +1472,7 @@ describe('review decisions: filesystem roots and URLs', () => {
 })
 
 describe('owner decision 5: Tailscale access', () => {
-  function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent', cwd: string, platform = process.platform) {
+  function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent', cwd: string) {
     const bin = temporaryDir(`tailscale-${mode}`)
     const serveStatus = mode === 'https'
       ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
@@ -1484,20 +1483,12 @@ describe('owner decision 5: Tailscale access', () => {
           : mode === 'hijack'
             ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:9999\nhttps://other.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
             : 'No serve config'
-    const source = mode === 'absent'
-      ? 'process.exitCode = 1\n'
-      : `const command = process.argv.slice(2).join(' '); if (command === 'ip -4') { ${mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')"} } else if (command === 'status --json') process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } })); else if (command === 'serve status') process.stdout.write(\`${serveStatus}\`); else process.exitCode = 1\n`
-    if (platform !== 'win32') {
-      const command = commandShim(bin, 'tailscale', source)
-      return { bin: realpathSync(bin), env: { WT_ARTIFACT_SERVER_TAILSCALE_BINARY: command } }
-    }
-
-    // execFileSync cannot directly execute a .cmd file. Pin Node as the real executable and place
-    // its three command scripts in the fixture cwd, preserving the exact tailscale argv shape.
+    // execFileSync cannot directly execute a Windows .cmd file. Every case pins Node as the real
+    // executable and places its command scripts in the fixture cwd, preserving the Tailscale argv.
     const failed = 'process.exitCode = 1\n'
     writeFileSync(join(cwd, 'ip'), mode === 'absent' ? failed : mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')\n")
     writeFileSync(join(cwd, 'status'), mode === 'absent' ? failed : "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
-    writeFileSync(join(cwd, 'serve'), mode === 'absent' ? failed : `process.stdout.write(${JSON.stringify(serveStatus)})\n`)
+    writeFileSync(join(cwd, 'serve'), mode === 'absent' ? failed : `process.stdout.write(\`${serveStatus}\`)\n`)
     return {
       bin: realpathSync(bin),
       env: { WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath },
@@ -1517,9 +1508,9 @@ describe('owner decision 5: Tailscale access', () => {
       .toBeNull()
   })
 
-  it('runs the Windows Tailscale fixture through a real executable', () => {
+  it('runs every Tailscale fixture through a real executable', () => {
     const cwd = temporaryDir('tailscale-windows-executable')
-    const { env } = tailscaleStub('present', cwd, 'win32')
+    const { env } = tailscaleStub('present', cwd)
     const result = spawnSync(env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY, ['ip', '-4'], {
       cwd, encoding: 'utf8', env: { ...process.env, ...env },
     })

@@ -2,7 +2,7 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, utimesSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, utimesSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -63,6 +63,8 @@ const TEST_CONTROL_NAMES = [
   'WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS',
   'WT_ARTIFACT_SERVER_TEST_STOP_HEARTBEAT_AFTER_MS',
   'WT_ARTIFACT_SERVER_TEST_CONTENTION_LOG',
+  'WT_ARTIFACT_SERVER_TEST_GIT_ROOT',
+  'WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE',
 ]
 const TEST_SEAMS_ACTIVE = new Set(TEST_MODE ? TEST_CONTROL_NAMES.filter((name) => process.env[name] !== undefined) : [])
 
@@ -249,6 +251,8 @@ async function holdClaimForTest(claim) {
   const deadline = Date.now() + holdMs
   while (!stopping && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())))
+    const shutdownFile = process.env.WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE
+    if (shutdownFile && existsSync(shutdownFile)) cleanExit()
     if (!stopping && (!Number.isFinite(stopHeartbeatAfterMs) || Date.now() - startedAt < stopHeartbeatAfterMs)) claim.heartbeat()
   }
 }

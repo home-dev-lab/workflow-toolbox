@@ -378,6 +378,7 @@ printf 'report\n' > "$report"
     const wholeSecond = Math.floor(Date.now() / 1000)
     utimesSync(join(lifecycle.root, '.lane', nonceLog), wholeSecond, wholeSecond)
     const laneMtime = fs.statSync(join(lifecycle.root, '.lane', nonceLog)).mtimeMs
+    lifecycle.state.lastLaneMtime = laneMtime
     const append = fs.appendFileSync.bind(fs)
     const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
       append(file, data, options)

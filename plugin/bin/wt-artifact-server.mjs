@@ -24,6 +24,7 @@ import {
   pathIsUnder,
   probeArtifactServer,
   readArtifactDiscovery,
+  registrationPidStatus,
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
@@ -297,7 +298,8 @@ async function serve() {
     for (const [file, registration] of registrations) {
       registration.live = false
       try {
-        process.kill(registration.pid, 0)
+        const status = registrationPidStatus(registration.pid)
+        if (status === 'gone') throw Object.assign(new Error('registration process is gone'), { code: 'ESRCH' })
         registration.live = true
         registration.deadAt = null
         liveCount += 1

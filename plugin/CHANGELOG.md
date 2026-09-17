@@ -12,6 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Artifact-server Windows fixtures now pin executable-backed Git and Tailscale seams, startup shutdown has a platform-honest test route, dead registrations use process-table evidence instead of retained-handle signalability, and the pilot continuation lock has a process-spawn-aware local timeout.
 - Windows process-spawning fixtures now wait for spawn-recorded child identities before removing temporary directories, artifact-server state timeouts name their predicate and captured output, configured Tailscale failures report timing and process status, and the board-client protocol lock treats partial request JSON as incomplete input instead of an uncaught exception.
 - Artifact-server registrations now apply their `0600` mode check only on POSIX, while the Windows end-to-end fixture records each spawned server identity for health-independent teardown and includes monitor output in state-timeout diagnostics.
 - Artifact-server end-to-end cleanup now identity-checks and terminates the detached Windows process tree before retrying temp-directory removal, and its Tailscale fixture invokes a real executable instead of assuming Windows can execute a `.cmd` file through `execFileSync`.
