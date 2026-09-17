@@ -29,8 +29,12 @@ async function loadConsentModules() {
   return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
 }
 
+async function loadIntegrationModule() {
+  return import('./lib/lane-integrate.mjs')
+}
+
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--variant <name>] [--allow-no-git]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--variant <name>] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run]'
 }
 
 function parse(argv) {
@@ -733,6 +737,17 @@ async function main() {
   return 0
 }
 
+async function integrationMain() {
+  const { integrateLane, parseIntegrateArgs } = await loadIntegrationModule()
+  const options = parseIntegrateArgs(process.argv.slice(3))
+  if (options.help) { process.stdout.write(`${usage()}\n`); return 0 }
+  if (options.error) { process.stderr.write(`wt-lane: ${options.error}\n${usage()}\n`); return 2 }
+  return integrateLane(options)
+}
+
 let isMain = false
 try { isMain = realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch {}
-if (isMain) main().then((code) => { process.exitCode = code }).catch((error) => { process.stderr.write(`wt-lane: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 })
+if (isMain) {
+  const entrypoint = process.argv[2] === 'integrate' ? integrationMain : main
+  entrypoint().then((code) => { process.exitCode = code }).catch((error) => { process.stderr.write(`wt-lane: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 })
+}
