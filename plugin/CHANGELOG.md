@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added `wt-lane.mjs integrate`, which commits a delivered lane from an explicit message file, merges it in a named same-repository worktree, verifies its `.lane/` archive before optional removal, and can authorize, push, dispatch, and inspect an explicitly requested CI branch.
 
 ### Fixed
+- SDK pilot timeouts now default by route (90 minutes for LITE, 6 hours for FULL), warn without refusing shorter explicit bounds, and stop at the next lifecycle phase boundary with an archived timeout report and worktree-retention marker instead of injecting an ignorable prompt mid-phase.
 - Main-guard one-shot allowances now key consumption to `tool_use_id`, so duplicate hook registrations agree on one Bash call while a later call is refused; SessionStart warns when an enabled marketplace copy overlaps the current plugin root, and the guard now states that API/`gh` deletions are outside its Bash-text coverage.
 - Run-cost reconciliation now attributes each lane through its recorded executor/model family, reading Claude usage receipts or matching OpenCode session rows per lane, and reports family-specific unknowns instead of applying the run executor to every lane.
 - The suite lock decides the Windows command shell per EXECUTABLE instead of per platform: a `.cmd`/`.bat` shim (including a bare name that PATHEXT resolves to one) still runs through the shell, every other command is spawned directly, so quoted arguments are no longer re-parsed by `cmd.exe`.

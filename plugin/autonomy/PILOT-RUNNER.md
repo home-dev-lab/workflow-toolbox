@@ -82,6 +82,13 @@ value of an inline `DoD:` / `Definition of done:` field. No criterion makes both
 starting the SDK query. The reasons are recorded with the route.
 `.lane/route.json` is an audit record, not an input to routing.
 
+The route also selects the runner timeout when `--timeout` is omitted: LITE keeps 5,400 seconds
+(90 minutes), while FULL uses 21,600 seconds (6 hours). The FULL default deliberately sits well
+above the longest measured FULL run, 3 hours 11 minutes, which ended on the lifecycle's own review
+bound. An explicit `--timeout` always wins. When it is shorter than the route reference (90 minutes
+for LITE, or the measured 3 hours 11 minutes for FULL), the runner prints one warning naming the
+route, supplied seconds, and reference, then proceeds.
+
 The installed plugin's version-1 `rules-manifest.json` maps exact sections under `plugin/rules`; an
 optional `<project>/.claude/wt-rules-manifest.json` uses the same schema and adds project-root sources.
 The runner validates every role, lifecycle trigger, source path, and exact heading before composition.
@@ -192,6 +199,32 @@ two SDK readings agree with each other (a remapped profile serves a different id
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
 
+The runner timeout is a clean-boundary stop, not a mid-phase kill. A Node timer calls the in-process
+lifecycle server's `requestStop('timeout')`; the current lane, gate, or other phase work is allowed to
+finish. The next otherwise-accepted `transition` records `Partial: timeout`, `Phase reached: <phase>`,
+and `Reason: timeout` in `.lane/pilot-report.md`, ends that phase without entering the next one,
+refuses later lifecycle calls, and aborts the SDK stream through `AbortController`. Finalization then
+publishes the ordinary partial archive and `.lane/worktree-retention.json`. The old implementation
+instead yielded a user prompt from the async prompt generator while a lifecycle tool could still be
+running; the SDK buffered that prompt, but no lifecycle state consumed it, so a pilot could continue
+through later phases.
+
+This boundary contract has an intentional worst case: if a phase never returns and therefore never
+calls `transition`, the runner timeout remains pending and cannot fire cleanly. Supervised executor
+lanes retain their existing owner decision path and identity-aware abandon control; use that control
+for a wedged lane. There is no second hard kill for a wedged pilot or gate, so an operator must
+terminate the runner externally if the phase has no supervised control path. That preserves the
+worktree but cannot promise the boundary report that the wedged phase never reached.
+
+Timeout delivery itself has no shell, signal, process-table, or filesystem-injection dependency:
+`pilot-runner-core.mjs` uses the cross-platform Node timer and `AbortController`, and
+`lifecycle-state-machine.mjs` receives the request in process. A phase running an executor still uses
+`lifecycle-launch.mjs`; on Windows its supervision evidence is checked through the recorded
+single-process identity path in `lane-supervisor-core.mjs`. An unavailable or inconclusive Windows
+identity read is returned as an actionable `TIMEOUT: unknown` rather than a plausible success, while
+the runner's own timeout request remains visible in its launch log as
+`timeout requested; waiting for the <phase> phase boundary`.
+
 When critic, review, or refutation exhausts its round bound, the runner also writes the ignored
 `.lane/worktree-retention.json` file. Version 1 records `cardId`, the canonical absolute `worktree`,
 `retainedAt`, the bounded-run `reason`, the stopping `phase`, and `expiry` with the board id and the
@@ -242,7 +275,7 @@ start, never by archive path. Malformed usage exits 2.
 
 `--card`, `--dir`, and `--card-file` are required. Optional flags are `--board-contract <json file>`, `--knowledge-base-index`, repeatable
 `--plugin-dir <absolute-path>`, `--profile-env`, `--contract`,
-`--hard`, `--mailbox`, and `--timeout`; `--lane-silence` is not accepted. The runner uses Node path semantics on
+`--hard`, `--mailbox`, and `--timeout <seconds>`; `--lane-silence` is not accepted. The runner uses Node path semantics on
 Linux, macOS, and Windows, resolves `--dir` to an absolute path, and applies real-path containment before
 authorizing reads. It never enables `allowDangerouslySkipPermissions`.
 The board contract is `{ boardId, listId, labels: { priority: {P0,P1,P2}, type:
