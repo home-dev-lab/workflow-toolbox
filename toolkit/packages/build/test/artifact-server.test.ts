@@ -1003,7 +1003,7 @@ describe('owner decision 2: discovery and one instance', () => {
 })
 
 describe('owner decision 3: session lifetime and operator controls', () => {
-  it('tolerates a transient discovery miss and stops when its state home no longer registers the server', async () => {
+  it('tolerates a transient discovery miss and uses a bounded removal retry while the server stops', async () => {
     const stateHome = temporaryDir('removed-state-home')
     const reservation = await reservePort()
     const port = reservation.port
@@ -1024,7 +1024,7 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     await new Promise((resolve) => setTimeout(resolve, 100))
     expect(pidAlive(server.pid)).toBe(true)
 
-    rmSync(stateHome, { recursive: true, force: true })
+    rmSync(stateHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 
     await waitFor(() => pidAlive(server.pid!) ? null : true, 500)
   })

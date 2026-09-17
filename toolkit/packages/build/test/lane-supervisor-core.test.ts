@@ -101,6 +101,36 @@ describe('lane supervisor safety core', () => {
     } finally { vi.useRealTimers() }
   })
 
+  it('refreshes a cached Darwin snapshot when a requested pid appeared within its TTL', () => {
+    vi.useFakeTimers()
+    try {
+      let includeSpawnedPid = false
+      const execFile = vi.fn((program: string) => program === 'ps'
+        ? { status: 0, stdout: `  431 Wed Sep 16 12:34:55 2026   431 S /usr/local/bin/node parent.mjs\n${includeSpawnedPid ? '  432 Wed Sep 16 12:34:56 2026   431 S /usr/local/bin/node worker.mjs\n' : ''}` }
+        : { status: 0, stdout: `p431\nfcwd\nn/Users/runner/work/parent\n${includeSpawnedPid ? 'p432\nfcwd\nn/Users/runner/work/lane\n' : ''}` })
+      expect(inspectProcess(431, { platform: 'darwin', spawnSync: execFile })).not.toBeNull()
+      vi.advanceTimersByTime(10)
+      includeSpawnedPid = true
+      vi.advanceTimersByTime(10)
+
+      expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toMatchObject({ pid: 432, cwd: '/Users/runner/work/lane' })
+      expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(2)
+      expect(execFile.mock.calls.filter(([program]) => program === 'lsof')).toHaveLength(2)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('bounds fresh-on-miss Darwin reads for a dead pid to once per TTL', () => {
+    vi.useFakeTimers()
+    try {
+      const execFile = vi.fn(() => ({ status: 0, stdout: '' }))
+      for (let tick = 0; tick < 100; tick += 1) {
+        expect(inspectProcess(999, { platform: 'darwin', spawnSync: execFile })).toBeNull()
+        vi.advanceTimersByTime(10)
+      }
+      expect(execFile).toHaveBeenCalledTimes(10)
+    } finally { vi.useRealTimers() }
+  })
+
   it('keeps a Darwin identity readable when lsof is absent and marks cwd unreadable', () => {
     const execFile = vi.fn((command: string) => command === 'ps'
       ? { status: 0, stdout: '  432 Wed Sep 16 12:34:56 2026   431 S /usr/local/bin/node worker.mjs\n' }
