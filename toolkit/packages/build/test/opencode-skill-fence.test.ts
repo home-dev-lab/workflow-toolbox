@@ -193,14 +193,16 @@ describe('OpenCode Claude-skill fence', () => {
     const f = stub('honor')
     const missing = Object.assign(new Error('not found'), { code: 'ENOENT' })
     const binary = 'C:\\Program Files\\nodejs\\opencode.CMD'
+    let versionCommand = ''
+    spawnOpencode((_command: string, args: string[]) => { versionCommand = args[3]! }, binary, ['--version'], undefined, 'win32')
     const spawnSyncFn = (command: string, args: string[], options: Record<string, unknown>) => {
-      expect(command).toBe('cmd.exe')
+      expect(command).toBe(process.env.ComSpec || 'cmd.exe')
       expect(args.slice(0, 3)).toEqual(['/d', '/s', '/c'])
       expect(args[3]).toContain('C:\\Program^ Files\\nodejs\\opencode.CMD ')
       expect(args[3]).toMatch(/^".*"$/)
       expect(options).toMatchObject({ windowsVerbatimArguments: true })
       expect(options).not.toHaveProperty('shell')
-      return args[3]!.includes('^^^"--version^^^"')
+      return args[3] === versionCommand
         ? { status: 0, stdout: '1.2.3\n', stderr: '' }
         : { status: 0, stdout: '[{"name":"workflow-toolbox-allowed-sentinel"}]', stderr: '' }
     }
@@ -216,7 +218,7 @@ describe('OpenCode Claude-skill fence', () => {
       spawnSyncFn,
     })
 
-    expect(result).toMatchObject({ ok: true, allowOk: true, binary })
+    expect(result, result.reason).toMatchObject({ ok: true, allowOk: true, binary })
   })
 
   it('uses the configured Windows command processor for a zero-argument shim', () => {

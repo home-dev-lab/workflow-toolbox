@@ -63,8 +63,8 @@ function installFakeOpencode(root: string) {
   ].join('\n'))
   writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`)
   chmodSync(bin, 0o755)
-  // The product resolves npm-installed OpenCode as opencode.cmd on Windows.
-  writeFileSync(`${bin}.cmd`, `@echo off\r\n"${process.execPath}" "${script}" %*\r\nexit /b %errorlevel%\r\n`)
+  // Match npm's command shim contract: a shim-relative target and direct `%*` forwarding.
+  writeFileSync(`${bin}.cmd`, `@echo off\r\n@"${process.execPath}" "%~dp0opencode.cjs" %*\r\n`)
 }
 
 describe('wt-opencode-envelope generated task sources', () => {
