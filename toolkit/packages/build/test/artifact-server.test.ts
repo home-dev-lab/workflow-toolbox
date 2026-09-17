@@ -16,9 +16,12 @@ const ENSURE = join(REPO_ROOT, 'plugin/bin/wt-artifact-server-ensure.mjs')
 const MONITORS = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 const temporaryDirs: string[] = []
 const children = new Set<ChildProcess>()
+const childOutputs = new WeakMap<ChildProcess, ReturnType<typeof captureChildOutput>>()
+const ensureOutputs = new Map<string, Array<ReturnType<typeof captureChildOutput>>>()
 type ProcessIdentity = { pid: number, argv: string[], startTime: number, startTimeApproximate?: boolean, image?: { name: string, path: string | null }, cwd?: string | null }
 type DetachedProcess = { identity: ProcessIdentity | null, state: Discovery | null }
 const detachedProcesses = new Map<number, DetachedProcess>()
+const serverProcessLogs = new Map<string, { captured: Set<number>, timer: ReturnType<typeof setInterval> }>()
 const CANDIDATE_PROBE_MS = 750
 const FALLBACK_CANDIDATES = 2
 const FALLBACK_READINESS_MS = 5_000
@@ -47,8 +50,9 @@ function detachedIdentity(pid: number): ProcessIdentity | null {
 }
 
 function trackDetached(pid: number, state: Discovery | null = null) {
-  const identity = detachedIdentity(pid)
-  detachedProcesses.set(pid, { identity, state })
+  const previous = detachedProcesses.get(pid)
+  const identity = previous?.identity ?? detachedIdentity(pid)
+  detachedProcesses.set(pid, { identity, state: state ?? previous?.state ?? null })
 }
 
 function detachedIdentityMatches(expected: ProcessIdentity, inspect = detachedIdentity) {
@@ -90,12 +94,42 @@ function jsonReceipts<T>(file: string): T[] {
   return spawnReceipts(file).map((line) => JSON.parse(line) as T)
 }
 
-function childOutput(child: ChildProcess) {
+function captureChildOutput(child: ChildProcess) {
   let stdout = ''
   let stderr = ''
   child.stdout?.on('data', (chunk) => { stdout += String(chunk) })
   child.stderr?.on('data', (chunk) => { stderr += String(chunk) })
   return { stdout: () => stdout, stderr: () => stderr }
+}
+
+function childOutput(child: ChildProcess) {
+  let output = childOutputs.get(child)
+  if (!output) {
+    output = captureChildOutput(child)
+    childOutputs.set(child, output)
+  }
+  return output
+}
+
+function captureSpawnedServers(file: string, captured: Set<number>) {
+  for (const value of spawnReceipts(file)) {
+    const pid = Number(value)
+    if (!Number.isSafeInteger(pid) || pid <= 1 || captured.has(pid)) continue
+    trackDetached(pid)
+    if (detachedProcesses.get(pid)?.identity) captured.add(pid)
+  }
+}
+
+function watchSpawnedServers(file: string) {
+  if (serverProcessLogs.has(file)) return
+  const captured = new Set<number>()
+  const timer = setInterval(() => captureSpawnedServers(file, captured), 250)
+  timer.unref()
+  serverProcessLogs.set(file, { captured, timer })
+}
+
+function lastOutputLine(value: string) {
+  return value.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? '<none>'
 }
 
 type RootRecord = { name: string, path: string }
@@ -214,6 +248,11 @@ async function stopDetached(record: DetachedProcess) {
 }
 
 afterEach(async () => {
+  for (const [file, record] of serverProcessLogs) {
+    clearInterval(record.timer)
+    captureSpawnedServers(file, record.captured)
+  }
+  serverProcessLogs.clear()
   for (const child of [...children]) {
     children.delete(child)
     await stopChild(child)
@@ -222,11 +261,23 @@ afterEach(async () => {
   for (const dir of temporaryDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true, ...(process.platform === 'win32' ? { maxRetries: 20, retryDelay: 100 } : {}) })
   }
+  ensureOutputs.clear()
 })
 
 function spawnEnsure(cwd: string, env: NodeJS.ProcessEnv) {
-  const child = spawn(process.execPath, [ENSURE], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const stateHome = env.XDG_STATE_HOME
+  const processLog = process.platform === 'win32' && stateHome ? join(stateHome, 'server-processes.log') : null
+  const child = spawn(process.execPath, [ENSURE], {
+    cwd,
+    env: processLog ? { ...env, WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG: processLog } : env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   children.add(child)
+  if (stateHome) {
+    const output = childOutput(child)
+    ensureOutputs.set(stateHome, [...ensureOutputs.get(stateHome) ?? [], output])
+  }
+  if (processLog) watchSpawnedServers(processLog)
   return child
 }
 
@@ -253,7 +304,10 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
     }
     const timer = setTimeout(() => {
       stopWaiting()
-      reject(new Error(`timed out waiting for artifact server state; last state=${JSON.stringify(readState(stateHome))}`))
+      const outputs = ensureOutputs.get(stateHome) ?? []
+      const stdout = outputs.map((output) => lastOutputLine(output.stdout())).at(-1) ?? '<none>'
+      const stderr = outputs.map((output) => lastOutputLine(output.stderr())).at(-1) ?? '<none>'
+      reject(new Error(`timed out waiting for artifact server state; last state=${JSON.stringify(readState(stateHome))}; last stdout=${JSON.stringify(stdout)}; last stderr=${JSON.stringify(stderr)}`))
     }, timeoutMs)
     const inspect = () => {
       const value = readState(stateHome)

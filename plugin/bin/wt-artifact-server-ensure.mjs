@@ -58,6 +58,7 @@ const TEST_CONTROL_NAMES = [
   'WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS',
   'WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS',
   'WT_ARTIFACT_SERVER_TEST_SPAWN_LOG',
+  'WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG',
   'WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG',
   'WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS',
   'WT_ARTIFACT_SERVER_TEST_STOP_HEARTBEAT_AFTER_MS',
@@ -121,6 +122,7 @@ async function spawnServer(port, claim) {
       child.once('error', reject)
       child.once('spawn', () => {
         testLog('WT_ARTIFACT_SERVER_TEST_SPAWN_LOG', `${process.pid} ${port}`)
+        testLog('WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG', `${child.pid}`)
         child.unref()
         resolve()
       })
