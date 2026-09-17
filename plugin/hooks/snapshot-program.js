@@ -61,6 +61,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const config = JSON.parse(process.argv[1]);
+const timingStartedAt = Date.now();
+const timingsMs = {};
 const detectArtifactUrl = ${detectArtifactUrl.toString()};
 const markdownToHtml = ${markdownToHtml.toString()};
 const executableName = ${executableName.toString()};
@@ -120,7 +122,9 @@ let procUptime = null;
 const PHASES = ${JSON.stringify([...LIFECYCLE_PHASES, 'awaiting_fidelity'])};
 const LITE_SKIPS = new Set(['plan', 'critic', 'review', 'refutation', 'harden']);
 const DIR_SCAN_CAP = Number.isSafeInteger(config.scanEntryCap) && config.scanEntryCap > 0 ? config.scanEntryCap : 1000;
+const WORKTREE_DETAIL_CAP = Number.isSafeInteger(config.worktreeDetailCap) && config.worktreeDetailCap > 0 ? config.worktreeDetailCap : 48;
 const cappedScans = [];
+const scanLimits = [];
 const unreadableScans = [];
 const processReadFailures = [];
 // A process that exits between the /proc listing and its record reads leaves no directory behind.
@@ -578,6 +582,7 @@ function usage(worktree, model) {
   return { value: measured ? String(total) : UNKNOWN, totals: null, source };
 }
 
+const lifecycleStartedAt = Date.now();
 const lifecycle = new Map();
 const lifecycleFiles = listed(path.join(config.configDir, 'plugins', 'store'));
 for (const file of lifecycleFiles.entries.filter(name => /^wt-lifecycle-hooks.*\.json$/.test(name))) {
@@ -595,7 +600,9 @@ for (const file of lifecycleFiles.entries.filter(name => /^wt-lifecycle-hooks.*\
     }
   }
 }
+timingsMs.lifecycleRecords = Date.now() - lifecycleStartedAt;
 
+const livenessStartedAt = Date.now();
 const liveness = new Map();
 const livenessFiles = listed(config.livenessDir);
 for (const file of livenessFiles.entries.filter(name => name.endsWith('.json'))) {
@@ -608,7 +615,9 @@ for (const file of livenessFiles.entries.filter(name => name.endsWith('.json')))
   if (rawWorktree && !worktree) continue;
   for (const id of cardIds(value.scope)) liveness.set(id, { ...value, ...(worktree ? { worktree } : {}), sourcePath: livenessFile });
 }
+timingsMs.livenessRecords = Date.now() - livenessStartedAt;
 
+const registryStartedAt = Date.now();
 const spawnByCard = new Map();
 const registryRoot = path.join(config.configDir, 'plugins', 'data');
 const registryListing = listed(registryRoot);
@@ -639,6 +648,7 @@ for (const file of registryFiles) {
     }
   }
 }
+timingsMs.spawnRegistry = Date.now() - registryStartedAt;
 
 const processByWorktree = new Map();
 const sdkRunnerByWorktree = new Map();
@@ -656,6 +666,7 @@ function briefFromArgs(args) {
   }
   return null;
 }
+const processScanStartedAt = Date.now();
 const processListing = processScanAvailable ? listed(procRoot) : { entries: [], readable: false, capped: false };
 const listedPids = processScanAvailable ? processListing.entries.filter(name => /^\d+$/.test(name)) : [];
 if (processScanAvailable) for (const pid of listedPids) {
@@ -696,6 +707,7 @@ if (processScanAvailable) for (const pid of listedPids) {
     }
   } catch {}
 }
+timingsMs.processScan = Date.now() - processScanStartedAt;
 function sessionPidFor(pid) {
   const seen = new Set(); let current = processes.get(pid);
   while (current && !seen.has(current.pid)) {
@@ -731,8 +743,17 @@ function pidState(worktree) {
   return recognized && matchedWorktree ? 'alive' : 'dead';
 }
 
+const worktreeEnumerationStartedAt = Date.now();
 const worktreeListing = listed(suiteWorktreeRoot);
-const scannedWorktrees = worktreeListing.entries.map(name => resolveActorPath(path.join(suiteWorktreeRoot, name), 'suite scan')).filter(Boolean);
+const listedWorktrees = worktreeListing.entries.map(name => resolveActorPath(path.join(suiteWorktreeRoot, name), 'suite scan')).filter(Boolean);
+const priorityWorktrees = [
+  ...processByWorktree.keys(), ...sdkRunnerByWorktree.keys(), ...laneWorkerByWorktree.keys(),
+].filter(worktree => under(suiteWorktreeRoot, worktree));
+const worktreeCandidates = [...new Set([...priorityWorktrees, ...listedWorktrees])];
+const scannedWorktrees = worktreeCandidates.slice(0, WORKTREE_DETAIL_CAP);
+if (worktreeCandidates.length > scannedWorktrees.length) scanLimits.push('worktree detail cap reached: ' + scannedWorktrees.length + ' of ' + worktreeCandidates.length + ' at ' + suiteWorktreeRoot);
+timingsMs.worktreeEnumeration = Date.now() - worktreeEnumerationStartedAt;
+const worktreeReadsStartedAt = Date.now();
 const laneByCard = new Map();
 const externalLanes = [];
 function roleLabel(value, inferred = false) {
@@ -841,6 +862,7 @@ for (const worktree of scannedWorktrees) {
   if (exited && (!/^(?:Review lane|Refutation)/.test(label) || !terminalReport)) continue;
   externalLanes.push({ id: id || 'lane:' + worktree, cardId: id, worktree, launcherSessionId: laneSessionId(worktree), model: laneModel(worktree) || undefined, outcome: terminalReport ? 'done' : 'running', title, label, roleInferred: role.inferred, terminalReport });
 }
+timingsMs.worktreeLaneReads = Date.now() - worktreeReadsStartedAt;
 
 function waveFor(lane, id) {
   const match = /^card-(\d{19})-wave-(.+)$/.exec(path.basename(lane?.worktree || ''));
@@ -1251,17 +1273,18 @@ const oldestHelper = helperItems.filter(item => item.ageSeconds !== null).sort((
 for (const item of [...helperItems, ...serviceItems]) delete item.ageSeconds;
 const services = { count: serviceItems.length, items: serviceItems };
 const helpers = { count: helperItems.length, oldest: helperItems.length ? oldestHelper?.age || UNKNOWN : 'none', items: helperItems };
-const discovery = ![lifecycleFiles, livenessFiles, registryListing, worktreeListing].every(source => source.readable) ? UNKNOWN : cappedScans.length || pathRefusals.length || unreadableScans.length ? 'partial' : 'available';
+const discovery = ![lifecycleFiles, livenessFiles, registryListing, worktreeListing].every(source => source.readable) ? UNKNOWN : cappedScans.length || scanLimits.length || pathRefusals.length || unreadableScans.length ? 'partial' : 'available';
 const allListedVanished = listedPids.length > 0 && processVanished === listedPids.length;
 const processPartialReason = processScanAvailable && !processListing.readable ? 'unreadable' : processListing.capped ? 'capped' : allListedVanished ? 'unreadable' : processReadFailures.length ? 'unreadable process records' : executableLookupFailures.length ? 'executable lookup unavailable' : null;
 const processDiscovery = !processScanAvailable ? UNKNOWN : processPartialReason ? 'partial' : 'available';
 const processReason = !processScanAvailable ? 'unavailable on this platform' : processPartialReason;
 const requiredDiscoveryRoots = [['lifecycle store', lifecycleFiles], ['liveness records', livenessFiles], ['spawn registry', registryListing], ['worktrees', worktreeListing]];
-const discoveryReason = discovery === UNKNOWN ? 'unavailable: ' + requiredDiscoveryRoots.filter(([, source]) => !source.readable).map(([name]) => name).join(', ') : discovery === 'partial' ? [...new Set([...cappedScans.map(dir => 'scan cap reached: ' + dir), ...unreadableScans.map(dir => 'unreadable: ' + dir), ...pathRefusals])].join('; ') : null;
+const discoveryReason = discovery === UNKNOWN ? 'unavailable: ' + requiredDiscoveryRoots.filter(([, source]) => !source.readable).map(([name]) => name).join(', ') : discovery === 'partial' ? [...new Set([...cappedScans.map(dir => 'scan cap reached: ' + dir), ...scanLimits, ...unreadableScans.map(dir => 'unreadable: ' + dir), ...pathRefusals])].join('; ') : null;
 const collectors = {
   work: { value: { rows, sessions }, availability: { status: discovery, ...(discoveryReason ? { reason: discoveryReason } : {}) } },
   processes: { value: { services, helpers }, availability: { status: processDiscovery, ...(processReason ? { reason: processReason } : {}) } },
   clockTicks: { value: clockTicks, availability: clockTicksAvailability },
 };
-process.stdout.write(JSON.stringify({ collectors, discovery, rows, sessions, services, helpers, processDiscovery, processPartialReason: processReason, processVanished, cappedScans: [...new Set(cappedScans)], unreadableScans: [...new Set(unreadableScans)], pathRefusals, collectedAt: new Date(now).toISOString() }));
+timingsMs.total = Date.now() - timingStartedAt;
+process.stdout.write(JSON.stringify({ collectors, discovery, rows, sessions, services, helpers, processDiscovery, processPartialReason: processReason, processVanished, cappedScans: [...new Set(cappedScans)], scanLimits, unreadableScans: [...new Set(unreadableScans)], pathRefusals, timingsMs, collectedAt: new Date(now).toISOString() }));
 `;

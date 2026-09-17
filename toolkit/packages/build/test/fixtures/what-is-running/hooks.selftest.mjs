@@ -954,6 +954,39 @@ await test('[E-2] directory scans stop at the configured cap and record the capp
   cappedDiscoverySnapshot = snapshot;
 });
 
+await test('[collector budget] detailed worktree reads stop at their own cap and name the partial scan', async () => {
+  const isolated = join(root, 'worktree-detail-cap');
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now, worktreeDetailCap: 3 };
+  mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true });
+  mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true });
+  mkdirSync(isolatedPaths.livenessDir, { recursive: true });
+  for (let index = 0; index < 5; index += 1) {
+    const lane = join(isolatedPaths.suiteRoot, 'worktrees', `lane-${index}`, '.lane');
+    mkdirSync(lane, { recursive: true });
+    writeFileSync(join(lane, 'brief.md'), `# Brief: cap fixture card ${1862698281071544120n + BigInt(index)}\n`);
+    writeFileSync(join(lane, 'run.log'), 'working\n');
+  }
+  const snapshot = await readSnapshot({ process: processCapability }, isolatedPaths);
+  assert.equal(snapshot.discovery, 'partial');
+  assert.equal(snapshot.rows.length, 3);
+  assert.deepEqual(snapshot.scanLimits, [`worktree detail cap reached: 3 of 5 at ${join(isolatedPaths.suiteRoot, 'worktrees')}`]);
+  assert.equal(snapshot.collectors.work.availability.reason, snapshot.scanLimits[0]);
+});
+
+await test('[collector budget] process timeout and exit failure retain distinct non-blank reasons', async () => {
+  let timeoutInit;
+  const timedOut = await readSnapshot({ process: { run: async (_argv, init) => {
+    timeoutInit = init;
+    const error = new Error('process timed out after 8000 ms');
+    error.code = 'ETIMEDOUT';
+    throw error;
+  } } }, paths);
+  assert.deepEqual(timeoutInit, { timeoutMs: 8000 });
+  assert.equal(timedOut.collectors.work.availability.reason, 'collector timed out after 8 s');
+  const failed = await readSnapshot({ process: { run: async () => ({ exitCode: 17, stdout: '', stderr: 'first stderr line\nsecond line\n' }) } }, paths);
+  assert.equal(failed.collectors.work.availability.reason, 'collector failed (exit code 17; first stderr line)');
+});
+
 await test('[Round 7 scan cap] exact limits are complete and normal retained reports fit the bounded walk', async () => {
   const isolated = join(root, 'normal-report-volume');
   const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now };
