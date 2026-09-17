@@ -7,12 +7,16 @@ const WINDOWS_PROCESS_TABLE_TTL_MS = 500
 const windowsProcessTableCache = new WeakMap()
 
 export function sameIdentity(expected, actual) {
+  let sameCwd = true
+  if (expected.cwd) {
+    try { sameCwd = realpathSync(expected.cwd) === realpathSync(actual?.cwd) } catch { sameCwd = expected.cwd === actual?.cwd }
+  }
   return Boolean(actual
     && expected.pid === actual.pid
     && Number.isFinite(expected.startTime)
     && expected.startTime === actual.startTime
     && JSON.stringify(expected.argv) === JSON.stringify(actual.argv)
-    && (!expected.cwd || expected.cwd === actual.cwd))
+    && sameCwd)
 }
 
 function evidenceSource(platform) {

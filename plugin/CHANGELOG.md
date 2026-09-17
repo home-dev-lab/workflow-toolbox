@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- macOS lane capture now waits through transient shell identities, canonicalises equivalent cwd spellings, and reports recorded-versus-live identity fields on timeout; adopted launcher and Windows envelope fixtures now lock their installed provider and native command-shim assumptions.
 - SDK roles resolve the INSTALLED context-mode plugin (the harness's `installed_plugins.json` entry, then the highest cached version) instead of a pinned version directory, so the first session after a context-mode update no longer fails closed on an absent path.
 - macOS supervision now reads untruncated command identities with wide `ps`; Windows supervision reuses one full `Win32_Process` snapshot for 500 ms per worker/child classification, and cross-OS fixtures pin their actual process, path, executable, and signal assumptions.
 - macOS lane launches now retry the native process provider before recording identity, report source-specific unavailable capture instead of a synthetic identity, and enumerate queued lane processes with one quote-aware `ps` query; remaining cross-OS fixtures now pin or name their actual host assumptions.

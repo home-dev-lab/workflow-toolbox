@@ -1,9 +1,9 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { appendSupervisorJournal, classifyLane, inspectProcess, latestWorktreeWrite, processEvidenceStatus, supervisionUnavailableMessage, terminateLane } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, classifyLane, inspectProcess, latestWorktreeWrite, processEvidenceStatus, sameIdentity, supervisionUnavailableMessage, terminateLane } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 describe('lane supervisor safety core', () => {
   it('returns unknown without a readable attributed record', () => {
@@ -91,6 +91,26 @@ describe('lane supervisor safety core', () => {
       ? { status: 0, stdout: 'Wed Sep 16 12:34:56 2026   431 /usr/local/bin/node worker.mjs\n' }
       : { status: null, stdout: '', error: Object.assign(new Error('spawn lsof ENOENT'), { code: 'ENOENT' }) })
     expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toMatchObject({ pid: 432, cwd: null })
+  })
+
+  it('matches two Darwin lsof cwd spellings only when they resolve to the same directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-darwin-cwd-'))
+    const canonical = join(root, 'private', 'var', 'lane')
+    const alias = join(root, 'var')
+    mkdirSync(canonical, { recursive: true })
+    symlinkSync(join(root, 'private', 'var'), alias, 'dir')
+    const cwds = [alias + '/lane', canonical]
+    const execFile = vi.fn((program: string, args: string[]) => program === 'ps' && args.includes('lstart=,pgid=,command=')
+      ? { status: 0, stdout: 'Wed Sep 16 12:34:56 2026   431 /usr/local/bin/node worker.mjs\n' }
+      : program === 'ps'
+        ? { status: 0, stdout: 'S\n' }
+        : { status: 0, stdout: `p432\nfcwd\nn${cwds.shift()}\n` })
+    try {
+      const recorded = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })!
+      const actual = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })!
+      expect(recorded.cwd).not.toBe(actual.cwd)
+      expect(sameIdentity(recorded, actual)).toBe(true)
+    } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
   it('reads a Windows PowerShell CIM transcript into the common identity contract', () => {
