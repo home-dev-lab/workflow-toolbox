@@ -756,6 +756,22 @@ const WT_ARTIFACT = {
 
 const WT_INPUT = { artifact: WT_ARTIFACT, mutation: 'worktree' }
 
+// Locked verbatim against the workflow's own WORKTREE_REMOVAL_PROHIBITION —
+// emitted by BOTH cleanup prompt branches (resolved and unresolved). Must
+// never contain the literal "git worktree remove".
+const WORKTREE_REMOVAL_PROHIBITION =
+  'Leave the worktree and its branch exactly as they are and report the entry. NEVER substitute a ' +
+  'git command to remove the worktree or delete the branch, and NEVER run `rm -rf` on it — only the ' +
+  'retention-aware plugin remover may delete a lifecycle worktree.'
+
+// Mirrors the constant of the same name in dev-implement.workflow.ts (copied verbatim from
+// plugin/agents/opencode-envelope.md:60) — the F1 fallback chain the cleanup prompt must emit
+// when no pluginRoot was supplied. Duplicated here (not imported) because the workflow module
+// does not export it; a locked test below extracts it independently from the EMITTED prompt
+// (ground truth) rather than trusting this copy.
+const PLUGIN_ROOT_RESOLUTION_EXPR =
+  '${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-$(node -e \'const fs=require("fs");const dir=process.env.CLAUDE_CONFIG_DIR||(process.env.HOME+"/.claude");const j=JSON.parse(fs.readFileSync(dir+"/plugins/installed_plugins.json","utf8"));const p=j.plugins||j;const k=Object.keys(p).find(x=>x.startsWith("workflow-toolbox@"));console.log(p[k][0].installPath)\' 2>/dev/null)}}'
+
 /**
  * Worktree-mode runtime: routes the SIX new agent kinds plus the three TDD
  * stages on the call's LABEL (unique by construction: `dev-implement:setup`,
@@ -833,7 +849,13 @@ function makeWtRuntime(overrides?: {
       }
       if (label === 'dev-implement:cleanup') {
         if (overrides?.cleanup) return overrides.cleanup(prompt)
-        return { removed: ['all'], failures: [], note: 'cleaned' }
+        // Default: echo back every entry's id as removed (parsed from the
+        // "<id>: <path> (<branch>)" lines the prompt lists) — the default
+        // "everything succeeded" cleanup, so the F4 retention warning stays
+        // silent unless a test explicitly overrides cleanup to simulate a
+        // retained entry.
+        const ids = [...prompt.matchAll(/^(\S+): \S+ \([^)]+\)$/gm)].map((m) => m[1])
+        return { removed: ids, failures: [], note: 'cleaned' }
       }
       if (label.startsWith('dev-implement:check:')) {
         if (overrides?.check) return overrides.check(prompt)
@@ -885,6 +907,51 @@ describe('dev-implement worktree parseInput', () => {
     await expect(
       wf.run(rt, JSON.stringify({ ...WT_INPUT, signCommits: 'yes' }))
     ).rejects.toThrow(/signCommits/i)
+  })
+
+  it('accepts an absolute pluginRoot and normalizes trailing slashes', async () => {
+    const rt = makeWtRuntime()
+    const result = await wf.run(rt, JSON.stringify({ ...WT_INPUT, pluginRoot: '/opt/wt-plugin/' }))
+    expect(result.succeeded).toBe(3)
+    const cleanup = rt.calls.find((c) => c.opts?.label === 'dev-implement:cleanup')
+    expect(cleanup?.prompt).toContain('node "/opt/wt-plugin/bin/wt-worktree-remove.mjs" --dir')
+  })
+
+  it('rejects a non-string pluginRoot', async () => {
+    const rt = makeWtRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...WT_INPUT, pluginRoot: 42 }))
+    ).rejects.toThrow(/pluginRoot/i)
+  })
+
+  it('rejects an empty pluginRoot', async () => {
+    const rt = makeWtRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...WT_INPUT, pluginRoot: '' }))
+    ).rejects.toThrow(/pluginRoot/i)
+  })
+
+  it('rejects a relative pluginRoot', async () => {
+    const rt = makeWtRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...WT_INPUT, pluginRoot: 'wt-plugin' }))
+    ).rejects.toThrow(/pluginRoot/i)
+  })
+
+  it('rejects a Windows drive-style pluginRoot', async () => {
+    const rt = makeWtRuntime()
+    await expect(
+      wf.run(rt, JSON.stringify({ ...WT_INPUT, pluginRoot: 'C:\\wt-plugin' }))
+    ).rejects.toThrow(/pluginRoot/i)
+  })
+
+  it('rejects a pluginRoot containing shell metacharacters', async () => {
+    const rt = makeWtRuntime()
+    for (const bad of ['/opt/wt"plugin', '/opt/wt`plugin', '/opt/wt$plugin', '/opt/wt;plugin', '/opt/wt\nplugin', '/opt/wt\\plugin']) {
+      await expect(
+        wf.run(rt, JSON.stringify({ ...WT_INPUT, pluginRoot: bad }))
+      ).rejects.toThrow(/pluginRoot/i)
+    }
   })
 })
 
@@ -1144,23 +1211,90 @@ describe('dev-implement worktree failure policies', () => {
     )).toBe(true)
   })
 
-  it('cleanup agent died → merged worktrees left on disk warning', async () => {
+  it('cleanup agent died → merged worktrees left on disk warning, and the F4 retention warning names EVERY merged entry by path AND branch', async () => {
     const rt = makeWtRuntime({ cleanup: () => null })
     const result = await wf.run(rt, JSON.stringify(WT_INPUT))
     expect(result.succeeded).toBe(3)
     expect(result.warnings.some((w: string) =>
       /cleanup agent died/i.test(w) && w.includes('/repo-worktrees'),
     )).toBe(true)
+    // F4: the cleanup agent died -> nothing was confirmed removed -> EVERY
+    // merged entry is retained, named by path AND branch.
+    expect(result.warnings.some((w: string) => w.includes('/repo-worktrees/T1') && w.includes('wt-task/T1'))).toBe(true)
+    expect(result.warnings.some((w: string) => w.includes('/repo-worktrees/T2') && w.includes('wt-task/T2'))).toBe(true)
+    expect(result.warnings.some((w: string) => w.includes('/repo-worktrees/T3') && w.includes('wt-task/T3'))).toBe(true)
   })
 
-  it('routes every merged-worktree cleanup through the retention-aware shipped remover', async () => {
+  it('resolved: pluginRoot supplied → cleanup prompt runs the guarded remover, carries the shared prohibition, never emits the resolution expression, and never mentions git worktree remove', async () => {
+    const rt = makeWtRuntime()
+    const result = await wf.run(rt, JSON.stringify({ ...WT_INPUT, pluginRoot: '/opt/wt-plugin' }))
+    const cleanup = rt.calls.find((c) => c.opts?.label === 'dev-implement:cleanup')!
+    expect(cleanup.prompt).toContain('node "/opt/wt-plugin/bin/wt-worktree-remove.mjs" --dir')
+    expect(cleanup.prompt).toContain(WORKTREE_REMOVAL_PROHIBITION)
+    // pluginRoot supplied is an explicit override that SKIPS resolution —
+    // the fallback expression must not appear at all.
+    expect(cleanup.prompt).not.toContain(PLUGIN_ROOT_RESOLUTION_EXPR)
+    expect(cleanup.prompt).not.toContain('installed_plugins.json')
+    expect(cleanup.prompt).not.toContain('git worktree remove')
+    // The default mock echoes every entry back as removed -> no retention warning.
+    expect(result.warnings.some((w: string) => /worktree\(s\) retained/i.test(w))).toBe(false)
+  })
+
+  it('unresolved: no pluginRoot → cleanup prompt resolves the plugin root itself via the shipped fallback chain (F1), runs the guarded remover through it, carries the shared prohibition verbatim, and asks for the F3-compliant leave-and-report shape', async () => {
     const rt = makeWtRuntime()
     await wf.run(rt, JSON.stringify(WT_INPUT))
-    const prompt = rt.calls.find((call) => call.prompt.includes('remove the merged worktrees'))!.prompt
-    expect(prompt).toContain('$CLAUDE_PLUGIN_ROOT/bin/wt-worktree-remove.mjs')
-    expect(prompt).toContain('--dir <path>')
-    expect(prompt).not.toContain('run `git worktree remove <path>`')
+    const cleanup = rt.calls.find((c) => c.opts?.label === 'dev-implement:cleanup')!
+    // F1: the SAME proven fallback chain plugin/agents/opencode-envelope.md:60
+    // ships — never a bare/lone $CLAUDE_PLUGIN_ROOT spelling.
+    expect(cleanup.prompt).toContain(PLUGIN_ROOT_RESOLUTION_EXPR)
+    expect(cleanup.prompt).toContain(`node "${PLUGIN_ROOT_RESOLUTION_EXPR}/bin/wt-worktree-remove.mjs" --dir`)
+    expect(cleanup.prompt).toContain(WORKTREE_REMOVAL_PROHIBITION)
+    expect(cleanup.prompt).toContain('retained-unverified')
+    // F3: removed[] carries only actually-removed ids; retained ones are
+    // reported through failures instead — the shape CLEANUP_RESULT_SCHEMA
+    // can actually express.
+    expect(cleanup.prompt).toContain('"removed": []')
+    expect(cleanup.prompt).not.toContain('git worktree remove')
   })
+
+  it('F4: retained entries (partial cleanup) → the run warns each retained one by path AND branch, and not the one actually removed', async () => {
+    const rt = makeWtRuntime({
+      cleanup: () => ({
+        removed: ['T1'],
+        failures: [
+          { id: 'T2', note: 'retained-unverified: resolution expression produced no usable path' },
+          { id: 'T3', note: 'retained-unverified: remover exited non-zero' },
+        ],
+        note: 'partial cleanup',
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    expect(result.warnings.some((w: string) => w.includes('/repo-worktrees/T2') && w.includes('wt-task/T2'))).toBe(true)
+    expect(result.warnings.some((w: string) => w.includes('/repo-worktrees/T3') && w.includes('wt-task/T3'))).toBe(true)
+    expect(result.warnings.some((w: string) => /worktree\(s\) retained/i.test(w) && w.includes('/repo-worktrees/T1'))).toBe(false)
+  })
+
+  it('F4: every merged entry confirmed removed → no retention warning fires', async () => {
+    const rt = makeWtRuntime({
+      cleanup: () => ({ removed: ['T1', 'T2', 'T3'], failures: [], note: 'all clean' }),
+    })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    expect(result.warnings.some((w: string) => /worktree\(s\) retained/i.test(w))).toBe(false)
+  })
+
+  it('cleanup-agent-died warning no longer names git worktree remove as the manual recovery', async () => {
+    const rt = makeWtRuntime({ cleanup: () => null })
+    const result = await wf.run(rt, JSON.stringify(WT_INPUT))
+    expect(result.warnings.some((w: string) => /cleanup agent died/i.test(w))).toBe(true)
+    expect(result.warnings.every((w: string) => !w.includes('git worktree remove'))).toBe(true)
+  })
+
+  // The subprocess-driven ground-truth resolution tests (bash-execution lock,
+  // fixture setup, and the "never emitted when pluginRoot is supplied" case)
+  // live in dev-implement-plugin-root-resolution.test.ts — its own small
+  // `process-spawning` file, so this ~1800-line FakeRuntime suite (which
+  // asserts prompt content only) no longer needs that project's reduced
+  // concurrency. See toolkit/scripts/spawning-test-files.mjs.
 
   it('not a git repository → honest degraded report, every task skipped, no further agents', async () => {
     const rt = makeWtRuntime({
@@ -1517,6 +1651,58 @@ describe('dev-implement mutation "auto" — parallel-lanes execution', () => {
     expect(cleanups.length).toBe(1)
     expect(cleanups[0]!.prompt).toContain('A1')
     expect(cleanups[0]!.prompt).toContain('B1')
+  })
+
+  it('resolved (lanes): pluginRoot supplied → cleanup prompt runs the guarded remover, carries the shared prohibition verbatim, never emits the resolution expression, and never mentions git worktree remove', async () => {
+    const rt = makeWtRuntime()
+    const result = await wf.run(rt, JSON.stringify({ ...AUTO_INPUT, pluginRoot: '/opt/wt-plugin' }))
+    const cleanup = rt.calls.find((c) => c.opts?.label === 'dev-implement:cleanup')!
+    expect(cleanup.prompt).toContain('node "/opt/wt-plugin/bin/wt-worktree-remove.mjs" --dir')
+    expect(cleanup.prompt).toContain(WORKTREE_REMOVAL_PROHIBITION)
+    expect(cleanup.prompt).not.toContain(PLUGIN_ROOT_RESOLUTION_EXPR)
+    expect(cleanup.prompt).not.toContain('installed_plugins.json')
+    expect(cleanup.prompt).not.toContain('git worktree remove')
+    expect(result.warnings.some((w: string) => /worktree\(s\) retained/i.test(w))).toBe(false)
+  })
+
+  it('unresolved (lanes): no pluginRoot → cleanup prompt resolves the plugin root itself via the shipped fallback chain (F1), runs the guarded remover through it, carries the shared prohibition verbatim, and asks for the F3-compliant leave-and-report shape', async () => {
+    const rt = makeWtRuntime()
+    await wf.run(rt, JSON.stringify(AUTO_INPUT))
+    const cleanup = rt.calls.find((c) => c.opts?.label === 'dev-implement:cleanup')!
+    expect(cleanup.prompt).toContain(PLUGIN_ROOT_RESOLUTION_EXPR)
+    expect(cleanup.prompt).toContain(`node "${PLUGIN_ROOT_RESOLUTION_EXPR}/bin/wt-worktree-remove.mjs" --dir`)
+    expect(cleanup.prompt).toContain(WORKTREE_REMOVAL_PROHIBITION)
+    expect(cleanup.prompt).toContain('retained-unverified')
+    expect(cleanup.prompt).toContain('"removed": []')
+    expect(cleanup.prompt).not.toContain('git worktree remove')
+  })
+
+  it('F4 (lanes): retained entries → the run warns each retained lane by path AND branch, and not the one actually removed', async () => {
+    const rt = makeWtRuntime({
+      cleanup: () => ({
+        removed: ['A1'],
+        failures: [{ id: 'B1', note: 'retained-unverified: resolution expression produced no usable path' }],
+        note: 'partial cleanup',
+      }),
+    })
+    const result = await wf.run(rt, JSON.stringify(AUTO_INPUT))
+    expect(result.warnings.some((w: string) => w.includes('/repo-worktrees/B1') && w.includes('wt-lane/B1'))).toBe(true)
+    expect(result.warnings.some((w: string) => /worktree\(s\) retained/i.test(w) && w.includes('/repo-worktrees/A1'))).toBe(false)
+  })
+
+  it('F4 (lanes): every merged lane confirmed removed → no retention warning fires', async () => {
+    const rt = makeWtRuntime({
+      cleanup: () => ({ removed: ['A1', 'B1'], failures: [], note: 'all clean' }),
+    })
+    const result = await wf.run(rt, JSON.stringify(AUTO_INPUT))
+    expect(result.warnings.some((w: string) => /worktree\(s\) retained/i.test(w))).toBe(false)
+  })
+
+  it('F4 (lanes): cleanup agent died → warning names EVERY merged lane by path AND branch', async () => {
+    const rt = makeWtRuntime({ cleanup: () => null })
+    const result = await wf.run(rt, JSON.stringify(AUTO_INPUT))
+    expect(result.warnings.some((w: string) => w.includes('/repo-worktrees/A1') && w.includes('wt-lane/A1'))).toBe(true)
+    expect(result.warnings.some((w: string) => w.includes('/repo-worktrees/B1') && w.includes('wt-lane/B1'))).toBe(true)
   })
 
   it('(5) one qualifying component plus two pooled singles resolves to 2 lanes', async () => {

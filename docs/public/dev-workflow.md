@@ -133,8 +133,14 @@ parallel **waves**, each task in an isolated git worktree on its own
   A merge **conflict** aborts conservatively (`merge-failed`) — agents never
   resolve conflicts.
 - **Failure worktrees are kept** (path and branch in the report) for forensics
-  and manual resume; merged worktrees are cleaned up. In every failure mode
-  the MAIN tree stays unmutated by that task — only merged work lands.
+  and manual resume. Merged worktrees are removed through the plugin's own
+  retention-aware remover, which the cleanup agent resolves from its own
+  shell (`pluginRoot`, when supplied, overrides that resolution — see
+  `pluginRoot` below); they are retained and reported by path and branch
+  instead when the plugin root cannot be resolved, or when the guarded
+  removal itself is refused (its ordinary behavior while retention still
+  applies, not an error) or otherwise fails. In every failure mode the MAIN
+  tree stays unmutated by that task — only merged work lands.
 - **Machine commits are unsigned by default** (`signCommits: false`): the task
   branches and merge commits are intermediate machine commits the operator
   owns and typically squashes. Opt in to signing only when the signing agent
@@ -143,6 +149,22 @@ parallel **waves**, each task in an isolated git worktree on its own
   `worktreeSetupCommand` (verbatim, e.g. `"pnpm install"`) so the test command
   is runnable inside each worktree. `worktreeRoot` overrides the default
   sibling location `<projectDir>-worktrees`.
+- **`pluginRoot`** is an OPTIONAL absolute-path override for the
+  workflow-toolbox plugin root, used only by the cleanup agent when removing
+  merged worktrees. The workflow's own code cannot derive it (no filesystem,
+  no env, `import.meta` erased at build), but the cleanup agent runs the
+  removal command in its own shell and resolves it there itself: an
+  interactive session has `CLAUDE_PLUGIN_ROOT`; a Path B delegated session
+  gets `WT_PLUGIN_ROOT` from the server; under the Workflow tool (Path A)
+  neither is set, so the agent falls back to its own `installed_plugins.json`
+  registry — the same three-way fallback `plugin/agents/opencode-envelope.md`
+  ships. Pass `pluginRoot` only when the caller knows a checkout the
+  registry lookup would not resolve (e.g. a `--plugin-dir` dev checkout),
+  as an override on top of the default args below:
+  `"pluginRoot": "/abs/path/to/workflow-toolbox/plugin"`.
+  Omit it, and merged worktrees are still removed on any path where that
+  resolution succeeds; they are retained on disk and reported by path and
+  branch only if resolution or the removal itself fails.
 
 ```text
 args: {
