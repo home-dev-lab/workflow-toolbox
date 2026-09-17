@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
 import path from 'node:path'
+import { processEvidenceStatus } from './lane-supervisor-core.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 
 export const ARTIFACT_SERVER_ID = 'workflow-toolbox-artifact-server'
@@ -161,6 +162,12 @@ export function pidAlive(pid) {
   }
 }
 
+export function registrationPidStatus(pid, options = {}) {
+  const platform = options.platform ?? process.platform
+  if (platform === 'win32') return processEvidenceStatus(pid, { ...options, platform })
+  return pidAlive(pid) ? 'running' : 'gone'
+}
+
 export function pathIsUnder(root, candidate) {
   const relative = path.relative(root, candidate)
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
@@ -181,7 +188,9 @@ export function normalizeRoots(roots) {
   })
 }
 
-function projectRoot(cwd) {
+function projectRoot(cwd, env) {
+  const testRoot = env.WT_ARTIFACT_SERVER_TEST_MODE === '1' ? nonEmpty(env.WT_ARTIFACT_SERVER_TEST_GIT_ROOT) : null
+  if (testRoot) return realpathSync(testRoot)
   const result = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   return result.status === 0 && path.isAbsolute(result.stdout.trim()) ? result.stdout.trim() : path.resolve(cwd)
 }
@@ -198,7 +207,7 @@ export function configuredRoots(env = process.env, cwd = process.cwd()) {
       return { name: equals < 0 ? path.basename(resolved) : entry.slice(0, equals), path: resolved }
     }))
   }
-  const root = projectRoot(cwd)
+  const root = projectRoot(cwd, env)
   const projectName = path.basename(root).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project'
   return normalizeRoots([
     { name: `${projectName}-reports`, path: path.join(root, '.claude', 'reports') },

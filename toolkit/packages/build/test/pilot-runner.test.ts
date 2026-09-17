@@ -672,7 +672,9 @@ describe('SDK pilot runner', () => {
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, injected_turns: 3, reason: 'pilot ended its turn 3 times without progress' } })
     expect(result.summary.partial).toMatchObject({ reason: 'pilot ended its turn 3 times without progress' })
     expect(readFileSync(join(result.summary.archive.path, 'summary.json'), 'utf8')).toContain('pilot ended its turn 3 times without progress')
-  }, 2_000)
+  // This case performs runner archive I/O and several spawned model-resolution probes; hosted
+  // Windows cannot reliably complete that process work inside Vitest's former 2-second budget.
+  }, 5_000)
 
   it('records and archives a runner timeout as a lifecycle partial', async () => {
     const f = fixture(); let clock = 0
