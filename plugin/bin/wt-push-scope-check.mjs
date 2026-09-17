@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+// This answers WHICH commits go out; the release-push evidence guard independently answers whether the release commit was gated.
 // Push-time guard: nothing lands in a publishable tree beyond what was actually
 // authorized. Computes the commits about to be pushed (remote/branch..ref) and
 // checks every one of them against an authorized scope. Exits non-zero and names

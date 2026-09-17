@@ -1,7 +1,7 @@
 // Hermetic real-git selftests: the guard's evidence is the index and tree, not a mocked diff.
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-gate-evidence-guard-hook.mjs')
+const RELEASE_PUSH_HOOK = join(REPO_ROOT, 'plugin/bin/wt-release-push-evidence-guard-hook.mjs')
 const RUN_GATE = join(REPO_ROOT, 'plugin/bin/wt-run-gate.mjs')
 const HERMETIC = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
 const made: string[] = []
@@ -47,7 +48,7 @@ function repo(withDeclaration = true) {
 }
 
 function env(root: string) {
-  return { ...process.env, ...HERMETIC, WT_GUARD_JOURNAL_DIR: states.get(root), WT_GUARD_JOURNAL_NOW: '2026-09-06T01:00:00.000Z' }
+  return { ...process.env, ...HERMETIC, XDG_STATE_HOME: states.get(root), WT_GUARD_JOURNAL_DIR: states.get(root), WT_GUARD_JOURNAL_NOW: '2026-09-06T01:00:00.000Z' }
 }
 
 function run(root: string, command = 'git commit -m x') {
@@ -60,6 +61,16 @@ function run(root: string, command = 'git commit -m x') {
   return { stdout: result.stdout, status: result.status }
 }
 
+function runReleasePush(root: string, command = 'git push public HEAD:main', extraEnv: NodeJS.ProcessEnv = {}) {
+  const result = spawnSync(process.execPath, [RELEASE_PUSH_HOOK], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...env(root), ...extraEnv },
+    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: root, tool_input: { command } }),
+  })
+  return { stdout: result.stdout, stderr: result.stderr, status: result.status }
+}
+
 function record(root: string, exit = 0) {
   const result = spawnSync(process.execPath, [RUN_GATE, '--record', 'test', '--', process.execPath, '-e', `process.exit(${exit})`], {
     cwd: root,
@@ -67,6 +78,12 @@ function record(root: string, exit = 0) {
     env: env(root),
   })
   expect(result.status).toBe(exit)
+}
+
+function configureReleaseRemote(root: string) {
+  git(root, 'branch', '-M', 'main')
+  git(root, 'remote', 'add', 'public', root)
+  git(root, 'symbolic-ref', 'refs/remotes/public/HEAD', 'refs/remotes/public/main')
 }
 
 function recordFile(root: string) {
@@ -137,5 +154,85 @@ describe('wt-gate-evidence-guard-hook', () => {
     const root = repo()
     record(root, 9)
     expect(JSON.parse(readFileSync(recordFile(root), 'utf8'))).toMatchObject({ exit: 9, name: 'test', tree: expect.any(String) })
+  })
+})
+
+describe('wt-release-push-evidence-guard-hook', () => {
+  it('refuses evidence that predates HEAD and names the stale gate and exact refresh command', () => {
+    const root = repo()
+    configureReleaseRemote(root)
+    record(root)
+    write(root, 'plugin/thing.mjs', '// release\n')
+    git(root, 'add', 'plugin/thing.mjs')
+    git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'release')
+
+    const output = JSON.parse(runReleasePush(root).stdout).hookSpecificOutput
+    expect(output.permissionDecision).toBe('deny')
+    expect(output.permissionDecisionReason).toContain('test: STALE')
+    expect(output.permissionDecisionReason).toContain('(toolkit) node "${CLAUDE_PLUGIN_ROOT}/bin/wt-run-gate.mjs" --record test -- pnpm test')
+  })
+
+  it('allows evidence recorded for the exact pushed HEAD', () => {
+    const root = repo()
+    configureReleaseRemote(root)
+    record(root)
+    expect(runReleasePush(root).stdout).toBe('')
+  })
+
+  it('consumes the main-guard allow-once for the exact push once and prints its reason', () => {
+    const root = repo()
+    configureReleaseRemote(root)
+    const command = 'git push public HEAD:main'
+    const stateDir = join(states.get(root)!, 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const allowOnce = join(stateDir, 'allow-once.json')
+    writeFileSync(allowOnce, JSON.stringify({ command, reason: 'release owner accepted the outage' }))
+
+    const allowed = runReleasePush(root, command)
+    expect(allowed.stdout).toContain('release owner accepted the outage')
+    expect(allowed.stdout).not.toContain('"deny"')
+    expect(existsSync(allowOnce)).toBe(false)
+    expect(JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+  })
+
+  it('is silent for a push to a non-release ref', () => {
+    const root = repo()
+    configureReleaseRemote(root)
+    expect(runReleasePush(root, 'git push public HEAD:develop').stdout).toBe('')
+  })
+
+  it('resolves bare refs and a no-ref push through git tracking configuration', () => {
+    const root = repo()
+    configureReleaseRemote(root)
+    git(root, 'update-ref', 'refs/remotes/public/main', 'HEAD')
+    git(root, 'branch', '--set-upstream-to=public/main')
+    record(root)
+
+    expect(runReleasePush(root, 'git push public main').stdout).toBe('')
+    expect(runReleasePush(root, 'git push').stdout).toBe('')
+  })
+
+  it('uses the configured release branch when the remote default is unavailable', () => {
+    const root = repo()
+    git(root, 'remote', 'add', 'public', root)
+    record(root)
+    expect(runReleasePush(root, 'git push public HEAD:stable', { WT_RELEASE_BRANCH: 'stable' }).stdout).toBe('')
+  })
+
+  it('uses the declaration as the one required-gate list shared with the commit guard', () => {
+    const root = repo(false)
+    configureReleaseRemote(root)
+    write(root, '.wt-gates.json', JSON.stringify({
+      gates: [
+        { name: 'test', command: 'pnpm test', cwd: 'toolkit' },
+        { name: 'typecheck', command: 'pnpm typecheck', cwd: 'toolkit' },
+      ],
+      paths: ['plugin/', 'toolkit/'],
+    }))
+    write(root, 'plugin/thing.mjs', '// staged\n')
+    git(root, 'add', '.wt-gates.json', 'plugin/thing.mjs')
+
+    expect(run(root).stdout).toContain('typecheck: MISSING')
+    expect(runReleasePush(root).stdout).toContain('typecheck: MISSING')
   })
 })

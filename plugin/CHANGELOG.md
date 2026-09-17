@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Release-branch pushes now refuse missing, red, or stale gate evidence unless an exact-command main-guard allow-once entry records and authorizes the exception.
 - Artifact-server end-to-end fixtures now preserve native system paths, provide Node-backed Windows command shims, avoid Windows-illegal names, and label POSIX-only mode checks; configured Tailscale binaries no longer fall through to ambient discovery, and Windows process identity reads retry transient misses within their existing timeout bound.
 - The artifact-server suite's state watcher canonicalises its temp path before `fs.watch`, so the Windows short-name spelling no longer trips libuv's fs-event assertion and aborts the vitest worker carrying the file.
 - The What is running collector now bounds detailed worktree scans, reports partial discovery when capped, and distinguishes its 8-second timeout from exit failures with the exit code and first stderr line.

@@ -98,6 +98,13 @@
       "required": false,
       "description": "Minutes without a worktree write before a still-running supervised lane is reported to its owner with evidence; it is never killed for this condition."
     },
+    "release_branch": {
+      "type": "string",
+      "title": "Release branch",
+      "default": "",
+      "required": false,
+      "description": "Release branch guarded at push time when the remote default branch is unavailable. Empty falls back to main/master."
+    },
     "configDir": {
       "type": "string",
       "title": "Claude configuration directory",
@@ -414,6 +421,11 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-gate-evidence-guard-hook.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-release-push-evidence-guard-hook.mjs\"",
             "timeout": 5
           }
         ]

@@ -7,7 +7,7 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { invokes } from './lib/command-invocation.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 import { readGuardJournal } from './lib/guard-journal-read.mjs'
-import { readGateDeclaration, readGateRecord, recordIsFresh, repoRoot, stagedPaths, touchesDeclaredPath, treeSignature } from './lib/gate-evidence.mjs'
+import { readGateDeclaration, repoRoot, requiredGateProblems, stagedPaths, touchesDeclaredPath, treeSignature } from './lib/gate-evidence.mjs'
 
 const GUARD = 'wt-gate-evidence-guard-hook.mjs'
 const GIT_COMMIT = /^git\s+(?:-C\s+\S+\s+)?commit\b/
@@ -64,13 +64,7 @@ function main() {
   }
 
   const signature = treeSignature(root)
-  const problems = declaration.gates.flatMap((gate) => {
-    const record = readGateRecord(root, gate.name)
-    if (!record) return [{ gate, status: 'MISSING' }]
-    if (record.exit !== 0) return [{ gate, status: `RED (exit ${record.exit})` }]
-    if (!recordIsFresh(root, record, signature, paths)) return [{ gate, status: 'STALE (signature differs or staged file changed after gate)' }]
-    return []
-  })
+  const problems = requiredGateProblems(root, declaration, { signature, paths })
   if (!problems.length) {
     recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'gate-evidence-fresh', cwd: root, session: input.session_id, agent: input.agent_id })
     return

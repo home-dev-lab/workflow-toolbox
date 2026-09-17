@@ -16,6 +16,7 @@ const DEFINITIONS = Object.freeze({
   second_opinion_fable_max_pct: { envKey: 'WT_SECOND_OPINION_FABLE_MAX_PCT', type: 'number', defaultValue: 90 },
   lane_orphan_cleanup: { envKey: 'WT_LANE_ORPHAN_CLEANUP', type: 'string', defaultValue: 'observe' },
   lane_stall_minutes: { envKey: 'WT_LANE_STALL_MINUTES', type: 'number', defaultValue: 10 },
+  release_branch: { envKey: 'WT_RELEASE_BRANCH', type: 'string', defaultValue: '' },
 })
 
 function configDir(env) {

@@ -80,7 +80,7 @@ export function touchesDeclaredPath(paths, declaredPaths) {
   return paths.some((file) => declaredPaths.some((prefix) => file.startsWith(prefix)))
 }
 
-export function recordIsFresh(root, record, signature, paths) {
+function recordIsFresh(root, record, signature, paths) {
   if (!record || record.version !== 2 || record.exit !== 0 || record.tree !== signature) return false
   const finishedAt = Date.parse(record.finishedAt)
   if (!Number.isFinite(finishedAt)) return false
@@ -90,5 +90,21 @@ export function recordIsFresh(root, record, signature, paths) {
     } catch {
       return false
     }
+  })
+}
+
+export function requiredGateProblems(root, declaration, { signature, paths = [], pushedCommit = null } = {}) {
+  return declaration.gates.flatMap((gate) => {
+    const record = readGateRecord(root, gate.name)
+    if (!record) return [{ gate, status: 'MISSING' }]
+    if (record.exit !== 0) return [{ gate, status: `RED (exit ${record.exit})` }]
+    if (pushedCommit) {
+      return record.version === 2 && record.head === pushedCommit && record.dirty === false
+        ? []
+        : [{ gate, status: 'STALE (recorded tree does not match pushed commit)' }]
+    }
+    return recordIsFresh(root, record, signature, paths)
+      ? []
+      : [{ gate, status: 'STALE (signature differs or staged file changed after gate)' }]
   })
 }

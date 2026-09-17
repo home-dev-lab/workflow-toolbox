@@ -541,6 +541,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PreToolUse gate-evidence guard under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-release-push-evidence-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse release-push gate-evidence guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-plugin-release-record-guard-hook.mjs',
     status: 'mapped',
     reason:
@@ -994,8 +999,9 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-pgrep-env-dump-guard-hook.mjs',
       'plugin/bin/wt-propagation-reminder-hook.mjs',
        'plugin/bin/wt-plugin-release-record-guard-hook.mjs',
-       'plugin/bin/wt-version-guard-hook.mjs',
-       'plugin/bin/wt-gate-evidence-guard-hook.mjs',
+        'plugin/bin/wt-version-guard-hook.mjs',
+        'plugin/bin/wt-gate-evidence-guard-hook.mjs',
+        'plugin/bin/wt-release-push-evidence-guard-hook.mjs',
     ],
     docs: ['docs/public/known-issues.md', 'plugin/monitors/README.md', 'README.md'],
   },

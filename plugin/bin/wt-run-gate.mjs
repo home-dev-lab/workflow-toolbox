@@ -88,6 +88,18 @@ function treeIdentity(cwd) {
   return `tree=${branch}@${head}${dirty}`
 }
 
+function recordedHead(root) {
+  // eslint-disable-next-line sonarjs/no-os-command-from-path -- gate identity comes from this repository's git executable.
+  const result = spawnSync('git', ['-C', root, 'rev-parse', 'HEAD'], { shell: false, encoding: 'utf8' })
+  return result.error || result.status !== 0 ? null : (result.stdout ?? '').trim() || null
+}
+
+function recordedTreeIsDirty(root) {
+  // eslint-disable-next-line sonarjs/no-os-command-from-path -- gate identity comes from this repository's git executable.
+  const result = spawnSync('git', ['-C', root, 'status', '--porcelain'], { shell: false, encoding: 'utf8' })
+  return result.error || result.status !== 0 ? null : (result.stdout ?? '').trim() !== ''
+}
+
 function fail(msg) {
   process.stderr.write(`wt-run-gate: ${msg}\n`)
   process.exit(2)
@@ -185,6 +197,7 @@ function main() {
   // would otherwise make an earlier record stale merely by writing its own log.
   const root = args.record ? repoRoot(process.cwd()) : null
   const startedTree = args.record ? treeSignature(root) : null
+  const startedHead = args.record ? recordedHead(root) : null
   const outDir = args.record && !args.outDirExplicit
     ? path.join(path.dirname(recordPath(root, args.record)), 'logs')
     : args.outDir
@@ -223,7 +236,8 @@ function main() {
   if (args.record) {
     // Compute after the child exits: an edit during a gate must invalidate its evidence.
     const finishedTree = treeSignature(root)
-    const changedDuringGate = startedTree !== finishedTree
+    const finishedHead = recordedHead(root)
+    const changedDuringGate = startedTree !== finishedTree || startedHead !== finishedHead
     const recordFile = writeGateRecord(root, {
       version: 2,
       name: args.record,
@@ -231,6 +245,8 @@ function main() {
       exit: changedDuringGate ? 1 : realExitCode ?? 1,
       finishedAt: new Date().toISOString(),
       tree: finishedTree,
+      head: finishedHead,
+      dirty: recordedTreeIsDirty(root),
     })
     if (changedDuringGate) process.stderr.write(`wt-run-gate: ${args.record}: tree changed during gate; record refused\n`)
     process.stdout.write(`GATE ${args.record}: record=${recordFile}\n`)
@@ -271,7 +287,8 @@ function main() {
     }
   }
 
-  process.exit(forceFail || (args.record && startedTree !== treeSignature(root)) ? 1 : (realExitCode ?? 1))
+  const recordTargetChanged = args.record && (startedTree !== treeSignature(root) || startedHead !== recordedHead(root))
+  process.exit(forceFail || recordTargetChanged ? 1 : (realExitCode ?? 1))
 }
 
 main()
