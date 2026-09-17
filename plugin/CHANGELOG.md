@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added `wt-lane.mjs integrate`, which commits a delivered lane from an explicit message file, merges it in a named same-repository worktree, verifies its `.lane/` archive before optional removal, and can authorize, push, dispatch, and inspect an explicitly requested CI branch.
 
 ### Fixed
+- Run-cost reconciliation now attributes each lane through its recorded executor/model family, reading Claude usage receipts or matching OpenCode session rows per lane, and reports family-specific unknowns instead of applying the run executor to every lane.
 - The suite lock decides the Windows command shell per EXECUTABLE instead of per platform: a `.cmd`/`.bat` shim (including a bare name that PATHEXT resolves to one) still runs through the shell, every other command is spawned directly, so quoted arguments are no longer re-parsed by `cmd.exe`.
 
 ## [0.182.0] - 2026-09-17
