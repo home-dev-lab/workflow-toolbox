@@ -1,5 +1,6 @@
 import { executableName, resolvedBinary } from '../bin/lib/resolved-binary.mjs';
 import { PHASES as LIFECYCLE_PHASES } from './lifecycle-phases.js';
+import { stripAnsiAndControl } from './text-sanitize.js';
 
 // These pure helpers are also embedded in the out-of-process collector below.
 export function detectArtifactUrl(file, platform, env = {}, linkBase = '', suiteRoot = '') {
@@ -65,6 +66,7 @@ const timingStartedAt = Date.now();
 const timingsMs = {};
 const detectArtifactUrl = ${detectArtifactUrl.toString()};
 const markdownToHtml = ${markdownToHtml.toString()};
+const stripAnsiAndControl = ${stripAnsiAndControl.toString()};
 const executableName = ${executableName.toString()};
 const resolvedBinary = ${resolvedBinary.toString()};
 const now = Date.parse(config.now || new Date().toISOString());
@@ -463,7 +465,8 @@ function freshestWrite(root) {
   return latest;
 }
 function toolActivity(value) {
-  const lines = String(value || '').split(/\r?\n/).map(line => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim()).filter(Boolean);
+  const clean = line => stripAnsiAndControl(line).trim();
+  const lines = String(value || '').split(/\r?\n/).map(clean).filter(Boolean);
   return lines.filter(line => /^(?:(?:→\s*)?(?:Read|Write|Edit|Patch)\b|\$\s+\S)/.test(line)).at(-1) || UNKNOWN;
 }
 function laneActivity(worktree, lastWrite = null) {
