@@ -242,15 +242,14 @@ function isRateLimited(text) {
  * which is precisely the reassuring-green failure this whole change exists to remove.
  *
  * ⚠ CROSS-PLATFORM, stated rather than discovered in CI. POSIX signalling of a group via a
- * negative pid does not exist on Windows: `process.kill(-pid)` throws there. So on win32 this
- * falls back to killing the direct child only — the same behaviour as before this change — and
- * returns `null` to say so out loud. A Windows adopter therefore keeps the leak; that is a known,
- * named limitation, not a silent one, and closing it needs a job-object approach this script
- * cannot express. */
+ * negative pid does not exist on Windows: `process.kill(-pid)` throws there. Windows instead
+ * asks taskkill to terminate the pid and its descendants (`/T`); the result remains `null`
+ * because taskkill does not report a survivor count. */
 function reapGroup(pid) {
   if (typeof pid !== 'number') return null
   if (process.platform === 'win32') {
-    try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+    const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
+    preflightSpawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
     return null
   }
   // Count what is still alive in the group AFTER killing it, rather than before: the answer we
@@ -289,8 +288,8 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
     if (typeof variant === 'string' && variant.length > 0) args.push('--variant', variant)
     args.push('--auto', '--dir', dir, '--format', 'json', '-f', taskfile)
 
-    // ⚠ `detached: true` puts the call in its OWN process group, and that is load-bearing rather
-    // than cosmetic. Measured 2026-08-18 against the previous shape (plain spawn + `child.kill`),
+    // ⚠ On POSIX, `detached: true` puts the call in its OWN process group, and that is load-bearing
+    // rather than cosmetic. Measured 2026-08-18 against the previous shape (plain spawn + `child.kill`),
     // with a stub binary that starts a background process before blocking:
     //
     //   a descendant holds this pipe   -> the envelope NEVER exits (alive past 45s on a 5s
@@ -303,8 +302,10 @@ function runOnceAsync({ bin, taskfile, dir, model, variant, agentMode, timeoutSe
     // The second row is the dangerous one: nothing in the manifest, the log or the exit code can
     // show it. Signalling the GROUP is what closes both — a survivor cannot hold the pipe if no
     // survivor exists. The invariant, stated so a later reader can check the body against it:
-    // WHEN THIS FUNCTION STOPS A CALL, NOTHING THAT CALL STARTED IS STILL RUNNING.
-    const child = spawnOpencode(spawn, bin, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: childEnv }, process.platform)
+    // WHEN THIS FUNCTION STOPS A CALL, NOTHING THAT CALL STARTED IS STILL RUNNING. Windows cannot
+    // use the detached command-shim shape because cmd.exe then loses piped stdout; taskkill /T is
+    // its process-tree counterpart instead.
+    const child = spawnOpencode(spawn, bin, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], ...(process.platform === 'win32' ? {} : { detached: true }), env: childEnv }, process.platform)
     let stdout = ''
     let stderr = ''
     let timedOut = false

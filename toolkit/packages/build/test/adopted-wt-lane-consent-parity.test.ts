@@ -26,7 +26,11 @@ function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutM
   })
   if (result.error) {
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim().split(/\r?\n/).at(-1) || '<no output>'
-    throw new Error(`${name} failed after ${timeoutMs}ms: ${result.error.message}; last output: ${output}`)
+    const dirIndex = args.indexOf('--dir')
+    const log = dirIndex >= 0 ? join(args[dirIndex + 1]!, '.lane', 'run.log') : null
+    let laneTail = '<unavailable>'
+    try { laneTail = readFileSync(log!, 'utf8').trim().split(/\r?\n/).slice(-8).join(' | ') || '<empty>' } catch {}
+    throw new Error(`${name} failed after ${timeoutMs}ms: ${result.error.message}; last output: ${output}; lane log tail: ${laneTail}`)
   }
   return result
 }
@@ -98,6 +102,18 @@ describe('adopted wt-lane consent resolver', () => {
       {},
       100,
     )).toThrow(/fixture hanging child failed after 100ms:.*last output: waiting/)
+  })
+
+  it('includes the durable lane log tail when a launcher times out', () => {
+    const project = mkdtempSync(join(tmpdir(), 'wt-adopted-timeout-')); roots.push(project)
+    mkdirSync(join(project, '.lane'))
+    writeFileSync(join(project, '.lane', 'run.log'), 'first\n2026-09-17T00:00:00.000Z stage=inspect-launcher-start\n')
+    expect(() => runChild(
+      'fixture launcher',
+      ['--input-type=module', '--eval', 'setTimeout(() => {}, 30_000)', '--', '--dir', project],
+      {},
+      100,
+    )).toThrow(/lane log tail: first \| 2026-09-17T00:00:00.000Z stage=inspect-launcher-start/)
   })
 
   for (const mode of ['--check', '--install']) {

@@ -77,6 +77,9 @@ jobs:
       - name: Test (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
+        env:
+          # windows-latest has 4 vCPUs; two workers avoid oversubscribing process-heavy fixtures.
+          WT_VITEST_MAX_WORKERS: 2
         run: |
           New-Item -ItemType Directory -Force ci-diagnostics | Out-Null
           pnpm test 2>&1 | Tee-Object ci-diagnostics/vitest.log
