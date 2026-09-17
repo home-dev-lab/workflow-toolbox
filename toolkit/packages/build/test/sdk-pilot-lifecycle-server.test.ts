@@ -1,9 +1,10 @@
 import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { createServer } from 'node:http'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -11,7 +12,7 @@ import { deriveRoute } from '../../../../plugin/bin/lib/route-from-card.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { archiveLifecycle } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
+import { archiveLifecycle, removeLifecycleWorktree } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -524,6 +525,126 @@ printf 'report\n' > "$report"
     expect(existsSync(worktree)).toBe(false)
     const manifestContent = readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8')
     expect(createHash('sha256').update(manifestContent).digest('hex')).toBe(summary.archive.manifest_sha256)
+  })
+
+  it('refuses to remove a marked worktree while its card is open, then removes it after the marker is cleared', async () => {
+    const container = mkdtempSync(join(tmpdir(), 'wt-retained-worktree-')); roots.push(container)
+    const project = join(container, 'project'); const worktree = join(container, 'card-worktree')
+    mkdirSync(project); writeFileSync(join(project, 'tracked.txt'), 'base\n')
+    const git = (...args: string[]) => spawnSync('git', args, { cwd: project, encoding: 'utf8' })
+    expect(git('init', '-q').status).toBe(0)
+    expect(git('config', 'user.email', 'test@example.invalid').status).toBe(0)
+    expect(git('config', 'user.name', 'Retention Test').status).toBe(0)
+    expect(git('config', 'commit.gpgSign', 'false').status).toBe(0)
+    expect(git('add', '-A').status).toBe(0); expect(git('commit', '-qm', 'base').status).toBe(0)
+    expect(git('worktree', 'add', '-q', '-b', 'retention-proof', worktree).status).toBe(0)
+    mkdirSync(join(worktree, '.lane'))
+    writeFileSync(join(worktree, '.lane', 'worktree-retention.json'), JSON.stringify({
+      version: 1, cardId: '1864705186723792821', retainedAt: '2026-09-17T10:00:00.000Z',
+      worktree: realpathSync(worktree),
+      reason: 'bounded lifecycle spent: plan not approved after 4 critic rounds', phase: 'critic',
+      expiry: { boardId: 'board', removeWhen: 'card is absent or in Done or NotDoing' },
+    }))
+    const openBoard = { getCard: async () => ({ listId: 'doing' }), listNameOf: async () => 'Doing' }
+    const markerPath = join(realpathSync(worktree), '.lane', 'worktree-retention.json')
+    await expect(removeLifecycleWorktree({ root: worktree, board: openBoard, force: true })).rejects.toThrow(new RegExp(`refused.*${markerPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*1864705186723792821.*Doing`, 'i'))
+    expect(existsSync(worktree)).toBe(true)
+
+    unlinkSync(join(worktree, '.lane', 'worktree-retention.json'))
+    await expect(removeLifecycleWorktree({ root: worktree, board: null })).resolves.toMatchObject({ removed: true })
+    expect(existsSync(worktree)).toBe(false)
+  })
+
+  it('refuses to remove a marked worktree when the board is unavailable and allows expiry in Done', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-retention-decision-')); roots.push(root)
+    mkdirSync(join(root, '.lane')); mkdirSync(join(root, '.git'))
+    const markerPath = join(root, '.lane', 'worktree-retention.json')
+    writeFileSync(join(root, '.lane', 'worktree-retention.json'), JSON.stringify({
+      version: 1, cardId: '42', retainedAt: '2026-09-17T10:00:00.000Z', reason: 'bounded lifecycle spent', phase: 'review',
+      worktree: realpathSync(root),
+      expiry: { boardId: 'board', removeWhen: 'card is absent or in Done or NotDoing' },
+    }))
+    const unavailable = { getCard: async () => { throw new Error('network down') }, listNameOf: async () => null }
+    await expect(removeLifecycleWorktree({ root, board: unavailable, git: () => { throw new Error('must not remove') } })).rejects.toThrow(new RegExp(`refused.*${markerPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*42.*board unavailable`, 'i'))
+    const calls: Array<{ program: string, args: string[], cwd: string }> = []
+    const done = { getCard: async () => ({ listId: 'done' }), listNameOf: async () => 'Done' }
+    const git = (program: string, args: string[], options: { cwd: string }) => {
+      calls.push({ program, args, cwd: options.cwd })
+      return args.includes('rev-parse') ? join(root, '.git') : ''
+    }
+    await expect(removeLifecycleWorktree({ root, board: done, git })).resolves.toMatchObject({ removed: true, expired: true, cardId: '42' })
+    expect(calls).toEqual([
+      { program: 'git', args: ['-C', realpathSync(root), 'rev-parse', '--git-common-dir'], cwd: resolve(realpathSync(root), '..') },
+      { program: 'git', args: ['-C', realpathSync(root), 'worktree', 'remove', realpathSync(root)], cwd: realpathSync(root) },
+    ])
+  })
+
+  it('fails closed for invalid, dangling, and foreign retention markers and names the marker and card', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-retention-invalid-')); roots.push(root)
+    const foreign = mkdtempSync(join(tmpdir(), 'wt-retention-foreign-')); roots.push(foreign)
+    mkdirSync(join(root, '.lane')); const markerPath = join(root, '.lane', 'worktree-retention.json')
+    writeFileSync(markerPath, JSON.stringify({ version: 1, cardId: '42' }))
+    await expect(removeLifecycleWorktree({ root, board: null })).rejects.toThrow(new RegExp(`${markerPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*card 42`))
+
+    unlinkSync(markerPath); symlinkSync(join(root, 'missing-target'), markerPath)
+    await expect(removeLifecycleWorktree({ root, board: null })).rejects.toThrow(new RegExp(`${markerPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*card unknown`))
+
+    unlinkSync(markerPath)
+    writeFileSync(markerPath, JSON.stringify({
+      version: 1, cardId: '42', worktree: realpathSync(foreign), retainedAt: '2026-09-17T10:00:00.000Z',
+      reason: 'bounded lifecycle spent', phase: 'critic', expiry: { boardId: 'board', removeWhen: 'card is absent or in Done or NotDoing' },
+    }))
+    await expect(removeLifecycleWorktree({ root, board: null })).rejects.toThrow(new RegExp(`${markerPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*card 42.*${realpathSync(foreign).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*${realpathSync(root).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+  })
+
+  it('drives the real retention CLI through configured HTTP for terminal, open, and unavailable cards', async () => {
+    const container = mkdtempSync(join(tmpdir(), 'wt-retention-cli-')); roots.push(container)
+    const project = join(container, 'project'); mkdirSync(project); writeFileSync(join(project, '.gitignore'), '.lane/\n'); writeFileSync(join(project, 'tracked.txt'), 'base\n')
+    const git = (...args: string[]) => spawnSync('git', args, { cwd: project, encoding: 'utf8' })
+    expect(git('init', '-q').status).toBe(0); expect(git('config', 'user.email', 'test@example.invalid').status).toBe(0)
+    expect(git('config', 'user.name', 'Retention CLI').status).toBe(0); expect(git('config', 'commit.gpgSign', 'false').status).toBe(0)
+    expect(git('add', '-A').status).toBe(0); expect(git('commit', '-qm', 'base').status).toBe(0)
+    const worktrees = Object.fromEntries(['done', 'open', 'unavailable'].map((name) => {
+      const worktree = join(container, name); expect(git('worktree', 'add', '-q', '-b', `retention-${name}`, worktree).status).toBe(0)
+      mkdirSync(join(worktree, '.lane')); writeFileSync(join(worktree, '.lane', 'worktree-retention.json'), JSON.stringify({
+        version: 1, cardId: name, worktree: realpathSync(worktree), retainedAt: '2026-09-17T10:00:00.000Z', reason: 'bounded lifecycle spent', phase: 'critic',
+        expiry: { boardId: 'board', removeWhen: 'card is absent or in Done or NotDoing' },
+      }))
+      return [name, worktree]
+    }))
+    let unavailable = false
+    const server = createServer((request, response) => {
+      let body = ''; request.setEncoding('utf8'); request.on('data', (chunk) => { body += chunk }); request.on('end', () => {
+        if (unavailable) { response.writeHead(500); response.end('unavailable'); return }
+        const rpc = JSON.parse(body)
+        let result = {}
+        if (rpc.method === 'tools/call') {
+          const name = rpc.params.name
+          const cardId = rpc.params.arguments.cardId
+          const value = name === 'get_card' ? { id: cardId, listId: cardId === 'done' ? 'done-list' : 'open-list' } : { lists: [{ id: 'done-list', name: 'Done' }, { id: 'open-list', name: 'In Progress' }] }
+          result = { content: [{ type: 'text', text: JSON.stringify(value) }] }
+        }
+        response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ jsonrpc: '2.0', id: rpc.id ?? null, result }))
+      })
+    })
+    await new Promise<void>((resolveReady) => server.listen(0, '127.0.0.1', resolveReady))
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('HTTP fixture has no port')
+    const configDir = join(container, 'config'); mkdirSync(configDir)
+    writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@test': { options: { planka_mcp_url: `http://127.0.0.1:${address.port}/mcp` } } } }))
+    const cli = resolve(fileURLToPath(new URL('../../../../plugin/bin/wt-worktree-remove.mjs', import.meta.url)))
+    const run = (worktree: string) => new Promise<{ code: number | null, stdout: string, stderr: string }>((resolveRun) => {
+      const child = spawn(process.execPath, [cli, '--dir', worktree], { env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, WT_PLANKA_MCP_URL: '' } })
+      let stdout = ''; let stderr = ''; child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8')
+      child.stdout.on('data', (chunk) => { stdout += chunk }); child.stderr.on('data', (chunk) => { stderr += chunk })
+      child.on('close', (code) => resolveRun({ code, stdout, stderr }))
+    })
+    try {
+      const doneWorktree = worktrees.done!; const openWorktree = worktrees.open!; const unavailableWorktree = worktrees.unavailable!
+      const done = await run(doneWorktree); expect(done.code, done.stderr).toBe(0); expect(existsSync(doneWorktree)).toBe(false)
+      const open = await run(openWorktree); expect(open.code).toBe(1); expect(open.stderr).toContain(join(openWorktree, '.lane', 'worktree-retention.json')); expect(open.stderr).toMatch(/open.*In Progress/); expect(existsSync(openWorktree)).toBe(true)
+      unavailable = true
+      const failed = await run(unavailableWorktree); expect(failed.code).toBe(1); expect(failed.stderr).toContain(join(unavailableWorktree, '.lane', 'worktree-retention.json')); expect(failed.stderr).toMatch(/unavailable.*board unavailable/i); expect(existsSync(unavailableWorktree)).toBe(true)
+    } finally { await new Promise<void>((resolveClose) => server.close(() => resolveClose())) }
   })
 
   it('H14-2 lock: refuses a Partial line on a full run and exposes null partial state', async () => {

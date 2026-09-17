@@ -2215,7 +2215,7 @@ Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }
     const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort } = options;
     if (merged.length === 0) return;
     const cleanupResult = await rt.agent(
-      `You are the cleanup agent \u2014 remove the merged ${noun === "task" ? "" : "lane "}worktrees and their ${noun} branches. From ${ctx.projectDir}, for EACH entry run \`git worktree remove <path>\` FIRST and \`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):
+      `You are the cleanup agent \u2014 remove the merged ${noun === "task" ? "" : "lane "}worktrees and their ${noun} branches. From ${ctx.projectDir}, for EACH entry run \`node "$CLAUDE_PLUGIN_ROOT/bin/wt-worktree-remove.mjs" --dir <path>\` FIRST and \`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):
 ` + merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join("\n") + `
 Do NOT touch any other worktree or branch.
 Return { "removed": ["<${noun === "task" ? "taskId" : "laneKey"}>"], "failures": [{"id": "<${noun === "task" ? "taskId" : "laneKey"}>", "note": "<why>"}], "note": "<summary>" }`,

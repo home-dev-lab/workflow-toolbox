@@ -1153,6 +1153,15 @@ describe('dev-implement worktree failure policies', () => {
     )).toBe(true)
   })
 
+  it('routes every merged-worktree cleanup through the retention-aware shipped remover', async () => {
+    const rt = makeWtRuntime()
+    await wf.run(rt, JSON.stringify(WT_INPUT))
+    const prompt = rt.calls.find((call) => call.prompt.includes('remove the merged worktrees'))!.prompt
+    expect(prompt).toContain('$CLAUDE_PLUGIN_ROOT/bin/wt-worktree-remove.mjs')
+    expect(prompt).toContain('--dir <path>')
+    expect(prompt).not.toContain('run `git worktree remove <path>`')
+  })
+
   it('not a git repository → honest degraded report, every task skipped, no further agents', async () => {
     const rt = makeWtRuntime({
       setup: () => ({ isGitRepo: false, headSha: '', note: 'not a repo' }),

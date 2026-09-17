@@ -2242,7 +2242,7 @@ async function cleanupMergedWorktrees(options: CleanupMergedWorktreesOptions): P
   if (merged.length === 0) return
   const cleanupResult = await rt.agent<CleanupResult>(
       `You are the cleanup agent — remove the merged ${noun === 'task' ? '' : 'lane '}worktrees and their ${noun} branches. From ` +
-      `${ctx.projectDir}, for EACH entry run \`git worktree remove <path>\` FIRST and ` +
+      `${ctx.projectDir}, for EACH entry run \`node "$CLAUDE_PLUGIN_ROOT/bin/wt-worktree-remove.mjs" --dir <path>\` FIRST and ` +
       `\`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):\n` +
       merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join('\n') +
       `\nDo NOT touch any other worktree or branch.\n` +

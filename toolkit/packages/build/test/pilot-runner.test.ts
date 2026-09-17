@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -628,6 +628,16 @@ describe('SDK pilot runner', () => {
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
     expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: 4, reason, findings: ['tighten the proof'] } } })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toEqual({
+      version: 1,
+      cardId: '1',
+      worktree: realpathSync(f.dir),
+      retainedAt: expect.stringMatching(/^\d{4}-/),
+      reason: `bounded lifecycle spent: ${reason}`,
+      phase: 'critic',
+      expiry: { boardId: null, removeWhen: 'card is absent or in Done or NotDoing' },
+    })
+    expect(readdirSync(join(f.dir, '.lane')).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 
   it('re-prompts after a tdd-lane end_turn and completes on the next turn', async () => {
@@ -656,6 +666,7 @@ describe('SDK pilot runner', () => {
     })
     expect(result).toMatchObject({ exitCode: 0, summary: { completed: true, injected_turns: 1 } })
     expect(continuations).toEqual([expect.stringContaining('current phase tdd')])
+    expect(existsSync(join(f.dir, '.lane', 'worktree-retention.json'))).toBe(false)
   })
 
   it('fails after three continuation prompts without lifecycle progress', async () => {
@@ -684,6 +695,7 @@ describe('SDK pilot runner', () => {
     })
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'runner timeout', partial: { reason: 'runner timeout' } } })
     expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { reason: 'runner timeout' } })
+    expect(existsSync(join(f.dir, '.lane', 'worktree-retention.json'))).toBe(false)
   })
 
   it('writes final receipts and an external partial archive when the initialized SDK stream throws', async () => {
