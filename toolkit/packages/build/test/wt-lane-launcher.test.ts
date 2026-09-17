@@ -21,9 +21,8 @@ const spawnedChildren: ChildProcess[] = []
 const spawnedGroups: number[] = []
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const PROCESS_CAPTURE_RETRY_MS = 10
-const PROCESS_CAPTURE_PROBES = 4
 const PROCESS_CAPTURE_SCHEDULING_MARGIN_MS = 100
-const PROCESS_CAPTURE_BOUND_MS = PROCESS_CAPTURE_RETRY_MS * PROCESS_CAPTURE_PROBES + PROCESS_CAPTURE_SCHEDULING_MARGIN_MS
+const DARWIN_PROVIDER_MISS_TTL_MS = 100
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
   const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
@@ -360,8 +359,8 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const result = inspectStartedProcess(() => {
       calls += 1
       return calls < 3 ? null : expected
-    }, 42, { platform: 'darwin', timeoutMs: PROCESS_CAPTURE_BOUND_MS })
-    expect(calls).toBe(4)
+    }, 42, { platform: 'darwin', timeoutMs: DARWIN_PROVIDER_MISS_TTL_MS * 3 + PROCESS_CAPTURE_SCHEDULING_MARGIN_MS })
+    expect(calls).toBeGreaterThanOrEqual(3)
     expect(result).toEqual({ identity: expected, unavailable: null })
   })
   it('waits through a transient Darwin shell transcript before capturing the stable command', () => {

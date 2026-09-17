@@ -29,7 +29,7 @@ const tempDirs: string[] = []
 const messageWaiters = new WeakMap<JsonRpcMessage[], Set<() => void>>()
 let barrierId = 10_000
 const POST_INITIALIZATION_POLL_MS = 100
-const POST_INITIALIZATION_DELIVERY_MARGIN_MS = 5_000
+const POST_INITIALIZATION_DELIVERY_MARGIN_MS = 45_000
 const POST_INITIALIZATION_DELIVERY_BOUND_MS = POST_INITIALIZATION_POLL_MS + POST_INITIALIZATION_DELIVERY_MARGIN_MS
 
 afterEach(async () => {

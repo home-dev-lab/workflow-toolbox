@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { appendSupervisorJournal, classifyLane, inspectProcess, latestWorktreeWrite, processEvidenceStatus, sameIdentity, supervisionUnavailableMessage, terminateLane } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher helper
-import { inspectStartedProcess } from '../../../../plugin/bin/wt-lane.mjs'
+import { inspectLauncherProcess, inspectStartedProcess } from '../../../../plugin/bin/wt-lane.mjs'
 
 describe('lane supervisor safety core', () => {
   it('returns unknown without a readable attributed record', () => {
@@ -172,8 +172,35 @@ describe('lane supervisor safety core', () => {
     expect(execFile).toHaveBeenCalledWith(
       'powershell.exe',
       expect.arrayContaining(['-Command', expect.stringContaining('Get-CimInstance Win32_Process |')]),
-      expect.any(Object),
+      expect.objectContaining({ timeout: 10_000 }),
     )
+  })
+
+  it('routes launcher PID reads around a slow full Windows process table', () => {
+    const execFile = vi.fn((_program: string, args: string[]) => {
+      const script = args.at(-1) ?? ''
+      if (!script.includes('-Filter')) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3_000)
+        return { status: 0, stdout: '[]' }
+      }
+      return { status: 0, stdout: JSON.stringify({ ProcessId: 432, CreationDate: '2026-09-16T19:34:56.000Z', CommandLine: 'node.exe wt-lane.mjs', ParentProcessId: 431 }) }
+    })
+    const inspect = (pid: number, options: Record<string, unknown>) => inspectProcess(pid, { ...options, spawnSync: execFile })
+    const started = Date.now()
+
+    expect(inspectLauncherProcess(inspect, 432, { platform: 'win32' })).toMatchObject({ pid: 432 })
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(execFile).toHaveBeenCalledTimes(1)
+    expect(String(execFile.mock.calls[0]?.[1]?.at(-1))).toContain('ProcessId = 432')
+  })
+
+  it('returns unavailable within the configured bound when the full Windows table never answers', () => {
+    const execFile = ((_program: string, _args: string[], options: Parameters<typeof spawnSync>[2]) =>
+      spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], options)) as typeof spawnSync
+    const started = Date.now()
+
+    expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile, timeoutMs: 100 })).toBeNull()
+    expect(Date.now() - started).toBeLessThan(750)
   })
 
   it('captures a Windows command shim from one timeout-bounded single-pid CIM read', () => {
