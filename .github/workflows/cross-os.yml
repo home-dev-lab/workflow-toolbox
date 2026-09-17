@@ -85,6 +85,22 @@ jobs:
           pnpm test 2>&1 | Tee-Object ci-diagnostics/vitest.log
           exit $LASTEXITCODE
         timeout-minutes: 22
+      # Diagnostic, never a gate: the vitest fork carrying artifact-server.test.ts has died on the hosted
+      # Windows runner without a result line since run 27 (`Worker exited unexpectedly` names no file).
+      # Run that one file alone, one worker, verbose reporter, with Node tracing every exit and uncaught
+      # exception, so the artifact carries the fork's last words instead of the pool's silence.
+      - name: Diagnose artifact-server fork (Windows)
+        if: ${{ always() && runner.os == 'Windows' }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          WT_VITEST_MAX_WORKERS: 1
+          NODE_OPTIONS: --trace-exit --trace-uncaught --trace-warnings
+        run: |
+          New-Item -ItemType Directory -Force ci-diagnostics | Out-Null
+          pnpm test:shard packages/build/test/artifact-server.test.ts --reporter=verbose 2>&1 | Tee-Object ci-diagnostics/artifact-server-fork.log
+          exit $LASTEXITCODE
+        timeout-minutes: 8
       - name: Typecheck
         run: pnpm typecheck
         timeout-minutes: 5
