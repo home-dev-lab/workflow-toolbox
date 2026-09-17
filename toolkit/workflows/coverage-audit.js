@@ -2526,7 +2526,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-propagation-reminder-hook.mjs",
         "plugin/bin/wt-plugin-release-record-guard-hook.mjs",
         "plugin/bin/wt-version-guard-hook.mjs",
-        "plugin/bin/wt-gate-evidence-guard-hook.mjs"
+        "plugin/bin/wt-gate-evidence-guard-hook.mjs",
+        "plugin/bin/wt-release-push-evidence-guard-hook.mjs"
       ],
       docs: ["docs/public/known-issues.md", "plugin/monitors/README.md", "README.md"]
     }

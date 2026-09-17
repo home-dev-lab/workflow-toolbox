@@ -214,6 +214,7 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_input: { command: 'git status' },
       }
     case 'wt-gate-evidence-guard-hook.mjs':
+    case 'wt-release-push-evidence-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
         tool_name: 'Bash',

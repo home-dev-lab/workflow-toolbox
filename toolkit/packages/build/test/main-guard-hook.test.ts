@@ -308,6 +308,16 @@ describe('wt-main-guard-hook — escape hatch', () => {
     expect(r.denied).toBe(true)
     expect(existsSync(join(stateDir, 'allow-once.json'))).toBe(true) // untouched
   })
+
+  it('does not consume or authorize an exact-command override without a non-empty reason', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const file = join(stateDir, 'allow-once.json')
+    writeFileSync(file, JSON.stringify({ command: 'rm -rf /', reason: '  ' }))
+    const r = run('rm -rf /')
+    expect(r.denied).toBe(true)
+    expect(existsSync(file)).toBe(true)
+  })
 })
 
 describe('wt-main-guard-hook — registration', () => {
