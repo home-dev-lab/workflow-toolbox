@@ -172,6 +172,9 @@ function bail() {
 }
 
 const input = readStdin()
+// A Stop hook that already blocked is re-entered with this flag. The harness explicitly asks the
+// hook not to continue, so return before probing or recording the same decision again.
+if (input.stop_hook_active === true) bail()
 const transcriptPath = input.transcript_path
 const sessionId = input.session_id || 'unknown'
 const cwd = input.cwd || process.cwd()
@@ -359,13 +362,7 @@ try {
   queueStatus = 'malformed' // exists, but unreadable/corrupt JSON — see FAIL-CLOSED above
 }
 if (queue.kind === 'known' && queue.startable === 0) {
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'Stop',
-      additionalContext: `[for Claude, not the user] 0 startable (${queue.awaitingOwner} awaiting owner, ${queue.unclassified} unclassified); finished mission may stop — the queue holds nothing this session can start`,
-    },
-  }))
-  process.exit(0)
+  bail()
 }
 if (queue.kind === 'known') {
   openCount = queue.startable
@@ -435,6 +432,8 @@ try {
 //                                                            visibility.
 //   3 + {"suppressOutput": true}                           — blocks, and reaches NOBODY: not the
 //                                                            user, and not the model either.
+// An allow decision emits nothing. In particular, a known queue with zero startable work must
+// not use shape 3 merely to explain that stopping is allowed, because shape 3 itself blocks Stop.
 //
 // ⚠ An earlier version of this comment claimed shape 3 was silent for the user, citing the docs'
 // "doesn't appear as a chat message in the interface" as agreeing with measurement. That was
