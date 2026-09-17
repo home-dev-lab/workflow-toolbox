@@ -136,6 +136,7 @@ export const spawningTestFiles = [
   'packages/build/test/verifier-cli-guard-envelope-phase.test.ts',
   'packages/build/test/wake-floor.test.ts',
   'packages/build/test/what-is-running.test.ts',
+  'packages/build/test/wt-lane-integrate.test.ts',
   'packages/build/test/wt-lane-launcher.test.ts',
   'packages/build/test/wt-lane-wait.test.ts',
   'packages/build/test/wt-pilot-fidelity.test.ts',

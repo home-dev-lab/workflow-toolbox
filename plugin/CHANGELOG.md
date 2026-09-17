@@ -11,6 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [0.182.0] - 2026-09-17
 
 ### Added
+- Added `wt-lane.mjs integrate`, which commits a delivered lane from an explicit message file, merges it in a named same-repository worktree, verifies its `.lane/` archive before optional removal, and can authorize, push, dispatch, and inspect an explicitly requested CI branch.
 - Added a recoverable machine-wide suite lock with bounded visible waits, status/release controls, and a lane-exported invocation for serializing outer Vitest runs.
 - Bounded SDK pilot runs now atomically leave a worktree-bound `.lane/worktree-retention.json`, and the shipped worktree remover refuses invalid, foreign, open-card, or board-unavailable cleanup until the card reaches `Done` or `NotDoing` (or no longer exists).
 
