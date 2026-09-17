@@ -280,11 +280,16 @@ export function detectTailscale(port) {
     encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'],
   })
   // Tests and managed launchers can pin the binary instead of relying on PATH discovery.
-  let command = process.env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY || 'tailscale'
+  const configuredCommand = process.env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY
+  let command = configuredCommand || 'tailscale'
   let ipOutput
   try {
     ipOutput = run(command, ['ip', '-4'])
   } catch {
+    if (configuredCommand) return {
+      ip: null, dnsName: null, remoteUrl: null,
+      detection: { status: 'unavailable', reason: 'could not run configured tailscale binary' },
+    }
     try {
       const windowsPath = run('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-Command',

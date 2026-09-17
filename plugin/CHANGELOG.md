@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Artifact-server end-to-end fixtures now preserve native system paths, provide Node-backed Windows command shims, avoid Windows-illegal names, and label POSIX-only mode checks; configured Tailscale binaries no longer fall through to ambient discovery, and Windows process identity reads retry transient misses within their existing timeout bound.
 - The artifact-server suite's state watcher canonicalises its temp path before `fs.watch`, so the Windows short-name spelling no longer trips libuv's fs-event assertion and aborts the vitest worker carrying the file.
 - Artifact-server tests now verify detached server process identity by PID, start time, argv, and executable before cleanup signals it, preventing Windows PID reuse from terminating the Vitest worker.
 - Wake-channel directory watches now canonicalise path aliases before entering libuv, preventing Windows short-name spool paths from aborting the server, and the adopted consent matrix derives its case timeout from all real launcher combinations.

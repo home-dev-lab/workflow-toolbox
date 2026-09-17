@@ -6,6 +6,7 @@ const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 const DARWIN_PROCESS_TABLE_TTL_MS = 100
 const WINDOWS_PROCESS_READ_TTL_MS = 500
 const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
+const WINDOWS_PROCESS_READ_ATTEMPTS = 2
 const WINDOWS_APPROXIMATE_START_SKEW_MS = 2_000
 const darwinProcessTableCache = new WeakMap()
 const darwinCwdCache = new WeakMap()
@@ -101,20 +102,28 @@ function darwinCwd(pid, execFile, now = Date.now()) {
   return value.get(pid) ?? null
 }
 
-function powershellProcess(pid, execFile, timeoutMs = WINDOWS_PROCESS_READ_TIMEOUT_MS, now = Date.now()) {
+function powershellProcess(pid, execFile, timeoutMs = WINDOWS_PROCESS_READ_TIMEOUT_MS, now = Date.now(), attempts = 1) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return { status: 1, stdout: '' }
   let cache = windowsProcessCache.get(execFile)
   if (!cache) { cache = new Map(); windowsProcessCache.set(execFile, cache) }
   const cached = cache.get(Number(pid))
   if (cached && now - cached.readAt <= WINDOWS_PROCESS_READ_TTL_MS) return cached.result
   const script = `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ Id = $p.Id; ProcessName = $p.ProcessName; Path = $p.Path; StartTime = [DateTimeOffset]::new($p.StartTime).ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress }`
-  const evidence = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile, timeoutMs)
-  let result = evidence
-  if (evidence.status === 0) {
-    try {
-      const value = evidence.stdout.trim() ? JSON.parse(evidence.stdout) : null
-      result = value ? { status: 0, value } : { status: 1, stdout: '' }
-    } catch { result = { status: 'unavailable' } }
+  const deadline = now + timeoutMs
+  const attemptTimeoutMs = Math.ceil(timeoutMs / attempts)
+  let result = { status: 'unavailable' }
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    const evidence = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile, Math.min(attemptTimeoutMs, remaining))
+    result = evidence
+    if (evidence.status === 0) {
+      try {
+        const value = evidence.stdout.trim() ? JSON.parse(evidence.stdout) : null
+        result = value ? { status: 0, value } : { status: 1, stdout: '' }
+      } catch { result = { status: 'unavailable' } }
+    }
+    if (result.status === 0) break
   }
   cache.set(Number(pid), { readAt: now, result })
   return result
@@ -286,8 +295,8 @@ function inspectDarwinProcess(pid, execFile, captureCwd) {
   return { pid: row.pid, argv: row.argv, startTime: row.startTime, groupId: row.groupId, cwd: captureCwd ? darwinCwd(pid, execFile) : null }
 }
 
-function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv) {
-  const result = powershellProcess(pid, execFile, timeoutMs)
+function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv, attempts) {
+  const result = powershellProcess(pid, execFile, timeoutMs, Date.now(), attempts)
   if (result.status !== 0 || !result.value) return null
   const startTime = Number(result.value.StartTime)
   const name = String(result.value.ProcessName || '').toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, '')
@@ -295,10 +304,10 @@ function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv) {
   return { pid, argv: Array.isArray(recordedArgv) ? recordedArgv : [], startTime, image: { name, path: typeof result.value.Path === 'string' && result.value.Path ? result.value.Path : null }, groupId: null, cwd: null }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null } = {}) {
+export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null, attempts = platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1 } = {}) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
   if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
-  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv)
+  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv, attempts)
   if (platform !== 'linux') return null
   try {
     const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)

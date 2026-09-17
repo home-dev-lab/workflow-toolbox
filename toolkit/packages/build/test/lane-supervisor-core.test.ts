@@ -174,7 +174,7 @@ describe('lane supervisor safety core', () => {
     expect(execFile).toHaveBeenCalledWith(
       'powershell.exe',
       expect.arrayContaining(['-Command', expect.stringContaining('Get-Process -Id 432')]),
-      expect.objectContaining({ timeout: 10_000 }),
+      expect.objectContaining({ timeout: 5_000 }),
     )
   })
 
@@ -205,6 +205,18 @@ describe('lane supervisor safety core', () => {
 
     expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile, timeoutMs: 100 })).toBeNull()
     expect(Date.now() - started).toBeLessThan(750)
+  })
+
+  it('retries a transient empty Windows process read within one total timeout budget', () => {
+    const argv = ['node.exe', 'worker.mjs']
+    const row = { Id: 433, ProcessName: 'node', Path: 'C:\\node.exe', StartTime: 1_789_587_296_000 }
+    const execFile = vi.fn()
+      .mockReturnValueOnce({ status: 0, stdout: '' })
+      .mockReturnValueOnce({ status: 0, stdout: JSON.stringify(row) })
+
+    expect(inspectProcess(433, { platform: 'win32', spawnSync: execFile, recordedArgv: argv, timeoutMs: 200 })).toMatchObject({ pid: 433, argv })
+    expect(execFile).toHaveBeenCalledTimes(2)
+    expect(execFile.mock.calls.reduce((total, call) => total + Number(call[2]?.timeout), 0)).toBeLessThanOrEqual(200)
   })
 
   it('captures a Windows command shim from one timeout-bounded Get-Process read', () => {
