@@ -40,6 +40,7 @@ export function readWorktreeRetentionMarker(root) {
 
 export function writeWorktreeRetentionMarker({ root, cardId, partial, boardId = null, retainedAt }) {
   const spentBound = partial && (
+    partial.reason === 'timeout' ||
     (partial.phase === 'critic' && /^plan not approved after \d+ critic rounds$/.test(partial.reason)) ||
     (['review', 'refutation'].includes(partial.phase) && new RegExp(`^${partial.phase} still requests changes after \\d+ harden rounds$`).test(partial.reason))
   )

@@ -274,6 +274,56 @@ function verdictFromReport(phase, content) {
   return { outcome: match[1], findings, severities }
 }
 
+function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop }) {
+  const stoppedRefusal = () => `edge refused: ${state.phase}->next; ${state.partial?.reason ?? 'runner'} already stopped the lifecycle: ${laneDir}`
+  const stopAtBoundary = (event) => {
+    const reason = state.pendingStop
+    const phase = state.phase
+    const result = `stopped phase=${phase} reason=${reason}`
+    state.partial = { phase, reason, findings: [] }
+    state.stopped = true
+    state.handled.set(event.tool_use_id, { shape: JSON.stringify(event), result })
+    const endedAt = now()
+    const currentPhase = timeline.phases.at(-1)
+    currentPhase.exited_at ??= endedAt
+    currentPhase.transition_id ??= event.tool_use_id
+    timeline.ended_at = endedAt
+    const report = `# SDK pilot partial report\n\nPartial: ${reason}\nPhase reached: ${phase}\nReason: ${reason}\n`
+    writeRegularFile(path.join(laneDir, 'pilot-report.md'), report)
+    state.pilotReportDigest = sha256(report)
+    persistTimeline()
+    if (typeof onBoundaryStop === 'function') onBoundaryStop({ phase, reason })
+    return result
+  }
+  const requestStop = (reason) => {
+    if (state.stopped || state.phase === 'awaiting_fidelity') return false
+    state.pendingStop ??= String(reason)
+    return true
+  }
+  return { requestStop, stopAtBoundary, stoppedRefusal }
+}
+
+function createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile }) {
+  return (reason) => {
+    if (state.phase === 'awaiting_fidelity') return JSON.parse(readRegularFile(path.join(laneDir, 'summary.json')) ?? '{}')
+    state.partial = { phase: state.phase, reason, findings: [] }
+    const endedAt = now()
+    timeline.phases.at(-1).exited_at ??= endedAt
+    timeline.ended_at = endedAt
+    persistTimeline()
+    audit()
+    let head = constructionBase
+    try { head = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() } catch {}
+    return archiveLifecycle({
+      root, archiveRoot, laneDir, cardId, route: frozenRoute, head,
+      phases: [...state.handled.values()].map((item) => item.result).concat(`partial: ${reason}`),
+      evidence: sha256(readRegularFile(evidencePath) ?? ''), partial: state.partial,
+      implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' }, routedCards: timeline.routed_cards,
+      assertDirectories: () => assertLaneDir(true), copy, git, sha256, writeRegularFile,
+    })
+  }
+}
+
 
 export function createLifecycleStateMachine({
   worktree,
@@ -303,6 +353,7 @@ export function createLifecycleStateMachine({
   boardContract = null,
   routeFinding = null,
   resolveRoutedFinding = null,
+  onBoundaryStop = null,
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
@@ -397,6 +448,8 @@ export function createLifecycleStateMachine({
     pendingControl: null,
     resolvedRoutedCards: new Set(),
     report: { stage: 'idle', base: null, head: null, tree: null },
+    pendingStop: null,
+    stopped: false,
   }
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
@@ -477,7 +530,7 @@ export function createLifecycleStateMachine({
         }
       : independentBrief({ ...options, artifacts })
   }
-  const { audit, evidencePath, laneEvidence, run, snapshotEvidence, verifySnapshot } = createLifecycleLaunch({
+  const { audit, evidencePath, laneEvidence, run: lifecycleRun, snapshotEvidence, verifySnapshot } = createLifecycleLaunch({
     root,
     laneDir,
     executor,
@@ -509,36 +562,14 @@ export function createLifecycleStateMachine({
       persistTimeline()
     },
   })
-  function finalizePartial(reason) {
-    if (state.phase === 'awaiting_fidelity') return JSON.parse(readRegularFile(path.join(laneDir, 'summary.json')) ?? '{}')
-    state.partial = { phase: state.phase, reason, findings: [] }
-    const endedAt = now()
-    timeline.phases.at(-1).exited_at ??= endedAt
-    timeline.ended_at = endedAt
-    persistTimeline()
-    audit()
-    let head = constructionBase
-    try { head = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim() } catch {}
-    return archiveLifecycle({
-      root,
-      archiveRoot,
-      laneDir,
-      cardId,
-      route: frozenRoute,
-      head,
-      phases: [...state.handled.values()].map((item) => item.result).concat(`partial: ${reason}`),
-      evidence: sha256(readRegularFile(evidencePath) ?? ''),
-      partial: state.partial,
-      implementation: { name: LIFECYCLE_SERVER_NAME, version: '1.0.0' },
-      routedCards: timeline.routed_cards,
-      assertDirectories: () => assertLaneDir(true),
-      copy,
-      git,
-      sha256,
-      writeRegularFile,
-    })
+  const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop })
+  function run(args) {
+    if (state.stopped) return stoppedRefusal()
+    return lifecycleRun(args)
   }
+  const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
   function transition(event) {
+    if (state.stopped) return stoppedRefusal()
     try { assertLaneDir(state.phase === 'report' || state.report.stage === 'committed') } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!event || typeof event !== 'object' || !PHASES.includes(event.phase)) {
       return refusal('unknown->next', 'valid phase', laneDir)
@@ -555,6 +586,7 @@ export function createLifecycleStateMachine({
     if (event.phase !== state.phase) {
       return refusal(`${state.phase}->next`, `current phase ${state.phase}`, laneDir)
     }
+    if (state.pendingStop && state.phase === 'report') return stopAtBoundary(event)
     let next = null
     let resultDetail = ''
     if (state.phase === 'discovery') {
@@ -752,6 +784,7 @@ export function createLifecycleStateMachine({
       next = 'awaiting_fidelity'
     }
     if (!next) return refusal(`${state.phase}->next`, 'outcome', laneDir)
+    if (state.pendingStop) return stopAtBoundary(event)
     const phaseRules = next === 'awaiting_fidelity'
       ? ''
       : composeRules(activeRules, {
@@ -775,6 +808,7 @@ export function createLifecycleStateMachine({
     return result
   }
   async function artifact({ kind, content }) {
+    if (state.stopped) return stoppedRefusal()
     try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     const spec = ARTIFACTS[kind]
     if (!spec) {
@@ -883,6 +917,7 @@ export function createLifecycleStateMachine({
     }
   }
   async function routeFindingTool(args) {
+    if (state.stopped) return stoppedRefusal()
     if (!boardContract || typeof routeFinding !== 'function') return 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
     try {
       const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })
@@ -990,5 +1025,6 @@ export function createLifecycleStateMachine({
     }),
   })
   Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })
+  Object.defineProperty(server, 'requestStop', { value: requestStop })
   return server
 }
