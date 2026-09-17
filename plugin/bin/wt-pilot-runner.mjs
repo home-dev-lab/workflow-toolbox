@@ -30,4 +30,11 @@ async function main() {
   }
 }
 
-main().then((code) => { process.exitCode = code })
+main().then((code) => {
+  process.exitCode = code
+  // Measured 2026-09-17 on the first real LITE run of card 1865938900493534235: after a refused initialization
+  // receipt the summary and the archive were written, `main` resolved, and the process stayed alive in an epoll
+  // wait with no child and no further output, so the launcher's EXIT marker never appeared. A draining process
+  // exits before this timer fires; the timer is unreferenced so it never keeps one alive itself.
+  setTimeout(() => process.exit(code), 2_000).unref()
+})
