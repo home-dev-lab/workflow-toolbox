@@ -4,11 +4,11 @@ import path from 'node:path'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 const DARWIN_PROCESS_TABLE_TTL_MS = 100
-const WINDOWS_PROCESS_TABLE_TTL_MS = 500
+const WINDOWS_PROCESS_READ_TTL_MS = 500
 const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
+const WINDOWS_APPROXIMATE_START_SKEW_MS = 2_000
 const darwinProcessTableCache = new WeakMap()
 const darwinCwdCache = new WeakMap()
-const windowsProcessTableCache = new WeakMap()
 const windowsProcessCache = new WeakMap()
 
 export function sameIdentity(expected, actual) {
@@ -16,12 +16,25 @@ export function sameIdentity(expected, actual) {
   if (expected.cwd) {
     try { sameCwd = realpathSync(expected.cwd) === realpathSync(actual?.cwd) } catch { sameCwd = expected.cwd === actual?.cwd }
   }
+  const sameStartTime = startTimesMatch(expected, actual)
+  const sameImage = !expected?.image
+    || Boolean(actual?.image
+      && expected.image.name === actual.image.name
+      && (!expected.image.path || (actual.image.path && expected.image.path.toLowerCase() === actual.image.path.toLowerCase())))
   return Boolean(actual
     && expected.pid === actual.pid
     && Number.isFinite(expected.startTime)
-    && expected.startTime === actual.startTime
+    && Number.isFinite(actual.startTime)
+    && sameStartTime
+    && sameImage
     && JSON.stringify(expected.argv) === JSON.stringify(actual.argv)
     && sameCwd)
+}
+
+function startTimesMatch(expected, actual) {
+  return expected?.startTimeApproximate
+    ? Math.abs(expected.startTime - actual?.startTime) <= WINDOWS_APPROXIMATE_START_SKEW_MS
+    : expected?.startTime === actual?.startTime
 }
 
 function evidenceSource(platform) {
@@ -36,22 +49,6 @@ function runEvidence(command, args, execFile, timeoutMs) {
     if (result.error) return { status: 'unavailable' }
     return { status: result.status, stdout: result.stdout ?? '' }
   } catch { return { status: 'unavailable' } }
-}
-
-function powershellProcessTable(execFile, timeoutMs = WINDOWS_PROCESS_READ_TIMEOUT_MS, now = Date.now()) {
-  const cached = windowsProcessTableCache.get(execFile)
-  if (cached && now - cached.readAt <= WINDOWS_PROCESS_TABLE_TTL_MS) return cached.result
-  const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,CreationDate,CommandLine,ParentProcessId | ConvertTo-Json -Compress'
-  const evidence = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile, timeoutMs)
-  let result = evidence
-  if (evidence.status === 0) {
-    try {
-      const parsed = evidence.stdout.trim() ? JSON.parse(evidence.stdout) : []
-      result = { status: 0, value: Array.isArray(parsed) ? parsed : [parsed] }
-    } catch { result = { status: 'unavailable' } }
-  }
-  windowsProcessTableCache.set(execFile, { readAt: now, result })
-  return result
 }
 
 function darwinProcessTable(execFile, pid, now = Date.now()) {
@@ -104,22 +101,13 @@ function darwinCwd(pid, execFile, now = Date.now()) {
   return value.get(pid) ?? null
 }
 
-function powershellProcess(pid, execFile, timeoutMs) {
-  // The pid is interpolated into a PowerShell command string: refuse anything that is not a plain process id.
-  if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return { status: 1, stdout: '' }
-  const table = powershellProcessTable(execFile, timeoutMs)
-  if (table.status === 'unavailable' || table.status !== 0) return table
-  const value = table.value.find((row) => Number(row?.ProcessId) === Number(pid))
-  return value ? { status: 0, value } : { status: 1, stdout: '' }
-}
-
-function powershellSingleProcess(pid, execFile, timeoutMs = WINDOWS_PROCESS_READ_TIMEOUT_MS, now = Date.now()) {
+function powershellProcess(pid, execFile, timeoutMs = WINDOWS_PROCESS_READ_TIMEOUT_MS, now = Date.now()) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return { status: 1, stdout: '' }
   let cache = windowsProcessCache.get(execFile)
   if (!cache) { cache = new Map(); windowsProcessCache.set(execFile, cache) }
   const cached = cache.get(Number(pid))
-  if (cached && now - cached.readAt <= WINDOWS_PROCESS_TABLE_TTL_MS) return cached.result
-  const script = `Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(pid)}" | Select-Object ProcessId,CreationDate,CommandLine,ParentProcessId | ConvertTo-Json -Compress`
+  if (cached && now - cached.readAt <= WINDOWS_PROCESS_READ_TTL_MS) return cached.result
+  const script = `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ Id = $p.Id; ProcessName = $p.ProcessName; Path = $p.Path; StartTime = [DateTimeOffset]::new($p.StartTime).ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress }`
   const evidence = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile, timeoutMs)
   let result = evidence
   if (evidence.status === 0) {
@@ -146,7 +134,7 @@ function processExists(pid, { platform = process.platform, procRoot = '/proc', s
     return result.status === 0 && result.value.has(Number(pid))
   }
   if (platform === 'win32') {
-    const result = powershellSingleProcess(pid, execFile, timeoutMs)
+    const result = powershellProcess(pid, execFile, timeoutMs)
     if (result.status === 'unavailable') return null
     return result.status === 0
   }
@@ -167,10 +155,10 @@ function processState(pid, { platform = process.platform, procRoot = '/proc', sp
 
 function identityStatus(expected, { inspect, platform, procRoot, processExists: exists, processState: state }) {
   if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv) || !Number.isFinite(expected.startTime)) return 'unknown'
-  const actual = inspect(expected.pid, { platform, procRoot, captureCwd: false })
+  const actual = inspect(expected.pid, { platform, procRoot, captureCwd: false, recordedArgv: expected.argv })
   if (actual) {
-    if (actual.startTime !== expected.startTime) return 'gone'
-    return sameIdentity(expected, actual) ? 'running' : 'unknown'
+    if (sameIdentity(expected, actual)) return 'running'
+    return startTimesMatch(expected, actual) ? 'unknown' : 'gone'
   }
   const existence = exists(expected.pid, { platform, procRoot })
   if (existence === false) return 'gone'
@@ -184,10 +172,10 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
     return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
   if (record.state === 'launch-failed') return { status: 'terminal', reason: 'launch-failed', worker: 'gone', child: 'gone' }
-  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, { inspect, platform, procRoot, processExists: exists, processState: state })
+  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, startTimeApproximate: record.workerStartTimeApproximate, image: record.workerImage }, { inspect, platform, procRoot, processExists: exists, processState: state })
   const child = record.childPid === null && record.childArgv === null
     ? 'not-spawned'
-    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, { inspect, platform, procRoot, processExists: exists, processState: state })
+    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, startTimeApproximate: record.childStartTimeApproximate, image: record.childImage }, { inspect, platform, procRoot, processExists: exists, processState: state })
   if (worker === 'gone' && child === 'not-spawned') return { status: 'gone', reason: 'worker-gone-no-child', worker, child: 'gone' }
   if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
   if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
@@ -298,18 +286,19 @@ function inspectDarwinProcess(pid, execFile, captureCwd) {
   return { pid: row.pid, argv: row.argv, startTime: row.startTime, groupId: row.groupId, cwd: captureCwd ? darwinCwd(pid, execFile) : null }
 }
 
-function inspectWindowsProcess(pid, execFile, singlePid, timeoutMs) {
-  const result = singlePid ? powershellSingleProcess(pid, execFile, timeoutMs) : powershellProcess(pid, execFile, timeoutMs)
+function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv) {
+  const result = powershellProcess(pid, execFile, timeoutMs)
   if (result.status !== 0 || !result.value) return null
-  const startTime = processStartSeconds(result.value.CreationDate)
-  if (!Number.isFinite(startTime) || typeof result.value.CommandLine !== 'string') return null
-  return { pid, argv: [result.value.CommandLine], startTime, groupId: Number(result.value.ParentProcessId), cwd: null }
+  const startTime = Number(result.value.StartTime)
+  const name = String(result.value.ProcessName || '').toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, '')
+  if (!Number.isFinite(startTime) || !name) return null
+  return { pid, argv: Array.isArray(recordedArgv) ? recordedArgv : [], startTime, image: { name, path: typeof result.value.Path === 'string' && result.value.Path ? result.value.Path : null }, groupId: null, cwd: null }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, singlePid = false, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined } = {}) {
+export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null } = {}) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
   if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
-  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, singlePid, timeoutMs)
+  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv)
   if (platform !== 'linux') return null
   try {
     const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)

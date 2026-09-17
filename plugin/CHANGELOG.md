@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Windows lane supervision now captures launcher and child identities with bounded `Get-Process` reads and spawn-recorded argv instead of CIM/WMI, rejects PID reuse by image and start time, and keeps the wake-channel polling backstop alive after initialization on Windows.
 - Windows lane launcher PID reads now bypass the full CIM table, every PowerShell process read has a 10-second ceiling with unreadable evidence remaining unknown, and cross-OS timing locks follow their provider and polling contracts.
 - Concurrent-test guard coverage injects deterministic process listings while retaining a real-machine count-reporting case; wake and artifact-server delivery bounds now follow their configured polling and readiness intervals, and lane capture fixtures derive their retry windows from the capture cadence.
 - Windows lane launch identity capture now uses a timeout-bounded single-PID query, records the observed command-shim identity or a named capture timeout, and macOS lifecycle coverage waits for the literal terminal receipt while locking stage ordering.

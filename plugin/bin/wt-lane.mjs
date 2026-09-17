@@ -12,7 +12,7 @@ import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
 import { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'
 import { laneModelRefusal } from './lib/lane-model-allowlist.mjs'
-import { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
 const DEFAULT_TIMEOUT = 5400
@@ -23,9 +23,10 @@ const DEFAULT_MAX_BRIEF_AGE = 600
 const DECISION_TRANSITION_BOUND_MS = 5_000
 const LAUNCH_LOCK_MAX_AGE_MS = 120_000
 const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
+const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
 }
 
 function usage() {
@@ -102,15 +103,21 @@ function parseBriefReceipt(encoded) {
   }
 }
 
-export function inspectStartedProcess(inspect, pid, { platform = process.platform, timeoutMs = platform === 'linux' ? 1_000 : 5_000, expectedCommand = null } = {}) {
+function windowsImage(command) {
+  const executable = String(command || '').replace(/^"([^\"]+)".*$/, '$1')
+  return { name: path.basename(executable).toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, ''), path: path.isAbsolute(executable) ? executable : null }
+}
+
+export function inspectStartedProcess(inspect, pid, { platform = process.platform, timeoutMs = platform === 'linux' ? 1_000 : 5_000, expectedCommand = null, expectedArgv = null, spawnedAt = Date.now() } = {}) {
   const deadline = Date.now() + timeoutMs
   let candidate = null
   do {
     const remainingMs = deadline - Date.now()
     if (remainingMs <= 0) break
-    const identity = inspect(pid, { platform, captureCwd: false, singlePid: platform === 'win32', timeoutMs: remainingMs })
+    const identity = inspect(pid, { platform, captureCwd: false, singlePid: platform === 'win32', timeoutMs: remainingMs, recordedArgv: expectedArgv })
     if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) {
       candidate = identity
+      if (platform === 'win32') return { identity, unavailable: null }
       const commandLine = identity.argv.length === 1 ? identity.argv[0].trim() : identity.argv[0]
       const executable = commandLine.startsWith('"')
         ? /^"([^"]+)"/.exec(commandLine)?.[1] ?? commandLine
@@ -126,6 +133,9 @@ export function inspectStartedProcess(inspect, pid, { platform = process.platfor
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
   } while (Date.now() < deadline)
   if (candidate && platform !== 'win32') return { identity: candidate, unavailable: null }
+  if (platform === 'win32' && Array.isArray(expectedArgv) && expectedArgv.length > 0) {
+    return { identity: { pid, argv: expectedArgv, startTime: spawnedAt, startTimeApproximate: true, image: windowsImage(expectedCommand ?? expectedArgv[0]), groupId: null, cwd: null }, unavailable: 'unavailable (powershell); using spawn-time identity' }
+  }
   const source = platform === 'darwin' ? 'ps' : platform === 'win32' ? 'powershell' : 'proc'
   return { identity: null, unavailable: `unavailable (${source})`, ...(candidate ? { observed: candidate } : {}) }
 }
@@ -287,9 +297,11 @@ async function main() {
     mkdirSync(paths.dir, { recursive: true })
     writeLaneStage(opts.log, 'inspect-launcher-start', { reset: true, runId, header: briefEvidenceLines(briefEvidence, true) })
     const launcherInspect = (pid, options = {}) => inspectLauncherProcess(consentModules.inspectProcess, pid, { ...options, platform: process.platform })
-    const identity = launcherInspect(process.pid) ?? { argv: process.argv, startTime: null }
+    const identity = launcherInspect(process.pid, { recordedArgv: process.argv }) ?? (process.platform === 'win32'
+      ? { argv: process.argv, startTime: PROCESS_STARTED_AT, startTimeApproximate: true, image: windowsImage(process.execPath) }
+      : { argv: process.argv, startTime: null })
     writeLaneStage(opts.log, 'inspect-launcher-done')
-    const lockOwner = { version: 1, runId, pid: process.pid, argv: identity.argv, startTime: identity.startTime, createdAt: new Date().toISOString() }
+    const lockOwner = { version: 1, runId, pid: process.pid, argv: identity.argv, startTime: identity.startTime, ...(process.platform === 'win32' ? { startTimeApproximate: identity.startTimeApproximate ?? false, image: identity.image ?? null } : {}), createdAt: new Date().toISOString() }
     const lockStatus = (lockPath) => {
       let owner = null
       try { owner = JSON.parse(readFileSync(path.join(lockPath, 'owner.json'), 'utf8')) } catch {}
@@ -301,9 +313,9 @@ async function main() {
       try { process.kill(owner.pid, 0) } catch (error) {
         if (error?.code === 'ESRCH') return { stale: true, owner, reason: 'owner process is gone' }
       }
-      const actual = launcherInspect(owner.pid)
-      if (actual && Number.isFinite(owner.startTime) && Number.isFinite(actual.startTime) && actual.startTime !== owner.startTime) return { stale: true, owner, reason: 'owner pid was reused' }
-      if (actual && Number.isFinite(owner.startTime) && Number.isFinite(actual.startTime) && actual.startTime === owner.startTime) return { stale: false, owner, reason: 'owner process is still running' }
+      const actual = launcherInspect(owner.pid, { recordedArgv: owner.argv })
+      if (actual && !consentModules.sameIdentity(owner, actual)) return { stale: true, owner, reason: 'owner pid was reused' }
+      if (actual && consentModules.sameIdentity(owner, actual)) return { stale: false, owner, reason: 'owner process is still running' }
       return age > LAUNCH_LOCK_MAX_AGE_MS
         ? { stale: true, owner, reason: `owner process identity is unreadable after ${LAUNCH_LOCK_MAX_AGE_MS}ms` }
         : { stale: false, owner, reason: 'owner process identity is not ready' }
@@ -474,9 +486,10 @@ async function main() {
       const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
+      const spawnedAt = Date.now()
       const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
       writeLaneStage(opts.log, 'worker-identity-capture-start')
-      const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: process.execPath })
+      const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: process.execPath, expectedArgv: child.spawnargs, spawnedAt })
       if (process.platform === 'win32' && !captured.identity) {
         const reason = captureTimeoutReason(captured)
         writeLaneStage(opts.log, `worker-identity-capture-timeout ${reason}`)
@@ -489,7 +502,7 @@ async function main() {
       const identity = captured.identity
       const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
       try {
-        writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity?.argv ?? null, workerStartTime: identity?.startTime ?? null, ...(process.platform === 'darwin' ? { workerCwd: identity?.cwd ?? null } : {}), ...(captured.unavailable ? { workerIdentity: captured.unavailable } : {}), childPid: null, childArgv: null, childStartTime: null, ...(process.platform === 'darwin' ? { childCwd: null } : {}), worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+        writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity?.argv ?? null, workerStartTime: identity?.startTime ?? null, ...(process.platform === 'win32' ? { workerStartTimeApproximate: identity?.startTimeApproximate ?? false, workerImage: identity?.image ?? null } : {}), ...(process.platform === 'darwin' ? { workerCwd: identity?.cwd ?? null } : {}), ...(captured.unavailable ? { workerIdentity: captured.unavailable } : {}), childPid: null, childArgv: null, childStartTime: null, ...(process.platform === 'darwin' ? { childCwd: null } : {}), worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
       } catch (error) {
         child.kill('SIGTERM')
         rmSync(briefSnapshot, { force: true })
@@ -529,6 +542,7 @@ async function main() {
   const progress = `wt-lane: starting ${opencodeBinary} in ${opts.dir}`
   process.stdout.write(`${progress}\n`)
   appendFileSync(fd, `${new Date().toISOString()} stage=opencode-spawn-start ${progress}\n`)
+  const childSpawnedAt = Date.now()
   try {
     child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd] }, process.platform)
     child.once('close', (code, signal) => { earlyChildClose = [code, signal] })
@@ -554,7 +568,7 @@ async function main() {
     appendFileSync(fd, `${new Date().toISOString()} stage=${stage}\n`)
   }
   appendWorkerStage('child-identity-capture-start')
-  const childCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: opencodeBinary })
+  const childCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: child.spawnfile ?? opencodeBinary, expectedArgv: child.spawnargs, spawnedAt: childSpawnedAt })
   if (process.platform === 'win32' && !childCapture.identity) {
     const reason = captureTimeoutReason(childCapture)
     appendWorkerStage(`child-identity-capture-timeout ${reason}`)
@@ -567,7 +581,7 @@ async function main() {
   }
   appendWorkerStage('child-identity-capture-done')
   appendWorkerStage('worker-identity-capture-start')
-  const workerCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, process.pid, { expectedCommand: process.execPath })
+  const workerCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, process.pid, { expectedCommand: process.execPath, expectedArgv: process.argv, spawnedAt: PROCESS_STARTED_AT })
   if (process.platform === 'win32' && !workerCapture.identity) {
     const reason = captureTimeoutReason(workerCapture)
     appendWorkerStage(`worker-identity-capture-timeout ${reason}`)
@@ -581,7 +595,7 @@ async function main() {
   appendWorkerStage('worker-identity-capture-done')
   const childIdentity = childCapture.identity
   const workerIdentity = workerCapture.identity
-  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(process.platform === 'darwin' ? { workerCwd: workerIdentity?.cwd ?? null } : {}), ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(process.platform === 'darwin' ? { childCwd: childIdentity?.cwd ?? null } : {}), ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
+  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(process.platform === 'win32' ? { workerStartTimeApproximate: workerIdentity?.startTimeApproximate ?? false, workerImage: workerIdentity?.image ?? null } : {}), ...(process.platform === 'darwin' ? { workerCwd: workerIdentity?.cwd ?? null } : {}), ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(process.platform === 'win32' ? { childStartTimeApproximate: childIdentity?.startTimeApproximate ?? false, childImage: childIdentity?.image ?? null } : {}), ...(process.platform === 'darwin' ? { childCwd: childIdentity?.cwd ?? null } : {}), ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
   let currentState = baseState
   const writeState = (extra) => {
     currentState = { ...currentState, ...extra }

@@ -160,38 +160,42 @@ describe('lane supervisor safety core', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('reads a Windows PowerShell CIM transcript into the common identity contract', () => {
-    const execFile = vi.fn(() => ({ status: 0, stdout: '{"ProcessId":432,"CreationDate":"2026-09-16T12:34:56.789000-07:00","CommandLine":"node.exe worker.mjs --flag","ParentProcessId":431}\r\n' }))
-    expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile })).toEqual({
+  it('reads a Windows Get-Process transcript while retaining spawn-recorded argv', () => {
+    const argv = ['node.exe', 'worker.mjs', '--flag']
+    const execFile = vi.fn(() => ({ status: 0, stdout: '{"Id":432,"ProcessName":"node","Path":"C:\\\\Program Files\\\\nodejs\\\\node.exe","StartTime":1789587296789}\r\n' }))
+    expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile, recordedArgv: argv })).toEqual({
       pid: 432,
-      argv: ['node.exe worker.mjs --flag'],
-      startTime: Math.floor(Date.parse('2026-09-16T12:34:56.789000-07:00') / 1000),
-      groupId: 431,
+      argv,
+      startTime: 1_789_587_296_789,
+      image: { name: 'node', path: 'C:\\Program Files\\nodejs\\node.exe' },
+      groupId: null,
       cwd: null,
     })
     expect(execFile).toHaveBeenCalledWith(
       'powershell.exe',
-      expect.arrayContaining(['-Command', expect.stringContaining('Get-CimInstance Win32_Process |')]),
+      expect.arrayContaining(['-Command', expect.stringContaining('Get-Process -Id 432')]),
       expect.objectContaining({ timeout: 10_000 }),
     )
   })
 
-  it('routes launcher PID reads around a slow full Windows process table', () => {
+  it('captures launcher identity while every injected CIM call stalls', () => {
     const execFile = vi.fn((_program: string, args: string[]) => {
       const script = args.at(-1) ?? ''
-      if (!script.includes('-Filter')) {
+      if (script.includes('Get-CimInstance')) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3_000)
         return { status: 0, stdout: '[]' }
       }
-      return { status: 0, stdout: JSON.stringify({ ProcessId: 432, CreationDate: '2026-09-16T19:34:56.000Z', CommandLine: 'node.exe wt-lane.mjs', ParentProcessId: 431 }) }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+      return { status: 0, stdout: JSON.stringify({ Id: 432, ProcessName: 'node', Path: 'C:\\node.exe', StartTime: 1_789_587_296_000 }) }
     })
     const inspect = (pid: number, options: Record<string, unknown>) => inspectProcess(pid, { ...options, spawnSync: execFile })
     const started = Date.now()
 
-    expect(inspectLauncherProcess(inspect, 432, { platform: 'win32' })).toMatchObject({ pid: 432 })
+    expect(inspectLauncherProcess(inspect, 432, { platform: 'win32', recordedArgv: ['node.exe', 'wt-lane.mjs'] })).toMatchObject({ pid: 432, argv: ['node.exe', 'wt-lane.mjs'] })
     expect(Date.now() - started).toBeLessThan(1_000)
     expect(execFile).toHaveBeenCalledTimes(1)
-    expect(String(execFile.mock.calls[0]?.[1]?.at(-1))).toContain('ProcessId = 432')
+    expect(String(execFile.mock.calls[0]?.[1]?.at(-1))).toContain('Get-Process -Id 432')
+    expect(String(execFile.mock.calls[0]?.[1]?.at(-1))).not.toContain('Get-CimInstance')
   })
 
   it('returns unavailable within the configured bound when the full Windows table never answers', () => {
@@ -203,44 +207,44 @@ describe('lane supervisor safety core', () => {
     expect(Date.now() - started).toBeLessThan(750)
   })
 
-  it('captures a Windows command shim from one timeout-bounded single-pid CIM read', () => {
-    const binary = String.raw`C:\Program Files\opencode\opencode.CMD`
-    const commandLine = String.raw`cmd.exe /d /s /c "C:\Program^ Files\opencode\opencode.CMD run"`
-    const execFile = vi.fn(() => ({ status: 0, stdout: JSON.stringify({ ProcessId: 432, CreationDate: '2026-09-16T19:34:56.000Z', CommandLine: commandLine, ParentProcessId: 431 }) }))
+  it('captures a Windows command shim from one timeout-bounded Get-Process read', () => {
+    const argv = ['cmd.exe', '/d', '/s', '/c', String.raw`"C:\Program^ Files\opencode\opencode.CMD run"`]
+    const execFile = vi.fn(() => ({ status: 0, stdout: JSON.stringify({ Id: 432, ProcessName: 'cmd', Path: 'C:\\Windows\\System32\\cmd.exe', StartTime: 1_789_587_296_000 }) }))
     const inspect = (pid: number, options: Record<string, unknown>) => inspectProcess(pid, { ...options, spawnSync: execFile })
 
-    expect(inspectStartedProcess(inspect, 432, { platform: 'win32', timeoutMs: 250, expectedCommand: binary }).identity).toMatchObject({
+    expect(inspectStartedProcess(inspect, 432, { platform: 'win32', timeoutMs: 250, expectedCommand: 'cmd.exe', expectedArgv: argv }).identity).toMatchObject({
       pid: 432,
-      argv: [commandLine],
-      startTime: 1_789_587_296,
+      argv,
+      startTime: 1_789_587_296_000,
+      image: { name: 'cmd', path: 'C:\\Windows\\System32\\cmd.exe' },
     })
     expect(execFile).toHaveBeenCalledWith(
       'powershell.exe',
-      expect.arrayContaining(['-Command', expect.stringContaining('ProcessId = 432')]),
+      expect.arrayContaining(['-Command', expect.stringContaining('Get-Process -Id 432')]),
       expect.objectContaining({ timeout: expect.any(Number) }),
     )
   })
 
-  it('bounds a slow Windows single-pid provider read by the capture wall deadline', () => {
+  it('falls back to a flagged spawn-time identity when the bounded Windows read is unavailable', () => {
     const execFile = ((_program: string, _args: string[], options: Parameters<typeof spawnSync>[2]) =>
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], options)) as typeof spawnSync
     const inspect = (pid: number, options: Record<string, unknown>) => inspectProcess(pid, { ...options, spawnSync: execFile })
     const started = Date.now()
 
-    expect(inspectStartedProcess(inspect, 432, { platform: 'win32', timeoutMs: 100, expectedCommand: 'opencode.CMD' }))
-      .toEqual({ identity: null, unavailable: 'unavailable (powershell)' })
+    expect(inspectStartedProcess(inspect, 432, { platform: 'win32', timeoutMs: 100, expectedCommand: 'opencode.CMD', expectedArgv: ['opencode.CMD', 'run'], spawnedAt: 123_456 }))
+      .toEqual({ identity: { pid: 432, argv: ['opencode.CMD', 'run'], startTime: 123_456, startTimeApproximate: true, image: { name: 'opencode', path: null }, groupId: null, cwd: null }, unavailable: 'unavailable (powershell); using spawn-time identity' })
     expect(Date.now() - started).toBeLessThan(750)
   })
 
-  it('shares one cached Windows table read and refreshes after its 500 ms staleness bound', () => {
+  it('caches one Windows PID read and refreshes after its 500 ms staleness bound', () => {
     vi.useFakeTimers()
     try {
-      const row = { ProcessId: 432, CreationDate: '2026-09-16T19:34:56.000Z', CommandLine: 'node.exe worker.mjs', ParentProcessId: 431 }
+      const row = { Id: 432, ProcessName: 'node', Path: 'C:\\node.exe', StartTime: 1_789_587_296_000 }
       const execFile = vi.fn()
-        .mockReturnValueOnce({ status: 0, stdout: JSON.stringify([row]) })
-        .mockReturnValueOnce({ status: 0, stdout: '[]' })
+        .mockReturnValueOnce({ status: 0, stdout: JSON.stringify(row) })
+        .mockReturnValueOnce({ status: 0, stdout: '' })
       expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile })).not.toBeNull()
-      expect(inspectProcess(999, { platform: 'win32', spawnSync: execFile })).toBeNull()
+      expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile })).not.toBeNull()
       expect(execFile).toHaveBeenCalledTimes(1)
       vi.advanceTimersByTime(501)
       expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile })).toBeNull()
@@ -248,24 +252,31 @@ describe('lane supervisor safety core', () => {
     } finally { vi.useRealTimers() }
   })
 
-  it('classifies both Windows lane pids from one process-table read', () => {
+  it('classifies both Windows lane pids from bounded per-pid native reads', () => {
     const rows = [
-      { ProcessId: 40, CreationDate: '2026-09-16T19:34:56.000Z', CommandLine: 'node.exe worker.mjs', ParentProcessId: 39 },
-      { ProcessId: 41, CreationDate: '2026-09-16T19:34:57.000Z', CommandLine: 'opencode.cmd run', ParentProcessId: 40 },
+      { Id: 40, ProcessName: 'node', Path: 'C:\\node.exe', StartTime: 1_789_587_296_000 },
+      { Id: 41, ProcessName: 'opencode', Path: 'C:\\opencode.exe', StartTime: 1_789_587_297_000 },
     ]
-    const execFile = vi.fn(() => ({ status: 0, stdout: JSON.stringify(rows) }))
+    const execFile = vi.fn((_program: string, args: string[]) => ({ status: 0, stdout: JSON.stringify(String(args.at(-1)).includes('-Id 40 ') ? rows[0] : rows[1]) }))
     const inspect = (pid: number, options: Record<string, unknown>) => inspectProcess(pid, { ...options, spawnSync: execFile })
-    const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node.exe worker.mjs'], workerStartTime: 1_789_587_296, childPid: 41, childArgv: ['opencode.cmd run'], childStartTime: 1_789_587_297 }
+    const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node.exe', 'worker.mjs'], workerStartTime: 1_789_587_296_000, workerImage: { name: 'node', path: 'C:\\node.exe' }, childPid: 41, childArgv: ['opencode.exe', 'run'], childStartTime: 1_789_587_297_000, childImage: { name: 'opencode', path: 'C:\\opencode.exe' } }
     expect(classifyLane(record, { platform: 'win32', inspect })).toMatchObject({ status: 'running', worker: 'running', child: 'running' })
-    expect(execFile).toHaveBeenCalledTimes(1)
+    expect(execFile).toHaveBeenCalledTimes(2)
   })
 
-  it.each([
-    '2026-09-16T19:34:56.000Z',
-    '/Date(1789587296000)/',
-  ])('normalizes the Windows CreationDate encoding %s', (creationDate) => {
-    const execFile = vi.fn(() => ({ status: 0, stdout: JSON.stringify({ ProcessId: 432, CreationDate: creationDate, CommandLine: 'node.exe worker.mjs', ParentProcessId: 431 }) }))
-    expect(inspectProcess(432, { platform: 'win32', spawnSync: execFile })?.startTime).toBe(1_789_587_296)
+  it('rejects a reused Windows pid when its native image changes', () => {
+    const expected = { pid: 432, argv: ['node.exe', 'worker.mjs'], startTime: 1_789_587_296_000, image: { name: 'node', path: 'C:\\node.exe' } }
+    expect(sameIdentity(expected, { ...expected, image: { name: 'other', path: 'C:\\other.exe' } })).toBe(false)
+    expect(sameIdentity(expected, { ...expected, image: { name: 'node', path: null } })).toBe(false)
+  })
+
+  it('rejects a reused Windows pid outside the exact or explicitly approximate start-time contract', () => {
+    const expected = { pid: 432, argv: ['node.exe', 'worker.mjs'], startTime: 1_789_587_296_000, image: { name: 'node', path: 'C:\\node.exe' } }
+    expect(sameIdentity(expected, { ...expected, startTime: expected.startTime + 1 })).toBe(false)
+    expect(sameIdentity({ ...expected, startTimeApproximate: true }, { ...expected, startTime: expected.startTime + 2_000 })).toBe(true)
+    expect(sameIdentity({ ...expected, startTimeApproximate: true }, { ...expected, startTime: expected.startTime + 2_001 })).toBe(false)
+    const record = { runId: '432-1', state: 'launching', workerPid: expected.pid, workerArgv: expected.argv, workerStartTime: expected.startTime, workerStartTimeApproximate: true, workerImage: expected.image, childPid: null, childArgv: null }
+    expect(classifyLane(record, { platform: 'win32', inspect: () => ({ ...expected, startTime: expected.startTime + 2_000 }) })).toMatchObject({ status: 'launching', worker: 'running' })
   })
 
   it.each(['darwin', 'win32'])('classifies %s running and gone from injected provider evidence', (platform) => {
