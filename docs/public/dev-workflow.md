@@ -163,8 +163,10 @@ parallel **waves**, each task in an isolated git worktree on its own
   as an override on top of the default args below:
   `"pluginRoot": "/abs/path/to/workflow-toolbox/plugin"`.
   Omit it, and merged worktrees are still removed on any path where that
-  resolution succeeds; they are retained on disk and reported by path and
-  branch only if resolution or the removal itself fails.
+  resolution succeeds AND the guarded remover confirms the removal; they are
+  retained on disk and reported by path and branch whenever the agent does not
+  confirm removal — a refused removal (the card still open, the ordinary case),
+  a failed resolution, or a cleanup agent that never answered.
 
 ```text
 args: {
