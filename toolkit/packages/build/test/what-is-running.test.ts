@@ -10,6 +10,7 @@ import { readSnapshot, register } from '../../../../plugin/hooks/hooks.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
+const PHASE_COST_FIXTURE = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'phase-cost.json')
 
 function runSelftest(filter?: string) {
   return spawnSync(process.execPath, [SELFTEST], {
@@ -92,6 +93,52 @@ function textChildren(tree: unknown): string[] {
 }
 
 describe('What is running collector seam', () => {
+  it('reads archived per-phase costs, preserves unknown, and records visible provenance', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-phase-cost-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1866347363803596065'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'phase-cost')
+      const lane = join(worktree, '.lane')
+      const archive = join(paths.suiteRoot, 'reports', `${cardId}-fixture`)
+      mkdirSync(lane, { recursive: true })
+      mkdirSync(archive, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Per-phase cost\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=discovery\nlifecycle: accepted phase=plan\n')
+      writeFileSync(join(lane, 'summary.json'), JSON.stringify({ archive: { path: archive } }))
+      writeFileSync(join(archive, 'cost.json'), readFileSync(PHASE_COST_FIXTURE, 'utf8'))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row.phaseCosts.discovery).toEqual({ input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, total: 2353491 })
+      expect(row.phaseCosts.plan).toBe('unknown')
+      expect(row.phaseCostSource).toBe(join(archive, 'cost.json'))
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('falls back to the bounded live usage file and attributes messages by lifecycle timestamp', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-live-cost-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1866347363803596066'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'live-cost')
+      const lane = join(worktree, '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'LITE' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Live cost\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=discovery\n')
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [{ phase: 'discovery', round: null, entered_at: 1000, exited_at: null }], lanes: [] }))
+      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [{ arrived_at: '1970-01-01T00:00:02.000Z', input: 10, output: 2, cache_read: 30, cache_creation: 4 }] }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row.phaseCosts.discovery).toEqual({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 })
+      expect(row.phaseCostSourceKind).toBe('live usage file')
+      expect(row.phaseCostSource).toBe(join(lane, 'usage.json'))
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('removes every control character from Text children in the captured reproducing snapshot', async () => {
     const captured = join(REPO_ROOT, '.lane', 'snapshot-with-control-chars.json')
     const snapshot = existsSync(captured)

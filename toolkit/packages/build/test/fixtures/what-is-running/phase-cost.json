@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "card_id": "1866347363803596065",
+  "phases": [
+    {
+      "phase": "discovery",
+      "round": null,
+      "models": {
+        "claude-opus-4-1": {
+          "family": "anthropic",
+          "input": 1234,
+          "cache_write": 5678,
+          "cache_read": 2345678,
+          "output": 901
+        }
+      },
+      "unknown": []
+    },
+    {
+      "phase": "plan",
+      "round": null,
+      "models": {},
+      "unknown": [
+        "OpenAI lane usage unavailable for plan: fixture lookup failed"
+      ]
+    }
+  ]
+}
