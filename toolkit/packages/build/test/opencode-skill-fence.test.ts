@@ -1,11 +1,11 @@
 import crypto from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
-import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFenceCache, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFenceCache, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
 
 const FENCE_MODULE = new URL('../../../../plugin/bin/lib/opencode-skill-fence.mjs', import.meta.url).href
 
@@ -141,6 +141,9 @@ describe('OpenCode Claude-skill fence', () => {
   it('fails closed when effective discovery fails or returns invalid JSON', () => {
     expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 1, stdout: '', stderr: 'bad' }) })).toMatchObject({ ok: false, reason: expect.stringContaining('failed') })
     expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout: 'nope', stderr: '' }) })).toMatchObject({ ok: false, reason: expect.stringContaining('invalid JSON') })
+    expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout: '{}', stderr: '' }) })).toMatchObject({ ok: false, reason: expect.stringContaining('unexpected shape') })
+    expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => { throw 'string failure' } })).toMatchObject({ ok: false, reason: expect.stringContaining('string failure') })
+    expect(verifyEffectiveOpencodeSkillDiscovery('opencode', { cwd: '/lane', env: {}, spawnSyncFn: () => ({ status: 0, stdout: '[{"name":"save-memory"}]', stderr: '' }) })).toMatchObject({ ok: false, refused: [{ name: 'save-memory', location: '<unknown location>' }] })
   })
 
   it('keeps the missing-binary discovery refusal legible', () => {
@@ -193,9 +196,11 @@ describe('OpenCode Claude-skill fence', () => {
     const spawnSyncFn = (command: string, args: string[], options: Record<string, unknown>) => {
       expect(command).toBe('cmd.exe')
       expect(args.slice(0, 3)).toEqual(['/d', '/s', '/c'])
-      expect(args[3]).toMatch(new RegExp(`^"${binary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" `))
+      expect(args[3]).toContain('C:\\Program^ Files\\nodejs\\opencode.CMD ')
+      expect(args[3]).toMatch(/^".*"$/)
+      expect(options).toMatchObject({ windowsVerbatimArguments: true })
       expect(options).not.toHaveProperty('shell')
-      return args[3]!.includes('"--version"')
+      return args[3]!.includes('^^^"--version^^^"')
         ? { status: 0, stdout: '1.2.3\n', stderr: '' }
         : { status: 0, stdout: '[{"name":"workflow-toolbox-allowed-sentinel"}]', stderr: '' }
     }
@@ -212,6 +217,39 @@ describe('OpenCode Claude-skill fence', () => {
     })
 
     expect(result).toMatchObject({ ok: true, allowOk: true, binary })
+  })
+
+  it('uses the configured Windows command processor for a zero-argument shim', () => {
+    const previous = process.env.ComSpec
+    process.env.ComSpec = 'C:\\Windows\\System32\\cmd.exe'
+    try {
+      const spawnSyncFn = (command: string, args: string[], options: Record<string, unknown>) => {
+        expect(command).toBe(process.env.ComSpec)
+        expect(args).toEqual(['/d', '/s', '/c', '"C:\\tools\\opencode.cmd"'])
+        expect(options).toEqual({ windowsVerbatimArguments: true })
+        return { status: 0 }
+      }
+
+      expect(spawnOpencode(spawnSyncFn, 'C:\\tools\\opencode.cmd', [], undefined, 'win32')).toEqual({ status: 0 })
+    } finally {
+      if (previous === undefined) delete process.env.ComSpec
+      else process.env.ComSpec = previous
+    }
+  })
+
+  it.runIf(process.platform === 'win32')('round-trips product-built flags and paths through a real Windows command shim', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'wt cmd argv ')); roots.push(root)
+    const script = path.join(root, 'record-argv.mjs')
+    const bin = path.join(root, 'opencode.cmd')
+    const record = path.join(root, 'argv.json')
+    const expected = ['run', '--dir', path.join(root, 'lane %PATH% ^ caret'), '--model', 'provider/model']
+    writeFileSync(script, `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)))\n`)
+    writeFileSync(bin, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
+
+    const result = spawnOpencode(spawnSync, bin, expected, { encoding: 'utf8' }, 'win32')
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(JSON.parse(readFileSync(record, 'utf8'))).toEqual(expected)
   })
 
   it('resolves a bare Windows executable through Path and PATHEXT', () => {
