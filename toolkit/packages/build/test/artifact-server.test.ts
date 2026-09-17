@@ -199,11 +199,15 @@ async function closeServer(server: Server) {
 async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM') {
   if (!child.pid || !pidAlive(child.pid)) return
   const pid = child.pid
+  const closed = child.exitCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => child.once('close', () => resolve()))
   if (process.platform === 'win32') killWindowsTree(pid)
   else child.kill(signal)
   await waitFor(() => pidAlive(pid) ? null : true, 10_000).catch(() => {
     throw new Error(`timed out waiting for test child pid=${pid} to exit before teardown`)
   })
+  await closed
 }
 
 async function detachedServerMatches(expected: Discovery) {
@@ -382,13 +386,17 @@ describe('review test infrastructure', () => {
     ]])
   })
 
-  it('uses process-table evidence instead of a retained Windows process handle for registration liveness', () => {
+  it('classifies a Windows registration as gone only from conclusive absence evidence', () => {
     expect(registrationPidStatus(123, {
-      platform: 'win32', inspect: () => null, processExists: () => false,
+      platform: 'win32', signal: () => {}, inspect: () => null, processExists: () => false,
     })).toBe('gone')
     expect(registrationPidStatus(123, {
-      platform: 'win32', inspect: () => null, processExists: () => null,
+      platform: 'win32', signal: () => {}, inspect: () => null, processExists: () => null,
     })).toBe('unknown')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => { throw Object.assign(new Error('absent'), { code: 'ESRCH' }) },
+      inspect: () => { throw new Error('must not query slower evidence after conclusive ESRCH') },
+    })).toBe('gone')
   })
 })
 

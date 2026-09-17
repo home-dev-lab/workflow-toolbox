@@ -12,6 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Artifact-server registration sweeps now use conclusive Windows `ESRCH` evidence before the bounded process-table fallback, process-spawning fixtures await monitor pipe closure before removing temporary directories, and the retention HTTP fixture answers torn JSON bodies with 400 instead of throwing.
 - Artifact-server Windows fixtures now pin executable-backed Git and Tailscale seams, startup shutdown has a platform-honest test route, dead registrations use process-table evidence instead of retained-handle signalability, and the pilot continuation lock has a process-spawn-aware local timeout.
 - Windows process-spawning fixtures now wait for spawn-recorded child identities before removing temporary directories, artifact-server state timeouts name their predicate and captured output, configured Tailscale failures report timing and process status, and the board-client protocol lock treats partial request JSON as incomplete input instead of an uncaught exception.
 - The What is running pane now removes ANSI sequences and control characters at its `Text` boundary, cleans log-derived activity in the collector, and shows a reading state before the first collector result instead of reporting a failure.
