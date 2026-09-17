@@ -468,7 +468,8 @@ async function main() {
   }
   writeLaneStage(opts.log, 'skill-fence-done')
 
-  const childEnv = { ...consentModules.opencodeChildEnv(process.env), ...(allowlist.allowed.length ? { OPENCODE_CONFIG: allowedSkills.configPath } : {}) }
+  const suiteLockCli = path.join(path.dirname(fileURLToPath(import.meta.url)), 'wt-suite-lock.mjs')
+  const childEnv = { ...consentModules.opencodeChildEnv(process.env), WT_SUITE_LOCK_CMD: `node ${consentModules.shellQuote(suiteLockCli)} run --`, ...(allowlist.allowed.length ? { OPENCODE_CONFIG: allowedSkills.configPath } : {}) }
   const opencodeBinary = fence.binary ?? 'opencode'
   writeLaneStage(opts.log, 'effective-discovery-start')
   const discovery = consentModules.verifyEffectiveOpencodeSkillDiscovery(opencodeBinary, { cwd: opts.dir, env: childEnv, platform: process.platform })

@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Added a recoverable machine-wide suite lock with bounded visible waits, status/release controls, and a lane-exported invocation for serializing outer Vitest runs.
 - Bounded SDK pilot runs now atomically leave a worktree-bound `.lane/worktree-retention.json`, and the shipped worktree remover refuses invalid, foreign, open-card, or board-unavailable cleanup until the card reaches `Done` or `NotDoing` (or no longer exists).
 
 ### Tooling
