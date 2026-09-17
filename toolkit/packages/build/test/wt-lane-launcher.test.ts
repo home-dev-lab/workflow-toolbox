@@ -348,10 +348,10 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(existsSync(paths.record)).toBe(false)
     expect(JSON.parse(readFileSync(paths.pointer, 'utf8'))).toMatchObject({ runId: '20-2' })
   })
-  it('uses null, not an unrelated clock, when a process start time cannot be read', () => {
+  it('uses an explicitly approximate spawn clock, never the unrelated performance time origin, for Windows fallback identity', () => {
     const source = readFileSync(LAUNCHER, 'utf8')
     expect(source).not.toContain('performance.timeOrigin')
-    expect(source).toContain('startTime: null')
+    expect(source).toContain('startTime: spawnedAt, startTimeApproximate: true')
   })
   it('captures the provider identity when a Darwin process becomes readable on the third call', () => {
     let calls = 0
