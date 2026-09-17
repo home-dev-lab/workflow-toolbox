@@ -10,7 +10,7 @@ import { resolveConsent } from '../../../../plugin/bin/lib/lane-consent-check-co
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const INSTALLER = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 const roots: string[] = []
-const CHILD_TIMEOUT_MS = 10_000
+const CHILD_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 10_000
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })

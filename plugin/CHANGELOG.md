@@ -10,6 +10,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - macOS process identity and queue enumeration now reuse 100 ms process-wide snapshots, Vitest leaves one runner core free, and the cross-OS probe preserves separate bounded shard logs instead of saturating the runner.
+- Windows OpenCode runner locks now exercise synchronous, detached-pipe, and file-descriptor command-shim launches with output and exit-code diagnostics; envelope fixtures trace whether task children started, and adopted-launcher checks allow for slower Windows identity capture.
 - Windows OpenCode test fixtures now mirror npm command shims' direct `%*` forwarding, and adopted-launcher subprocess checks close stdin and report bounded timeout diagnostics.
 - Cross-OS CI now bounds every matrix step and always uploads the Vitest log plus a final process table; Windows OpenCode `.cmd` launches preserve product-built flags and paths through `cmd.exe`'s two parsing passes.
 - Cross-OS CI now preserves a streaming test log before the job deadline and prints the runner process table; macOS lane identity polls no longer repeat slow `lsof` cwd reads, child cleanup is bounded by observed exit, and Windows `.cmd` OpenCode fixtures retain their arguments without deprecated shell joining.

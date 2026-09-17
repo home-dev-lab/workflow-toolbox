@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -239,20 +239,100 @@ describe('OpenCode Claude-skill fence', () => {
     }
   })
 
-  it.runIf(process.platform === 'win32')('round-trips product-built flags and paths through a real Windows command shim', () => {
+  function windowsShimFixture() {
     const root = mkdtempSync(path.join(os.tmpdir(), 'wt cmd argv ')); roots.push(root)
-    const script = path.join(root, 'record-argv.mjs')
+    const script = path.join(root, 'x.mjs')
     const bin = path.join(root, 'opencode.cmd')
     const record = path.join(root, 'argv.json')
     const expected = ['run', '--dir', path.join(root, 'lane %PATH% ^ caret'), '--model', 'provider/model']
-    writeFileSync(script, `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(record)}, JSON.stringify(process.argv.slice(2)))\n`)
-    writeFileSync(bin, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
+    writeFileSync(script, `import { writeFileSync } from 'node:fs'\nconst args = process.argv.slice(2)\nwriteFileSync(${JSON.stringify(record)}, JSON.stringify(args))\nprocess.stdout.write('shim stdout:' + JSON.stringify(args) + '\\n')\nprocess.exitCode = 3\n`)
+    writeFileSync(bin, `@echo off\r\n@"${process.execPath}" "%~dp0x.mjs" %*\r\n@exit /b %errorlevel%\r\n`)
+    return { root, bin, record, expected }
+  }
 
+  function spawnDetails(result: { status?: number | null, signal?: NodeJS.Signals | null, stdout?: unknown, stderr?: unknown }, elapsedMs: number) {
+    return `status=${String(result.status)} signal=${String(result.signal)} stdout=${JSON.stringify(String(result.stdout ?? ''))} stderr=${JSON.stringify(String(result.stderr ?? ''))} elapsed=${elapsedMs}ms`
+  }
+
+  it.runIf(process.platform === 'win32')('passes stdout, argv, and exit /b 3 through spawnSync and a real Windows command shim', () => {
+    const { bin, record, expected } = windowsShimFixture()
+    const started = Date.now()
     const result = spawnOpencode(spawnSync, bin, expected, { encoding: 'utf8' }, 'win32')
+    const details = spawnDetails(result, Date.now() - started)
 
-    expect(result.status, result.stderr).toBe(0)
-    expect(JSON.parse(readFileSync(record, 'utf8'))).toEqual(expected)
+    expect(result.status, details).toBe(3)
+    expect(result.stdout, details).toContain(`shim stdout:${JSON.stringify(expected)}`)
+    expect(existsSync(record), details).toBe(true)
+    expect(JSON.parse(readFileSync(record, 'utf8')), details).toEqual(expected)
   })
+
+  it.runIf(process.platform === 'win32')('passes stdout and exit code through the detached envelope spawn shape', async () => {
+    const { bin, record, expected } = windowsShimFixture()
+    const started = Date.now()
+    const child = spawnOpencode(spawn, bin, expected, { stdio: ['ignore', 'pipe', 'pipe'], detached: true }, 'win32')
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk: Buffer) => { stdout += String(chunk) })
+    child.stderr.on('data', (chunk: Buffer) => { stderr += String(chunk) })
+    const result = await new Promise<{ status: number | null, signal: NodeJS.Signals | null, stdout: string, stderr: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        reject(new Error(spawnDetails({ status: child.exitCode, signal: child.signalCode, stdout, stderr }, Date.now() - started)))
+      }, 5_000)
+      child.once('error', (error: Error) => {
+        clearTimeout(timer)
+        reject(new Error(`${error.message}; ${spawnDetails({ status: child.exitCode, signal: child.signalCode, stdout, stderr }, Date.now() - started)}`))
+      })
+      child.once('close', (status: number | null, signal: NodeJS.Signals | null) => {
+        clearTimeout(timer)
+        resolve({ status, signal, stdout, stderr })
+      })
+    })
+    const elapsedMs = Date.now() - started
+    const details = spawnDetails(result, elapsedMs)
+
+    expect(result.status, details).toBe(3)
+    expect(result.stdout, details).toContain(`shim stdout:${JSON.stringify(expected)}`)
+    expect(existsSync(record), details).toBe(true)
+    expect(JSON.parse(readFileSync(record, 'utf8')), details).toEqual(expected)
+    expect(elapsedMs, details).toBeLessThan(5_000)
+  }, 10_000)
+
+  it.runIf(process.platform === 'win32')('passes output and exit code through the launcher file-descriptor spawn shape', async () => {
+    const { root, bin, record, expected } = windowsShimFixture()
+    const output = path.join(root, 'child.log')
+    const fd = openSync(output, 'a')
+    const started = Date.now()
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawnOpencode(spawn, bin, expected, { stdio: ['ignore', fd, fd] }, 'win32')
+    } finally {
+      closeSync(fd)
+    }
+    const result = await new Promise<{ status: number | null, signal: NodeJS.Signals | null, stdout: string, stderr: string }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL')
+        const text = readFileSync(output, 'utf8')
+        reject(new Error(spawnDetails({ status: child.exitCode, signal: child.signalCode, stdout: text, stderr: text }, Date.now() - started)))
+      }, 5_000)
+      child.once('error', (error) => {
+        clearTimeout(timer)
+        const text = readFileSync(output, 'utf8')
+        reject(new Error(`${error.message}; ${spawnDetails({ status: child.exitCode, signal: child.signalCode, stdout: text, stderr: text }, Date.now() - started)}`))
+      })
+      child.once('close', (status, signal) => {
+        clearTimeout(timer)
+        const text = readFileSync(output, 'utf8')
+        resolve({ status, signal, stdout: text, stderr: text })
+      })
+    })
+    const details = spawnDetails(result, Date.now() - started)
+
+    expect(result.status, details).toBe(3)
+    expect(result.stdout, details).toContain(`shim stdout:${JSON.stringify(expected)}`)
+    expect(existsSync(record), details).toBe(true)
+    expect(JSON.parse(readFileSync(record, 'utf8')), details).toEqual(expected)
+  }, 10_000)
 
   it('resolves a bare Windows executable through Path and PATHEXT', () => {
     const f = stub('honor')
