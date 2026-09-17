@@ -228,7 +228,7 @@ describe('scanLiveLaneProcesses', () => {
 })
 
 describe('wt-queue-not-empty-gate-hook: emission shape', () => {
-  it('refuses a known startable queue and lets a finished mission stop', () => {
+  it('refuses a known startable queue and emits nothing for a finished mission', () => {
     const startable = scaffold('v2-startable')
     writeSnapshot(startable.stateDir, startable.cwd, { at: Date.now(), startable: 2, awaitingOwner: 3, unclassified: 1, next: 'CARD-startable' })
     const startableText = blockText(runHook(startable.payload, startable.env))
@@ -236,8 +236,24 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
 
     const finished = scaffold('v2-finished')
     writeSnapshot(finished.stateDir, finished.cwd, { at: Date.now(), startable: 0, awaitingOwner: 3, unclassified: 1, next: '' })
-    const finishedText = blockText(runHook(finished.payload, finished.env))
-    expect(finishedText).toContain('0 startable (3 awaiting owner, 1 unclassified); finished mission may stop')
+    const result = runHook(finished.payload, finished.env)
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('')
+  })
+
+  it.each([
+    ['known startable queue', { at: Date.now(), startable: 2, awaitingOwner: 0, unclassified: 0, next: 'CARD-known' }],
+    ['legacy open queue', { open: 2, at: Date.now(), next: 'CARD-legacy' }],
+    ['malformed queue', { open: '2', at: Date.now(), next: 'CARD-malformed' }],
+  ])('stays silent when stop_hook_active=true for a blocking %s branch', (_name, snapshot) => {
+    const { env, payload, stateDir, cwd } = scaffold(`retry-${_name.replaceAll(' ', '-')}`)
+    writeSnapshot(stateDir, cwd, snapshot)
+
+    const result = runHook({ ...(payload as Record<string, unknown>), stop_hook_active: true }, env)
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('')
   })
 
   it('retains legacy refusal with an explicit classification suffix', () => {

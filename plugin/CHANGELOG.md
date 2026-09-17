@@ -10,6 +10,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - Wake-channel directory watches now canonicalise path aliases before entering libuv, preventing Windows short-name spool paths from aborting the server, and the adopted consent matrix derives its case timeout from all real launcher combinations.
+- The queue-not-empty Stop gate now exits silently for a zero-startable queue and for harness retries marked `stop_hook_active`, preventing an allowed stop from looping on block-shaped feedback.
 - SDK role initialization receipts no longer require a skill declared `user-invocable: false` (the harness never lists one), and the pilot runner exits after a refused receipt instead of idling with the EXIT marker unwritten.
 - SDK role LSP plugins now map .js, .mjs, and .cjs to JavaScript from the same table that drives worktree language detection, so plain .js worktrees are detected and navigable instead of silently unmapped while the receipt reports LSP available.
 - Cross-OS process-spawning locks now pin the shipped wake-channel poll source, supply Windows process identity with spawn-recorded argv, await fixture-child exit before bounded teardown retries, and give measured long-running consent and lifecycle cases local timeout margins.
