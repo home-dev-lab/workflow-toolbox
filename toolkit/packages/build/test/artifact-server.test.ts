@@ -132,16 +132,24 @@ function readState(stateHome: string): Discovery | null {
   try { return JSON.parse(readFileSync(statePath(stateHome), 'utf8')) as Discovery } catch { return null }
 }
 
+function commandShim(bin: string, name: string, source: string) {
+  const implementation = join(bin, `${name}.cjs`)
+  writeFileSync(implementation, source)
+  const posix = join(bin, name)
+  writeFileSync(posix, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(implementation)} "$@"\n`)
+  chmodSync(posix, 0o755)
+  const windows = join(bin, `${name}.cmd`)
+  writeFileSync(windows, `@"${process.execPath}" "${implementation}" %*\r\n`)
+  return process.platform === 'win32' ? windows : posix
+}
+
 function baseEnv(stateHome: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const bin = temporaryDir('tailscale-default-absent')
-  const script = join(bin, 'tailscale')
-  writeFileSync(script, '#!/bin/sh\nexit 1\n')
-  chmodSync(script, 0o755)
-  const git = join(bin, 'git')
-  writeFileSync(git, '#!/bin/sh\nif [ -n "$WT_TEST_GIT_ROOT" ] && [ "$1 $2" = "rev-parse --show-toplevel" ]; then printf "%s\\n" "$WT_TEST_GIT_ROOT"; exit 0; fi\nexit 1\n')
-  chmodSync(git, 0o755)
+  const tailscale = commandShim(bin, 'tailscale', 'process.exitCode = 1\n')
+  commandShim(bin, 'git', "if (process.env.WT_TEST_GIT_ROOT && process.argv.slice(2).join(' ') === 'rev-parse --show-toplevel') process.stdout.write(process.env.WT_TEST_GIT_ROOT + '\\n'); else process.exitCode = 1\n")
   return {
-    ...process.env, PATH: bin, XDG_STATE_HOME: stateHome,
+    ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: stateHome,
+    WT_ARTIFACT_SERVER_TAILSCALE_BINARY: tailscale,
     WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1', ...extra,
   }
 }
@@ -342,7 +350,7 @@ describe('owner decision 2: discovery and one instance', () => {
     expect((await health(state)).pid).toBe(state.pid)
     expect((await health(state)).version).toBe(state.version)
     expect((await health(state)).uid).toBe(typeof process.getuid === 'function' ? process.getuid() : userInfo().username)
-    expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
   })
 
   it('starts exactly one server when concurrent monitors ensure an empty state', async () => {
@@ -1029,10 +1037,11 @@ describe('owner decision 2: discovery and one instance', () => {
       expect(foreign.listening).toBe(true)
 
       const { project } = projectWithRoots('uid-mismatch')
-      spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
+      const monitor = spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
+      const output = childOutput(monitor)
       const own = await waitForState(stateHome, (value) => value.port !== address.port, 30_000)
         .catch(() => readState(stateHome))
-      expect(own?.port).not.toBe(address.port)
+      expect(own?.port, `monitor stdout=${output.stdout()} stderr=${output.stderr()}`).not.toBe(address.port)
     } finally {
       await closeServer(foreign)
     }
@@ -1158,11 +1167,11 @@ describe('review decisions: filesystem roots and URLs', () => {
     spawnEnsure(project, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_ROOTS: `beta=${rootB}` }))
     const state = await waitForState(stateHome, (value) => value.roots.length === 2)
     expect(state.roots.map((root) => root.name).sort()).toEqual(['alpha', 'beta'])
-    expect(statSync(join(stateHome, 'wt-artifact-server')).mode & 0o777).toBe(0o700)
-    expect(statSync(registrationsPath(stateHome)).mode & 0o777).toBe(0o700)
+    if (process.platform !== 'win32') expect(statSync(join(stateHome, 'wt-artifact-server')).mode & 0o777).toBe(0o700)
+    if (process.platform !== 'win32') expect(statSync(registrationsPath(stateHome)).mode & 0o777).toBe(0o700)
     const registrations = readdirSync(registrationsPath(stateHome))
     expect(registrations).toHaveLength(2)
-    expect(registrations.every((file) => (statSync(join(registrationsPath(stateHome), file)).mode & 0o777) === 0o600)).toBe(true)
+    if (process.platform !== 'win32') expect(registrations.every((file) => (statSync(join(registrationsPath(stateHome), file)).mode & 0o777) === 0o600)).toBe(true)
     for (const file of registrations) {
       const registration = JSON.parse(readFileSync(join(registrationsPath(stateHome), file), 'utf8')) as Record<string, unknown>
       expect(registration).toEqual(expect.objectContaining({ pid: expect.any(Number), roots: expect.any(Array), deny: expect.any(Array), startedAt: expect.any(String) }))
@@ -1335,7 +1344,7 @@ describe('review decisions: filesystem roots and URLs', () => {
       { name: firstName, path: join(projectOne, '.claude', 'reports') },
       { name: secondName, path: join(projectTwo, '.claude', 'reports') },
     ]))
-    expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
 
     spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectOne }))
     const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2)
@@ -1346,7 +1355,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     await stopChild(monitorTwo)
   })
 
-  it('[E-01] refuses an insecure or foreign-owned state directory', () => {
+  it.skipIf(process.platform === 'win32')('[E-01] refuses an insecure or foreign-owned state directory [POSIX mode-bit enforcement]', () => {
     const { project } = projectWithRoots('insecure-state')
     const stateHome = temporaryDir('insecure-state-home')
     const stateDir = join(stateHome, 'wt-artifact-server')
@@ -1361,22 +1370,19 @@ describe('review decisions: filesystem roots and URLs', () => {
 describe('owner decision 5: Tailscale access', () => {
   function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent') {
     const bin = temporaryDir(`tailscale-${mode}`)
-    const script = join(bin, 'tailscale')
     const serveStatus = mode === 'https'
-      ? `printf 'https://host.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+      ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
       : mode === 'https-path'
-        ? `printf 'https://host.tailnet.ts.net\\n|-- /reports proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+        ? 'https://host.tailnet.ts.net\n|-- /reports proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
         : mode === 'https-port'
-          ? `printf 'https://host.tailnet.ts.net:8443\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+          ? 'https://host.tailnet.ts.net:8443\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
           : mode === 'hijack'
-            ? `printf 'https://host.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:9999\\nhttps://other.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
-            : "printf 'No serve config'"
-    const body = mode !== 'absent'
-      ? `#!/bin/sh\nif [ "$1 $2" = "ip -4" ]; then ${mode === 'no-tailnet' ? 'exit 0' : "printf '127.0.0.1\\n'; exit 0"}; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then ${serveStatus}; exit 0; fi\nexit 1\n`
-      : '#!/bin/sh\nexit 1\n'
-    writeFileSync(script, body)
-    chmodSync(script, 0o755)
-    return realpathSync(bin)
+            ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:9999\nhttps://other.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+            : 'No serve config'
+    const source = mode === 'absent'
+      ? 'process.exitCode = 1\n'
+      : `const command = process.argv.slice(2).join(' '); if (command === 'ip -4') { ${mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')"} } else if (command === 'status --json') process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } })); else if (command === 'serve status') process.stdout.write(\`${serveStatus}\`); else process.exitCode = 1\n`
+    return { bin: realpathSync(bin), command: commandShim(bin, 'tailscale', source) }
   }
 
   it('parses the URL token from the captured Tailscale Serve header', () => {
@@ -1398,9 +1404,9 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const bin = tailscaleStub('present')
+    const { bin, command } = tailscaleStub('present')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: command, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe(`http://127.0.0.1:${port}`)
@@ -1421,9 +1427,9 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const bin = tailscaleStub('absent')
+    const { bin, command } = tailscaleStub('absent')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: bin, WT_ARTIFACT_SERVER_PORT: String(port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: command, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBeNull()
@@ -1439,8 +1445,8 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const bin = tailscaleStub('no-tailnet')
-    spawnEnsure(project, baseEnv(stateHome, { PATH: bin, WT_ARTIFACT_SERVER_PORT: String(port) }))
+    const { bin, command } = tailscaleStub('no-tailnet')
+    spawnEnsure(project, baseEnv(stateHome, { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: command, WT_ARTIFACT_SERVER_PORT: String(port) }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBeNull()
     expect(state.tailnetDetection).toEqual({ status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' })
@@ -1454,9 +1460,9 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const bin = tailscaleStub('https')
+    const { bin, command } = tailscaleStub('https')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: command, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome, (value) => value.roots.length > 0)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net')
@@ -1472,9 +1478,9 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-https-path-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const bin = tailscaleStub('https-path')
+    const { bin, command } = tailscaleStub('https-path')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: command, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net/reports')
@@ -1485,9 +1491,9 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-https-port-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const bin = tailscaleStub('https-port')
+    const { bin, command } = tailscaleStub('https-port')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: command, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net:8443')
@@ -1498,9 +1504,9 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-hijack-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const bin = tailscaleStub('hijack')
+    const { bin, command } = tailscaleStub('hijack')
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: join(bin, 'tailscale'), WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: command, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe(`http://127.0.0.1:${reservation.port}`)
@@ -1518,7 +1524,8 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     await closeServer(reservation.server)
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: bin, WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_TEST_WSL: '1',
+      PATH: bin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: undefined,
+      WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_TEST_WSL: '1',
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe(`http://127.0.0.2:${reservation.port}`)
@@ -1583,7 +1590,7 @@ describe('review decisions: serving security matrix', () => {
       '<script>alert(1)</script>',
     ].join('\n'))
     mkdirSync(join(root, 'index'))
-    writeFileSync(join(root, 'index', '<script>.txt'), 'index')
+    writeFileSync(join(root, 'index', '&script;.txt'), 'index')
     writeFileSync(join(root, 'plain.txt'), '<b>text</b>')
     writeFileSync(join(root, 'events.log'), 'event')
     writeFileSync(join(root, 'data.json'), '{"ok":true}')
@@ -1637,7 +1644,7 @@ describe('review decisions: serving security matrix', () => {
     }
     const index = await rawRequest(port, '/artifacts/index/', `localhost:${port}`)
     expect(index.status).toBe(200)
-    expect(index.body).toContain('&lt;script&gt;.txt')
+    expect(index.body).toContain('&amp;script;.txt')
     expect(index.body).not.toContain('<script>')
     expect(index.headers['content-security-policy']).toMatch(/default-src 'none'/)
     const head = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`, '127.0.0.1', 'HEAD')
