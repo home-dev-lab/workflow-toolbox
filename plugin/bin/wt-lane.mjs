@@ -465,6 +465,9 @@ async function main() {
   // preserving its own and .agents skills while fencing the harness's single-writer memory skills.
   let child
   let earlyChildClose = null
+  // A first line BEFORE the spawn and the identity capture: a launcher that is alive but still
+  // waiting on capture must never read as `<no output>` to a bounded caller (Windows runs 19–20).
+  process.stdout.write(`wt-lane: starting ${opencodeBinary} in ${opts.dir}\n`)
   try {
     child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd] }, process.platform)
     child.once('close', (code, signal) => { earlyChildClose = [code, signal] })
