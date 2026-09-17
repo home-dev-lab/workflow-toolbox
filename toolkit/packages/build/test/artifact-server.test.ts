@@ -231,7 +231,12 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
       if (Date.now() >= deadline) return
       watcher?.close()
       const stateDir = join(stateHome, 'wt-artifact-server')
-      watcher = watch(existsSync(stateDir) ? stateDir : stateHome, { persistent: false }, () => {
+      // Canonical spelling before libuv, as the wake-channel server does: on the hosted Windows runner the
+      // temp state home carries an 8.3 short name, and fs.watch on that spelling trips libuv's
+      // src\win\fs-event.c:72 assertion, which ABORTS the vitest worker with no result line (runs 27–31 of
+      // the cross-OS card; run 31's traced single-file step printed the assertion after two tests).
+      const watchTarget = realpathSync.native(existsSync(stateDir) ? stateDir : stateHome)
+      watcher = watch(watchTarget, { persistent: false }, () => {
         if (!inspect() && existsSync(stateDir)) arm()
       })
       inspect()
