@@ -934,12 +934,17 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1])
     const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
-    process.kill(worker, 'SIGTERM')
     const log = join(f.dir, '.lane', 'run.log')
+    waitForContent(log, /^EXIT=0$/m, 4000)
+    process.kill(worker, 'SIGTERM')
     const until = Date.now() + 4000
     while (Date.now() < until) { try { process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0); spawnSync('sleep', ['0.05']) } catch { break } }
-    expect(readFileSync(log, 'utf8')).toMatch(/EXIT=0\n$/)
-    expect((readFileSync(log, 'utf8').match(/^EXIT=/gm) ?? []).length).toBe(1)
+    const lines = readFileSync(log, 'utf8').trimEnd().split(/\r?\n/)
+    const exitIndex = lines.findIndex((line) => line === 'EXIT=0')
+    expect(exitIndex).toBeGreaterThanOrEqual(0)
+    expect(lines.filter((line) => /^EXIT=/.test(line))).toEqual(['EXIT=0'])
+    expect(lines.slice(exitIndex + 1).some((line) => /\bstage=/.test(line))).toBe(false)
+    expect(lines.at(-1)).toBe('EXIT=0')
   })
   it('passes --variant through to opencode and refuses a malformed one', () => {
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; IFS= read -r x; echo done')

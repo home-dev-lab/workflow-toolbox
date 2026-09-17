@@ -10,6 +10,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - Concurrent-test guard coverage injects deterministic process listings while retaining a real-machine count-reporting case; wake and artifact-server delivery bounds now follow their configured polling and readiness intervals, and lane capture fixtures derive their retry windows from the capture cadence.
+- Windows lane launch identity capture now uses a timeout-bounded single-PID query, records the observed command-shim identity or a named capture timeout, and macOS lifecycle coverage waits for the literal terminal receipt while locking stage ordering.
 - macOS process identity refreshes cached snapshots once for a missing PID without restoring polling fork storms, and artifact-server teardown retries bounded concurrent state writes.
 - Windows OpenCode envelopes preserve command-shim stdout without detached spawning, terminate timed-out process trees through `taskkill /T`, persist timestamped launcher stages for timeout diagnosis, and cap the 4-vCPU CI runner at two Vitest workers.
 - macOS process identity and queue enumeration now reuse 100 ms process-wide snapshots, Vitest leaves one runner core free, and the cross-OS probe preserves separate bounded shard logs instead of saturating the runner.
