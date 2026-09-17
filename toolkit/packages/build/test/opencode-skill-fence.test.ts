@@ -3,6 +3,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFenceCache, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
@@ -266,7 +267,14 @@ describe('OpenCode Claude-skill fence', () => {
     expect(JSON.parse(readFileSync(record, 'utf8')), details).toEqual(expected)
   })
 
-  it.runIf(process.platform === 'win32')('passes stdout and exit code through the detached envelope spawn shape', async () => {
+  it('keeps the envelope detached only where process-group signaling preserves piped output', () => {
+    const source = readFileSync(fileURLToPath(new URL('../../../../plugin/bin/wt-opencode-envelope.mjs', import.meta.url)), 'utf8')
+    expect(source).toContain("...(process.platform === 'win32' ? {} : { detached: true })")
+    expect(source).toContain("'System32', 'taskkill.exe'")
+    expect(source).toContain("['/PID', String(pid), '/T', '/F']")
+  })
+
+  it.runIf(process.platform === 'win32')('locks the Windows detached command-shim defect: exit survives but piped stdout is empty', async () => {
     const { bin, record, expected } = windowsShimFixture()
     const started = Date.now()
     const child = spawnOpencode(spawn, bin, expected, { stdio: ['ignore', 'pipe', 'pipe'], detached: true }, 'win32')
@@ -292,7 +300,7 @@ describe('OpenCode Claude-skill fence', () => {
     const details = spawnDetails(result, elapsedMs)
 
     expect(result.status, details).toBe(3)
-    expect(result.stdout, details).toContain(`shim stdout:${JSON.stringify(expected)}`)
+    expect(result.stdout, details).toBe('')
     expect(existsSync(record), details).toBe(true)
     expect(JSON.parse(readFileSync(record, 'utf8')), details).toEqual(expected)
     expect(elapsedMs, details).toBeLessThan(5_000)
