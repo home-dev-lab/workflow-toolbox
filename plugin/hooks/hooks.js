@@ -155,6 +155,10 @@ function phaseLabel(phase) {
   return PANE_PHASES.find(([id]) => id === phase)?.[1] || phase;
 }
 
+function formatCount(value) {
+  return Number.isFinite(value) ? Math.trunc(value).toLocaleString('en-US').replace(/,/g, ' ') : 'unknown';
+}
+
 function knownDetails(row) {
   const details = [];
   const gates = Object.entries(row.gates || {}).filter(([, value]) => value && value !== 'unknown');
@@ -214,6 +218,20 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
       fixedText(style, state.words),
     );
   };
+  const phaseCostDetail = (row, phase) => {
+    const cost = row.phaseCosts?.[phase];
+    if (!cost) return [];
+    if (cost === 'unknown') return [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, {}, 'cost so far: unknown'))];
+    return [
+      node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, { wrap: 'wrap' }, `cost so far | input: ${formatCount(cost.input)} | output: ${formatCount(cost.output)} | cache read: ${formatCount(cost.cacheRead)} | cache write: ${formatCount(cost.cacheWrite)}`)),
+      node(Box, { key: `phase-cost-source:${row.id}:${phase}` }, node(Text, { dimColor: true }, `cost source: ${row.phaseCostSourceKind || 'unknown'}`)),
+    ];
+  };
+  const compactPhaseCost = (row, phase, key) => {
+    if (!(Number(actions.bodyColumns) >= 120) || !Object.hasOwn(row.phaseCosts || {}, phase)) return null;
+    const cost = row.phaseCosts[phase];
+    return node(Box, { key: `phase-cost:${key}:${phase}`, flexShrink: 0 }, node(Text, { dimColor: true }, cost === 'unknown' ? '· unknown' : `· ${formatCount(cost.total)} tokens`));
+  };
   const renderCardId = (row) => {
     const id = row.cardId || (/^\d{19}$/.test(String(row.id || '')) ? row.id : null);
     if (!id) return null;
@@ -262,7 +280,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     const phaseButtons = visiblePhases.map(([phase, label]) => {
       const state = stateOf(row, phase);
       const buttonKey = `detail-toggle:stage:${row.id}:${phase}`;
-      const hasEvidence = Boolean(row.inspectors?.[phase]?.summary || row.inspectors?.[phase]?.href) && !['not started', 'skipped'].includes(state.words);
+      const hasEvidence = (Boolean(row.inspectors?.[phase]?.summary || row.inspectors?.[phase]?.href) || Object.hasOwn(row.phaseCosts || {}, phase)) && !['not started', 'skipped'].includes(state.words);
       return renderStateSegment({ key: `phase-state:${row.id}:${phase}`, buttonKey, label: phaseLabelFor(row, phase), state, open: selection === phase, onPress: hasEvidence ? () => actions.select(row.id, phase) : null });
     });
     const rounds = row.criticRounds > 0
@@ -279,6 +297,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     ] : [];
     const inspectorButtonKey = selection ? `detail-toggle:stage:${row.id}:${selection}` : null;
     const inspectorNodes = !selection ? [] : [renderOpenDetail(inspectorButtonKey, PANE_PHASES.find(([phase]) => phase === selection)?.[1] || selection, () => actions.closeView(row.id),
+      ...phaseCostDetail(row, selection),
       ...renderEvidence(inspector?.summary || (inspector?.href ? 'A report was recorded.' : '')),
       Link && isValidLinkHref(inspector?.href) ? linked({ href: inspector.href, label: '[Open report]' }) : null,
     )];
@@ -311,7 +330,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     if (pilot) for (const [id] of PANE_PHASES) {
       const state = stateOf(pilot, id);
       const inspector = pilot.inspectors?.[id];
-      stages.push({ id, label: phaseLabelFor(pilot, id), state, summary: inspector?.summary || (inspector?.href ? 'A report was recorded.' : null), href: inspector?.href });
+      stages.push({ id, label: phaseLabelFor(pilot, id), state, summary: inspector?.summary || (inspector?.href ? 'A report was recorded.' : null), href: inspector?.href, cost: pilot.phaseCosts?.[id] });
     }
     if (pilot?.phaseStates?.awaiting_fidelity && pilot.phaseStates.awaiting_fidelity !== 'not started') {
       stages.push({ id: 'awaiting_fidelity', label: 'Fidelity', state: stateOf(pilot, 'awaiting_fidelity'), summary: null, href: null });
@@ -327,8 +346,11 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     if (!stages.length) return null;
     const segments = stages.map((stage) => {
       const buttonKey = `detail-toggle:stage:${sessionId}:${card.id}:${stage.id}`;
-      const hasEvidence = Boolean(stage.summary) && !['not started', 'skipped'].includes(stage.state.words) && !/^(?:Not reached\.|No summary available\.|decision: recorded|fix requested)$/i.test(stage.summary.trim());
-      return renderStateSegment({ key: `stage-state:${sessionId}:${card.id}:${stage.id}`, buttonKey, label: stage.label, state: stage.state, open: selection === stage.id, onPress: hasEvidence ? () => actions.select(key, stage.id) : null });
+      const hasEvidence = (Boolean(stage.summary) || stage.cost !== undefined) && !['not started', 'skipped'].includes(stage.state.words) && (!stage.summary || !/^(?:Not reached\.|No summary available\.|decision: recorded|fix requested)$/i.test(stage.summary.trim()));
+      return node(Box, { key: `stage-with-cost:${sessionId}:${card.id}:${stage.id}`, flexDirection: 'row', columnGap: 1 },
+        renderStateSegment({ key: `stage-state:${sessionId}:${card.id}:${stage.id}`, buttonKey, label: stage.label, state: stage.state, open: selection === stage.id, onPress: hasEvidence ? () => actions.select(key, stage.id) : null }),
+        pilot ? compactPhaseCost(pilot, stage.id, `${sessionId}:${card.id}`) : null,
+      );
     });
     const openStage = stages.find((stage) => stage.id === selection);
     const openButtonKey = openStage ? `detail-toggle:stage:${sessionId}:${card.id}:${openStage.id}` : null;
@@ -337,7 +359,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
       !pilot && (card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0)
         ? node(Text, { dimColor: true }, `review rounds: ${card.devCycle?.rounds || 0} · fix rounds: ${card.devCycle?.fixRounds || 0}`)
         : null,
-      openStage ? renderOpenDetail(openButtonKey, openStage.label, () => actions.closeView(key), ...renderEvidence(openStage.summary), Link && isValidLinkHref(openStage.href) ? linked({ href: openStage.href, label: '[Open report]' }) : null) : null,
+      openStage ? renderOpenDetail(openButtonKey, openStage.label, () => actions.closeView(key), ...(pilot ? phaseCostDetail(pilot, openStage.id) : []), ...renderEvidence(openStage.summary), Link && isValidLinkHref(openStage.href) ? linked({ href: openStage.href, label: '[Open report]' }) : null) : null,
     );
   };
   const renderHierarchyActor = (actor, indent = 1) => node(Box, { key: `hierarchy:${actor.id}`, flexDirection: 'column' },
@@ -543,6 +565,7 @@ export const registerWithLayout = (on, options, layout) => {
       toggle: (id) => { expanded.has(id) ? expanded.delete(id) : expanded.add(id); $.ui.invalidate('ui.render'); },
       select: (id, phase) => { selected.get(id) === phase ? selected.delete(id) : selected.set(id, phase); $.ui.invalidate('ui.render'); },
       closeView: (id) => { selected.delete(id); $.ui.invalidate('ui.render'); },
+      bodyColumns: event.props?.bodyColumns,
     });
   });
 

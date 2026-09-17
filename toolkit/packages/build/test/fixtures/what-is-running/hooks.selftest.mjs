@@ -1336,7 +1336,7 @@ const renderedPaneText = async () => {
   rendered = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns: 120 } });
   return JSON.stringify(rendered.result, (_key, value) => typeof value === 'function' ? '[function]' : value);
 };
-const renderSnapshot = async (snapshot, sessionCwd = null, preserveUnknown = false) => {
+const renderSnapshot = async (snapshot, sessionCwd = null, preserveUnknown = false, bodyColumns = 80) => {
   const declaredProject = snapshot.sessions?.find((session) => typeof session.project === 'string' && session.project !== 'unknown')?.project
     || snapshot.rows?.find((row) => typeof row.project === 'string' && row.project !== 'unknown')?.project;
   const effectiveCwd = sessionCwd || (declaredProject ? `/fixture/${declaredProject}` : worktree);
@@ -1357,7 +1357,7 @@ const renderSnapshot = async (snapshot, sessionCwd = null, preserveUnknown = fal
   await find('session.start').hook(local$, { cwd: effectiveCwd }, async () => ({}));
   await find('command.run').hook(local$, { command: 'wir' }, async () => ({}));
   const pane = find('ui.render', (hook) => hook.matcher?.component === 'Pane');
-  const tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns: 80 } }, async () => ({}));
+  const tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns } }, async () => ({}));
   return { tree, pane, local$, find };
 };
 
@@ -3190,6 +3190,11 @@ await test('[increment UI invariant] all rendered clickables are coloured and ev
 
 await test('[increment stage row] stages are visibly separated and no stage node carries a state colour', async () => {
   const { snapshot } = step8Fixture();
+  snapshot.sessions[0].cards[0].actors[0].phaseCosts = {
+    discovery: { input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, total: 2353491 },
+    plan: 'unknown',
+  };
+  snapshot.sessions[0].cards[0].actors[0].phaseCostSource = '/fixture/archive/cost.json';
   const { tree } = await renderSnapshot(snapshot);
   const stageRow = descendants(tree, (item) => item.name === 'Box' && item.props.flexWrap === 'wrap' && hasDescendant(item, (child) => child.name === 'Text' && child.props.children.includes('Work stages:')))[0];
   const segments = descendants(stageRow, (item) => item.name === 'Box' && String(item.props.key || '').startsWith('stage-state:'));
@@ -3198,6 +3203,34 @@ await test('[increment stage row] stages are visibly separated and no stage node
   for (const segment of segments) {
     for (const item of descendants(segment, () => true)) assert.equal(item.props?.color, undefined);
   }
+  const costNodes = descendants(stageRow, (item) => String(item.props?.key || '').startsWith('phase-cost:'));
+  for (const item of costNodes.flatMap((cost) => descendants(cost, () => true))) assert.equal(item.props?.color, undefined);
+});
+
+await test('[phase cost pane] wide rows show compact totals, narrow rows retain stage words, and details show four named counters plus source', async () => {
+  const { snapshot } = step8Fixture();
+  const pilot = snapshot.sessions[0].cards[0].actors[0];
+  pilot.phaseCosts = {
+    discovery: { input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, total: 2353491 },
+    plan: 'unknown',
+  };
+  pilot.phaseCostSource = '/fixture/archive/cost.json';
+  pilot.phaseCostSourceKind = 'archive cost.json';
+  const narrow = await renderSnapshot(snapshot, null, false, 80);
+  let text = descendants(narrow.tree, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
+  for (const word of ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Report']) assert(text.includes(word), word);
+  assert(!text.includes('2 353 491 tokens'));
+
+  const wide = await renderSnapshot(snapshot, null, false, 160);
+  text = descendants(wide.tree, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
+  assert(text.includes('2 353 491 tokens'));
+  assert(text.includes('unknown'));
+  findButton(wide.tree, 'Discovery').props.onPress();
+  const open = await wide.pane.hook(wide.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns: 160 } }, async () => ({}));
+  const detail = descendants(open, (item) => item.name === 'Box' && item.props.key === 'open-detail-toggle:stage:session:step8:1862698281071544008:discovery')[0];
+  const detailText = descendants(detail, (item) => item.name === 'Text').flatMap((item) => item.props.children).join(' ');
+  assert(detailText.includes('cost so far | input: 1 234 | output: 901 | cache read: 2 345 678 | cache write: 5 678'));
+  assert(detailText.includes('cost source: archive cost.json'));
 });
 
 await test('[Step 8 round 2 jitter] process refusals appear only after two consecutive pane polls', async () => {
