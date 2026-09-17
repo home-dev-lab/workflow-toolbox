@@ -71,7 +71,7 @@ async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 
     if (value !== null) return value
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
-  throw new Error('timed out waiting for artifact server state')
+  throw new Error(`timed out waiting for condition; predicate=${JSON.stringify(read.toString())}`)
 }
 
 function statePath(stateHome: string) {
@@ -211,8 +211,12 @@ async function closeServer(server: Server) {
 
 async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM') {
   if (!child.pid || !pidAlive(child.pid)) return
-  child.kill(signal)
-  await waitFor(() => pidAlive(child.pid!) ? null : true, 3_000).catch(() => undefined)
+  const pid = child.pid
+  if (process.platform === 'win32') killWindowsTree(pid)
+  else child.kill(signal)
+  await waitFor(() => pidAlive(pid) ? null : true, 10_000).catch(() => {
+    throw new Error(`timed out waiting for test child pid=${pid} to exit before teardown`)
+  })
 }
 
 async function detachedServerMatches(expected: Discovery) {
@@ -228,12 +232,14 @@ async function detachedServerMatches(expected: Discovery) {
 async function stopDetached(record: DetachedProcess) {
   const pid = record.identity?.pid ?? record.state?.pid
   if (!pid) return
-  detachedProcesses.delete(pid)
   const processMatches = record.identity ? detachedIdentityMatches(record.identity) : false
   // A loaded hosted Windows runner can time out the PowerShell identity refresh. The live server's
   // authenticated protocol identity is the bounded fallback; no identity evidence still means no kill.
   const serverMatches = process.platform === 'win32' && record.state ? await detachedServerMatches(record.state) : false
-  if (!processMatches && !serverMatches) return
+  if (!processMatches && !serverMatches) {
+    detachedProcesses.delete(pid)
+    return
+  }
   try {
     if (process.platform === 'win32') {
       killWindowsTree(pid)
@@ -242,9 +248,13 @@ async function stopDetached(record: DetachedProcess) {
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+    detachedProcesses.delete(pid)
     return
   }
-  await waitFor(() => pidAlive(pid) ? null : true, 3_000).catch(() => undefined)
+  await waitFor(() => pidAlive(pid) ? null : true, 10_000).catch(() => {
+    throw new Error(`timed out waiting for detached artifact server pid=${pid} to exit before teardown`)
+  })
+  detachedProcesses.delete(pid)
 }
 
 afterEach(async () => {
@@ -307,7 +317,7 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
       const outputs = ensureOutputs.get(stateHome) ?? []
       const stdout = outputs.map((output) => lastOutputLine(output.stdout())).at(-1) ?? '<none>'
       const stderr = outputs.map((output) => lastOutputLine(output.stderr())).at(-1) ?? '<none>'
-      reject(new Error(`timed out waiting for artifact server state; last state=${JSON.stringify(readState(stateHome))}; last stdout=${JSON.stringify(stdout)}; last stderr=${JSON.stringify(stderr)}`))
+      reject(new Error(`timed out waiting for artifact server state; predicate=${JSON.stringify(predicate.toString())}; last state=${JSON.stringify(readState(stateHome))}; last stdout=${JSON.stringify(stdout)}; last stderr=${JSON.stringify(stderr)}`))
     }, timeoutMs)
     const inspect = () => {
       const value = readState(stateHome)
@@ -1553,11 +1563,29 @@ describe('owner decision 5: Tailscale access', () => {
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBeNull()
-    expect(state.tailnetDetection).toEqual({ status: 'unavailable', reason: expect.stringMatching(/could not/i) })
+    expect(state.tailnetDetection).toEqual({ status: 'unavailable', reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=1/) })
     expect((await rawRequest(port, '/__wt-artifact-server/health', `localhost:${port}`)).status).toBe(200)
     const status = await runCli(['status'], baseEnv(stateHome))
-    expect(status.stdout).toMatch(/tailnetDetection: unavailable.*could not/i)
+    expect(status.stdout).toMatch(/tailnetDetection: unavailable.*configured tailscale binary failed.*exit=1/i)
   })
+
+  it('reports the configured Tailscale timeout and measured elapsed time', async () => {
+    const { project } = projectWithRoots('tailscale-timeout')
+    const stateHome = temporaryDir('tailscale-timeout-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    writeFileSync(join(project, 'ip'), 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000)\n')
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
+      WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+    }))
+
+    const state = await waitForState(stateHome, () => true, 12_000)
+    expect(state.tailnetDetection).toEqual({
+      status: 'unavailable',
+      reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGTERM, code=ETIMEDOUT, timeout=5000ms/),
+    })
+  }, 15_000)
 
   it('distinguishes a successful no-tailnet result from a failed lookup', async () => {
     const { project } = projectWithRoots('no-tailnet-result')

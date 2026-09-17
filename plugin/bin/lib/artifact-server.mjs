@@ -288,19 +288,35 @@ export function artifactUrl(absPath, options = {}) {
 }
 
 export function detectTailscale(port) {
+  const commandTimeoutMs = 5_000
   const run = (command, args) => execFileSync(command, args, {
-    encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8', timeout: commandTimeoutMs, stdio: ['ignore', 'pipe', 'ignore'],
   })
+  const failureReason = (error, elapsedMs) => {
+    const timeout = error?.code === 'ETIMEDOUT' || error?.killed === true ? String(commandTimeoutMs) + 'ms' : 'no'
+    const fields = [
+      `exit=${Number.isInteger(error?.status) ? error.status : 'none'}`,
+      `signal=${error?.signal ?? 'none'}`,
+      `code=${error?.code ?? 'none'}`,
+      `timeout=${timeout}`,
+    ]
+    return `configured tailscale binary failed after ${elapsedMs} ms: ${fields.join(', ')}`
+  }
   // Tests and managed launchers can pin the binary instead of relying on PATH discovery.
   const configuredCommand = process.env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY
   let command = configuredCommand || 'tailscale'
   let ipOutput
+  const startedAt = Date.now()
+  let initialError = null
   try {
     ipOutput = run(command, ['ip', '-4'])
-  } catch {
+  } catch (error) {
+    initialError = error
+  }
+  if (initialError) {
     if (configuredCommand) return {
       ip: null, dnsName: null, remoteUrl: null,
-      detection: { status: 'unavailable', reason: 'could not run configured tailscale binary' },
+      detection: { status: 'unavailable', reason: failureReason(initialError, Date.now() - startedAt) },
     }
     try {
       const windowsPath = run('powershell.exe', [

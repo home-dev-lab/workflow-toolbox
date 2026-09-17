@@ -171,6 +171,8 @@ describe('runner-hosted SDK pilot lifecycle', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(35)
     const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
     expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].exit).toBe('0')
+    const child = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'delayed-launcher-child.json'), 'utf8')) as { pid: number, argv: string[] }
+    await waitForIdentityExit(child)
   })
 
   it('attests a missing terminal marker and refuses the corresponding edge', async () => {
@@ -1309,6 +1311,18 @@ function killIdentity(expected: { pid: number, argv: string[], startTime?: numbe
   }
   if (sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, inspectProcess(expected.pid, { recordedArgv: expected.argv }))) throw new Error(`timed out waiting for test child ${expected.pid} to exit`)
 }
+async function waitForIdentityExit(recorded: { pid: number, argv: string[] }) {
+  const first = inspectProcess(recorded.pid, { recordedArgv: recorded.argv })
+  if (!first) return
+  const expected = { ...recorded, startTime: first.startTime }
+  const deadline = Date.now() + 10_000
+  while (sameIdentity(expected, inspectProcess(recorded.pid, { recordedArgv: recorded.argv })) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  if (sameIdentity(expected, inspectProcess(recorded.pid, { recordedArgv: recorded.argv }))) {
+    throw new Error(`timed out waiting for detached launcher child pid=${recorded.pid} to exit before teardown`)
+  }
+}
 function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null, options: Record<string, unknown> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-'))); roots.push(root)
   const archiveRoot = archiveProject()
@@ -1358,7 +1372,7 @@ function rawLauncher(source: string) {
   return file
 }
 function delayedLauncher() {
-  return launcher("import { spawn } from 'node:child_process'; import { readFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; const code = \"const fs=require('fs'); setTimeout(() => { fs.appendFileSync(process.argv[1], 'done\\\\nEXIT=0\\\\n'); fs.writeFileSync(process.argv[2], 'report\\\\n') }, 50)\"; const child = spawn(process.execPath, ['-e', code, log, report], { detached: true, stdio: 'ignore' }); child.unref()")
+  return launcher("import { spawn } from 'node:child_process'; import { readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; const code = \"const fs=require('fs'); setTimeout(() => { fs.appendFileSync(process.argv[1], 'done\\\\nEXIT=0\\\\n'); fs.writeFileSync(process.argv[2], 'report\\\\n') }, 50)\"; const argv=[process.execPath, '-e', code, log, report]; const child = spawn(argv[0], argv.slice(1), { detached: true, stdio: 'ignore' }); writeFileSync(join(root,'.lane','delayed-launcher-child.json'),JSON.stringify({pid:child.pid,argv})); child.unref()")
 }
 function emptyLauncher() { return launcher('process.exit(0)') }
 function logOnlyLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, '')") }
