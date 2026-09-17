@@ -52,9 +52,12 @@ function powershellProcessTable(execFile, now = Date.now()) {
   return result
 }
 
-function darwinProcessTable(execFile, now = Date.now()) {
+function darwinProcessTable(execFile, pid, now = Date.now()) {
   const cached = darwinProcessTableCache.get(execFile)
-  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) return cached.result
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
+    const missReadAt = cached.missReadAt.get(pid)
+    if (cached.result.status !== 0 || cached.result.value.has(pid) || (missReadAt !== undefined && now - missReadAt <= DARWIN_PROCESS_TABLE_TTL_MS)) return cached.result
+  }
   const evidence = runEvidence('ps', ['-ww', '-axo', 'pid=,lstart=,pgid=,state=,command='], execFile)
   let result = evidence
   if (evidence.status === 0) {
@@ -68,13 +71,21 @@ function darwinProcessTable(execFile, now = Date.now()) {
     }
     result = { status: 0, value }
   }
-  darwinProcessTableCache.set(execFile, { readAt: now, result })
+  const missReadAt = new Map([...cached?.missReadAt ?? []].filter(([, readAt]) => now - readAt <= DARWIN_PROCESS_TABLE_TTL_MS))
+  if (result.status === 0) {
+    for (const presentPid of result.value.keys()) missReadAt.delete(presentPid)
+    if (!result.value.has(pid)) missReadAt.set(pid, now)
+  }
+  darwinProcessTableCache.set(execFile, { readAt: now, result, missReadAt })
   return result
 }
 
 function darwinCwd(pid, execFile, now = Date.now()) {
   const cached = darwinCwdCache.get(execFile)
-  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) return cached.value.get(pid) ?? null
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
+    const missReadAt = cached.missReadAt.get(pid)
+    if (cached.value.has(pid) || (missReadAt !== undefined && now - missReadAt <= DARWIN_PROCESS_TABLE_TTL_MS)) return cached.value.get(pid) ?? null
+  }
   const result = runEvidence('lsof', ['-d', 'cwd', '-F', 'pn'], execFile)
   const value = new Map()
   let currentPid = null
@@ -84,7 +95,10 @@ function darwinCwd(pid, execFile, now = Date.now()) {
       else if (line.startsWith('n') && Number.isSafeInteger(currentPid)) value.set(currentPid, line.slice(1))
     }
   }
-  darwinCwdCache.set(execFile, { readAt: now, value })
+  const missReadAt = new Map([...cached?.missReadAt ?? []].filter(([, readAt]) => now - readAt <= DARWIN_PROCESS_TABLE_TTL_MS))
+  for (const presentPid of value.keys()) missReadAt.delete(presentPid)
+  if (!value.has(pid)) missReadAt.set(pid, now)
+  darwinCwdCache.set(execFile, { readAt: now, value, missReadAt })
   return value.get(pid) ?? null
 }
 
@@ -106,7 +120,7 @@ function processStartSeconds(value) {
 function processExists(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
   if (platform === 'linux') return existsSync(path.join(procRoot, String(pid)))
   if (platform === 'darwin') {
-    const result = darwinProcessTable(execFile)
+    const result = darwinProcessTable(execFile, Number(pid))
     if (result.status === 'unavailable') return null
     return result.status === 0 && result.value.has(Number(pid))
   }
@@ -120,7 +134,7 @@ function processExists(pid, { platform = process.platform, procRoot = '/proc', s
 
 function processState(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
   if (platform === 'darwin') {
-    const result = darwinProcessTable(execFile)
+    const result = darwinProcessTable(execFile, Number(pid))
     return result.status === 0 ? result.value.get(Number(pid))?.state?.charAt(0) ?? null : null
   }
   if (platform !== 'linux') return null
@@ -256,7 +270,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
 }
 
 function inspectDarwinProcess(pid, execFile, captureCwd) {
-  const result = darwinProcessTable(execFile)
+  const result = darwinProcessTable(execFile, pid)
   if (result.status !== 0) return null
   const row = result.value.get(pid)
   if (!row || row.state.startsWith('Z')) return null
