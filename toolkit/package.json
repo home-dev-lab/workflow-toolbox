@@ -18,6 +18,7 @@
     "quality:debt-cards": "node scripts/quality.mjs debt-cards",
     "quality": "pnpm run quality:lint && pnpm run quality:dup && pnpm run quality:dead && pnpm run quality:deps",
     "test": "pnpm build:dist && node scripts/cross-repo-typecheck.mjs && vitest run --coverage",
+    "test:shard": "vitest run",
     "test:under-load": "node scripts/suite-under-load.mjs",
     "test:cross-repo": "node scripts/cross-repo-typecheck.mjs",
     "wt:build": "tsx packages/build/src/cli.ts build",

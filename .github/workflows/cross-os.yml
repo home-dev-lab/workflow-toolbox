@@ -63,7 +63,7 @@ jobs:
           WT_VITEST_MAX_WORKERS: 2
         run: |
           mkdir -p ci-diagnostics
-          pnpm exec vitest run --shard=1/2 2>&1 | tee ci-diagnostics/vitest-shard-1-of-2.log
+          pnpm test:shard --shard=1/2 2>&1 | tee ci-diagnostics/vitest-shard-1-of-2.log
         timeout-minutes: 12
       - name: Test (macOS shard 2/2)
         if: ${{ runner.os == 'macOS' }}
@@ -72,7 +72,7 @@ jobs:
           WT_VITEST_MAX_WORKERS: 2
         run: |
           mkdir -p ci-diagnostics
-          pnpm exec vitest run --shard=2/2 2>&1 | tee ci-diagnostics/vitest-shard-2-of-2.log
+          pnpm test:shard --shard=2/2 2>&1 | tee ci-diagnostics/vitest-shard-2-of-2.log
         timeout-minutes: 12
       - name: Test (Windows)
         if: ${{ runner.os == 'Windows' }}
