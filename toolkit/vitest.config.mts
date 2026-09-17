@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import { resolve } from 'node:path'
+import { spawningTestFiles } from './scripts/spawning-test-files.mjs'
 
-const skillFenceTest = 'packages/build/test/opencode-skill-fence.integration.test.ts'
 const configuredMaxWorkers = process.env.WT_VITEST_MAX_WORKERS
   ? Number(process.env.WT_VITEST_MAX_WORKERS)
   : process.platform === 'darwin' ? 2 : undefined
@@ -40,23 +40,24 @@ const commonTestConfig = {
 
 export default defineConfig({
   test: {
-    // These cold-cache tests spawn real opencode processes. Keep them in the
-    // ordinary gate, but start them only after the parallel files have drained.
+    // Real child processes share a small pool, so their timeout measures execution
+    // rather than time queued behind the ordinary parallel population.
     projects: [
       {
         test: {
           ...commonTestConfig,
           name: 'parallel',
           include,
-          exclude: [skillFenceTest],
+          exclude: spawningTestFiles,
           sequence: { groupOrder: 0 },
         },
       },
       {
         test: {
           ...commonTestConfig,
-          name: 'skill-fence',
-          include: [skillFenceTest],
+          name: 'process-spawning',
+          include: spawningTestFiles,
+          maxWorkers: configuredMaxWorkers === undefined ? 2 : Math.min(2, configuredMaxWorkers),
           sequence: { groupOrder: 1 },
         },
       },
