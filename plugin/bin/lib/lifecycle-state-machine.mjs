@@ -18,7 +18,7 @@ export const AWAITING_FIDELITY_RESULT = 'accepted phase=awaiting_fidelity'
 export const MAX_CRITIC_ROUNDS = 4
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
 
-const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
+export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
 const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation', 'harden'])
 const GATES = new Set(['typecheck', 'lint', 'test'])
 const ARTIFACTS = {

@@ -1,4 +1,5 @@
 import { executableName, resolvedBinary } from '../bin/lib/resolved-binary.mjs';
+import { PHASES as LIFECYCLE_PHASES } from './lifecycle-phases.js';
 
 // These pure helpers are also embedded in the out-of-process collector below.
 export function detectArtifactUrl(file, platform, env = {}, linkBase = '', suiteRoot = '') {
@@ -116,7 +117,7 @@ const clockTicksAvailability = clockTicks === null
   ? { status: UNKNOWN, reason: 'getconf CLK_TCK unavailable' }
   : { status: 'available' };
 let procUptime = null;
-const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report', 'awaiting_fidelity'];
+const PHASES = ${JSON.stringify([...LIFECYCLE_PHASES, 'awaiting_fidelity'])};
 const LITE_SKIPS = new Set(['plan', 'critic', 'review', 'refutation', 'harden']);
 const DIR_SCAN_CAP = Number.isSafeInteger(config.scanEntryCap) && config.scanEntryCap > 0 ? config.scanEntryCap : 1000;
 const cappedScans = [];
@@ -228,6 +229,19 @@ function slice(file, maxBytes, fromEnd = false, rejectOverflow = false) {
 function tail(file, maxBytes = LOG_TAIL_BYTES) { return slice(file, maxBytes, true); }
 function head(file, maxBytes = BRIEF_HEAD_BYTES) { return slice(file, maxBytes); }
 function json(file) { const value = slice(file, JSON_BYTES, false, true); try { return value === null ? null : JSON.parse(value); } catch { return null; } }
+function lifecycleTimeline(worktree) {
+  const source = lanePath(worktree, 'lifecycle.json');
+  const value = json(source);
+  if (!value || !Array.isArray(value.phases) || value.phases.length === 0) return null;
+  const validTime = item => item === null || Number.isFinite(item);
+  const validRound = item => item === null || (Number.isSafeInteger(item) && item > 0);
+  if (!value.phases.every(item => item && typeof item === 'object' && PHASES.includes(item.phase) && item.phase !== 'awaiting_fidelity'
+    && validRound(item.round) && Number.isFinite(item.entered_at) && validTime(item.exited_at))) return null;
+  const phaseHistory = value.phases.map(item => item.phase);
+  if (Number.isFinite(value.ended_at) && phaseHistory.at(-1) === 'report') phaseHistory.push('awaiting_fidelity');
+  const criticRounds = value.phases.filter(item => item.phase === 'critic').reduce((count, item) => Math.max(count, item.round || 0), 0);
+  return { source, phaseHistory, criticRounds };
+}
 function info(file) { const safeFile = safePath(file); return safeFile ? infoUnrestricted(safeFile) : null; }
 function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : null; } catch { return null; } }
 function cardIds(value) { return [...new Set(String(value || '').match(/\b\d{19}\b/g) || [])]; }
@@ -676,8 +690,9 @@ if (processScanAvailable) for (const pid of listedPids) {
     if (sdkRunner) sdkRunnerByWorktree.set(worktree, { pid: Number(pid), model, brief });
     else {
       const previous = processByWorktree.get(worktree);
-      if (!previous || previous.model === UNKNOWN || model !== UNKNOWN) processByWorktree.set(worktree, { pid: Number(pid), model, brief: brief || previous?.brief || null });
-      if (laneWorker) laneWorkerByWorktree.set(worktree, { pid: Number(pid), model, brief });
+      const laneKind = executable === executables.codex ? 'codex' : executable === executables.opencode ? 'opencode' : 'plain';
+      if (!previous || previous.model === UNKNOWN || model !== UNKNOWN) processByWorktree.set(worktree, { pid: Number(pid), model, brief: brief || previous?.brief || null, laneKind });
+      if (laneWorker) laneWorkerByWorktree.set(worktree, { pid: Number(pid), model, brief, laneKind });
     }
   } catch {}
 }
@@ -736,6 +751,8 @@ function structuredLaneRole(worktree, launchedBrief = null) {
   for (const value of [route?.laneRole, route?.role, route?.lifecycle?.phase, route?.phase]) {
     const label = roleLabel(value); if (label) return label;
   }
+  const timelinePhase = lifecycleTimeline(worktree)?.phaseHistory.at(-1);
+  if (roleLabel(timelinePhase)) return roleLabel(timelinePhase);
   const runnerLog = tail(sdkLogFile(worktree)) || '';
   const accepted = [...runnerLog.matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)].at(-1)?.[1];
   if (roleLabel(accepted)) return roleLabel(accepted);
@@ -778,24 +795,27 @@ for (const worktree of scannedWorktrees) {
 for (const worktree of scannedWorktrees) {
   const runnerLogFile = sdkLogFile(worktree);
   const runnerLog = tail(runnerLogFile);
-  if (runnerLog !== null) {
+  const timeline = lifecycleTimeline(worktree);
+  if (runnerLog !== null || timeline) {
     const route = json(lanePath(worktree, 'route.json'));
     const routeCardId = route?.cardId;
     const id = /^\d{19}$/.test(String(routeCardId || ''))
       ? String(routeCardId)
       : cardMarkdownId(head(lanePath(worktree, 'card.md')));
     if (id) {
-      const lastLine = runnerLog.split(/\r?\n/).filter(Boolean).at(-1) || '';
+      const lastLine = String(runnerLog || '').split(/\r?\n/).filter(Boolean).at(-1) || '';
       if (/^EXIT=\d+$/.test(lastLine)) continue;
-      const accepted = [...runnerLog.matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)];
-      const phaseHistory = accepted.map(match => match[1]);
-      const criticRounds = [...runnerLog.matchAll(/^lifecycle: lane critic EXIT=\d+$/gm)].length;
+      const accepted = [...String(runnerLog || '').matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)];
+      const phaseHistory = timeline?.phaseHistory || accepted.map(match => match[1]);
+      const criticRounds = timeline?.criticRounds ?? [...String(runnerLog || '').matchAll(/^lifecycle: lane critic EXIT=\d+$/gm)].length;
       laneByCard.set(id, {
         worktree,
         launcherSessionId: laneSessionId(worktree),
-        model: runnerLog.match(/\beffective=([^\s]+)/)?.[1] || route?.effective || route?.model || sdkRunnerByWorktree.get(worktree)?.model || UNKNOWN,
+        model: String(runnerLog || '').match(/\beffective=([^\s]+)/)?.[1] || route?.effective || route?.model || sdkRunnerByWorktree.get(worktree)?.model || UNKNOWN,
         phase: phaseHistory.at(-1) || null,
         phaseHistory,
+        phaseSource: timeline ? 'lifecycle' : 'log',
+        lifecycleSource: timeline?.source || null,
         criticRounds,
         runnerLogTruncated: (info(runnerLogFile)?.size || 0) > LOG_TAIL_BYTES,
         outcome: 'running',
@@ -833,7 +853,7 @@ function externalLane(lane, id) {
   const lastWrite = freshestWrite(lane.worktree);
   const running = pidState(lane.worktree) === 'alive' || freshTime(lastWrite);
   const processPid = processByWorktree.get(lane.worktree)?.pid || null;
-  return running ? { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: lane.label || 'Lane', parentCardId: id, title: cleanCardTitle(lane.title, id), outcome: lane.outcome || 'running', ...(lane.model ? { model: lane.model } : {}), activity: lane.terminalReport ? 'report written' : laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) } : null;
+  return running ? { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: lane.label || 'Lane', phaseAvailability: (processByWorktree.get(lane.worktree)?.laneKind || 'plain') + ' lane', parentCardId: id, title: cleanCardTitle(lane.title, id), outcome: lane.outcome || 'running', ...(lane.model ? { model: lane.model } : {}), activity: lane.terminalReport ? 'report written' : laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) } : null;
 }
 function nestedLane(lane, id) {
   if (!lane || pidState(lane.worktree) !== 'alive') return null;
@@ -845,7 +865,7 @@ function nestedLane(lane, id) {
   const detail = brief ? markdownTitle(brief)?.match(/\b(?:review\s+round|round|step)\s+\d+(?:\s+round\s+\d+)?\b/i)?.[0] || null : null;
   const phase = phaseOf(lane.phase);
   const phaseRole = phase === UNKNOWN ? null : (phase === 'tdd' ? 'TDD' : phase.replace(/_/g, ' ').replace(/^./, letter => letter.toUpperCase())) + ' lane';
-  return { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: isFix ? 'Fix lane' : phaseRole || lane.label || 'Lane', parentCardId: id, title: isFix ? detail : phaseRole ? null : cleanCardTitle(lane.title, id) || path.basename(lane.worktree), outcome: 'running', ...(runner?.model && runner.model !== UNKNOWN ? { model: runner.model } : {}), activity: laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) };
+  return { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: isFix ? 'Fix lane' : phaseRole || lane.label || 'Lane', phaseAvailability: (runner?.laneKind || 'plain') + ' lane', parentCardId: id, title: isFix ? detail : phaseRole ? null : cleanCardTitle(lane.title, id) || path.basename(lane.worktree), outcome: 'running', ...(runner?.model && runner.model !== UNKNOWN ? { model: runner.model } : {}), activity: laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) };
 }
 
 const activeLifecycleIds = [...lifecycle].filter(([, value]) => value?.phase).map(([id]) => id);
@@ -888,6 +908,7 @@ for (const id of ids) {
     waveId: wave?.waveId || null,
     route: lane?.route || null,
     phase: phaseOf(lane?.phase || record?.phase),
+    phaseSource: lane?.phaseSource || null,
     phaseStates,
     outcome: waitingForArbiter ? 'waiting for arbiter review' : lane?.outcome || failedOutcome || UNKNOWN,
     model: lane?.model || workers[0]?.model || UNKNOWN,
@@ -907,7 +928,7 @@ for (const id of ids) {
     processPid: sdkRunner?.pid || null,
     elapsed: worktree ? pilotElapsed(worktree, sdkRunner?.pid || null) : UNKNOWN,
     sources: {
-      lifecycle: record?.sourcePath || UNKNOWN,
+      lifecycle: lane?.lifecycleSource || record?.sourcePath || UNKNOWN,
       spawnRegistry: workers.length ? 'spawn registry' : UNKNOWN,
       laneProbe: lane ? lane.worktree : UNKNOWN,
       liveness: live?.sourcePath || UNKNOWN,
@@ -944,7 +965,7 @@ for (const processRecord of processes.values()) {
     const label = classified.label;
     const modelAt = args.findIndex(arg => arg === '--model');
     const model = modelAt >= 0 ? args[modelAt + 1] || null : laneModel(worktree);
-    processActors.push({ id: 'process:' + pid, processPid: pid, worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label, roleInferred: classified.inferred, role: heading, title: heading, ...(model ? { model } : {}), activity: laneActivity(worktree, freshestWrite(worktree)), elapsed: actorElapsed(worktree, pid), outcome: 'running', sessionPid: sessionPidFor(pid), launcherSessionId: laneSessionId(worktree) });
+    processActors.push({ id: 'process:' + pid, processPid: pid, worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label, phaseAvailability: (executable === executables.codex ? 'codex' : 'opencode') + ' lane', roleInferred: classified.inferred, role: heading, title: heading, ...(model ? { model } : {}), activity: laneActivity(worktree, freshestWrite(worktree)), elapsed: actorElapsed(worktree, pid), outcome: 'running', sessionPid: sessionPidFor(pid), launcherSessionId: laneSessionId(worktree) });
   } else {
     const requestAt = args.indexOf('task');
     const request = args.slice(requestAt + 1).join(' ');
