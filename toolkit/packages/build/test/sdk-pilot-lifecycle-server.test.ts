@@ -1,7 +1,7 @@
 import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -617,11 +617,12 @@ printf 'report\n' > "$report"
     const server = createServer((request, response) => {
       let body = ''; request.setEncoding('utf8'); request.on('data', (chunk) => { body += chunk }); request.on('end', () => {
         if (unavailable) { response.writeHead(500); response.end('unavailable'); return }
-        const rpc = JSON.parse(body)
+        let rpc: { method?: string, id?: unknown, params?: { name?: string, arguments?: { cardId?: string } } }
+        try { rpc = JSON.parse(body) } catch { response.writeHead(400); response.end(); return }
         let result = {}
         if (rpc.method === 'tools/call') {
-          const name = rpc.params.name
-          const cardId = rpc.params.arguments.cardId
+          const name = rpc.params?.name
+          const cardId = rpc.params?.arguments?.cardId
           const value = name === 'get_card' ? { id: cardId, listId: cardId === 'done' ? 'done-list' : 'open-list' } : { lists: [{ id: 'done-list', name: 'Done' }, { id: 'open-list', name: 'In Progress' }] }
           result = { content: [{ type: 'text', text: JSON.stringify(value) }] }
         }
@@ -630,6 +631,13 @@ printf 'report\n' > "$report"
     })
     await new Promise<void>((resolveReady) => server.listen(0, '127.0.0.1', resolveReady))
     const address = server.address(); if (!address || typeof address === 'string') throw new Error('HTTP fixture has no port')
+    const incompleteStatus = await new Promise<number>((resolveStatus, reject) => {
+      const request = httpRequest({ host: '127.0.0.1', port: address.port, method: 'POST' }, (response) => {
+        response.resume(); response.on('end', () => resolveStatus(response.statusCode ?? 0))
+      })
+      request.once('error', reject); request.end()
+    })
+    expect(incompleteStatus).toBe(400)
     const configDir = join(container, 'config'); mkdirSync(configDir)
     writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@test': { options: { planka_mcp_url: `http://127.0.0.1:${address.port}/mcp` } } } }))
     const cli = resolve(fileURLToPath(new URL('../../../../plugin/bin/wt-worktree-remove.mjs', import.meta.url)))

@@ -164,7 +164,13 @@ export function pidAlive(pid) {
 
 export function registrationPidStatus(pid, options = {}) {
   const platform = options.platform ?? process.platform
-  if (platform === 'win32') return processEvidenceStatus(pid, { ...options, platform })
+  if (platform === 'win32') {
+    const signal = options.signal ?? process.kill.bind(process)
+    try { signal(pid, 0) } catch (error) {
+      if (error?.code === 'ESRCH') return 'gone'
+    }
+    return processEvidenceStatus(pid, { ...options, platform })
+  }
   return pidAlive(pid) ? 'running' : 'gone'
 }
 
