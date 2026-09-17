@@ -49,7 +49,7 @@ export function attributePilotTurns(messages, phases) {
 export function matchLaneSessions(sessions, directory, startedAt, endedAt, options = {}) {
   const matches = sessions.filter((row) => row.directory === directory && Number(row.time_updated) >= startedAt && Number(row.time_created) <= endedAt)
   if (matches.length > 0 || !options.explain) return matches
-  return { status: 'unknown', reason: `no OpenCode session matched directory ${directory} and lane window ${startedAt}..${endedAt}` }
+  return { status: 'unknown', reason: `no OpenCode session row for worktree ${directory} within ${startedAt}..${endedAt}` }
 }
 
 function modelName(row) {
@@ -64,6 +64,45 @@ function queryOpenCodeSessions({ dbPath, sqlite = 'sqlite3', execFile = execFile
   const query = `SELECT id,directory,model,tokens_input,tokens_output,tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated FROM session WHERE directory=${quote(directory)} AND time_updated>=${Math.floor(startedAt)} AND time_created<=${Math.ceil(endedAt)} ORDER BY time_created`
   const output = execFile(sqlite, ['-readonly', '-json', '--', dbPath, query], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 })
   return output.trim() ? JSON.parse(output) : []
+}
+
+function defaultOpenCodeDb(options) {
+  if (options.dbPath) return options.dbPath
+  if (process.env.WT_OPENCODE_DB) return process.env.WT_OPENCODE_DB
+  if ((options.platform ?? process.platform) !== 'linux') return null
+  return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'opencode', 'opencode.db')
+}
+
+function laneFamily(lane) {
+  if (lane.executor === 'claude-sdk') return 'anthropic'
+  if (lane.executor === 'gpt-lane' || lane.executor === 'opencode') return 'openai'
+  const model = String(lane.model ?? '').toLowerCase()
+  if (model.startsWith('openai/') || model.startsWith('gpt-')) return 'openai'
+  if (model.startsWith('anthropic/') || model.startsWith('claude-') || /^(?:opus|sonnet|haiku)$/.test(model)) return 'anthropic'
+  return null
+}
+
+function laneLabel(lane) {
+  return `${lane.phase}${lane.round ? ` round ${lane.round}` : ''}`
+}
+
+function readClaudeLane(laneDir, lane) {
+  try {
+    const laneUsage = readJson(path.resolve(laneDir, lane.usage_file))
+    return [{ phase: lane.phase, round: lane.round ?? null, model: laneUsage.model ?? lane.model ?? 'unknown', tokens: tokenColumns('anthropic', laneUsage.totals ?? laneUsage), wall_time_ms: lane.ended_at - lane.started_at }]
+  } catch (error) {
+    return `Anthropic lane usage unavailable for ${laneLabel(lane)}: ${error instanceof Error ? error.message : String(error)}`
+  }
+}
+
+function readOpenAiLane(lane, sessions, assignedSessions, worktree) {
+  if (typeof sessions === 'string') return `OpenAI lane usage unavailable for ${laneLabel(lane)}: ${sessions}`
+  const matched = matchLaneSessions(sessions.filter((row) => !assignedSessions.has(row.id)), worktree, lane.started_at, lane.ended_at, { explain: true })
+  if (!Array.isArray(matched)) return `OpenAI lane usage unavailable for ${laneLabel(lane)}: ${matched.reason}`
+  return matched.map((row) => {
+    assignedSessions.add(row.id)
+    return { phase: lane.phase, round: lane.round ?? null, model: modelName(row), tokens: tokenColumns('openai', row), wall_time_ms: Math.max(0, Number(row.time_updated) - Number(row.time_created)) }
+  })
 }
 
 function phaseKey(phase, round) {
@@ -110,14 +149,15 @@ function embeddedWindow(file) {
   return { started_at: mtime, ended_at: mtime, basis: 'log mtime' }
 }
 
-function inferredTimeline(laneDir) {
+function inferredTimeline(laneDir, models = {}) {
   const rounds = new Map()
   const logs = fs.readdirSync(laneDir).filter((name) => /^(?:tdd|critic|review|refutation|harden)-run\.[^.]+(?:-[^.]+)*\.log$/.test(name))
   const lanes = logs.map((name) => {
     const phase = name.split('-run.')[0]
     const round = (rounds.get(phase) ?? 0) + 1; rounds.set(phase, round)
     const window = embeddedWindow(path.join(laneDir, name))
-    return { phase, round: phase === 'critic' ? round : null, started_at: window.started_at, ended_at: window.ended_at, model: null, usage_file: null, inferred: true, inference: window.basis }
+    const modelKey = ['tdd', 'harden'].includes(phase) ? 'code' : phase
+    return { phase, round: phase === 'critic' ? round : null, started_at: window.started_at, ended_at: window.ended_at, model: models[modelKey] ?? null, usage_file: null, inferred: true, inference: window.basis }
   })
   return { phases: [], lanes, inferred: true }
 }
@@ -175,7 +215,7 @@ export function computeRunCost(options) {
   try { summary = readJson(path.join(laneDir, 'summary.json')) } catch {}
   const usage = readJson(path.join(laneDir, 'usage.json'))
   let timeline
-  try { timeline = readJson(path.join(laneDir, 'lifecycle.json')) } catch { timeline = inferredTimeline(laneDir) }
+  try { timeline = readJson(path.join(laneDir, 'lifecycle.json')) } catch { timeline = inferredTimeline(laneDir, routeReceipt.models) }
   const window = archiveWindow(laneDir, timeline, summary, options)
   const { startedAt, endedAt } = window
   const worktree = options.worktree ?? routeReceipt.worktree ?? path.dirname(laneDir)
@@ -217,28 +257,43 @@ export function computeRunCost(options) {
       }
     }
   }
-  const allSessions = routeReceipt.executor === 'claude-sdk' ? [] : options.sessions ?? queryOpenCodeSessions({ dbPath: options.dbPath ?? process.env.WT_OPENCODE_DB ?? path.join(os.homedir(), '.local/share/opencode/opencode.db'), sqlite: options.sqlite, execFile: options.execFile, directory: worktree, startedAt, endedAt })
-  const assignedSessions = new Set()
-
-  for (const lane of timeline.lanes ?? []) {
-    if (routeReceipt.executor === 'claude-sdk') {
-      try {
-        const laneUsage = readJson(path.resolve(laneDir, lane.usage_file))
-        entries.push({ phase: lane.phase, round: lane.round ?? null, model: laneUsage.model ?? lane.model ?? 'unknown', tokens: tokenColumns('anthropic', laneUsage.totals ?? laneUsage), wall_time_ms: lane.ended_at - lane.started_at })
+  const lanes = timeline.lanes ?? []
+  let allSessions = []
+  if (lanes.some((lane) => laneFamily(lane) === 'openai')) {
+    if (options.sessions) allSessions = options.sessions
+    else {
+      const dbPath = defaultOpenCodeDb(options)
+      if (dbPath === null) allSessions = `OpenCode session store location is unverified on ${options.platform ?? process.platform}; pass --db or set WT_OPENCODE_DB`
+      else try {
+        allSessions = queryOpenCodeSessions({ dbPath, sqlite: options.sqlite, execFile: options.execFile, directory: worktree, startedAt, endedAt })
       } catch (error) {
-        const reason = `Claude lane usage unavailable for ${lane.phase}${lane.round ? ` round ${lane.round}` : ''}: ${error instanceof Error ? error.message : String(error)}`
-        entries.push({ phase: lane.phase, round: lane.round ?? null, status: 'unknown', reason, wall_time_ms: lane.ended_at - lane.started_at }); unknown.push(reason)
+        allSessions = `OpenCode session store query failed: ${error instanceof Error ? error.message : String(error)}`
       }
-      continue
-    }
-    const matched = matchLaneSessions(allSessions.filter((row) => !assignedSessions.has(row.id)), worktree, lane.started_at, lane.ended_at, { explain: true })
-    if (!Array.isArray(matched)) { entries.push({ phase: lane.phase, round: lane.round ?? null, ...matched, wall_time_ms: lane.ended_at - lane.started_at }); unknown.push(matched.reason); continue }
-    for (const row of matched) {
-      assignedSessions.add(row.id)
-      entries.push({ phase: lane.phase, round: lane.round ?? null, model: modelName(row), tokens: tokenColumns('openai', row), wall_time_ms: Math.max(0, Number(row.time_updated) - Number(row.time_created)) })
     }
   }
-  for (const row of allSessions.filter((item) => item.directory === worktree && !assignedSessions.has(item.id))) {
+  const assignedSessions = new Set()
+  const laneSources = new Set()
+
+  for (const lane of lanes) {
+    const family = laneFamily(lane)
+    if (family === null) {
+      const reason = `lane usage family unavailable for ${laneLabel(lane)}: executor and model do not identify Anthropic or OpenAI`
+      entries.push({ phase: lane.phase, round: lane.round ?? null, status: 'unknown', reason, wall_time_ms: lane.ended_at - lane.started_at })
+      unknown.push(reason)
+      continue
+    }
+    laneSources.add(family)
+    const result = family === 'anthropic'
+      ? readClaudeLane(laneDir, lane)
+      : readOpenAiLane(lane, allSessions, assignedSessions, worktree)
+    if (typeof result === 'string') {
+      entries.push({ phase: lane.phase, round: lane.round ?? null, status: 'unknown', reason: result, wall_time_ms: lane.ended_at - lane.started_at })
+      unknown.push(result)
+    } else {
+      entries.push(...result)
+    }
+  }
+  for (const row of Array.isArray(allSessions) ? allSessions.filter((item) => item.directory === worktree && !assignedSessions.has(item.id)) : []) {
     const reason = `OpenCode session ${row.id} matched the run but no lane window`
     entries.push({ phase: 'unmatched', round: null, model: modelName(row), status: 'unknown', reason, tokens: tokenColumns('openai', row), wall_time_ms: Math.max(0, Number(row.time_updated) - Number(row.time_created)) })
     unknown.push(reason)
@@ -272,7 +327,7 @@ export function computeRunCost(options) {
       pilot_result: usageDifference(pilotMessages, resultTotals, outputAdjustments),
       model_usage: modelUsageDifference(usage.model_usage, primaryModel, resultTotals),
     },
-    sources: { pilot: usage.messages ? 'Claude Agent SDK assistant message usage' : 'legacy Claude Agent SDK result usage', lanes: routeReceipt.executor === 'claude-sdk' ? 'Claude Agent SDK result usage' : 'OpenCode session rows via sqlite3', timeline: timeline.inferred ? 'inferred from each lane log' : 'lifecycle transition receipts' },
+    sources: { pilot: usage.messages ? 'Claude Agent SDK assistant message usage' : 'legacy Claude Agent SDK result usage', lanes: [...laneSources].map((family) => family === 'anthropic' ? 'Claude Agent SDK result usage' : 'OpenCode session rows via sqlite3').join(' and ') || 'unavailable', timeline: timeline.inferred ? 'inferred from each lane log' : 'lifecycle transition receipts' },
   }
 }
 

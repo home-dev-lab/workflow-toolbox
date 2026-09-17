@@ -499,7 +499,7 @@ export function createLifecycleStateMachine({
     gateRunner,
     now,
     recordLaneStart: ({ phase, model, startedAt, usageFile }) => {
-      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
+      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, executor, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
       timeline.lanes.push(record)
       persistTimeline()
       return record

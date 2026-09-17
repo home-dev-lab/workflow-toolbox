@@ -212,7 +212,9 @@ beside the nonce log. GPT lane cost is read-only
 from OpenCode `session` rows whose `directory` exactly matches the worktree and whose timestamps
 overlap that lane's launch window. The reader invokes the external `sqlite3` CLI because the plugin's
 Node floor is 20; `WT_OPENCODE_DB` overrides the default
-`~/.local/share/opencode/opencode.db`. An absent CLI, unreadable database, or unmatched lane is
+`$XDG_DATA_HOME/opencode/opencode.db` on Linux (defaulting to
+`~/.local/share/opencode/opencode.db`). macOS and Windows store locations are not asserted without
+`--db` or `WT_OPENCODE_DB`. An absent CLI, unreadable database, unsupported default, or unmatched lane is
 `unknown` with its reason, never zero, and cost failure never changes the runner exit.
 
 For a legacy archive without `lifecycle.json`, each nonce log gets its own window from its first and
