@@ -1,0 +1,127 @@
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { afterEach, describe, expect, it } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { acquireSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
+
+const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
+const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
+const roots: string[] = []
+
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function tempRoot(tag: string): string {
+  const root = mkdtempSync(join(tmpdir(), `wt-suite-lock-${tag}-`))
+  roots.push(root)
+  return root
+}
+
+function cli(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) {
+  return spawnSync(process.execPath, [CLI, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, WT_SUITE_LOCK_DIR: root, ...extraEnv },
+  })
+}
+
+function runAsync(args: string[], root: string) {
+  const child = spawn(process.execPath, [CLI, ...args], {
+    env: { ...process.env, WT_SUITE_LOCK_DIR: root },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr!.on('data', (chunk) => { stderr += String(chunk) })
+  return { child, stderr: () => stderr, done: new Promise<number | null>((resolve) => child.once('exit', resolve)) }
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('timed out waiting for fixture state')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
+describe('suite lock library', () => {
+  it('writes the holder shape and gives the lock to a waiter after release', async () => {
+    const root = tempRoot('handoff')
+    const first = await acquireSuiteLock({ root, argv: ['pnpm', 'test'] })
+    expect(readSuiteLock({ root }).holder).toEqual({
+      pid: process.pid,
+      argv: ['pnpm', 'test'],
+      cwd: process.cwd(),
+      startedAt: expect.any(String),
+      platform: process.platform,
+    })
+    let acquired = false
+    const secondPromise = acquireSuiteLock({ root, pollMs: 10, noticeMs: 10, waitS: 1 }).then((lease: unknown) => { acquired = true; return lease })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(acquired).toBe(false)
+    expect(releaseSuiteLock(first)).toBe(true)
+    const second = await secondPromise
+    expect(releaseSuiteLock(second)).toBe(true)
+  })
+
+  it('reclaims a holder whose pid is dead', async () => {
+    const root = tempRoot('stale')
+    const lock = join(root, 'lock.d')
+    const seeded = await acquireSuiteLock({ root })
+    writeFileSync(join(lock, 'holder.json'), `${JSON.stringify({ ...seeded.holder, pid: 2_147_483_647 })}\n`)
+    const replacement = await acquireSuiteLock({ root, waitS: 0.1, pollMs: 10 })
+    expect(replacement.holder.pid).toBe(process.pid)
+    expect(releaseSuiteLock(replacement)).toBe(true)
+  })
+})
+
+describe('wt-suite-lock CLI', () => {
+  it('times out with 75 and never runs the command', async () => {
+    const root = tempRoot('timeout')
+    const marker = join(root, 'ran')
+    const lease = await acquireSuiteLock({ root })
+    const result = cli(['run', '--wait-s', '0.05', '--', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
+    expect(result.status).toBe(75)
+    expect(result.stderr).toContain('timed out waiting for suite lock: holder pid')
+    expect(existsSync(marker)).toBe(false)
+    releaseSuiteLock(lease)
+  })
+
+  it('bypasses visibly and runs when WT_SUITE_LOCK=0', () => {
+    const root = tempRoot('bypass')
+    const result = cli(['run', '--', process.execPath, '-e', 'process.stdout.write("ran")'], root, { WT_SUITE_LOCK: '0' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('ran')
+    expect(result.stderr).toContain('bypassed because WT_SUITE_LOCK=0')
+  })
+
+  it('serializes two real run commands and reports the holder', async () => {
+    const root = tempRoot('integration')
+    const program = 'setTimeout(() => {}, 3000)'
+    const started = Date.now()
+    const first = runAsync(['run', '--', process.execPath, '-e', program], root)
+    await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    const second = runAsync(['run', '--', process.execPath, '-e', program], root)
+    expect(await first.done).toBe(0)
+    expect(await second.done).toBe(0)
+    expect(Date.now() - started).toBeGreaterThanOrEqual(5900)
+    expect(second.stderr()).toMatch(/waiting for suite lock: holder pid \d+ \(.+\) since \d\d:\d\d/)
+    expect(existsSync(join(root, 'lock.d'))).toBe(false)
+  }, 10_000)
+
+  it('reports status as JSON and release refuses a live holder without force', async () => {
+    const root = tempRoot('operator')
+    const lease = await acquireSuiteLock({ root })
+    const status = cli(['status', '--json'], root)
+    expect(JSON.parse(status.stdout)).toMatchObject({ held: true, holder: { pid: process.pid } })
+    const refused = cli(['release'], root)
+    expect(refused.status).toBe(1)
+    expect(refused.stderr).toContain('refused to release live holder')
+    expect(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8')).toContain(`"pid": ${process.pid}`)
+    expect(cli(['release', '--force'], root).status).toBe(0)
+    expect(releaseSuiteLock(lease)).toBe(true)
+  })
+})
