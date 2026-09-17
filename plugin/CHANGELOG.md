@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Main-guard one-shot allowances now key consumption to `tool_use_id`, so duplicate hook registrations agree on one Bash call while a later call is refused; SessionStart warns when an enabled marketplace copy overlaps the current plugin root, and the guard now states that API/`gh` deletions are outside its Bash-text coverage.
 - The suite lock decides the Windows command shell per EXECUTABLE instead of per platform: a `.cmd`/`.bat` shim (including a bare name that PATHEXT resolves to one) still runs through the shell, every other command is spawned directly, so quoted arguments are no longer re-parsed by `cmd.exe`.
 
 ## [0.182.0] - 2026-09-17

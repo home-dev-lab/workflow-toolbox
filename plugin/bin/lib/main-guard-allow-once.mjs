@@ -10,13 +10,34 @@ export function mainGuardStateDir() {
   }).dir
 }
 
-export function consumeMainGuardAllowOnce(command) {
+function replaceAllowance(file, entry) {
+  const temporary = `${file}.${process.pid}.tmp`
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(entry)}\n`, { flag: 'wx', mode: 0o600 })
+    fs.renameSync(temporary, file)
+  } finally {
+    fs.rmSync(temporary, { force: true })
+  }
+}
+
+export function consumeMainGuardAllowOnce(command, toolUseId) {
   const file = path.join(mainGuardStateDir(), 'allow-once.json')
   try {
     const entry = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (!entry || entry.command !== command) return null
     if (typeof entry.reason !== 'string' || !entry.reason.trim()) return null
-    fs.unlinkSync(file)
+    if (typeof toolUseId !== 'string' || !toolUseId) return null
+    if (entry.consumedBy) {
+      if (entry.consumedBy === toolUseId) return entry.reason.trim()
+      fs.unlinkSync(file)
+      return null
+    }
+    replaceAllowance(file, {
+      command: entry.command,
+      reason: entry.reason,
+      consumedBy: toolUseId,
+      consumedAt: new Date().toISOString(),
+    })
     return entry.reason.trim()
   } catch {
     return null

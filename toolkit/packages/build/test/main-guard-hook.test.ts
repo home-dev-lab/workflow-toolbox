@@ -19,12 +19,13 @@ afterEach(() => {
   rmSync(sandboxHome, { recursive: true, force: true })
 })
 
-function run(command: string, opts: { agentId?: string; cwd?: string } = {}) {
+function run(command: string, opts: { agentId?: string; cwd?: string; toolUseId?: string } = {}) {
   const payload: Record<string, unknown> = {
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
     tool_input: { command },
     cwd: opts.cwd ?? sandboxHome,
+    tool_use_id: opts.toolUseId ?? 'tool-default',
   }
   if (opts.agentId) payload.agent_id = opts.agentId
   const res = spawnSync(process.execPath, [HOOK], {
@@ -86,6 +87,7 @@ describe('wt-main-guard-hook — measured-BLOCKING classes', () => {
     const r = run('git push origin --delete stale-branch')
     expect(r.denied).toBe(true)
     expect(r.stdout).toContain('remote branch deletion is remote-destructive')
+    expect(r.stdout).toContain('API deletions and gh calls are outside this guard')
   })
 
   it('RED: denies a remote branch deletion (: refspec form)', () => {
@@ -145,6 +147,13 @@ describe('wt-main-guard-hook — legitimate near-misses stay silent', () => {
     expect(r.denied).toBe(false)
     expect(r.stdout).toBe('')
     expect(journalLines().length).toBe(0)
+  })
+
+  it('documents its bound in behavior: a branch deletion through gh api is outside the Bash-text classifier', () => {
+    const r = run('gh api -X DELETE repos/acme/widget/git/refs/heads/stale-branch')
+    expect(r.denied).toBe(false)
+    expect(r.stdout).toBe('')
+    expect(journalLines()).toEqual([])
   })
 
   it('GREEN: an ordinary rm -rf on a plain (non-git, non-home, non-root) directory is journal-only, not denied', () => {
@@ -281,7 +290,7 @@ describe('wt-main-guard-hook — scope', () => {
 })
 
 describe('wt-main-guard-hook — escape hatch', () => {
-  it('a byte-exact allow-once override consumes itself and lets the exact command through', () => {
+  it('a byte-exact allow-once override records its consuming tool call and lets the exact command through', () => {
     const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
     mkdirSync(stateDir, { recursive: true })
     const command = 'rm -rf /'
@@ -292,9 +301,46 @@ describe('wt-main-guard-hook — escape hatch', () => {
     const r = run(command)
     expect(r.denied).toBe(false)
     expect(r.stdout).toBe('')
-    expect(existsSync(join(stateDir, 'allow-once.json'))).toBe(false) // single-use
+    expect(JSON.parse(readFileSync(join(stateDir, 'allow-once.json'), 'utf8'))).toMatchObject({
+      command,
+      consumedBy: 'tool-default',
+    })
     const lines = journalLines()
     expect(lines.some((l) => l.decision === 'override-allow')).toBe(true)
+  })
+
+  it('two registrations allow the same tool call, then a different call is refused and spends the entry', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const file = join(stateDir, 'allow-once.json')
+    const command = 'git push origin --delete stale-branch'
+    writeFileSync(file, JSON.stringify({ command, reason: 'branch owner approved this exact deletion' }))
+
+    const first = run(command, { toolUseId: 'tool-delete-1' })
+    const secondRegistration = run(command, { toolUseId: 'tool-delete-1' })
+    const laterCall = run(command, { toolUseId: 'tool-delete-2' })
+
+    expect(first).toMatchObject({ denied: false, stdout: '', status: 0 })
+    expect(secondRegistration).toMatchObject({ denied: false, stdout: '', status: 0 })
+    expect(laterCall.denied).toBe(true)
+    expect(existsSync(file)).toBe(false)
+    expect(journalLines().map((line) => line.decision)).toEqual(['override-allow', 'override-allow', 'denied'])
+  })
+
+  it('a spent entry for this command refuses a different tool call and is removed', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const file = join(stateDir, 'allow-once.json')
+    const command = 'rm -rf /'
+    writeFileSync(file, JSON.stringify({
+      command,
+      reason: 'already used',
+      consumedBy: 'tool-old',
+      consumedAt: '2026-09-17T18:00:00.000Z',
+    }))
+
+    expect(run(command, { toolUseId: 'tool-new' }).denied).toBe(true)
+    expect(existsSync(file)).toBe(false)
   })
 
   it('does not consume the override for a DIFFERENT command (byte-exact match only)', () => {
