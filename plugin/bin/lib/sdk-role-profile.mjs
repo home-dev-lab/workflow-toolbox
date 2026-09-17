@@ -19,7 +19,7 @@ const LSP_SERVERS = Object.freeze([{
   args: Object.freeze(['--stdio']),
   languages: Object.freeze([
     { name: 'typescript', extensions: Object.freeze(['.ts']), markers: Object.freeze(['tsconfig.json']) },
-    { name: 'javascript', extensions: Object.freeze(['.mjs']), markers: Object.freeze(['package.json']) },
+    { name: 'javascript', extensions: Object.freeze(['.js', '.mjs', '.cjs']), markers: Object.freeze(['package.json']) },
   ]),
 }])
 

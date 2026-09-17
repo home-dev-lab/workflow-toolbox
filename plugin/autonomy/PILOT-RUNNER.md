@@ -29,7 +29,7 @@ other nine MCP tools do not enter their receipt.
 | judge, critic, review, refutation | Read, Glob, Grep, LSP, `ctx_search` only | optional, visible | none | none; no Bash |
 
 The initial implementation detects TypeScript and JavaScript from a root `tsconfig.json` or
-`package.json`, or a `.ts` or `.mjs` file in the worktree. It resolves
+`package.json`, or a `.ts`, `.js`, `.mjs`, or `.cjs` file in the worktree. It resolves
 `typescript-language-server` on `PATH`; an absolute `WT_LSP_TYPESCRIPT_SERVER` overrides PATH only
 when set. The generated `.lsp.json` carries the resolved absolute command and only the detected
 language mappings. Missing binaries never refuse a session: the init log and `lifecycle.json` state

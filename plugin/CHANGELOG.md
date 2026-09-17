@@ -10,6 +10,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - SDK role initialization receipts no longer require a skill declared `user-invocable: false` (the harness never lists one), and the pilot runner exits after a refused receipt instead of idling with the EXIT marker unwritten.
+- SDK role LSP plugins now map .js, .mjs, and .cjs to JavaScript from the same table that drives worktree language detection, so plain .js worktrees are detected and navigable instead of silently unmapped while the receipt reports LSP available.
 - Cross-OS process-spawning locks now pin the shipped wake-channel poll source, supply Windows process identity with spawn-recorded argv, await fixture-child exit before bounded teardown retries, and give measured long-running consent and lifecycle cases local timeout margins.
 - Windows lane supervision now captures launcher and child identities with bounded `Get-Process` reads and spawn-recorded argv instead of CIM/WMI, rejects PID reuse by image and start time, and keeps the wake-channel polling backstop alive after initialization on Windows.
 - Windows lane launcher PID reads now bypass the full CIM table, every PowerShell process read has a 10-second ceiling with unreadable evidence remaining unknown, and cross-OS timing locks follow their provider and polling contracts.
