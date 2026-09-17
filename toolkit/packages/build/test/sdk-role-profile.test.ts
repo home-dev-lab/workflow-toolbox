@@ -112,7 +112,20 @@ describe('SDK role profiles', () => {
     expect(prepared.lsp).toEqual({ available: true, command: server, languages: ['typescript', 'javascript'] })
     expect(prepared.profile.tools).toContain('LSP')
     expect(JSON.parse(readFileSync(join(prepared.skillPlugin, '.lsp.json'), 'utf8'))).toEqual({
-      typescript: { command: server, args: ['--stdio'], extensionToLanguage: { '.ts': 'typescript', '.mjs': 'javascript' } },
+      typescript: { command: server, args: ['--stdio'], extensionToLanguage: { '.ts': 'typescript', '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript' } },
+    })
+  })
+
+  it('detects JavaScript from js and cjs files without a package marker', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-lsp-')); roots.push(root)
+    const bin = join(root, 'bin'); mkdirSync(bin)
+    const server = join(bin, 'typescript-language-server'); writeFileSync(server, '#!/bin/sh\n'); chmodSync(server, 0o755)
+    writeFileSync(join(root, 'hook.js'), 'export const hook = true\n')
+    writeFileSync(join(root, 'helper.cjs'), 'module.exports = true\n')
+    const prepared = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: bin, WT_LSP_TYPESCRIPT_SERVER: undefined }, adapterOptions: { log: () => {} } })
+    expect(prepared.lsp).toEqual({ available: true, command: server, languages: ['javascript'] })
+    expect(JSON.parse(readFileSync(join(prepared.skillPlugin, '.lsp.json'), 'utf8'))).toEqual({
+      typescript: { command: server, args: ['--stdio'], extensionToLanguage: { '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript' } },
     })
   })
 
