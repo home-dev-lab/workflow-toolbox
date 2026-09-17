@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Concurrent-test guard coverage injects deterministic process listings while retaining a real-machine count-reporting case; wake and artifact-server delivery bounds now follow their configured polling and readiness intervals, and lane capture fixtures derive their retry windows from the capture cadence.
 - macOS process identity refreshes cached snapshots once for a missing PID without restoring polling fork storms, and artifact-server teardown retries bounded concurrent state writes.
 - Windows OpenCode envelopes preserve command-shim stdout without detached spawning, terminate timed-out process trees through `taskkill /T`, persist timestamped launcher stages for timeout diagnosis, and cap the 4-vCPU CI runner at two Vitest workers.
 - macOS process identity and queue enumeration now reuse 100 ms process-wide snapshots, Vitest leaves one runner core free, and the cross-OS probe preserves separate bounded shard logs instead of saturating the runner.

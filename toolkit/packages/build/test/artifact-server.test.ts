@@ -15,6 +15,11 @@ const MONITORS = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 const temporaryDirs: string[] = []
 const children = new Set<ChildProcess>()
 const detachedPids = new Set<number>()
+const CANDIDATE_PROBE_MS = 750
+const FALLBACK_CANDIDATES = 2
+const FALLBACK_READINESS_MS = 5_000
+const FALLBACK_DISCOVERY_MARGIN_MS = 2_000
+const FALLBACK_DISCOVERY_BOUND_MS = CANDIDATE_PROBE_MS * FALLBACK_CANDIDATES + FALLBACK_READINESS_MS + FALLBACK_DISCOVERY_MARGIN_MS
 
 function temporaryDir(tag: string) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`)))
@@ -948,9 +953,12 @@ describe('owner decision 2: discovery and one instance', () => {
       foreign.listen(port, '127.0.0.1', resolve)
     })
     try {
-      const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port) })
+      const env = baseEnv(stateHome, {
+        WT_ARTIFACT_SERVER_PORT: String(port),
+        WT_ARTIFACT_SERVER_TEST_READINESS_MS: String(FALLBACK_READINESS_MS),
+      })
       spawnEnsure(project, env)
-      const state = await waitForState(stateHome, () => true, 60_000)
+      const state = await waitForState(stateHome, () => true, FALLBACK_DISCOVERY_BOUND_MS)
       expect(state.port).toBe(port + 1)
       expect(foreign.listening).toBe(true)
       await closeServer(foreign)
@@ -960,7 +968,7 @@ describe('owner decision 2: discovery and one instance', () => {
     } finally {
       if (foreign.listening) await closeServer(foreign)
     }
-  }, 70_000)
+  }, FALLBACK_DISCOVERY_BOUND_MS + 2_000)
 
   it('[E-04] refuses uid mismatch attachment and same-process forged stop identity', async () => {
     const stateHome = temporaryDir('mismatch-state')
