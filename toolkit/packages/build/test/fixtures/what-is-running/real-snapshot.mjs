@@ -25,6 +25,7 @@ if (!['available', 'partial'].includes(snapshot.discovery)) {
   if (snapshot.discovery === 'partial') {
     const reasons = [];
     if (snapshot.cappedScans?.length) reasons.push(`scan cap reached: ${snapshot.cappedScans.join(', ')}`);
+    if (snapshot.scanLimits?.length) reasons.push(snapshot.scanLimits.join('; '));
     if (snapshot.pathRefusals?.length) reasons.push(snapshot.pathRefusals.join('; '));
     console.log(`Discovery: partial (${reasons.join('; ') || 'unknown reason'})`);
   }

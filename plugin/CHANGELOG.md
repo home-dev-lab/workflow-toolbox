@@ -10,6 +10,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - The artifact-server suite's state watcher canonicalises its temp path before `fs.watch`, so the Windows short-name spelling no longer trips libuv's fs-event assertion and aborts the vitest worker carrying the file.
+- The What is running collector now bounds detailed worktree scans, reports partial discovery when capped, and distinguishes its 8-second timeout from exit failures with the exit code and first stderr line.
 - Artifact-server tests now verify detached server process identity by PID, start time, argv, and executable before cleanup signals it, preventing Windows PID reuse from terminating the Vitest worker.
 - Wake-channel directory watches now canonicalise path aliases before entering libuv, preventing Windows short-name spool paths from aborting the server, and the adopted consent matrix derives its case timeout from all real launcher combinations.
 - The queue-not-empty Stop gate now exits silently for a zero-startable queue and for harness retries marked `stop_hook_active`, preventing an allowed stop from looping on block-shaped feedback.

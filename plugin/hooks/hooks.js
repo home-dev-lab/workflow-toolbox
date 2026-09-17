@@ -2,6 +2,7 @@ import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { PHASES } from './lifecycle-phases.js';
 
 const PANE_ID = 'wt-what-is-running';
+export const COLLECTOR_TIMEOUT_MS = 8000;
 export const WORKFLOW_TOOLBOX_LAYOUT = Object.freeze({
   laneDirName: '.lane',
   worktreesDirName: 'worktrees',
@@ -15,13 +16,16 @@ export const WORKFLOW_TOOLBOX_LAYOUT = Object.freeze({
   services: { brokerPackage: 'atrium', brokerPathPattern: '(?:^|/)atrium(?:/|$)', brokerLabel: 'Atrium broker' },
   baseBranches: ['main', 'develop'],
 });
-const UNKNOWN_SNAPSHOT = {
-  collectors: {
-    work: { value: { rows: [], sessions: [] }, availability: { status: 'unknown', reason: 'collector failed' } },
-    processes: { value: { services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] } }, availability: { status: 'unknown', reason: 'collector failed' } },
-  },
-  discovery: 'unknown', rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] }, collectedAt: 'unknown',
-};
+function unavailableSnapshot(reason) {
+  return {
+    collectors: {
+      work: { value: { rows: [], sessions: [] }, availability: { status: 'unknown', reason } },
+      processes: { value: { services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] } }, availability: { status: 'unknown', reason } },
+    },
+    discovery: 'unknown', rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] }, collectedAt: 'unknown',
+  };
+}
+const UNKNOWN_SNAPSHOT = unavailableSnapshot('collector failed');
 const COLORS = {
   // Button and Link text colour cannot be set in the host, and button text renders light: every button background
   // must be DARK for contrast (owner is colour blind, 2026-09-14 #2286 — whiteBright under light text was unreadable).
@@ -79,12 +83,25 @@ async function pathsOf($, options, sessionCwd) {
 
 export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT) {
   try {
-    const result = await $.process.run(['node', '-e', SNAPSHOT_PROGRAM, JSON.stringify({ ...paths, layout: paths.layout || layout })]);
-    if (result?.exitCode !== 0 || typeof result.stdout !== 'string') return UNKNOWN_SNAPSHOT;
-    const parsed = JSON.parse(result.stdout);
-    return Array.isArray(parsed?.rows) && ['available', 'partial', 'unknown'].includes(parsed.discovery) ? parsed : UNKNOWN_SNAPSHOT;
-  } catch {
-    return UNKNOWN_SNAPSHOT;
+    const result = await $.process.run(
+      ['node', '-e', SNAPSHOT_PROGRAM, JSON.stringify({ ...paths, layout: paths.layout || layout })],
+      { timeoutMs: COLLECTOR_TIMEOUT_MS },
+    );
+    if (result?.exitCode !== 0) {
+      const stderr = typeof result?.stderr === 'string' ? result.stderr.split(/\r?\n/).find((line) => line.trim())?.trim() : null;
+      return unavailableSnapshot(`collector failed (exit code ${result?.exitCode ?? 'unknown'}; ${(stderr || 'no stderr').slice(0, 160)})`);
+    }
+    if (typeof result.stdout !== 'string') return unavailableSnapshot('collector failed (stdout unavailable)');
+    let parsed;
+    try { parsed = JSON.parse(result.stdout); } catch { return unavailableSnapshot('collector failed (invalid JSON output)'); }
+    return Array.isArray(parsed?.rows) && ['available', 'partial', 'unknown'].includes(parsed.discovery)
+      ? parsed
+      : unavailableSnapshot('collector failed (invalid snapshot output)');
+  } catch (error) {
+    const detail = [error?.name, error?.code, error?.message].filter(Boolean).join(' ');
+    return /timeout|timed?\s*out|ETIMEDOUT/i.test(detail)
+      ? unavailableSnapshot(`collector timed out after ${COLLECTOR_TIMEOUT_MS / 1000} s`)
+      : unavailableSnapshot(`collector failed (${String(error?.message || error || 'unknown error').split(/\r?\n/)[0].slice(0, 160)})`);
   }
 }
 
@@ -378,6 +395,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   if (snapshot.discovery === 'partial') {
     const reasons = [];
     if (snapshot.cappedScans?.length) reasons.push(`scan cap reached: ${snapshot.cappedScans.join(', ')}`);
+    if (snapshot.scanLimits?.length) reasons.push(snapshot.scanLimits.join('; '));
     if (snapshot.pathRefusals?.length) reasons.push(snapshot.pathRefusals.join('; '));
     grouped.push(node(Text, { dimColor: true }, reasons.length ? `discovery partial (${reasons.join('; ')})` : 'Discovery is partial.'));
   }
