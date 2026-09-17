@@ -192,6 +192,17 @@ two SDK readings agree with each other (a remapped profile serves a different id
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
 
+When critic, review, or refutation exhausts its round bound, the runner also writes the ignored
+`.lane/worktree-retention.json` file. Version 1 records `cardId`, the canonical absolute `worktree`,
+`retainedAt`, the bounded-run `reason`, the stopping `phase`, and `expiry` with the board id and the
+condition `card is absent or in Done or NotDoing`. Readers of v1 tolerate additional fields.
+`node "$CLAUDE_PLUGIN_ROOT/bin/wt-worktree-remove.mjs" --dir <worktree>` reads that
+marker before every removal, resolves the card's current list, and refuses while the card is open or
+the board cannot be reached. It also refuses a marker copied from a different worktree; `--force`
+changes Git's removal mode only and never bypasses these checks.
+An absent marker preserves ordinary removal behavior. A direct `git worktree remove`, manual recursive
+deletion, or other tooling that does not call this remover remains outside this guard.
+
 `lifecycle.json` timestamps the runner start/end, each accepted phase interval, and each lane launch.
 Each streamed pilot assistant message records its arrival time and SDK usage and is attributed to the
 containing interval; repeated critics retain their round number. The final SDK result total is retained

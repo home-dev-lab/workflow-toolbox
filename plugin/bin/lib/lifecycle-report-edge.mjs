@@ -2,7 +2,112 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { treeSignature } from './gate-evidence.mjs'
+
+const WORKTREE_RETENTION_FILE = path.join('.lane', 'worktree-retention.json')
+
+export function readWorktreeRetentionMarker(root) {
+  const markerPath = path.join(root, WORKTREE_RETENTION_FILE)
+  let stat
+  let marker
+  try {
+    stat = fs.lstatSync(markerPath)
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('not a regular file')
+    marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'))
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw new Error(`worktree removal refused: invalid retention marker ${markerPath} for card unknown (${error instanceof Error ? error.message : String(error)})`, { cause: error })
+  }
+  if (
+    marker?.version !== 1 ||
+    typeof marker.cardId !== 'string' ||
+    !/^[A-Za-z0-9._-]+$/.test(marker.cardId) ||
+    typeof marker.retainedAt !== 'string' ||
+    typeof marker.reason !== 'string' ||
+    typeof marker.phase !== 'string' ||
+    typeof marker.worktree !== 'string' ||
+    !path.isAbsolute(marker.worktree) ||
+    !marker.expiry ||
+    !('boardId' in marker.expiry) ||
+    (marker.expiry.boardId !== null && typeof marker.expiry.boardId !== 'string') ||
+    typeof marker.expiry.removeWhen !== 'string'
+  ) {
+    throw new Error(`worktree removal refused: invalid retention marker ${markerPath} for card ${typeof marker?.cardId === 'string' ? marker.cardId : 'unknown'}`)
+  }
+  return marker
+}
+
+export function writeWorktreeRetentionMarker({ root, cardId, partial, boardId = null, retainedAt }) {
+  const spentBound = partial && (
+    (partial.phase === 'critic' && /^plan not approved after \d+ critic rounds$/.test(partial.reason)) ||
+    (['review', 'refutation'].includes(partial.phase) && new RegExp(`^${partial.phase} still requests changes after \\d+ harden rounds$`).test(partial.reason))
+  )
+  if (!spentBound) return false
+  const resolvedRoot = fs.realpathSync(root)
+  const markerPath = path.join(resolvedRoot, WORKTREE_RETENTION_FILE)
+  const temporary = path.join(path.dirname(markerPath), `worktree-retention.${randomUUID()}.tmp`)
+  const marker = {
+    version: 1,
+    cardId: String(cardId),
+    worktree: resolvedRoot,
+    retainedAt,
+    reason: `bounded lifecycle spent: ${partial.reason}`,
+    phase: partial.phase,
+    expiry: { boardId: boardId === null ? null : String(boardId), removeWhen: 'card is absent or in Done or NotDoing' },
+  }
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(marker, null, 2)}\n`)
+    fs.renameSync(temporary, markerPath)
+  } catch (error) {
+    fs.rmSync(temporary, { force: true })
+    throw error
+  }
+  return true
+}
+
+function sameWorktree(left, right, platform) {
+  return platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
+}
+
+export async function removeLifecycleWorktree({ root, board, force = false, git = execFileSync, platform = process.platform }) {
+  if (typeof root !== 'string' || !path.isAbsolute(root)) throw new Error('worktree path must be absolute')
+  const resolvedRoot = fs.realpathSync(root)
+  const markerPath = path.join(resolvedRoot, WORKTREE_RETENTION_FILE)
+  const marker = readWorktreeRetentionMarker(resolvedRoot)
+  let expired = false
+  if (marker) {
+    let markerWorktree
+    try { markerWorktree = fs.realpathSync(marker.worktree) } catch { markerWorktree = marker.worktree }
+    if (!sameWorktree(markerWorktree, resolvedRoot, platform)) {
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId} names worktree ${markerWorktree}, not removal target ${resolvedRoot}`)
+    }
+    if (!board || typeof board.getCard !== 'function') {
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable, so retention expiry cannot be verified`)
+    }
+    let card
+    let listName
+    try {
+      card = await board.getCard(marker.cardId)
+      if (card) {
+        listName = card.listName ?? card.list?.name
+        if (!listName && card.listId && typeof board.listNameOf === 'function') listName = await board.listNameOf(String(card.listId))
+        if (!listName) throw new Error('card list is unavailable')
+      }
+    } catch (error) {
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for card ${marker.cardId}; board unavailable (${error instanceof Error ? error.message : String(error)})`, { cause: error })
+    }
+    expired = card === null || card === undefined || ['Done', 'NotDoing'].includes(listName)
+    if (!expired) {
+      throw new Error(`worktree removal refused: retention marker ${markerPath} for open card ${marker.cardId} in list ${listName}: ${marker.reason}`)
+    }
+  }
+  const commonOutput = git('git', ['-C', resolvedRoot, 'rev-parse', '--git-common-dir'], { cwd: path.dirname(resolvedRoot), encoding: 'utf8' })
+  const commonDir = fs.realpathSync(path.resolve(resolvedRoot, String(commonOutput).trim()))
+  const repositoryRoot = path.basename(commonDir) === '.git' ? path.dirname(commonDir) : commonDir
+  git('git', ['-C', repositoryRoot, 'worktree', 'remove', ...(force ? ['--force'] : []), resolvedRoot], { cwd: repositoryRoot, stdio: 'inherit' })
+  return { removed: true, expired, cardId: marker?.cardId ?? null }
+}
 function resolveThroughExisting(requested) {
   let probe = path.resolve(requested)
   const suffix = []
