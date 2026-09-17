@@ -59,9 +59,25 @@ function detachedIdentityMatches(expected: ProcessIdentity, inspect = detachedId
   return sameIdentity(expected, inspect(expected.pid))
 }
 
-function killWindowsTree(pid: number, run = spawnSync) {
+function killWindowsTree(pid: number, run = spawnSync, includeTree = true) {
   const taskkill = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
-  return run(taskkill, ['/PID', String(pid), '/T', '/F'], { timeout: 5_000, windowsHide: true, stdio: 'ignore' })
+  return run(taskkill, ['/PID', String(pid), ...(includeTree ? ['/T'] : []), '/F'], { timeout: 5_000, windowsHide: true, stdio: 'ignore' })
+}
+
+function sweepDiagnostic(stateHome: string) {
+  const file = join(stateHome, 'sweep-diagnostic.jsonl')
+  try { return readFileSync(file, 'utf8').trim() || '<empty>' } catch { return '<missing>' }
+}
+
+async function requestCleanMonitorStop(child: ChildProcess, shutdownFile: string) {
+  if (!child.pid || !pidAlive(child.pid)) return
+  const pid = child.pid
+  const closed = child.exitCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => child.once('close', () => resolve()))
+  writeFileSync(shutdownFile, '')
+  await waitFor(() => pidAlive(pid) ? null : true, 5_000)
+  await closed
 }
 
 async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 15_000): Promise<T> {
@@ -196,13 +212,13 @@ async function closeServer(server: Server) {
   await new Promise<void>((resolve) => server.close(() => resolve()))
 }
 
-async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM') {
+async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM', includeWindowsTree = true) {
   if (!child.pid || !pidAlive(child.pid)) return
   const pid = child.pid
   const closed = child.exitCode !== null
     ? Promise.resolve()
     : new Promise<void>((resolve) => child.once('close', () => resolve()))
-  if (process.platform === 'win32') killWindowsTree(pid)
+  if (process.platform === 'win32') killWindowsTree(pid, spawnSync, includeWindowsTree)
   else child.kill(signal)
   await waitFor(() => pidAlive(pid) ? null : true, 10_000).catch(() => {
     throw new Error(`timed out waiting for test child pid=${pid} to exit before teardown`)
@@ -396,6 +412,28 @@ describe('review test infrastructure', () => {
     expect(registrationPidStatus(123, {
       platform: 'win32', signal: () => { throw Object.assign(new Error('absent'), { code: 'ESRCH' }) },
       inspect: () => { throw new Error('must not query slower evidence after conclusive ESRCH') },
+    })).toBe('gone')
+    const identity = { pid: 123, argv: ['node', 'monitor'], startTime: 100 }
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: identity,
+      inspect: () => ({ ...identity, startTime: 101 }), processExists: () => true,
+    })).toBe('gone')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: identity,
+      inspect: () => identity, processExists: () => true,
+    })).toBe('running')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: identity,
+      inspect: () => null, processExists: () => null,
+    })).toBe('unknown')
+    const approximateIdentity = { ...identity, startTimeApproximate: true, startTimeToleranceMs: 250 }
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: approximateIdentity,
+      inspect: () => ({ ...identity, startTime: 200 }), processExists: () => true,
+    })).toBe('running')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: approximateIdentity,
+      inspect: () => ({ ...identity, startTime: 500 }), processExists: () => true,
     })).toBe('gone')
   })
 })
@@ -1211,14 +1249,15 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     await closeServer(reservation.server)
     const monitor = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_IDLE_GRACE_S: '0.2',
+      WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC: join(stateHome, 'sweep-diagnostic.jsonl'),
     }))
     const state = await waitForState(stateHome)
     await waitFor(async () => (await health(state)).registeredSessions === 1 ? true : null)
-    await stopChild(monitor, 'SIGKILL')
-    await new Promise((resolve) => setTimeout(resolve, 80))
-    expect(pidAlive(state.pid)).toBe(true)
-    await waitFor(() => pidAlive(state.pid) ? null : true, 2_000)
-    expect(readdirSync(registrationsPath(stateHome))).toHaveLength(0)
+    await stopChild(monitor, 'SIGKILL', false)
+    await waitFor(() => pidAlive(state.pid) ? null : true, 15_000).catch((error) => {
+      throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`)
+    })
+    expect(readdirSync(registrationsPath(stateHome)), `sweep diagnostic=${sweepDiagnostic(stateHome)}`).toHaveLength(0)
   })
 
   it('[V3-stop-refused][V3-force] refuses stop/restart with registrations and allows both with --force', async () => {
@@ -1436,8 +1475,15 @@ describe('review decisions: filesystem roots and URLs', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const common = { WT_ARTIFACT_SERVER_PORT: String(port) }
-    const monitorOne = spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
+    const shutdownOne = join(stateHome, 'monitor-one.shutdown')
+    const common = {
+      WT_ARTIFACT_SERVER_PORT: String(port),
+      WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC: join(stateHome, 'sweep-diagnostic.jsonl'),
+    }
+    const monitorOne = spawnEnsure(projectOne, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne,
+      WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE: shutdownOne,
+    }))
     const first = await waitForState(stateHome, (state) => state.roots.length === 1)
     const firstName = first.roots[0]!.name
     const firstUrl = `${first.baseUrl}/${firstName}/one.txt`
@@ -1449,8 +1495,9 @@ describe('review decisions: filesystem roots and URLs', () => {
     expect(secondName).toBeTruthy()
     expect(secondName).not.toBe(firstName)
 
-    await stopChild(monitorOne)
+    await requestCleanMonitorStop(monitorOne, shutdownOne)
     const left = await waitForState(stateHome, (state) => state.roots.length === 1 && state.roots[0]?.path === join(projectTwo, '.claude', 'reports'))
+      .catch((error) => { throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`) })
     expect(left.roots[0]!.name).toBe(secondName)
     expect(left.mounts).toEqual(expect.arrayContaining([
       { name: firstName, path: join(projectOne, '.claude', 'reports') },

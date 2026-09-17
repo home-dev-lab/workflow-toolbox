@@ -65,6 +65,7 @@ const TEST_CONTROL_NAMES = [
   'WT_ARTIFACT_SERVER_TEST_CONTENTION_LOG',
   'WT_ARTIFACT_SERVER_TEST_GIT_ROOT',
   'WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE',
+  'WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC',
 ]
 const TEST_SEAMS_ACTIVE = new Set(TEST_MODE ? TEST_CONTROL_NAMES.filter((name) => process.env[name] !== undefined) : [])
 
@@ -337,6 +338,10 @@ async function main() {
     registrationFile = path.join(artifactRegistrationsDir(), `${session}.json`)
     atomicWriteJson(registrationFile, {
       pid: process.pid, roots, deny: configuredDenyPatterns(), startedAt: new Date().toISOString(),
+      ...(process.platform === 'win32' ? { identity: {
+        pid: process.pid, argv: process.argv,
+        startTime: Date.now() - process.uptime() * 1_000, startTimeApproximate: true, startTimeToleranceMs: 250,
+      } } : {}),
     })
   } catch (error) {
     process.stderr.write(`wt-artifact-server: ${error.message}\n`)
@@ -446,6 +451,8 @@ async function main() {
       }
     }
     const keepAlive = setInterval(() => {
+      const shutdownFile = TEST_MODE ? process.env.WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE : null
+      if (shutdownFile && existsSync(shutdownFile)) cleanExit()
       if (process.ppid !== parentPid) cleanExit()
       void retryTick()
     }, 2_000)

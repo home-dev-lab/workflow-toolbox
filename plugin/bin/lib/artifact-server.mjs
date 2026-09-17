@@ -166,10 +166,18 @@ export function registrationPidStatus(pid, options = {}) {
   const platform = options.platform ?? process.platform
   if (platform === 'win32') {
     const signal = options.signal ?? process.kill.bind(process)
+    let signalResult = 'returned'
     try { signal(pid, 0) } catch (error) {
-      if (error?.code === 'ESRCH') return 'gone'
+      signalResult = `threw:${error?.code ?? 'unknown'}`
+      if (error?.code === 'ESRCH') {
+        options.diagnostic?.({ signal: signalResult, processTable: { status: 'not-read', raw: null, elapsedMs: 0 } })
+        return 'gone'
+      }
     }
-    return processEvidenceStatus(pid, { ...options, platform })
+    let processTable
+    const status = processEvidenceStatus(pid, { ...options, platform, diagnostic: (value) => { processTable = value } })
+    options.diagnostic?.({ signal: signalResult, processTable })
+    return status
   }
   return pidAlive(pid) ? 'running' : 'gone'
 }

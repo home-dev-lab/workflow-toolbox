@@ -34,7 +34,7 @@ export function sameIdentity(expected, actual) {
 
 function startTimesMatch(expected, actual) {
   return expected?.startTimeApproximate
-    ? Math.abs(expected.startTime - actual?.startTime) <= WINDOWS_APPROXIMATE_START_SKEW_MS
+    ? Math.abs(expected.startTime - actual?.startTime) <= (expected.startTimeToleranceMs ?? WINDOWS_APPROXIMATE_START_SKEW_MS)
     : expected?.startTime === actual?.startTime
 }
 
@@ -120,7 +120,7 @@ function powershellProcess(pid, execFile, timeoutMs = WINDOWS_PROCESS_READ_TIMEO
     if (evidence.status === 0) {
       try {
         const value = evidence.stdout.trim() ? JSON.parse(evidence.stdout) : null
-        result = value ? { status: 0, value } : { status: 1, stdout: '' }
+        result = value ? { status: 0, value, stdout: evidence.stdout.trim() } : { status: 1, stdout: '' }
       } catch { result = { status: 'unavailable' } }
     }
     if (result.status === 0) break
@@ -295,8 +295,9 @@ function inspectDarwinProcess(pid, execFile, captureCwd) {
   return { pid: row.pid, argv: row.argv, startTime: row.startTime, groupId: row.groupId, cwd: captureCwd ? darwinCwd(pid, execFile) : null }
 }
 
-function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv, attempts) {
+function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv, attempts, reportEvidence) {
   const result = powershellProcess(pid, execFile, timeoutMs, Date.now(), attempts)
+  reportEvidence?.(result)
   if (result.status !== 0 || !result.value) return null
   const startTime = Number(result.value.StartTime)
   const name = String(result.value.ProcessName || '').toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, '')
@@ -304,10 +305,10 @@ function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv, attempts)
   return { pid, argv: Array.isArray(recordedArgv) ? recordedArgv : [], startTime, image: { name, path: typeof result.value.Path === 'string' && result.value.Path ? result.value.Path : null }, groupId: null, cwd: null }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null, attempts = platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1 } = {}) {
+export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null, attempts = platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1, reportEvidence = null } = {}) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
   if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
-  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv, attempts)
+  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv, attempts, reportEvidence)
   if (platform !== 'linux') return null
   try {
     const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
@@ -327,11 +328,27 @@ export function inspectProcess(pid, { procRoot = '/proc', platform = process.pla
   }
 }
 
-export function processEvidenceStatus(pid, { platform = process.platform, inspect = inspectProcess, processExists: exists = processExists } = {}) {
+export function processEvidenceStatus(pid, { platform = process.platform, inspect = inspectProcess, processExists: exists = processExists, expectedIdentity = null, diagnostic = null } = {}) {
+  const startedAt = Date.now()
+  let raw = null
   const windowsOptions = platform === 'win32' ? { singlePid: true, timeoutMs: WINDOWS_PROCESS_READ_TIMEOUT_MS } : {}
-  if (inspect(pid, { platform, ...windowsOptions })) return 'running'
+  const actual = inspect(pid, {
+    platform, ...windowsOptions,
+    ...(expectedIdentity ? { recordedArgv: expectedIdentity.argv } : {}),
+    reportEvidence: (result) => { raw = typeof result?.stdout === 'string' ? result.stdout.trim() : null },
+  })
+  if (actual) {
+    let status = 'running'
+    if (expectedIdentity && !sameIdentity(expectedIdentity, actual)) {
+      status = startTimesMatch(expectedIdentity, actual) ? 'unknown' : 'gone'
+    }
+    diagnostic?.({ status, raw: raw ?? JSON.stringify(actual), elapsedMs: Date.now() - startedAt, actual })
+    return status
+  }
   const existence = exists(pid, { platform, ...windowsOptions })
-  return existence === false ? 'gone' : 'unknown'
+  const status = existence === false ? 'gone' : 'unknown'
+  diagnostic?.({ status, raw, elapsedMs: Date.now() - startedAt, actual: null })
+  return status
 }
 
 export function laneHardBoundAt(record) {
