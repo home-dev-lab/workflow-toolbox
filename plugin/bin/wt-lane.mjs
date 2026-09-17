@@ -105,7 +105,7 @@ export function inspectStartedProcess(inspect, pid, { platform = process.platfor
   const deadline = Date.now() + timeoutMs
   let candidate = null
   do {
-    const identity = inspect(pid, { platform })
+    const identity = inspect(pid, { platform, captureCwd: false })
     if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) {
       candidate = identity
       const commandLine = identity.argv.length === 1 ? identity.argv[0].trim() : identity.argv[0]
@@ -113,7 +113,11 @@ export function inspectStartedProcess(inspect, pid, { platform = process.platfor
         ? /^"([^"]+)"/.exec(commandLine)?.[1] ?? commandLine
         : commandLine.split(/\s+/, 1)[0]
       const command = path.basename(executable).toLowerCase().replace(/^\(|\)$/g, '')
-      if (!['sh', 'bash', 'dash', 'zsh', 'ksh'].includes(command)) return { identity, unavailable: null }
+      if (!['sh', 'bash', 'dash', 'zsh', 'ksh'].includes(command)) {
+        if (platform !== 'darwin') return { identity, unavailable: null }
+        const captured = inspect(pid, { platform, captureCwd: true })
+        return { identity: captured ?? identity, unavailable: null }
+      }
     } else if (candidate) return { identity: candidate, unavailable: null }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
   } while (Date.now() < deadline)
@@ -421,7 +425,7 @@ async function main() {
       const identity = captured.identity
       const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
       try {
-        writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity?.argv ?? null, workerStartTime: identity?.startTime ?? null, ...(captured.unavailable ? { workerIdentity: captured.unavailable } : {}), childPid: null, childArgv: null, childStartTime: null, worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+        writeFileSync(paths.record, `${JSON.stringify({ version: 1, runId, state: 'launching', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: child.pid, workerArgv: identity?.argv ?? null, workerStartTime: identity?.startTime ?? null, ...(process.platform === 'darwin' ? { workerCwd: identity?.cwd ?? null } : {}), ...(captured.unavailable ? { workerIdentity: captured.unavailable } : {}), childPid: null, childArgv: null, childStartTime: null, ...(process.platform === 'darwin' ? { childCwd: null } : {}), worktree: opts.dir, timeoutAt, timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0 }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
       } catch (error) {
         child.kill('SIGTERM')
         rmSync(briefSnapshot, { force: true })
@@ -482,7 +486,7 @@ async function main() {
   const workerCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, process.pid)
   const childIdentity = childCapture.identity
   const workerIdentity = workerCapture.identity
-  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
+  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(process.platform === 'darwin' ? { workerCwd: workerIdentity?.cwd ?? null } : {}), ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(process.platform === 'darwin' ? { childCwd: childIdentity?.cwd ?? null } : {}), ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
   let currentState = baseState
   const writeState = (extra) => {
     currentState = { ...currentState, ...extra }

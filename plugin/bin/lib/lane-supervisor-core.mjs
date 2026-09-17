@@ -93,7 +93,7 @@ function processState(pid, { platform = process.platform, procRoot = '/proc', sp
 
 function identityStatus(expected, { inspect, platform, procRoot, processExists: exists, processState: state }) {
   if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv) || !Number.isFinite(expected.startTime)) return 'unknown'
-  const actual = inspect(expected.pid, { platform, procRoot })
+  const actual = inspect(expected.pid, { platform, procRoot, captureCwd: false })
   if (actual) {
     if (actual.startTime !== expected.startTime) return 'gone'
     return sameIdentity(expected, actual) ? 'running' : 'unknown'
@@ -157,8 +157,8 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
   if (!['running', 'decision-needed', 'terminal', 'worker-gone-child-alive'].includes(verdict.status)) {
     return { killed: false, reason: verdict.reason, verdict }
   }
-  const worker = inspect(record.workerPid, { platform })
-  const child = inspect(record.childPid, { platform })
+  const worker = inspect(record.workerPid, { platform, captureCwd: true })
+  const child = inspect(record.childPid, { platform, captureCwd: true })
   const refuse = (reason) => {
     journal({ ...event, event: 'termination-refused', reason })
     return { killed: false, reason, verdict }
@@ -175,8 +175,8 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     const relative = child ? path.relative(recordRoot, childCwd) : null
     if (child && (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) return refuse('child-cwd-outside-worktree')
   }
-  if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, worker))
-    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, child))) {
+  if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, cwd: record.workerCwd }, worker))
+    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, cwd: record.childCwd }, child))) {
     return { killed: false, reason: 'identity-changed', verdict }
   }
   if ((worker?.groupId && worker.groupId !== record.workerPid) || (child?.groupId && child.groupId !== record.workerPid)) {
@@ -216,7 +216,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
   }
 }
 
-function inspectDarwinProcess(pid, execFile) {
+function inspectDarwinProcess(pid, execFile, captureCwd) {
   const result = runEvidence('ps', ['-ww', '-p', String(pid), '-o', 'lstart=,pgid=,command='], execFile)
   if (result.status !== 0) return null
   const match = /^(.{24})\s+(\d+)\s+([\s\S]+?)\s*$/.exec(result.stdout)
@@ -225,8 +225,8 @@ function inspectDarwinProcess(pid, execFile) {
   if (!Number.isFinite(startTime)) return null
   const state = runEvidence('ps', ['-p', String(pid), '-o', 'state='], execFile)
   if (state.status === 0 && state.stdout.trim().startsWith('Z')) return null
-  const cwdResult = runEvidence('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], execFile)
-  const cwd = cwdResult.status === 0 ? cwdResult.stdout.split(/\r?\n/).find((line) => line.startsWith('n'))?.slice(1) ?? null : null
+  const cwdResult = captureCwd ? runEvidence('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], execFile) : null
+  const cwd = cwdResult?.status === 0 ? cwdResult.stdout.split(/\r?\n/).find((line) => line.startsWith('n'))?.slice(1) ?? null : null
   return { pid, argv: [match[3]], startTime, groupId: Number(match[2]), cwd }
 }
 
@@ -238,9 +238,9 @@ function inspectWindowsProcess(pid, execFile) {
   return { pid, argv: [result.value.CommandLine], startTime, groupId: Number(result.value.ParentProcessId), cwd: null }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync } = {}) {
+export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true } = {}) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
-  if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile)
+  if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
   if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile)
   if (platform !== 'linux') return null
   try {

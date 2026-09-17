@@ -186,15 +186,16 @@ describe('OpenCode Claude-skill fence', () => {
     expect(result).not.toHaveProperty('reason')
   })
 
-  it('quotes and shell-spawns a resolved Windows command shim', () => {
+  it('quotes and cmd-spawns a resolved Windows command shim', () => {
     const f = stub('honor')
     const missing = Object.assign(new Error('not found'), { code: 'ENOENT' })
     const binary = 'C:\\Program Files\\nodejs\\opencode.CMD'
     const spawnSyncFn = (command: string, args: string[], options: Record<string, unknown>) => {
-      expect(command).toBe(`"${binary}"`)
-      expect(options).toMatchObject({ shell: true })
-      for (const arg of args) if (/\s/.test(arg)) expect(arg).toMatch(/^".*"$/)
-      return args[0] === '--version'
+      expect(command).toBe('cmd.exe')
+      expect(args.slice(0, 3)).toEqual(['/d', '/s', '/c'])
+      expect(args[3]).toMatch(new RegExp(`^"${binary.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}" `))
+      expect(options).not.toHaveProperty('shell')
+      return args[3]!.includes('"--version"')
         ? { status: 0, stdout: '1.2.3\n', stderr: '' }
         : { status: 0, stdout: '[{"name":"workflow-toolbox-allowed-sentinel"}]', stderr: '' }
     }

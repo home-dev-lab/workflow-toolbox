@@ -31,10 +31,11 @@ export function opencodeChildEnv(env = process.env) {
 
 export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform) {
   if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(bin)) {
-    // Windows command shims require cmd.exe. Callers keep argv to product-built flags and paths;
-    // with shell: true Node joins argv unquoted, so any element carrying whitespace is quoted here.
-    const quoted = args.map((arg) => /[\s"]/.test(arg) ? `"${String(arg).replace(/"/g, '\\"')}"` : arg)
-    return spawnFn(`"${bin}"`, quoted, { ...options, shell: true })
+    // Invoke the shim through cmd explicitly. Node's shell:true argv joining is both deprecated
+    // and lossy for quoted paths/arguments on Windows.
+    const quote = (value) => `"${String(value).replace(/"/g, '""')}"`
+    const command = [quote(bin), ...args.map(quote)].join(' ')
+    return spawnFn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', command], options)
   }
   return spawnFn(bin, args, options)
 }

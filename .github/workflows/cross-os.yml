@@ -24,7 +24,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     defaults:
       run:
         working-directory: toolkit
@@ -39,6 +39,14 @@ jobs:
         run: pnpm install
       - name: Test
         run: pnpm test
+        timeout-minutes: 22
+      - name: Runner process table (POSIX)
+        if: ${{ always() && runner.os != 'Windows' }}
+        run: ps -eo pid=,ppid=,pgid=,state=,etime=,args=
+      - name: Runner process table (Windows)
+        if: ${{ always() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,CommandLine | Format-Table -Wrap
       - name: Typecheck
         run: pnpm typecheck
       - name: Quality
