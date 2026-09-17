@@ -5,7 +5,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -56,18 +58,29 @@ afterEach(async () => {
 // three tests green — a control that could not fail for the reason it appeared to test. A test
 // that means to observe the watch must therefore set a poll LONGER than its own patience, so that
 // the poll cannot be the thing that answers.
-function startServer(pollMs = '20'): {
+function startServer(pollMs = '20', aliasSpool = false): {
   child: ChildProcessWithoutNullStreams
   spool: string
+  watchTarget: string
   messages: JsonRpcMessage[]
   stderr: () => string
 } {
   const root = mkdtempSync(join(tmpdir(), 'wt-wake-channel-'))
   const spool = join(root, 'inbox')
   tempDirs.push(root)
+  if (aliasSpool) {
+    mkdirSync(join(root, 'canonical-inbox'))
+    symlinkSync(join(root, 'canonical-inbox'), spool, 'dir')
+  }
+  const watchTarget = aliasSpool ? realpathSync.native(spool) : spool
 
   const child = spawn(process.execPath, [serverScript], {
-    env: { ...process.env, WT_WAKE_SPOOL: spool, WT_WAKE_POLL_MS: pollMs },
+    env: {
+      ...process.env,
+      WT_WAKE_SPOOL: spool,
+      WT_WAKE_POLL_MS: pollMs,
+      ...(aliasSpool ? { WT_WAKE_DEBUG: '1' } : {}),
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   processes.push(child)
@@ -93,7 +106,7 @@ function startServer(pollMs = '20'): {
     errors += chunk
   })
 
-  return { child, spool, messages, stderr: () => errors }
+  return { child, spool, watchTarget, messages, stderr: () => errors }
 }
 
 function send(child: ChildProcessWithoutNullStreams, message: object): void {
@@ -218,6 +231,26 @@ describe('wt-wake-channel MCP server', () => {
     expect(existsSync(join(spool, 'a-malformed.txt'))).toBe(true)
     expect(stderr()).toBe('')
   }, 60_000)
+
+  // Linux cannot produce a Windows 8.3 short name, so a symlink is its honest path-alias stand-in.
+  // Keep polling beyond the test's patience: only the watcher can deliver this message.
+  it.skipIf(process.platform !== 'linux')('canonicalises an aliased spool before watching and delivers post-init through the configured alias', async () => {
+    const { child, spool, watchTarget, messages, stderr } = startServer('60_000', true)
+    await initialize(child, messages)
+
+    expect(spool).not.toBe(watchTarget)
+    expect(stderr()).toBe(`[wt-wake-channel] watching ${watchTarget}\n`)
+    writeFileSync(join(spool, 'aliased.txt'), 'alias wake', 'utf8')
+
+    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel')
+      .catch((error: unknown) => {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; child exit=${child.exitCode ?? child.signalCode ?? 'running'}; stderr=${stderr() || '<empty>'}`)
+      })
+    expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
+      '<observer source="wt-wake-channel">alias wake</observer>',
+    ])
+    expect(readFileSync(join(spool, 'consumed', 'aliased.txt'), 'utf8')).toBe('alias wake')
+  }, 47_000)
 
   // The channel promises fs.watch as a fast path and polling as the delivery backstop. This locks
   // the latter, so a host that drops watch events remains a valid test environment.
