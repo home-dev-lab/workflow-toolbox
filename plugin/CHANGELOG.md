@@ -36,6 +36,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Windows subprocess fixtures import ESM sources through `file:` URLs and OpenCode envelope assertions normalise path separators.
 
 ### Changed
+- Process-spawning test files now share one low-parallelism Vitest project, with AST-based enumeration and a drift check that requires every newly detected file to join the policy.
 - The What is running pane now reads SDK stages from `.lane/lifecycle.json`, labels log-derived fallback stages, uses the lifecycle state machine's exported phase vocabulary throughout, and states explicitly that phases are unavailable for plain OpenCode/Codex lanes.
 - Claude SDK roles now expose optional TypeScript/JavaScript LSP navigation through their generated
   role plugin when `typescript-language-server` resolves, and record a visible non-fatal absent state
