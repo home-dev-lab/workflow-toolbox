@@ -33,7 +33,9 @@ const initMessage = (model?: string) => ({
   ...(model === undefined ? {} : { model }),
   tools: ['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS), lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }, { path: resolveContextModeRoot(process.env) }, { name: 'wt-sdk-pilot' }],
-  skills: ['wt-sdk-pilot:stale-card-sweep', 'wt-sdk-pilot:lesson-harvest', 'wt-sdk-pilot:deep-grounding'],
+  // `lesson-harvest` is declared `user-invocable: false`, and the real receipt never lists such a skill (measured
+  // 2026-09-17): a fake listing it would pass a check the harness cannot satisfy.
+  skills: ['wt-sdk-pilot:stale-card-sweep', 'wt-sdk-pilot:deep-grounding'],
 })
 const roots: string[] = []
 function fixture() {
@@ -303,6 +305,30 @@ describe('SDK pilot runner', () => {
     expect(windows.stdout).toBe(`@anthropic-ai/claude-agent-sdk is not installed; run: npm install --prefix "${pluginData}" @anthropic-ai/claude-agent-sdk`)
   })
 
+  // Measured 2026-09-17 on the first real LITE run: after a refused receipt the summary and archive were written and
+  // the process stayed alive in an epoll wait, so the launcher's EXIT marker never appeared. A fake SDK that keeps a
+  // timer alive reproduces that shape; without the forced exit this spawn ends by the test timeout, not by code 1.
+  it('exits with code 1 after a refused initialization receipt even when the SDK leaves a handle alive', () => {
+    const f = fixture()
+    const packageDir = join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+    const init = { ...initMessage('sonnet'), skills: [] }
+    writeFileSync(join(packageDir, 'index.cjs'), [
+      'setInterval(() => {}, 1000)',
+      'module.exports = {',
+      `  query: () => (async function* () { yield ${JSON.stringify(init)} })(),`,
+      '  createSdkMcpServer: (options) => ({ type: "sdk", name: options.name, instance: {} }),',
+      '  tool: (name, description, schema, handler) => ({ name, description, schema, handler }),',
+      '}',
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
+      encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_PATH: '', WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') },
+    })
+    expect(result.signal).toBeNull()
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('missingSkills')
+  })
+
   it('starts SDK resolution from an installed plugin using the target project', () => {
     const f = fixture(); fakeSdk(f.dir, 'project')
     const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
@@ -352,6 +378,7 @@ describe('SDK pilot runner', () => {
     expect(logged).toEqual([
       'route=LITE reasons=human Route: LITE model=sonnet effective=sonnet executor=gpt-lane',
       'SDK role pilot: LSP absent: typescript-language-server not found on PATH',
+      'SDK role pilot: skills loaded through the role plugin but never listed by the initialization receipt (user-invocable: false): lesson-harvest',
       'injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.',
       'served model: unknown (requested sonnet)',
     ])

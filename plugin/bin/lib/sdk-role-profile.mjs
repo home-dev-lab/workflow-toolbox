@@ -239,6 +239,7 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
 
   const lspPrepared = prepareLsp(worktree, env, platform)
   let skillPlugin = null
+  const unlistedSkills = []
   if (profile.skills.length > 0 || lspPrepared.config) {
     skillPlugin = path.join(worktree, '.lane', 'sdk-plugins', role)
     const skillsDir = path.join(skillPlugin, 'skills')
@@ -249,6 +250,7 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
       const source = path.join(pluginRoot, 'skills', skill)
       if (!exists(path.join(source, 'SKILL.md'))) throw new Error(`SDK role ${role} refuses to start: selected skill path is absent: ${source}`)
       cpSync(source, path.join(skillsDir, skill), { recursive: true })
+      if (skillIsUnlistedByInit(readFileSync(path.join(source, 'SKILL.md'), 'utf8'))) unlistedSkills.push(skill)
     }
     const manifest = { name: `wt-sdk-${role}`, version: '0.0.0', ...(profile.skills.length > 0 ? { skills: './skills/' } : {}) }
     writeFileSync(path.join(skillPlugin, '.claude-plugin', 'plugin.json'), JSON.stringify(manifest, null, 2) + '\n')
@@ -260,7 +262,17 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
   log(lspPrepared.state.available
     ? `SDK role ${role}: LSP available (${lspPrepared.state.command})`
     : `SDK role ${role}: LSP absent: ${lspPrepared.state.reason}`)
-  return { profile, pluginPaths, guardPaths, skillPlugin, lsp: lspPrepared.state, hooks: guardHooks(profile, guardPaths, { env, ...adapterOptions }) }
+  if (unlistedSkills.length > 0) log(`SDK role ${role}: skills loaded through the role plugin but never listed by the initialization receipt (user-invocable: false): ${unlistedSkills.join(', ')}`)
+  return { profile, pluginPaths, guardPaths, skillPlugin, unlistedSkills, lsp: lspPrepared.state, hooks: guardHooks(profile, guardPaths, { env, ...adapterOptions }) }
+}
+
+// Measured 2026-09-17 (probe `lsp-probe/probe3.mjs`, then the first real LITE run of card 1865938900493534235):
+// the SDK `system:init` receipt lists only the plugin skills declared `user-invocable: true`. A skill declared
+// `user-invocable: false` loads through the plugin manifest all the same, but the receipt cannot prove it, so
+// requiring it there refused every pilot run at initialization. Such a skill is recorded and logged instead.
+export function skillIsUnlistedByInit(skillMarkdown) {
+  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMarkdown)?.[1] ?? ''
+  return /^user-invocable:\s*false\s*$/m.test(frontmatter)
 }
 
 export function composeSdkRoleQueryOptions(base, prepared) {
@@ -289,8 +301,9 @@ export function assertSdkRoleReceipt(role, message, prepared) {
   const forbiddenTools = prepared.profile.readOnly
     ? Object.values(CONTEXT_MODE_TOOLS).filter((tool) => tool !== CONTEXT_MODE_TOOLS.search && tools.includes(tool))
     : []
-  const missingSkills = prepared.profile.skills.filter((skill) => !skills.some((loaded) => loaded === skill || loaded.endsWith(`:${skill}`)))
+  const unlistedSkills = Array.isArray(prepared.unlistedSkills) ? prepared.unlistedSkills : []
+  const missingSkills = prepared.profile.skills.filter((skill) => !unlistedSkills.includes(skill) && !skills.some((loaded) => loaded === skill || loaded.endsWith(`:${skill}`)))
   if (absentPlugins.length || missingTools.length || forbiddenTools.length || missingSkills.length) {
-    throw new Error(`SDK role ${role} initialization receipt is incomplete: ${JSON.stringify({ absentPlugins, missingTools, forbiddenTools, missingSkills, tools, plugins, skills })}`)
+    throw new Error(`SDK role ${role} initialization receipt is incomplete: ${JSON.stringify({ absentPlugins, missingTools, forbiddenTools, missingSkills, unlistedSkills, tools, plugins, skills })}`)
   }
 }

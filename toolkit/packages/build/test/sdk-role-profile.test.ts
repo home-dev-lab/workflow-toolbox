@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { resolveContextModeRoot, assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
+import { resolveContextModeRoot, assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, skillIsUnlistedByInit } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
 
 prepareContextModeFixture()
 
@@ -136,6 +136,27 @@ describe('SDK role profiles', () => {
     expect(overridden.lsp).toMatchObject({ available: true, command: override })
     const absentOverride = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: second, WT_LSP_TYPESCRIPT_SERVER: join(root, 'absent') }, adapterOptions: { log: () => {} } })
     expect(absentOverride.lsp).toMatchObject({ available: false })
+  })
+
+  // Measured 2026-09-17 (lsp-probe/probe3.mjs, then the first real LITE run): the SDK init receipt lists only the
+  // plugin skills declared `user-invocable: true`, so the pilot's `lesson-harvest` can never appear there.
+  it('does not require a user-invocable:false skill in the initialization receipt, and still requires the others', () => {
+    expect(skillIsUnlistedByInit('---\nname: x\nuser-invocable: false\ndescription: d\n---\n\nBody\n')).toBe(true)
+    expect(skillIsUnlistedByInit('---\nname: x\nuser-invocable: true\ndescription: d\n---\n\nBody\n')).toBe(false)
+    expect(skillIsUnlistedByInit('# no frontmatter\nuser-invocable: false\n')).toBe(false)
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-skills-')); roots.push(root)
+    writeFileSync(join(root, 'source.ts'), 'export const value = 1\n')
+    const logged: string[] = []
+    const prepared = prepareSdkRole('pilot', { worktree: root, env: { ...process.env, PATH: '', WT_LSP_TYPESCRIPT_SERVER: undefined }, adapterOptions: { log: (line: string) => logged.push(line) } })
+    expect(prepared.unlistedSkills).toEqual(['lesson-harvest'])
+    expect(logged.some((line) => /never listed by the initialization receipt .*lesson-harvest/.test(line))).toBe(true)
+    const receipt = {
+      tools: prepared.profile.tools.filter((tool: string) => tool !== 'LSP'),
+      plugins: [...prepared.pluginPaths.map((pluginPath: string) => ({ path: pluginPath })), { name: 'wt-sdk-pilot' }],
+      skills: ['wt-sdk-pilot:stale-card-sweep', 'wt-sdk-pilot:deep-grounding'],
+    }
+    expect(() => assertSdkRoleReceipt('pilot', receipt, prepared)).not.toThrow()
+    expect(() => assertSdkRoleReceipt('pilot', { ...receipt, skills: ['wt-sdk-pilot:stale-card-sweep'] }, prepared)).toThrow(/missingSkills":\["deep-grounding"\].*unlistedSkills":\["lesson-harvest"\]/)
   })
 
   it('requires LSP in the initialization receipt only when the prepared server is available', () => {
