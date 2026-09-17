@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Artifact-server registrations now apply their `0600` mode check only on POSIX, while the Windows end-to-end fixture records each spawned server identity for health-independent teardown and includes monitor output in state-timeout diagnostics.
 - Artifact-server end-to-end cleanup now identity-checks and terminates the detached Windows process tree before retrying temp-directory removal, and its Tailscale fixture invokes a real executable instead of assuming Windows can execute a `.cmd` file through `execFileSync`.
 - The artifact server no longer refuses its state directory on Windows: the POSIX group/other write-bit check is enforced on POSIX platforms only, where Node's synthetic win32 mode had made every Windows start fail with `group- or world-writable`.
 - Artifact-server end-to-end fixtures now preserve native system paths, provide Node-backed Windows command shims, avoid Windows-illegal names, and label POSIX-only mode checks; configured Tailscale binaries no longer fall through to ambient discovery, and Windows process identity reads retry transient misses within their existing timeout bound.

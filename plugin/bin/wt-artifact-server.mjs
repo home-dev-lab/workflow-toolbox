@@ -263,7 +263,8 @@ async function serve() {
   const readRegistration = (file) => {
     const registrationPath = path.join(artifactRegistrationsDir(), file)
     const info = statSync(registrationPath)
-    if (!info.isFile() || (info.mode & 0o777) !== 0o600) throw new Error('registration must be a mode-0600 file')
+    // Node reports synthetic permission bits on Windows; 0600 is a POSIX ownership contract.
+    if (!info.isFile() || (process.platform !== 'win32' && (info.mode & 0o777) !== 0o600)) throw new Error('registration must be a mode-0600 file')
     if (typeof process.getuid === 'function' && info.uid !== process.getuid()) throw new Error('registration is owned by another uid')
     const value = JSON.parse(readFileSync(registrationPath, 'utf8'))
     if (!value || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !Array.isArray(value.roots) ||
