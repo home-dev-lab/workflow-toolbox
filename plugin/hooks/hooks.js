@@ -1,5 +1,6 @@
 import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { PHASES } from './lifecycle-phases.js';
+import { stripAnsiAndControl } from './text-sanitize.js';
 
 const PANE_ID = 'wt-what-is-running';
 export const COLLECTOR_TIMEOUT_MS = 8000;
@@ -25,7 +26,7 @@ function unavailableSnapshot(reason) {
     discovery: 'unknown', rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] }, collectedAt: 'unknown',
   };
 }
-const UNKNOWN_SNAPSHOT = unavailableSnapshot('collector failed');
+const UNKNOWN_SNAPSHOT = unavailableSnapshot('reading…');
 const COLORS = {
   // Button and Link text colour cannot be set in the host, and button text renders light: every button background
   // must be DARK for contrast (owner is colour blind, 2026-09-14 #2286 — whiteBright under light text was unreadable).
@@ -83,8 +84,13 @@ async function pathsOf($, options, sessionCwd) {
 
 export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT) {
   try {
+    // Test-only real-host seam: the control-character probe needs the host to render a fixed reproducing snapshot.
+    let snapshotFile;
+    try { snapshotFile = await $.env?.get?.('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch {}
     const result = await $.process.run(
-      ['node', '-e', SNAPSHOT_PROGRAM, JSON.stringify({ ...paths, layout: paths.layout || layout })],
+      snapshotFile
+        ? ['node', '-e', "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", snapshotFile]
+        : ['node', '-e', SNAPSHOT_PROGRAM, JSON.stringify({ ...paths, layout: paths.layout || layout })],
       { timeoutMs: COLLECTOR_TIMEOUT_MS },
     );
     if (result?.exitCode !== 0) {
@@ -111,7 +117,7 @@ function node(Component, props = {}, ...children) {
 }
 
 function sanitizeRenderedText(value) {
-  if (typeof value === 'string') return value.replace(/\[/g, '(').replace(/\]/g, ')');
+  if (typeof value === 'string') return stripAnsiAndControl(value).replace(/\[/g, '(').replace(/\]/g, ')');
   if (Array.isArray(value)) return value.map(sanitizeRenderedText);
   return value;
 }
@@ -401,11 +407,11 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   }
   if (hiddenCount) grouped.push(node(Text, { dimColor: true }, `${hiddenCount} ${hiddenCount === 1 ? 'item' : 'items'} hidden${unattributedCount ? ` · ${unattributedCount} unattributed` : ''}`));
   const workAvailability = snapshot.collectors?.work?.availability;
-  const lines = snapshot.discovery === 'unknown'
-    ? [node(Text, { dimColor: true }, `Could not read the running work (${workAvailability?.reason || 'collector failed'}).`)]
-    : grouped.length
-    ? grouped
-    : [node(Text, { dimColor: true }, 'Nothing running in the background.')];
+  let unavailableText = `Could not read the running work (${workAvailability?.reason || 'collector failed'}).`;
+  if (workAvailability?.reason === 'reading…') unavailableText = 'Reading the running work…';
+  let lines = grouped;
+  if (snapshot.discovery === 'unknown') lines = [node(Text, { dimColor: true }, unavailableText)];
+  else if (!grouped.length) lines = [node(Text, { dimColor: true }, 'Nothing running in the background.')];
   return node(Box, { flexDirection: 'column' },
     node(Box, { flexDirection: 'row', columnGap: 2 },
       fixedText({ bold: true }, 'What is running'),
@@ -499,9 +505,11 @@ export const registerWithLayout = (on, options, layout) => {
   };
   on('session.start', async ($, event, next) => {
     currentProject = pathBase(projectRootOf(event.cwd));
+    let snapshotFile;
+    try { snapshotFile = await $.env.get('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch { snapshotFile = undefined; }
     host = {
       paths: await pathsOf($, options, event.cwd),
-      readSnapshot: (paths) => readSnapshot({ process: { run: (argv) => $.process.run(argv) } }, paths, layout),
+      readSnapshot: (paths) => readSnapshot({ env: { get: async () => snapshotFile }, process: { run: (argv) => $.process.run(argv) } }, paths, layout),
       invalidate: () => $.ui.invalidate('ui.render'),
       open: (pane) => $.ui.open(pane),
       close: (pane) => $.ui.close(pane),
