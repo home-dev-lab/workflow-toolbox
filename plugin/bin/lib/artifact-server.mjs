@@ -48,25 +48,37 @@ export function artifactUid() {
   return typeof process.getuid === 'function' ? process.getuid() : userInfo().username
 }
 
+// POSIX mode bits are a POSIX contract. On win32 Node reports a synthetic mode (0o666-shaped) with the
+// group/other write bits set for every directory, so the `& 0o022` check refused the state directory on
+// every Windows machine and the server never started there (measured 2026-09-17, cross-os run 33: the
+// monitor's stderr read `artifact server state directory is group- or world-writable`). Ownership and
+// access on Windows are ACLs the profile directory already carries; the mode check is not enforced
+// there, and that is stated rather than silently passed.
+export function stateDirModeBitsEnforced(platform = process.platform) {
+  return platform !== 'win32'
+}
+
 export function ensureSecureStateDir(options = {}) {
   const env = options.env ?? process.env
-  const stateDir = artifactStateDir(env, options.home, options.platform)
+  const platform = options.platform ?? process.platform
+  const enforceModes = stateDirModeBitsEnforced(platform)
+  const stateDir = artifactStateDir(env, options.home, platform)
   mkdirSync(stateDir, { recursive: true, mode: 0o700 })
   const info = statSync(stateDir)
   if (!info.isDirectory()) throw new Error('artifact server state path is not a directory')
   if (typeof process.getuid === 'function' && info.uid !== process.getuid()) {
     throw new Error(`artifact server state directory is owned by uid ${info.uid}, expected ${process.getuid()}`)
   }
-  if ((info.mode & 0o022) !== 0) throw new Error('artifact server state directory is group- or world-writable')
-  chmodSync(stateDir, 0o700)
-  const registrations = artifactRegistrationsDir(env, options.home, options.platform)
+  if (enforceModes && (info.mode & 0o022) !== 0) throw new Error('artifact server state directory is group- or world-writable')
+  if (enforceModes) chmodSync(stateDir, 0o700)
+  const registrations = artifactRegistrationsDir(env, options.home, platform)
   mkdirSync(registrations, { recursive: true, mode: 0o700 })
   const registrationInfo = statSync(registrations)
   if (typeof process.getuid === 'function' && registrationInfo.uid !== process.getuid()) {
     throw new Error('artifact server registrations directory is owned by another uid')
   }
-  if ((registrationInfo.mode & 0o022) !== 0) throw new Error('artifact server registrations directory is group- or world-writable')
-  chmodSync(registrations, 0o700)
+  if (enforceModes && (registrationInfo.mode & 0o022) !== 0) throw new Error('artifact server registrations directory is group- or world-writable')
+  if (enforceModes) chmodSync(registrations, 0o700)
   return stateDir
 }
 
