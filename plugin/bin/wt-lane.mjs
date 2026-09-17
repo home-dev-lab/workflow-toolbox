@@ -22,6 +22,7 @@ const DEFAULT_MAX_EXTENSIONS = 3
 const DEFAULT_MAX_BRIEF_AGE = 600
 const DECISION_TRANSITION_BOUND_MS = 5_000
 const LAUNCH_LOCK_MAX_AGE_MS = 120_000
+const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
 
 async function loadConsentModules() {
   return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
@@ -127,6 +128,14 @@ export function inspectStartedProcess(inspect, pid, { platform = process.platfor
   if (candidate && platform !== 'win32') return { identity: candidate, unavailable: null }
   const source = platform === 'darwin' ? 'ps' : platform === 'win32' ? 'powershell' : 'proc'
   return { identity: null, unavailable: `unavailable (${source})`, ...(candidate ? { observed: candidate } : {}) }
+}
+
+export function inspectLauncherProcess(inspect, pid, { platform = process.platform, ...options } = {}) {
+  return inspect(pid, {
+    ...options,
+    platform,
+    ...(platform === 'win32' ? { singlePid: true, timeoutMs: WINDOWS_PROCESS_READ_TIMEOUT_MS } : {}),
+  })
 }
 
 function captureTimeoutReason(capture) {
@@ -277,7 +286,8 @@ async function main() {
     const recoveryLock = path.join(paths.dir, 'launch.lock.recovery')
     mkdirSync(paths.dir, { recursive: true })
     writeLaneStage(opts.log, 'inspect-launcher-start', { reset: true, runId, header: briefEvidenceLines(briefEvidence, true) })
-    const identity = consentModules.inspectProcess(process.pid) ?? { argv: process.argv, startTime: null }
+    const launcherInspect = (pid, options = {}) => inspectLauncherProcess(consentModules.inspectProcess, pid, { ...options, platform: process.platform })
+    const identity = launcherInspect(process.pid) ?? { argv: process.argv, startTime: null }
     writeLaneStage(opts.log, 'inspect-launcher-done')
     const lockOwner = { version: 1, runId, pid: process.pid, argv: identity.argv, startTime: identity.startTime, createdAt: new Date().toISOString() }
     const lockStatus = (lockPath) => {
@@ -291,7 +301,7 @@ async function main() {
       try { process.kill(owner.pid, 0) } catch (error) {
         if (error?.code === 'ESRCH') return { stale: true, owner, reason: 'owner process is gone' }
       }
-      const actual = consentModules.inspectProcess(owner.pid)
+      const actual = launcherInspect(owner.pid)
       if (actual && Number.isFinite(owner.startTime) && Number.isFinite(actual.startTime) && actual.startTime !== owner.startTime) return { stale: true, owner, reason: 'owner pid was reused' }
       if (actual && Number.isFinite(owner.startTime) && Number.isFinite(actual.startTime) && actual.startTime === owner.startTime) return { stale: false, owner, reason: 'owner process is still running' }
       return age > LAUNCH_LOCK_MAX_AGE_MS
@@ -384,7 +394,7 @@ async function main() {
       return 1
     }
     if (current) {
-      const verdict = consentModules.classifyLane(current)
+      const verdict = consentModules.classifyLane(current, { platform: process.platform, inspect: launcherInspect })
       const hardBound = consentModules.laneHardBoundAt(current)
       if (verdict.status === 'unknown' && hardBound !== null && Date.now() > hardBound) {
         try {
