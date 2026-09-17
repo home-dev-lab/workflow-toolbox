@@ -91,8 +91,11 @@ describe('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('builds the immutable four-tool MCP server', () => {
-    const worktree = fileURLToPath(new URL('../../../..', import.meta.url))
-    rmSync(`${worktree}/.lane/route.json`, { force: true })
+    // A temporary worktree, never the checkout root: this case used to delete and rewrite the CHECKOUT's own
+    // `.lane/route.json` and `.lane/lifecycle.json` with card 123, which clobbered a real SDK run's receipts
+    // whenever that run gated itself with the full suite (measured 2026-09-17: cost.json card_id 123).
+    const worktree = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-'))); roots.push(worktree)
+    mkdirSync(join(worktree, '.lane'), { recursive: true })
     const server = createLifecycleServer({ worktree, archiveRoot: archiveProject(), route: 'LITE', executor: 'claude-sdk', models: { code: 'sonnet', review: 'opus', refutation: 'opus' }, cardId: '123', sessionTag: 's' })
     expect(server.type).toBe('sdk')
     expect(server.name).toBe('sdk-pilot-lifecycle')
