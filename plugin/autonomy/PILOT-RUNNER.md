@@ -196,7 +196,8 @@ When critic, review, or refutation exhausts its round bound, the runner also wri
 `.lane/worktree-retention.json` file. Version 1 records `cardId`, the canonical absolute `worktree`,
 `retainedAt`, the bounded-run `reason`, the stopping `phase`, and `expiry` with the board id and the
 condition `card is absent or in Done or NotDoing`. Readers of v1 tolerate additional fields.
-`node "$CLAUDE_PLUGIN_ROOT/bin/wt-worktree-remove.mjs" --dir <worktree>` reads that
+`node "${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-$(node -e 'const fs=require("fs");const dir=process.env.CLAUDE_CONFIG_DIR||(process.env.HOME+"/.claude");const j=JSON.parse(fs.readFileSync(dir+"/plugins/installed_plugins.json","utf8"));const p=j.plugins||j;const k=Object.keys(p).find(x=>x.startsWith("workflow-toolbox@"));console.log(p[k][0].installPath)' 2>/dev/null)}}/bin/wt-worktree-remove.mjs" --dir <worktree>`
+(the same three-fallback plugin-root resolution `plugin/agents/opencode-envelope.md` ships) reads that
 marker before every removal, resolves the card's current list, and refuses while the card is open or
 the board cannot be reached. It also refuses a marker copied from a different worktree; `--force`
 changes Git's removal mode only and never bypasses these checks.
