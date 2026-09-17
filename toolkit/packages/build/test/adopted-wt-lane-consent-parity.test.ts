@@ -10,10 +10,26 @@ import { resolveConsent } from '../../../../plugin/bin/lib/lane-consent-check-co
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const INSTALLER = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 const roots: string[] = []
+const CHILD_TIMEOUT_MS = 10_000
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
+
+function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = CHILD_TIMEOUT_MS) {
+  const result = spawnSync(process.execPath, args, {
+    encoding: 'utf8',
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: timeoutMs,
+    killSignal: 'SIGKILL',
+  })
+  if (result.error) {
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim().split(/\r?\n/).at(-1) || '<no output>'
+    throw new Error(`${name} failed after ${timeoutMs}ms: ${result.error.message}; last output: ${output}`)
+  }
+  return result
+}
 
 function fixture(transformSource?: (source: string) => string, install = true) {
   const root = mkdtempSync(join(tmpdir(), 'wt-adopted-lane-consent-'))
@@ -36,7 +52,7 @@ if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel
 if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\n'; exit 0; fi
 exit 0
 `)
-  writeFileSync(join(bin, 'opencode.cmd'), `@echo off\r\n"${process.execPath}" "${join(bin, 'opencode-fixture.mjs')}" %*\r\n`)
+  writeFileSync(join(bin, 'opencode.cmd'), `@echo off\r\n@"${process.execPath}" "%~dp0opencode-fixture.mjs" %*\r\n`)
   writeFileSync(join(bin, 'opencode-fixture.mjs'), `
 import fs from 'node:fs'
 const args = process.argv.slice(2)
@@ -62,7 +78,7 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
   // inherit a developer's config, home, or lane settings into the child process.
   const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: join(root, 'state') }
   if (install) {
-    const result = spawnSync(process.execPath, [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], { encoding: 'utf8', env })
+    const result = runChild('adopt installer', [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], env)
     expect(result.status, result.stderr).toBe(0)
   }
   return { root, config, project, installed, env, installer: join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs') }
@@ -71,21 +87,26 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
 function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna', extra: string[] = []) {
   const brief = join(f.project, 'brief.md')
   writeFileSync(brief, '# brief\n')
-  return spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git', ...extra], { encoding: 'utf8', env: f.env })
+  return runChild('adopted wt-lane launcher', [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git', ...extra], f.env)
 }
 
 describe('adopted wt-lane consent resolver', () => {
+  it('names a timed-out child and includes its last output line', () => {
+    expect(() => runChild(
+      'fixture hanging child',
+      ['--input-type=module', '--eval', "process.stdout.write('waiting\\n'); setTimeout(() => {}, 30_000)"],
+      {},
+      100,
+    )).toThrow(/fixture hanging child failed after 100ms:.*last output: waiting/)
+  })
+
   for (const mode of ['--check', '--install']) {
     it(`${mode} refuses when the resolved plugin root is missing a launcher runtime module`, () => {
       const f = fixture(undefined, false)
       const missing = join(f.root, 'plugin', 'bin', 'lib', 'lane-model-allowlist.mjs')
       rmSync(missing)
 
-      const result = spawnSync(
-        process.execPath,
-        [f.installer, '--set', 'scripts', mode, '--dir', join(f.root, 'scripts')],
-        { encoding: 'utf8', env: f.env },
-      )
+      const result = runChild('adopt installer missing-module check', [f.installer, '--set', 'scripts', mode, '--dir', join(f.root, 'scripts')], f.env)
 
       expect(result.status).not.toBe(0)
       expect(`${result.stdout}${result.stderr}`).toBe(
@@ -100,11 +121,7 @@ describe('adopted wt-lane consent resolver', () => {
     const missing = join(f.root, 'plugin', 'bin', 'lib', 'plugin-options.mjs')
     rmSync(missing)
 
-    const result = spawnSync(
-      process.execPath,
-      [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')],
-      { encoding: 'utf8', env: f.env },
-    )
+    const result = runChild('adopt installer preflight', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
 
     expect(result.status).not.toBe(0)
     expect(`${result.stdout}${result.stderr}`).toBe(
@@ -125,11 +142,7 @@ describe('adopted wt-lane consent resolver', () => {
 
   it('installs and starts the adopted launcher when the resolved plugin root has every runtime module', () => {
     const f = fixture(undefined, false)
-    const install = spawnSync(
-      process.execPath,
-      [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')],
-      { encoding: 'utf8', env: f.env },
-    )
+    const install = runChild('adopt installer', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
     expect(install.status, `${install.stdout}${install.stderr}`).toBe(0)
 
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
@@ -145,10 +158,10 @@ describe('adopted wt-lane consent resolver', () => {
     const old = new Date(Date.now() - 15 * 60_000)
     utimesSync(brief, old, old)
 
-    const refused = spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git', '--max-brief-age', '600'], { encoding: 'utf8', env: f.env })
+    const refused = runChild('adopted wt-lane stale-brief refusal', [f.installed, '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git', '--max-brief-age', '600'], f.env)
     expect(refused.status).toBe(1)
     expect(refused.stderr).toContain('--acknowledge-stale-brief')
-    const acknowledged = spawnSync(process.execPath, [f.installed, '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git', '--max-brief-age', '600', '--acknowledge-stale-brief'], { encoding: 'utf8', env: f.env })
+    const acknowledged = runChild('adopted wt-lane stale-brief acknowledgement', [f.installed, '--dir', f.project, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git', '--max-brief-age', '600', '--acknowledge-stale-brief'], f.env)
     expect(acknowledged.status, acknowledged.stderr).toBe(0)
     expect(acknowledged.stdout).toMatch(/brief_sha256=[0-9a-f]{64}\n/)
   })
@@ -208,7 +221,7 @@ describe('adopted wt-lane consent resolver', () => {
   it('prints help without an installed plugin', () => {
     const f = fixture()
     rmSync(join(f.config, 'plugins', 'installed_plugins.json'))
-    const actual = spawnSync(process.execPath, [f.installed, '--help'], { encoding: 'utf8', env: f.env })
+    const actual = runChild('adopted wt-lane help', [f.installed, '--help'], f.env)
     expect(actual.status, actual.stderr).toBe(0)
     expect(actual.stdout).toContain('Usage: node wt-lane.mjs')
   })
@@ -239,7 +252,7 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
       "import { resolveConsent } from './lib/lane-consent-check-core.mjs'",
       "import { resolveConsent as resolveLaneConsent } from './lib/lane-consent-check-core.mjs'",
     ), false)
-    const install = spawnSync(process.execPath, [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], { encoding: 'utf8', env: f.env })
+    const install = runChild('adopt installer transformed-source refusal', [f.installer, '--set', 'scripts', '--install', '--dir', join(f.root, 'scripts')], f.env)
 
     expect(install.status).not.toBe(0)
     expect(`${install.stdout}${install.stderr}`).toContain('launcher transformation expected exactly one occurrence')
