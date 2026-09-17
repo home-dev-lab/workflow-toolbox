@@ -20,6 +20,10 @@ const spawnedWatchers: ChildProcess[] = []
 const spawnedChildren: ChildProcess[] = []
 const spawnedGroups: number[] = []
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const PROCESS_CAPTURE_RETRY_MS = 10
+const PROCESS_CAPTURE_PROBES = 4
+const PROCESS_CAPTURE_SCHEDULING_MARGIN_MS = 100
+const PROCESS_CAPTURE_BOUND_MS = PROCESS_CAPTURE_RETRY_MS * PROCESS_CAPTURE_PROBES + PROCESS_CAPTURE_SCHEDULING_MARGIN_MS
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
   const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
@@ -356,7 +360,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const result = inspectStartedProcess(() => {
       calls += 1
       return calls < 3 ? null : expected
-    }, 42, { platform: 'darwin', timeoutMs: 500 })
+    }, 42, { platform: 'darwin', timeoutMs: PROCESS_CAPTURE_BOUND_MS })
     expect(calls).toBe(4)
     expect(result).toEqual({ identity: expected, unavailable: null })
   })
@@ -394,7 +398,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(lsofCalls).toBe(1)
   }, 3_500)
   it('records a source-specific unavailable state instead of a synthetic identity', () => {
-    expect(inspectStartedProcess(() => null, 42, { platform: 'darwin', timeoutMs: 20 })).toEqual({ identity: null, unavailable: 'unavailable (ps)' })
+    expect(inspectStartedProcess(() => null, 42, { platform: 'darwin', timeoutMs: PROCESS_CAPTURE_RETRY_MS * 2 })).toEqual({ identity: null, unavailable: 'unavailable (ps)' })
     expect(classifyLane({ runId: '42-1', state: 'running', workerPid: 42, workerArgv: null, workerStartTime: null, workerIdentity: 'unavailable (ps)', childPid: null, childArgv: null }, { platform: 'darwin' }))
       .toMatchObject({ status: 'unknown', reason: 'worker identity unavailable (ps)' })
   })

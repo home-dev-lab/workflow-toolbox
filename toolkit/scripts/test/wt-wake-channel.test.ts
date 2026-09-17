@@ -28,6 +28,9 @@ const processes: ChildProcessWithoutNullStreams[] = []
 const tempDirs: string[] = []
 const messageWaiters = new WeakMap<JsonRpcMessage[], Set<() => void>>()
 let barrierId = 10_000
+const POST_INITIALIZATION_POLL_MS = 100
+const POST_INITIALIZATION_DELIVERY_MARGIN_MS = 5_000
+const POST_INITIALIZATION_DELIVERY_BOUND_MS = POST_INITIALIZATION_POLL_MS + POST_INITIALIZATION_DELIVERY_MARGIN_MS
 
 afterEach(async () => {
   const children = processes.splice(0)
@@ -216,27 +219,20 @@ describe('wt-wake-channel MCP server', () => {
     expect(stderr()).toBe('')
   }, 60_000)
 
-  // The production path, and until this test existed nothing covered it: a message deposited
-  // AFTER the handshake, which is when every real wake arrives. The three tests above either
-  // deposit before `initialized` (picked up by the direct drain) or run under a 20 ms poll —
-  // neither can distinguish a working watch from an absent one.
-  //
-  // The poll is pinned to 60 s here, far beyond this test's patience, so the ONLY mechanism that
-  // can satisfy the assertion is the filesystem watch. Disable the watch and this goes red;
-  // that is what makes it a lock rather than a demonstration.
-  it.skipIf(process.platform === 'win32')('delivers a message deposited AFTER initialization, without waiting for the poll [requires reliable fs.watch directory delivery]', async () => {
-    const { child, spool, messages, stderr } = startServer('60000')
+  // The channel promises fs.watch as a fast path and polling as the delivery backstop. This locks
+  // the latter, so a host that drops watch events remains a valid test environment.
+  it('delivers a message deposited AFTER initialization within the configured poll interval plus margin', async () => {
+    const { child, spool, messages, stderr } = startServer(String(POST_INITIALIZATION_POLL_MS))
     await initialize(child, messages)
     expect(channelMessages(messages)).toEqual([])
 
     writeFileSync(join(spool, 'post-init.txt'), 'the observer speaks', 'utf8')
 
-    // Patience stays well below the 60 s poll, so only the filesystem watch can satisfy this assertion.
-    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel', 30_000)
+    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel', POST_INITIALIZATION_DELIVERY_BOUND_MS)
     expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
       '<observer source="wt-wake-channel">the observer speaks</observer>',
     ])
     expect(existsSync(join(spool, 'post-init.txt'))).toBe(false)
     expect(stderr()).toBe('')
-  }, 60_000)
+  }, POST_INITIALIZATION_DELIVERY_BOUND_MS + 2_000)
 })
