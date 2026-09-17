@@ -44,11 +44,36 @@ jobs:
       # The default reporter ignores --outputFile (vitest writes a file only for json/junit/html), so the
       # streaming log is captured with tee; the runner's bash has pipefail, pwsh re-raises $LASTEXITCODE.
       - name: Test (POSIX)
-        if: ${{ runner.os != 'Windows' }}
+        if: ${{ runner.os == 'Linux' }}
         run: |
           mkdir -p ci-diagnostics
           pnpm test 2>&1 | tee ci-diagnostics/vitest.log
         timeout-minutes: 22
+      # The macOS probe runs the suite in two halves so that one half's log survives a frozen runner.
+      # Coverage is off here on purpose: thresholds judged on half a suite would be red by construction;
+      # the coverage judge stays on the ubuntu and Windows `pnpm test`.
+      - name: Build for the macOS shards
+        if: ${{ runner.os == 'macOS' }}
+        run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
+        timeout-minutes: 8
+      - name: Test (macOS shard 1/2)
+        if: ${{ runner.os == 'macOS' }}
+        continue-on-error: true
+        env:
+          WT_VITEST_MAX_WORKERS: 2
+        run: |
+          mkdir -p ci-diagnostics
+          pnpm exec vitest run --shard=1/2 2>&1 | tee ci-diagnostics/vitest-shard-1-of-2.log
+        timeout-minutes: 12
+      - name: Test (macOS shard 2/2)
+        if: ${{ runner.os == 'macOS' }}
+        continue-on-error: true
+        env:
+          WT_VITEST_MAX_WORKERS: 2
+        run: |
+          mkdir -p ci-diagnostics
+          pnpm exec vitest run --shard=2/2 2>&1 | tee ci-diagnostics/vitest-shard-2-of-2.log
+        timeout-minutes: 12
       - name: Test (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh

@@ -3,7 +3,10 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
+const DARWIN_PROCESS_TABLE_TTL_MS = 100
 const WINDOWS_PROCESS_TABLE_TTL_MS = 500
+const darwinProcessTableCache = new WeakMap()
+const darwinCwdCache = new WeakMap()
 const windowsProcessTableCache = new WeakMap()
 
 export function sameIdentity(expected, actual) {
@@ -49,6 +52,42 @@ function powershellProcessTable(execFile, now = Date.now()) {
   return result
 }
 
+function darwinProcessTable(execFile, now = Date.now()) {
+  const cached = darwinProcessTableCache.get(execFile)
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) return cached.result
+  const evidence = runEvidence('ps', ['-ww', '-axo', 'pid=,lstart=,pgid=,state=,command='], execFile)
+  let result = evidence
+  if (evidence.status === 0) {
+    const value = new Map()
+    for (const line of evidence.stdout.split(/\r?\n/)) {
+      const match = /^\s*(\d+)\s+(.{24})\s+(\d+)\s+(\S+)\s+([\s\S]+?)\s*$/.exec(line)
+      if (!match) continue
+      const startTime = processStartSeconds(match[2])
+      if (!Number.isFinite(startTime)) continue
+      value.set(Number(match[1]), { pid: Number(match[1]), argv: [match[5]], startTime, groupId: Number(match[3]), state: match[4] })
+    }
+    result = { status: 0, value }
+  }
+  darwinProcessTableCache.set(execFile, { readAt: now, result })
+  return result
+}
+
+function darwinCwd(pid, execFile, now = Date.now()) {
+  const cached = darwinCwdCache.get(execFile)
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) return cached.value.get(pid) ?? null
+  const result = runEvidence('lsof', ['-d', 'cwd', '-F', 'pn'], execFile)
+  const value = new Map()
+  let currentPid = null
+  if (result.status === 0) {
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (line.startsWith('p')) currentPid = Number(line.slice(1))
+      else if (line.startsWith('n') && Number.isSafeInteger(currentPid)) value.set(currentPid, line.slice(1))
+    }
+  }
+  darwinCwdCache.set(execFile, { readAt: now, value })
+  return value.get(pid) ?? null
+}
+
 function powershellProcess(pid, execFile) {
   // The pid is interpolated into a PowerShell command string: refuse anything that is not a plain process id.
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return { status: 1, stdout: '' }
@@ -67,9 +106,9 @@ function processStartSeconds(value) {
 function processExists(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
   if (platform === 'linux') return existsSync(path.join(procRoot, String(pid)))
   if (platform === 'darwin') {
-    const result = runEvidence('ps', ['-p', String(pid), '-o', 'pid='], execFile)
+    const result = darwinProcessTable(execFile)
     if (result.status === 'unavailable') return null
-    return result.status === 0 && result.stdout.trim() === String(pid)
+    return result.status === 0 && result.value.has(Number(pid))
   }
   if (platform === 'win32') {
     const result = powershellProcess(pid, execFile)
@@ -81,8 +120,8 @@ function processExists(pid, { platform = process.platform, procRoot = '/proc', s
 
 function processState(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
   if (platform === 'darwin') {
-    const result = runEvidence('ps', ['-p', String(pid), '-o', 'state='], execFile)
-    return result.status === 0 ? result.stdout.trim().charAt(0) || null : null
+    const result = darwinProcessTable(execFile)
+    return result.status === 0 ? result.value.get(Number(pid))?.state?.charAt(0) ?? null : null
   }
   if (platform !== 'linux') return null
   try {
@@ -217,17 +256,11 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
 }
 
 function inspectDarwinProcess(pid, execFile, captureCwd) {
-  const result = runEvidence('ps', ['-ww', '-p', String(pid), '-o', 'lstart=,pgid=,command='], execFile)
+  const result = darwinProcessTable(execFile)
   if (result.status !== 0) return null
-  const match = /^(.{24})\s+(\d+)\s+([\s\S]+?)\s*$/.exec(result.stdout)
-  if (!match) return null
-  const startTime = processStartSeconds(match[1])
-  if (!Number.isFinite(startTime)) return null
-  const state = runEvidence('ps', ['-p', String(pid), '-o', 'state='], execFile)
-  if (state.status === 0 && state.stdout.trim().startsWith('Z')) return null
-  const cwdResult = captureCwd ? runEvidence('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], execFile) : null
-  const cwd = cwdResult?.status === 0 ? cwdResult.stdout.split(/\r?\n/).find((line) => line.startsWith('n'))?.slice(1) ?? null : null
-  return { pid, argv: [match[3]], startTime, groupId: Number(match[2]), cwd }
+  const row = result.value.get(pid)
+  if (!row || row.state.startsWith('Z')) return null
+  return { pid: row.pid, argv: row.argv, startTime: row.startTime, groupId: row.groupId, cwd: captureCwd ? darwinCwd(pid, execFile) : null }
 }
 
 function inspectWindowsProcess(pid, execFile) {

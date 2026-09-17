@@ -2,6 +2,12 @@ import { defineConfig } from 'vitest/config'
 import { resolve } from 'node:path'
 
 const skillFenceTest = 'packages/build/test/opencode-skill-fence.integration.test.ts'
+const configuredMaxWorkers = process.env.WT_VITEST_MAX_WORKERS
+  ? Number(process.env.WT_VITEST_MAX_WORKERS)
+  : process.platform === 'darwin' ? 2 : undefined
+if (configuredMaxWorkers !== undefined && (!Number.isInteger(configuredMaxWorkers) || configuredMaxWorkers < 1)) {
+  throw new Error('WT_VITEST_MAX_WORKERS must be a positive integer')
+}
 const include = [
   'packages/*/test/**/*.test.ts',
   'packages/*/src/**/*.test.ts',
@@ -10,6 +16,9 @@ const include = [
 ]
 const commonTestConfig = {
   reporters: ['default'],
+  // macos-latest has three vCPUs. Two workers leave one core available for the runner agent
+  // while preserving file parallelism; other hosts retain Vitest's default worker count.
+  ...(configuredMaxWorkers === undefined ? {} : { maxWorkers: configuredMaxWorkers }),
   // A few tests drive the real TypeScript compiler (ts.createProgram in
   // globals-typecheck, the `build --typecheck` path in cli-subcommands).
   // They take ~4s cold and spike past the 5s default under full-suite CPU

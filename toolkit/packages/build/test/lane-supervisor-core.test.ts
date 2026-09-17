@@ -58,7 +58,7 @@ describe('lane supervisor safety core', () => {
 
   it('reads repeated Darwin ps and lsof transcripts into one stable identity', () => {
     const execFile = vi.fn((command: string) => command === 'ps'
-      ? { status: 0, stdout: 'Wed Sep 16 12:34:56 2026   431 /usr/local/bin/node worker.mjs --flag\n' }
+      ? { status: 0, stdout: '  432 Wed Sep 16 12:34:56 2026   431 S /usr/local/bin/node worker.mjs --flag\n' }
       : { status: 0, stdout: 'p432\nfcwd\nn/Users/runner/work/lane\n' })
     const expected = {
       pid: 432,
@@ -69,26 +69,41 @@ describe('lane supervisor safety core', () => {
     }
     expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toEqual(expected)
     expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toEqual(expected)
-    expect(execFile).toHaveBeenCalledWith('ps', ['-ww', '-p', '432', '-o', 'lstart=,pgid=,command='], expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C' }) }))
+    expect(execFile).toHaveBeenCalledWith('ps', ['-ww', '-axo', 'pid=,lstart=,pgid=,state=,command='], expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C' }) }))
+    expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(1)
+    expect(execFile.mock.calls.filter(([program]) => program === 'lsof')).toHaveLength(1)
   })
 
   it('keeps a long Darwin argv identical across wide two-read transcripts', () => {
     const command = `/usr/local/bin/node worker.mjs --brief-receipt ${'a'.repeat(500)}`
-    const execFile = vi.fn((program: string, args: string[]) => program === 'ps' && args.includes('lstart=,pgid=,command=')
-      ? { status: 0, stdout: `Wed Sep 16 12:34:56 2026   431 ${command}\n` }
-      : program === 'ps'
-        ? { status: 0, stdout: 'S\n' }
-        : { status: 0, stdout: 'p432\nfcwd\nn/Users/runner/work/lane\n' })
+    const execFile = vi.fn((program: string) => program === 'ps'
+      ? { status: 0, stdout: `  432 Wed Sep 16 12:34:56 2026   431 S ${command}\n` }
+      : { status: 0, stdout: 'p432\nfcwd\nn/Users/runner/work/lane\n' })
     const first = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })
     const second = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })
     expect(first?.argv).toEqual([command])
     expect(second).toEqual(first)
-    expect(execFile.mock.calls.filter(([program, args]) => program === 'ps' && args[0] === '-ww')).toHaveLength(2)
+    expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(1)
+  })
+
+  it('bounds Darwin forks by the 100 ms snapshot TTL under a 10 ms identity poll', () => {
+    vi.useFakeTimers()
+    try {
+      const execFile = vi.fn((program: string) => program === 'ps'
+        ? { status: 0, stdout: '  432 Wed Sep 16 12:34:56 2026   431 S /usr/local/bin/node worker.mjs\n' }
+        : { status: 0, stdout: 'p432\nfcwd\nn/Users/runner/work/lane\n' })
+      for (let tick = 0; tick < 100; tick += 1) {
+        expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).not.toBeNull()
+        vi.advanceTimersByTime(10)
+      }
+      expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(10)
+      expect(execFile.mock.calls.filter(([program]) => program === 'lsof')).toHaveLength(10)
+    } finally { vi.useRealTimers() }
   })
 
   it('keeps a Darwin identity readable when lsof is absent and marks cwd unreadable', () => {
     const execFile = vi.fn((command: string) => command === 'ps'
-      ? { status: 0, stdout: 'Wed Sep 16 12:34:56 2026   431 /usr/local/bin/node worker.mjs\n' }
+      ? { status: 0, stdout: '  432 Wed Sep 16 12:34:56 2026   431 S /usr/local/bin/node worker.mjs\n' }
       : { status: null, stdout: '', error: Object.assign(new Error('spawn lsof ENOENT'), { code: 'ENOENT' }) })
     expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).toMatchObject({ pid: 432, cwd: null })
   })
@@ -100,13 +115,12 @@ describe('lane supervisor safety core', () => {
     mkdirSync(canonical, { recursive: true })
     symlinkSync(join(root, 'private', 'var'), alias, 'dir')
     const cwds = [alias + '/lane', canonical]
-    const execFile = vi.fn((program: string, args: string[]) => program === 'ps' && args.includes('lstart=,pgid=,command=')
-      ? { status: 0, stdout: 'Wed Sep 16 12:34:56 2026   431 /usr/local/bin/node worker.mjs\n' }
-      : program === 'ps'
-        ? { status: 0, stdout: 'S\n' }
-        : { status: 0, stdout: `p432\nfcwd\nn${cwds.shift()}\n` })
+    const execFile = vi.fn((program: string) => program === 'ps'
+      ? { status: 0, stdout: '  432 Wed Sep 16 12:34:56 2026   431 S /usr/local/bin/node worker.mjs\n' }
+      : { status: 0, stdout: `p432\nfcwd\nn${cwds.shift()}\n` })
     try {
       const recorded = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })!
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 101)
       const actual = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })!
       expect(recorded.cwd).not.toBe(actual.cwd)
       expect(sameIdentity(recorded, actual)).toBe(true)
