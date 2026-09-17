@@ -272,6 +272,7 @@ printf 'report\n' > "$report"
 
   it('does not accept a reused worker pid with different argv as live lane evidence', async () => {
     const pidFileName = '.lane/reused-worker-pid'
+    const workerArgv = [process.execPath, '-e', 'setInterval(()=>{},1000)']
     const reused = launcher(`import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}); child.unref(); const runId='998-1'; const dir=join(root,'.lane','supervision'); mkdirSync(dir,{recursive:true}); writeFileSync(join(root,${JSON.stringify(pidFileName)}),String(child.pid)); writeFileSync(join(dir,runId+'.json'),JSON.stringify({runId,state:'running',workerPid:child.pid,workerArgv:['not','the','worker'],owner:'pilot',decisionTransitionDueAt:new Date(Date.now()-1).toISOString()})); writeFileSync(join(dir,'current.json'),JSON.stringify({runId})); process.stdout.write('pid='+child.pid+'\\nrun='+runId+'\\n')`)
     const lifecycle = testLifecycle('LITE', [], rawLauncher(readFileSync(reused, 'utf8').replace("process.stdout.write('pid='+process.pid+'\\n');", '')), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
@@ -279,12 +280,13 @@ printf 'report\n' > "$report"
     expect(result).not.toContain('live worker is still completing')
     const pid = Number(readFileSync(join(lifecycle.root, pidFileName), 'utf8'))
     expect(() => process.kill(pid, 0)).not.toThrow()
-    const identity = inspectProcess(pid); expect(identity?.argv.join(' ')).toContain('setInterval')
+    const identity = inspectProcess(pid, { recordedArgv: workerArgv }); expect(identity?.argv).toEqual(workerArgv)
     killIdentity(identity, 'SIGKILL')
   })
 
   it('returns an actionable TIMEOUT without killing a matching worker when the record is unreadable', async () => {
     const pidFileName = '.lane/unreadable-worker-pid'
+    const workerArgv = [process.execPath, '-e', 'setInterval(()=>{},1000)']
     const detached = launcher(`import { spawn } from 'node:child_process'; import { mkdirSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'}); child.unref(); const runId='997-1'; const dir=join(root,'.lane','supervision'); mkdirSync(dir,{recursive:true}); writeFileSync(join(root,${JSON.stringify(pidFileName)}),String(child.pid)); writeFileSync(join(dir,runId+'.json'),'null'); writeFileSync(join(dir,'current.json'),JSON.stringify({runId})); process.stdout.write('pid='+child.pid+'\\nrun='+runId+'\\n')`)
     const lifecycle = testLifecycle('LITE', [], rawLauncher(readFileSync(detached, 'utf8').replace("process.stdout.write('pid='+process.pid+'\\n');", '')), 30)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }); await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
@@ -292,7 +294,7 @@ printf 'report\n' > "$report"
     expect(result).toMatch(/TIMEOUT:.*--owner-token '[0-9a-f-]+'/)
     const pid = Number(readFileSync(join(lifecycle.root, pidFileName), 'utf8'))
     expect(() => process.kill(pid, 0)).not.toThrow()
-    const identity = inspectProcess(pid); expect(identity?.argv.join(' ')).toContain('setInterval')
+    const identity = inspectProcess(pid, { recordedArgv: workerArgv }); expect(identity?.argv).toEqual(workerArgv)
     killIdentity(identity, 'SIGKILL')
   })
 
@@ -1283,17 +1285,17 @@ printf 'report\n' > "$report"
 })
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) })
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) })
 function killIdentity(expected: { pid: number, argv: string[], startTime?: number, cwd?: string | null } | null, signal: NodeJS.Signals) {
   if (!expected) throw new Error('expected test process identity is gone')
-  const actual = inspectProcess(expected.pid)
+  const actual = inspectProcess(expected.pid, { recordedArgv: expected.argv })
   expect(sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, actual)).toBe(true)
   process.kill(expected.pid, signal)
   const deadline = Date.now() + 5_000
-  while (sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, inspectProcess(expected.pid)) && Date.now() < deadline) {
+  while (sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, inspectProcess(expected.pid, { recordedArgv: expected.argv })) && Date.now() < deadline) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
   }
-  if (sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, inspectProcess(expected.pid))) throw new Error(`timed out waiting for test child ${expected.pid} to exit`)
+  if (sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, inspectProcess(expected.pid, { recordedArgv: expected.argv }))) throw new Error(`timed out waiting for test child ${expected.pid} to exit`)
 }
 function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null, options: Record<string, unknown> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-'))); roots.push(root)

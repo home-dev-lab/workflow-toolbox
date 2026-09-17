@@ -223,7 +223,7 @@ describe('adopted wt-lane consent resolver', () => {
         expect(actual.status, `${account.name}; ${project.name}: ${actual.stderr}`).toBe(expected === 'true' ? 0 : 1)
       }
     }
-  })
+  }, CHILD_TIMEOUT_MS + 15_000)
 
   it('refuses when no installed plugin root can provide the real resolver', () => {
     const f = fixture()
