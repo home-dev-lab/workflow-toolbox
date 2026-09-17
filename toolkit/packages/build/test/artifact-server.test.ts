@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl } from '../../../../plugin/bin/lib/artifact-server.mjs'
+// @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
+import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SERVER = join(REPO_ROOT, 'plugin/bin/wt-artifact-server.mjs')
@@ -14,7 +16,8 @@ const ENSURE = join(REPO_ROOT, 'plugin/bin/wt-artifact-server-ensure.mjs')
 const MONITORS = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 const temporaryDirs: string[] = []
 const children = new Set<ChildProcess>()
-const detachedPids = new Set<number>()
+type ProcessIdentity = { pid: number, argv: string[], startTime: number, startTimeApproximate?: boolean, image?: { name: string, path: string | null }, cwd?: string | null }
+const detachedProcesses = new Map<number, ProcessIdentity>()
 const CANDIDATE_PROBE_MS = 750
 const FALLBACK_CANDIDATES = 2
 const FALLBACK_READINESS_MS = 5_000
@@ -34,6 +37,21 @@ function pidAlive(pid: number) {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
+}
+
+function detachedIdentity(pid: number): ProcessIdentity | null {
+  const recordedArgv = [process.execPath, SERVER, 'serve']
+  // Destructive checks must not reuse lane supervision's short process-read cache.
+  return inspectProcess(pid, { captureCwd: false, recordedArgv, spawnSync: spawnSync.bind(null) })
+}
+
+function trackDetached(pid: number) {
+  const identity = detachedIdentity(pid)
+  if (identity) detachedProcesses.set(pid, identity)
+}
+
+function detachedIdentityMatches(expected: ProcessIdentity, inspect = detachedIdentity) {
+  return sameIdentity(expected, inspect(expected.pid))
 }
 
 async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 15_000): Promise<T> {
@@ -149,15 +167,16 @@ async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'
   await waitFor(() => pidAlive(child.pid!) ? null : true, 3_000).catch(() => undefined)
 }
 
-async function stopDetached(pid: number) {
-  if (!detachedPids.delete(pid) || !pidAlive(pid)) return
+async function stopDetached(expected: ProcessIdentity) {
+  detachedProcesses.delete(expected.pid)
+  if (!detachedIdentityMatches(expected)) return
   try {
-    process.kill(pid, 'SIGTERM')
+    process.kill(expected.pid, 'SIGTERM')
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
     return
   }
-  await waitFor(() => pidAlive(pid) ? null : true, 3_000).catch(() => undefined)
+  await waitFor(() => pidAlive(expected.pid) ? null : true, 3_000).catch(() => undefined)
 }
 
 afterEach(async () => {
@@ -165,7 +184,7 @@ afterEach(async () => {
     children.delete(child)
     await stopChild(child)
   }
-  for (const pid of [...detachedPids]) await stopDetached(pid)
+  for (const identity of [...detachedProcesses.values()]) await stopDetached(identity)
   for (const dir of temporaryDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -222,7 +241,7 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
     poller = setInterval(inspect, 50)
     arm()
   })
-  detachedPids.add(state.pid)
+  trackDetached(state.pid)
   return state
 }
 
@@ -251,6 +270,11 @@ describe('review test infrastructure', () => {
     const result = await waitFor(async () => ++calls === 3 ? 'ready' : null)
     expect(result).toBe('ready')
     expect(calls).toBe(3)
+  })
+
+  it('refuses to stop a recycled detached PID', () => {
+    const expected: ProcessIdentity = { pid: 123, argv: ['node', SERVER, 'serve'], startTime: 10 }
+    expect(detachedIdentityMatches(expected, () => ({ ...expected, startTime: 11 }))).toBe(false)
   })
 })
 
@@ -403,7 +427,7 @@ describe('owner decision 2: discovery and one instance', () => {
     }, 20_000)
     for (const receipt of receipts) {
       expect(receipt.argv).toEqual([process.execPath, SERVER, 'serve'])
-      detachedPids.add(receipt.pid)
+      trackDetached(receipt.pid)
     }
     expect(output.stdout()).toMatch(/retry attempt 2\/3/i)
     expect(monitor.exitCode).toBeNull()
@@ -637,7 +661,7 @@ describe('owner decision 2: discovery and one instance', () => {
     expect(receipts).toHaveLength(4)
     for (const receipt of receipts) {
       expect(receipt.argv).toEqual([process.execPath, SERVER, 'serve'])
-      detachedPids.add(receipt.pid)
+      trackDetached(receipt.pid)
     }
     expect(spawnReceipts(spawnLog)).toEqual(Array(4).fill(`${monitor.pid} ${port}`))
     expect(output.stdout().match(/retry attempt [123]\/3/gi)).toHaveLength(3)
@@ -729,7 +753,7 @@ describe('owner decision 2: discovery and one instance', () => {
       return receipts.length === 1 ? receipts : null
     })
     if (!frozen) throw new Error('frozen artifact server receipt is missing')
-    detachedPids.add(frozen.pid)
+    trackDetached(frozen.pid)
 
     const slowHealthy = createServer((_request, response) => {
       setTimeout(() => {
@@ -854,7 +878,7 @@ describe('owner decision 2: discovery and one instance', () => {
       try { return JSON.parse(readFileSync(delayedProcess, 'utf8')) as { pid: number, argv: string[] } } catch { return null }
     })
     expect(delayed.argv).toEqual([process.execPath, SERVER, 'serve'])
-    detachedPids.add(delayed.pid)
+    trackDetached(delayed.pid)
 
     await waitFor(() => /did not become ready/i.test(output.stdout()) ? true : null, 12_000)
     expect(output.stdout()).not.toMatch(/no available port/i)
