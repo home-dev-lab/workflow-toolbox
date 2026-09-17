@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Artifact-server tests now verify detached server process identity by PID, start time, argv, and executable before cleanup signals it, preventing Windows PID reuse from terminating the Vitest worker.
 - Wake-channel directory watches now canonicalise path aliases before entering libuv, preventing Windows short-name spool paths from aborting the server, and the adopted consent matrix derives its case timeout from all real launcher combinations.
 - SDK role initialization receipts no longer require a skill declared `user-invocable: false` (the harness never lists one), and the pilot runner exits after a refused receipt instead of idling with the EXIT marker unwritten.
 - SDK role LSP plugins now map .js, .mjs, and .cjs to JavaScript from the same table that drives worktree language detection, so plain .js worktrees are detected and navigable instead of silently unmapped while the receipt reports LSP available.
