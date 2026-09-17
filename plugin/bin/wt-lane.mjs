@@ -24,7 +24,7 @@ const DECISION_TRANSITION_BOUND_MS = 5_000
 const LAUNCH_LOCK_MAX_AGE_MS = 120_000
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
 }
 
 function usage() {
@@ -108,7 +108,11 @@ export function inspectStartedProcess(inspect, pid, { platform = process.platfor
     const identity = inspect(pid, { platform })
     if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) {
       candidate = identity
-      const command = path.basename(identity.argv[0]).toLowerCase()
+      const commandLine = identity.argv.length === 1 ? identity.argv[0].trim() : identity.argv[0]
+      const executable = commandLine.startsWith('"')
+        ? /^"([^"]+)"/.exec(commandLine)?.[1] ?? commandLine
+        : commandLine.split(/\s+/, 1)[0]
+      const command = path.basename(executable).toLowerCase().replace(/^\(|\)$/g, '')
       if (!['sh', 'bash', 'dash', 'zsh', 'ksh'].includes(command)) return { identity, unavailable: null }
     } else if (candidate) return { identity: candidate, unavailable: null }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
@@ -413,7 +417,7 @@ async function main() {
       const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
-      const captured = inspectStartedProcess(consentModules.inspectProcess, child.pid)
+      const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid)
       const identity = captured.identity
       const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
       try {
@@ -474,8 +478,8 @@ async function main() {
   const decisionFile = statePaths.decision
   const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const journal = (event) => { try { consentModules.appendSupervisorJournal(dataDir, event) } catch { /* supervision must remain bounded when its audit sink is unavailable */ } }
-  const childCapture = inspectStartedProcess(consentModules.inspectProcess, child.pid)
-  const workerCapture = inspectStartedProcess(consentModules.inspectProcess, process.pid)
+  const childCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid)
+  const workerCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, process.pid)
   const childIdentity = childCapture.identity
   const workerIdentity = workerCapture.identity
   const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }

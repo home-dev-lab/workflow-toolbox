@@ -127,7 +127,13 @@ function waitForVerdict(status: string, expected: string, ms = 15_000) {
     spawnSync('sleep', ['0.05'])
   }
   const state = JSON.parse(readFileSync(status, 'utf8'))
-  throw new Error(`timed out waiting for ${expected} process verdict; received ${verdict}; worker=${JSON.stringify(inspectProcess(state.workerPid))}; child=${JSON.stringify(inspectProcess(state.childPid))}; record=${JSON.stringify(state)}`)
+  const workerActual = inspectProcess(state.workerPid, { platform: process.platform })
+  const childActual = inspectProcess(state.childPid, { platform: process.platform })
+  const fields = (label: string, recorded: { argv: unknown, startTime: unknown, cwd: unknown }, actual: ReturnType<typeof inspectProcess>) =>
+    `${label}.record.argv=${JSON.stringify(recorded.argv)}; ${label}.actual.argv=${JSON.stringify(actual?.argv ?? null)}; ` +
+    `${label}.record.startTime=${JSON.stringify(recorded.startTime)}; ${label}.actual.startTime=${JSON.stringify(actual?.startTime ?? null)}; ` +
+    `${label}.record.cwd=${JSON.stringify(recorded.cwd)}; ${label}.actual.cwd=${JSON.stringify(actual?.cwd ?? null)}`
+  throw new Error(`timed out waiting for ${expected} process verdict; received ${verdict}; ${fields('worker', { argv: state.workerArgv, startTime: state.workerStartTime, cwd: state.workerCwd ?? null }, workerActual)}; ${fields('child', { argv: state.childArgv, startTime: state.childStartTime, cwd: state.childCwd ?? null }, childActual)}; record=${JSON.stringify(state)}`)
 }
 function killIdentity(expected: { pid: number, argv: string[], startTime?: number, cwd?: string | null } | null, signal: NodeJS.Signals) {
   if (!expected) throw new Error('expected test process identity is gone')
@@ -345,6 +351,23 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     }, 42, { platform: 'darwin', timeoutMs: 500 })
     expect(calls).toBe(3)
     expect(result).toEqual({ identity: expected, unavailable: null })
+  })
+  it('waits through a transient Darwin shell transcript before capturing the stable command', () => {
+    const start = 'Wed Sep 16 12:34:56 2026'
+    const commands = ['(bash)', '(bash)', '/usr/local/bin/node lane.mjs --worker']
+    const execFile = ((program: string, args: string[]) => {
+      if (program === 'ps' && args.includes('lstart=,pgid=,command=')) {
+        return { status: 0, stdout: `${start}   42 ${commands.shift() ?? '/usr/local/bin/node lane.mjs --worker'}\n` }
+      }
+      if (program === 'ps') return { status: 0, stdout: 'S\n' }
+      return { status: 0, stdout: 'p42\nfcwd\nn/private/var/folders/lane\n' }
+    }) as typeof spawnSync
+    const inspect = (pid: number, options: { platform: NodeJS.Platform }) => inspectProcess(pid, { ...options, spawnSync: execFile })
+
+    const first = inspect(42, { platform: 'darwin' })
+    expect(first?.argv).toEqual(['(bash)'])
+    expect(inspectStartedProcess(inspect, 42, { platform: 'darwin', timeoutMs: 100 }).identity?.argv)
+      .toEqual(['/usr/local/bin/node lane.mjs --worker'])
   })
   it('records a source-specific unavailable state instead of a synthetic identity', () => {
     expect(inspectStartedProcess(() => null, 42, { platform: 'darwin', timeoutMs: 20 })).toEqual({ identity: null, unavailable: 'unavailable (ps)' })

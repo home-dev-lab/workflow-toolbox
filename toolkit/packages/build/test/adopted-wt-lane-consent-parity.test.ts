@@ -113,6 +113,16 @@ describe('adopted wt-lane consent resolver', () => {
     expect(existsSync(f.installed)).toBe(false)
   })
 
+  it('loads the same installed supervisor provider as the shipped launcher', () => {
+    const f = fixture()
+    const adopted = readFileSync(f.installed, 'utf8')
+    expect(adopted).toContain("const supervisor = path.join(root, 'bin', 'lib', 'lane-supervisor-core.mjs')")
+    expect(adopted).toContain('supervisorModule.inspectProcess')
+    expect(adopted).toContain("const launcher = path.join(root, 'bin', 'wt-lane.mjs')")
+    expect(adopted).toContain('launcherModule.inspectStartedProcess')
+    expect(adopted).not.toContain("from './lib/lane-supervisor-core.mjs'")
+  })
+
   it('installs and starts the adopted launcher when the resolved plugin root has every runtime module', () => {
     const f = fixture(undefined, false)
     const install = spawnSync(

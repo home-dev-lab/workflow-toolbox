@@ -64,7 +64,7 @@ function installFakeOpencode(root: string) {
   writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`)
   chmodSync(bin, 0o755)
   // The product resolves npm-installed OpenCode as opencode.cmd on Windows.
-  writeFileSync(`${bin}.cmd`, `@echo off\r\ncall "${process.execPath}" "${script}" %*\r\nexit /b %errorlevel%\r\n`)
+  writeFileSync(`${bin}.cmd`, `@echo off\r\n"${process.execPath}" "${script}" %*\r\nexit /b %errorlevel%\r\n`)
 }
 
 describe('wt-opencode-envelope generated task sources', () => {
@@ -114,7 +114,7 @@ describe('wt-opencode-envelope generated task sources', () => {
 
   it('help documents explicit source modes and numeric default cap', () => {
     const result = spawnSync(process.execPath, [SCRIPT, '--help'], { encoding: 'utf8' })
-    expect(result.status, result.stderr).toBe(0)
+    expect(result.status).toBe(0)
     expect(result.stdout).toContain('--each-json <path>')
     expect(result.stdout).toContain('--each-lines <path>')
     expect(result.stdout).toContain('--max-tasks <n>')
@@ -140,7 +140,7 @@ describe('wt-opencode-envelope generated task sources', () => {
       '--manifest', manifestPath,
     ], { encoding: 'utf8', env: { ...process.env, PATH: '' } })
 
-    expect(result.status).toBe(0)
+    expect(result.status, result.stderr).toBe(0)
     const outputManifest = manifestPathFromStdout(result.stdout)
      expect(portablePath(outputManifest!)).toMatch(/^.*\/wt-envelope\/[^/]+\/envelope\.manifest\.json$/)
     const manifest = JSON.parse(readFileSync(outputManifest!, 'utf8'))
@@ -167,10 +167,10 @@ describe('wt-opencode-envelope generated task sources', () => {
       SCRIPT, tasks, '--dir', workdir, '--model', 'nonexistent/provider-model', '--manifest', manifestPath,
     ], { encoding: 'utf8', env })
 
-    expect(result.status).toBe(0)
+    expect(result.status, result.stderr).toBe(0)
     const outputManifest = manifestPathFromStdout(result.stdout)
     expect(portablePath(outputManifest!)).toMatch(/\/envelope\.manifest\.json$/)
-    expect(result.stdout).toBe(`MANIFEST: ${outputManifest} ANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
+    expect(result.stdout, result.stderr).toBe(`MANIFEST: ${outputManifest} ANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
     expect(readFileSync(modelCapture, 'utf8')).toBe('nonexistent/provider-model')
     expect(JSON.parse(readFileSync(outputManifest!, 'utf8')).tasks[0]).toMatchObject({
       status: 'answer', requestedModel: 'nonexistent/provider-model', model: 'nonexistent/provider-model',
@@ -345,7 +345,7 @@ describe('wt-opencode-envelope generated task sources', () => {
     expect(result.stdout).toBe(`MANIFEST: ${manifestPathFromStdout(result.stdout)}\n`)
     expect(readFileSync(promptCapture, 'utf8')).toBe('Synthesize:\n--- BEGIN ANSWER id=first exitStatus=0 ---\nfirst result\n--- END ANSWER id=first ---')
     const manifest = JSON.parse(readFileSync(manifestPathFromStdout(result.stdout)!, 'utf8'))
-    expect(manifest).toMatchObject({ total: 1, answered: 1, errored: 0, skippedFailedTaskIds: ['broken'] })
+    expect(manifest, result.stderr).toMatchObject({ total: 1, answered: 1, errored: 0, skippedFailedTaskIds: ['broken'] })
     expect(manifest.tasks[0]).toMatchObject({ status: 'answer', exitStatus: 0 })
     // the id is derived from the source manifest, so it is a stable prefix plus a digest
     expect(manifest.tasks[0].id).toMatch(/^reduce-[0-9a-f]{8}$/)
@@ -409,8 +409,8 @@ describe('wt-opencode-envelope generated task sources', () => {
     const manifestB = join(root, 'reduce-b.manifest.json')
     const runA = run(sourceA, manifestA)
     const runB = run(sourceB, manifestB)
-    expect(runA.status).toBe(0)
-    expect(runB.status).toBe(0)
+    expect(runA.status, runA.stderr).toBe(0)
+    expect(runB.status, runB.stderr).toBe(0)
 
     const fileA = JSON.parse(readFileSync(manifestPathFromStdout(runA.stdout)!, 'utf8')).tasks[0].answerFile
     const fileB = JSON.parse(readFileSync(manifestPathFromStdout(runB.stdout)!, 'utf8')).tasks[0].answerFile
