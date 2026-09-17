@@ -21,6 +21,7 @@ async function resolveListName(board, card) {
   return ''
 }
 const labels = (card) => (card?.labels ?? []).map((item) => typeof item === 'string' ? item : item.name)
+const canonicalPath = (file) => (fs.realpathSync.native ?? fs.realpathSync)(file)
 const under = (parent, child) => { const relative = path.relative(parent, child); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)) }
 const CARD_ID = /^\d{1,32}$/
 const errorText = (error) => error instanceof Error ? error.message : String(error)
@@ -90,11 +91,11 @@ function realLocation(file) {
   let probe = path.resolve(file)
   const suffix = []
   while (!fs.existsSync(probe)) { suffix.unshift(path.basename(probe)); probe = path.dirname(probe) }
-  return path.resolve(fs.realpathSync(probe), ...suffix)
+  return path.resolve(canonicalPath(probe), ...suffix)
 }
 
 function assertUnder(root, target, label) {
-  if (!under(fs.realpathSync(root), realLocation(target))) throw new Error(`${label} is outside its root directory`)
+  if (!under(canonicalPath(root), realLocation(target))) throw new Error(`${label} is outside its root directory`)
   return target
 }
 
@@ -224,7 +225,7 @@ export async function runOrchestrator(input, dependencies = {}) {
   }
 
   try {
-    repo = fs.realpathSync(String(git('git', ['rev-parse', '--show-toplevel'], { cwd: options.cwd ?? process.cwd(), encoding: 'utf8' })).trim())
+    repo = canonicalPath(String(git('git', ['rev-parse', '--show-toplevel'], { cwd: options.cwd ?? process.cwd(), encoding: 'utf8' })).trim())
     if (options.base === 'main') throw new Error('base main is refused')
     if ((options.pluginDirs ?? []).some((pluginDir) => !path.isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
     if (options.cards?.some((id) => !CARD_ID.test(String(id)))) throw new Error('invalid card id')
@@ -233,7 +234,7 @@ export async function runOrchestrator(input, dependencies = {}) {
     if (!board) throw new Error('board unavailable: no board client')
     if (!runPilot) throw new Error('driver error: no pilot runner')
     fs.mkdirSync(waveDir, { recursive: true })
-    if (!under(repo, fs.realpathSync(waveDir))) throw new Error('worktrees dir is outside repository root')
+    if (!under(repo, canonicalPath(waveDir))) throw new Error('worktrees dir is outside repository root')
     const hooks = path.join(waveDir, 'hooks')
     fs.mkdirSync(hooks, { recursive: true })
     for (const [name, action] of [['pre-push', 'push'], ['pre-merge-commit', 'merge']]) {

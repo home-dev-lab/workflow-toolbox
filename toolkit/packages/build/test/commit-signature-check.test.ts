@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -100,11 +100,12 @@ process.exit(99)
 `,
     { mode: 0o755 },
   )
+  writeFileSync(join(bin, 'git.cmd'), '@node "%~dp0git" %*\r\n')
   return {
     repo,
     env: {
       ...process.env,
-      PATH: `${bin}:${process.env.PATH || ''}`,
+      PATH: `${bin}${delimiter}${process.env.PATH || ''}`,
       ...vars,
     },
   }
@@ -197,7 +198,7 @@ describe('commit-signature-core', () => {
   })
 })
 
-describe('wt-check-commit-signatures.mjs', () => {
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures.mjs [fake git is a script shim that bare spawnSync cannot execute on Windows]', () => {
   it('signing not configured + unsigned HEAD → exit 0 and empty output', () => {
     const { repo, env } = makeFakeGitEnv('cli-silent-unsigned', {
       FAKE_GIT_LOG: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tN\tunsigned head\n',
@@ -343,7 +344,7 @@ describe('wt-check-commit-signatures.mjs', () => {
   })
 })
 
-describe('wt-check-commit-signatures-hook.mjs', () => {
+describe.skipIf(process.platform === 'win32')('wt-check-commit-signatures-hook.mjs [fake git is a script shim that bare spawnSync cannot execute on Windows]', () => {
   it('does not run on a non-commit Bash command', () => {
     const { env } = makeFakeGitEnv('hook-non-commit')
     const res = runHook(
@@ -475,6 +476,26 @@ describe('wt-check-commit-signatures-hook.mjs', () => {
     )
     expect(res.status).toBe(0)
     expect(readFileSync(trace, 'utf8')).toContain('refs/remotes/origin/main..HEAD')
+  })
+
+  it('keeps no-ref signature inspection for an explicit slash-named remote', () => {
+    const trace = makeTraceFile('hook-range-slash-remote')
+    const { repo, env } = makeFakeGitEnv('hook-range-slash-remote', {
+      FAKE_GIT_BRANCH: 'main',
+      FAKE_GIT_PUSH_REF: 'refs/remotes/team/public/main',
+      FAKE_GIT_TRACE: trace,
+    })
+    const res = runHook(
+      {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        cwd: repo,
+        tool_input: { command: 'git push team/public' },
+      },
+      env,
+    )
+    expect(res.status).toBe(0)
+    expect(readFileSync(trace, 'utf8')).toContain('refs/remotes/team/public/main..HEAD')
   })
 
   it('derives the outgoing range from the push command when the refspec names HEAD explicitly', () => {

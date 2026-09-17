@@ -1,5 +1,5 @@
-import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,11 +36,17 @@ function run(command: string, env: NodeJS.ProcessEnv = process.env, executable =
   return { ...result, entries }
 }
 
+function injectedProcessListing(listing: string): NodeJS.ProcessEnv {
+  const ps = join(journalDir, 'ps')
+  writeFileSync(ps, `#!/bin/sh\n${listing}\n`)
+  chmodSync(ps, 0o755)
+  return { ...process.env, PATH: journalDir }
+}
+
 describe('wt-concurrent-test-guard-hook', () => {
-  it.skipIf(process.platform === 'win32')('SILENT + SELF-MATCH RED PROOF: reports zero under its own Vitest runner', () => {
-    const disguisedNode = join(journalDir, 'vitest')
-    symlinkSync(process.execPath, disguisedNode)
-    const result = run('vitest run', process.env, disguisedNode)
+  it.skipIf(process.platform === 'win32')('SILENT + SELF-MATCH RED PROOF: reports zero from an injected self listing', () => {
+    // `ps` is resolved from PATH. Its parent is the hook, so this record proves the hook excludes itself.
+    const result = run('vitest run', injectedProcessListing("printf '%s 1 vitest vitest run\\n' \"$PPID\""))
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
     expect(result.entries).toHaveLength(1)
@@ -51,26 +57,27 @@ describe('wt-concurrent-test-guard-hook', () => {
     })
   })
 
-  it.skipIf(process.platform === 'win32')('WARN: a real concurrent runner process is counted, legible, and never blocked', async () => {
-    const worker = spawn(process.execPath, ['-e', "process.title='vitest'; process.stdout.write('ready'); setInterval(()=>{}, 1000)"], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    await new Promise<void>((resolve, reject) => {
-      worker.once('error', reject)
-      worker.stdout.once('data', () => resolve())
-    })
-    try {
-      const result = run('pnpm test')
-      expect(result.status).toBe(0)
-      expect(result.stdout).toContain('1 test-runner process(es) are already running')
-      expect(result.stdout).toContain('WARNING (not blocked)')
-      expect(result.stdout).toContain('"permissionDecision":"allow"')
-      expect(result.stdout).not.toContain('"deny"')
-      expect(result.entries).toHaveLength(1)
-      expect(result.entries[0]).toMatchObject({ decision: 'warned', evidence: { count: '1' } })
-    } finally {
-      worker.kill()
-    }
+  it.skipIf(process.platform === 'win32')('WARN: an injected concurrent runner is counted, legible, and never blocked', () => {
+    const result = run('pnpm test', injectedProcessListing("printf '999999 1 vitest vitest run\\n'"))
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('1 test-runner process(es) are already running')
+    expect(result.stdout).toContain('WARNING (not blocked)')
+    expect(result.stdout).toContain('"permissionDecision":"allow"')
+    expect(result.stdout).not.toContain('"deny"')
+    expect(result.entries).toHaveLength(1)
+    expect(result.entries[0]).toMatchObject({ decision: 'warned', evidence: { count: '1' } })
+  })
+
+  it.skipIf(process.platform === 'win32')('REAL MACHINE: reports the runner count it discovers without assuming it is alone', () => {
+    const result = run('pnpm test')
+    expect(result.status).toBe(0)
+    expect(result.entries).toHaveLength(1)
+    const count = Number(result.entries[0].evidence.count)
+    expect(Number.isInteger(count)).toBe(true)
+    expect(count).toBeGreaterThanOrEqual(0)
+    expect(result.entries[0]).toMatchObject({ decision: count > 0 ? 'warned' : 'silent', evidence: { count: String(count) } })
+    if (count > 0) expect(result.stdout).toContain(`${count} test-runner process(es) are already running`)
+    else expect(result.stdout).toBe('')
   })
 
   it.each(['pnpm -r test', 'pnpm vitest', 'pnpm exec vitest', 'pnpm --recursive test'])(

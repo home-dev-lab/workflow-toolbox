@@ -1,6 +1,9 @@
 import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
+import { PHASES } from './lifecycle-phases.js';
+import { stripAnsiAndControl } from './text-sanitize.js';
 
 const PANE_ID = 'wt-what-is-running';
+export const COLLECTOR_TIMEOUT_MS = 8000;
 export const WORKFLOW_TOOLBOX_LAYOUT = Object.freeze({
   laneDirName: '.lane',
   worktreesDirName: 'worktrees',
@@ -14,19 +17,21 @@ export const WORKFLOW_TOOLBOX_LAYOUT = Object.freeze({
   services: { brokerPackage: 'atrium', brokerPathPattern: '(?:^|/)atrium(?:/|$)', brokerLabel: 'Atrium broker' },
   baseBranches: ['main', 'develop'],
 });
-const UNKNOWN_SNAPSHOT = {
-  collectors: {
-    work: { value: { rows: [], sessions: [] }, availability: { status: 'unknown', reason: 'collector failed' } },
-    processes: { value: { services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] } }, availability: { status: 'unknown', reason: 'collector failed' } },
-  },
-  discovery: 'unknown', rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] }, collectedAt: 'unknown',
-};
+function unavailableSnapshot(reason) {
+  return {
+    collectors: {
+      work: { value: { rows: [], sessions: [] }, availability: { status: 'unknown', reason } },
+      processes: { value: { services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] } }, availability: { status: 'unknown', reason } },
+    },
+    discovery: 'unknown', rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'unknown', items: [] }, collectedAt: 'unknown',
+  };
+}
+const UNKNOWN_SNAPSHOT = unavailableSnapshot('reading…');
 const COLORS = {
   // Button and Link text colour cannot be set in the host, and button text renders light: every button background
   // must be DARK for contrast (owner is colour blind, 2026-09-14 #2286 — whiteBright under light text was unreadable).
   // Link text renders blue: its background must be LIGHT.
-  action: 'black', actionOpen: 'blue', close: 'black', link: 'whiteBright',
-  running: 'yellowBright', done: 'blue', skipped: 'magenta', waiting: 'whiteBright',
+  action: 'black', actionOpen: 'gray', close: 'black', link: 'whiteBright',
   external: 'cyanBright', error: 'redBright',
 };
 
@@ -78,12 +83,30 @@ async function pathsOf($, options, sessionCwd) {
 
 export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT) {
   try {
-    const result = await $.process.run(['node', '-e', SNAPSHOT_PROGRAM, JSON.stringify({ ...paths, layout: paths.layout || layout })]);
-    if (result?.exitCode !== 0 || typeof result.stdout !== 'string') return UNKNOWN_SNAPSHOT;
-    const parsed = JSON.parse(result.stdout);
-    return Array.isArray(parsed?.rows) && ['available', 'partial', 'unknown'].includes(parsed.discovery) ? parsed : UNKNOWN_SNAPSHOT;
-  } catch {
-    return UNKNOWN_SNAPSHOT;
+    // Test-only real-host seam: the control-character probe needs the host to render a fixed reproducing snapshot.
+    let snapshotFile;
+    try { snapshotFile = await $.env?.get?.('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch {}
+    const result = await $.process.run(
+      snapshotFile
+        ? ['node', '-e', "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", snapshotFile]
+        : ['node', '-e', SNAPSHOT_PROGRAM, JSON.stringify({ ...paths, layout: paths.layout || layout })],
+      { timeoutMs: COLLECTOR_TIMEOUT_MS },
+    );
+    if (result?.exitCode !== 0) {
+      const stderr = typeof result?.stderr === 'string' ? result.stderr.split(/\r?\n/).find((line) => line.trim())?.trim() : null;
+      return unavailableSnapshot(`collector failed (exit code ${result?.exitCode ?? 'unknown'}; ${(stderr || 'no stderr').slice(0, 160)})`);
+    }
+    if (typeof result.stdout !== 'string') return unavailableSnapshot('collector failed (stdout unavailable)');
+    let parsed;
+    try { parsed = JSON.parse(result.stdout); } catch { return unavailableSnapshot('collector failed (invalid JSON output)'); }
+    return Array.isArray(parsed?.rows) && ['available', 'partial', 'unknown'].includes(parsed.discovery)
+      ? parsed
+      : unavailableSnapshot('collector failed (invalid snapshot output)');
+  } catch (error) {
+    const detail = [error?.name, error?.code, error?.message].filter(Boolean).join(' ');
+    return /timeout|timed?\s*out|ETIMEDOUT/i.test(detail)
+      ? unavailableSnapshot(`collector timed out after ${COLLECTOR_TIMEOUT_MS / 1000} s`)
+      : unavailableSnapshot(`collector failed (${String(error?.message || error || 'unknown error').split(/\r?\n/)[0].slice(0, 160)})`);
   }
 }
 
@@ -93,7 +116,7 @@ function node(Component, props = {}, ...children) {
 }
 
 function sanitizeRenderedText(value) {
-  if (typeof value === 'string') return value.replace(/\[/g, '(').replace(/\]/g, ')');
+  if (typeof value === 'string') return stripAnsiAndControl(value).replace(/\[/g, '(').replace(/\]/g, ')');
   if (Array.isArray(value)) return value.map(sanitizeRenderedText);
   return value;
 }
@@ -110,11 +133,17 @@ export function isValidLinkHref(href) {
   }
 }
 
-const PHASES = [
-  ['discovery', 'Discovery'], ['plan', 'Plan'], ['critic', 'Critic'], ['tdd', 'TDD'],
-  ['verify', 'Verify'], ['review', 'Pilot review'], ['refutation', 'Pilot refutation'],
-  ['harden', 'Harden'], ['report', 'Report'],
-];
+const PHASE_LABELS = Object.freeze({
+  discovery: 'Discovery', plan: 'Plan', critic: 'Critic', tdd: 'TDD', verify: 'Verify',
+  review: 'Independent review', refutation: 'Independent refutation', harden: 'Harden', report: 'Report',
+});
+export const PANE_PHASES = Object.freeze(PHASES.map((phase) => Object.freeze([phase, PHASE_LABELS[phase]])));
+
+function phaseLabelFor(row, phase) {
+  const label = PHASE_LABELS[phase] || phase;
+  const model = phase === 'review' ? row.models?.review : phase === 'refutation' ? row.models?.refutation : null;
+  return model && model !== 'unknown' ? `${label} (${model})` : label;
+}
 
 function stateOf(row, phase) {
   const words = row.phaseStates?.[phase] || 'not started';
@@ -123,7 +152,7 @@ function stateOf(row, phase) {
 
 function phaseLabel(phase) {
   if (phase === 'awaiting_fidelity') return 'Waiting for arbiter review';
-  return PHASES.find(([id]) => id === phase)?.[1] || phase;
+  return PANE_PHASES.find(([id]) => id === phase)?.[1] || phase;
 }
 
 function knownDetails(row) {
@@ -177,13 +206,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     return shown;
   };
   const renderStateSegment = ({ key, buttonKey, label, state, open = false, onPress = null }) => {
-    const style = state.words === 'not started' ? { dimColor: true }
-      : state.words === 'running' ? { color: COLORS.running, bold: true }
-      : state.words === 'done' ? { color: COLORS.done }
-      : state.words === 'skipped' ? { color: COLORS.skipped, inverse: true }
-      : state.words === 'waiting for arbiter review' ? { color: COLORS.waiting, inverse: true }
-      : /^(?:error|failed|fail)/i.test(state.words) ? { color: COLORS.error, bold: true }
-      : { color: COLORS.external };
+    const style = state.words === 'running' ? { bold: true } : {};
     return node(Box, { key, flexDirection: 'row', columnGap: 1 },
       onPress
         ? control({ key: buttonKey, plain: true, onPress }, `${open ? '▼' : '▶'} ${label} ${state.glyph}`, open ? COLORS.actionOpen : COLORS.action)
@@ -209,7 +232,12 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   const renderExternal = (row, indent = 0, showCard = true) => {
     const cardId = renderCardId(row);
     const label = `${row.label || 'External lane'}${row.roleInferred ? ' (inferred)' : ''}`;
-    const details = [row.model && row.model !== 'unknown' ? `model ${row.model}` : null, row.activity && row.activity !== 'unknown' ? row.activity : null, row.elapsed && row.elapsed !== 'unknown' ? `elapsed ${row.elapsed}` : null].filter(Boolean).join(' · ');
+    const details = [
+      `phases: n/a (${row.phaseAvailability || 'plain lane'})`,
+      row.model && row.model !== 'unknown' ? `model ${row.model}` : null,
+      row.activity && row.activity !== 'unknown' ? row.activity : null,
+      row.elapsed && row.elapsed !== 'unknown' ? `elapsed ${row.elapsed}` : null,
+    ].filter(Boolean).join(' · ');
     return node(Box, { key: row.id, flexDirection: 'column', paddingLeft: indent },
       node(Box, { flexDirection: 'row', columnGap: 1 },
         fixedText({ color: COLORS.external }, label),
@@ -229,12 +257,13 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     const selection = selected.get(row.id);
     const inspector = selection ? row.inspectors?.[selection.toLowerCase()] : null;
     const phaseKnown = row.phase && row.phase !== 'unknown';
-    const visiblePhases = phaseKnown ? PHASES : [];
+    const visiblePhases = phaseKnown ? PANE_PHASES : [];
+    const stageHeading = row.phaseSource === 'log' ? 'Work stages (from log):' : 'Work stages:';
     const phaseButtons = visiblePhases.map(([phase, label]) => {
       const state = stateOf(row, phase);
       const buttonKey = `detail-toggle:stage:${row.id}:${phase}`;
       const hasEvidence = Boolean(row.inspectors?.[phase]?.summary || row.inspectors?.[phase]?.href) && !['not started', 'skipped'].includes(state.words);
-      return renderStateSegment({ key: `phase-state:${row.id}:${phase}`, buttonKey, label, state, open: selection === phase, onPress: hasEvidence ? () => actions.select(row.id, phase) : null });
+      return renderStateSegment({ key: `phase-state:${row.id}:${phase}`, buttonKey, label: phaseLabelFor(row, phase), state, open: selection === phase, onPress: hasEvidence ? () => actions.select(row.id, phase) : null });
     });
     const rounds = row.criticRounds > 0
       ? `Plan ↔ Critic: ${row.runnerLogTruncated ? 'at least ' : ''}${row.criticRounds} ${row.criticRounds === 1 ? 'round' : 'rounds'}`
@@ -249,7 +278,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
       row.watchdog && row.watchdog !== 'unknown' ? node(Text, { dimColor: true }, `watchdog: ${row.watchdog}`) : null,
     ] : [];
     const inspectorButtonKey = selection ? `detail-toggle:stage:${row.id}:${selection}` : null;
-    const inspectorNodes = !selection ? [] : [renderOpenDetail(inspectorButtonKey, PHASES.find(([phase]) => phase === selection)?.[1] || selection, () => actions.closeView(row.id),
+    const inspectorNodes = !selection ? [] : [renderOpenDetail(inspectorButtonKey, PANE_PHASES.find(([phase]) => phase === selection)?.[1] || selection, () => actions.closeView(row.id),
       ...renderEvidence(inspector?.summary || (inspector?.href ? 'A report was recorded.' : '')),
       Link && isValidLinkHref(inspector?.href) ? linked({ href: inspector.href, label: '[Open report]' }) : null,
     )];
@@ -264,7 +293,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
         failed ? fixedText({ color: COLORS.error, bold: true }, ` · ${row.outcome}`) : null,
       ),
       showCard ? renderCardLink(row) : null,
-      showStages && phaseKnown ? node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1, paddingLeft: 1 }, fixedText({ bold: true }, 'Work stages:'), ...phaseButtons.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])) : null,
+      showStages && phaseKnown ? node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1, paddingLeft: 1 }, fixedText({ bold: true }, stageHeading), ...phaseButtons.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])) : null,
       rounds ? node(Box, { paddingLeft: 1 }, node(Text, { dimColor: true }, rounds)) : null,
       ...(showStages ? inspectorNodes : []),
       isExpanded ? renderOpenDetail(`detail-toggle:row:${row.id}`, `${row.label || 'Pilot'} details`, () => actions.toggle(row.id), ...expandedLines) : null,
@@ -274,18 +303,21 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   const grouped = [];
   const deepActors = (actors) => (actors || []).flatMap((actor) => [actor, ...deepActors([...(actor.lanes || []), ...(actor.children || [])])]);
   const renderCardStages = (card, sessionId) => {
-    const pilot = deepActors(card.actors).find((actor) => actor.kind === 'pilot' && actor.phase && actor.phase !== 'unknown');
+    // `sdkLifecycle` is the deciding field: lifecycle phases replace, rather than extend, the legacy dev cycle.
+    const pilot = deepActors(card.actors).find((actor) => actor.sdkLifecycle === true && actor.phase && actor.phase !== 'unknown');
     const key = `timeline:${sessionId}:${card.id}`;
     const selection = selected.get(key);
     const stages = [];
-    if (pilot) for (const [id, label] of PHASES) {
+    if (pilot) for (const [id] of PANE_PHASES) {
       const state = stateOf(pilot, id);
       const inspector = pilot.inspectors?.[id];
-      stages.push({ id, label, state, summary: inspector?.summary || (inspector?.href ? 'A report was recorded.' : null), href: inspector?.href });
+      stages.push({ id, label: phaseLabelFor(pilot, id), state, summary: inspector?.summary || (inspector?.href ? 'A report was recorded.' : null), href: inspector?.href });
+    }
+    if (pilot?.phaseStates?.awaiting_fidelity && pilot.phaseStates.awaiting_fidelity !== 'not started') {
+      stages.push({ id: 'awaiting_fidelity', label: 'Fidelity', state: stateOf(pilot, 'awaiting_fidelity'), summary: null, href: null });
     }
     const cycleLabels = { implementation: 'Implementation', review: 'Sol review', refutation: 'Astra refutation', arbiter: 'Decision', fix: 'Fix', merge: 'Merge' };
-    for (const stage of card.devCycle?.stages || []) {
-      if (pilot && stage.id === 'implementation') continue;
+    for (const stage of pilot ? [] : card.devCycle?.stages || []) {
       const fixRounds = card.devCycle?.fixRounds || 0;
       const summary = stage.id === 'fix' && fixRounds > 0
         ? `${fixRounds} fix ${fixRounds === 1 ? 'round was' : 'rounds were'} requested.`
@@ -302,7 +334,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     const openButtonKey = openStage ? `detail-toggle:stage:${sessionId}:${card.id}:${openStage.id}` : null;
     return node(Box, { key, flexDirection: 'column', paddingLeft: 1 },
       node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 }, fixedText({ bold: true }, 'Work stages:'), ...segments.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])),
-      card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0
+      !pilot && (card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0)
         ? node(Text, { dimColor: true }, `review rounds: ${card.devCycle?.rounds || 0} · fix rounds: ${card.devCycle?.fixRounds || 0}`)
         : null,
       openStage ? renderOpenDetail(openButtonKey, openStage.label, () => actions.closeView(key), ...renderEvidence(openStage.summary), Link && isValidLinkHref(openStage.href) ? linked({ href: openStage.href, label: '[Open report]' }) : null) : null,
@@ -371,16 +403,17 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   if (snapshot.discovery === 'partial') {
     const reasons = [];
     if (snapshot.cappedScans?.length) reasons.push(`scan cap reached: ${snapshot.cappedScans.join(', ')}`);
+    if (snapshot.scanLimits?.length) reasons.push(snapshot.scanLimits.join('; '));
     if (snapshot.pathRefusals?.length) reasons.push(snapshot.pathRefusals.join('; '));
     grouped.push(node(Text, { dimColor: true }, reasons.length ? `discovery partial (${reasons.join('; ')})` : 'Discovery is partial.'));
   }
   if (hiddenCount) grouped.push(node(Text, { dimColor: true }, `${hiddenCount} ${hiddenCount === 1 ? 'item' : 'items'} hidden${unattributedCount ? ` · ${unattributedCount} unattributed` : ''}`));
   const workAvailability = snapshot.collectors?.work?.availability;
-  const lines = snapshot.discovery === 'unknown'
-    ? [node(Text, { dimColor: true }, `Could not read the running work (${workAvailability?.reason || 'collector failed'}).`)]
-    : grouped.length
-    ? grouped
-    : [node(Text, { dimColor: true }, 'Nothing running in the background.')];
+  let unavailableText = `Could not read the running work (${workAvailability?.reason || 'collector failed'}).`;
+  if (workAvailability?.reason === 'reading…') unavailableText = 'Reading the running work…';
+  let lines = grouped;
+  if (snapshot.discovery === 'unknown') lines = [node(Text, { dimColor: true }, unavailableText)];
+  else if (!grouped.length) lines = [node(Text, { dimColor: true }, 'Nothing running in the background.')];
   return node(Box, { flexDirection: 'column' },
     node(Box, { flexDirection: 'row', columnGap: 2 },
       fixedText({ bold: true }, 'What is running'),
@@ -474,9 +507,11 @@ export const registerWithLayout = (on, options, layout) => {
   };
   on('session.start', async ($, event, next) => {
     currentProject = pathBase(projectRootOf(event.cwd));
+    let snapshotFile;
+    try { snapshotFile = await $.env.get('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch { snapshotFile = undefined; }
     host = {
       paths: await pathsOf($, options, event.cwd),
-      readSnapshot: (paths) => readSnapshot({ process: { run: (argv) => $.process.run(argv) } }, paths, layout),
+      readSnapshot: (paths) => readSnapshot({ env: { get: async () => snapshotFile }, process: { run: (argv) => $.process.run(argv) } }, paths, layout),
       invalidate: () => $.ui.invalidate('ui.render'),
       open: (pane) => $.ui.open(pane),
       close: (pane) => $.ui.close(pane),

@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
@@ -23,7 +24,7 @@ const REAL_MANIFEST = join(REAL_PLUGIN_ROOT, '.claude-plugin', 'plugin.json')
 const REAL_HOOK = join(REAL_PLUGIN_ROOT, 'bin', 'wt-hook-registration-drift-hook.mjs')
 
 function makeSandbox(tag: string) {
-  const root = mkdtempSync(join(tmpdir(), `wt-hook-drift-${tag}-`))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-hook-drift-${tag}-`)))
   const pluginRoot = join(root, 'plugin')
   const binDir = join(pluginRoot, 'bin')
   const libDir = join(binDir, 'lib')

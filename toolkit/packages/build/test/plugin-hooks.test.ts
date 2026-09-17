@@ -943,11 +943,11 @@ describe('wt-verifier-cli-guard-hook — safeTmpDir rejects a project-rooted os.
   }
 
   it('looksLikeProjectDir: true when candidate === cwd, or is an ancestor of cwd', () => {
-    expect(evalInHook("mod.looksLikeProjectDir('/home/x/projects/wt-suite', '/home/x/projects/wt-suite')")).toBe(true)
+    const parent = process.platform === 'win32' ? 'C:\\projects\\wt-suite' : '/home/x/projects/wt-suite'
+    const child = join(parent, 'workflow-toolbox')
+    expect(evalInHook(`mod.looksLikeProjectDir(${JSON.stringify(parent)}, ${JSON.stringify(parent)})`)).toBe(true)
     expect(
-      evalInHook(
-        "mod.looksLikeProjectDir('/home/x/projects/wt-suite', '/home/x/projects/wt-suite/workflow-toolbox')"
-      )
+      evalInHook(`mod.looksLikeProjectDir(${JSON.stringify(parent)}, ${JSON.stringify(child)})`)
     ).toBe(true)
   })
 
@@ -963,12 +963,10 @@ describe('wt-verifier-cli-guard-hook — safeTmpDir rejects a project-rooted os.
     const expected = process.platform === 'win32'
       ? (process.env['SystemRoot'] ? join(process.env['SystemRoot'], 'Temp') : 'C:\\Windows\\Temp')
       : '/tmp'
-    const result = evalInHook(
-      "(() => { const fake = '/home/x/projects/wt-suite/workflow-toolbox'; " +
-        "process.cwd = () => fake; os.tmpdir = () => '/home/x/projects/wt-suite'; " +
-        'return mod.safeTmpDir() })()'
-    )
-    expect(result).not.toBe('/home/x/projects/wt-suite')
+    const projectRoot = process.platform === 'win32' ? 'C:\\projects\\wt-suite' : '/home/x/projects/wt-suite'
+    const cwd = join(projectRoot, 'workflow-toolbox')
+    const result = evalInHook(`(() => { process.cwd = () => ${JSON.stringify(cwd)}; os.tmpdir = () => ${JSON.stringify(projectRoot)}; return mod.safeTmpDir() })()`)
+    expect(result).not.toBe(projectRoot)
     expect(result).toBe(expected)
   })
 

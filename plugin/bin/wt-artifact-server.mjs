@@ -2,7 +2,7 @@
 
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,7 @@ import {
   pathIsUnder,
   probeArtifactServer,
   readArtifactDiscovery,
+  registrationPidStatus,
 } from './lib/artifact-server.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
@@ -243,6 +244,16 @@ async function serve() {
   let ownershipMisses = 0
   let noLiveSince = Date.now()
   const servers = []
+  const diagnosticFile = process.env.WT_ARTIFACT_SERVER_TEST_MODE === '1'
+    ? process.env.WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC
+    : null
+
+  const diagnose = (value) => {
+    if (!diagnosticFile) return
+    try { appendFileSync(diagnosticFile, `${JSON.stringify({ at: new Date().toISOString(), ...value })}\n`) } catch {
+      // Diagnostics must not alter server behavior.
+    }
+  }
 
   const liveRoots = () => {
     const candidates = []
@@ -263,7 +274,8 @@ async function serve() {
   const readRegistration = (file) => {
     const registrationPath = path.join(artifactRegistrationsDir(), file)
     const info = statSync(registrationPath)
-    if (!info.isFile() || (info.mode & 0o777) !== 0o600) throw new Error('registration must be a mode-0600 file')
+    // Node reports synthetic permission bits on Windows; 0600 is a POSIX ownership contract.
+    if (!info.isFile() || (process.platform !== 'win32' && (info.mode & 0o777) !== 0o600)) throw new Error('registration must be a mode-0600 file')
     if (typeof process.getuid === 'function' && info.uid !== process.getuid()) throw new Error('registration is owned by another uid')
     const value = JSON.parse(readFileSync(registrationPath, 'utf8'))
     if (!value || !Number.isSafeInteger(value.pid) || value.pid <= 0 || !Array.isArray(value.roots) ||
@@ -272,7 +284,10 @@ async function serve() {
     const roots = normalizeRoots(value.roots).map((root) => ({
       name: root.name, declared: root.path, canonical: realpathSync(root.path),
     }))
-    return { pid: value.pid, roots, deny: value.deny, live: false, deadAt: null }
+    let identity = null
+    if (value.identity && value.identity.pid === value.pid && Array.isArray(value.identity.argv) &&
+      Number.isFinite(value.identity.startTime)) identity = value.identity
+    return { pid: value.pid, identity, roots, deny: value.deny, live: false, deadAt: null }
   }
 
   const scanRegistrations = async () => {
@@ -281,6 +296,7 @@ async function serve() {
     let cleanRemoval = false
     for (const [file, registration] of registrations) {
       if (!files.has(file)) {
+        diagnose({ file, pid: registration.pid, filePresent: false, fileMtimeMs: null, decision: 'file-absent-remove' })
         if (registration.live) cleanRemoval = true
         registrations.delete(file)
       }
@@ -295,11 +311,23 @@ async function serve() {
     let nextDeadline = Infinity
     for (const [file, registration] of registrations) {
       registration.live = false
+      const registrationPath = path.join(artifactRegistrationsDir(), file)
+      const filePresent = existsSync(registrationPath)
+      let fileMtimeMs = null
+      try { fileMtimeMs = statSync(registrationPath).mtimeMs } catch {
+        // Presence and mtime are diagnostic evidence; the sweep decision remains authoritative.
+      }
+      let classifier = null
       try {
-        process.kill(registration.pid, 0)
+        const status = registrationPidStatus(registration.pid, {
+          expectedIdentity: registration.identity,
+          diagnostic: (value) => { classifier = value },
+        })
+        if (status === 'gone') throw Object.assign(new Error('registration process is gone'), { code: 'ESRCH' })
         registration.live = true
         registration.deadAt = null
         liveCount += 1
+        diagnose({ file, pid: registration.pid, filePresent, fileMtimeMs, classifier, decision: status === 'unknown' ? 'unknown-keep-live' : 'running-keep-live' })
       } catch (error) {
         if (error?.code === 'EPERM') {
           registration.live = true
@@ -309,8 +337,11 @@ async function serve() {
           registration.deadAt ??= now
           nextDeadline = Math.min(nextDeadline, registration.deadAt + idleGraceMs())
           if (now >= registration.deadAt + idleGraceMs()) {
+            diagnose({ file, pid: registration.pid, filePresent, fileMtimeMs, classifier, decision: 'gone-remove', deadAt: new Date(registration.deadAt).toISOString() })
             rmSync(path.join(artifactRegistrationsDir(), file), { force: true })
             registrations.delete(file)
+          } else {
+            diagnose({ file, pid: registration.pid, filePresent, fileMtimeMs, classifier, decision: 'gone-wait-grace', deadAt: new Date(registration.deadAt).toISOString() })
           }
         }
       }

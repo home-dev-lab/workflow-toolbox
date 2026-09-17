@@ -1,53 +1,202 @@
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
+const DARWIN_PROCESS_TABLE_TTL_MS = 100
+const WINDOWS_PROCESS_READ_TTL_MS = 500
+const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
+const WINDOWS_PROCESS_READ_ATTEMPTS = 2
+const WINDOWS_APPROXIMATE_START_SKEW_MS = 2_000
+const darwinProcessTableCache = new WeakMap()
+const darwinCwdCache = new WeakMap()
+const windowsProcessCache = new WeakMap()
 
 export function sameIdentity(expected, actual) {
+  let sameCwd = true
+  if (expected.cwd) {
+    try { sameCwd = realpathSync(expected.cwd) === realpathSync(actual?.cwd) } catch { sameCwd = expected.cwd === actual?.cwd }
+  }
+  const sameStartTime = startTimesMatch(expected, actual)
+  const sameImage = !expected?.image
+    || Boolean(actual?.image
+      && expected.image.name === actual.image.name
+      && (!expected.image.path || (actual.image.path && expected.image.path.toLowerCase() === actual.image.path.toLowerCase())))
   return Boolean(actual
     && expected.pid === actual.pid
     && Number.isFinite(expected.startTime)
-    && expected.startTime === actual.startTime
+    && Number.isFinite(actual.startTime)
+    && sameStartTime
+    && sameImage
     && JSON.stringify(expected.argv) === JSON.stringify(actual.argv)
-    && (!expected.cwd || expected.cwd === actual.cwd))
+    && sameCwd)
 }
 
-function processExists(pid, { procRoot = '/proc' } = {}) {
-  return existsSync(path.join(procRoot, String(pid)))
+function startTimesMatch(expected, actual) {
+  return expected?.startTimeApproximate
+    ? Math.abs(expected.startTime - actual?.startTime) <= (expected.startTimeToleranceMs ?? WINDOWS_APPROXIMATE_START_SKEW_MS)
+    : expected?.startTime === actual?.startTime
 }
 
-function identityStatus(expected, { inspect, platform, procRoot, processExists: exists }) {
-  if (platform !== 'linux') return 'unknown'
-  if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv) || !Number.isFinite(expected.startTime)) return 'unknown'
-  const actual = inspect(expected.pid, { platform, procRoot })
-  if (actual) {
-    if (actual.startTime !== expected.startTime) return 'gone'
-    return sameIdentity(expected, actual) ? 'running' : 'unknown'
-  }
-  const processDir = path.join(procRoot, String(expected.pid))
-  if (!exists(expected.pid, { platform, procRoot })) return 'gone'
+function evidenceSource(platform) {
+  if (platform === 'darwin') return 'ps'
+  if (platform === 'win32') return 'powershell'
+  return 'proc'
+}
+
+function runEvidence(command, args, execFile, timeoutMs) {
   try {
-    const stat = readFileSync(path.join(processDir, 'stat'), 'utf8')
-    if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] === 'Z') return 'gone'
-  } catch {}
+    const result = execFile(command, args, { encoding: 'utf8', windowsHide: true, env: { ...process.env, LC_ALL: 'C' }, ...(Number.isFinite(timeoutMs) ? { timeout: Math.max(1, timeoutMs) } : {}) })
+    if (result.error) return { status: 'unavailable' }
+    return { status: result.status, stdout: result.stdout ?? '' }
+  } catch { return { status: 'unavailable' } }
+}
+
+function darwinProcessTable(execFile, pid, now = Date.now()) {
+  const cached = darwinProcessTableCache.get(execFile)
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
+    const missReadAt = cached.missReadAt.get(pid)
+    if (cached.result.status !== 0 || cached.result.value.has(pid) || (missReadAt !== undefined && now - missReadAt <= DARWIN_PROCESS_TABLE_TTL_MS)) return cached.result
+  }
+  const evidence = runEvidence('ps', ['-ww', '-axo', 'pid=,lstart=,pgid=,state=,command='], execFile)
+  let result = evidence
+  if (evidence.status === 0) {
+    const value = new Map()
+    for (const line of evidence.stdout.split(/\r?\n/)) {
+      const match = /^\s*(\d+)\s+(.{24})\s+(\d+)\s+(\S+)\s+([\s\S]+?)\s*$/.exec(line)
+      if (!match) continue
+      const startTime = processStartSeconds(match[2])
+      if (!Number.isFinite(startTime)) continue
+      value.set(Number(match[1]), { pid: Number(match[1]), argv: [match[5]], startTime, groupId: Number(match[3]), state: match[4] })
+    }
+    result = { status: 0, value }
+  }
+  const missReadAt = new Map([...cached?.missReadAt ?? []].filter(([, readAt]) => now - readAt <= DARWIN_PROCESS_TABLE_TTL_MS))
+  if (result.status === 0) {
+    for (const presentPid of result.value.keys()) missReadAt.delete(presentPid)
+    if (!result.value.has(pid)) missReadAt.set(pid, now)
+  }
+  darwinProcessTableCache.set(execFile, { readAt: now, result, missReadAt })
+  return result
+}
+
+function darwinCwd(pid, execFile, now = Date.now()) {
+  const cached = darwinCwdCache.get(execFile)
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
+    const missReadAt = cached.missReadAt.get(pid)
+    if (cached.value.has(pid) || (missReadAt !== undefined && now - missReadAt <= DARWIN_PROCESS_TABLE_TTL_MS)) return cached.value.get(pid) ?? null
+  }
+  const result = runEvidence('lsof', ['-d', 'cwd', '-F', 'pn'], execFile)
+  const value = new Map()
+  let currentPid = null
+  if (result.status === 0) {
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (line.startsWith('p')) currentPid = Number(line.slice(1))
+      else if (line.startsWith('n') && Number.isSafeInteger(currentPid)) value.set(currentPid, line.slice(1))
+    }
+  }
+  const missReadAt = new Map([...cached?.missReadAt ?? []].filter(([, readAt]) => now - readAt <= DARWIN_PROCESS_TABLE_TTL_MS))
+  for (const presentPid of value.keys()) missReadAt.delete(presentPid)
+  if (!value.has(pid)) missReadAt.set(pid, now)
+  darwinCwdCache.set(execFile, { readAt: now, value, missReadAt })
+  return value.get(pid) ?? null
+}
+
+function powershellProcess(pid, execFile, timeoutMs = WINDOWS_PROCESS_READ_TIMEOUT_MS, now = Date.now(), attempts = 1) {
+  if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return { status: 1, stdout: '' }
+  let cache = windowsProcessCache.get(execFile)
+  if (!cache) { cache = new Map(); windowsProcessCache.set(execFile, cache) }
+  const cached = cache.get(Number(pid))
+  if (cached && now - cached.readAt <= WINDOWS_PROCESS_READ_TTL_MS) return cached.result
+  const script = `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p) { [pscustomobject]@{ Id = $p.Id; ProcessName = $p.ProcessName; Path = $p.Path; StartTime = [DateTimeOffset]::new($p.StartTime).ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress }`
+  const deadline = now + timeoutMs
+  const attemptTimeoutMs = Math.ceil(timeoutMs / attempts)
+  let result = { status: 'unavailable' }
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    const evidence = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile, Math.min(attemptTimeoutMs, remaining))
+    result = evidence
+    if (evidence.status === 0) {
+      try {
+        const value = evidence.stdout.trim() ? JSON.parse(evidence.stdout) : null
+        result = value ? { status: 0, value, stdout: evidence.stdout.trim() } : { status: 1, stdout: '' }
+      } catch { result = { status: 'unavailable' } }
+    }
+    if (result.status === 0) break
+  }
+  cache.set(Number(pid), { readAt: now, result })
+  return result
+}
+
+function processStartSeconds(value) {
+  const dotNet = /^\/Date\((\d+)(?:[+-]\d+)?\)\/$/.exec(String(value))
+  const milliseconds = dotNet ? Number(dotNet[1]) : Date.parse(value)
+  return Math.floor(milliseconds / 1000)
+}
+
+function processExists(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync, timeoutMs } = {}) {
+  if (platform === 'linux') return existsSync(path.join(procRoot, String(pid)))
+  if (platform === 'darwin') {
+    const result = darwinProcessTable(execFile, Number(pid))
+    if (result.status === 'unavailable') return null
+    return result.status === 0 && result.value.has(Number(pid))
+  }
+  if (platform === 'win32') {
+    const result = powershellProcess(pid, execFile, timeoutMs)
+    if (result.status === 'unavailable') return null
+    return result.status === 0
+  }
+  return null
+}
+
+function processState(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync } = {}) {
+  if (platform === 'darwin') {
+    const result = darwinProcessTable(execFile, Number(pid))
+    return result.status === 0 ? result.value.get(Number(pid))?.state?.charAt(0) ?? null : null
+  }
+  if (platform !== 'linux') return null
+  try {
+    const stat = readFileSync(path.join(procRoot, String(pid), 'stat'), 'utf8')
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0]
+  } catch { return null }
+}
+
+function identityStatus(expected, { inspect, platform, procRoot, processExists: exists, processState: state }) {
+  if (!Number.isSafeInteger(expected?.pid) || expected.pid <= 1 || !Array.isArray(expected.argv) || !Number.isFinite(expected.startTime)) return 'unknown'
+  const actual = inspect(expected.pid, { platform, procRoot, captureCwd: false, recordedArgv: expected.argv })
+  if (actual) {
+    if (sameIdentity(expected, actual)) return 'running'
+    return startTimesMatch(expected, actual) ? 'unknown' : 'gone'
+  }
+  const existence = exists(expected.pid, { platform, procRoot })
+  if (existence === false) return 'gone'
+  if (existence === null) return 'unknown'
+  if (state(expected.pid, { platform, procRoot }) === 'Z') return 'gone'
   return 'unknown'
 }
 
-export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc', processExists: exists = processExists } = {}) {
+export function classifyLane(record, { inspect = inspectProcess, platform = process.platform, procRoot = '/proc', processExists: exists = processExists, processState: state = processState } = {}) {
   if (!record || typeof record !== 'object' || typeof record.runId !== 'string') {
     return { status: 'unknown', reason: 'invalid-record', worker: 'unknown', child: 'unknown' }
   }
   if (record.state === 'launch-failed') return { status: 'terminal', reason: 'launch-failed', worker: 'gone', child: 'gone' }
-  if (platform !== 'linux') return { status: 'unknown', reason: `identity-unavailable-${platform}`, worker: 'unknown', child: 'unknown' }
-  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, { inspect, platform, procRoot, processExists: exists })
+  const worker = identityStatus({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, startTimeApproximate: record.workerStartTimeApproximate, image: record.workerImage }, { inspect, platform, procRoot, processExists: exists, processState: state })
   const child = record.childPid === null && record.childArgv === null
     ? 'not-spawned'
-    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, { inspect, platform, procRoot, processExists: exists })
+    : identityStatus({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, startTimeApproximate: record.childStartTimeApproximate, image: record.childImage }, { inspect, platform, procRoot, processExists: exists, processState: state })
   if (worker === 'gone' && child === 'not-spawned') return { status: 'gone', reason: 'worker-gone-no-child', worker, child: 'gone' }
   if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
   if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
   if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
-  if (worker === 'unknown' || child === 'unknown') return { status: 'unknown', reason: 'identity-unreadable', worker, child }
+  if (worker === 'unknown' || child === 'unknown') {
+    const unavailable = worker === 'unknown' && typeof record.workerIdentity === 'string'
+      ? `worker identity ${record.workerIdentity}`
+      : child === 'unknown' && typeof record.childIdentity === 'string'
+        ? `child identity ${record.childIdentity}`
+        : null
+    return { status: 'unknown', reason: unavailable ?? (platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`), worker, child }
+  }
   if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
   if (worker === 'running' && child === 'running' && ['running', 'decision-needed'].includes(record.state)) {
     return { status: record.state, reason: record.state, worker, child }
@@ -55,7 +204,7 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
   return { status: 'unknown', reason: 'inconsistent-record', worker, child }
 }
 
-export function terminateLane(record, { inspect = inspectProcess, kill = process.kill, graceMs = 1000, platform = process.platform, journal = () => {}, source = 'unknown', markTerminal = null, ownedChild = null, recordWorktree = null } = {}) {
+export function terminateLane(record, { inspect = inspectProcess, kill = process.kill, graceMs = 1000, platform = process.platform, procRoot = '/proc', processExists: exists = processExists, processState: state = processState, journal = () => {}, source = 'unknown', markTerminal = null, ownedChild = null, recordWorktree = null } = {}) {
   const event = { event: 'termination-signaled', runId: record.runId, source, workerPid: record.workerPid, childPid: record.childPid, pid: record.childPid, argv: argvSummary(record.childArgv ?? []), worktree: record.worktree, owner: record.owner ?? null, reason: 'verified lane process group' }
   // The worker owns this ChildProcess handle and its detached group. This path deliberately does
   // not consult /proc and never sends SIGKILL to the group leader (itself).
@@ -74,17 +223,18 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     journal({ ...event, event: 'terminated', reason: 'terminated' })
     return { killed: true, reason: 'terminated', verdict: { status: 'gone', reason: 'worker-owned-child-ended' } }
   }
-  const verdict = classifyLane(record, { inspect, platform })
+  const verdict = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
   if (verdict.status === 'gone') return { killed: false, reason: 'already-gone', verdict }
   if (!['running', 'decision-needed', 'terminal', 'worker-gone-child-alive'].includes(verdict.status)) {
     return { killed: false, reason: verdict.reason, verdict }
   }
-  const worker = inspect(record.workerPid, { platform })
-  const child = inspect(record.childPid, { platform })
+  const worker = inspect(record.workerPid, { platform, captureCwd: true })
+  const child = inspect(record.childPid, { platform, captureCwd: true })
   const refuse = (reason) => {
     journal({ ...event, event: 'termination-refused', reason })
     return { killed: false, reason, verdict }
   }
+  if (platform === 'win32') return refuse('external-tree-termination-unavailable-win32')
   if (['control', 'watcher'].includes(source)) {
     if (child && !child.cwd) return refuse('child-cwd-unreadable')
     let recordRoot
@@ -96,8 +246,8 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     const relative = child ? path.relative(recordRoot, childCwd) : null
     if (child && (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) return refuse('child-cwd-outside-worktree')
   }
-  if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime }, worker))
-    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime }, child))) {
+  if ((worker && !sameIdentity({ pid: record.workerPid, argv: record.workerArgv, startTime: record.workerStartTime, cwd: record.workerCwd }, worker))
+    || (child && !sameIdentity({ pid: record.childPid, argv: record.childArgv, startTime: record.childStartTime, cwd: record.childCwd }, child))) {
     return { killed: false, reason: 'identity-changed', verdict }
   }
   if ((worker?.groupId && worker.groupId !== record.workerPid) || (child?.groupId && child.groupId !== record.workerPid)) {
@@ -118,7 +268,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     }
     if (markTerminal) markTerminal('terminal')
     if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-    const afterTerm = classifyLane(record, { inspect, platform })
+    const afterTerm = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
     if (afterTerm.status === 'gone') {
       journal({ ...event, event: 'terminated', reason: 'terminated' })
       return { killed: true, reason: 'terminated', verdict: afterTerm }
@@ -126,7 +276,7 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
     if (afterTerm.status === 'unknown' && afterTerm.reason === 'identity-unreadable') return { killed: false, reason: 'identity-unreadable-after-sigterm', verdict: afterTerm }
     if (!signal('SIGKILL')) return { killed: true, reason: 'terminated', verdict: afterTerm }
     if (graceMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, graceMs)
-    const afterKill = classifyLane(record, { inspect, platform })
+    const afterKill = classifyLane(record, { inspect, platform, procRoot, processExists: exists, processState: state })
     if (afterKill.status === 'gone') {
       journal({ ...event, event: 'terminated', reason: 'terminated' })
       return { killed: true, reason: 'terminated', verdict: afterKill }
@@ -137,8 +287,29 @@ export function terminateLane(record, { inspect = inspectProcess, kill = process
   }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform } = {}) {
-  if (platform !== 'linux' || !Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
+function inspectDarwinProcess(pid, execFile, captureCwd) {
+  const result = darwinProcessTable(execFile, pid)
+  if (result.status !== 0) return null
+  const row = result.value.get(pid)
+  if (!row || row.state.startsWith('Z')) return null
+  return { pid: row.pid, argv: row.argv, startTime: row.startTime, groupId: row.groupId, cwd: captureCwd ? darwinCwd(pid, execFile) : null }
+}
+
+function inspectWindowsProcess(pid, execFile, timeoutMs, recordedArgv, attempts, reportEvidence) {
+  const result = powershellProcess(pid, execFile, timeoutMs, Date.now(), attempts)
+  reportEvidence?.(result)
+  if (result.status !== 0 || !result.value) return null
+  const startTime = Number(result.value.StartTime)
+  const name = String(result.value.ProcessName || '').toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, '')
+  if (!Number.isFinite(startTime) || !name) return null
+  return { pid, argv: Array.isArray(recordedArgv) ? recordedArgv : [], startTime, image: { name, path: typeof result.value.Path === 'string' && result.value.Path ? result.value.Path : null }, groupId: null, cwd: null }
+}
+
+export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, timeoutMs = platform === 'win32' ? WINDOWS_PROCESS_READ_TIMEOUT_MS : undefined, recordedArgv = null, attempts = platform === 'win32' && Array.isArray(recordedArgv) ? WINDOWS_PROCESS_READ_ATTEMPTS : 1, reportEvidence = null } = {}) {
+  if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
+  if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
+  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, timeoutMs, recordedArgv, attempts, reportEvidence)
+  if (platform !== 'linux') return null
   try {
     const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)
     const cwd = readlinkSync(path.join(procRoot, String(pid), 'cwd'))
@@ -157,9 +328,27 @@ export function inspectProcess(pid, { procRoot = '/proc', platform = process.pla
   }
 }
 
-export function processEvidenceStatus(pid, { platform = process.platform, inspect = inspectProcess } = {}) {
-  if (platform !== 'linux') return 'unknown'
-  return inspect(pid, { platform }) ? 'running' : 'gone'
+export function processEvidenceStatus(pid, { platform = process.platform, inspect = inspectProcess, processExists: exists = processExists, expectedIdentity = null, diagnostic = null } = {}) {
+  const startedAt = Date.now()
+  let raw = null
+  const windowsOptions = platform === 'win32' ? { singlePid: true, timeoutMs: WINDOWS_PROCESS_READ_TIMEOUT_MS } : {}
+  const actual = inspect(pid, {
+    platform, ...windowsOptions,
+    ...(expectedIdentity ? { recordedArgv: expectedIdentity.argv } : {}),
+    reportEvidence: (result) => { raw = typeof result?.stdout === 'string' ? result.stdout.trim() : null },
+  })
+  if (actual) {
+    let status = 'running'
+    if (expectedIdentity && !sameIdentity(expectedIdentity, actual)) {
+      status = startTimesMatch(expectedIdentity, actual) ? 'unknown' : 'gone'
+    }
+    diagnostic?.({ status, raw: raw ?? JSON.stringify(actual), elapsedMs: Date.now() - startedAt, actual })
+    return status
+  }
+  const existence = exists(pid, { platform, ...windowsOptions })
+  const status = existence === false ? 'gone' : 'unknown'
+  diagnostic?.({ status, raw, elapsedMs: Date.now() - startedAt, actual: null })
+  return status
 }
 
 export function laneHardBoundAt(record) {

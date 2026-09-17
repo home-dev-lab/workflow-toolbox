@@ -1291,6 +1291,8 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
     required: ["removed", "failures", "note"],
     additionalProperties: false
   };
+  var WORKTREE_REMOVAL_PROHIBITION = "Leave the worktree and its branch exactly as they are and report the entry. NEVER substitute a git command to remove the worktree or delete the branch, and NEVER run `rm -rf` on it \u2014 only the retention-aware plugin remover may delete a lifecycle worktree.";
+  var PLUGIN_ROOT_RESOLUTION_EXPR = '${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-$(node -e \'const fs=require("fs");const dir=process.env.CLAUDE_CONFIG_DIR||(process.env.HOME+"/.claude");const j=JSON.parse(fs.readFileSync(dir+"/plugins/installed_plugins.json","utf8"));const p=j.plugins||j;const k=Object.keys(p).find(x=>x.startsWith("workflow-toolbox@"));console.log(p[k][0].installPath)\' 2>/dev/null)}}';
   var VERDICT_ROUTING = {
     "no-test-seam": "a test seam here is a DESIGN decision \u2014 escalate to the plan owner; do not fabricate a speculative abstraction to satisfy the pipeline",
     "premise-falsified": "the red stage proved the plan premise wrong \u2014 route back to planning (a corrective re-plan), not to re-coding against a falsified plan",
@@ -1524,6 +1526,36 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       }
       signCommits = obj["signCommits"];
     }
+    let pluginRoot = null;
+    if (obj["pluginRoot"] !== void 0 && obj["pluginRoot"] !== null) {
+      const raw2 = obj["pluginRoot"];
+      if (typeof raw2 !== "string") {
+        throw new Error(
+          'dev-implement: "pluginRoot" must be a string \u2014 the absolute path to the workflow-toolbox plugin root, or omit it entirely (merged worktrees are then retained and reported instead of removed)'
+        );
+      }
+      if (raw2.trim().length === 0) {
+        throw new Error(
+          'dev-implement: "pluginRoot" must be a non-empty absolute path \u2014 omit it entirely to leave merged worktrees retained and reported instead of removed'
+        );
+      }
+      if (/^[A-Za-z]:[\\/]/.test(raw2)) {
+        throw new Error(
+          'dev-implement: "pluginRoot" must be a POSIX-absolute path (starting with "/") \u2014 a Windows-style drive path (e.g. "C:\\wt-plugin") cannot be interpolated into the POSIX shell command the cleanup agent runs (a backslash there is an escape character, not a separator)'
+        );
+      }
+      if (!raw2.startsWith("/")) {
+        throw new Error(
+          'dev-implement: "pluginRoot" must be an absolute path (starting with "/") \u2014 a relative path is ambiguous once interpolated into the cleanup agent\u2019s shell command from an unknown working directory'
+        );
+      }
+      if (/["`$;\n\\]/.test(raw2)) {
+        throw new Error(
+          'dev-implement: "pluginRoot" must not contain shell metacharacters (a double quote, backtick, "$", ";", a newline, or a backslash) \u2014 the value is interpolated into a double-quoted shell word (`node "<pluginRoot>/bin/wt-worktree-remove.mjs"`) and a metacharacter there would mangle a destructive command'
+        );
+      }
+      pluginRoot = raw2.length > 1 ? raw2.replace(/\/+$/, "") || "/" : raw2;
+    }
     let maxIterationsPerTask = 4;
     if (obj["maxIterationsPerTask"] !== void 0) {
       if (typeof obj["maxIterationsPerTask"] !== "number" || obj["maxIterationsPerTask"] < 1) {
@@ -1567,6 +1599,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       worktreeSetupCommand,
       worktreeRoot,
       signCommits,
+      pluginRoot,
       autoLaneMinTasks,
       effort,
       pathWarnings
@@ -2212,26 +2245,47 @@ Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }
     }
   }
   async function cleanupMergedWorktrees(options) {
-    const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort } = options;
+    const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort, pluginRoot } = options;
     if (merged.length === 0) return;
-    const cleanupResult = await rt.agent(
-      `You are the cleanup agent \u2014 remove the merged ${noun === "task" ? "" : "lane "}worktrees and their ${noun} branches. From ${ctx.projectDir}, for EACH entry run \`git worktree remove <path>\` FIRST and \`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):
-` + merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join("\n") + `
-Do NOT touch any other worktree or branch.
-Return { "removed": ["<${noun === "task" ? "taskId" : "laneKey"}>"], "failures": [{"id": "<${noun === "task" ? "taskId" : "laneKey"}>", "note": "<why>"}], "note": "<summary>" }`,
-      { schema: CLEANUP_RESULT_SCHEMA, label: "dev-implement:cleanup", phase: "Merge", effort: mechanicalEffort }
-    );
+    const nounWord = noun === "task" ? "" : "lane ";
+    const idLabel = noun === "task" ? "taskId" : "laneKey";
+    const entries = merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join("\n");
+    const returnShape = `Return { "removed": ["<${idLabel}>"], "failures": [{"id": "<${idLabel}>", "note": "<why>"}], "note": "<summary>" }`;
+    const prompt = pluginRoot !== null ? `You are the cleanup agent \u2014 remove the merged ${nounWord}worktrees and their ${noun} branches. From ${ctx.projectDir}, for EACH entry run \`node "${pluginRoot}/bin/wt-worktree-remove.mjs" --dir <path>\` FIRST and \`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):
+${entries}
+Do NOT touch any other worktree or branch. If a removal fails (non-zero exit), ${WORKTREE_REMOVAL_PROHIBITION} Report the failure in "failures" with the remover's own message.
+${returnShape}` : `You are the cleanup agent \u2014 remove the merged ${nounWord}worktrees and their ${noun} branches. No pluginRoot was supplied for this run, so FIRST resolve the workflow-toolbox plugin root yourself, exactly as the shipped agents do, with this expression (an interactive session has CLAUDE_PLUGIN_ROOT; a Path B delegated session has WT_PLUGIN_ROOT; under the Workflow tool neither is set, so the fallback reads your own installed_plugins.json registry): \`${PLUGIN_ROOT_RESOLUTION_EXPR}\`.
+From ${ctx.projectDir}, for EACH entry run \`node "${PLUGIN_ROOT_RESOLUTION_EXPR}/bin/wt-worktree-remove.mjs" --dir <path>\` FIRST and \`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):
+${entries}
+Do NOT touch any other worktree or branch. If the resolution expression fails to produce a usable path, or a removal fails (non-zero exit), do NOT substitute any other command: ${WORKTREE_REMOVAL_PROHIBITION} If none of the entries above can be removed, return "removed": [] and list every one of them in "failures" with a "retained-unverified" note.
+${returnShape}`;
+    const cleanupResult = await rt.agent(prompt, {
+      schema: CLEANUP_RESULT_SCHEMA,
+      label: "dev-implement:cleanup",
+      phase: "Merge",
+      effort: mechanicalEffort
+    });
+    const remover = pluginRoot !== null ? `node "${pluginRoot}/bin/wt-worktree-remove.mjs" --dir <path>` : `node "${PLUGIN_ROOT_RESOLUTION_EXPR}/bin/wt-worktree-remove.mjs" --dir <path>`;
     if (cleanupResult === null) {
-      warn(rt, warnings, noun === "task" ? `dev-implement: cleanup agent died \u2014 merged worktrees left on disk under ${cleanupRoot} (manual: git worktree remove)` : `dev-implement: cleanup agent died \u2014 merged lane worktrees left on disk under ${cleanupRoot} (manual: git worktree remove)`);
+      warn(rt, warnings, noun === "task" ? `dev-implement: cleanup agent died \u2014 merged worktrees left on disk under ${cleanupRoot} (manual: ${remover})` : `dev-implement: cleanup agent died \u2014 merged lane worktrees left on disk under ${cleanupRoot} (manual: ${remover})`);
     } else if (cleanupResult.failures.length > 0) {
       warn(rt, warnings, `dev-implement: cleanup incomplete for ${noun === "task" ? "" : "lane(s) "}${cleanupResult.failures.map((f) => f.id).join(", ")} \u2014 ${cleanupResult.note}`);
+    }
+    const removedIds = new Set(cleanupResult === null ? [] : cleanupResult.removed);
+    const retained = cleanupResult === null ? merged : merged.filter((m) => !removedIds.has(m.id));
+    if (retained.length > 0) {
+      warn(
+        rt,
+        warnings,
+        `dev-implement: ${retained.length} merged ${nounWord}worktree(s) retained \u2014 ` + retained.map((m) => `${m.id} at ${m.path} (branch ${m.branch})`).join(", ") + `. Remove them with the plugin's retention-aware remover (${remover}).`
+      );
     }
   }
   async function runWorktree(rt, input, routing) {
     const warnings = [];
     for (const w of input.pathWarnings) warn(rt, warnings, w);
     const stats = {};
-    const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input;
+    const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits, pluginRoot } = input;
     const ctx = artifact.context;
     const wtBranch = (id) => `wt-task/${id}`;
     const signFlag = signCommits ? "" : "-c commit.gpgsign=false ";
@@ -2474,7 +2528,7 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
         });
       }
     }
-    await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: "task", mechanicalEffort });
+    await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: "task", mechanicalEffort, pluginRoot });
     rt.phase("Report");
     const tallies = tally(reportTasks);
     const keptWorktrees = reportTasks.filter((t) => t.worktreePath !== void 0);
@@ -2508,7 +2562,7 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
     const warnings = [];
     for (const w of input.pathWarnings) warn(rt, warnings, w);
     const stats = {};
-    const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input;
+    const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits, pluginRoot } = input;
     const ctx = artifact.context;
     const laneBranch = (key) => `wt-lane/${key}`;
     const signFlag = signCommits ? "" : "-c commit.gpgsign=false ";
@@ -2749,7 +2803,7 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
         merged
       });
     }
-    await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: "lane", mechanicalEffort });
+    await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: "lane", mechanicalEffort, pluginRoot });
     rt.phase("Report");
     const tallies = tally(reportTasks);
     const keptWorktrees = reportTasks.filter((t) => t.worktreePath !== void 0);

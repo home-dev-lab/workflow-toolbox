@@ -1049,6 +1049,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
   function escapeRegExp(literal) {
     return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
+  function isAbsoluteArtifactPath(value) {
+    return /^\/[^\r\n]*$/.test(value) || /^[A-Za-z]:[\\/][^\r\n]*$/.test(value);
+  }
   async function readProbeFile(rt, path, kind, phase) {
     try {
       const read = await rt.agent(
@@ -1101,8 +1104,8 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       } else if (endsWithToken) {
         available = true;
       } else {
-        const manifestReply = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)(?: ANSWER: [^\r\n]*)?$/m.exec(stripped);
-        if (manifestReply === null) {
+        const manifestReply = /^MANIFEST: ([^\r\n]*\.manifest\.json)(?: ANSWER: [^\r\n]*)?$/m.exec(stripped);
+        if (manifestReply === null || !isAbsoluteArtifactPath(manifestReply[1])) {
           reason = `unexpected probe reply: ${head(stripped)}`;
         } else {
           const manifestPath = manifestReply[1];
@@ -1125,7 +1128,7 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
             const answeredTasks = Array.isArray(tasks) ? tasks.filter((task) => {
               if (task === null || typeof task !== "object") return false;
               const record = task;
-              return record["status"] === "answer" && typeof record["answerFile"] === "string" && /^\/[^\r\n]+$/.test(record["answerFile"]);
+              return record["status"] === "answer" && typeof record["answerFile"] === "string" && isAbsoluteArtifactPath(record["answerFile"]);
             }) : [];
             if (!countsValid || !Array.isArray(tasks) || answeredTasks.length !== answered) {
               reason = `invalid probe manifest: ${head(manifestPath)}`;
@@ -2169,6 +2172,10 @@ ${renderClaim(claim)}`;
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
+      sources: ["plugin/bin/wt-suite-lock.mjs", "plugin/bin/lib/suite-lock.mjs"],
+      docs: ["docs/public/known-issues.md"]
+    },
+    {
       sources: [
         "plugin/bin/wt-artifact-server.mjs",
         "plugin/bin/wt-artifact-server-ensure.mjs",
@@ -2190,7 +2197,7 @@ ${renderClaim(claim)}`;
       docs: ["plugin/autonomy/AUTHORIZATIONS.md", "plugin/autonomy/PERMISSIONS.md", "plugin/skills/adopt/SKILL.md"]
     },
     {
-      sources: ["plugin/bin/wt-pilot-runner.mjs", "plugin/bin/wt-pilot-fidelity.mjs", "plugin/bin/wt-run-cost.mjs", "plugin/bin/wt-claude-executor.mjs", "plugin/bin/wt-lane.mjs", "plugin/bin/lib/pilot-runner-core.mjs", "plugin/bin/lib/run-cost-core.mjs", "plugin/bin/lib/knowledge-base-index.mjs", "plugin/bin/lib/claude-executor-core.mjs", "plugin/bin/lib/sdk-pilot-lifecycle-server.mjs", "plugin/bin/lib/lifecycle-brief.mjs", "plugin/bin/lib/lifecycle-launch.mjs", "plugin/bin/lib/lifecycle-report-edge.mjs", "plugin/bin/lib/lifecycle-state-machine.mjs", "plugin/bin/lib/rules-manifest.mjs", "plugin/rules-manifest.json", "plugin/rules-manifest.schema.json", "plugin/bin/lib/orchestrator-judge.mjs", "plugin/bin/lib/orchestrator-runner-core.mjs", "plugin/bin/lib/route-from-card.mjs", "plugin/autonomy/PILOT-CONTRACT.md", "plugin/hooks-modules/pilot-guard/", "plugin/skills/sdk-pilot/"],
+      sources: ["plugin/bin/wt-pilot-runner.mjs", "plugin/bin/wt-pilot-fidelity.mjs", "plugin/bin/wt-worktree-remove.mjs", "plugin/bin/wt-run-cost.mjs", "plugin/bin/wt-claude-executor.mjs", "plugin/bin/wt-lane.mjs", "plugin/bin/lib/pilot-runner-core.mjs", "plugin/bin/lib/run-cost-core.mjs", "plugin/bin/lib/knowledge-base-index.mjs", "plugin/bin/lib/claude-executor-core.mjs", "plugin/bin/lib/sdk-pilot-lifecycle-server.mjs", "plugin/bin/lib/lifecycle-brief.mjs", "plugin/bin/lib/lifecycle-launch.mjs", "plugin/bin/lib/lifecycle-report-edge.mjs", "plugin/bin/lib/lifecycle-state-machine.mjs", "plugin/bin/lib/rules-manifest.mjs", "plugin/rules-manifest.json", "plugin/rules-manifest.schema.json", "plugin/bin/lib/orchestrator-judge.mjs", "plugin/bin/lib/orchestrator-runner-core.mjs", "plugin/bin/lib/route-from-card.mjs", "plugin/autonomy/PILOT-CONTRACT.md", "plugin/hooks-modules/pilot-guard/", "plugin/skills/sdk-pilot/"],
       docs: ["plugin/autonomy/PILOT-RUNNER.md", "plugin/skills/sdk-pilot/SKILL.md"]
     },
     {
@@ -2523,7 +2530,8 @@ ${renderClaim(claim)}`;
         "plugin/bin/wt-propagation-reminder-hook.mjs",
         "plugin/bin/wt-plugin-release-record-guard-hook.mjs",
         "plugin/bin/wt-version-guard-hook.mjs",
-        "plugin/bin/wt-gate-evidence-guard-hook.mjs"
+        "plugin/bin/wt-gate-evidence-guard-hook.mjs",
+        "plugin/bin/wt-release-push-evidence-guard-hook.mjs"
       ],
       docs: ["docs/public/known-issues.md", "plugin/monitors/README.md", "README.md"]
     }

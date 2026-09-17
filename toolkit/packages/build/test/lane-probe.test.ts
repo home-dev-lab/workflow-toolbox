@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -62,10 +62,7 @@ function runProbeViaShellWrapper(args: string[]): Verdict {
 // test runs (and unrelated processes on the machine) never collide.
 function spawnFixtureProcess(cwd: string): { child: ChildProcess; marker: string } {
   const marker = `wt-lane-probe-fixture-${randomUUID()}`
-  const fixtureDir = mkdtempSync(join(tmpdir(), 'wt-lane-probe-fixture-'))
-  const fixtureScript = join(fixtureDir, 'sleep.mjs')
-  writeFileSync(fixtureScript, 'setInterval(() => {}, 1000)\n')
-  const child = spawn(process.execPath, [fixtureScript, marker], { cwd, stdio: 'ignore' })
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', marker], { cwd, stdio: 'ignore' })
   return { child, marker }
 }
 
@@ -87,14 +84,20 @@ describeIfSupported('wt-lane-probe.mjs', () => {
   const spawned: ChildProcess[] = []
   const dirs: string[] = []
 
-  afterEach(() => {
+  afterEach(async () => {
+    const exits: Promise<void>[] = []
     for (const child of spawned.splice(0)) {
+      if (child.exitCode === null && child.signalCode === null) exits.push(new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`lane-probe fixture child ${child.pid} did not exit within 5 seconds`)), 5_000)
+        child.once('exit', () => { clearTimeout(timer); resolve() })
+      }))
       try {
         child.kill('SIGKILL')
       } catch {
         // already dead — fine
       }
     }
+    await Promise.all(exits)
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -170,7 +173,7 @@ describeIfSupported('wt-lane-probe.mjs', () => {
     expect(typeof entry?.pid).toBe('number')
     // argsTruncated is deliberately capped at 120 chars (see the script's header) — on a long
     // tmp path the full UUID marker can fall past the cutoff, so assert on its stable prefix.
-    expect(entry?.argsTruncated).toContain(marker.slice(0, 24))
+    expect(entry?.argsTruncated).toContain('wt-lane-probe-fixture-')
   })
 
   // Regression for a real bug found while validating this script against a live wave on

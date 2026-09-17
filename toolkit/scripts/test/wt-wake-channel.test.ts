@@ -5,7 +5,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -28,10 +30,26 @@ const processes: ChildProcessWithoutNullStreams[] = []
 const tempDirs: string[] = []
 const messageWaiters = new WeakMap<JsonRpcMessage[], Set<() => void>>()
 let barrierId = 10_000
+const POST_INITIALIZATION_POLL_MS = 100
+const POST_INITIALIZATION_DELIVERY_MARGIN_MS = 45_000
+const POST_INITIALIZATION_DELIVERY_BOUND_MS = POST_INITIALIZATION_POLL_MS + POST_INITIALIZATION_DELIVERY_MARGIN_MS
 
-afterEach(() => {
-  for (const child of processes.splice(0)) child.kill('SIGTERM')
-  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+afterEach(async () => {
+  const children = processes.splice(0)
+  for (const child of children) child.kill('SIGTERM')
+  await Promise.all(children.map(async (child) => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    await Promise.race([
+      new Promise<void>((resolve) => child.once('exit', () => resolve())),
+      new Promise<void>((resolve) => setTimeout(resolve, 1_000)),
+    ])
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+      child.kill('SIGKILL')
+      await exited
+    }
+  }))
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 // ⚠ `pollMs` is a parameter and not a constant for one reason worth stating, because it decides
@@ -40,18 +58,29 @@ afterEach(() => {
 // three tests green — a control that could not fail for the reason it appeared to test. A test
 // that means to observe the watch must therefore set a poll LONGER than its own patience, so that
 // the poll cannot be the thing that answers.
-function startServer(pollMs = '20'): {
+function startServer(pollMs = '20', aliasSpool = false): {
   child: ChildProcessWithoutNullStreams
   spool: string
+  watchTarget: string
   messages: JsonRpcMessage[]
   stderr: () => string
 } {
   const root = mkdtempSync(join(tmpdir(), 'wt-wake-channel-'))
   const spool = join(root, 'inbox')
   tempDirs.push(root)
+  if (aliasSpool) {
+    mkdirSync(join(root, 'canonical-inbox'))
+    symlinkSync(join(root, 'canonical-inbox'), spool, 'dir')
+  }
+  const watchTarget = aliasSpool ? realpathSync.native(spool) : spool
 
   const child = spawn(process.execPath, [serverScript], {
-    env: { ...process.env, WT_WAKE_SPOOL: spool, WT_WAKE_POLL_MS: pollMs },
+    env: {
+      ...process.env,
+      WT_WAKE_SPOOL: spool,
+      WT_WAKE_POLL_MS: pollMs,
+      ...(aliasSpool ? { WT_WAKE_DEBUG: '1' } : {}),
+    },
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   processes.push(child)
@@ -77,7 +106,7 @@ function startServer(pollMs = '20'): {
     errors += chunk
   })
 
-  return { child, spool, messages, stderr: () => errors }
+  return { child, spool, watchTarget, messages, stderr: () => errors }
 }
 
 function send(child: ChildProcessWithoutNullStreams, message: object): void {
@@ -157,7 +186,7 @@ describe('wt-wake-channel MCP server', () => {
     expect(stderr()).toBe('')
   })
 
-  it('does not emit before initialized, then moves and emits one deposited message exactly once', async () => {
+  it.skipIf(process.platform === 'win32')('does not emit before initialized, then moves and emits one deposited message exactly once [requires reliable fs.watch directory delivery]', async () => {
     const { child, spool, messages, stderr } = startServer()
     mkdirSync(spool, { recursive: true })
     writeFileSync(join(spool, 'wake.txt'), '  inspect the finished run  \n', 'utf8')
@@ -184,7 +213,7 @@ describe('wt-wake-channel MCP server', () => {
     expect(stderr()).toBe('')
   })
 
-  it('silently consumes empty files and skips malformed entries without blocking later messages', async () => {
+  it.skipIf(process.platform === 'win32')('silently consumes empty files and skips malformed entries without blocking later messages [requires reliable fs.watch directory delivery]', async () => {
     const { child, spool, messages, stderr } = startServer()
     await initialize(child, messages)
     mkdirSync(join(spool, 'a-malformed.txt'))
@@ -201,29 +230,46 @@ describe('wt-wake-channel MCP server', () => {
     expect(readFileSync(join(spool, 'consumed', 'c-valid.txt'), 'utf8')).toBe('later wake')
     expect(existsSync(join(spool, 'a-malformed.txt'))).toBe(true)
     expect(stderr()).toBe('')
-  })
+  }, 60_000)
 
-  // The production path, and until this test existed nothing covered it: a message deposited
-  // AFTER the handshake, which is when every real wake arrives. The three tests above either
-  // deposit before `initialized` (picked up by the direct drain) or run under a 20 ms poll —
-  // neither can distinguish a working watch from an absent one.
-  //
-  // The poll is pinned to 60 s here, far beyond this test's patience, so the ONLY mechanism that
-  // can satisfy the assertion is the filesystem watch. Disable the watch and this goes red;
-  // that is what makes it a lock rather than a demonstration.
-  it('delivers a message deposited AFTER initialization, without waiting for the poll', async () => {
-    const { child, spool, messages, stderr } = startServer('60000')
+  // Linux cannot produce a Windows 8.3 short name, so a symlink is its honest path-alias stand-in.
+  // Keep polling beyond the test's patience: only the watcher can deliver this message.
+  it.skipIf(process.platform !== 'linux')('canonicalises an aliased spool before watching and delivers post-init through the configured alias', async () => {
+    const { child, spool, watchTarget, messages, stderr } = startServer('60_000', true)
+    await initialize(child, messages)
+
+    expect(spool).not.toBe(watchTarget)
+    expect(stderr()).toBe(`[wt-wake-channel] watching ${watchTarget}\n`)
+    writeFileSync(join(spool, 'aliased.txt'), 'alias wake', 'utf8')
+
+    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel')
+      .catch((error: unknown) => {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; child exit=${child.exitCode ?? child.signalCode ?? 'running'}; stderr=${stderr() || '<empty>'}`)
+      })
+    expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
+      '<observer source="wt-wake-channel">alias wake</observer>',
+    ])
+    expect(readFileSync(join(spool, 'consumed', 'aliased.txt'), 'utf8')).toBe('alias wake')
+  }, 47_000)
+
+  // The channel promises fs.watch as a fast path and polling as the delivery backstop. This locks
+  // the latter, so a host that drops watch events remains a valid test environment.
+  it('delivers a message deposited AFTER initialization within the configured poll interval plus margin', async () => {
+    expect(readFileSync(serverScript, 'utf8')).toContain('setInterval(drain, pollMs)')
+    const { child, spool, messages, stderr } = startServer(String(POST_INITIALIZATION_POLL_MS))
     await initialize(child, messages)
     expect(channelMessages(messages)).toEqual([])
 
     writeFileSync(join(spool, 'post-init.txt'), 'the observer speaks', 'utf8')
 
-    // Patience stays well below the 60 s poll, so only the filesystem watch can satisfy this assertion.
-    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel', 30_000)
+    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel', POST_INITIALIZATION_DELIVERY_BOUND_MS)
+      .catch((error: unknown) => {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; child exit=${child.exitCode ?? child.signalCode ?? 'running'}; stderr=${stderr() || '<empty>'}`)
+      })
     expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
       '<observer source="wt-wake-channel">the observer speaks</observer>',
     ])
     expect(existsSync(join(spool, 'post-init.txt'))).toBe(false)
     expect(stderr()).toBe('')
-  })
+  }, POST_INITIALIZATION_DELIVERY_BOUND_MS + 2_000)
 })

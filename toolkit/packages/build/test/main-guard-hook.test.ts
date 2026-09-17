@@ -30,7 +30,7 @@ function run(command: string, opts: { agentId?: string; cwd?: string } = {}) {
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: sandboxHome },
+    env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: sandboxHome, XDG_STATE_HOME: join(sandboxHome, '.local', 'state') },
   })
   return {
     denied: res.stdout.includes('"deny"'),
@@ -307,6 +307,16 @@ describe('wt-main-guard-hook — escape hatch', () => {
     const r = run('rm -rf ~')
     expect(r.denied).toBe(true)
     expect(existsSync(join(stateDir, 'allow-once.json'))).toBe(true) // untouched
+  })
+
+  it('does not consume or authorize an exact-command override without a non-empty reason', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const file = join(stateDir, 'allow-once.json')
+    writeFileSync(file, JSON.stringify({ command: 'rm -rf /', reason: '  ' }))
+    const r = run('rm -rf /')
+    expect(r.denied).toBe(true)
+    expect(existsSync(file)).toBe(true)
   })
 })
 

@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
 import path from 'node:path'
+import { processEvidenceStatus } from './lane-supervisor-core.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 
 export const ARTIFACT_SERVER_ID = 'workflow-toolbox-artifact-server'
@@ -48,25 +49,37 @@ export function artifactUid() {
   return typeof process.getuid === 'function' ? process.getuid() : userInfo().username
 }
 
+// POSIX mode bits are a POSIX contract. On win32 Node reports a synthetic mode (0o666-shaped) with the
+// group/other write bits set for every directory, so the `& 0o022` check refused the state directory on
+// every Windows machine and the server never started there (measured 2026-09-17, cross-os run 33: the
+// monitor's stderr read `artifact server state directory is group- or world-writable`). Ownership and
+// access on Windows are ACLs the profile directory already carries; the mode check is not enforced
+// there, and that is stated rather than silently passed.
+function stateDirModeBitsEnforced(platform = process.platform) {
+  return platform !== 'win32'
+}
+
 export function ensureSecureStateDir(options = {}) {
   const env = options.env ?? process.env
-  const stateDir = artifactStateDir(env, options.home, options.platform)
+  const platform = options.platform ?? process.platform
+  const enforceModes = stateDirModeBitsEnforced(platform)
+  const stateDir = artifactStateDir(env, options.home, platform)
   mkdirSync(stateDir, { recursive: true, mode: 0o700 })
   const info = statSync(stateDir)
   if (!info.isDirectory()) throw new Error('artifact server state path is not a directory')
   if (typeof process.getuid === 'function' && info.uid !== process.getuid()) {
     throw new Error(`artifact server state directory is owned by uid ${info.uid}, expected ${process.getuid()}`)
   }
-  if ((info.mode & 0o022) !== 0) throw new Error('artifact server state directory is group- or world-writable')
-  chmodSync(stateDir, 0o700)
-  const registrations = artifactRegistrationsDir(env, options.home, options.platform)
+  if (enforceModes && (info.mode & 0o022) !== 0) throw new Error('artifact server state directory is group- or world-writable')
+  if (enforceModes) chmodSync(stateDir, 0o700)
+  const registrations = artifactRegistrationsDir(env, options.home, platform)
   mkdirSync(registrations, { recursive: true, mode: 0o700 })
   const registrationInfo = statSync(registrations)
   if (typeof process.getuid === 'function' && registrationInfo.uid !== process.getuid()) {
     throw new Error('artifact server registrations directory is owned by another uid')
   }
-  if ((registrationInfo.mode & 0o022) !== 0) throw new Error('artifact server registrations directory is group- or world-writable')
-  chmodSync(registrations, 0o700)
+  if (enforceModes && (registrationInfo.mode & 0o022) !== 0) throw new Error('artifact server registrations directory is group- or world-writable')
+  if (enforceModes) chmodSync(registrations, 0o700)
   return stateDir
 }
 
@@ -149,6 +162,26 @@ export function pidAlive(pid) {
   }
 }
 
+export function registrationPidStatus(pid, options = {}) {
+  const platform = options.platform ?? process.platform
+  if (platform === 'win32') {
+    const signal = options.signal ?? process.kill.bind(process)
+    let signalResult = 'returned'
+    try { signal(pid, 0) } catch (error) {
+      signalResult = `threw:${error?.code ?? 'unknown'}`
+      if (error?.code === 'ESRCH') {
+        options.diagnostic?.({ signal: signalResult, processTable: { status: 'not-read', raw: null, elapsedMs: 0 } })
+        return 'gone'
+      }
+    }
+    let processTable
+    const status = processEvidenceStatus(pid, { ...options, platform, diagnostic: (value) => { processTable = value } })
+    options.diagnostic?.({ signal: signalResult, processTable })
+    return status
+  }
+  return pidAlive(pid) ? 'running' : 'gone'
+}
+
 export function pathIsUnder(root, candidate) {
   const relative = path.relative(root, candidate)
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
@@ -169,7 +202,9 @@ export function normalizeRoots(roots) {
   })
 }
 
-function projectRoot(cwd) {
+function projectRoot(cwd, env) {
+  const testRoot = env.WT_ARTIFACT_SERVER_TEST_MODE === '1' ? nonEmpty(env.WT_ARTIFACT_SERVER_TEST_GIT_ROOT) : null
+  if (testRoot) return realpathSync(testRoot)
   const result = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   return result.status === 0 && path.isAbsolute(result.stdout.trim()) ? result.stdout.trim() : path.resolve(cwd)
 }
@@ -186,7 +221,7 @@ export function configuredRoots(env = process.env, cwd = process.cwd()) {
       return { name: equals < 0 ? path.basename(resolved) : entry.slice(0, equals), path: resolved }
     }))
   }
-  const root = projectRoot(cwd)
+  const root = projectRoot(cwd, env)
   const projectName = path.basename(root).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project'
   return normalizeRoots([
     { name: `${projectName}-reports`, path: path.join(root, '.claude', 'reports') },
@@ -209,10 +244,11 @@ function parseDiscovery(text) {
 
 export function readArtifactDiscovery(options = {}) {
   const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
   try {
     const discoveryPath = artifactDiscoveryPath(env, options.home, options.platform)
     const info = statSync(discoveryPath)
-    if (!info.isFile() || (info.mode & 0o777) !== 0o600) return null
+    if (!info.isFile() || (platform !== 'win32' && (info.mode & 0o777) !== 0o600)) return null
     if (typeof process.getuid === 'function' && info.uid !== process.getuid()) return null
     return parseDiscovery(readFileSync(discoveryPath, 'utf8'))
   } catch {
@@ -275,14 +311,36 @@ export function artifactUrl(absPath, options = {}) {
 }
 
 export function detectTailscale(port) {
+  const commandTimeoutMs = 5_000
   const run = (command, args) => execFileSync(command, args, {
-    encoding: 'utf8', timeout: 1_000, stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf8', timeout: commandTimeoutMs, stdio: ['ignore', 'pipe', 'ignore'],
   })
-  let command = 'tailscale'
+  const failureReason = (error, elapsedMs) => {
+    const timeout = error?.code === 'ETIMEDOUT' || error?.killed === true ? String(commandTimeoutMs) + 'ms' : 'no'
+    const fields = [
+      `exit=${Number.isInteger(error?.status) ? error.status : 'none'}`,
+      `signal=${error?.signal ?? 'none'}`,
+      `code=${error?.code ?? 'none'}`,
+      `timeout=${timeout}`,
+    ]
+    return `configured tailscale binary failed after ${elapsedMs} ms: ${fields.join(', ')}`
+  }
+  // Tests and managed launchers can pin the binary instead of relying on PATH discovery.
+  const configuredCommand = process.env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY
+  let command = configuredCommand || 'tailscale'
   let ipOutput
+  const startedAt = Date.now()
+  let initialError = null
   try {
     ipOutput = run(command, ['ip', '-4'])
-  } catch {
+  } catch (error) {
+    initialError = error
+  }
+  if (initialError) {
+    if (configuredCommand) return {
+      ip: null, dnsName: null, remoteUrl: null,
+      detection: { status: 'unavailable', reason: failureReason(initialError, Date.now() - startedAt) },
+    }
     try {
       const windowsPath = run('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-Command',

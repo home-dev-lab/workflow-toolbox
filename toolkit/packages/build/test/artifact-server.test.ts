@@ -1,12 +1,14 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createServer, request as httpRequest, type Server } from 'node:http'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl, registrationPidStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
+// @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
+import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SERVER = join(REPO_ROOT, 'plugin/bin/wt-artifact-server.mjs')
@@ -14,10 +16,20 @@ const ENSURE = join(REPO_ROOT, 'plugin/bin/wt-artifact-server-ensure.mjs')
 const MONITORS = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 const temporaryDirs: string[] = []
 const children = new Set<ChildProcess>()
-const detachedPids = new Set<number>()
+const childOutputs = new WeakMap<ChildProcess, ReturnType<typeof captureChildOutput>>()
+const ensureOutputs = new Map<string, Array<ReturnType<typeof captureChildOutput>>>()
+type ProcessIdentity = { pid: number, argv: string[], startTime: number, startTimeApproximate?: boolean, image?: { name: string, path: string | null }, cwd?: string | null }
+type DetachedProcess = { identity: ProcessIdentity | null, state: Discovery | null }
+const detachedProcesses = new Map<number, DetachedProcess>()
+const serverProcessLogs = new Map<string, { captured: Set<number>, timer: ReturnType<typeof setInterval> }>()
+const CANDIDATE_PROBE_MS = 750
+const FALLBACK_CANDIDATES = 2
+const FALLBACK_READINESS_MS = 5_000
+const FALLBACK_DISCOVERY_MARGIN_MS = 2_000
+const FALLBACK_DISCOVERY_BOUND_MS = CANDIDATE_PROBE_MS * FALLBACK_CANDIDATES + FALLBACK_READINESS_MS + FALLBACK_DISCOVERY_MARGIN_MS
 
 function temporaryDir(tag: string) {
-  const dir = mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`)))
   temporaryDirs.push(dir)
   return dir
 }
@@ -31,6 +43,43 @@ function pidAlive(pid: number) {
   }
 }
 
+function detachedIdentity(pid: number): ProcessIdentity | null {
+  const recordedArgv = [process.execPath, SERVER, 'serve']
+  // Destructive checks must not reuse lane supervision's short process-read cache.
+  return inspectProcess(pid, { captureCwd: false, recordedArgv, spawnSync: spawnSync.bind(null) })
+}
+
+function trackDetached(pid: number, state: Discovery | null = null) {
+  const previous = detachedProcesses.get(pid)
+  const identity = previous?.identity ?? detachedIdentity(pid)
+  detachedProcesses.set(pid, { identity, state: state ?? previous?.state ?? null })
+}
+
+function detachedIdentityMatches(expected: ProcessIdentity, inspect = detachedIdentity) {
+  return sameIdentity(expected, inspect(expected.pid))
+}
+
+function killWindowsTree(pid: number, run = spawnSync, includeTree = true) {
+  const taskkill = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
+  return run(taskkill, ['/PID', String(pid), ...(includeTree ? ['/T'] : []), '/F'], { timeout: 5_000, windowsHide: true, stdio: 'ignore' })
+}
+
+function sweepDiagnostic(stateHome: string) {
+  const file = join(stateHome, 'sweep-diagnostic.jsonl')
+  try { return readFileSync(file, 'utf8').trim() || '<empty>' } catch { return '<missing>' }
+}
+
+async function requestCleanMonitorStop(child: ChildProcess, shutdownFile: string) {
+  if (!child.pid || !pidAlive(child.pid)) return
+  const pid = child.pid
+  const closed = child.exitCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => child.once('close', () => resolve()))
+  writeFileSync(shutdownFile, '')
+  await waitFor(() => pidAlive(pid) ? null : true, 5_000)
+  await closed
+}
+
 async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 15_000): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
@@ -38,7 +87,7 @@ async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 
     if (value !== null) return value
     await new Promise((resolve) => setTimeout(resolve, 25))
   }
-  throw new Error('timed out waiting for artifact server state')
+  throw new Error(`timed out waiting for condition; predicate=${JSON.stringify(read.toString())}`)
 }
 
 function statePath(stateHome: string) {
@@ -61,12 +110,42 @@ function jsonReceipts<T>(file: string): T[] {
   return spawnReceipts(file).map((line) => JSON.parse(line) as T)
 }
 
-function childOutput(child: ChildProcess) {
+function captureChildOutput(child: ChildProcess) {
   let stdout = ''
   let stderr = ''
   child.stdout?.on('data', (chunk) => { stdout += String(chunk) })
   child.stderr?.on('data', (chunk) => { stderr += String(chunk) })
   return { stdout: () => stdout, stderr: () => stderr }
+}
+
+function childOutput(child: ChildProcess) {
+  let output = childOutputs.get(child)
+  if (!output) {
+    output = captureChildOutput(child)
+    childOutputs.set(child, output)
+  }
+  return output
+}
+
+function captureSpawnedServers(file: string, captured: Set<number>) {
+  for (const value of spawnReceipts(file)) {
+    const pid = Number(value)
+    if (!Number.isSafeInteger(pid) || pid <= 1 || captured.has(pid)) continue
+    trackDetached(pid)
+    if (detachedProcesses.get(pid)?.identity) captured.add(pid)
+  }
+}
+
+function watchSpawnedServers(file: string) {
+  if (serverProcessLogs.has(file)) return
+  const captured = new Set<number>()
+  const timer = setInterval(() => captureSpawnedServers(file, captured), 250)
+  timer.unref()
+  serverProcessLogs.set(file, { captured, timer })
+}
+
+function lastOutputLine(value: string) {
+  return value.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? '<none>'
 }
 
 type RootRecord = { name: string, path: string }
@@ -111,14 +190,9 @@ function readState(stateHome: string): Discovery | null {
 
 function baseEnv(stateHome: string, extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const bin = temporaryDir('tailscale-default-absent')
-  const script = join(bin, 'tailscale')
-  writeFileSync(script, '#!/bin/sh\nexit 1\n')
-  chmodSync(script, 0o755)
-  const git = join(bin, 'git')
-  writeFileSync(git, '#!/bin/sh\nif [ -n "$WT_TEST_GIT_ROOT" ] && [ "$1 $2" = "rev-parse --show-toplevel" ]; then printf "%s\\n" "$WT_TEST_GIT_ROOT"; exit 0; fi\nexit 1\n')
-  chmodSync(git, 0o755)
   return {
-    ...process.env, PATH: bin, XDG_STATE_HOME: stateHome,
+    ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: stateHome,
+    WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
     WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1', ...extra,
   }
 }
@@ -138,35 +212,89 @@ async function closeServer(server: Server) {
   await new Promise<void>((resolve) => server.close(() => resolve()))
 }
 
-async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM') {
+async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM', includeWindowsTree = true) {
   if (!child.pid || !pidAlive(child.pid)) return
-  child.kill(signal)
-  await waitFor(() => pidAlive(child.pid!) ? null : true, 3_000).catch(() => undefined)
+  const pid = child.pid
+  const closed = child.exitCode !== null
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => child.once('close', () => resolve()))
+  if (process.platform === 'win32') killWindowsTree(pid, spawnSync, includeWindowsTree)
+  else child.kill(signal)
+  await waitFor(() => pidAlive(pid) ? null : true, 10_000).catch(() => {
+    throw new Error(`timed out waiting for test child pid=${pid} to exit before teardown`)
+  })
+  await closed
 }
 
-async function stopDetached(pid: number) {
-  if (!detachedPids.delete(pid) || !pidAlive(pid)) return
+async function detachedServerMatches(expected: Discovery) {
   try {
-    process.kill(pid, 'SIGTERM')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+    const actual = await health(expected)
+    return actual.pid === expected.pid && actual.port === expected.port && actual.version === expected.version &&
+      actual.uid === (typeof process.getuid === 'function' ? process.getuid() : userInfo().username)
+  } catch {
+    return false
+  }
+}
+
+async function stopDetached(record: DetachedProcess) {
+  const pid = record.identity?.pid ?? record.state?.pid
+  if (!pid) return
+  const processMatches = record.identity ? detachedIdentityMatches(record.identity) : false
+  // A loaded hosted Windows runner can time out the PowerShell identity refresh. The live server's
+  // authenticated protocol identity is the bounded fallback; no identity evidence still means no kill.
+  const serverMatches = process.platform === 'win32' && record.state ? await detachedServerMatches(record.state) : false
+  if (!processMatches && !serverMatches) {
+    detachedProcesses.delete(pid)
     return
   }
-  await waitFor(() => pidAlive(pid) ? null : true, 3_000).catch(() => undefined)
+  try {
+    if (process.platform === 'win32') {
+      killWindowsTree(pid)
+    } else {
+      process.kill(pid, 'SIGTERM')
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+    detachedProcesses.delete(pid)
+    return
+  }
+  await waitFor(() => pidAlive(pid) ? null : true, 10_000).catch(() => {
+    throw new Error(`timed out waiting for detached artifact server pid=${pid} to exit before teardown`)
+  })
+  detachedProcesses.delete(pid)
 }
 
 afterEach(async () => {
+  for (const [file, record] of serverProcessLogs) {
+    clearInterval(record.timer)
+    captureSpawnedServers(file, record.captured)
+  }
+  serverProcessLogs.clear()
   for (const child of [...children]) {
     children.delete(child)
     await stopChild(child)
   }
-  for (const pid of [...detachedPids]) await stopDetached(pid)
-  for (const dir of temporaryDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  for (const record of [...detachedProcesses.values()]) await stopDetached(record)
+  for (const dir of temporaryDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true, ...(process.platform === 'win32' ? { maxRetries: 20, retryDelay: 100 } : {}) })
+  }
+  ensureOutputs.clear()
 })
 
 function spawnEnsure(cwd: string, env: NodeJS.ProcessEnv) {
-  const child = spawn(process.execPath, [ENSURE], { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const stateHome = env.XDG_STATE_HOME
+  const processLog = process.platform === 'win32' && stateHome ? join(stateHome, 'server-processes.log') : null
+  const child = spawn(process.execPath, [ENSURE], {
+    cwd,
+    env: processLog ? { ...env, WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG: processLog } : env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   children.add(child)
+  if (stateHome) {
+    const output = childOutput(child)
+    ensureOutputs.set(stateHome, [...ensureOutputs.get(stateHome) ?? [], output])
+  }
+  if (processLog) watchSpawnedServers(processLog)
   return child
 }
 
@@ -193,7 +321,10 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
     }
     const timer = setTimeout(() => {
       stopWaiting()
-      reject(new Error(`timed out waiting for artifact server state; last state=${JSON.stringify(readState(stateHome))}`))
+      const outputs = ensureOutputs.get(stateHome) ?? []
+      const stdout = outputs.map((output) => lastOutputLine(output.stdout())).at(-1) ?? '<none>'
+      const stderr = outputs.map((output) => lastOutputLine(output.stderr())).at(-1) ?? '<none>'
+      reject(new Error(`timed out waiting for artifact server state; predicate=${JSON.stringify(predicate.toString())}; last state=${JSON.stringify(readState(stateHome))}; last stdout=${JSON.stringify(stdout)}; last stderr=${JSON.stringify(stderr)}`))
     }, timeoutMs)
     const inspect = () => {
       const value = readState(stateHome)
@@ -207,7 +338,12 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
       if (Date.now() >= deadline) return
       watcher?.close()
       const stateDir = join(stateHome, 'wt-artifact-server')
-      watcher = watch(existsSync(stateDir) ? stateDir : stateHome, { persistent: false }, () => {
+      // Canonical spelling before libuv, as the wake-channel server does: on the hosted Windows runner the
+      // temp state home carries an 8.3 short name, and fs.watch on that spelling trips libuv's
+      // src\win\fs-event.c:72 assertion, which ABORTS the vitest worker with no result line (runs 27–31 of
+      // the cross-OS card; run 31's traced single-file step printed the assertion after two tests).
+      const watchTarget = realpathSync.native(existsSync(stateDir) ? stateDir : stateHome)
+      watcher = watch(watchTarget, { persistent: false }, () => {
         if (!inspect() && existsSync(stateDir)) arm()
       })
       inspect()
@@ -217,7 +353,7 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
     poller = setInterval(inspect, 50)
     arm()
   })
-  detachedPids.add(state.pid)
+  trackDetached(state.pid, state)
   return state
 }
 
@@ -246,6 +382,59 @@ describe('review test infrastructure', () => {
     const result = await waitFor(async () => ++calls === 3 ? 'ready' : null)
     expect(result).toBe('ready')
     expect(calls).toBe(3)
+  })
+
+  it('refuses to stop a recycled detached PID', () => {
+    const expected: ProcessIdentity = { pid: 123, argv: ['node', SERVER, 'serve'], startTime: 10 }
+    expect(detachedIdentityMatches(expected, () => ({ ...expected, startTime: 11 }))).toBe(false)
+  })
+
+  it('uses taskkill to stop the verified Windows process tree', () => {
+    const calls: unknown[][] = []
+    killWindowsTree(123, ((...args: unknown[]) => {
+      calls.push(args)
+      return {} as ReturnType<typeof spawnSync>
+    }) as typeof spawnSync)
+    expect(calls).toEqual([[
+      join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'),
+      ['/PID', '123', '/T', '/F'],
+      { timeout: 5_000, windowsHide: true, stdio: 'ignore' },
+    ]])
+  })
+
+  it('classifies a Windows registration as gone only from conclusive absence evidence', () => {
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, inspect: () => null, processExists: () => false,
+    })).toBe('gone')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, inspect: () => null, processExists: () => null,
+    })).toBe('unknown')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => { throw Object.assign(new Error('absent'), { code: 'ESRCH' }) },
+      inspect: () => { throw new Error('must not query slower evidence after conclusive ESRCH') },
+    })).toBe('gone')
+    const identity = { pid: 123, argv: ['node', 'monitor'], startTime: 100 }
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: identity,
+      inspect: () => ({ ...identity, startTime: 101 }), processExists: () => true,
+    })).toBe('gone')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: identity,
+      inspect: () => identity, processExists: () => true,
+    })).toBe('running')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: identity,
+      inspect: () => null, processExists: () => null,
+    })).toBe('unknown')
+    const approximateIdentity = { ...identity, startTimeApproximate: true, startTimeToleranceMs: 250 }
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: approximateIdentity,
+      inspect: () => ({ ...identity, startTime: 200 }), processExists: () => true,
+    })).toBe('running')
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: approximateIdentity,
+      inspect: () => ({ ...identity, startTime: 500 }), processExists: () => true,
+    })).toBe('gone')
   })
 })
 
@@ -308,7 +497,7 @@ describe('owner decision 2: discovery and one instance', () => {
     expect((await health(state)).pid).toBe(state.pid)
     expect((await health(state)).version).toBe(state.version)
     expect((await health(state)).uid).toBe(typeof process.getuid === 'function' ? process.getuid() : userInfo().username)
-    expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
   })
 
   it('starts exactly one server when concurrent monitors ensure an empty state', async () => {
@@ -398,7 +587,7 @@ describe('owner decision 2: discovery and one instance', () => {
     }, 20_000)
     for (const receipt of receipts) {
       expect(receipt.argv).toEqual([process.execPath, SERVER, 'serve'])
-      detachedPids.add(receipt.pid)
+      trackDetached(receipt.pid)
     }
     expect(output.stdout()).toMatch(/retry attempt 2\/3/i)
     expect(monitor.exitCode).toBeNull()
@@ -632,7 +821,7 @@ describe('owner decision 2: discovery and one instance', () => {
     expect(receipts).toHaveLength(4)
     for (const receipt of receipts) {
       expect(receipt.argv).toEqual([process.execPath, SERVER, 'serve'])
-      detachedPids.add(receipt.pid)
+      trackDetached(receipt.pid)
     }
     expect(spawnReceipts(spawnLog)).toEqual(Array(4).fill(`${monitor.pid} ${port}`))
     expect(output.stdout().match(/retry attempt [123]\/3/gi)).toHaveLength(3)
@@ -724,7 +913,7 @@ describe('owner decision 2: discovery and one instance', () => {
       return receipts.length === 1 ? receipts : null
     })
     if (!frozen) throw new Error('frozen artifact server receipt is missing')
-    detachedPids.add(frozen.pid)
+    trackDetached(frozen.pid)
 
     const slowHealthy = createServer((_request, response) => {
       setTimeout(() => {
@@ -817,14 +1006,17 @@ describe('owner decision 2: discovery and one instance', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
+    const shutdownFile = join(temporaryDir('startup-shutdown-request'), 'shutdown')
     const holder = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
+      ...(process.platform === 'win32' ? { WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE: shutdownFile } : {}),
     }))
     const output = childOutput(holder)
     await waitFor(() => {
       try { return readdirSync(startupClaimPath(stateHome)).length === 1 ? true : null } catch { return null }
     })
-    holder.kill('SIGTERM')
+    if (process.platform === 'win32') writeFileSync(shutdownFile, 'shutdown\n')
+    else holder.kill('SIGTERM')
     await waitFor(() => /startup stopped during shutdown/i.test(output.stdout()) ? true : null)
     expect(output.stdout()).not.toMatch(/no available port/i)
   })
@@ -849,7 +1041,7 @@ describe('owner decision 2: discovery and one instance', () => {
       try { return JSON.parse(readFileSync(delayedProcess, 'utf8')) as { pid: number, argv: string[] } } catch { return null }
     })
     expect(delayed.argv).toEqual([process.execPath, SERVER, 'serve'])
-    detachedPids.add(delayed.pid)
+    trackDetached(delayed.pid)
 
     await waitFor(() => /did not become ready/i.test(output.stdout()) ? true : null, 12_000)
     expect(output.stdout()).not.toMatch(/no available port/i)
@@ -948,9 +1140,12 @@ describe('owner decision 2: discovery and one instance', () => {
       foreign.listen(port, '127.0.0.1', resolve)
     })
     try {
-      const env = baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port) })
+      const env = baseEnv(stateHome, {
+        WT_ARTIFACT_SERVER_PORT: String(port),
+        WT_ARTIFACT_SERVER_TEST_READINESS_MS: String(FALLBACK_READINESS_MS),
+      })
       spawnEnsure(project, env)
-      const state = await waitForState(stateHome, () => true, 60_000)
+      const state = await waitForState(stateHome, () => true, FALLBACK_DISCOVERY_BOUND_MS)
       expect(state.port).toBe(port + 1)
       expect(foreign.listening).toBe(true)
       await closeServer(foreign)
@@ -960,7 +1155,7 @@ describe('owner decision 2: discovery and one instance', () => {
     } finally {
       if (foreign.listening) await closeServer(foreign)
     }
-  }, 70_000)
+  }, FALLBACK_DISCOVERY_BOUND_MS + 2_000)
 
   it('[E-04] refuses uid mismatch attachment and same-process forged stop identity', async () => {
     const stateHome = temporaryDir('mismatch-state')
@@ -992,10 +1187,11 @@ describe('owner decision 2: discovery and one instance', () => {
       expect(foreign.listening).toBe(true)
 
       const { project } = projectWithRoots('uid-mismatch')
-      spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
+      const monitor = spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
+      const output = childOutput(monitor)
       const own = await waitForState(stateHome, (value) => value.port !== address.port, 30_000)
         .catch(() => readState(stateHome))
-      expect(own?.port).not.toBe(address.port)
+      expect(own?.port, `monitor stdout=${output.stdout()} stderr=${output.stderr()}`).not.toBe(address.port)
     } finally {
       await closeServer(foreign)
     }
@@ -1003,7 +1199,7 @@ describe('owner decision 2: discovery and one instance', () => {
 })
 
 describe('owner decision 3: session lifetime and operator controls', () => {
-  it('tolerates a transient discovery miss and stops when its state home no longer registers the server', async () => {
+  it('tolerates a transient discovery miss and uses a bounded removal retry while the server stops', async () => {
     const stateHome = temporaryDir('removed-state-home')
     const reservation = await reservePort()
     const port = reservation.port
@@ -1024,7 +1220,7 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     await new Promise((resolve) => setTimeout(resolve, 100))
     expect(pidAlive(server.pid)).toBe(true)
 
-    rmSync(stateHome, { recursive: true, force: true })
+    rmSync(stateHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 
     await waitFor(() => pidAlive(server.pid!) ? null : true, 500)
   })
@@ -1053,14 +1249,15 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     await closeServer(reservation.server)
     const monitor = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_IDLE_GRACE_S: '0.2',
+      WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC: join(stateHome, 'sweep-diagnostic.jsonl'),
     }))
     const state = await waitForState(stateHome)
     await waitFor(async () => (await health(state)).registeredSessions === 1 ? true : null)
-    await stopChild(monitor, 'SIGKILL')
-    await new Promise((resolve) => setTimeout(resolve, 80))
-    expect(pidAlive(state.pid)).toBe(true)
-    await waitFor(() => pidAlive(state.pid) ? null : true, 2_000)
-    expect(readdirSync(registrationsPath(stateHome))).toHaveLength(0)
+    await stopChild(monitor, 'SIGKILL', false)
+    await waitFor(() => pidAlive(state.pid) ? null : true, 15_000).catch((error) => {
+      throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`)
+    })
+    expect(readdirSync(registrationsPath(stateHome)), `sweep diagnostic=${sweepDiagnostic(stateHome)}`).toHaveLength(0)
   })
 
   it('[V3-stop-refused][V3-force] refuses stop/restart with registrations and allows both with --force', async () => {
@@ -1121,11 +1318,11 @@ describe('review decisions: filesystem roots and URLs', () => {
     spawnEnsure(project, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_ROOTS: `beta=${rootB}` }))
     const state = await waitForState(stateHome, (value) => value.roots.length === 2)
     expect(state.roots.map((root) => root.name).sort()).toEqual(['alpha', 'beta'])
-    expect(statSync(join(stateHome, 'wt-artifact-server')).mode & 0o777).toBe(0o700)
-    expect(statSync(registrationsPath(stateHome)).mode & 0o777).toBe(0o700)
+    if (process.platform !== 'win32') expect(statSync(join(stateHome, 'wt-artifact-server')).mode & 0o777).toBe(0o700)
+    if (process.platform !== 'win32') expect(statSync(registrationsPath(stateHome)).mode & 0o777).toBe(0o700)
     const registrations = readdirSync(registrationsPath(stateHome))
     expect(registrations).toHaveLength(2)
-    expect(registrations.every((file) => (statSync(join(registrationsPath(stateHome), file)).mode & 0o777) === 0o600)).toBe(true)
+    if (process.platform !== 'win32') expect(registrations.every((file) => (statSync(join(registrationsPath(stateHome), file)).mode & 0o777) === 0o600)).toBe(true)
     for (const file of registrations) {
       const registration = JSON.parse(readFileSync(join(registrationsPath(stateHome), file), 'utf8')) as Record<string, unknown>
       expect(registration).toEqual(expect.objectContaining({ pid: expect.any(Number), roots: expect.any(Array), deny: expect.any(Array), startedAt: expect.any(String) }))
@@ -1184,7 +1381,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    spawnEnsure(nestedCwd, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port), WT_TEST_GIT_ROOT: project }))
+    spawnEnsure(nestedCwd, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_GIT_ROOT: project }))
     const state = await waitForState(stateHome, (value) => value.roots.length === 2)
     const prefix = basename(project)
     expect(state.roots).toEqual(expect.arrayContaining([
@@ -1254,8 +1451,8 @@ describe('review decisions: filesystem roots and URLs', () => {
     const port = reservation.port
     await closeServer(reservation.server)
     const common = { WT_ARTIFACT_SERVER_PORT: String(port) }
-    spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectOne }))
-    spawnEnsure(projectTwo, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectTwo }))
+    spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
+    spawnEnsure(projectTwo, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectTwo }))
     const state = await waitForState(stateHome, (value) => value.roots.length === 4)
     const reportNames = state.roots.filter((root) => root.path.endsWith(join('.claude', 'reports'))).map((root) => root.name)
     expect(reportNames).toHaveLength(2)
@@ -1278,29 +1475,37 @@ describe('review decisions: filesystem roots and URLs', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const common = { WT_ARTIFACT_SERVER_PORT: String(port) }
-    const monitorOne = spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectOne }))
+    const shutdownOne = join(stateHome, 'monitor-one.shutdown')
+    const common = {
+      WT_ARTIFACT_SERVER_PORT: String(port),
+      WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC: join(stateHome, 'sweep-diagnostic.jsonl'),
+    }
+    const monitorOne = spawnEnsure(projectOne, baseEnv(stateHome, {
+      ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne,
+      WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE: shutdownOne,
+    }))
     const first = await waitForState(stateHome, (state) => state.roots.length === 1)
     const firstName = first.roots[0]!.name
     const firstUrl = `${first.baseUrl}/${firstName}/one.txt`
 
-    const monitorTwo = spawnEnsure(projectTwo, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectTwo }))
+    const monitorTwo = spawnEnsure(projectTwo, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectTwo }))
     const joined = await waitForState(stateHome, (state) => state.roots.length === 2)
     const secondName = joined.roots.find((root) => root.path === join(projectTwo, '.claude', 'reports'))?.name
     expect(joined.roots.find((root) => root.path === join(projectOne, '.claude', 'reports'))?.name).toBe(firstName)
     expect(secondName).toBeTruthy()
     expect(secondName).not.toBe(firstName)
 
-    await stopChild(monitorOne)
+    await requestCleanMonitorStop(monitorOne, shutdownOne)
     const left = await waitForState(stateHome, (state) => state.roots.length === 1 && state.roots[0]?.path === join(projectTwo, '.claude', 'reports'))
+      .catch((error) => { throw new Error(`${String(error)}; sweep diagnostic=${sweepDiagnostic(stateHome)}`) })
     expect(left.roots[0]!.name).toBe(secondName)
     expect(left.mounts).toEqual(expect.arrayContaining([
       { name: firstName, path: join(projectOne, '.claude', 'reports') },
       { name: secondName, path: join(projectTwo, '.claude', 'reports') },
     ]))
-    expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
 
-    spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_TEST_GIT_ROOT: projectOne }))
+    spawnEnsure(projectOne, baseEnv(stateHome, { ...common, WT_ARTIFACT_SERVER_TEST_GIT_ROOT: projectOne }))
     const rejoined = await waitForState(stateHome, (state) => state.roots.length === 2)
     expect(rejoined.roots.find((root) => root.path === join(projectOne, '.claude', 'reports'))?.name).toBe(firstName)
     expect(rejoined.roots.find((root) => root.path === join(projectTwo, '.claude', 'reports'))?.name).toBe(secondName)
@@ -1309,7 +1514,7 @@ describe('review decisions: filesystem roots and URLs', () => {
     await stopChild(monitorTwo)
   })
 
-  it('[E-01] refuses an insecure or foreign-owned state directory', () => {
+  it.skipIf(process.platform === 'win32')('[E-01] refuses an insecure or foreign-owned state directory [POSIX mode-bit enforcement]', () => {
     const { project } = projectWithRoots('insecure-state')
     const stateHome = temporaryDir('insecure-state-home')
     const stateDir = join(stateHome, 'wt-artifact-server')
@@ -1322,24 +1527,27 @@ describe('review decisions: filesystem roots and URLs', () => {
 })
 
 describe('owner decision 5: Tailscale access', () => {
-  function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent') {
+  function tailscaleStub(mode: 'present' | 'https' | 'https-path' | 'https-port' | 'hijack' | 'no-tailnet' | 'absent', cwd: string) {
     const bin = temporaryDir(`tailscale-${mode}`)
-    const script = join(bin, 'tailscale')
     const serveStatus = mode === 'https'
-      ? `printf 'https://host.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+      ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
       : mode === 'https-path'
-        ? `printf 'https://host.tailnet.ts.net\\n|-- /reports proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+        ? 'https://host.tailnet.ts.net\n|-- /reports proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
         : mode === 'https-port'
-          ? `printf 'https://host.tailnet.ts.net:8443\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
+          ? 'https://host.tailnet.ts.net:8443\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
           : mode === 'hijack'
-            ? `printf 'https://host.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:9999\\nhttps://other.tailnet.ts.net\\n|-- / proxy http://127.0.0.1:%s\\n' "$WT_ARTIFACT_SERVER_PORT"`
-            : "printf 'No serve config'"
-    const body = mode !== 'absent'
-      ? `#!/bin/sh\nif [ "$1 $2" = "ip -4" ]; then ${mode === 'no-tailnet' ? 'exit 0' : "printf '127.0.0.2\\n'; exit 0"}; fi\nif [ "$1 $2" = "status --json" ]; then printf '{"Self":{"DNSName":"host.tailnet.ts.net."}}'; exit 0; fi\nif [ "$1 $2" = "serve status" ]; then ${serveStatus}; exit 0; fi\nexit 1\n`
-      : '#!/bin/sh\nexit 1\n'
-    writeFileSync(script, body)
-    chmodSync(script, 0o755)
-    return bin
+            ? 'https://host.tailnet.ts.net\n|-- / proxy http://127.0.0.1:9999\nhttps://other.tailnet.ts.net\n|-- / proxy http://127.0.0.1:${process.env.WT_ARTIFACT_SERVER_PORT}\n'
+            : 'No serve config'
+    // execFileSync cannot directly execute a Windows .cmd file. Every case pins Node as the real
+    // executable and places its command scripts in the fixture cwd, preserving the Tailscale argv.
+    const failed = 'process.exitCode = 1\n'
+    writeFileSync(join(cwd, 'ip'), mode === 'absent' ? failed : mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')\n")
+    writeFileSync(join(cwd, 'status'), mode === 'absent' ? failed : "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
+    writeFileSync(join(cwd, 'serve'), mode === 'absent' ? failed : `process.stdout.write(\`${serveStatus}\`)\n`)
+    return {
+      bin: realpathSync(bin),
+      env: { WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath },
+    }
   }
 
   it('parses the URL token from the captured Tailscale Serve header', () => {
@@ -1355,27 +1563,38 @@ describe('owner decision 5: Tailscale access', () => {
       .toBeNull()
   })
 
+  it('runs every Tailscale fixture through a real executable', () => {
+    const cwd = temporaryDir('tailscale-windows-executable')
+    const { env } = tailscaleStub('present', cwd)
+    const result = spawnSync(env.WT_ARTIFACT_SERVER_TAILSCALE_BINARY, ['ip', '-4'], {
+      cwd, encoding: 'utf8', env: { ...process.env, ...env },
+    })
+    expect(result.stderr).toBe('')
+    expect(result.status).toBe(0)
+    expect(result.stdout.trim()).toBe('127.0.0.1')
+  })
+
   it('[B-02] accepts MagicDNS, rejects an evil Host, and reports the tailnet URL', async () => {
     const { project } = projectWithRoots('tailscale')
     const stateHome = temporaryDir('tailscale-state')
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const bin = tailscaleStub('present')
+    const { bin, env: tailscaleEnv } = tailscaleStub('present', project)
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome)
-    expect(state.remoteUrl).toBe(`http://127.0.0.2:${port}`)
+    expect(state.remoteUrl).toBe(`http://127.0.0.1:${port}`)
     expect((await rawRequest(port, '/__wt-artifact-server/health', 'host.tailnet.ts.net')).status).toBe(200)
-    expect((await rawRequest(port, '/__wt-artifact-server/health', `127.0.0.2:${port}`, '127.0.0.2')).status).toBe(200)
+    expect((await rawRequest(port, '/__wt-artifact-server/health', `127.0.0.1:${port}`, '127.0.0.1')).status).toBe(200)
     expect((await rawRequest(port, '/__wt-artifact-server/register?session=remote&roots=%5B%5D', 'host.tailnet.ts.net')).status).toBe(404)
     const refused = await rawRequest(port, '/__wt-artifact-server/health', 'evil.example')
     expect(refused.status).toBe(421)
     expect(refused.body).toContain('evil.example')
     expect(refused.body).toMatch(/not in the allow-list/i)
     expect(refused.body).not.toContain('host.tailnet.ts.net')
-    expect(refused.body).not.toContain('127.0.0.2')
+    expect(refused.body).not.toContain('127.0.0.1')
   })
 
   it('[B-02] sets remoteUrl to null when the stubbed tailscale binary is absent', async () => {
@@ -1384,17 +1603,35 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const bin = tailscaleStub('absent')
+    const { bin, env: tailscaleEnv } = tailscaleStub('absent', project)
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: bin, WT_ARTIFACT_SERVER_PORT: String(port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBeNull()
-    expect(state.tailnetDetection).toEqual({ status: 'unavailable', reason: expect.stringMatching(/could not/i) })
+    expect(state.tailnetDetection).toEqual({ status: 'unavailable', reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=1/) })
     expect((await rawRequest(port, '/__wt-artifact-server/health', `localhost:${port}`)).status).toBe(200)
     const status = await runCli(['status'], baseEnv(stateHome))
-    expect(status.stdout).toMatch(/tailnetDetection: unavailable.*could not/i)
+    expect(status.stdout).toMatch(/tailnetDetection: unavailable.*configured tailscale binary failed.*exit=1/i)
   })
+
+  it('reports the configured Tailscale timeout and measured elapsed time', async () => {
+    const { project } = projectWithRoots('tailscale-timeout')
+    const stateHome = temporaryDir('tailscale-timeout-state')
+    const reservation = await reservePort()
+    await closeServer(reservation.server)
+    writeFileSync(join(project, 'ip'), 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000)\n')
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
+      WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+    }))
+
+    const state = await waitForState(stateHome, () => true, 12_000)
+    expect(state.tailnetDetection).toEqual({
+      status: 'unavailable',
+      reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGTERM, code=ETIMEDOUT, timeout=5000ms/),
+    })
+  }, 15_000)
 
   it('distinguishes a successful no-tailnet result from a failed lookup', async () => {
     const { project } = projectWithRoots('no-tailnet-result')
@@ -1402,8 +1639,8 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const bin = tailscaleStub('no-tailnet')
-    spawnEnsure(project, baseEnv(stateHome, { PATH: bin, WT_ARTIFACT_SERVER_PORT: String(port) }))
+    const { bin, env: tailscaleEnv } = tailscaleStub('no-tailnet', project)
+    spawnEnsure(project, baseEnv(stateHome, { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(port) }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBeNull()
     expect(state.tailnetDetection).toEqual({ status: 'no-tailnet', reason: 'tailscale reported no IPv4 address' })
@@ -1417,9 +1654,9 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const bin = tailscaleStub('https')
+    const { bin, env: tailscaleEnv } = tailscaleStub('https', project)
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
     const state = await waitForState(stateHome, (value) => value.roots.length > 0)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net')
@@ -1435,9 +1672,9 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-https-path-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const bin = tailscaleStub('https-path')
+    const { bin, env: tailscaleEnv } = tailscaleStub('https-path', project)
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net/reports')
@@ -1448,9 +1685,9 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-https-port-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const bin = tailscaleStub('https-port')
+    const { bin, env: tailscaleEnv } = tailscaleStub('https-port', project)
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe('https://host.tailnet.ts.net:8443')
@@ -1461,12 +1698,12 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-hijack-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const bin = tailscaleStub('hijack')
+    const { bin, env: tailscaleEnv } = tailscaleStub('hijack', project)
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
     const state = await waitForState(stateHome)
-    expect(state.remoteUrl).toBe(`http://127.0.0.2:${reservation.port}`)
+    expect(state.remoteUrl).toBe(`http://127.0.0.1:${reservation.port}`)
   })
 
   it.skipIf(process.platform !== 'linux')('resolves the Windows Tailscale executable through WSL interop without an install path guess', async () => {
@@ -1481,7 +1718,8 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     await closeServer(reservation.server)
     spawnEnsure(project, baseEnv(stateHome, {
-      PATH: bin, WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_TEST_WSL: '1',
+      PATH: bin, WT_ARTIFACT_SERVER_TAILSCALE_BINARY: undefined,
+      WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_TEST_WSL: '1',
     }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBe(`http://127.0.0.2:${reservation.port}`)
@@ -1546,7 +1784,7 @@ describe('review decisions: serving security matrix', () => {
       '<script>alert(1)</script>',
     ].join('\n'))
     mkdirSync(join(root, 'index'))
-    writeFileSync(join(root, 'index', '<script>.txt'), 'index')
+    writeFileSync(join(root, 'index', '&script;.txt'), 'index')
     writeFileSync(join(root, 'plain.txt'), '<b>text</b>')
     writeFileSync(join(root, 'events.log'), 'event')
     writeFileSync(join(root, 'data.json'), '{"ok":true}')
@@ -1600,7 +1838,7 @@ describe('review decisions: serving security matrix', () => {
     }
     const index = await rawRequest(port, '/artifacts/index/', `localhost:${port}`)
     expect(index.status).toBe(200)
-    expect(index.body).toContain('&lt;script&gt;.txt')
+    expect(index.body).toContain('&amp;script;.txt')
     expect(index.body).not.toContain('<script>')
     expect(index.headers['content-security-policy']).toMatch(/default-src 'none'/)
     const head = await rawRequest(port, '/artifacts/report.md', `localhost:${port}`, '127.0.0.1', 'HEAD')

@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // @ts-expect-error TS7016 -- lane-live-scan.mjs is a shipped plain-JS plugin script.
 import { registeredWorktrees, scanLiveLaneProcesses } from '../../../../plugin/bin/lib/lane-live-scan.mjs'
@@ -61,6 +61,8 @@ function scaffold(tag: string): Scaffold {
     ...process.env,
     WT_QUEUE_GATE_DIR: stateDir,
     WT_QUEUE_GATE_PROC_ROOT: procRoot,
+    // These fixtures provide a synthetic /proc tree; do not inherit the host OS provider.
+    WT_QUEUE_GATE_PROCESS_PLATFORM: 'linux',
     HOME: root,
     CLAUDE_CONFIG_DIR: configDir,
   }
@@ -136,12 +138,44 @@ describe('registeredWorktrees', () => {
 })
 
 describe('scanLiveLaneProcesses', () => {
-  it('reports process inspection as unknown off Linux', () => {
-    expect(scanLiveLaneProcesses({ platform: 'darwin' })).toEqual({ status: 'unknown', processes: [] })
+  it('enumerates Darwin lanes from one quote-aware ps transcript', () => {
+    const calls: unknown[][] = []
+    const result = scanLiveLaneProcesses({
+      platform: 'darwin',
+      spawnSyncImpl: (...args: unknown[]) => {
+        calls.push(args)
+        return { status: 0, stdout: '  101 /usr/local/bin/node /tools/wt-lane.mjs --dir "/tmp/work trees/lane 15"\n  102 node worker.mjs\n' }
+      },
+    })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.slice(0, 2)).toEqual(['ps', ['-axo', 'pid=,command=']])
+    expect(result).toEqual({ status: 'known', processes: [{ pid: '101', dir: '/tmp/work trees/lane 15', command: 'node wt-lane.mjs' }] })
+  })
+
+  it('bounds Darwin enumeration forks by the 100 ms snapshot TTL under a 10 ms poll', () => {
+    vi.useFakeTimers()
+    try {
+      const spawnSyncImpl = vi.fn(() => ({ status: 0, stdout: '  101 node /tools/wt-lane.mjs --dir /tmp/lane\n' }))
+      for (let tick = 0; tick < 100; tick += 1) {
+        expect(scanLiveLaneProcesses({ platform: 'darwin', spawnSyncImpl }).status).toBe('known')
+        vi.advanceTimersByTime(10)
+      }
+      expect(spawnSyncImpl).toHaveBeenCalledTimes(10)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('names ps when Darwin process enumeration is unavailable', () => {
+    expect(scanLiveLaneProcesses({ platform: 'darwin', spawnSyncImpl: () => ({ error: new Error('ENOENT'), status: null }) }))
+      .toEqual({ status: 'unknown', processes: [], source: 'ps' })
+  })
+
+  it('reports process inspection as unknown on unsupported platforms', () => {
+    expect(scanLiveLaneProcesses({ platform: 'freebsd' })).toEqual({ status: 'unknown', processes: [] })
   })
 
   it('ignores a matching process whose --dir is not absolute', () => {
     expect(scanLiveLaneProcesses({
+      platform: 'linux',
       readdirImpl: () => ['101'],
       readFileImpl: () => Buffer.from('node\0wt-lane.mjs\0--dir\0relative/lane\0'),
     })).toEqual({ status: 'known', processes: [] })
@@ -151,6 +185,7 @@ describe('scanLiveLaneProcesses', () => {
     const entries = Array.from({ length: 5_001 }, (_, index) => String(index + 1))
     let reads = 0
     const result = scanLiveLaneProcesses({
+      platform: 'linux',
       readdirImpl: () => entries,
       readFileImpl: () => {
         reads += 1
@@ -160,10 +195,40 @@ describe('scanLiveLaneProcesses', () => {
     expect(result).toEqual({ status: 'capped', processes: [] })
     expect(reads).toBe(5_000)
   })
+
+  it('uses one PowerShell CIM table query and preserves a drive-qualified lane directory', () => {
+    const calls: unknown[][] = []
+    const result = scanLiveLaneProcesses({
+      platform: 'win32',
+      spawnSyncImpl: (...args: unknown[]) => {
+        calls.push(args)
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            ProcessId: 404,
+            CommandLine: '"C:\\Program Files\\nodejs\\node.exe" "D:\\tools\\wt-lane.mjs" --dir "D:\\work trees\\lane-14"',
+          }),
+        }
+      },
+    })
+    expect(calls).toHaveLength(1)
+    expect(String(calls[0]?.[1])).toContain('Get-CimInstance Win32_Process')
+    expect(result).toEqual({
+      status: 'known',
+      processes: [{ pid: '404', dir: 'D:\\work trees\\lane-14', command: 'node.exe wt-lane.mjs' }],
+    })
+  })
+
+  it('names PowerShell when Windows process enumeration is unavailable', () => {
+    expect(scanLiveLaneProcesses({
+      platform: 'win32',
+      spawnSyncImpl: () => ({ error: new Error('ENOENT'), status: null }),
+    })).toEqual({ status: 'unknown', processes: [], source: 'powershell' })
+  })
 })
 
 describe('wt-queue-not-empty-gate-hook: emission shape', () => {
-  it('refuses a known startable queue and lets a finished mission stop', () => {
+  it('refuses a known startable queue and emits nothing for a finished mission', () => {
     const startable = scaffold('v2-startable')
     writeSnapshot(startable.stateDir, startable.cwd, { at: Date.now(), startable: 2, awaitingOwner: 3, unclassified: 1, next: 'CARD-startable' })
     const startableText = blockText(runHook(startable.payload, startable.env))
@@ -171,8 +236,24 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
 
     const finished = scaffold('v2-finished')
     writeSnapshot(finished.stateDir, finished.cwd, { at: Date.now(), startable: 0, awaitingOwner: 3, unclassified: 1, next: '' })
-    const finishedText = blockText(runHook(finished.payload, finished.env))
-    expect(finishedText).toContain('0 startable (3 awaiting owner, 1 unclassified); finished mission may stop')
+    const result = runHook(finished.payload, finished.env)
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('')
+  })
+
+  it.each([
+    ['known startable queue', { at: Date.now(), startable: 2, awaitingOwner: 0, unclassified: 0, next: 'CARD-known' }],
+    ['legacy open queue', { open: 2, at: Date.now(), next: 'CARD-legacy' }],
+    ['malformed queue', { open: '2', at: Date.now(), next: 'CARD-malformed' }],
+  ])('stays silent when stop_hook_active=true for a blocking %s branch', (_name, snapshot) => {
+    const { env, payload, stateDir, cwd } = scaffold(`retry-${_name.replaceAll(' ', '-')}`)
+    writeSnapshot(stateDir, cwd, snapshot)
+
+    const result = runHook({ ...(payload as Record<string, unknown>), stop_hook_active: true }, env)
+    expect(result.code).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('')
   })
 
   it('retains legacy refusal with an explicit classification suffix', () => {
@@ -554,7 +635,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(text).toContain('5 open')
   })
 
-  it('discovers live work in suite worktrees when cwd is a non-git umbrella', () => {
+  it.skipIf(process.platform !== 'linux')('discovers live work in suite worktrees when cwd is a non-git umbrella [fixture supplies Linux /proc]', () => {
     const root = mkRoot('umbrella-live-lane')
     const stateDir = join(root, 'queue-gate-state')
     const procRoot = join(root, 'fake-proc')

@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './opencode-skill-fence.mjs'
 
 const EXIT_MARKER = '__WT_OBSERVER_EXIT__='
 const OBSERVER_INSTRUCTION = 'Read the attached observer task and return its requested JSON verdict.'
@@ -115,22 +115,23 @@ export function observerLaneInputBytes(prompt) {
 }
 
 export function runObserverLane({ projectDir, prompt, timeoutSeconds, model, binPath }) {
-  const fence = verifyOpencodeSkillFence(binPath)
+  const fence = verifyOpencodeSkillFence(binPath, { platform: process.platform })
   if (!fence.ok) return { outcome: { kind: 'error', reason: opencodeSkillFenceRefusal(fence.reason) }, taskText: prompt }
+  const binary = fence.binary ?? binPath
   const childEnv = opencodeChildEnv()
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(binPath, { cwd: projectDir, env: childEnv })
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(binary, { cwd: projectDir, env: childEnv, platform: process.platform })
   if (!discovery.ok) return { outcome: { kind: 'error', reason: effectiveSkillDiscoveryRefusal(discovery, 'wt-observer') }, taskText: prompt }
   const root = mkdtempSync(path.join(os.tmpdir(), 'wt-observer-'))
   const taskFile = path.join(root, 'observer-task.md')
   writeFileSync(taskFile, prompt, 'utf8')
 
-  const result = spawnSync(binPath, ['run', OBSERVER_INSTRUCTION, '--format', 'json', '--auto', '--dir', projectDir, '--model', model, '-f', taskFile], {
+  const result = spawnOpencode(spawnSync, binary, ['run', OBSERVER_INSTRUCTION, '--format', 'json', '--auto', '--dir', projectDir, '--model', model, '-f', taskFile], {
     encoding: 'utf8',
     timeout: (Number(timeoutSeconds) + 5) * 1000,
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: projectDir,
     env: childEnv,
-  })
+  }, process.platform)
 
   let taskText = ''
   try {

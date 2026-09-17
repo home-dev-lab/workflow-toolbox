@@ -4,11 +4,12 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { treeSignature } from './gate-evidence.mjs'
+import { PHASES } from './lifecycle-state-machine.mjs'
 
 const MANIFEST = 'fidelity-manifest.json'
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const GATES = new Set(['typecheck', 'lint', 'test'])
-const LIFECYCLE_PHASES = new Set(['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report'])
+const LIFECYCLE_PHASES = new Set(PHASES)
 const INTEGER_EXIT = /^-?\d+$/
 
 function safeName(name) {
@@ -177,7 +178,7 @@ export function verifyFidelityBundle({ root, dir, requireSameTree = false, requi
   const actual = new Set()
   function walk(relative = '') {
     for (const entry of fs.readdirSync(path.join(dir, relative), { withFileTypes: true })) {
-      const name = path.join(relative, entry.name)
+      const name = path.join(relative, entry.name).replaceAll('\\', '/')
       if (entry.isSymbolicLink() || (!entry.isFile() && !entry.isDirectory())) throw new Error(`unsafe fidelity bundle entry: ${name}`)
       if (entry.isDirectory()) walk(name)
       else actual.add(name)

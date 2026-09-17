@@ -91,7 +91,7 @@ export function buildLspRoot(repoRoot = DEFAULT_REPO_ROOT) {
   const seen = new Map()
 
   for (const { file } of packLspPaths(repoRoot)) {
-    const relativeFile = file.slice(repoRoot.length + 1)
+    const relativeFile = file.slice(repoRoot.length + 1).replaceAll('\\', '/')
     const text = readFileSync(file, 'utf8')
     const keys = topLevelKeys(text, relativeFile)
     for (const key of keys) {

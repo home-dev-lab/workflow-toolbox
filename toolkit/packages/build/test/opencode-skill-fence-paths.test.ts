@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
-import path from 'node:path'
+import path, { delimiter } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { runObserverLane } from '../../../../plugin/bin/lib/observer-lane.mjs'
@@ -13,10 +13,23 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function fixture() {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-paths-')); roots.push(root)
-  const binDir = path.join(root, 'bin'); const bin = path.join(binDir, 'opencode'); const record = path.join(root, 'record')
+  const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-paths-'))); roots.push(root)
+  const binDir = path.join(root, 'bin'); const bin = path.join(binDir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode'); const record = path.join(root, 'record')
   mkdirSync(binDir)
-  writeFileSync(bin, `#!/bin/sh
+  if (process.platform === 'win32') {
+    const script = path.join(binDir, 'opencode.mjs')
+    writeFileSync(script, `import { appendFileSync } from 'node:fs'
+const args = process.argv.slice(2)
+if (args[0] === '--version') { console.log('fixture-1'); process.exit(0) }
+if (args[0] === '--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }
+if (args[0] === 'debug' && args[1] === 'skill') { appendFileSync(process.env.RECORD, 'probe|' + process.cwd() + '|' + process.env.IDENTITY_MARKER + '|' + (process.env.OPENCODE_CONFIG ?? 'unset') + '\\n'); console.log('[]'); process.exit(0) }
+if (args[0] === 'providers') process.exit(0)
+appendFileSync(process.env.RECORD, 'run|' + process.cwd() + '|' + process.env.IDENTITY_MARKER + '|' + (process.env.OPENCODE_CONFIG ?? 'unset') + '\\n')
+console.log('{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}')
+`)
+    writeFileSync(bin, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
+  } else {
+    writeFileSync(bin, `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
 if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
 if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf 'probe|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$RECORD"; printf '[]\n'; exit 0; fi
@@ -24,11 +37,12 @@ if [ "$1" = "providers" ]; then exit 0; fi
 printf 'run|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$RECORD"
 printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'
 `)
-  chmodSync(bin, 0o755)
+    chmodSync(bin, 0o755)
+  }
   const home = path.join(root, 'home')
   mkdirSync(home)
   writeFileSync(path.join(home, '.zprofile'), `export OPENCODE_CONFIG=${path.join(root, 'shell-startup-unsafe.json')}\n`)
-  const env = { ...process.env, HOME: home, PATH: `${binDir}:${process.env.PATH}`, RECORD: record, IDENTITY_MARKER: 'same', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
+  const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${binDir}${delimiter}${process.env.PATH}`, RECORD: record, IDENTITY_MARKER: 'same', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
   return { root, bin, record, env }
 }
 
@@ -55,7 +69,7 @@ describe('all toolbox-owned OpenCode launch paths', () => {
     ])
   })
 
-  it('uses one sanitized cwd/environment/config context for observer probe and direct spawn', () => {
+  it.skipIf(process.platform === 'win32')('uses one sanitized cwd/environment/config context for observer probe and direct spawn [POSIX JSON-stream fixture]', () => {
     const f = fixture()
     const keys = ['PATH', 'RECORD', 'IDENTITY_MARKER', 'OPENCODE_CONFIG', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))

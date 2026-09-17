@@ -221,6 +221,40 @@ export interface DevImplementInput {
    *  Default false: a locked signing agent mid-run would kill merges opaquely;
    *  the operator owns/squashes the final history. */
   signCommits: boolean
+  /** OPTIONAL explicit override for the workflow-toolbox plugin root, used
+   *  by the cleanup agent when removing merged worktrees. This workflow's
+   *  OWN code cannot resolve it — the sandbox has no filesystem and no env,
+   *  and `import.meta` is erased at build — but the cleanup AGENT runs the
+   *  removal command in its OWN shell, where it CAN resolve the root itself
+   *  with the same fallback chain `plugin/agents/opencode-envelope.md:60`
+   *  ships (`${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-<installed_plugins.json
+   *  lookup>}}`), proven to resolve on all three launch paths by
+   *  `toolkit/packages/build/test/opencode-plugin-root-resolution.test.ts`
+   *  (it runs the expression in bash with `CLAUDE_PLUGIN_ROOT`,
+   *  `WT_PLUGIN_ROOT`, AND `HOME` unset). Concretely: an interactive session
+   *  has `CLAUDE_PLUGIN_ROOT`; a Path B delegated session gets
+   *  `WT_PLUGIN_ROOT` from the server; under the Workflow tool (Path A)
+   *  NEITHER is set, so the agent falls through to its own
+   *  `installed_plugins.json` registry lookup. So this knob is NOT a
+   *  per-path requirement — pass it only when the caller knows a specific
+   *  checkout the registry lookup would not resolve (e.g. a `--plugin-dir`
+   *  dev checkout, where the registry would point at the marketplace cache
+   *  instead of the active one). null = let the cleanup agent resolve its
+   *  own root; merged worktrees (worktree and lane modes alike) are
+   *  RETAINED on disk and reported by absolute path and branch, instead of
+   *  removed, only if that resolution or the removal itself still fails.
+   *
+   *  Parsed and validated regardless of mutation mode (like
+   *  maxIterationsPerTask/autoLaneMinTasks below) — an unused-but-valid knob
+   *  under "sequential" is honest, not a hidden typo; it is deliberately NOT
+   *  added to the worktree-only rejection list above, because it describes
+   *  the environment rather than a run shape. Must be POSIX-absolute
+   *  (starts with "/"): it is interpolated into a double-quoted shell word
+   *  run by the cleanup agent (`node "<pluginRoot>/bin/wt-worktree-remove.mjs"`),
+   *  so a Windows-style drive path and shell metacharacters (a double quote,
+   *  backtick, `$`, `;`, a newline, or a backslash) are rejected here rather
+   *  than risking a mangled destructive command downstream. */
+  pluginRoot: string | null
   /** "auto" mode only (parsed and validated regardless of mode, like the
    *  other non-worktree-only knobs — silently unused otherwise, never a
    *  rejected typo): the minimum task count a weakly-connected component of
@@ -539,6 +573,30 @@ const CLEANUP_RESULT_SCHEMA = {
 } as const satisfies JsonSchema
 
 type CleanupResult = FromSchema<typeof CLEANUP_RESULT_SCHEMA>
+
+// Emitted VERBATIM by BOTH cleanup prompt branches below (pluginRoot
+// resolved and unresolved) — ONE constant so the ban is never spelled two
+// different (and driftable) ways. Must NEVER contain the literal string
+// "git worktree remove": a prompt that spells the forbidden command is a
+// prompt an agent can lift it back out of. Only the plugin's own
+// retention-aware remover (wt-worktree-remove.mjs) may delete a lifecycle
+// worktree or its branch.
+const WORKTREE_REMOVAL_PROHIBITION =
+  'Leave the worktree and its branch exactly as they are and report the entry. NEVER substitute a ' +
+  'git command to remove the worktree or delete the branch, and NEVER run `rm -rf` on it — only the ' +
+  'retention-aware plugin remover may delete a lifecycle worktree.'
+
+// The SAME plugin-root resolution expression plugin/agents/opencode-envelope.md:60
+// ships (copied verbatim, scoped here to this remover's script name) —
+// proven to resolve on ALL THREE launch paths by
+// toolkit/packages/build/test/opencode-plugin-root-resolution.test.ts, which
+// runs it in bash with CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT and HOME all
+// unset: an interactive session has CLAUDE_PLUGIN_ROOT; a Path B delegated
+// session has WT_PLUGIN_ROOT from the server; under the Workflow tool
+// (Path A) NEITHER is set, so the third fallback reads the harness's own
+// installed_plugins.json registry for the workflow-toolbox@... entry.
+const PLUGIN_ROOT_RESOLUTION_EXPR =
+  '${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-$(node -e \'const fs=require("fs");const dir=process.env.CLAUDE_CONFIG_DIR||(process.env.HOME+"/.claude");const j=JSON.parse(fs.readFileSync(dir+"/plugins/installed_plugins.json","utf8"));const p=j.plugins||j;const k=Object.keys(p).find(x=>x.startsWith("workflow-toolbox@"));console.log(p[k][0].installPath)\' 2>/dev/null)}}'
 
 // ---------------------------------------------------------------------------
 // Final workflow output — deterministic report
@@ -1022,6 +1080,53 @@ function parseInput(raw: unknown): DevImplementInput {
     signCommits = obj['signCommits']
   }
 
+  // pluginRoot — deliberately NOT in the worktree-only rejection loop above
+  // (see the DevImplementInput doc comment): it describes the launch
+  // environment, not a run shape, so it stays valid (if unused) under
+  // "sequential" too. null = the launcher did not supply it, which the
+  // worktree/lane engines treat as "retain merged worktrees and report them"
+  // rather than removing them.
+  let pluginRoot: string | null = null
+  if (obj['pluginRoot'] !== undefined && obj['pluginRoot'] !== null) {
+    const raw = obj['pluginRoot']
+    if (typeof raw !== 'string') {
+      throw new Error(
+        'dev-implement: "pluginRoot" must be a string — the absolute path to the workflow-toolbox ' +
+        'plugin root, or omit it entirely (merged worktrees are then retained and reported instead ' +
+        'of removed)',
+      )
+    }
+    if (raw.trim().length === 0) {
+      throw new Error(
+        'dev-implement: "pluginRoot" must be a non-empty absolute path — omit it entirely to leave ' +
+        'merged worktrees retained and reported instead of removed',
+      )
+    }
+    if (/^[A-Za-z]:[\\/]/.test(raw)) {
+      throw new Error(
+        'dev-implement: "pluginRoot" must be a POSIX-absolute path (starting with "/") — a ' +
+        'Windows-style drive path (e.g. "C:\\wt-plugin") cannot be interpolated into the POSIX shell ' +
+        'command the cleanup agent runs (a backslash there is an escape character, not a separator)',
+      )
+    }
+    if (!raw.startsWith('/')) {
+      throw new Error(
+        'dev-implement: "pluginRoot" must be an absolute path (starting with "/") — a relative path ' +
+        'is ambiguous once interpolated into the cleanup agent\u2019s shell command from an unknown ' +
+        'working directory',
+      )
+    }
+    if (/["`$;\n\\]/.test(raw)) {
+      throw new Error(
+        'dev-implement: "pluginRoot" must not contain shell metacharacters (a double quote, backtick, ' +
+        '"$", ";", a newline, or a backslash) — the value is interpolated into a double-quoted shell ' +
+        'word (`node "<pluginRoot>/bin/wt-worktree-remove.mjs"`) and a metacharacter there would ' +
+        'mangle a destructive command',
+      )
+    }
+    pluginRoot = raw.length > 1 ? raw.replace(/\/+$/, '') || '/' : raw
+  }
+
   let maxIterationsPerTask = 4
   if (obj['maxIterationsPerTask'] !== undefined) {
     if (typeof obj['maxIterationsPerTask'] !== 'number' || obj['maxIterationsPerTask'] < 1) {
@@ -1087,6 +1192,7 @@ function parseInput(raw: unknown): DevImplementInput {
     worktreeSetupCommand,
     worktreeRoot,
     signCommits,
+    pluginRoot,
     autoLaneMinTasks,
     effort,
     pathWarnings,
@@ -2148,6 +2254,9 @@ interface CleanupMergedWorktreesOptions {
   warnings: string[]
   noun: 'task' | 'lane'
   mechanicalEffort: EffortAlias
+  /** The launcher-supplied plugin root, or null. See the DevImplementInput
+   *  doc comment — this decides which of the two prompt branches below runs. */
+  pluginRoot: string | null
 }
 
 async function mergeCandidate(options: MergeCandidateOptions): Promise<void> {
@@ -2238,23 +2347,92 @@ async function mergeCandidate(options: MergeCandidateOptions): Promise<void> {
 }
 
 async function cleanupMergedWorktrees(options: CleanupMergedWorktreesOptions): Promise<void> {
-  const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort } = options
+  const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort, pluginRoot } = options
   if (merged.length === 0) return
-  const cleanupResult = await rt.agent<CleanupResult>(
-      `You are the cleanup agent — remove the merged ${noun === 'task' ? '' : 'lane '}worktrees and their ${noun} branches. From ` +
-      `${ctx.projectDir}, for EACH entry run \`git worktree remove <path>\` FIRST and ` +
+
+  const nounWord = noun === 'task' ? '' : 'lane '
+  const idLabel = noun === 'task' ? 'taskId' : 'laneKey'
+  const entries = merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join('\n')
+  const returnShape = `Return { "removed": ["<${idLabel}>"], "failures": [{"id": "<${idLabel}>", "note": "<why>"}], "note": "<summary>" }`
+
+  // Resolved: pluginRoot supplied — an explicit override that SKIPS
+  // resolution, exactly as OPENCODE_PLUGIN_ROOT does for the envelope agent.
+  // The plugin's OWN retention-aware remover does the removal; the
+  // prohibition is scoped to a failed (non-zero exit) removal, which must be
+  // reported rather than retried manually.
+  //
+  // Unresolved: pluginRoot null — the COMMON case (nothing currently passes
+  // pluginRoot to this workflow), not a dead branch. The cleanup agent
+  // resolves the root itself, in its OWN shell, with the same fallback chain
+  // plugin/agents/opencode-envelope.md:60 ships (this workflow's own code
+  // cannot do that resolution — no filesystem, no env, no import.meta at
+  // runtime — but the agent's shell can). Only when that resolution or the
+  // removal itself still fails does the agent leave the worktree in place
+  // and report it retained-unverified.
+  const prompt = pluginRoot !== null
+    ? `You are the cleanup agent — remove the merged ${nounWord}worktrees and their ${noun} branches. From ` +
+      `${ctx.projectDir}, for EACH entry run \`node "${pluginRoot}/bin/wt-worktree-remove.mjs" --dir <path>\` FIRST and ` +
       `\`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):\n` +
-      merged.map((m) => `${m.id}: ${m.path} (${m.branch})`).join('\n') +
-      `\nDo NOT touch any other worktree or branch.\n` +
-      `Return { "removed": ["<${noun === 'task' ? 'taskId' : 'laneKey'}>"], "failures": [{"id": "<${noun === 'task' ? 'taskId' : 'laneKey'}>", "note": "<why>"}], "note": "<summary>" }`,
-      { schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge', effort: mechanicalEffort },
-  )
+      `${entries}\n` +
+      `Do NOT touch any other worktree or branch. If a removal fails (non-zero exit), ${WORKTREE_REMOVAL_PROHIBITION} ` +
+      `Report the failure in "failures" with the remover's own message.\n` +
+      `${returnShape}`
+    : `You are the cleanup agent — remove the merged ${nounWord}worktrees and their ${noun} branches. No pluginRoot ` +
+      `was supplied for this run, so FIRST resolve the workflow-toolbox plugin root yourself, exactly as the shipped ` +
+      `agents do, with this expression (an interactive session has CLAUDE_PLUGIN_ROOT; a Path B delegated session has ` +
+      `WT_PLUGIN_ROOT; under the Workflow tool neither is set, so the fallback reads your own installed_plugins.json ` +
+      `registry): \`${PLUGIN_ROOT_RESOLUTION_EXPR}\`.\n` +
+      `From ${ctx.projectDir}, for EACH entry run \`node "${PLUGIN_ROOT_RESOLUTION_EXPR}/bin/wt-worktree-remove.mjs" --dir <path>\` ` +
+      `FIRST and \`git branch -d <branch>\` SECOND (a branch checked out in a live worktree cannot be deleted):\n` +
+      `${entries}\n` +
+      `Do NOT touch any other worktree or branch. If the resolution expression fails to produce a usable path, or a ` +
+      `removal fails (non-zero exit), do NOT substitute any other command: ${WORKTREE_REMOVAL_PROHIBITION} If none of ` +
+      `the entries above can be removed, return "removed": [] and list every one of them in "failures" with a ` +
+      `"retained-unverified" note.\n` +
+      `${returnShape}`
+
+  const cleanupResult = await rt.agent<CleanupResult>(prompt, {
+    schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge', effort: mechanicalEffort,
+  })
+
+  // The manual-recovery pointer names the guarded remover (never the banned
+  // `git worktree remove`): an absolute, runnable command when pluginRoot
+  // resolved, otherwise the same self-resolving expression the agent above
+  // was told to use.
+  const remover = pluginRoot !== null
+    ? `node "${pluginRoot}/bin/wt-worktree-remove.mjs" --dir <path>`
+    : `node "${PLUGIN_ROOT_RESOLUTION_EXPR}/bin/wt-worktree-remove.mjs" --dir <path>`
+
   if (cleanupResult === null) {
     warn(rt, warnings, noun === 'task'
-      ? `dev-implement: cleanup agent died — merged worktrees left on disk under ${cleanupRoot} (manual: git worktree remove)`
-      : `dev-implement: cleanup agent died — merged lane worktrees left on disk under ${cleanupRoot} (manual: git worktree remove)`)
+      ? `dev-implement: cleanup agent died — merged worktrees left on disk under ${cleanupRoot} (manual: ${remover})`
+      : `dev-implement: cleanup agent died — merged lane worktrees left on disk under ${cleanupRoot} (manual: ${remover})`)
   } else if (cleanupResult.failures.length > 0) {
     warn(rt, warnings, `dev-implement: cleanup incomplete for ${noun === 'task' ? '' : 'lane(s) '}${cleanupResult.failures.map((f) => f.id).join(', ')} — ${cleanupResult.note}`)
+  }
+
+  // Deterministic (in-code) retention warning — driven by what the cleanup
+  // agent actually reported removed, NOT by whether pluginRoot was supplied:
+  // the fallback chain means an unsupplied pluginRoot usually still resolves
+  // and removes everything, so `pluginRoot === null` alone is the wrong
+  // signal (it would warn even when nothing was left behind). Fires for
+  // every merged entry the agent did not confirm removed, and for ALL of
+  // them when the cleanup agent died outright — the ONLY place in the
+  // output that names a retained worktree by BOTH its absolute path AND its
+  // branch: the merged row built above omits keptFields (contrast the
+  // kept-for-forensics rows), and the Report phase's keptWorktrees filters
+  // on reportTasks whose worktreePath is set, which succeeded tasks never
+  // have.
+  const removedIds = new Set(cleanupResult === null ? [] : cleanupResult.removed)
+  const retained = cleanupResult === null ? merged : merged.filter((m) => !removedIds.has(m.id))
+  if (retained.length > 0) {
+    warn(
+      rt,
+      warnings,
+      `dev-implement: ${retained.length} merged ${nounWord}worktree(s) retained — ` +
+      retained.map((m) => `${m.id} at ${m.path} (branch ${m.branch})`).join(', ') +
+      `. Remove them with the plugin's retention-aware remover (${remover}).`,
+    )
   }
 }
 
@@ -2266,7 +2444,7 @@ async function runWorktree(
   const warnings: string[] = []
   for (const w of input.pathWarnings) warn(rt, warnings, w)
   const stats: Record<string, PatternStats> = {}
-  const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input
+  const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits, pluginRoot } = input
   const ctx = artifact.context
 
   const wtBranch = (id: string): string => `wt-task/${id}`
@@ -2568,7 +2746,7 @@ async function runWorktree(
   }
 
   // ---- Batched cleanup of MERGED worktrees only (kept ones stay for forensics) ----
-  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'task', mechanicalEffort })
+  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'task', mechanicalEffort, pluginRoot })
 
   // -------------------------------------------------------------------------
   // Phase 'Report' — deterministic tallying IN CODE (no agent).
@@ -2640,7 +2818,7 @@ async function runAutoLanes(
   const warnings: string[] = []
   for (const w of input.pathWarnings) warn(rt, warnings, w)
   const stats: Record<string, PatternStats> = {}
-  const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits } = input
+  const { artifact, maxIterationsPerTask, worktreeSetupCommand, worktreeRoot, signCommits, pluginRoot } = input
   const ctx = artifact.context
 
   const laneBranch = (key: string): string => `wt-lane/${key}`
@@ -2931,7 +3109,7 @@ async function runAutoLanes(
   }
 
   // ---- Batched cleanup of MERGED-AND-CLEAN lane worktrees only ----
-  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'lane', mechanicalEffort })
+  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'lane', mechanicalEffort, pluginRoot })
 
   // -------------------------------------------------------------------------
   // Phase 'Report' — deterministic tallying IN CODE (no agent).

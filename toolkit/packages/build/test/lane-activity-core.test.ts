@@ -40,6 +40,7 @@ describe('normalizeSessionRow — a real captured session row', () => {
       expect(normalized?.directory).toBe('/tmp/fixture-worktree')
       expect(normalized?.lastUpdatedMs).toBe(1786130915755)
     } finally {
+      db.close()
       cleanup()
     }
   })

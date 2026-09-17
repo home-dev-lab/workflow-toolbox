@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
@@ -44,7 +44,7 @@ function fakeSdk(root: string) {
 }
 
 function waveFixture(bullets = 1) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-wave-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-wave-'))); roots.push(root)
   const cardDir = join(root, 'cards', '1'); mkdirSync(cardDir, { recursive: true })
   writeFileSync(join(cardDir, 'card.md'), `## Definition of done\n${Array.from({ length: bullets }, (_, index) => `- item ${index + 1}`).join('\n')}\n`)
   writeFileSync(join(cardDir, 'pilot-report.md'), '# report\n'); writeFileSync(join(cardDir, 'diff.patch'), 'diff\n')
@@ -58,7 +58,7 @@ function receipts(cardDir: string, overrides: Record<string, number> = {}) {
 }
 
 function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship\n' }]) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-orchestrator-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-orchestrator-'))); roots.push(root)
   spawnSync('git', ['init', '-q', '-b', 'develop'], { cwd: root }); spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root }); spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root })
   writeFileSync(join(root, '.gitignore'), '.waves/\n.lane/\n'); writeFileSync(join(root, 'base.txt'), 'base\n'); spawnSync('git', ['add', '.'], { cwd: root }); spawnSync('git', ['commit', '-qm', 'base'], { cwd: root })
   const worktreesDir = join(root, '.waves'); const report = join(worktreesDir, 'report.md'); const moves: string[] = []; const comments: string[] = []; const gitCalls: string[][] = []; const launches: Array<{ card: string, hard?: boolean }> = []
@@ -115,9 +115,9 @@ describe('orchestrator board HTTP client', () => {
   it('O1-6 lock: sends notifications/initialized before the first tools/call', async () => {
     const offsets: number[] = []
     let notified = false
-    const server = createServer((request, response) => { let body = ''; request.on('data', (part) => { body += part }); request.on('end', () => { const call = JSON.parse(body); if (call.method === 'notifications/initialized') { notified = true; response.statusCode = 202; response.end(); return } if (call.method === 'tools/call' && !notified) { response.statusCode = 409; response.end(); return } const offset = call.params?.arguments?.offset; if (offset !== undefined) offsets.push(offset); if (call.method === 'tools/call') { const a = call.params.arguments; const ok = call.params.name === 'find_cards' ? typeof a.boardId === 'string' && typeof a.list === 'string' : call.params.name === 'get_card' ? typeof a.cardId === 'string' : call.params.name === 'move_card' ? typeof a.cardId === 'string' && typeof a.listId === 'string' : call.params.name === 'add_comment' ? typeof a.cardId === 'string' && typeof a.text === 'string' : call.params.name === 'get_board' ? typeof a.boardId === 'string' : false; if (!ok) { response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: { content: [{ type: 'text', text: `Error: invalid arguments for ${call.params.name}` }] } })); return } } const value = call.method === 'initialize' ? {} : { content: [{ type: 'text', text: JSON.stringify({ cards: [{ id: offset }], total: 2 }) }] }; response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: value })) }) })
+    const server = createServer((request, response) => { let body = ''; request.on('data', (part) => { body += part }); request.on('end', () => { let call: { method?: string, id?: unknown, params?: { name?: string, arguments?: Record<string, unknown> } }; try { call = JSON.parse(body) } catch { response.statusCode = 400; response.end(); return } if (call.method === 'notifications/initialized') { notified = true; response.statusCode = 202; response.end(); return } if (call.method === 'tools/call' && !notified) { response.statusCode = 409; response.end(); return } const offset = call.params?.arguments?.offset; if (typeof offset === 'number') offsets.push(offset); if (call.method === 'tools/call') { const a = call.params?.arguments ?? {}; const name = call.params?.name; const ok = name === 'find_cards' ? typeof a.boardId === 'string' && typeof a.list === 'string' : name === 'get_card' ? typeof a.cardId === 'string' : name === 'move_card' ? typeof a.cardId === 'string' && typeof a.listId === 'string' : name === 'add_comment' ? typeof a.cardId === 'string' && typeof a.text === 'string' : name === 'get_board' ? typeof a.boardId === 'string' : false; if (!ok) { response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: { content: [{ type: 'text', text: `Error: invalid arguments for ${name}` }] } })); return } } const value = call.method === 'initialize' ? {} : { content: [{ type: 'text', text: JSON.stringify({ cards: [{ id: offset }], total: 2 }) }] }; response.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result: value })) }) })
     await new Promise<void>((resolve) => server.listen(0, resolve))
-    try { const client = createBoardClient({ boardId: 'board-1', url: `http://127.0.0.1:${(server.address() as { port: number }).port}` }); await client.findCards({ listName: 'Next', limit: 1, offset: 0 }); await client.findCards({ listName: 'Next', limit: 1, offset: 1 }); expect(offsets).toEqual([0, 1]) } finally { await new Promise<void>((resolve) => server.close(() => resolve())) }
+    try { const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`; expect((await fetch(url, { method: 'POST', body: '' })).status).toBe(400); const client = createBoardClient({ boardId: 'board-1', url }); await client.findCards({ listName: 'Next', limit: 1, offset: 0 }); await client.findCards({ listName: 'Next', limit: 1, offset: 1 }); expect(offsets).toEqual([0, 1]) } finally { await new Promise<void>((resolve) => server.close(() => resolve())) }
   })
 
   it.each([
@@ -154,7 +154,7 @@ describe('wave lifecycle server', () => {
   })
 
   it('enforces every state edge and exposes state()', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-wave-state-')); roots.push(root); const server = createWaveServer({ waveDir: root, cards: [{ id: '1' }] }) as RegisteredServer
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-wave-state-'))); roots.push(root); const server = createWaveServer({ waveDir: root, cards: [{ id: '1' }] }) as RegisteredServer
     expect(() => server.setCardState('1', 'judging')).toThrow('pending->judging'); server.setCardState('1', 'piloting'); server.setCardState('1', 'judging'); server.setCardState('1', 'undecided')
     expect(server.state()).toEqual({ cards: { 1: 'undecided' }, judgmentWritten: false, allDecided: true }); expect(() => server.setCardState('1', 'accepted')).toThrow('undecided->accepted')
   })
@@ -181,7 +181,7 @@ describe('wave lifecycle server', () => {
 
 describe('orchestrator driver', () => {
   it('parses the complete CLI surface and rejects invalid launch shapes', () => {
-    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md', pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
+    expect(parseOrchestratorArgs(['--cards', '1,2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--hard', '2', '--base', 'dev', '--pilot-timeout', '8', '--board-url', 'http://b', '--knowledge-base-index', '/tmp/MEMORY.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp'])).toMatchObject({ cards: ['1', '2'], hard: ['2'], base: 'dev', pilotTimeout: 8, boardUrl: 'http://b', knowledgeBaseIndex: '/tmp/MEMORY.md', pluginDirs: [resolve('/tmp/rules'), resolve('/tmp/lsp')] })
     expect(parseOrchestratorArgs(['--cards', '1', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r', '--plugin-dir', 'relative/plugin'])).toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
     expect(parseOrchestratorArgs(['--cards', '1', '--mission-list', 'Next', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r']).error).toContain('exactly one')
   })
@@ -432,7 +432,7 @@ describe('orchestrator driver', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') }
     delete env.CLAUDE_PLUGIN_DATA
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env })
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...env, NODE_NO_WARNINGS: '1' } })
     expect(result.status).toBe(1)
     expect(result.stderr.trim().split(/\r?\n/)).toEqual(['wt-run-orchestrator: @anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk'])
     expect(result.stdout).toBe('')
@@ -478,7 +478,7 @@ describe('SDK orchestrator judge', () => {
     const plugins = [join(f.root, 'rules-plugin'), join(f.root, 'lsp-plugin')]; plugins.forEach((plugin) => mkdirSync(plugin))
     const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex, pluginDirs: plugins }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
     expect(calls).toBe(1)
-    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', CONTEXT_MODE_TOOLS.search] })
+    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', 'LSP', CONTEXT_MODE_TOOLS.search] })
     expect(queryOptions.plugins).toEqual([
       { type: 'local', path: expect.stringContaining('pilot-guard') },
       { type: 'local', path: resolveContextModeRoot(process.env) },
@@ -534,7 +534,7 @@ describe('SDK orchestrator judge', () => {
     const gates = async (worktree: string, cardDir: string) => { const result = await f.gates(worktree, cardDir); symlinkSync(join(f.root, 'base.txt'), join(cardDir, 'planted-link')); return result }
     const query = () => { launched = true; return (async function* () {})() }
     const result = await runOrchestrator(f.options, { ...f, judge: undefined, gates, query, models: { orchestrator: { value: 'sonnet' } }, contract: '# contract' })
-    expect(result).toMatchObject({ exitCode: 1, stopReason: 'judge refused: symlink under wave directory: cards/1/planted-link' })
+    expect(result).toMatchObject({ exitCode: 1, stopReason: `judge refused: symlink under wave directory: ${join('cards', '1', 'planted-link')}` })
     expect(launched).toBe(false)
     expect(readFileSync(f.report, 'utf8')).toContain('judge refused: symlink under wave directory')
   })

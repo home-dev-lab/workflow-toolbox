@@ -259,6 +259,7 @@ describe('label-intent-lens — board aggregation', () => {
 
 describe('label-intent-lens — CLI exit code gate', () => {
   const script = fileURLToPath(new URL('../label-intent-lens.ts', import.meta.url))
+  const tsx = fileURLToPath(new URL('../../node_modules/tsx/dist/cli.mjs', import.meta.url))
 
   it('exits 1 when at least one finding exists, and 0 when the snapshot is clean', () => {
     const dir = mkdtempSync(join(tmpdir(), 'label-intent-lens-'))
@@ -271,12 +272,11 @@ describe('label-intent-lens — CLI exit code gate', () => {
       'utf8',
     )
 
-    const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
-    const badRun = spawnSync(pnpm, ['exec', 'tsx', script, bad], {
+    const badRun = spawnSync(process.execPath, [tsx, script, bad], {
       cwd: fileURLToPath(new URL('../../', import.meta.url)),
       encoding: 'utf8',
     })
-    const goodRun = spawnSync(pnpm, ['exec', 'tsx', script, good], {
+    const goodRun = spawnSync(process.execPath, [tsx, script, good], {
       cwd: fileURLToPath(new URL('../../', import.meta.url)),
       encoding: 'utf8',
     })

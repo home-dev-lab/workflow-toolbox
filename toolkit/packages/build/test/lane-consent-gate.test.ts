@@ -10,7 +10,7 @@
 // OFF (refused, denied), and BROKEN (unreadable/malformed settings, denied — fail CLOSED).
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,7 +30,7 @@ afterEach(() => {
 })
 
 function fixture(tag: string) {
-  const root = mkdtempSync(join(tmpdir(), `wt-lane-consent-gate-${tag}-`))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), `wt-lane-consent-gate-${tag}-`)))
   roots.push(root)
   const project = join(root, 'project')
   const config = join(root, 'config')

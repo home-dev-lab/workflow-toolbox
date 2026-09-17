@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -68,7 +68,7 @@ function makeRunDir(
   nonce: string,
   posLabel: string,
   negLabel: string,
-  root = mkdtempSync(join(tmpdir(), 'prov-fixture-')),
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'prov-fixture-'))),
 ): { root: string; posJsonl: string; negJsonl: string } {
   const runDir = join(root, 'projects', 'testslug', 'testsess', 'subagents', 'workflows', 'wf_test')
   mkdirSync(runDir, { recursive: true })
@@ -100,7 +100,7 @@ function scannerEnv(configRoot: string, extraEnv: Record<string, string> = {}): 
     CLAUDE_CONFIG_DIR: configRoot,
     WT_PROVENANCE_POLL_DEADLINE_MS: '1500',
     WT_PROVENANCE_POLL_INTERVAL_MS: '100',
-    WT_VERIFIER_MARKER_DIR: mkdtempSync(join(tmpdir(), 'prov-nomarker-')),
+    WT_VERIFIER_MARKER_DIR: realpathSync(mkdtempSync(join(tmpdir(), 'prov-nomarker-'))),
     ...extraEnv,
   }
 }
@@ -261,7 +261,7 @@ describe('scanner e2e — drift-lock against the shipped signal', () => {
     makeRunDir(nonce, posLabel, negLabel, profile)
     const source = buildProvenanceScannerSource(opencode, nonce, [posLabel, negLabel])
 
-    const out = runScanner(source, explicit, { HOME: home })
+    const out = runScanner(source, explicit, { HOME: home, USERPROFILE: home })
 
     expect(out.anchored).toBe(true)
   })
@@ -319,7 +319,7 @@ describe('scanner e2e — step-3: flush-immune marker read + bounded poll (Path 
     // ALONE yields cliSeen=false. But the REAL guard hook, driven here on a REAL opencode run,
     // writes neg001's marker keyed by the SAME sha1(transcript_path + ':' + agent_id) the scanner
     // reconstructs. RED before step-3 (no marker read): negLabel=false. GREEN after: negLabel=true.
-    const markerDir = mkdtempSync(join(tmpdir(), 'prov-marker-'))
+    const markerDir = realpathSync(mkdtempSync(join(tmpdir(), 'prov-marker-')))
     const nonce = deriveProvenanceNonce([posLabel, negLabel])
     const { root } = makeRunDir(nonce, posLabel, negLabel)
     // Path B transcript_path the hook keyed by = the shared session transcript = dirname^3(runDir)+'.jsonl'.
@@ -346,7 +346,7 @@ describe('scanner e2e — step-3: flush-immune marker read + bounded poll (Path 
   })
 
   it('MARKER: also keys off the per-agent transcript path (interactive-mode robustness)', () => {
-    const markerDir = mkdtempSync(join(tmpdir(), 'prov-marker2-'))
+    const markerDir = realpathSync(mkdtempSync(join(tmpdir(), 'prov-marker2-')))
     const nonce = deriveProvenanceNonce([posLabel, negLabel])
     const { root } = makeRunDir(nonce, posLabel, negLabel)
     const perAgentTp = join(root, 'projects', 'testslug', 'testsess', 'subagents', 'workflows', 'wf_test', 'agent-neg001.jsonl')
@@ -377,11 +377,11 @@ describe('scanner e2e — step-3: flush-immune marker read + bounded poll (Path 
     // (NEG_COMMAND: no `run`); the REAL producer (guard hook PostToolUse) writes a marker for ONLY
     // agent B. Invariant (per-unit): distinct markers ↔ distinct units. Locks the fix against a
     // regression to a run-global key (which would credit A too → labelA true → this test fails).
-    const markerDir = mkdtempSync(join(tmpdir(), 'prov-perunit-'))
+    const markerDir = realpathSync(mkdtempSync(join(tmpdir(), 'prov-perunit-')))
     const labelA = 'adversarialVerification:verify:0:0'
     const labelB = 'adversarialVerification:verify:0:1'
     const nonce = deriveProvenanceNonce([labelA, labelB])
-    const root = mkdtempSync(join(tmpdir(), 'prov-perunit-root-'))
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'prov-perunit-root-')))
     const runDir = join(root, 'projects', 'testslug', 'testsess', 'subagents', 'workflows', 'wf_pu')
     mkdirSync(runDir, { recursive: true })
     writeFileSync(join(runDir, 'agent-aaa.jsonl'), [labeledUserTurn(labelA, 'verify.'), bashTurn(NEG_COMMAND)].join('\n') + '\n')

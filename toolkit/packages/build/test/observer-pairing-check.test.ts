@@ -669,7 +669,7 @@ describe('wt-check-observer-pairing.mjs', () => {
       // is not the observer) — the only shape that still attempts a capture. The
       // sibling-absent (pending) shape never calls captureConflict at all since card
       // 1837360811689903959, so it cannot exhibit a capture failure.
-      it('keeps the FINDING when the capture itself fails, and names the failure', () => {
+      it.skipIf(process.platform === 'win32')('keeps the FINDING when chmod makes capture unwritable (POSIX-only)', () => {
         // This is the case that decides whether the capture is safe to add at all. Losing
         // the finding because the evidence could not be written would be strictly worse
         // than losing the evidence alone — and a silent capture failure would leave a

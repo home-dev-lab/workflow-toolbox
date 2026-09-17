@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, watch } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, watch } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -143,11 +143,10 @@ process.stdout.on('error', debug)
 
 // When the session goes, this process goes with it — stated, not left to emerge.
 //
-// Today it would probably exit anyway: the backstop interval is unref'd and the watch is
-// non-persistent, so nothing holds the event loop open once stdin ends. "Probably" is the problem.
-// That lifetime is an accident of three unrelated flags, and any one of them changing — a
-// persistent watch, a ref'd timer added later for a good reason — turns this into a process that
-// outlives its session, keeps consuming spooled messages, and emits them into a closed pipe.
+// The poll timer below deliberately keeps the server alive. A piped stdin keeps the event loop
+// alive on POSIX, but not reliably on Windows; making both the watcher and timer non-persistent
+// allowed the server to exit immediately after initialization there. These handlers still make
+// stdin closure the explicit lifetime boundary.
 //
 // A channel whose far end is gone must CLOSE rather than keep trying: a dead reader retried
 // forever is how a roster ends up listing agents that no longer exist.
@@ -189,7 +188,12 @@ try {
 // The result: a normal wake arrives in milliseconds via the watch; a wake whose event was
 // dropped still arrives, at worst one backstop period late, instead of never.
 try {
-  watcher = watch(spool, { persistent: false }, () => {
+  // libuv's Windows watcher requires the watched directory and reported event path to use the
+  // same spelling. Resolve aliases (notably 8.3 short names) before entering libuv; spool I/O
+  // deliberately keeps using the configured path.
+  const watchTarget = realpathSync.native(spool)
+  debug(`watching ${watchTarget}`)
+  watcher = watch(watchTarget, { persistent: false }, () => {
     try {
       drain()
     } catch (error) {
@@ -207,4 +211,4 @@ try {
   debug(error)
 }
 
-setInterval(drain, pollMs).unref?.()
+setInterval(drain, pollMs)

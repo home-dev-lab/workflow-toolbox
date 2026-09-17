@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
@@ -122,7 +122,7 @@ describe('wt-missing-package-script-guard-hook', () => {
     expect(r.warned).toBe(true)
     expect(r.denied).toBe(false)
     expect(r.stdout).toContain('lint')
-    expect(r.stdout).toContain(root)
+    expect(r.stdout).toContain(basename(root))
     expect(r.status).toBe(0)
   })
 
@@ -166,7 +166,7 @@ describe('wt-missing-package-script-guard-hook', () => {
   })
 
   it('INVENTED: warns — two cumulative cds land on the sub-package missing the script', () => {
-    const r = run(`cd ${root} && cd packages/smoke && pnpm lint`, tmpdir())
+    const r = run(`cd ${root.replaceAll('\\', '/')} && cd packages/smoke && pnpm lint`, tmpdir())
     expect(r.warned).toBe(true)
   })
 

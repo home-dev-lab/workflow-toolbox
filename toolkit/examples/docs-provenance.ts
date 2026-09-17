@@ -106,6 +106,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'README, known-issues, and the external-lane skill document the stable adopted launcher and lifecycle contract.',
   },
   {
+    script: 'plugin/bin/wt-suite-lock.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the machine-wide suite lock, bounded wait, stale recovery, bypass, and operator controls.',
+  },
+  {
     script: 'plugin/bin/wt-lane-control.mjs',
     status: 'mapped',
     reason: 'Known-issues and the external-lane skill document the owner decision CLI and its identity refusals.',
@@ -129,6 +134,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-pilot-runner.mjs',
     status: 'mapped',
     reason: 'The sdk-pilot skill and pilot-runner guide document the SDK runner, launch, mailbox, profile env, and measurements.',
+  },
+  {
+    script: 'plugin/bin/wt-worktree-remove.mjs',
+    status: 'mapped',
+    reason: 'PILOT-RUNNER documents retained-worktree marker expiry, fail-closed board checks, and guarded removal.',
   },
   {
     script: 'plugin/bin/wt-run-cost.mjs',
@@ -541,6 +551,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this PreToolUse gate-evidence guard under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-release-push-evidence-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse release-push gate-evidence guard under Shipped Hooks, Guards & Monitors.',
+  },
+  {
     script: 'plugin/bin/wt-plugin-release-record-guard-hook.mjs',
     status: 'mapped',
     reason:
@@ -641,6 +656,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
+    sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/lib/suite-lock.mjs'],
+    docs: ['docs/public/known-issues.md'],
+  },
+  {
     sources: [
       'plugin/bin/wt-artifact-server.mjs',
       'plugin/bin/wt-artifact-server-ensure.mjs',
@@ -662,7 +681,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['plugin/autonomy/AUTHORIZATIONS.md', 'plugin/autonomy/PERMISSIONS.md', 'plugin/skills/adopt/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/wt-run-cost.mjs', 'plugin/bin/wt-claude-executor.mjs', 'plugin/bin/wt-lane.mjs', 'plugin/bin/lib/pilot-runner-core.mjs', 'plugin/bin/lib/run-cost-core.mjs', 'plugin/bin/lib/knowledge-base-index.mjs', 'plugin/bin/lib/claude-executor-core.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/lifecycle-brief.mjs', 'plugin/bin/lib/lifecycle-launch.mjs', 'plugin/bin/lib/lifecycle-report-edge.mjs', 'plugin/bin/lib/lifecycle-state-machine.mjs', 'plugin/bin/lib/rules-manifest.mjs', 'plugin/rules-manifest.json', 'plugin/rules-manifest.schema.json', 'plugin/bin/lib/orchestrator-judge.mjs', 'plugin/bin/lib/orchestrator-runner-core.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/', 'plugin/skills/sdk-pilot/'],
+    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/wt-worktree-remove.mjs', 'plugin/bin/wt-run-cost.mjs', 'plugin/bin/wt-claude-executor.mjs', 'plugin/bin/wt-lane.mjs', 'plugin/bin/lib/pilot-runner-core.mjs', 'plugin/bin/lib/run-cost-core.mjs', 'plugin/bin/lib/knowledge-base-index.mjs', 'plugin/bin/lib/claude-executor-core.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/lifecycle-brief.mjs', 'plugin/bin/lib/lifecycle-launch.mjs', 'plugin/bin/lib/lifecycle-report-edge.mjs', 'plugin/bin/lib/lifecycle-state-machine.mjs', 'plugin/bin/lib/rules-manifest.mjs', 'plugin/rules-manifest.json', 'plugin/rules-manifest.schema.json', 'plugin/bin/lib/orchestrator-judge.mjs', 'plugin/bin/lib/orchestrator-runner-core.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/', 'plugin/skills/sdk-pilot/'],
     docs: ['plugin/autonomy/PILOT-RUNNER.md', 'plugin/skills/sdk-pilot/SKILL.md'],
   },
   {
@@ -994,8 +1013,9 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-pgrep-env-dump-guard-hook.mjs',
       'plugin/bin/wt-propagation-reminder-hook.mjs',
        'plugin/bin/wt-plugin-release-record-guard-hook.mjs',
-       'plugin/bin/wt-version-guard-hook.mjs',
-       'plugin/bin/wt-gate-evidence-guard-hook.mjs',
+        'plugin/bin/wt-version-guard-hook.mjs',
+        'plugin/bin/wt-gate-evidence-guard-hook.mjs',
+        'plugin/bin/wt-release-push-evidence-guard-hook.mjs',
     ],
     docs: ['docs/public/known-issues.md', 'plugin/monitors/README.md', 'README.md'],
   },

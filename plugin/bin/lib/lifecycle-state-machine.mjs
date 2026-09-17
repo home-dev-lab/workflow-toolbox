@@ -18,7 +18,7 @@ export const AWAITING_FIDELITY_RESULT = 'accepted phase=awaiting_fidelity'
 export const MAX_CRITIC_ROUNDS = 4
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
 
-const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
+export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
 const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation', 'harden'])
 const GATES = new Set(['typecheck', 'lint', 'test'])
 const ARTIFACTS = {
@@ -297,7 +297,7 @@ export function createLifecycleStateMachine({
   copy = fs.cpSync,
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
   rules = null,
-  cardText = null,
+  cardText = null, lsp = { available: false, reason: 'not prepared' },
   now = () => Date.now(),
   timelineWriter = null,
   boardContract = null,
@@ -333,12 +333,11 @@ export function createLifecycleStateMachine({
       required.push(archiveRoot, path.join(archiveRoot, '.claude'), path.join(archiveRoot, '.claude', 'reports'))
     }
     for (const directory of required) {
-      let stat
-      try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      let stat; try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
       const expectedRoot = directory === laneDir ? root : archiveRoot
-      if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(directory) !== directory || path.relative(expectedRoot, directory).startsWith('..')) {
-        throw new Error(`lane directory replaced: ${directory}`)
-      }
+      let resolvedDirectory; let resolvedRoot
+      try { [resolvedDirectory, resolvedRoot] = [fs.realpathSync(directory), fs.realpathSync(expectedRoot)] } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      if (!stat.isDirectory() || stat.isSymbolicLink() || path.relative(resolvedRoot, resolvedDirectory).startsWith('..')) throw new Error(`lane directory replaced: ${directory}`)
     }
     if (archive) {
       try {
@@ -401,7 +400,7 @@ export function createLifecycleStateMachine({
   }
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
-  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
+  const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? ((file, content) => {
     const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
     try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { fs.rmSync(temporary, { force: true }) }

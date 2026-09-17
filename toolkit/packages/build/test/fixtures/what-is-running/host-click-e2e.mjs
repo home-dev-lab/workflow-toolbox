@@ -2,7 +2,7 @@
 // Real-host interaction e2e for What is running: open the pane in a tmux-hosted Claude Code session, click EVERY bracketed
 // element through SGR mouse sequences, capture after each click, and assert the pane changed. Phase buttons must also
 // produce pairwise different inspector bodies. Kills only its own tmux session. Usage:
-//   node host-click-e2e.mjs [--plugin-dir <dir>] [--cwd <dir>] [--cols 160] [--out <dir>]
+//   node host-click-e2e.mjs [--plugin-dir <dir>] [--cwd <dir>] [--cols 160] [--out <dir>] [--lifecycle-fixture true]
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -17,8 +17,26 @@ const waitMs = Number(args['wait-ms'] ?? 2500)
 const scopeWaitMs = Number(args['scope-wait-ms'] ?? waitMs)
 const closeDetails = args['close-details'] === 'true'
 const allScopeOnly = args['all-scope-only'] === 'true'
+const lifecycleFixture = args['lifecycle-fixture'] === 'true'
 fs.mkdirSync(out, { recursive: true })
 const session = `wir-click-${process.pid}-${Date.now()}`
+const lifecycleWorktree = lifecycleFixture ? path.join(cwd, '.claude', 'worktrees', `wir-lifecycle-e2e-${process.pid}`) : null
+if (lifecycleWorktree) {
+  const lane = path.join(lifecycleWorktree, '.lane')
+  fs.mkdirSync(lane, { recursive: true })
+  fs.writeFileSync(path.join(lane, 'route.json'), JSON.stringify({ cardId: '1862698281071544148', route: 'LITE' }))
+  fs.writeFileSync(path.join(lane, 'card.md'), '# Structured lifecycle host fixture\n\nCard id: 1862698281071544148\n')
+  // Deliberately conflicts with lifecycle.json: the host must show Verify, not Plan.
+  fs.writeFileSync(path.join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=plan\n')
+  fs.writeFileSync(path.join(lane, 'lifecycle.json'), JSON.stringify({
+    version: 2, started_at: 1, ended_at: null,
+    phases: [
+      { phase: 'discovery', round: null, entered_at: 1, exited_at: 2 },
+      { phase: 'tdd', round: null, entered_at: 2, exited_at: 3 },
+      { phase: 'verify', round: null, entered_at: 3, exited_at: null },
+    ],
+  }))
+}
 const sleep = (ms) => execFileSync('sleep', [String(ms / 1000)])
 const tmux = (...a) => execFileSync('tmux', a, { encoding: 'utf8' })
 const capture = () => tmux('capture-pane', '-p', '-t', session)
@@ -84,6 +102,13 @@ try {
   sleep(3000)
   const initial = capture()
   fs.writeFileSync(path.join(out, '00-initial.txt'), initial)
+  if (lifecycleFixture) {
+    const text = paneText(initial)
+    if (!text.includes('Work stages:') || !text.includes('Verify ●') || text.includes('Work stages (from log):')) {
+      throw new Error('structured lifecycle fixture did not render Discovery -> TDD -> Verify from lifecycle.json')
+    }
+    results.push({ label: 'lifecycle.json Discovery -> TDD -> Verify', changed: true, note: 'structured source won over conflicting Plan log' })
+  }
   const labels = [...new Set(buttons(initial).map((b) => `${b.label}@${b.row}`))]
   console.log(`buttons found: ${labels.length}`)
   const seen = new Set()
@@ -138,6 +163,7 @@ try {
   exit = 2
 } finally {
   try { tmux('kill-session', '-t', session) } catch {}
+  if (lifecycleWorktree) fs.rmSync(lifecycleWorktree, { recursive: true, force: true })
 }
 // A human-readable, ordered walkthrough: what each click added and removed. A passing "the view changed" check is not
 // a usability review; the arbiter reads this file in order before presenting the pane (owner 2026-09-14 #1999).

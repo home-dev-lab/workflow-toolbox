@@ -235,7 +235,7 @@ describe('adopt:migrate --execute', () => {
     expect(readFileSync(join(wtDir, RULE)).equals(beforeWt), 'destination must be untouched on refusal').toBe(true)
   })
 
-  it('refuses on an unreadable source and moves nothing', () => {
+  it.skipIf(process.platform === 'win32')('POSIX-only chmod lock: refuses on an unreadable source and moves nothing', () => {
     const claudeDir = mkDir()
     writeCleanFlatCopy(claudeDir)
     const wtDir = join(claudeDir, 'wt')

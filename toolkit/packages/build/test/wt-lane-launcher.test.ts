@@ -1,34 +1,51 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { claimCurrentSupervision, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+// @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
+import { inspectStartedProcess } from '../../../../plugin/bin/wt-lane.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
 const CONTROL = join(ROOT, 'plugin/bin/wt-lane-control.mjs')
 const WATCHER = join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
+const FAKE_OPENCODE = join(ROOT, 'toolkit/packages/build/test/fixtures/fake-opencode.mjs')
 const roots: string[] = []
+const spawnedWatchers: ChildProcess[] = []
+const spawnedChildren: ChildProcess[] = []
+const spawnedGroups: number[] = []
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }) })
+const PROCESS_CAPTURE_RETRY_MS = 10
+const PROCESS_CAPTURE_SCHEDULING_MARGIN_MS = 100
+const DARWIN_PROVIDER_MISS_TTL_MS = 100
+afterEach(async () => {
+  const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
+  const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for test child ${child.pid} to exit`)), 5_000)
+    child.once('exit', () => { clearTimeout(timer); resolve() })
+    if (child.exitCode !== null || child.signalCode !== null) { clearTimeout(timer); resolve() }
+  }))
+  for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+  for (const group of spawnedGroups.splice(0)) try { process.kill(-group, 'SIGKILL') } catch {}
+  await Promise.all(exits)
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+})
 
 function fixture(script: string) {
-  const root = mkdtempSync(join(tmpdir(), 'wt-lane-launcher-')); roots.push(root)
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-launcher-'))); roots.push(root)
   const dir = join(root, 'worktree'); const bin = join(root, 'bin'); const config = join(root, 'config')
   mkdirSync(join(dir, '.lane'), { recursive: true }); mkdirSync(bin); mkdirSync(config)
   writeFileSync(join(dir, 'brief.md'), '# brief\n')
-  writeFileSync(join(bin, 'opencode'), `#!/bin/sh
-if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
-if [ "$1" = "--pure" ]; then if [ "$IGNORE_FENCE" = "1" ]; then printf '[{"name":"workflow-toolbox-fence-sentinel"}]\n'; elif [ "$INVISIBLE_ALLOW" = "1" ]; then printf '[]\n'; else printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; fi; exit 0; fi
-if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then if [ -n "$IDENTITY_RECORD" ]; then printf 'probe|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$IDENTITY_RECORD"; fi; if [ -n "$SLOW_PREFLIGHT_AT_COUNT" ] || [ -n "$FAIL_PREFLIGHT_AT_COUNT" ]; then count=0; [ -f "$PWD/.lane/preflight-count" ] && count=$(cat "$PWD/.lane/preflight-count"); count=$((count + 1)); printf '%s' "$count" > "$PWD/.lane/preflight-count"; [ "$count" = "$SLOW_PREFLIGHT_AT_COUNT" ] && sleep 6; [ "$count" = "$FAIL_PREFLIGHT_AT_COUNT" ] && exit 7; fi; printf '%s\n' "\${EFFECTIVE_SKILLS:-[]}"; exit 0; fi
-${script}\n`)
-  spawnSync('chmod', ['+x', join(bin, 'opencode')])
+  writeFileSync(join(bin, 'opencode'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_OPENCODE)} opencode "$@"\n`)
+  writeFileSync(join(bin, 'opencode.cmd'), `@echo off\r\n"${process.execPath}" "${FAKE_OPENCODE}" opencode %*\r\n`)
+  chmodSync(join(bin, 'opencode'), 0o755)
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state') }
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script }
   return { root, dir, config, env }
 }
 function run(f: ReturnType<typeof fixture>, extra: string[] = [], model = 'openai/gpt-5.6-luna') {
@@ -62,6 +79,73 @@ function waitForLines(file: string, count: number, ms = 30_000) {
   while (Date.now() < until) { if (lineCount(file) >= count) return; spawnSync('sleep', ['0.05']) }
   throw new Error(`timed out waiting for ${count} lines in ${file}; received ${lineCount(file)}`)
 }
+function spawnWatcher(args: string[], options: Parameters<typeof spawn>[2]) {
+  const watcher = spawn(process.execPath, [WATCHER, ...args], options)
+  spawnedWatchers.push(watcher)
+  return watcher
+}
+function spawnChild(command: string, args: string[], options: Parameters<typeof spawn>[2]): ChildProcess {
+  const child = spawn(command, args, options)
+  spawnedChildren.push(child)
+  return child
+}
+function installDeterministicOrphan(status: string, cwd: string) {
+  const state = JSON.parse(readFileSync(status, 'utf8'))
+  const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
+  const originalChild = { pid: state.childPid, argv: state.childArgv, startTime: state.childStartTime }
+  killIdentity(worker, 'SIGKILL'); waitForIdentityExit(worker)
+  const actualOriginal = inspectProcess(originalChild.pid)
+  if (sameIdentity(originalChild, actualOriginal)) { killIdentity(originalChild, 'SIGKILL'); waitForIdentityExit(originalChild) }
+  const replacement = spawnChild(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd, stdio: 'ignore' })
+  const until = Date.now() + 5000
+  let child = inspectProcess(replacement.pid!)
+  while (!child && Date.now() < until) { spawnSync('sleep', ['0.05']); child = inspectProcess(replacement.pid!) }
+  if (!child) throw new Error('replacement orphan identity did not become readable')
+  writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned', childPid: child.pid, childArgv: child.argv, childStartTime: child.startTime }))
+  return child
+}
+function installDeterministicGroupedOrphan(status: string, cwd: string) {
+  const state = JSON.parse(readFileSync(status, 'utf8'))
+  const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
+  const originalChild = { pid: state.childPid, argv: state.childArgv, startTime: state.childStartTime }
+  killIdentity(worker, 'SIGKILL'); waitForIdentityExit(worker)
+  const actualOriginal = inspectProcess(originalChild.pid)
+  if (sameIdentity(originalChild, actualOriginal)) { killIdentity(originalChild, 'SIGKILL'); waitForIdentityExit(originalChild) }
+  const childPidFile = join(cwd, '.lane', 'grouped-orphan.pid')
+  const script = `const { spawn } = require('node:child_process'); const fs = require('node:fs'); const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid)); setInterval(() => {}, 1000)`
+  const leader = spawnChild(process.execPath, ['-e', script], { cwd, detached: true, stdio: 'ignore' })
+  spawnedGroups.push(leader.pid!)
+  waitForFile(childPidFile, 5000)
+  const until = Date.now() + 5000
+  let leaderIdentity = inspectProcess(leader.pid!)
+  let child = inspectProcess(Number(readFileSync(childPidFile, 'utf8')))
+  while ((!leaderIdentity || !child) && Date.now() < until) {
+    spawnSync('sleep', ['0.05'])
+    leaderIdentity = inspectProcess(leader.pid!)
+    child = inspectProcess(Number(readFileSync(childPidFile, 'utf8')))
+  }
+  if (!leaderIdentity || !child || child.groupId !== leaderIdentity.pid) throw new Error('grouped orphan identities did not become readable')
+  killIdentity(leaderIdentity, 'SIGKILL'); waitForIdentityExit(leaderIdentity)
+  writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned', workerPid: leaderIdentity.pid, workerArgv: leaderIdentity.argv, workerStartTime: leaderIdentity.startTime, childPid: child.pid, childArgv: child.argv, childStartTime: child.startTime }))
+  return child
+}
+function waitForVerdict(status: string, expected: string, ms = 15_000) {
+  const until = Date.now() + ms
+  let verdict = 'unknown'
+  while (Date.now() < until) {
+    verdict = classifyLane(JSON.parse(readFileSync(status, 'utf8')), { platform: process.platform }).status
+    if (verdict === expected) return
+    spawnSync('sleep', ['0.05'])
+  }
+  const state = JSON.parse(readFileSync(status, 'utf8'))
+  const workerActual = inspectProcess(state.workerPid, { platform: process.platform })
+  const childActual = inspectProcess(state.childPid, { platform: process.platform })
+  const fields = (label: string, recorded: { argv: unknown, startTime: unknown, cwd: unknown }, actual: ReturnType<typeof inspectProcess>) =>
+    `${label}.record.argv=${JSON.stringify(recorded.argv)}; ${label}.actual.argv=${JSON.stringify(actual?.argv ?? null)}; ` +
+    `${label}.record.startTime=${JSON.stringify(recorded.startTime)}; ${label}.actual.startTime=${JSON.stringify(actual?.startTime ?? null)}; ` +
+    `${label}.record.cwd=${JSON.stringify(recorded.cwd)}; ${label}.actual.cwd=${JSON.stringify(actual?.cwd ?? null)}`
+  throw new Error(`timed out waiting for ${expected} process verdict; received ${verdict}; ${fields('worker', { argv: state.workerArgv, startTime: state.workerStartTime, cwd: state.workerCwd ?? null }, workerActual)}; ${fields('child', { argv: state.childArgv, startTime: state.childStartTime, cwd: state.childCwd ?? null }, childActual)}; record=${JSON.stringify(state)}`)
+}
 function killIdentity(expected: { pid: number, argv: string[], startTime?: number, cwd?: string | null } | null, signal: NodeJS.Signals) {
   if (!expected) throw new Error('expected test process identity is gone')
   const actual = inspectProcess(expected.pid)
@@ -88,7 +172,7 @@ function currentDecisionFile(dir: string) {
   return join(dir, '.lane', 'supervision', `${runId}.decision.json`)
 }
 
-describe('wt-lane detached launcher', () => {
+describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requires POSIX process-group signals; Windows process evidence is transcript-tested)', () => {
   it('refuses a stale brief and names the acknowledgement flag and fresh-round remedy', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     const brief = join(f.dir, 'brief.md')
@@ -193,6 +277,7 @@ describe('wt-lane detached launcher', () => {
     f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
     const first = run(f, ['--timeout', '60']); expect(first.status).toBe(0)
     const status = currentStateFile(f.dir); waitForFile(join(f.dir, 'opencode.pid'))
+    waitForContent(status, /"state": "running"/)
     const second = run(f, ['--timeout', '60'])
     expect(second.status).toBe(1)
     expect(second.stderr).toContain(`wait until the lane reaches decision-needed, then abandon with node '${CONTROL}' --dir '${f.dir}' --decision abandon`)
@@ -203,9 +288,9 @@ describe('wt-lane detached launcher', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     f.env.SLOW_PREFLIGHT_AT_COUNT = '2'
     const argv = [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', '--timeout', '60']
-    const first = spawn(process.execPath, argv, { env: f.env })
-    const second = spawn(process.execPath, argv, { env: f.env })
-    const collect = (child: ReturnType<typeof spawn>) => new Promise<{ code: number | null, stderr: string }>((resolve) => { let stderr = ''; child.stderr?.on('data', (data) => { stderr += data }); child.on('close', (code) => resolve({ code, stderr })) })
+    const first = spawnChild(process.execPath, argv, { env: f.env })
+    const second = spawnChild(process.execPath, argv, { env: f.env })
+    const collect = (child: ChildProcess) => new Promise<{ code: number | null, stderr: string }>((resolve) => { let stderr = ''; child.stderr?.on('data', (data) => { stderr += data }); child.on('close', (code) => resolve({ code, stderr })) })
     return Promise.all([collect(first), collect(second)]).then((results) => {
       expect(results.map(({ code }) => code).sort()).toEqual([0, 1])
       expect(results.find(({ code }) => code === 1)?.stderr).toContain('another lane launch is in progress')
@@ -218,7 +303,7 @@ describe('wt-lane detached launcher', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     f.env.SLOW_PREFLIGHT_AT_COUNT = '1'
     const argv = [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', '--timeout', '60']
-    const first = spawn(process.execPath, argv, { env: f.env })
+    const first = spawnChild(process.execPath, argv, { env: f.env })
     const lock = join(f.dir, '.lane', 'supervision', 'launch.lock')
     waitForFile(join(lock, 'owner.json'))
     const old = new Date(Date.now() - 121_000)
@@ -239,7 +324,7 @@ describe('wt-lane detached launcher', () => {
   it('does not release a launch lock after its owner record has been replaced', async () => {
     const f = fixture('sleep 0.2')
     f.env.SLOW_PREFLIGHT_AT_COUNT = '1'
-    const first = spawn(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { env: f.env })
+    const first = spawnChild(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { env: f.env })
     const ownerFile = join(f.dir, '.lane', 'supervision', 'launch.lock', 'owner.json')
     waitForFile(ownerFile)
     writeFileSync(ownerFile, JSON.stringify({ runId: 'foreign', pid: process.pid, argv: process.argv, startTime: inspectProcess(process.pid)?.startTime ?? null }))
@@ -263,10 +348,58 @@ describe('wt-lane detached launcher', () => {
     expect(existsSync(paths.record)).toBe(false)
     expect(JSON.parse(readFileSync(paths.pointer, 'utf8'))).toMatchObject({ runId: '20-2' })
   })
-  it('uses null, not an unrelated clock, when a process start time cannot be read', () => {
+  it('uses an explicitly approximate spawn clock, never the unrelated performance time origin, for Windows fallback identity', () => {
     const source = readFileSync(LAUNCHER, 'utf8')
     expect(source).not.toContain('performance.timeOrigin')
-    expect(source).toContain('startTime: null')
+    expect(source).toContain('startTime: spawnedAt, startTimeApproximate: true')
+  })
+  it('captures the provider identity when a Darwin process becomes readable on the third call', () => {
+    let calls = 0
+    const expected = { pid: 42, argv: ['/usr/local/bin/node lane.mjs'], startTime: 123, groupId: 42, cwd: '/lane' }
+    const result = inspectStartedProcess(() => {
+      calls += 1
+      return calls < 3 ? null : expected
+    }, 42, { platform: 'darwin', timeoutMs: DARWIN_PROVIDER_MISS_TTL_MS * 3 + PROCESS_CAPTURE_SCHEDULING_MARGIN_MS })
+    expect(calls).toBeGreaterThanOrEqual(3)
+    expect(result).toEqual({ identity: expected, unavailable: null })
+  })
+  it('waits through a transient Darwin shell transcript before capturing the stable command', () => {
+    const start = 'Wed Sep 16 12:34:56 2026'
+    const commands = ['(bash)', '(bash)', '/usr/local/bin/node lane.mjs --worker']
+    const execFile = ((program: string) => {
+      if (program === 'ps') return { status: 0, stdout: `  42 ${start}   42 S ${commands.shift() ?? '/usr/local/bin/node lane.mjs --worker'}\n` }
+      return { status: 0, stdout: 'p42\nfcwd\nn/private/var/folders/lane\n' }
+    }) as typeof spawnSync
+    const inspect = (pid: number, options: { platform: NodeJS.Platform }) => inspectProcess(pid, { ...options, spawnSync: execFile })
+
+    const first = inspect(42, { platform: 'darwin' })
+    expect(first?.argv).toEqual(['(bash)'])
+    // Each transcript transition now costs one 100 ms table TTL on darwin; the bound is about the
+    // sequence, not about 250 ms (run 23: 250 ms was marginal on the macOS runner).
+    expect(inspectStartedProcess(inspect, 42, { platform: 'darwin', timeoutMs: 2_000 }).identity?.argv)
+      .toEqual(['/usr/local/bin/node lane.mjs --worker'])
+  })
+  it('captures Darwin cwd once when lsof takes two seconds', () => {
+    let lsofCalls = 0
+    const execFile = ((program: string) => {
+      if (program === 'lsof') {
+        lsofCalls += 1
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000)
+        return { status: 0, stdout: 'p42\nfcwd\nn/private/var/folders/lane\n' }
+      }
+      return { status: 0, stdout: '  42 Wed Sep 16 12:34:56 2026   42 S /usr/local/bin/node lane.mjs --worker\n' }
+    }) as typeof spawnSync
+    const inspect = (pid: number, options: { platform: NodeJS.Platform, captureCwd?: boolean }) => inspectProcess(pid, { ...options, spawnSync: execFile })
+    const started = Date.now()
+
+    expect(inspectStartedProcess(inspect, 42, { platform: 'darwin', timeoutMs: 5_000 }).identity?.cwd).toBe('/private/var/folders/lane')
+    expect(Date.now() - started).toBeLessThan(3_000)
+    expect(lsofCalls).toBe(1)
+  }, 3_500)
+  it('records a source-specific unavailable state instead of a synthetic identity', () => {
+    expect(inspectStartedProcess(() => null, 42, { platform: 'darwin', timeoutMs: PROCESS_CAPTURE_RETRY_MS * 2 })).toEqual({ identity: null, unavailable: 'unavailable (ps)' })
+    expect(classifyLane({ runId: '42-1', state: 'running', workerPid: 42, workerArgv: null, workerStartTime: null, workerIdentity: 'unavailable (ps)', childPid: null, childArgv: null }, { platform: 'darwin' }))
+      .toMatchObject({ status: 'unknown', reason: 'worker identity unavailable (ps)' })
   })
   it('recovers and journals a stale launch lock whose recorded owner is gone', () => {
     const f = fixture('sleep 0.2')
@@ -346,18 +479,20 @@ describe('wt-lane detached launcher', () => {
     const result = spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: { ...f.env, NODE_OPTIONS: `--require=${preload}`, EPERM_PID: String(process.pid) } })
     expect(result.status, result.stderr).toBe(0)
   })
-  it('refuses a second lane when process identity is unavailable off Linux', () => {
+  it('launches a second lane on Darwin after provider evidence reports the first gone', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const first = run(f, ['--timeout', '60']); expect(first.status).toBe(0)
     const status = currentStateFile(f.dir); waitForFile(join(f.dir, 'opencode.pid'))
+    waitForContent(status, /"state": "running"/)
+    const state = JSON.parse(readFileSync(status, 'utf8'))
+    const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
+    killIdentity(worker, 'SIGTERM'); waitForIdentityExit(worker)
     const preload = join(f.root, 'darwin.cjs')
     writeFileSync(preload, "Object.defineProperty(process, 'platform', { value: 'darwin' })\n")
     const second = spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: { ...f.env, NODE_OPTIONS: `--require=${preload}` } })
-    expect(second.status).toBe(1)
-    expect(second.stderr).toContain('retry after the recorded hard bound at')
-    expect(second.stderr).not.toContain('--decision abandon')
-    const state = JSON.parse(readFileSync(status, 'utf8'))
-    killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
+    expect(second.status, second.stderr).toBe(0)
+    const secondState = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))
+    killIdentity(inspectProcess(secondState.workerPid), 'SIGTERM')
   })
   it('supersedes and journals an unknown record only after its recorded hard bound', () => {
     const f = fixture('sleep 0.2')
@@ -442,6 +577,7 @@ describe('wt-lane detached launcher', () => {
     const res = run(f, ['--timeout', '1', '--decision-grace', '10']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir)
     waitForContent(status, /decision-needed/)
+    waitForVerdict(status, 'decision-needed')
     writeFileSync(currentDecisionFile(f.dir), JSON.stringify({ runId: 'stale', timeoutAt: 'stale', decision: 'abandon' }))
     const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'abandon', '--reason', 'e2e stalled fixture'], { encoding: 'utf8', env: f.env })
     expect(control.status, control.stderr).toBe(0)
@@ -495,15 +631,13 @@ describe('wt-lane detached launcher', () => {
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForContent(status, /"state": "running"/); waitForFile(pidFile)
-    const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1]); process.kill(worker, 'SIGKILL')
-    const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
+    const orphan = installDeterministicOrphan(status, f.dir)
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
     expect(watcher.status, watcher.stderr).toBe(0)
-    const pid = Number(readFileSync(pidFile, 'utf8').trim())
-    expect(() => process.kill(pid, 0)).not.toThrow()
+    expect(() => process.kill(orphan.pid, 0)).not.toThrow()
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     expect(readFileSync(journal, 'utf8')).toContain('"event":"would-clean"')
-    process.kill(pid, 'SIGKILL')
+    killIdentity(orphan, 'SIGKILL')
   })
   it('abandons a live orphan when its worker is gone', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
@@ -512,7 +646,9 @@ describe('wt-lane detached launcher', () => {
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForContent(status, /decision-needed/); waitForFile(pidFile)
     const state = JSON.parse(readFileSync(status, 'utf8'))
-    killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGKILL')
+    const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
+    killIdentity(worker, 'SIGKILL'); waitForIdentityExit(worker)
+    waitForVerdict(status, 'worker-gone-child-alive')
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
     expect(watcher.stdout).toContain('worker-gone-child-alive')
     const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'abandon'], { encoding: 'utf8', env: f.env })
@@ -531,7 +667,7 @@ describe('wt-lane detached launcher', () => {
     const ownerArgs = ownerKind === 'pilot' ? ['--owner', 'pilot', '--owner-token', 'pilot-token'] : []
     const res = run(f, ['--timeout', '60', ...ownerArgs]); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
-    waitForFile(status); waitForFile(pidFile)
+    waitForContent(status, /"state": "running"/); waitForFile(pidFile); waitForVerdict(status, 'running')
     const state = JSON.parse(readFileSync(status, 'utf8'))
     const workerIdentity = inspectProcess(state.workerPid)
     if (!workerIdentity) throw new Error('worker identity disappeared before the watcher fixture was ready')
@@ -541,7 +677,7 @@ describe('wt-lane detached launcher', () => {
       // Give it a deterministically gone worker and a fresh child whose full identity we own.
       killIdentity(workerIdentity, 'SIGKILL')
       waitForIdentityExit(workerIdentity)
-      const replacement = spawn('/bin/sleep', ['30'], { cwd: f.dir, stdio: 'ignore' })
+      const replacement = spawnChild(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { cwd: f.dir, stdio: 'ignore' })
       const replacementDeadline = Date.now() + 5_000
       let replacementIdentity = inspectProcess(replacement.pid!)
       while (!replacementIdentity && Date.now() < replacementDeadline) {
@@ -574,7 +710,7 @@ describe('wt-lane detached launcher', () => {
     }
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     const sweepLog = join(f.root, 'sweeps.log')
-    const watcher = spawn(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.05'], {
+    const watcher = spawnWatcher(['--project', f.dir, '--poll', '0.05'], {
       stdio: 'ignore',
       env: { ...f.env, CLAUDE_CODE_SESSION_ID: 'watching-session', WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog },
     })
@@ -611,7 +747,7 @@ describe('wt-lane detached launcher', () => {
     writeFileSync(marker, 'old'); ageTree(f.dir); utimesSync(f.dir, old, old)
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     const sweepLog = join(f.root, 'sweeps.log')
-    const watcher = spawn(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.1'], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog } })
+    const watcher = spawnWatcher(['--project', f.dir, '--poll', '0.1'], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog } })
     waitForContent(journal, /"event":"stalled"/)
     writeFileSync(marker, 'fresh')
     waitForContent(sweepLog, new RegExp(`${state.runId}:stalled:cleared`))
@@ -628,27 +764,26 @@ describe('wt-lane detached launcher', () => {
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForContent(status, /"state": "running"/); waitForFile(pidFile)
-    process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGKILL')
-    const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
+    const orphan = installDeterministicGroupedOrphan(status, f.dir)
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: { ...f.env, WT_LANE_ORPHAN_CLEANUP: 'enforce' }, timeout: 5000 })
     expect(watcher.status, watcher.stderr).toBe(0)
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     expect(readFileSync(journal, 'utf8')).toContain('"event":"cleaned"')
-    expect(() => process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0)).toThrow()
+    expect(() => process.kill(orphan.pid, 0)).toThrow()
   })
   it('keeps polling after a journal write failure', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForContent(status, /"state": "running"/); waitForFile(pidFile)
-    process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGKILL')
-    const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
+    const orphan = installDeterministicOrphan(status, f.dir)
     const blocked = join(f.root, 'blocked-state'); writeFileSync(blocked, 'not a directory')
-    const watcher = spawn(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.05'], { stdio: 'ignore', env: { ...f.env, XDG_STATE_HOME: blocked } })
-    spawnSync('sleep', ['0.3'])
+    const sweepLog = join(f.root, 'sweeps.log')
+    const watcher = spawnWatcher(['--project', f.dir, '--poll', '0.05'], { stdio: 'ignore', env: { ...f.env, XDG_STATE_HOME: blocked, WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog } })
+    waitForLines(sweepLog, 2)
     expect(() => process.kill(watcher.pid!, 0)).not.toThrow()
     process.kill(watcher.pid!, 'SIGTERM')
-    process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 'SIGKILL')
+    killIdentity(orphan, 'SIGKILL')
   })
   it('a test sweep receipt failure is reported but cannot fail the sweep', () => {
     const f = fixture('sleep 1')
@@ -666,8 +801,7 @@ describe('wt-lane detached launcher', () => {
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForContent(status, /"state": "running"/); waitForFile(pidFile)
-    process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGKILL')
-    const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
+    installDeterministicGroupedOrphan(status, f.dir)
     const blocked = join(f.root, 'blocked-state'); writeFileSync(blocked, 'not a directory')
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: { ...f.env, XDG_STATE_HOME: blocked, WT_LANE_ORPHAN_CLEANUP: 'enforce' }, timeout: 5000 })
     expect(watcher.stdout).toContain('kill journal failed')
@@ -678,19 +812,18 @@ describe('wt-lane detached launcher', () => {
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForContent(status, /"state": "running"/); waitForFile(pidFile)
-    process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGKILL')
-    const state = JSON.parse(readFileSync(status, 'utf8')); writeFileSync(status, JSON.stringify({ ...state, state: 'abandoned' }))
+    const orphan = installDeterministicOrphan(status, f.dir)
     const blocked = join(f.root, 'blocked-state'); writeFileSync(blocked, 'not a directory')
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: { ...f.env, XDG_STATE_HOME: blocked } })
     expect(watcher.stdout).toContain('LANE would-clean:')
     expect((watcher.stderr.match(/journal write failed/g) ?? [])).toHaveLength(1)
-    process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 'SIGKILL')
+    killIdentity(orphan, 'SIGKILL')
   })
   it('prints a stalled owner notice even when the journal is unavailable', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
-    const status = currentStateFile(f.dir); waitForFile(status); waitForFile(join(f.dir, 'opencode.pid'))
+    const status = currentStateFile(f.dir); waitForContent(status, /"state": "running"/); waitForFile(join(f.dir, 'opencode.pid')); waitForVerdict(status, 'running')
     const old = new Date(Date.now() - 120_000)
     const ageTree = (dir: string) => {
       for (const name of readdirSync(dir)) {
@@ -707,9 +840,9 @@ describe('wt-lane detached launcher', () => {
     expect((watcher.stderr.match(/journal write failed/g) ?? [])).toHaveLength(1)
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
   })
-  it('prints an unattributed warning even when the journal is unavailable', () => {
+  it.skipIf(process.platform !== 'linux')('prints an unattributed warning even when the journal is unavailable [requires Linux /proc orphan enumeration]', async () => {
     const f = fixture('true')
-    const child = spawn('bash', ['-c', 'exec -a opencode sleep 30'], { cwd: f.dir, stdio: 'ignore' })
+    const child = spawnChild('bash', ['-c', 'exec -a opencode sleep 30'], { cwd: f.dir, stdio: 'ignore' })
     try {
       spawnSync('sleep', ['0.1'])
       const blocked = join(f.root, 'blocked-state'); writeFileSync(blocked, 'not a directory')
@@ -800,12 +933,17 @@ describe('wt-lane detached launcher', () => {
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1])
     const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
-    process.kill(worker, 'SIGTERM')
     const log = join(f.dir, '.lane', 'run.log')
+    waitForContent(log, /^EXIT=0$/m, 4000)
+    process.kill(worker, 'SIGTERM')
     const until = Date.now() + 4000
     while (Date.now() < until) { try { process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0); spawnSync('sleep', ['0.05']) } catch { break } }
-    expect(readFileSync(log, 'utf8')).toMatch(/EXIT=0\n$/)
-    expect((readFileSync(log, 'utf8').match(/^EXIT=/gm) ?? []).length).toBe(1)
+    const lines = readFileSync(log, 'utf8').trimEnd().split(/\r?\n/)
+    const exitIndex = lines.findIndex((line) => line === 'EXIT=0')
+    expect(exitIndex).toBeGreaterThanOrEqual(0)
+    expect(lines.filter((line) => /^EXIT=/.test(line))).toEqual(['EXIT=0'])
+    expect(lines.slice(exitIndex + 1).some((line) => /\bstage=/.test(line))).toBe(false)
+    expect(lines.at(-1)).toBe('EXIT=0')
   })
   it('passes --variant through to opencode and refuses a malformed one', () => {
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; IFS= read -r x; echo done')

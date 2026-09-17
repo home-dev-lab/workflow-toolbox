@@ -13,6 +13,7 @@ import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './sdk-role-profile.mjs'
+import { writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 
 export const DEFAULT_TIMEOUT = 5400
 const POLL_MS = 250
@@ -279,10 +280,11 @@ export async function runPilot(options, dependencies) {
       : async () => { throw new Error('board unavailable: planka_mcp_url is not configured') }
     : null
   const resolveRoutedFinding = boardContract && board && typeof board.resolveRoutedCard === 'function' ? (card) => board.resolveRoutedCard(card) : null
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, boardContract, routeFinding, resolveRoutedFinding, ...lifecycleOptions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions })
 
   async function* prompt() {
-    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
+    const lspLine = sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`
+    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
     yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && now() - started < options.timeout * 1000) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
@@ -414,6 +416,7 @@ export async function runPilot(options, dependencies) {
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
+  writeWorktreeRetentionMarker({ root: options.dir, cardId: options.card, partial, boardId: boardContract?.boardId ?? null, retainedAt: new Date(ended).toISOString() })
   let cost
   try {
     cost = computeRunCost({ laneDir: join(options.dir, '.lane'), worktree: options.dir, startedAt: started, endedAt: ended, route: options.hard ? 'HARD' : routing.route, ...(dependencies.costSessions === undefined ? {} : { sessions: dependencies.costSessions }) })

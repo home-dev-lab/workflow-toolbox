@@ -1305,7 +1305,7 @@ syncBuiltinESMExports()
       {
         maxCycles: 6,
         sleepLogPath,
-        extraEnv: { NODE_OPTIONS: `--import=${preloadPath}` },
+        extraEnv: { NODE_OPTIONS: `--import=${pathToFileURL(preloadPath).href}` },
       },
       15_000,
     )
@@ -1390,7 +1390,7 @@ syncBuiltinESMExports()
       {
         maxCycles: 22,
         sleepLogPath: resetSleepLogPath,
-        extraEnv: { NODE_OPTIONS: `--import=${resetPreloadPath}` },
+        extraEnv: { NODE_OPTIONS: `--import=${pathToFileURL(resetPreloadPath).href}` },
       },
       15_000,
     )

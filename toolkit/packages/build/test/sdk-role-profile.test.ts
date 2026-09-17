@@ -1,10 +1,10 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { composeSdkRoleQueryOptions, prepareSdkRole } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
+import { resolveContextModeRoot, assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, skillIsUnlistedByInit } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
 
 prepareContextModeFixture()
 
@@ -55,7 +55,7 @@ describe('SDK role profiles', () => {
     for (const role of readers) {
       const profile = roleProfile(role)
       expect(profile.readOnly).toBe(true)
-      expect(profile.tools).toEqual(['Read', 'Glob', 'Grep', CONTEXT_MODE_TOOLS.search])
+      expect(profile.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', CONTEXT_MODE_TOOLS.search])
       expect(profile.tools).not.toContain('Bash')
       expect(profile.tools).not.toContain('Write')
       expect(profile.tools.some((tool: string) => tool.includes('ctx_execute'))).toBe(false)
@@ -75,7 +75,7 @@ describe('SDK role profiles', () => {
     expect(roleProfile('pilot').skills).toEqual(['stale-card-sweep', 'lesson-harvest', 'deep-grounding'])
     const pilot = roleProfile('pilot')
     expect(pilot.readOnly).toBe(false)
-    expect(pilot.tools).toEqual(['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS)])
+    expect(pilot.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...Object.values(CONTEXT_MODE_TOOLS)])
     for (const tool of ['Edit', 'Write', 'Bash']) expect(pilot.tools).not.toContain(tool)
     expect(pilot.guards).toEqual([])
     expect(roleProfile('tdd').skills).toEqual(['changelog'])
@@ -101,6 +101,87 @@ describe('SDK role profiles', () => {
     writeFileSync(join(context, '.claude-plugin', 'plugin.json'), '{}'); writeFileSync(join(context, 'hooks', 'hooks.json'), '{}')
     expect(() => prepareSdkRole('tdd', { worktree: root, pluginRoot, env: { CLAUDE_CONFIG_DIR: join(root, 'config') } })).toThrow(join(pluginRoot, 'bin', 'wt-unquoted-tool-glob-guard-hook.mjs'))
   })
+
+  it('writes an LSP plugin with the resolved command and detected TypeScript and JavaScript languages', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-lsp-')); roots.push(root)
+    const bin = join(root, 'bin'); mkdirSync(bin)
+    const server = join(bin, 'typescript-language-server'); writeFileSync(server, '#!/bin/sh\n'); chmodSync(server, 0o755)
+    writeFileSync(join(root, 'source.ts'), 'export const value = 1\n')
+    writeFileSync(join(root, 'module.mjs'), 'export const other = 2\n')
+    const prepared = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: bin, WT_LSP_TYPESCRIPT_SERVER: undefined }, adapterOptions: { log: () => {} } })
+    expect(prepared.lsp).toEqual({ available: true, command: server, languages: ['typescript', 'javascript'] })
+    expect(prepared.profile.tools).toContain('LSP')
+    expect(JSON.parse(readFileSync(join(prepared.skillPlugin, '.lsp.json'), 'utf8'))).toEqual({
+      typescript: { command: server, args: ['--stdio'], extensionToLanguage: { '.ts': 'typescript', '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript' } },
+    })
+  })
+
+  it('detects JavaScript from js and cjs files without a package marker', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-lsp-')); roots.push(root)
+    const bin = join(root, 'bin'); mkdirSync(bin)
+    const server = join(bin, 'typescript-language-server'); writeFileSync(server, '#!/bin/sh\n'); chmodSync(server, 0o755)
+    writeFileSync(join(root, 'hook.js'), 'export const hook = true\n')
+    writeFileSync(join(root, 'helper.cjs'), 'module.exports = true\n')
+    const prepared = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: bin, WT_LSP_TYPESCRIPT_SERVER: undefined }, adapterOptions: { log: () => {} } })
+    expect(prepared.lsp).toEqual({ available: true, command: server, languages: ['javascript'] })
+    expect(JSON.parse(readFileSync(join(prepared.skillPlugin, '.lsp.json'), 'utf8'))).toEqual({
+      typescript: { command: server, args: ['--stdio'], extensionToLanguage: { '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript' } },
+    })
+  })
+
+  it('keeps a role available without an LSP plugin when the language server is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-lsp-')); roots.push(root)
+    writeFileSync(join(root, 'source.ts'), 'export const value = 1\n')
+    const prepared = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: '', WT_LSP_TYPESCRIPT_SERVER: undefined }, adapterOptions: { log: () => {} } })
+    expect(prepared.lsp).toEqual({ available: false, reason: 'typescript-language-server not found on PATH' })
+    expect(prepared.skillPlugin).toBeNull()
+  })
+
+  it('resolves Windows command shims and honours an absolute override only when it is set', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-lsp-')); roots.push(root)
+    writeFileSync(join(root, 'package.json'), '{}\n')
+    const first = join(root, 'first'); const second = join(root, 'second'); mkdirSync(first); mkdirSync(second)
+    const shim = join(second, 'typescript-language-server.cmd'); writeFileSync(shim, '@exit /b 0\n'); chmodSync(shim, 0o755)
+    const override = join(root, 'custom-language-server'); writeFileSync(override, '#!/bin/sh\n'); chmodSync(override, 0o755)
+    const fromPath = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: `${first};${second}`, WT_LSP_TYPESCRIPT_SERVER: undefined }, platform: 'win32', adapterOptions: { log: () => {} } })
+    expect(fromPath.lsp).toMatchObject({ available: true, command: shim })
+    const overridden = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: second, WT_LSP_TYPESCRIPT_SERVER: override }, adapterOptions: { log: () => {} } })
+    expect(overridden.lsp).toMatchObject({ available: true, command: override })
+    const absentOverride = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: second, WT_LSP_TYPESCRIPT_SERVER: join(root, 'absent') }, adapterOptions: { log: () => {} } })
+    expect(absentOverride.lsp).toMatchObject({ available: false })
+  })
+
+  // Measured 2026-09-17 (lsp-probe/probe3.mjs, then the first real LITE run): the SDK init receipt lists only the
+  // plugin skills declared `user-invocable: true`, so the pilot's `lesson-harvest` can never appear there.
+  it('does not require a user-invocable:false skill in the initialization receipt, and still requires the others', () => {
+    expect(skillIsUnlistedByInit('---\nname: x\nuser-invocable: false\ndescription: d\n---\n\nBody\n')).toBe(true)
+    expect(skillIsUnlistedByInit('---\nname: x\nuser-invocable: true\ndescription: d\n---\n\nBody\n')).toBe(false)
+    expect(skillIsUnlistedByInit('# no frontmatter\nuser-invocable: false\n')).toBe(false)
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-skills-')); roots.push(root)
+    writeFileSync(join(root, 'source.ts'), 'export const value = 1\n')
+    const logged: string[] = []
+    const prepared = prepareSdkRole('pilot', { worktree: root, env: { ...process.env, PATH: '', WT_LSP_TYPESCRIPT_SERVER: undefined }, adapterOptions: { log: (line: string) => logged.push(line) } })
+    expect(prepared.unlistedSkills).toEqual(['lesson-harvest'])
+    expect(logged.some((line) => /never listed by the initialization receipt .*lesson-harvest/.test(line))).toBe(true)
+    const receipt = {
+      tools: prepared.profile.tools.filter((tool: string) => tool !== 'LSP'),
+      plugins: [...prepared.pluginPaths.map((pluginPath: string) => ({ path: pluginPath })), { name: 'wt-sdk-pilot' }],
+      skills: ['wt-sdk-pilot:stale-card-sweep', 'wt-sdk-pilot:deep-grounding'],
+    }
+    expect(() => assertSdkRoleReceipt('pilot', receipt, prepared)).not.toThrow()
+    expect(() => assertSdkRoleReceipt('pilot', { ...receipt, skills: ['wt-sdk-pilot:stale-card-sweep'] }, prepared)).toThrow(/missingSkills":\["deep-grounding"\].*unlistedSkills":\["lesson-harvest"\]/)
+  })
+
+  it('requires LSP in the initialization receipt only when the prepared server is available', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-lsp-')); roots.push(root)
+    writeFileSync(join(root, 'source.ts'), 'export const value = 1\n')
+    const absent = prepareSdkRole('review', { worktree: root, env: { ...process.env, PATH: '', WT_LSP_TYPESCRIPT_SERVER: undefined }, adapterOptions: { log: () => {} } })
+    const receipt = { tools: absent.profile.tools.filter((tool: string) => tool !== 'LSP'), plugins: absent.pluginPaths.map((pluginPath: string) => ({ path: pluginPath })), skills: [] }
+    expect(() => assertSdkRoleReceipt('review', receipt, absent)).not.toThrow()
+    const server = join(root, 'server'); writeFileSync(server, '#!/bin/sh\n'); chmodSync(server, 0o755)
+    const available = prepareSdkRole('review', { worktree: root, env: { ...process.env, WT_LSP_TYPESCRIPT_SERVER: server }, adapterOptions: { log: () => {} } })
+    expect(() => assertSdkRoleReceipt('review', { ...receipt, plugins: available.pluginPaths.map((pluginPath: string) => ({ path: pluginPath })) }, available)).toThrow(/missingTools.*LSP/)
+  })
 })
 
 describe('SDK command-guard callback adapter', () => {
@@ -119,6 +200,24 @@ describe('SDK command-guard callback adapter', () => {
     const result = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'true' } })
     expect(result).not.toHaveProperty('hookSpecificOutput')
     expect(result).not.toHaveProperty('continue')
-    expect(lines).toEqual([expect.stringContaining('wt-unquoted-tool-glob-guard-hook.mjs exited 7: boom')])
+    expect(lines).toEqual([
+      'SDK role tdd: LSP absent: typescript-language-server not found on PATH',
+      expect.stringContaining('wt-unquoted-tool-glob-guard-hook.mjs exited 7: boom'),
+    ])
+  })
+})
+
+describe('context-mode root resolution follows the installed plugin, not a pinned version', () => {
+  it('prefers the recorded install path, then the highest cached version, then the last known version', () => {
+    const env = { CLAUDE_CONFIG_DIR: '/cfg' }
+    const cache = join('/cfg', 'plugins', 'cache', 'context-mode', 'context-mode')
+    const registry = JSON.stringify({ plugins: { 'context-mode@context-mode': [{ installPath: join(cache, '1.0.178'), version: '1.0.178' }] } })
+    expect(resolveContextModeRoot(env, { readFile: () => registry, exists: (p: string) => p.endsWith('1.0.178'), readDir: () => ['1.0.177', '1.0.178'] })).toBe(join(cache, '1.0.178'))
+    // recorded path gone from disk → highest cached version wins
+    expect(resolveContextModeRoot(env, { readFile: () => registry, exists: () => false, readDir: () => ['1.0.9', '1.0.177', '1.0.10'] })).toBe(join(cache, '1.0.177'))
+    // no registry, no cache → the last known version (the fail-closed message names it)
+    expect(resolveContextModeRoot(env, { readFile: () => { throw new Error('ENOENT') }, exists: () => false, readDir: () => { throw new Error('ENOENT') } })).toBe(join(cache, '1.0.177'))
+    // explicit override always wins
+    expect(resolveContextModeRoot({ WT_CONTEXT_MODE_ROOT: '/pinned' }, { readFile: () => registry, exists: () => true, readDir: () => ['9.9.9'] })).toBe('/pinned')
   })
 })

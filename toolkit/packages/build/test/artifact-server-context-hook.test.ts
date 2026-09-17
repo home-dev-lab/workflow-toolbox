@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +14,7 @@ const temporaryDirs: string[] = []
 const servers: Server[] = []
 
 function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'wt-artifact-context-'))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wt-artifact-context-')))
   temporaryDirs.push(dir)
   return dir
 }

@@ -1,6 +1,6 @@
 import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
-import { basename, isAbsolute, join } from 'node:path'
+import path, { basename, join } from 'node:path'
 
 export const ACTIVITY_MAX_ENTRIES = 4000
 export const ACTIVITY_WINDOW_MIN = 12
@@ -145,22 +145,99 @@ export function suiteUmbrellaWorktrees(root) {
   }
 }
 
-function laneDirFromArgs(args) {
-  const executable = basename(args[0] || '')
+function laneDirFromArgs(args, pathApi = path) {
+  const executable = pathApi.basename(args[0] || '')
   const subcommand = args[1]
-  const script = args.find((arg) => ['wt-pilot-runner.mjs', 'wt-lane.mjs'].includes(basename(arg)))
+  const script = args.find((arg) => ['wt-pilot-runner.mjs', 'wt-lane.mjs'].includes(pathApi.basename(arg)))
   if (!script && !((executable === 'opencode' && subcommand === 'run') || (executable === 'codex' && subcommand === 'exec'))) {
     return null
   }
 
   for (let index = 2; index < args.length; index += 1) {
-    if (args[index] === '--dir' && isAbsolute(args[index + 1] || '')) return args[index + 1]
+    if (args[index] === '--dir' && pathApi.isAbsolute(args[index + 1] || '')) return args[index + 1]
     if (args[index].startsWith('--dir=') && args[index].slice('--dir='.length)) {
       const dir = args[index].slice('--dir='.length)
-      return isAbsolute(dir) ? dir : null
+      return pathApi.isAbsolute(dir) ? dir : null
     }
   }
   return null
+}
+
+function windowsCommandArgs(commandLine) {
+  const args = []
+  const pattern = /"((?:\\.|[^"])*)"|(\S+)/g
+  for (const match of String(commandLine).matchAll(pattern)) args.push((match[1] ?? match[2]).replace(/\\"/g, '"'))
+  return args
+}
+
+function posixCommandArgs(commandLine) {
+  const args = []
+  const pattern = /"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|((?:\\.|[^\s])+)/g
+  for (const match of String(commandLine).matchAll(pattern)) args.push((match[1] ?? match[2] ?? match[3]).replace(/\\([\\"' ])/g, '$1'))
+  return args
+}
+
+const DARWIN_PROCESS_SCAN_TTL_MS = 100
+const darwinProcessScanCache = new WeakMap()
+
+function scanDarwinLaneProcesses(spawnSyncImpl, now = Date.now()) {
+  const cached = darwinProcessScanCache.get(spawnSyncImpl)
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_SCAN_TTL_MS) return cached.result
+  let result
+  try {
+    result = spawnSyncImpl('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 5_000, env: { ...process.env, LC_ALL: 'C' } })
+  } catch {
+    result = { status: 'unknown', processes: [], source: 'ps' }
+    darwinProcessScanCache.set(spawnSyncImpl, { readAt: now, result })
+    return result
+  }
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') {
+    result = { status: 'unknown', processes: [], source: 'ps' }
+    darwinProcessScanCache.set(spawnSyncImpl, { readAt: now, result })
+    return result
+  }
+  const rows = result.stdout.split(/\r?\n/).map((line) => /^\s*(\d+)\s+(.+)$/.exec(line)).filter(Boolean)
+  const processes = []
+  for (const row of rows.slice(0, PROCESS_SCAN_MAX_ENTRIES)) {
+    const args = posixCommandArgs(row[2])
+    const dir = laneDirFromArgs(args)
+    if (dir) processes.push({ pid: row[1], dir, command: args.map((arg) => basename(arg)).slice(0, 2).join(' ') })
+  }
+  result = { status: rows.length > PROCESS_SCAN_MAX_ENTRIES ? 'capped' : 'known', processes }
+  darwinProcessScanCache.set(spawnSyncImpl, { readAt: now, result })
+  return result
+}
+
+function scanWindowsLaneProcesses(spawnSyncImpl) {
+  const script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -or $_.Name -eq 'node' } | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+  let result
+  try {
+    result = spawnSyncImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      windowsHide: true,
+    })
+  } catch {
+    return { status: 'unknown', processes: [], source: 'powershell' }
+  }
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') {
+    return { status: 'unknown', processes: [], source: 'powershell' }
+  }
+  let rows
+  try {
+    const parsed = result.stdout.trim() ? JSON.parse(result.stdout) : []
+    rows = Array.isArray(parsed) ? parsed : [parsed]
+  } catch {
+    return { status: 'unknown', processes: [], source: 'powershell' }
+  }
+  const processes = []
+  for (const row of rows.slice(0, PROCESS_SCAN_MAX_ENTRIES)) {
+    if (!row || typeof row.CommandLine !== 'string' || !Number.isSafeInteger(Number(row.ProcessId))) continue
+    const args = windowsCommandArgs(row.CommandLine)
+    const dir = laneDirFromArgs(args.map((arg) => arg.replaceAll('/', path.win32.sep)), path.win32)
+    if (dir && path.win32.isAbsolute(dir)) processes.push({ pid: String(row.ProcessId), dir, command: args.map((arg) => path.win32.basename(arg)).slice(0, 2).join(' ') })
+  }
+  return { status: rows.length > PROCESS_SCAN_MAX_ENTRIES ? 'capped' : 'known', processes }
 }
 
 // /proc is Linux-only. Other platforms, or an unreadable process table, produce an explicit
@@ -170,7 +247,10 @@ export function scanLiveLaneProcesses({
   platform = process.platform,
   readdirImpl = readdirSync,
   readFileImpl = readFileSync,
+  spawnSyncImpl = spawnSync,
 } = {}) {
+  if (platform === 'win32') return scanWindowsLaneProcesses(spawnSyncImpl)
+  if (platform === 'darwin') return scanDarwinLaneProcesses(spawnSyncImpl)
   if (platform !== 'linux') return { status: 'unknown', processes: [] }
 
   let entries

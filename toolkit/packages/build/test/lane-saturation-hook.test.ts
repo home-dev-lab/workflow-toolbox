@@ -317,7 +317,7 @@ describe('wt-lane-saturation-hook.mjs', () => {
     }
   })
 
-  it('treats malformed pgrep output as unknown instead of a false zero', () => {
+  it.skipIf(process.platform === 'win32')('treats malformed pgrep output as unknown instead of a false zero [requires a POSIX pgrep executable fixture]', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lane-malformed-pgrep-'))
     roots.push(root)
     const pgrep = join(root, 'pgrep')

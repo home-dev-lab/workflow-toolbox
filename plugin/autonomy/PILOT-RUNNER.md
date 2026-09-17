@@ -17,16 +17,26 @@ through the runner mailbox and owner-facing output only through the pilot report
 ## What an SDK session receives
 
 Every Claude SDK query uses the table in `plugin/bin/lib/sdk-role-profile.mjs`; GPT lanes and
-`lane_skills` are unchanged. `LSP` is omitted because SDK 0.3.273 accepted it in `tools` but did not
-list or expose it in the initialization receipt. Context-mode 1.0.177 is loaded from the active
+`lane_skills` are unchanged. `LSP` is listed for every role and becomes available only when the
+generated role plugin has a resolved language server. Context-mode 1.0.177 is loaded from the active
 profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
 other nine MCP tools do not enter their receipt.
 
-| Role | Tools | Selected workflow-toolbox skills | Shipped command guards |
-| --- | --- | --- | --- |
-| pilot | Read, Glob, Grep, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |
-| tdd, harden | Read, Glob, Grep, Edit, Write, Bash, all ten context-mode MCP tools | changelog | writer set |
-| judge, critic, review, refutation | Read, Glob, Grep, `ctx_search` only | none | none; no Bash |
+| Role | Tools | LSP | Selected workflow-toolbox skills | Shipped command guards |
+| --- | --- | --- | --- | --- |
+| pilot | Read, Glob, Grep, LSP, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | optional, visible | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |
+| tdd, harden | Read, Glob, Grep, LSP, Edit, Write, Bash, all ten context-mode MCP tools | optional, visible | changelog | writer set |
+| judge, critic, review, refutation | Read, Glob, Grep, LSP, `ctx_search` only | optional, visible | none | none; no Bash |
+
+The initial implementation detects TypeScript and JavaScript from a root `tsconfig.json` or
+`package.json`, or a `.ts`, `.js`, `.mjs`, or `.cjs` file in the worktree. It resolves
+`typescript-language-server` on `PATH`; an absolute `WT_LSP_TYPESCRIPT_SERVER` overrides PATH only
+when set. The generated `.lsp.json` carries the resolved absolute command and only the detected
+language mappings. Missing binaries never refuse a session: the init log and `lifecycle.json` state
+`LSP absent: typescript-language-server not found on PATH`, and the closing report states
+`LSP navigation: absent (...)`; availability is stated with the command and the report says
+`LSP navigation: available`. When available, omission of `LSP` from the SDK init receipt refuses the
+incomplete receipt; when absent, the SDK is expected to omit it.
 
 The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
 unquoted globs, merge chains, concurrent tests, piped gate status, process-environment dumps,
@@ -50,6 +60,10 @@ plugin, or context-mode 1.0.177 path refuses startup and names the path.
 Resolution uses Node's native path APIs and the active `CLAUDE_CONFIG_DIR`, including Windows paths
 such as a profile beneath `%APPDATA%`; generated files are copies, not symlinks. If that profile does
 not have context-mode 1.0.177, the session refuses to start rather than degrading to an unguarded run.
+LSP PATH lookup uses `.cmd` and `.exe` shims on Windows. On macOS it searches the PATH actually
+provided to the runner, so `/usr/local/bin` and Homebrew locations are considered only when present
+there; no install prefix is guessed. Linux likewise uses the supplied PATH. On every platform an
+absent binary produces the same visible absent receipt and never a startup refusal.
 
 ## Route and phases
 
@@ -177,6 +191,18 @@ source/effective model, plus `served_model` from the SDK `system:init` receipt a
 two SDK readings agree with each other (a remapped profile serves a different id than the requested
 alias on purpose, so the request is recorded beside them, never compared); it otherwise lists the
 differing values, or reports why the SDK evidence is absent. This is SDK-reported evidence, not a proxy-trace attestation.
+
+When critic, review, or refutation exhausts its round bound, the runner also writes the ignored
+`.lane/worktree-retention.json` file. Version 1 records `cardId`, the canonical absolute `worktree`,
+`retainedAt`, the bounded-run `reason`, the stopping `phase`, and `expiry` with the board id and the
+condition `card is absent or in Done or NotDoing`. Readers of v1 tolerate additional fields.
+`node "${CLAUDE_PLUGIN_ROOT:-${WT_PLUGIN_ROOT:-$(node -e 'const fs=require("fs");const dir=process.env.CLAUDE_CONFIG_DIR||(process.env.HOME+"/.claude");const j=JSON.parse(fs.readFileSync(dir+"/plugins/installed_plugins.json","utf8"));const p=j.plugins||j;const k=Object.keys(p).find(x=>x.startsWith("workflow-toolbox@"));console.log(p[k][0].installPath)' 2>/dev/null)}}/bin/wt-worktree-remove.mjs" --dir <worktree>`
+(the same three-fallback plugin-root resolution `plugin/agents/opencode-envelope.md` ships) reads that
+marker before every removal, resolves the card's current list, and refuses while the card is open or
+the board cannot be reached. It also refuses a marker copied from a different worktree; `--force`
+changes Git's removal mode only and never bypasses these checks.
+An absent marker preserves ordinary removal behavior. A direct `git worktree remove`, manual recursive
+deletion, or other tooling that does not call this remover remains outside this guard.
 
 `lifecycle.json` timestamps the runner start/end, each accepted phase interval, and each lane launch.
 Each streamed pilot assistant message records its arrival time and SDK usage and is attributed to the

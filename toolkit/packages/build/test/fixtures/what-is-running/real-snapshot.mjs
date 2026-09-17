@@ -25,6 +25,7 @@ if (!['available', 'partial'].includes(snapshot.discovery)) {
   if (snapshot.discovery === 'partial') {
     const reasons = [];
     if (snapshot.cappedScans?.length) reasons.push(`scan cap reached: ${snapshot.cappedScans.join(', ')}`);
+    if (snapshot.scanLimits?.length) reasons.push(snapshot.scanLimits.join('; '));
     if (snapshot.pathRefusals?.length) reasons.push(snapshot.pathRefusals.join('; '));
     console.log(`Discovery: partial (${reasons.join('; ') || 'unknown reason'})`);
   }
@@ -44,7 +45,7 @@ if (!['available', 'partial'].includes(snapshot.discovery)) {
     console.log(`Toggle: this project · ${currentProject}`);
     snapshot.sessions = visible;
   }
-  const phaseNames = { discovery: 'Discovery', plan: 'Plan', critic: 'Critic', tdd: 'TDD', verify: 'Verify', review: 'Pilot review', refutation: 'Pilot refutation', harden: 'Harden', report: 'Report' };
+  const phaseNames = { discovery: 'Discovery', plan: 'Plan', critic: 'Critic', tdd: 'TDD', verify: 'Verify', review: 'Independent review', refutation: 'Independent refutation', harden: 'Harden', report: 'Report' };
   const cycleNames = { implementation: 'Implementation', review: 'Sol review', refutation: 'Astra refutation', arbiter: 'Decision', fix: 'Fix', merge: 'Merge' };
   const evidenceLines = (summary) => {
     const lines = String(summary || '').replace(/\r\n?/g, '\n').split('\n').map((line) => line.trim().replace(/^#{1,6}\s+/, '').replace(/^[-*]\s+/, '').replace(/\*\*|__|`/g, '').trim()).filter((line) => line && !/^[A-Za-z][A-Za-z ]*:$/.test(line));
@@ -58,10 +59,10 @@ if (!['available', 'partial'].includes(snapshot.discovery)) {
   };
   const deepActors = (actors) => (actors || []).flatMap((actor) => [actor, ...deepActors([...(actor.lanes || []), ...(actor.children || [])])]);
   const workStages = (card) => {
-    const pilot = deepActors(card.actors).find((actor) => actor.kind === 'pilot' && actor.phase && actor.phase !== 'unknown');
-    const stages = pilot ? Object.entries(phaseNames).map(([id, label]) => ({ label, state: pilot.phaseStates?.[id] || 'not started' })) : [];
-    for (const stage of card.devCycle?.stages || []) {
-      if (pilot && stage.id === 'implementation') continue;
+    const pilot = deepActors(card.actors).find((actor) => actor.sdkLifecycle === true && actor.phase && actor.phase !== 'unknown');
+    const stages = pilot ? Object.entries(phaseNames).map(([id, label]) => ({ label: ['review', 'refutation'].includes(id) && pilot.models?.[id] ? `${label} (${pilot.models[id]})` : label, state: pilot.phaseStates?.[id] || 'not started' })) : [];
+    if (pilot?.phaseStates?.awaiting_fidelity && pilot.phaseStates.awaiting_fidelity !== 'not started') stages.push({ label: 'Fidelity', state: pilot.phaseStates.awaiting_fidelity });
+    for (const stage of pilot ? [] : card.devCycle?.stages || []) {
       stages.push({ label: cycleNames[stage.id] || stage.label, state: stage.state });
     }
     return stages;
@@ -77,7 +78,7 @@ if (!['available', 'partial'].includes(snapshot.discovery)) {
       const stages = workStages(card);
       if (stages.length) {
         console.log(`    Work stages: ${stages.map((stage) => `${stage.label}: ${stage.state}`).join(' -> ')}`);
-        if (card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0) console.log(`    review rounds: ${card.devCycle?.rounds || 0} · fix rounds: ${card.devCycle?.fixRounds || 0}`);
+        if (!deepActors(card.actors).some((actor) => actor.sdkLifecycle === true) && (card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0)) console.log(`    review rounds: ${card.devCycle?.rounds || 0} · fix rounds: ${card.devCycle?.fixRounds || 0}`);
       }
       for (const actor of card.actors || []) printActor(actor, '    ');
       for (const actor of card.actors || []) if (actor.kind === 'pilot' && actor.phase && actor.phase !== 'unknown' && actor.inspectors?.[actor.phase]?.summary) {

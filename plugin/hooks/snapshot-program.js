@@ -1,4 +1,6 @@
 import { executableName, resolvedBinary } from '../bin/lib/resolved-binary.mjs';
+import { PHASES as LIFECYCLE_PHASES } from './lifecycle-phases.js';
+import { stripAnsiAndControl } from './text-sanitize.js';
 
 // These pure helpers are also embedded in the out-of-process collector below.
 export function detectArtifactUrl(file, platform, env = {}, linkBase = '', suiteRoot = '') {
@@ -60,8 +62,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const config = JSON.parse(process.argv[1]);
+const timingStartedAt = Date.now();
+const timingsMs = {};
 const detectArtifactUrl = ${detectArtifactUrl.toString()};
 const markdownToHtml = ${markdownToHtml.toString()};
+const stripAnsiAndControl = ${stripAnsiAndControl.toString()};
 const executableName = ${executableName.toString()};
 const resolvedBinary = ${resolvedBinary.toString()};
 const now = Date.parse(config.now || new Date().toISOString());
@@ -116,10 +121,12 @@ const clockTicksAvailability = clockTicks === null
   ? { status: UNKNOWN, reason: 'getconf CLK_TCK unavailable' }
   : { status: 'available' };
 let procUptime = null;
-const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report', 'awaiting_fidelity'];
+const PHASES = ${JSON.stringify([...LIFECYCLE_PHASES, 'awaiting_fidelity'])};
 const LITE_SKIPS = new Set(['plan', 'critic', 'review', 'refutation', 'harden']);
 const DIR_SCAN_CAP = Number.isSafeInteger(config.scanEntryCap) && config.scanEntryCap > 0 ? config.scanEntryCap : 1000;
+const WORKTREE_DETAIL_CAP = Number.isSafeInteger(config.worktreeDetailCap) && config.worktreeDetailCap > 0 ? config.worktreeDetailCap : 48;
 const cappedScans = [];
+const scanLimits = [];
 const unreadableScans = [];
 const processReadFailures = [];
 // A process that exits between the /proc listing and its record reads leaves no directory behind.
@@ -228,6 +235,19 @@ function slice(file, maxBytes, fromEnd = false, rejectOverflow = false) {
 function tail(file, maxBytes = LOG_TAIL_BYTES) { return slice(file, maxBytes, true); }
 function head(file, maxBytes = BRIEF_HEAD_BYTES) { return slice(file, maxBytes); }
 function json(file) { const value = slice(file, JSON_BYTES, false, true); try { return value === null ? null : JSON.parse(value); } catch { return null; } }
+function lifecycleTimeline(worktree) {
+  const source = lanePath(worktree, 'lifecycle.json');
+  const value = json(source);
+  if (!value || !Array.isArray(value.phases) || value.phases.length === 0) return null;
+  const validTime = item => item === null || Number.isFinite(item);
+  const validRound = item => item === null || (Number.isSafeInteger(item) && item > 0);
+  if (!value.phases.every(item => item && typeof item === 'object' && PHASES.includes(item.phase) && item.phase !== 'awaiting_fidelity'
+    && validRound(item.round) && Number.isFinite(item.entered_at) && validTime(item.exited_at))) return null;
+  const phaseHistory = value.phases.map(item => item.phase);
+  if (Number.isFinite(value.ended_at) && phaseHistory.at(-1) === 'report') phaseHistory.push('awaiting_fidelity');
+  const criticRounds = value.phases.filter(item => item.phase === 'critic').reduce((count, item) => Math.max(count, item.round || 0), 0);
+  return { source, phaseHistory, criticRounds };
+}
 function info(file) { const safeFile = safePath(file); return safeFile ? infoUnrestricted(safeFile) : null; }
 function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : null; } catch { return null; } }
 function cardIds(value) { return [...new Set(String(value || '').match(/\b\d{19}\b/g) || [])]; }
@@ -445,7 +465,8 @@ function freshestWrite(root) {
   return latest;
 }
 function toolActivity(value) {
-  const lines = String(value || '').split(/\r?\n/).map(line => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim()).filter(Boolean);
+  const clean = line => stripAnsiAndControl(line).trim();
+  const lines = String(value || '').split(/\r?\n/).map(clean).filter(Boolean);
   return lines.filter(line => /^(?:(?:→\s*)?(?:Read|Write|Edit|Patch)\b|\$\s+\S)/.test(line)).at(-1) || UNKNOWN;
 }
 function laneActivity(worktree, lastWrite = null) {
@@ -564,6 +585,7 @@ function usage(worktree, model) {
   return { value: measured ? String(total) : UNKNOWN, totals: null, source };
 }
 
+const lifecycleStartedAt = Date.now();
 const lifecycle = new Map();
 const lifecycleFiles = listed(path.join(config.configDir, 'plugins', 'store'));
 for (const file of lifecycleFiles.entries.filter(name => /^wt-lifecycle-hooks.*\.json$/.test(name))) {
@@ -581,7 +603,9 @@ for (const file of lifecycleFiles.entries.filter(name => /^wt-lifecycle-hooks.*\
     }
   }
 }
+timingsMs.lifecycleRecords = Date.now() - lifecycleStartedAt;
 
+const livenessStartedAt = Date.now();
 const liveness = new Map();
 const livenessFiles = listed(config.livenessDir);
 for (const file of livenessFiles.entries.filter(name => name.endsWith('.json'))) {
@@ -594,7 +618,9 @@ for (const file of livenessFiles.entries.filter(name => name.endsWith('.json')))
   if (rawWorktree && !worktree) continue;
   for (const id of cardIds(value.scope)) liveness.set(id, { ...value, ...(worktree ? { worktree } : {}), sourcePath: livenessFile });
 }
+timingsMs.livenessRecords = Date.now() - livenessStartedAt;
 
+const registryStartedAt = Date.now();
 const spawnByCard = new Map();
 const registryRoot = path.join(config.configDir, 'plugins', 'data');
 const registryListing = listed(registryRoot);
@@ -625,6 +651,7 @@ for (const file of registryFiles) {
     }
   }
 }
+timingsMs.spawnRegistry = Date.now() - registryStartedAt;
 
 const processByWorktree = new Map();
 const sdkRunnerByWorktree = new Map();
@@ -642,6 +669,7 @@ function briefFromArgs(args) {
   }
   return null;
 }
+const processScanStartedAt = Date.now();
 const processListing = processScanAvailable ? listed(procRoot) : { entries: [], readable: false, capped: false };
 const listedPids = processScanAvailable ? processListing.entries.filter(name => /^\d+$/.test(name)) : [];
 if (processScanAvailable) for (const pid of listedPids) {
@@ -676,11 +704,13 @@ if (processScanAvailable) for (const pid of listedPids) {
     if (sdkRunner) sdkRunnerByWorktree.set(worktree, { pid: Number(pid), model, brief });
     else {
       const previous = processByWorktree.get(worktree);
-      if (!previous || previous.model === UNKNOWN || model !== UNKNOWN) processByWorktree.set(worktree, { pid: Number(pid), model, brief: brief || previous?.brief || null });
-      if (laneWorker) laneWorkerByWorktree.set(worktree, { pid: Number(pid), model, brief });
+      const laneKind = executable === executables.codex ? 'codex' : executable === executables.opencode ? 'opencode' : 'plain';
+      if (!previous || previous.model === UNKNOWN || model !== UNKNOWN) processByWorktree.set(worktree, { pid: Number(pid), model, brief: brief || previous?.brief || null, laneKind });
+      if (laneWorker) laneWorkerByWorktree.set(worktree, { pid: Number(pid), model, brief, laneKind });
     }
   } catch {}
 }
+timingsMs.processScan = Date.now() - processScanStartedAt;
 function sessionPidFor(pid) {
   const seen = new Set(); let current = processes.get(pid);
   while (current && !seen.has(current.pid)) {
@@ -716,8 +746,17 @@ function pidState(worktree) {
   return recognized && matchedWorktree ? 'alive' : 'dead';
 }
 
+const worktreeEnumerationStartedAt = Date.now();
 const worktreeListing = listed(suiteWorktreeRoot);
-const scannedWorktrees = worktreeListing.entries.map(name => resolveActorPath(path.join(suiteWorktreeRoot, name), 'suite scan')).filter(Boolean);
+const listedWorktrees = worktreeListing.entries.map(name => resolveActorPath(path.join(suiteWorktreeRoot, name), 'suite scan')).filter(Boolean);
+const priorityWorktrees = [
+  ...processByWorktree.keys(), ...sdkRunnerByWorktree.keys(), ...laneWorkerByWorktree.keys(),
+].filter(worktree => under(suiteWorktreeRoot, worktree));
+const worktreeCandidates = [...new Set([...priorityWorktrees, ...listedWorktrees])];
+const scannedWorktrees = worktreeCandidates.slice(0, WORKTREE_DETAIL_CAP);
+if (worktreeCandidates.length > scannedWorktrees.length) scanLimits.push('worktree detail cap reached: ' + scannedWorktrees.length + ' of ' + worktreeCandidates.length + ' at ' + suiteWorktreeRoot);
+timingsMs.worktreeEnumeration = Date.now() - worktreeEnumerationStartedAt;
+const worktreeReadsStartedAt = Date.now();
 const laneByCard = new Map();
 const externalLanes = [];
 function roleLabel(value, inferred = false) {
@@ -736,6 +775,8 @@ function structuredLaneRole(worktree, launchedBrief = null) {
   for (const value of [route?.laneRole, route?.role, route?.lifecycle?.phase, route?.phase]) {
     const label = roleLabel(value); if (label) return label;
   }
+  const timelinePhase = lifecycleTimeline(worktree)?.phaseHistory.at(-1);
+  if (roleLabel(timelinePhase)) return roleLabel(timelinePhase);
   const runnerLog = tail(sdkLogFile(worktree)) || '';
   const accepted = [...runnerLog.matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)].at(-1)?.[1];
   if (roleLabel(accepted)) return roleLabel(accepted);
@@ -778,24 +819,27 @@ for (const worktree of scannedWorktrees) {
 for (const worktree of scannedWorktrees) {
   const runnerLogFile = sdkLogFile(worktree);
   const runnerLog = tail(runnerLogFile);
-  if (runnerLog !== null) {
+  const timeline = lifecycleTimeline(worktree);
+  if (runnerLog !== null || timeline) {
     const route = json(lanePath(worktree, 'route.json'));
     const routeCardId = route?.cardId;
     const id = /^\d{19}$/.test(String(routeCardId || ''))
       ? String(routeCardId)
       : cardMarkdownId(head(lanePath(worktree, 'card.md')));
     if (id) {
-      const lastLine = runnerLog.split(/\r?\n/).filter(Boolean).at(-1) || '';
+      const lastLine = String(runnerLog || '').split(/\r?\n/).filter(Boolean).at(-1) || '';
       if (/^EXIT=\d+$/.test(lastLine)) continue;
-      const accepted = [...runnerLog.matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)];
-      const phaseHistory = accepted.map(match => match[1]);
-      const criticRounds = [...runnerLog.matchAll(/^lifecycle: lane critic EXIT=\d+$/gm)].length;
+      const accepted = [...String(runnerLog || '').matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)];
+      const phaseHistory = timeline?.phaseHistory || accepted.map(match => match[1]);
+      const criticRounds = timeline?.criticRounds ?? [...String(runnerLog || '').matchAll(/^lifecycle: lane critic EXIT=\d+$/gm)].length;
       laneByCard.set(id, {
         worktree,
         launcherSessionId: laneSessionId(worktree),
-        model: runnerLog.match(/\beffective=([^\s]+)/)?.[1] || route?.effective || route?.model || sdkRunnerByWorktree.get(worktree)?.model || UNKNOWN,
+        model: String(runnerLog || '').match(/\beffective=([^\s]+)/)?.[1] || route?.effective || route?.model || sdkRunnerByWorktree.get(worktree)?.model || UNKNOWN,
         phase: phaseHistory.at(-1) || null,
         phaseHistory,
+        phaseSource: timeline ? 'lifecycle' : 'log',
+        lifecycleSource: timeline?.source || null,
         criticRounds,
         runnerLogTruncated: (info(runnerLogFile)?.size || 0) > LOG_TAIL_BYTES,
         outcome: 'running',
@@ -821,6 +865,7 @@ for (const worktree of scannedWorktrees) {
   if (exited && (!/^(?:Review lane|Refutation)/.test(label) || !terminalReport)) continue;
   externalLanes.push({ id: id || 'lane:' + worktree, cardId: id, worktree, launcherSessionId: laneSessionId(worktree), model: laneModel(worktree) || undefined, outcome: terminalReport ? 'done' : 'running', title, label, roleInferred: role.inferred, terminalReport });
 }
+timingsMs.worktreeLaneReads = Date.now() - worktreeReadsStartedAt;
 
 function waveFor(lane, id) {
   const match = /^card-(\d{19})-wave-(.+)$/.exec(path.basename(lane?.worktree || ''));
@@ -833,7 +878,7 @@ function externalLane(lane, id) {
   const lastWrite = freshestWrite(lane.worktree);
   const running = pidState(lane.worktree) === 'alive' || freshTime(lastWrite);
   const processPid = processByWorktree.get(lane.worktree)?.pid || null;
-  return running ? { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: lane.label || 'Lane', parentCardId: id, title: cleanCardTitle(lane.title, id), outcome: lane.outcome || 'running', ...(lane.model ? { model: lane.model } : {}), activity: lane.terminalReport ? 'report written' : laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) } : null;
+  return running ? { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: lane.label || 'Lane', phaseAvailability: (processByWorktree.get(lane.worktree)?.laneKind || 'plain') + ' lane', parentCardId: id, title: cleanCardTitle(lane.title, id), outcome: lane.outcome || 'running', ...(lane.model ? { model: lane.model } : {}), activity: lane.terminalReport ? 'report written' : laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) } : null;
 }
 function nestedLane(lane, id) {
   if (!lane || pidState(lane.worktree) !== 'alive') return null;
@@ -845,7 +890,7 @@ function nestedLane(lane, id) {
   const detail = brief ? markdownTitle(brief)?.match(/\b(?:review\s+round|round|step)\s+\d+(?:\s+round\s+\d+)?\b/i)?.[0] || null : null;
   const phase = phaseOf(lane.phase);
   const phaseRole = phase === UNKNOWN ? null : (phase === 'tdd' ? 'TDD' : phase.replace(/_/g, ' ').replace(/^./, letter => letter.toUpperCase())) + ' lane';
-  return { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: isFix ? 'Fix lane' : phaseRole || lane.label || 'Lane', parentCardId: id, title: isFix ? detail : phaseRole ? null : cleanCardTitle(lane.title, id) || path.basename(lane.worktree), outcome: 'running', ...(runner?.model && runner.model !== UNKNOWN ? { model: runner.model } : {}), activity: laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) };
+  return { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: isFix ? 'Fix lane' : phaseRole || lane.label || 'Lane', phaseAvailability: (runner?.laneKind || 'plain') + ' lane', parentCardId: id, title: isFix ? detail : phaseRole ? null : cleanCardTitle(lane.title, id) || path.basename(lane.worktree), outcome: 'running', ...(runner?.model && runner.model !== UNKNOWN ? { model: runner.model } : {}), activity: laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) };
 }
 
 const activeLifecycleIds = [...lifecycle].filter(([, value]) => value?.phase).map(([id]) => id);
@@ -876,6 +921,7 @@ for (const id of ids) {
   const waitingForArbiter = lane?.phase === 'awaiting_fidelity';
   const sdkRunner = worktree ? sdkRunnerByWorktree.get(worktree) : null;
   const phaseStates = statesOf(lane?.phaseHistory?.length ? lane.phaseHistory : record?.phase ? [record.phase] : [], lane?.route);
+  const frozenRoute = worktree ? json(lanePath(worktree, 'route.json')) : null;
   if (waitingForArbiter) phaseStates.awaiting_fidelity = 'waiting for arbiter review';
   const { source: reviewSource, ...review } = reviewResult;
   rows.push({
@@ -883,14 +929,17 @@ for (const id of ids) {
     cardId: id,
     cardUrl: cardUrl(id),
     kind: 'pilot',
+    sdkLifecycle: true,
     label: 'SDK pilot',
     title,
     waveId: wave?.waveId || null,
     route: lane?.route || null,
     phase: phaseOf(lane?.phase || record?.phase),
+    phaseSource: lane?.phaseSource || null,
     phaseStates,
     outcome: waitingForArbiter ? 'waiting for arbiter review' : lane?.outcome || failedOutcome || UNKNOWN,
     model: lane?.model || workers[0]?.model || UNKNOWN,
+    models: frozenRoute?.models || {},
     criticRounds: lane?.criticRounds,
     runnerLogTruncated: lane?.runnerLogTruncated || false,
     who,
@@ -900,14 +949,14 @@ for (const id of ids) {
     tokens: usageResult.value,
     usage: usageResult.totals,
     watchdog,
-    inspectors: inspectors(worktree, lane ? json(lanePath(worktree, 'route.json')) : null, lane ? tail(sdkLogFile(worktree)) : null),
+    inspectors: inspectors(worktree, lane ? frozenRoute : null, lane ? tail(sdkLogFile(worktree)) : null),
     lanes: [nestedLane(lane, id)].filter(Boolean),
     worktree,
     launcherSessionId: lane?.launcherSessionId || laneSessionId(worktree),
     processPid: sdkRunner?.pid || null,
     elapsed: worktree ? pilotElapsed(worktree, sdkRunner?.pid || null) : UNKNOWN,
     sources: {
-      lifecycle: record?.sourcePath || UNKNOWN,
+      lifecycle: lane?.lifecycleSource || record?.sourcePath || UNKNOWN,
       spawnRegistry: workers.length ? 'spawn registry' : UNKNOWN,
       laneProbe: lane ? lane.worktree : UNKNOWN,
       liveness: live?.sourcePath || UNKNOWN,
@@ -944,7 +993,7 @@ for (const processRecord of processes.values()) {
     const label = classified.label;
     const modelAt = args.findIndex(arg => arg === '--model');
     const model = modelAt >= 0 ? args[modelAt + 1] || null : laneModel(worktree);
-    processActors.push({ id: 'process:' + pid, processPid: pid, worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label, roleInferred: classified.inferred, role: heading, title: heading, ...(model ? { model } : {}), activity: laneActivity(worktree, freshestWrite(worktree)), elapsed: actorElapsed(worktree, pid), outcome: 'running', sessionPid: sessionPidFor(pid), launcherSessionId: laneSessionId(worktree) });
+    processActors.push({ id: 'process:' + pid, processPid: pid, worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label, phaseAvailability: (executable === executables.codex ? 'codex' : 'opencode') + ' lane', roleInferred: classified.inferred, role: heading, title: heading, ...(model ? { model } : {}), activity: laneActivity(worktree, freshestWrite(worktree)), elapsed: actorElapsed(worktree, pid), outcome: 'running', sessionPid: sessionPidFor(pid), launcherSessionId: laneSessionId(worktree) });
   } else {
     const requestAt = args.indexOf('task');
     const request = args.slice(requestAt + 1).join(' ');
@@ -979,6 +1028,13 @@ function branchMerged(worktree, id) {
     const headResult = runGit(['rev-parse', 'HEAD']);
     const head = String(headResult.stdout || '').trim();
     if (headResult.error || headResult.status !== 0 || !head) return { value: false, availability: { status: UNKNOWN, reason: 'git HEAD probe unavailable' } };
+    const reflogResult = runGit(['reflog', 'show', '--format=%H', branch]);
+    if (reflogResult.error || reflogResult.status !== 0) return { value: false, availability: { status: UNKNOWN, reason: 'git branch history probe unavailable' } };
+    const createdAt = String(reflogResult.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1);
+    if (!createdAt || createdAt === head) return { value: false, availability: { status: 'available' } };
+    const aheadResult = runGit(['rev-list', createdAt + '..' + branch]);
+    if (aheadResult.error || aheadResult.status !== 0) return { value: false, availability: { status: UNKNOWN, reason: 'git branch ahead probe unavailable' } };
+    if (!String(aheadResult.stdout || '').trim()) return { value: false, availability: { status: 'available' } };
     let baseMeasured = false;
     for (const base of baseBranches) {
       const baseResult = runGit(['rev-parse', base]);
@@ -1230,17 +1286,18 @@ const oldestHelper = helperItems.filter(item => item.ageSeconds !== null).sort((
 for (const item of [...helperItems, ...serviceItems]) delete item.ageSeconds;
 const services = { count: serviceItems.length, items: serviceItems };
 const helpers = { count: helperItems.length, oldest: helperItems.length ? oldestHelper?.age || UNKNOWN : 'none', items: helperItems };
-const discovery = ![lifecycleFiles, livenessFiles, registryListing, worktreeListing].every(source => source.readable) ? UNKNOWN : cappedScans.length || pathRefusals.length || unreadableScans.length ? 'partial' : 'available';
+const discovery = ![lifecycleFiles, livenessFiles, registryListing, worktreeListing].every(source => source.readable) ? UNKNOWN : cappedScans.length || scanLimits.length || pathRefusals.length || unreadableScans.length ? 'partial' : 'available';
 const allListedVanished = listedPids.length > 0 && processVanished === listedPids.length;
 const processPartialReason = processScanAvailable && !processListing.readable ? 'unreadable' : processListing.capped ? 'capped' : allListedVanished ? 'unreadable' : processReadFailures.length ? 'unreadable process records' : executableLookupFailures.length ? 'executable lookup unavailable' : null;
 const processDiscovery = !processScanAvailable ? UNKNOWN : processPartialReason ? 'partial' : 'available';
 const processReason = !processScanAvailable ? 'unavailable on this platform' : processPartialReason;
 const requiredDiscoveryRoots = [['lifecycle store', lifecycleFiles], ['liveness records', livenessFiles], ['spawn registry', registryListing], ['worktrees', worktreeListing]];
-const discoveryReason = discovery === UNKNOWN ? 'unavailable: ' + requiredDiscoveryRoots.filter(([, source]) => !source.readable).map(([name]) => name).join(', ') : discovery === 'partial' ? [...new Set([...cappedScans.map(dir => 'scan cap reached: ' + dir), ...unreadableScans.map(dir => 'unreadable: ' + dir), ...pathRefusals])].join('; ') : null;
+const discoveryReason = discovery === UNKNOWN ? 'unavailable: ' + requiredDiscoveryRoots.filter(([, source]) => !source.readable).map(([name]) => name).join(', ') : discovery === 'partial' ? [...new Set([...cappedScans.map(dir => 'scan cap reached: ' + dir), ...scanLimits, ...unreadableScans.map(dir => 'unreadable: ' + dir), ...pathRefusals])].join('; ') : null;
 const collectors = {
   work: { value: { rows, sessions }, availability: { status: discovery, ...(discoveryReason ? { reason: discoveryReason } : {}) } },
   processes: { value: { services, helpers }, availability: { status: processDiscovery, ...(processReason ? { reason: processReason } : {}) } },
   clockTicks: { value: clockTicks, availability: clockTicksAvailability },
 };
-process.stdout.write(JSON.stringify({ collectors, discovery, rows, sessions, services, helpers, processDiscovery, processPartialReason: processReason, processVanished, cappedScans: [...new Set(cappedScans)], unreadableScans: [...new Set(unreadableScans)], pathRefusals, collectedAt: new Date(now).toISOString() }));
+timingsMs.total = Date.now() - timingStartedAt;
+process.stdout.write(JSON.stringify({ collectors, discovery, rows, sessions, services, helpers, processDiscovery, processPartialReason: processReason, processVanished, cappedScans: [...new Set(cappedScans)], scanLimits, unreadableScans: [...new Set(unreadableScans)], pathRefusals, timingsMs, collectedAt: new Date(now).toISOString() }));
 `;

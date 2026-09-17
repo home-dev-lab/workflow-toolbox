@@ -202,6 +202,10 @@ The append-only journal is `<plugin-data-dir>/lane-supervisor/lane-supervisor.js
 
 Process-group termination works on POSIX, including Linux and macOS. Exact supervision discovery and control are Linux-only; elsewhere the watcher prints `lane supervision unavailable on <platform>` once per session and refuses cleanup rather than guessing, while the launcher's bounded no-answer default still applies. It invokes the same consent gate before launch, while the consent and saturation hooks recognize `node .../wt-lane.mjs`. Adopt it to `<configDir>/scripts/wt-lane.mjs` for a stable allow-rule path. This upgrade requires re-adoption; a newly adopted launcher used against an older installed plugin refuses with an update-and-re-adopt remedy instead of crashing during module load. The bundled plugin-cache path changes with plugin versions.
 
+### `wt-suite-lock.mjs` — machine-wide test-suite lock
+
+`node plugin/bin/wt-suite-lock.mjs run -- pnpm test` serializes outer test-suite runs for the current user. It acquires `wt-suite-lock/lock.d` beneath the same platform state root as the artifact server by atomic directory creation, waits up to 45 minutes by default, reports the holder immediately and every 30 seconds, and never runs the command after a timeout (exit 75). A dead PID is reclaimed; on Windows only, a signalable holder older than the three-hour `--stale-s` bound is also reclaimable because signalability cannot establish process identity there. `status [--json]` inspects the holder and `release [--force]` removes a dead holder or, with the explicit override, a live one. `WT_SUITE_LOCK_DIR` selects a test/private lock root, while `WT_SUITE_LOCK=0` bypasses locking with a visible stderr line. `wt-lane.mjs` exports the checkout-resolved invocation as `WT_SUITE_LOCK_CMD` for lane commands.
+
 ### `wt-env-prerequisite-drift-hook.mjs` — post-adoption environment drift light (SessionStart)
 
 Re-checks, at every session start, that the environment settings the adopted sets require are still DECLARED in the active config profile's `settings.json`. `adopt` writes them on the day you adopt; nothing re-checks afterwards, so a settings file edited later — by you, by another tool, by a machine restore — silently degrades the plugin: without the nested-spawn depth key an executor lane can die mid-wave, and without the observer flag adopted pilots run with no watchdog while their reports honestly say "no observer findings". It is a warning light, never a gate: it always exits `0`. Three states, never a boolean — a settings file it cannot read or parse is reported as **NOT CHECKED**, explicitly not as "absent", because folding "I could not measure" into "it is broken" is how a session-start check earns a reputation for crying wolf. It is silent when every prerequisite is present, and silent for a project that adopted nothing (a project with its own hand-written agents has no observer prerequisite — adoption is detected by the installer's banner in `.claude/rules`/`.claude/agents`, never by the directory merely existing). When it does speak it names the key, the concrete consequence, and the way out in both directions: run the installer, or declare the key yourself with any value you prefer — it checks that a key is declared, never what it holds. **No environment value ever reaches its output**, since that block carries real credentials; it reads key names only.
@@ -482,9 +486,15 @@ Warns (never blocks) when a Bash command uses `pgrep -a`/`-l` (or a combined sho
 
 It deliberately does not cover: PID-only forms (`pgrep -f pattern`, `pgrep -c -f pattern`, bare `pgrep pattern`) — deliberately silent, that is the safe form; `ps -o args= -p <pid>` (a single already-identified PID, the sanctioned follow-up); a bare `ps` with no full-listing flag; or prose about this trap (a heredoc, a commit message) — same known false-positive family as the sibling guards in this file, a textual guard cannot tell code from data. The flag matcher requires the `-` to be preceded by whitespace or the string start, so a hyphenated PATTERN argument (`pgrep my-pattern`) does not itself read as a flag.
 
-### `wt-plugin-release-record-guard-hook.mjs` — plugin release-record guard (PreToolUse on Bash)
+### `wt-plugin-release-record-guard-hook.mjs` — plugin release-record and quality guard (PreToolUse on Bash)
 
 Warns, never blocks, when a `git commit` stages a change under `plugin/` while staging neither `plugin/.claude-plugin/plugin.json` nor `plugin/CHANGELOG.md`. The plugin's version is what decides whether an adopter receives a change at all, so a plugin fix committed and pushed without a bump reaches `main` and reaches nobody — silently, because nothing was checking.
+
+Blocks a `release:` commit when the staged changelog adds no `### Quality` heading or the staged
+toolkit quality baseline improves no ratchet over the previous `workflow-toolbox--v*` tag.
+Run `pnpm quality:delta` for the missing section and `pnpm quality:baseline` after tightening a
+ratchet. The explicit `gates: quality-skipped — <reason>` trailer bypasses only this release-time
+quality decision and is journalled. Ordinary feature commits retain the warn-only behaviour below.
 
 This closes an asymmetry rather than adding a new rule. The published packages already fail red on the equivalent omission: touch a package source without a changeset and `changeset-gate` goes red. The plugin had no counterpart.
 
@@ -507,6 +517,12 @@ In a repository that declares `.wt-gates.json`, a real `git commit` touching one
 `wt-run-gate.mjs --check <tree-dir> [--gate name,...]` reads those records without running a command and reports green only when every requested record has that tree's current signature.
 
 The guard is warn-only for its first 19 journalled firings, naming MISSING, RED, or STALE records and exact wrapper commands; the twentieth refuses. `gates: skipped — <reason>` in `-m`, `-F`, or a heredoc message explicitly allows the commit and is journalled. It is silent outside a declaring repository, for non-declared staged paths, merges, and `--amend` commits with no staged change. It runs no gates itself and therefore stays within the hook timeout.
+
+### `wt-release-push-evidence-guard-hook.mjs` — release push gate-evidence guard (PreToolUse on Bash)
+
+For a repository that declares `.wt-gates.json`, a push to the release branch requires every declared gate record to name the exact pushed commit and to have been recorded from a clean tree. The release branch resolves first from the locally cached `refs/remotes/<remote>/HEAD` (refresh it with `git remote set-head <remote> --auto`), then the `release_branch` plugin option or `WT_RELEASE_BRANCH`, then literal `main`/`master`; every release decision prints the source and value it used. An unresolved custom layout warns once and allows rather than blocking an ordinary push. Bare refs, `src:dst`, `HEAD`, and no-ref upstream pushes share the push parser used by the signature guard.
+
+The release push must be the whole Bash command so an earlier segment cannot move the sampled source. Aggregate (`--all`, `--mirror`), matching, wildcard, and release-deletion forms are refused rather than guessed when the release branch is resolved. This guard refuses stale evidence from its first firing, names every affected gate, and prints the exact `wt-run-gate.mjs --record` command that refreshes it; version-1 records deliberately require that one-time refresh after upgrade. The commit trailer `gates: skipped — <reason>` does not apply to releases. The only escape is the main guard's byte-exact, single-use `allow-once.json` entry with a non-empty reason; consuming it removes the file and surfaces that reason. The push-scope and main guards retain their own parsers and policies: push-scope answers which commits are authorized to leave, this guard answers whether the release commit was gated, and the main guard independently refuses remote deletion.
 
 ### `wt-propagation-reminder-hook.mjs` — tooling/plugin-edit propagation reminder (PostToolUse on Write/Edit/MultiEdit)
 

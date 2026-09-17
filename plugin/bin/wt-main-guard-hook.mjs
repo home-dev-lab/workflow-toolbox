@@ -60,14 +60,10 @@ import { execFileSync } from 'node:child_process'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { stripHeredocs, stripQuotedSpans } from './lib/command-invocation.mjs'
-import { pluginName, resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
+import { consumeMainGuardAllowOnce, mainGuardStateDir } from './lib/main-guard-allow-once.mjs'
 
-const STATE_DIR = resolvePluginDataDir({
-  fallback: path.join(os.homedir(), '.local', 'state', 'wt-main-guard'),
-  pluginName: pluginName(),
-}).dir
+const STATE_DIR = mainGuardStateDir()
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
-const ALLOW_ONCE_PATH = path.join(STATE_DIR, 'allow-once.json')
 
 // Per-class blocking posture, decided by measurement (see the report this port shipped with,
 // and docs/public/known-issues.md).
@@ -404,20 +400,6 @@ function journal(entry) {
 /** If the allow-once file names THIS exact command, consume it (single use) and return its
  *  reason; else null. Byte-for-byte match only — no prefix/pattern matching, deliberately, so
  *  the escape hatch cannot be pre-armed for a class of commands. */
-function checkAllowOnce(command) {
-  try {
-    if (!fs.existsSync(ALLOW_ONCE_PATH)) return null
-    const obj = JSON.parse(fs.readFileSync(ALLOW_ONCE_PATH, 'utf8'))
-    if (obj && obj.command === command) {
-      fs.unlinkSync(ALLOW_ONCE_PATH)
-      return obj.reason || '(no reason given)'
-    }
-    return null
-  } catch {
-    return null
-  }
-}
-
 // ---------------------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------------------
@@ -444,7 +426,7 @@ function main() {
   }
 
   // result.kind === 'deny'
-  const overrideReason = checkAllowOnce(command)
+  const overrideReason = consumeMainGuardAllowOnce(command)
   if (overrideReason) {
     journal({
       class: result.class,

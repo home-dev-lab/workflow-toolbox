@@ -18,7 +18,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, chmodSync, symlinkSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, realpathSync, writeFileSync, chmodSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,7 +34,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 function mkDir(): string {
-  const d = mkdtempSync(join(tmpdir(), 'wt-run-gate-'))
+  const d = realpathSync(mkdtempSync(join(tmpdir(), 'wt-run-gate-')))
   dirs.push(d)
   return d
 }
@@ -121,7 +121,7 @@ describe('wt-run-gate — the exit code written is the GATE\'s own, never a wrap
     }
   })
 
-  it('a command killed by a SIGNAL (never returns its own exit code) is recorded as SIGNAL, never silently coerced to a numeric code', () => {
+  it.skipIf(process.platform === 'win32')('POSIX-only: a command killed by a SIGNAL is recorded as SIGNAL, never silently coerced to a numeric code', () => {
     const d = mkDir()
     const res = run(['--name', 'g', '--out-dir', d, '--', process.execPath, '-e', "process.kill(process.pid, 'SIGTERM')"])
     expect(res.status).not.toBe(0)
@@ -245,7 +245,7 @@ describe('wt-run-gate --check', () => {
     expect(result.stdout).toBe('test: missing\n')
   })
 
-  it('keeps names unambiguous and invalidates binary bytes, tracked deletion, symlink targets, and modes', () => {
+  it.skipIf(process.platform === 'win32')('POSIX-only filename/mode lock: keeps names unambiguous and invalidates binary bytes, deletion, symlinks, and modes', () => {
     const { root, env } = gateRepo()
     writeFileSync(join(root, 'space name\nnext'), Buffer.from([0, 1, 2]))
     writeFileSync(join(root, 'binary.bin'), Buffer.from([0, 255, 1]))

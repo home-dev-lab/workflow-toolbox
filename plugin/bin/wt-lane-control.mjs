@@ -29,7 +29,6 @@ function main() {
   const options = parse(process.argv.slice(2))
   if (options.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (options.error) { process.stderr.write(`wt-lane-control: ${options.error}\n${usage()}\n`); return 2 }
-  if (process.platform !== 'linux') { process.stderr.write(`wt-lane-control: refused: lane supervision control is unavailable on ${process.platform}\n`); return 1 }
   const state = readCurrentSupervision(options.dir)
   if (!state) { process.stderr.write(`wt-lane-control: no readable supervised lane at ${options.dir}\n`); return 1 }
   if (!['session', 'pilot'].includes(state.owner)) { process.stderr.write('wt-lane-control: refused: lane owner is unknown\n'); return 1 }

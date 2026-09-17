@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -52,7 +52,7 @@ afterEach(() => {
 })
 
 function makeWorktreeDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'wt-lane-activity-worktree-'))
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-activity-worktree-')))
   dirs.push(dir)
   return dir
 }
@@ -90,7 +90,7 @@ describe('wt-lane-activity.mjs — usage', () => {
   })
 })
 
-describe('wt-lane-activity.mjs — happy path against a fake data dir built from the REAL fixture', () => {
+describe.skipIf(process.platform === 'win32')('wt-lane-activity.mjs — happy path against a fake data dir built from the REAL fixture (requires the pgrep/cwd provider)', () => {
   it('names the current sub-task from the log AND reports tokens/model from the store, for a worktree with no live process', () => {
     const worktree = makeWorktreeDir()
     const dataDir = makeDataDir({ worktreePath: worktree })
@@ -106,8 +106,8 @@ describe('wt-lane-activity.mjs — happy path against a fake data dir built from
     expect(entry?.logReadable).toBe(true)
     expect(entry?.currentSubTask).toBe('project copy refresh done')
     // no live process matched --pattern -> the store/log probe correctly separates from liveness
-    expect(entry?.process.alive).toBe(false)
-    expect(entry?.stall.verdict).toBe('gone')
+    expect(entry?.process.alive).toBe(process.platform === 'win32' ? 'unknown' : false)
+    expect(entry?.stall.verdict).toBe(process.platform === 'win32' ? 'unknown' : 'gone')
   })
 })
 
@@ -183,7 +183,7 @@ describe('wt-lane-activity.mjs — degraded paths (invariant 3 & 4: unknown, nev
   })
 })
 
-describe('wt-lane-activity.mjs — process-alive integration (delegates to wt-lane-probe.mjs, does not reimplement it)', () => {
+describe.skipIf(process.platform === 'win32')('wt-lane-activity.mjs — process-alive integration (requires the pgrep/cwd provider)', () => {
   it('reports process.alive:true and a non-"gone" stall verdict when a real matching process is running in the worktree', async () => {
     const worktree = makeWorktreeDir()
     const dataDir = makeDataDir({ worktreePath: worktree })

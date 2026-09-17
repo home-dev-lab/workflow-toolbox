@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -23,7 +23,7 @@ function discoverDenyGuards() {
 }
 
 function companionFiles(source: string, filePath: string) {
-  const dir = filePath.slice(0, filePath.lastIndexOf('/'))
+  const dir = dirname(filePath)
   return [...source.matchAll(/path\.join\(HERE, '([^']+\.mjs)'\)/g)]
     .map((match) => match[1])
     .filter((name): name is string => Boolean(name))

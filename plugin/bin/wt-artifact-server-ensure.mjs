@@ -2,7 +2,7 @@
 
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, utimesSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, utimesSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -58,10 +58,14 @@ const TEST_CONTROL_NAMES = [
   'WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS',
   'WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS',
   'WT_ARTIFACT_SERVER_TEST_SPAWN_LOG',
+  'WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG',
   'WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG',
   'WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS',
   'WT_ARTIFACT_SERVER_TEST_STOP_HEARTBEAT_AFTER_MS',
   'WT_ARTIFACT_SERVER_TEST_CONTENTION_LOG',
+  'WT_ARTIFACT_SERVER_TEST_GIT_ROOT',
+  'WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE',
+  'WT_ARTIFACT_SERVER_TEST_SWEEP_DIAGNOSTIC',
 ]
 const TEST_SEAMS_ACTIVE = new Set(TEST_MODE ? TEST_CONTROL_NAMES.filter((name) => process.env[name] !== undefined) : [])
 
@@ -121,6 +125,7 @@ async function spawnServer(port, claim) {
       child.once('error', reject)
       child.once('spawn', () => {
         testLog('WT_ARTIFACT_SERVER_TEST_SPAWN_LOG', `${process.pid} ${port}`)
+        testLog('WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG', `${child.pid}`)
         child.unref()
         resolve()
       })
@@ -247,6 +252,8 @@ async function holdClaimForTest(claim) {
   const deadline = Date.now() + holdMs
   while (!stopping && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, Math.min(50, deadline - Date.now())))
+    const shutdownFile = process.env.WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE
+    if (shutdownFile && existsSync(shutdownFile)) cleanExit()
     if (!stopping && (!Number.isFinite(stopHeartbeatAfterMs) || Date.now() - startedAt < stopHeartbeatAfterMs)) claim.heartbeat()
   }
 }
@@ -331,6 +338,10 @@ async function main() {
     registrationFile = path.join(artifactRegistrationsDir(), `${session}.json`)
     atomicWriteJson(registrationFile, {
       pid: process.pid, roots, deny: configuredDenyPatterns(), startedAt: new Date().toISOString(),
+      ...(process.platform === 'win32' ? { identity: {
+        pid: process.pid, argv: process.argv,
+        startTime: Date.now() - process.uptime() * 1_000, startTimeApproximate: true, startTimeToleranceMs: 250,
+      } } : {}),
     })
   } catch (error) {
     process.stderr.write(`wt-artifact-server: ${error.message}\n`)
@@ -440,6 +451,8 @@ async function main() {
       }
     }
     const keepAlive = setInterval(() => {
+      const shutdownFile = TEST_MODE ? process.env.WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE : null
+      if (shutdownFile && existsSync(shutdownFile)) cleanExit()
       if (process.ppid !== parentPid) cleanExit()
       void retryTick()
     }, 2_000)

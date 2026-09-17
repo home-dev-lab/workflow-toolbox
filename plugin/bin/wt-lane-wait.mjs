@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // wt-lane-wait.mjs -- wait for one detached external lane without reading its log body.
 
-import { closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { classifyLane, readCurrentSupervision } from './lib/lane-supervisor-core.mjs'
 
@@ -27,7 +27,9 @@ function parse(argv) {
   if (!Number.isFinite(out.poll) || out.poll <= 0) return { error: '--poll must be a positive number of seconds' }
   if (!Number.isFinite(out.timeout) || out.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
   if (out.pid !== null && (!/^\d+$/.test(out.pid) || Number(out.pid) <= 0)) return { error: '--pid must be a positive process id' }
-  out.dir = path.resolve(out.dir)
+  // Keep the waiter and the recorded lane identity on the same spelling when TMPDIR
+  // traverses a macOS /private symlink.
+  try { out.dir = realpathSync(out.dir) } catch { out.dir = path.resolve(out.dir) }
   return out
 }
 

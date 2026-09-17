@@ -2,7 +2,7 @@
 import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionUnavailableMessage, terminateLane } from './lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { registeredWorktrees, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
 import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
@@ -98,7 +98,6 @@ async function main() {
     const controls = [...TEST_SEAMS_ACTIVE].map((name) => `${name}=${process.env[name]}`).join(' ')
     process.stderr.write(`⚠ LANE ORPHAN WATCH TEST MODE — ${controls} — sweep receipts are test-only and logging failures cannot alter watcher behavior. This must NEVER be set outside the test suite.\n`)
   }
-  if (process.platform !== 'linux') process.stdout.write(`${supervisionUnavailableMessage()}\n`)
   const sweep = () => {
     const watcherOrphans = terminateOrphanWatchers()
     if (watcherOrphans.status === 'unavailable') {

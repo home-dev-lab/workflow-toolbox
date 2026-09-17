@@ -1,0 +1,1667 @@
+{
+  "metrics": {
+    "cognitiveComplexity": {
+      "detail": "",
+      "file": "plugin/bin/lib/pilot-runner-core.mjs",
+      "function": "runPilot",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:206 Refactor this function to reduce its Cognitive Complexity from 261 to the 0 allowed.",
+          "file": "plugin/bin/lib/pilot-runner-core.mjs",
+          "function": "runPilot",
+          "line": 206,
+          "value": 261
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:170 Refactor this function to reduce its Cognitive Complexity from 197 to the 0 allowed.",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "function": "run",
+          "line": 170,
+          "value": 197
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:541 Refactor this function to reduce its Cognitive Complexity from 164 to the 0 allowed.",
+          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+          "function": "transition",
+          "line": 541,
+          "value": 164
+        },
+        {
+          "exact": "plugin/skills/adopt/scripts/install.mjs:1395 Refactor this function to reduce its Cognitive Complexity from 145 to the 0 allowed.",
+          "file": "plugin/skills/adopt/scripts/install.mjs",
+          "function": "auditOverlap",
+          "line": 1395,
+          "value": 145
+        },
+        {
+          "exact": "plugin/workflows/independent-analysis.js:1522 Refactor this function to reduce its Cognitive Complexity from 114 to the 0 allowed.",
+          "file": "plugin/workflows/independent-analysis.js",
+          "function": "adversarialVerification",
+          "line": 1522,
+          "value": 114
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/adversarial-verification.ts:240 Refactor this function to reduce its Cognitive Complexity from 114 to the 0 allowed.",
+          "file": "toolkit/packages/patterns/src/adversarial-verification.ts",
+          "function": "adversarialVerification",
+          "line": 240,
+          "value": 114
+        },
+        {
+          "exact": "plugin/bin/wt-lane.mjs:169 Refactor this function to reduce its Cognitive Complexity from 109 to the 0 allowed.",
+          "file": "plugin/bin/wt-lane.mjs",
+          "function": "main",
+          "line": 169,
+          "value": 109
+        },
+        {
+          "exact": "plugin/bin/lib/memory-index-check-core.mjs:127 Refactor this function to reduce its Cognitive Complexity from 103 to the 0 allowed.",
+          "file": "plugin/bin/lib/memory-index-check-core.mjs",
+          "function": "checkStore",
+          "line": 127,
+          "value": 103
+        },
+        {
+          "exact": "plugin/bin/wt-lane-orphan-watch.mjs:101 Refactor this function to reduce its Cognitive Complexity from 97 to the 0 allowed.",
+          "file": "plugin/bin/wt-lane-orphan-watch.mjs",
+          "function": "sweep",
+          "line": 101,
+          "value": 97
+        },
+        {
+          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:196 Refactor this function to reduce its Cognitive Complexity from 91 to the 0 allowed.",
+          "file": "plugin/bin/lib/orchestrator-runner-core.mjs",
+          "function": "runOrchestrator",
+          "line": 196,
+          "value": 91
+        },
+        {
+          "exact": "plugin/bin/wt-observe.mjs:1887 Refactor this function to reduce its Cognitive Complexity from 84 to the 0 allowed.",
+          "file": "plugin/bin/wt-observe.mjs",
+          "function": "cmdStart",
+          "line": 1887,
+          "value": 84
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/observe-cli.ts:599 Refactor this function to reduce its Cognitive Complexity from 84 to the 0 allowed.",
+          "file": "toolkit/packages/debugger/src/observe-cli.ts",
+          "function": "cmdStart",
+          "line": 599,
+          "value": 84
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/tournament.ts:250 Refactor this function to reduce its Cognitive Complexity from 74 to the 0 allowed.",
+          "file": "toolkit/packages/patterns/src/tournament.ts",
+          "function": "tournament",
+          "line": 250,
+          "value": 74
+        },
+        {
+          "exact": "toolkit/packages/comm/src/validate.ts:43 Refactor this function to reduce its Cognitive Complexity from 72 to the 0 allowed.",
+          "file": "toolkit/packages/comm/src/validate.ts",
+          "function": "validateNode",
+          "line": 43,
+          "value": 72
+        },
+        {
+          "exact": "toolkit/packages/smoke/src/capabilities-probe.ts:144 Refactor this function to reduce its Cognitive Complexity from 72 to the 0 allowed.",
+          "file": "toolkit/packages/smoke/src/capabilities-probe.ts",
+          "function": "ingestProbeMessage",
+          "line": 144,
+          "value": 72
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/probe-agent-type.ts:203 Refactor this function to reduce its Cognitive Complexity from 65 to the 0 allowed.",
+          "file": "toolkit/packages/patterns/src/probe-agent-type.ts",
+          "function": "probeAgentType",
+          "line": 203,
+          "value": 65
+        },
+        {
+          "exact": "plugin/bin/wt-stop-hook.mjs:852 Refactor this function to reduce its Cognitive Complexity from 61 to the 0 allowed.",
+          "file": "plugin/bin/wt-stop-hook.mjs",
+          "function": "formatAuditReportMarkdown",
+          "line": 852,
+          "value": 61
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/report-format.ts:36 Refactor this function to reduce its Cognitive Complexity from 61 to the 0 allowed.",
+          "file": "toolkit/packages/debugger/src/report-format.ts",
+          "function": "formatAuditReportMarkdown",
+          "line": 36,
+          "value": 61
+        },
+        {
+          "exact": "plugin/bin/lib/lane-supervisor-core.mjs:132 Refactor this function to reduce its Cognitive Complexity from 60 to the 0 allowed.",
+          "file": "plugin/bin/lib/lane-supervisor-core.mjs",
+          "function": "terminateLane",
+          "line": 132,
+          "value": 60
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/plan-and-execute.ts:177 Refactor this function to reduce its Cognitive Complexity from 59 to the 0 allowed.",
+          "file": "toolkit/packages/patterns/src/plan-and-execute.ts",
+          "function": "planAndExecute",
+          "line": 177,
+          "value": 59
+        }
+      ],
+      "value": 261
+    },
+    "coverageBranches": {
+      "detail": "",
+      "file": "plugin/bin/lib/actionability-core.mjs",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/actionability-core.mjs: branches 0%",
+          "file": "plugin/bin/lib/actionability-core.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/agent-type-tools.mjs: branches 0%",
+          "file": "plugin/bin/lib/agent-type-tools.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/autonomy-mandate.mjs: branches 0%",
+          "file": "plugin/bin/lib/autonomy-mandate.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/cli-help.mjs: branches 0%",
+          "file": "plugin/bin/lib/cli-help.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/command-invocation.mjs: branches 0%",
+          "file": "plugin/bin/lib/command-invocation.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/env-prerequisites.mjs: branches 0%",
+          "file": "plugin/bin/lib/env-prerequisites.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/fail-open-trace.mjs: branches 0%",
+          "file": "plugin/bin/lib/fail-open-trace.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/guard-journal-read.mjs: branches 0%",
+          "file": "plugin/bin/lib/guard-journal-read.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/guard-journal.mjs: branches 0%",
+          "file": "plugin/bin/lib/guard-journal.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/label-intent-runner.mjs: branches 0%",
+          "file": "plugin/bin/lib/label-intent-runner.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/lane-model-allowlist.mjs: branches 0%",
+          "file": "plugin/bin/lib/lane-model-allowlist.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/plugin-version-alignment.mjs: branches 0%",
+          "file": "plugin/bin/lib/plugin-version-alignment.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/prior-art-launch-guard-core.mjs: branches 0%",
+          "file": "plugin/bin/lib/prior-art-launch-guard-core.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/prior-art-state-paths.mjs: branches 0%",
+          "file": "plugin/bin/lib/prior-art-state-paths.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/queue-gate-marker-expiry.mjs: branches 0%",
+          "file": "plugin/bin/lib/queue-gate-marker-expiry.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-backoff.mjs: branches 0%",
+          "file": "plugin/bin/lib/quota-backoff.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-window-completeness.mjs: branches 0%",
+          "file": "plugin/bin/lib/quota-window-completeness.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/service-flag.mjs: branches 0%",
+          "file": "plugin/bin/lib/service-flag.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/session-env-log.mjs: branches 0%",
+          "file": "plugin/bin/lib/session-env-log.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/session-role.mjs: branches 0%",
+          "file": "plugin/bin/lib/session-role.mjs",
+          "value": 0
+        }
+      ],
+      "value": 40.12
+    },
+    "coverageFunctions": {
+      "detail": "",
+      "file": "plugin/bin/lib/actionability-core.mjs",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/actionability-core.mjs: functions 0%",
+          "file": "plugin/bin/lib/actionability-core.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/agent-type-tools.mjs: functions 0%",
+          "file": "plugin/bin/lib/agent-type-tools.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/autonomy-mandate.mjs: functions 0%",
+          "file": "plugin/bin/lib/autonomy-mandate.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/cli-help.mjs: functions 0%",
+          "file": "plugin/bin/lib/cli-help.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/env-prerequisites.mjs: functions 0%",
+          "file": "plugin/bin/lib/env-prerequisites.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/fail-open-trace.mjs: functions 0%",
+          "file": "plugin/bin/lib/fail-open-trace.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/guard-journal-read.mjs: functions 0%",
+          "file": "plugin/bin/lib/guard-journal-read.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/guard-journal.mjs: functions 0%",
+          "file": "plugin/bin/lib/guard-journal.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/label-intent-runner.mjs: functions 0%",
+          "file": "plugin/bin/lib/label-intent-runner.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/lane-model-allowlist.mjs: functions 0%",
+          "file": "plugin/bin/lib/lane-model-allowlist.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/plugin-version-alignment.mjs: functions 0%",
+          "file": "plugin/bin/lib/plugin-version-alignment.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/prior-art-launch-guard-core.mjs: functions 0%",
+          "file": "plugin/bin/lib/prior-art-launch-guard-core.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/prior-art-state-paths.mjs: functions 0%",
+          "file": "plugin/bin/lib/prior-art-state-paths.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/queue-gate-marker-expiry.mjs: functions 0%",
+          "file": "plugin/bin/lib/queue-gate-marker-expiry.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-backoff.mjs: functions 0%",
+          "file": "plugin/bin/lib/quota-backoff.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-cache-tolerance.mjs: functions 0%",
+          "file": "plugin/bin/lib/quota-cache-tolerance.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-window-completeness.mjs: functions 0%",
+          "file": "plugin/bin/lib/quota-window-completeness.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/service-flag.mjs: functions 0%",
+          "file": "plugin/bin/lib/service-flag.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/session-env-log.mjs: functions 0%",
+          "file": "plugin/bin/lib/session-env-log.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/session-role.mjs: functions 0%",
+          "file": "plugin/bin/lib/session-role.mjs",
+          "value": 0
+        }
+      ],
+      "value": 44.48
+    },
+    "coverageLines": {
+      "detail": "",
+      "file": "plugin/bin/lib/actionability-core.mjs",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/actionability-core.mjs: lines 0%",
+          "file": "plugin/bin/lib/actionability-core.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/agent-type-tools.mjs: lines 0%",
+          "file": "plugin/bin/lib/agent-type-tools.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/autonomy-mandate.mjs: lines 0%",
+          "file": "plugin/bin/lib/autonomy-mandate.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/cli-help.mjs: lines 0%",
+          "file": "plugin/bin/lib/cli-help.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/env-prerequisites.mjs: lines 0%",
+          "file": "plugin/bin/lib/env-prerequisites.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/fail-open-trace.mjs: lines 0%",
+          "file": "plugin/bin/lib/fail-open-trace.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/guard-journal-read.mjs: lines 0%",
+          "file": "plugin/bin/lib/guard-journal-read.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/label-intent-runner.mjs: lines 0%",
+          "file": "plugin/bin/lib/label-intent-runner.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/plugin-data-dir.selftest.mjs: lines 0%",
+          "file": "plugin/bin/lib/plugin-data-dir.selftest.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/plugin-version-alignment.mjs: lines 0%",
+          "file": "plugin/bin/lib/plugin-version-alignment.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/prior-art-launch-guard-core.mjs: lines 0%",
+          "file": "plugin/bin/lib/prior-art-launch-guard-core.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/prior-art-state-paths.mjs: lines 0%",
+          "file": "plugin/bin/lib/prior-art-state-paths.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/queue-gate-marker-expiry.mjs: lines 0%",
+          "file": "plugin/bin/lib/queue-gate-marker-expiry.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-backoff.mjs: lines 0%",
+          "file": "plugin/bin/lib/quota-backoff.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-cache-tolerance.mjs: lines 0%",
+          "file": "plugin/bin/lib/quota-cache-tolerance.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-window-completeness.mjs: lines 0%",
+          "file": "plugin/bin/lib/quota-window-completeness.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/service-flag.mjs: lines 0%",
+          "file": "plugin/bin/lib/service-flag.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/session-env-log.mjs: lines 0%",
+          "file": "plugin/bin/lib/session-env-log.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/session-role.mjs: lines 0%",
+          "file": "plugin/bin/lib/session-role.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/subagent-delivery-shape.mjs: lines 0%",
+          "file": "plugin/bin/lib/subagent-delivery-shape.mjs",
+          "value": 0
+        }
+      ],
+      "value": 42
+    },
+    "coverageStatements": {
+      "detail": "",
+      "file": "plugin/bin/lib/actionability-core.mjs",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/actionability-core.mjs: statements 0%",
+          "file": "plugin/bin/lib/actionability-core.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/agent-type-tools.mjs: statements 0%",
+          "file": "plugin/bin/lib/agent-type-tools.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/autonomy-mandate.mjs: statements 0%",
+          "file": "plugin/bin/lib/autonomy-mandate.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/cli-help.mjs: statements 0%",
+          "file": "plugin/bin/lib/cli-help.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/env-prerequisites.mjs: statements 0%",
+          "file": "plugin/bin/lib/env-prerequisites.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/fail-open-trace.mjs: statements 0%",
+          "file": "plugin/bin/lib/fail-open-trace.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/guard-journal-read.mjs: statements 0%",
+          "file": "plugin/bin/lib/guard-journal-read.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/label-intent-runner.mjs: statements 0%",
+          "file": "plugin/bin/lib/label-intent-runner.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/plugin-data-dir.selftest.mjs: statements 0%",
+          "file": "plugin/bin/lib/plugin-data-dir.selftest.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/plugin-version-alignment.mjs: statements 0%",
+          "file": "plugin/bin/lib/plugin-version-alignment.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/prior-art-launch-guard-core.mjs: statements 0%",
+          "file": "plugin/bin/lib/prior-art-launch-guard-core.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/prior-art-state-paths.mjs: statements 0%",
+          "file": "plugin/bin/lib/prior-art-state-paths.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/queue-gate-marker-expiry.mjs: statements 0%",
+          "file": "plugin/bin/lib/queue-gate-marker-expiry.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-backoff.mjs: statements 0%",
+          "file": "plugin/bin/lib/quota-backoff.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-cache-tolerance.mjs: statements 0%",
+          "file": "plugin/bin/lib/quota-cache-tolerance.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/quota-window-completeness.mjs: statements 0%",
+          "file": "plugin/bin/lib/quota-window-completeness.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/service-flag.mjs: statements 0%",
+          "file": "plugin/bin/lib/service-flag.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/session-env-log.mjs: statements 0%",
+          "file": "plugin/bin/lib/session-env-log.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/session-role.mjs: statements 0%",
+          "file": "plugin/bin/lib/session-role.mjs",
+          "value": 0
+        },
+        {
+          "exact": "plugin/bin/lib/subagent-delivery-shape.mjs: statements 0%",
+          "file": "plugin/bin/lib/subagent-delivery-shape.mjs",
+          "value": 0
+        }
+      ],
+      "value": 40.62
+    },
+    "cyclomaticComplexity": {
+      "detail": "",
+      "file": "plugin/bin/lib/lifecycle-launch.mjs",
+      "function": "run",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:170 Async function 'run' has a complexity of 127. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "function": "run",
+          "line": 170,
+          "value": 127
+        },
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:206 Async function 'runPilot' has a complexity of 112. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/pilot-runner-core.mjs",
+          "function": "runPilot",
+          "line": 206,
+          "value": 112
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:541 Function 'transition' has a complexity of 109. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+          "function": "transition",
+          "line": 541,
+          "value": 109
+        },
+        {
+          "exact": "plugin/bin/wt-lane.mjs:169 Async function 'main' has a complexity of 94. Maximum allowed is 0.",
+          "file": "plugin/bin/wt-lane.mjs",
+          "function": "main",
+          "line": 169,
+          "value": 94
+        },
+        {
+          "exact": "plugin/skills/adopt/scripts/install.mjs:1395 Function 'auditOverlap' has a complexity of 91. Maximum allowed is 0.",
+          "file": "plugin/skills/adopt/scripts/install.mjs",
+          "function": "auditOverlap",
+          "line": 1395,
+          "value": 91
+        },
+        {
+          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:196 Async function 'runOrchestrator' has a complexity of 79. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/orchestrator-runner-core.mjs",
+          "function": "runOrchestrator",
+          "line": 196,
+          "value": 79
+        },
+        {
+          "exact": "plugin/bin/lib/lane-supervisor-core.mjs:132 Function 'terminateLane' has a complexity of 72. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lane-supervisor-core.mjs",
+          "function": "terminateLane",
+          "line": 132,
+          "value": 72
+        },
+        {
+          "exact": "plugin/bin/lib/run-cost-core.mjs:171 Function 'computeRunCost' has a complexity of 72. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/run-cost-core.mjs",
+          "function": "computeRunCost",
+          "line": 171,
+          "value": 72
+        },
+        {
+          "exact": "plugin/workflows/independent-analysis.js:1522 Async function 'adversarialVerification' has a complexity of 71. Maximum allowed is 0.",
+          "file": "plugin/workflows/independent-analysis.js",
+          "function": "adversarialVerification",
+          "line": 1522,
+          "value": 71
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/adversarial-verification.ts:240 Async function 'adversarialVerification' has a complexity of 71. Maximum allowed is 0.",
+          "file": "toolkit/packages/patterns/src/adversarial-verification.ts",
+          "function": "adversarialVerification",
+          "line": 240,
+          "value": 71
+        },
+        {
+          "exact": "plugin/bin/wt-outbound-guard-hook.mjs:203 Function 'main' has a complexity of 69. Maximum allowed is 0.",
+          "file": "plugin/bin/wt-outbound-guard-hook.mjs",
+          "function": "main",
+          "line": 203,
+          "value": 69
+        },
+        {
+          "exact": "plugin/bin/lib/memory-index-check-core.mjs:127 Function 'checkStore' has a complexity of 68. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/memory-index-check-core.mjs",
+          "function": "checkStore",
+          "line": 127,
+          "value": 68
+        },
+        {
+          "exact": "plugin/hooks/hooks.js:138 Function 'renderPane' has a complexity of 68. Maximum allowed is 0.",
+          "file": "plugin/hooks/hooks.js",
+          "function": "renderPane",
+          "line": 138,
+          "value": 68
+        },
+        {
+          "exact": "plugin/bin/wt-lane-orphan-watch.mjs:101 Arrow function has a complexity of 67. Maximum allowed is 0.",
+          "file": "plugin/bin/wt-lane-orphan-watch.mjs",
+          "function": "sweep",
+          "line": 101,
+          "value": 67
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/tournament.ts:250 Async function 'tournament' has a complexity of 60. Maximum allowed is 0.",
+          "file": "toolkit/packages/patterns/src/tournament.ts",
+          "function": "tournament",
+          "line": 250,
+          "value": 60
+        },
+        {
+          "exact": "plugin/bin/wt-actionable-snapshot-producer-hook.mjs:210 Function 'main' has a complexity of 52. Maximum allowed is 0.",
+          "file": "plugin/bin/wt-actionable-snapshot-producer-hook.mjs",
+          "function": "main",
+          "line": 210,
+          "value": 52
+        },
+        {
+          "exact": "plugin/bin/wt-opencode-envelope.mjs:553 Async function 'main' has a complexity of 51. Maximum allowed is 0.",
+          "file": "plugin/bin/wt-opencode-envelope.mjs",
+          "function": "main",
+          "line": 553,
+          "value": 51
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/plan-and-execute.ts:177 Async function 'planAndExecute' has a complexity of 51. Maximum allowed is 0.",
+          "file": "toolkit/packages/patterns/src/plan-and-execute.ts",
+          "function": "planAndExecute",
+          "line": 177,
+          "value": 51
+        },
+        {
+          "exact": "plugin/bin/wt-autonomy-watch.mjs:338 Function 'poll' has a complexity of 47. Maximum allowed is 0.",
+          "file": "plugin/bin/wt-autonomy-watch.mjs",
+          "function": "poll",
+          "line": 338,
+          "value": 47
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/probe-agent-type.ts:203 Async function 'probeAgentType' has a complexity of 46. Maximum allowed is 0.",
+          "file": "toolkit/packages/patterns/src/probe-agent-type.ts",
+          "function": "probeAgentType",
+          "line": 203,
+          "value": 46
+        }
+      ],
+      "value": 127
+    },
+    "dependencyCycles": {
+      "detail": "",
+      "file": "toolkit/packages/debugger/src/project-registry.ts",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "packages/debugger/src/project-registry.ts -> packages/debugger/src/source.ts",
+          "file": "toolkit/packages/debugger/src/project-registry.ts",
+          "value": 1
+        },
+        {
+          "exact": "packages/patterns/src/envelope-contract.ts -> packages/patterns/src/structured-salvage.ts",
+          "file": "toolkit/packages/patterns/src/envelope-contract.ts",
+          "value": 1
+        }
+      ],
+      "value": 2
+    },
+    "depth": {
+      "detail": "",
+      "file": "plugin/bin/wt-observe.mjs",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "plugin/bin/wt-observe.mjs:1927 Blocks are nested too deeply (7). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-observe.mjs",
+          "function": "",
+          "line": 1927,
+          "value": 7
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/observe-cli.ts:656 Blocks are nested too deeply (7). Maximum allowed is 0.",
+          "file": "toolkit/packages/debugger/src/observe-cli.ts",
+          "function": "",
+          "line": 656,
+          "value": 7
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:268 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "function": "",
+          "line": 268,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:369 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/pilot-runner-core.mjs",
+          "function": "",
+          "line": 369,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/wt-arc-watch.mjs:727 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-arc-watch.mjs",
+          "function": "",
+          "line": 727,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/wt-lane.mjs:298 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-lane.mjs",
+          "function": "",
+          "line": 298,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/wt-quota-watch.mjs:630 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-quota-watch.mjs",
+          "function": "",
+          "line": 630,
+          "value": 6
+        },
+        {
+          "exact": "plugin/workflows/independent-analysis.js:978 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "plugin/workflows/independent-analysis.js",
+          "function": "",
+          "line": 978,
+          "value": 6
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/capability-registry.ts:584 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "toolkit/packages/debugger/src/capability-registry.ts",
+          "function": "",
+          "line": 584,
+          "value": 6
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/probe-agent-type.ts:323 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "toolkit/packages/patterns/src/probe-agent-type.ts",
+          "function": "",
+          "line": 323,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/lib/guard-journal-read.mjs:137 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/guard-journal-read.mjs",
+          "function": "",
+          "line": 137,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/lib/resolved-binary.mjs:26 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/resolved-binary.mjs",
+          "function": "",
+          "line": 26,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/lib/second-opinion-core.mjs:159 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/second-opinion-core.mjs",
+          "function": "",
+          "line": 159,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/wt-cache-keepalive.mjs:149 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-cache-keepalive.mjs",
+          "function": "",
+          "line": 149,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/wt-delegation-ladder-hook.mjs:71 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-delegation-ladder-hook.mjs",
+          "function": "",
+          "line": 71,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/wt-stop-hook.mjs:495 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-stop-hook.mjs",
+          "function": "",
+          "line": 495,
+          "value": 5
+        },
+        {
+          "exact": "plugin/skills/adopt/scripts/install.mjs:1814 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/skills/adopt/scripts/install.mjs",
+          "function": "",
+          "line": 1814,
+          "value": 5
+        },
+        {
+          "exact": "plugin/skills/workflow-composer/scripts/validate-workflow.mjs:75 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/skills/workflow-composer/scripts/validate-workflow.mjs",
+          "function": "",
+          "line": 75,
+          "value": 5
+        },
+        {
+          "exact": "toolkit/packages/build/src/lint.ts:96 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "toolkit/packages/build/src/lint.ts",
+          "function": "",
+          "line": 96,
+          "value": 5
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/tool-denial.ts:277 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "toolkit/packages/debugger/src/tool-denial.ts",
+          "function": "",
+          "line": 277,
+          "value": 5
+        }
+      ],
+      "value": 7
+    },
+    "duplication": {
+      "detail": "2670 duplicated lines",
+      "file": "plugin/skills/workflow-composer/assets/examples/toolkit/dev-implement.workflow.ts",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "skills/workflow-composer/assets/examples/toolkit/dev-implement.workflow.ts: 432 duplicated line occurrences",
+          "file": "plugin/skills/workflow-composer/assets/examples/toolkit/dev-implement.workflow.ts",
+          "value": 432
+        },
+        {
+          "exact": "bin/wt-stop-hook.mjs: 383 duplicated line occurrences",
+          "file": "plugin/bin/wt-stop-hook.mjs",
+          "value": 383
+        },
+        {
+          "exact": "skills/workflow-composer/assets/examples/toolkit/coverage-audit.workflow.ts: 370 duplicated line occurrences",
+          "file": "plugin/skills/workflow-composer/assets/examples/toolkit/coverage-audit.workflow.ts",
+          "value": 370
+        },
+        {
+          "exact": "skills/workflow-composer/assets/examples/toolkit/docs-audit.workflow.ts: 349 duplicated line occurrences",
+          "file": "plugin/skills/workflow-composer/assets/examples/toolkit/docs-audit.workflow.ts",
+          "value": 349
+        },
+        {
+          "exact": "bin/wt-debug.mjs: 255 duplicated line occurrences",
+          "file": "plugin/bin/wt-debug.mjs",
+          "value": 255
+        },
+        {
+          "exact": "skills/adopt/scripts/install.mjs: 150 duplicated line occurrences",
+          "file": "plugin/skills/adopt/scripts/install.mjs",
+          "value": 150
+        },
+        {
+          "exact": "external-delegation.ts: 136 duplicated line occurrences",
+          "file": "external-delegation.ts",
+          "value": 136
+        },
+        {
+          "exact": "bin/wt-find-newermt-format-guard-hook.mjs: 133 duplicated line occurrences",
+          "file": "plugin/bin/wt-find-newermt-format-guard-hook.mjs",
+          "value": 133
+        },
+        {
+          "exact": "skills/adopt/scripts/changelog-span.mjs: 126 duplicated line occurrences",
+          "file": "plugin/skills/adopt/scripts/changelog-span.mjs",
+          "value": 126
+        },
+        {
+          "exact": "bin/wt-verifier-cli-guard-hook.mjs: 125 duplicated line occurrences",
+          "file": "plugin/bin/wt-verifier-cli-guard-hook.mjs",
+          "value": 125
+        },
+        {
+          "exact": "skills/workflow-composer/assets/examples/toolkit/dev-plan.workflow.ts: 115 duplicated line occurrences",
+          "file": "plugin/skills/workflow-composer/assets/examples/toolkit/dev-plan.workflow.ts",
+          "value": 115
+        },
+        {
+          "exact": "skills/workflow-composer/assets/examples/toolkit/showcase-deep.workflow.ts: 103 duplicated line occurrences",
+          "file": "plugin/skills/workflow-composer/assets/examples/toolkit/showcase-deep.workflow.ts",
+          "value": 103
+        },
+        {
+          "exact": "provenance-gate.ts: 102 duplicated line occurrences",
+          "file": "provenance-gate.ts",
+          "value": 102
+        },
+        {
+          "exact": "fan-out-and-synthesize.ts: 98 duplicated line occurrences",
+          "file": "fan-out-and-synthesize.ts",
+          "value": 98
+        },
+        {
+          "exact": "bin/wt-autonomy-watch.mjs: 89 duplicated line occurrences",
+          "file": "plugin/bin/wt-autonomy-watch.mjs",
+          "value": 89
+        },
+        {
+          "exact": "plan-and-execute.ts: 82 duplicated line occurrences",
+          "file": "plan-and-execute.ts",
+          "value": 82
+        },
+        {
+          "exact": "skills/workflow-composer/assets/examples/toolkit/all-patterns-workflow.workflow.ts: 81 duplicated line occurrences",
+          "file": "plugin/skills/workflow-composer/assets/examples/toolkit/all-patterns-workflow.workflow.ts",
+          "value": 81
+        },
+        {
+          "exact": "skills/workflow-composer/assets/examples/toolkit/dev-review-fix.workflow.ts: 79 duplicated line occurrences",
+          "file": "plugin/skills/workflow-composer/assets/examples/toolkit/dev-review-fix.workflow.ts",
+          "value": 79
+        },
+        {
+          "exact": "bin/wt-opencode-envelope.mjs: 78 duplicated line occurrences",
+          "file": "plugin/bin/wt-opencode-envelope.mjs",
+          "value": 78
+        },
+        {
+          "exact": "transcript-usage.ts: 77 duplicated line occurrences",
+          "file": "transcript-usage.ts",
+          "value": 77
+        }
+      ],
+      "value": 2.885613003631333
+    },
+    "eslintWarnings": {
+      "detail": "687 warnings",
+      "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs: 41 warning(s)",
+          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+          "value": 41
+        },
+        {
+          "exact": "plugin/bin/wt-observe.mjs: 37 warning(s)",
+          "file": "plugin/bin/wt-observe.mjs",
+          "value": 37
+        },
+        {
+          "exact": "plugin/workflows/independent-analysis.js: 33 warning(s)",
+          "file": "plugin/workflows/independent-analysis.js",
+          "value": 33
+        },
+        {
+          "exact": "plugin/hooks/hooks.js: 32 warning(s)",
+          "file": "plugin/hooks/hooks.js",
+          "value": 32
+        },
+        {
+          "exact": "plugin/bin/wt-lane.mjs: 20 warning(s)",
+          "file": "plugin/bin/wt-lane.mjs",
+          "value": 20
+        },
+        {
+          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs: 18 warning(s)",
+          "file": "plugin/bin/lib/orchestrator-runner-core.mjs",
+          "value": 18
+        },
+        {
+          "exact": "plugin/bin/wt-verifier-cli-guard-hook.mjs: 18 warning(s)",
+          "file": "plugin/bin/wt-verifier-cli-guard-hook.mjs",
+          "value": 18
+        },
+        {
+          "exact": "plugin/bin/wt-stop-hook.mjs: 17 warning(s)",
+          "file": "plugin/bin/wt-stop-hook.mjs",
+          "value": 17
+        },
+        {
+          "exact": "plugin/bin/wt-artifact-server.mjs: 13 warning(s)",
+          "file": "plugin/bin/wt-artifact-server.mjs",
+          "value": 13
+        },
+        {
+          "exact": "plugin/skills/adopt/scripts/install.mjs: 12 warning(s)",
+          "file": "plugin/skills/adopt/scripts/install.mjs",
+          "value": 12
+        },
+        {
+          "exact": "plugin/skills/workflow-composer/assets/examples/verify-findings.js: 12 warning(s)",
+          "file": "plugin/skills/workflow-composer/assets/examples/verify-findings.js",
+          "value": 12
+        },
+        {
+          "exact": "plugin/bin/lib/run-cost-core.mjs: 11 warning(s)",
+          "file": "plugin/bin/lib/run-cost-core.mjs",
+          "value": 11
+        },
+        {
+          "exact": "plugin/bin/lib/stale-date-guard-core.mjs: 10 warning(s)",
+          "file": "plugin/bin/lib/stale-date-guard-core.mjs",
+          "value": 10
+        },
+        {
+          "exact": "plugin/bin/lib/wave-lifecycle-server.mjs: 10 warning(s)",
+          "file": "plugin/bin/lib/wave-lifecycle-server.mjs",
+          "value": 10
+        },
+        {
+          "exact": "plugin/skills/workflow-composer/assets/examples/repo-health-snapshot.js: 10 warning(s)",
+          "file": "plugin/skills/workflow-composer/assets/examples/repo-health-snapshot.js",
+          "value": 10
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/observe-lifecycle.ts: 10 warning(s)",
+          "file": "toolkit/packages/debugger/src/observe-lifecycle.ts",
+          "value": 10
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs: 9 warning(s)",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "value": 9
+        },
+        {
+          "exact": "plugin/bin/wt-queue-not-empty-gate-hook.mjs: 9 warning(s)",
+          "file": "plugin/bin/wt-queue-not-empty-gate-hook.mjs",
+          "value": 9
+        },
+        {
+          "exact": "plugin/bin/lib/opencode-skill-fence.mjs: 8 warning(s)",
+          "file": "plugin/bin/lib/opencode-skill-fence.mjs",
+          "value": 8
+        },
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs: 7 warning(s)",
+          "file": "plugin/bin/lib/pilot-runner-core.mjs",
+          "value": 7
+        }
+      ],
+      "value": 687
+    },
+    "fileLines": {
+      "detail": "",
+      "file": "plugin/bin/wt-observe.mjs",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "plugin/bin/wt-observe.mjs:5 File has too many lines (2729). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-observe.mjs",
+          "function": "",
+          "line": 5,
+          "value": 2729
+        },
+        {
+          "exact": "plugin/workflows/independent-analysis.js:2 File has too many lines (2176). Maximum allowed is 1.",
+          "file": "plugin/workflows/independent-analysis.js",
+          "function": "",
+          "line": 2,
+          "value": 2176
+        },
+        {
+          "exact": "plugin/skills/adopt/scripts/install.mjs:69 File has too many lines (1747). Maximum allowed is 1.",
+          "file": "plugin/skills/adopt/scripts/install.mjs",
+          "function": "",
+          "line": 69,
+          "value": 1747
+        },
+        {
+          "exact": "plugin/bin/wt-stop-hook.mjs:5 File has too many lines (1433). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-stop-hook.mjs",
+          "function": "",
+          "line": 5,
+          "value": 1433
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/observe-cli.ts:47 File has too many lines (1264). Maximum allowed is 1.",
+          "file": "toolkit/packages/debugger/src/observe-cli.ts",
+          "function": "",
+          "line": 47,
+          "value": 1264
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:3 File has too many lines (974). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+          "function": "",
+          "line": 3,
+          "value": 974
+        },
+        {
+          "exact": "plugin/bin/wt-verifier-cli-guard-hook.mjs:50 File has too many lines (818). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-verifier-cli-guard-hook.mjs",
+          "function": "",
+          "line": 50,
+          "value": 818
+        },
+        {
+          "exact": "plugin/bin/wt-quota-watch.mjs:55 File has too many lines (622). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-quota-watch.mjs",
+          "function": "",
+          "line": 55,
+          "value": 622
+        },
+        {
+          "exact": "plugin/bin/wt-lane.mjs:5 File has too many lines (580). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-lane.mjs",
+          "function": "",
+          "line": 5,
+          "value": 580
+        },
+        {
+          "exact": "plugin/bin/wt-opencode-envelope.mjs:19 File has too many lines (563). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-opencode-envelope.mjs",
+          "function": "",
+          "line": 19,
+          "value": 563
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/adversarial-verification.ts:22 File has too many lines (539). Maximum allowed is 1.",
+          "file": "toolkit/packages/patterns/src/adversarial-verification.ts",
+          "function": "",
+          "line": 22,
+          "value": 539
+        },
+        {
+          "exact": "plugin/bin/wt-artifact-server.mjs:4 File has too many lines (514). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-artifact-server.mjs",
+          "function": "",
+          "line": 4,
+          "value": 514
+        },
+        {
+          "exact": "plugin/hooks/hooks.js:3 File has too many lines (494). Maximum allowed is 1.",
+          "file": "plugin/hooks/hooks.js",
+          "function": "PANE_ID",
+          "line": 3,
+          "value": 494
+        },
+        {
+          "exact": "toolkit/packages/build/src/cli.ts:28 File has too many lines (485). Maximum allowed is 1.",
+          "file": "toolkit/packages/build/src/cli.ts",
+          "function": "",
+          "line": 28,
+          "value": 485
+        },
+        {
+          "exact": "plugin/bin/wt-arc-watch.mjs:50 File has too many lines (475). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-arc-watch.mjs",
+          "function": "",
+          "line": 50,
+          "value": 475
+        },
+        {
+          "exact": "plugin/bin/wt-autonomy-watch.mjs:14 File has too many lines (464). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-autonomy-watch.mjs",
+          "function": "",
+          "line": 14,
+          "value": 464
+        },
+        {
+          "exact": "plugin/bin/wt-artifact-server-ensure.mjs:4 File has too many lines (432). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-artifact-server-ensure.mjs",
+          "function": "",
+          "line": 4,
+          "value": 432
+        },
+        {
+          "exact": "plugin/bin/wt-debug.mjs:5 File has too many lines (423). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-debug.mjs",
+          "function": "",
+          "line": 5,
+          "value": 423
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/capability-registry.ts:37 File has too many lines (422). Maximum allowed is 1.",
+          "file": "toolkit/packages/debugger/src/capability-registry.ts",
+          "function": "",
+          "line": 37,
+          "value": 422
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:3 File has too many lines (421). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "function": "",
+          "line": 3,
+          "value": 421
+        }
+      ],
+      "value": 2729
+    },
+    "functionLines": {
+      "detail": "",
+      "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+      "function": "createLifecycleStateMachine",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:278 Function 'createLifecycleStateMachine' has too many lines (708). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+          "function": "createLifecycleStateMachine",
+          "line": 278,
+          "value": 708
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/adversarial-verification.ts:240 Async function 'adversarialVerification' has too many lines (484). Maximum allowed is 1.",
+          "file": "toolkit/packages/patterns/src/adversarial-verification.ts",
+          "function": "adversarialVerification",
+          "line": 240,
+          "value": 484
+        },
+        {
+          "exact": "plugin/workflows/independent-analysis.js:1522 Async function 'adversarialVerification' has too many lines (449). Maximum allowed is 1.",
+          "file": "plugin/workflows/independent-analysis.js",
+          "function": "adversarialVerification",
+          "line": 1522,
+          "value": 449
+        },
+        {
+          "exact": "plugin/bin/wt-lane.mjs:169 Async function 'main' has too many lines (426). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-lane.mjs",
+          "function": "main",
+          "line": 169,
+          "value": 426
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:53 Function 'createLifecycleLaunch' has too many lines (377). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "function": "createLifecycleLaunch",
+          "line": 53,
+          "value": 377
+        },
+        {
+          "exact": "plugin/bin/lib/memory-index-check-core.mjs:127 Function 'checkStore' has too many lines (326). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/memory-index-check-core.mjs",
+          "function": "checkStore",
+          "line": 127,
+          "value": 326
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/tournament.ts:250 Async function 'tournament' has too many lines (284). Maximum allowed is 1.",
+          "file": "toolkit/packages/patterns/src/tournament.ts",
+          "function": "tournament",
+          "line": 250,
+          "value": 284
+        },
+        {
+          "exact": "plugin/hooks/hooks.js:138 Function 'renderPane' has too many lines (255). Maximum allowed is 1.",
+          "file": "plugin/hooks/hooks.js",
+          "function": "renderPane",
+          "line": 138,
+          "value": 255
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/classify-and-act.ts:117 Async function 'classifyAndAct' has too many lines (232). Maximum allowed is 1.",
+          "file": "toolkit/packages/patterns/src/classify-and-act.ts",
+          "function": "classifyAndAct",
+          "line": 117,
+          "value": 232
+        },
+        {
+          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:196 Async function 'runOrchestrator' has too many lines (226). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/orchestrator-runner-core.mjs",
+          "function": "runOrchestrator",
+          "line": 196,
+          "value": 226
+        },
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:206 Async function 'runPilot' has too many lines (226). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/pilot-runner-core.mjs",
+          "function": "runPilot",
+          "line": 206,
+          "value": 226
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/plan-and-execute.ts:177 Async function 'planAndExecute' has too many lines (218). Maximum allowed is 1.",
+          "file": "toolkit/packages/patterns/src/plan-and-execute.ts",
+          "function": "planAndExecute",
+          "line": 177,
+          "value": 218
+        },
+        {
+          "exact": "plugin/skills/adopt/scripts/install.mjs:1395 Function 'auditOverlap' has too many lines (216). Maximum allowed is 1.",
+          "file": "plugin/skills/adopt/scripts/install.mjs",
+          "function": "auditOverlap",
+          "line": 1395,
+          "value": 216
+        },
+        {
+          "exact": "plugin/bin/wt-artifact-server.mjs:234 Async function 'serve' has too many lines (212). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-artifact-server.mjs",
+          "function": "serve",
+          "line": 234,
+          "value": 212
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/generate-and-filter.ts:122 Async function 'generateAndFilter' has too many lines (207). Maximum allowed is 1.",
+          "file": "toolkit/packages/patterns/src/generate-and-filter.ts",
+          "function": "generateAndFilter",
+          "line": 122,
+          "value": 207
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/report-format.ts:36 Function 'formatAuditReportMarkdown' has too many lines (183). Maximum allowed is 1.",
+          "file": "toolkit/packages/debugger/src/report-format.ts",
+          "function": "formatAuditReportMarkdown",
+          "line": 36,
+          "value": 183
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/score-and-rank.ts:179 Async function 'scoreAndRank' has too many lines (175). Maximum allowed is 1.",
+          "file": "toolkit/packages/patterns/src/score-and-rank.ts",
+          "function": "scoreAndRank",
+          "line": 179,
+          "value": 175
+        },
+        {
+          "exact": "plugin/skills/workflow-composer/scripts/validate-workflow.mjs:174 Function 'lintWorkflowSource' has too many lines (172). Maximum allowed is 1.",
+          "file": "plugin/skills/workflow-composer/scripts/validate-workflow.mjs",
+          "function": "lintWorkflowSource",
+          "line": 174,
+          "value": 172
+        },
+        {
+          "exact": "toolkit/packages/build/src/lint.ts:230 Function 'lintWorkflowSource' has too many lines (172). Maximum allowed is 1.",
+          "file": "toolkit/packages/build/src/lint.ts",
+          "function": "lintWorkflowSource",
+          "line": 230,
+          "value": 172
+        },
+        {
+          "exact": "plugin/bin/wt-stop-hook.mjs:852 Function 'formatAuditReportMarkdown' has too many lines (164). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-stop-hook.mjs",
+          "function": "formatAuditReportMarkdown",
+          "line": 852,
+          "value": 164
+        }
+      ],
+      "value": 708
+    },
+    "knipIssues": {
+      "detail": "",
+      "file": "plugin/bin/lib/artifact-server.mjs",
+      "function": "",
+      "offenders": [
+        {
+          "exact": "plugin/bin/lib/artifact-server.mjs: 8 issue(s)",
+          "file": "plugin/bin/lib/artifact-server.mjs",
+          "value": 8
+        },
+        {
+          "exact": "toolkit/packages/smoke/src/lib.ts: 8 issue(s)",
+          "file": "toolkit/packages/smoke/src/lib.ts",
+          "value": 8
+        },
+        {
+          "exact": "plugin/bin/lib/wt-lane-saturation-core.mjs: 7 issue(s)",
+          "file": "plugin/bin/lib/wt-lane-saturation-core.mjs",
+          "value": 7
+        },
+        {
+          "exact": "toolkit/packages/smoke/src/changelog.ts: 6 issue(s)",
+          "file": "toolkit/packages/smoke/src/changelog.ts",
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/lib/lane-live-scan.mjs: 5 issue(s)",
+          "file": "plugin/bin/lib/lane-live-scan.mjs",
+          "value": 5
+        },
+        {
+          "exact": "toolkit/packages/build/package.json: 5 issue(s)",
+          "file": "toolkit/packages/build/package.json",
+          "value": 5
+        },
+        {
+          "exact": "toolkit/packages/scaffold/package.json: 5 issue(s)",
+          "file": "toolkit/packages/scaffold/package.json",
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/lib/intake-triage-core.mjs: 4 issue(s)",
+          "file": "plugin/bin/lib/intake-triage-core.mjs",
+          "value": 4
+        },
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs: 4 issue(s)",
+          "file": "plugin/bin/lib/pilot-runner-core.mjs",
+          "value": 4
+        },
+        {
+          "exact": "plugin/bin/lib/rules-manifest.mjs: 4 issue(s)",
+          "file": "plugin/bin/lib/rules-manifest.mjs",
+          "value": 4
+        },
+        {
+          "exact": "toolkit/packages/debugger/package.json: 4 issue(s)",
+          "file": "toolkit/packages/debugger/package.json",
+          "value": 4
+        },
+        {
+          "exact": "toolkit/packages/patterns/package.json: 4 issue(s)",
+          "file": "toolkit/packages/patterns/package.json",
+          "value": 4
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/provenance-gate.ts: 4 issue(s)",
+          "file": "toolkit/packages/patterns/src/provenance-gate.ts",
+          "value": 4
+        },
+        {
+          "exact": "toolkit/packages/smoke/package.json: 4 issue(s)",
+          "file": "toolkit/packages/smoke/package.json",
+          "value": 4
+        },
+        {
+          "exact": "toolkit/packages/smoke/src/agent-schema.ts: 4 issue(s)",
+          "file": "toolkit/packages/smoke/src/agent-schema.ts",
+          "value": 4
+        },
+        {
+          "exact": ".github/workflows/cross-os.yml: 3 issue(s)",
+          "file": ".github/workflows/cross-os.yml",
+          "value": 3
+        },
+        {
+          "exact": "plugin/bin/lib/command-repeat-core.mjs: 3 issue(s)",
+          "file": "plugin/bin/lib/command-repeat-core.mjs",
+          "value": 3
+        },
+        {
+          "exact": "plugin/bin/lib/env-prerequisites.mjs: 3 issue(s)",
+          "file": "plugin/bin/lib/env-prerequisites.mjs",
+          "value": 3
+        },
+        {
+          "exact": "plugin/bin/lib/label-intent-runner.mjs: 3 issue(s)",
+          "file": "plugin/bin/lib/label-intent-runner.mjs",
+          "value": 3
+        },
+        {
+          "exact": "plugin/bin/lib/lane-supervisor-core.mjs: 3 issue(s)",
+          "file": "plugin/bin/lib/lane-supervisor-core.mjs",
+          "value": 3
+        }
+      ],
+      "value": 221
+    },
+    "params": {
+      "detail": "",
+      "file": "plugin/bin/wt-actionable-gate-hook.mjs",
+      "function": "renderBlock",
+      "offenders": [
+        {
+          "exact": "plugin/bin/wt-actionable-gate-hook.mjs:326 Function 'renderBlock' has too many parameters (7). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-actionable-gate-hook.mjs",
+          "function": "renderBlock",
+          "line": 326,
+          "value": 7
+        },
+        {
+          "exact": "plugin/bin/wt-observe.mjs:2208 Async function 'cmdLaunch' has too many parameters (7). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-observe.mjs",
+          "function": "cmdLaunch",
+          "line": 2208,
+          "value": 7
+        },
+        {
+          "exact": "plugin/hooks/hooks.js:138 Function 'renderPane' has too many parameters (7). Maximum allowed is 0.",
+          "file": "plugin/hooks/hooks.js",
+          "function": "renderPane",
+          "line": 138,
+          "value": 7
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/observe-cli.ts:1087 Async function 'cmdLaunch' has too many parameters (7). Maximum allowed is 0.",
+          "file": "toolkit/packages/debugger/src/observe-cli.ts",
+          "function": "cmdLaunch",
+          "line": 1087,
+          "value": 7
+        },
+        {
+          "exact": "plugin/bin/lib/claude-executor-core.mjs:33 Function 'executorCanUseTool' has too many parameters (6). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/claude-executor-core.mjs",
+          "function": "executorCanUseTool",
+          "line": 33,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/lib/memory-index-check-core.mjs:589 Function 'measureEntryMembers' has too many parameters (6). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/memory-index-check-core.mjs",
+          "function": "measureEntryMembers",
+          "line": 589,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/wt-artifact-server.mjs:186 Function 'send' has too many parameters (6). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-artifact-server.mjs",
+          "function": "send",
+          "line": 186,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/wt-opencode-verify.mjs:71 Function 'runOnce' has too many parameters (6). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-opencode-verify.mjs",
+          "function": "runOnce",
+          "line": 71,
+          "value": 6
+        },
+        {
+          "exact": "plugin/skills/adopt/scripts/install.mjs:1686 Function 'plan' has too many parameters (6). Maximum allowed is 0.",
+          "file": "plugin/skills/adopt/scripts/install.mjs",
+          "function": "plan",
+          "line": 1686,
+          "value": 6
+        },
+        {
+          "exact": "toolkit/packages/patterns/src/loop-until-done.ts:351 Function 'buildResult' has too many parameters (6). Maximum allowed is 0.",
+          "file": "toolkit/packages/patterns/src/loop-until-done.ts",
+          "function": "buildResult",
+          "line": 351,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:119 Function 'acceptanceProblem' has too many parameters (5). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+          "function": "acceptanceProblem",
+          "line": 119,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/lib/opencode-skill-fence.mjs:32 Function 'spawnOpencode' has too many parameters (5). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/opencode-skill-fence.mjs",
+          "function": "spawnOpencode",
+          "line": 32,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/lib/run-cost-core.mjs:49 Function 'matchLaneSessions' has too many parameters (5). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/run-cost-core.mjs",
+          "function": "matchLaneSessions",
+          "line": 49,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/wt-actionable-snapshot-producer-hook.mjs:126 Function 'writeJournalEntry' has too many parameters (5). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-actionable-snapshot-producer-hook.mjs",
+          "function": "writeJournalEntry",
+          "line": 126,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/wt-quota-watch.mjs:348 Function 'baselineWindow' has too many parameters (5). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-quota-watch.mjs",
+          "function": "baselineWindow",
+          "line": 348,
+          "value": 5
+        },
+        {
+          "exact": "plugin/bin/wt-rule-convention-guard-hook.mjs:93 Function 'pushRegexViolations' has too many parameters (5). Maximum allowed is 0.",
+          "file": "plugin/bin/wt-rule-convention-guard-hook.mjs",
+          "function": "pushRegexViolations",
+          "line": 93,
+          "value": 5
+        },
+        {
+          "exact": "plugin/workflows/independent-analysis.js:1298 Async function 'runCacheWarmup' has too many parameters (5). Maximum allowed is 0.",
+          "file": "plugin/workflows/independent-analysis.js",
+          "function": "runCacheWarmup",
+          "line": 1298,
+          "value": 5
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/launch-capabilities.ts:264 Function 'resolveObserverRequires' has too many parameters (5). Maximum allowed is 0.",
+          "file": "toolkit/packages/debugger/src/launch-capabilities.ts",
+          "function": "resolveObserverRequires",
+          "line": 264,
+          "value": 5
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/observe-lifecycle.ts:226 Function 'resolveHubSources' has too many parameters (5). Maximum allowed is 0.",
+          "file": "toolkit/packages/debugger/src/observe-lifecycle.ts",
+          "function": "resolveHubSources",
+          "line": 226,
+          "value": 5
+        },
+        {
+          "exact": "toolkit/packages/debugger/src/observer-def.ts:122 Function 'validateBoundedString' has too many parameters (5). Maximum allowed is 0.",
+          "file": "toolkit/packages/debugger/src/observer-def.ts",
+          "function": "validateBoundedString",
+          "line": 122,
+          "value": 5
+        }
+      ],
+      "value": 7
+    }
+  },
+  "releaseTag": "workflow-toolbox--v0.181.0"
+}

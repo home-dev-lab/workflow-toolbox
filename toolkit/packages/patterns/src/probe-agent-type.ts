@@ -130,6 +130,10 @@ function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function isAbsoluteArtifactPath(value: string): boolean {
+  return /^\/[^\r\n]*$/.test(value) || /^[A-Za-z]:[\\/][^\r\n]*$/.test(value)
+}
+
 interface FileReadResult {
   found: boolean
   content: string
@@ -275,8 +279,8 @@ export async function probeAgentType(
       // one-task batch may append an ANSWER suffix for schema callers.
       // Validate the untrusted path before asking the sandbox's read agent to
       // open it; relative paths and lookalike suffixes never reach that agent.
-      const manifestReply = /^MANIFEST: (\/[^\r\n]*\.manifest\.json)(?: ANSWER: [^\r\n]*)?$/m.exec(stripped)
-      if (manifestReply === null) {
+      const manifestReply = /^MANIFEST: ([^\r\n]*\.manifest\.json)(?: ANSWER: [^\r\n]*)?$/m.exec(stripped)
+      if (manifestReply === null || !isAbsoluteArtifactPath(manifestReply[1]!)) {
         reason = `unexpected probe reply: ${head(stripped)}`
       } else {
         const manifestPath = manifestReply[1]!
@@ -307,7 +311,7 @@ export async function probeAgentType(
                 const record = task as Record<string, unknown>
                 return record['status'] === 'answer'
                   && typeof record['answerFile'] === 'string'
-                  && /^\/[^\r\n]+$/.test(record['answerFile'])
+                  && isAbsoluteArtifactPath(record['answerFile'])
               })
             : []
 

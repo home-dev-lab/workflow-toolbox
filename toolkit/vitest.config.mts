@@ -1,6 +1,13 @@
 import { defineConfig } from 'vitest/config'
+import { resolve } from 'node:path'
+import { spawningTestFiles } from './scripts/spawning-test-files.mjs'
 
-const skillFenceTest = 'packages/build/test/opencode-skill-fence.integration.test.ts'
+const configuredMaxWorkers = process.env.WT_VITEST_MAX_WORKERS
+  ? Number(process.env.WT_VITEST_MAX_WORKERS)
+  : process.platform === 'darwin' ? 2 : undefined
+if (configuredMaxWorkers !== undefined && (!Number.isInteger(configuredMaxWorkers) || configuredMaxWorkers < 1)) {
+  throw new Error('WT_VITEST_MAX_WORKERS must be a positive integer')
+}
 const include = [
   'packages/*/test/**/*.test.ts',
   'packages/*/src/**/*.test.ts',
@@ -8,12 +15,18 @@ const include = [
   'scripts/test/**/*.test.ts',
 ]
 const commonTestConfig = {
+  reporters: ['default'],
+  // macos-latest has three vCPUs. Two workers leave one core available for the runner agent
+  // while preserving file parallelism; other hosts retain Vitest's default worker count.
+  ...(configuredMaxWorkers === undefined ? {} : { maxWorkers: configuredMaxWorkers }),
   // A few tests drive the real TypeScript compiler (ts.createProgram in
   // globals-typecheck, the `build --typecheck` path in cli-subcommands).
   // They take ~4s cold and spike past the 5s default under full-suite CPU
   // contention (WSL2 / CI), producing intermittent "Test timed out in 5000ms"
   // flakes. 20s gives comfortable margin while still bounding a true hang.
   testTimeout: 20_000,
+  hookTimeout: 15_000,
+  teardownTimeout: 15_000,
   // Guard-hook tests spawn real plugin/bin/*guard*.mjs processes; without a redirect they
   // journal into the operator's own ~/.local/state/wt-guard-journal (card
   // 1836526445-journal-testpollution — measured 670 junk records from one `pnpm test` run).
@@ -27,26 +40,53 @@ const commonTestConfig = {
 
 export default defineConfig({
   test: {
-    // These cold-cache tests spawn real opencode processes. Keep them in the
-    // ordinary gate, but start them only after the parallel files have drained.
+    // Real child processes share a small pool, so their timeout measures execution
+    // rather than time queued behind the ordinary parallel population.
     projects: [
       {
         test: {
           ...commonTestConfig,
           name: 'parallel',
           include,
-          exclude: [skillFenceTest],
+          exclude: spawningTestFiles,
           sequence: { groupOrder: 0 },
         },
       },
       {
         test: {
           ...commonTestConfig,
-          name: 'skill-fence',
-          include: [skillFenceTest],
+          name: 'process-spawning',
+          include: spawningTestFiles,
+          maxWorkers: configuredMaxWorkers === undefined ? 2 : Math.min(2, configuredMaxWorkers),
           sequence: { groupOrder: 1 },
         },
       },
     ],
+    coverage: {
+      provider: 'v8',
+      allowExternal: true,
+      reportOnFailure: true,
+      reporter: ['text', 'json-summary'],
+      reportsDirectory: '.lane/coverage',
+      include: ['packages/*/src/**/*.ts', resolve(import.meta.dirname, '../plugin/bin/**/*.mjs')],
+      exclude: [
+        '**/*.test.ts',
+        '**/test/**',
+        '**/fixtures/**',
+        '**/dist/**',
+        '../plugin/bin/**/*fixture*',
+      ],
+      thresholds: {
+        // ratchet 2026-09-17: 0.3 points below the observed floor (42.02 / 40.10 / 44.43 / 40.63 on
+        // develop a94fc461). A threshold pinned at the exact floor fails on the first timed-out or
+        // skipped test (one 30 s fs.watch timeout moved functions by 0.04 and branches by 0.01);
+        // the margin absorbs one such flake, never a real regression, which lands whole points.
+        // Real improvement is judged by scripts/quality.mjs against quality-baseline.json, not here.
+        lines: 41.7,
+        branches: 39.8,
+        functions: 44.1,
+        statements: 40.3,
+      },
+    },
   },
 })

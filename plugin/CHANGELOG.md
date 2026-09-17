@@ -5,6 +5,68 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Added a recoverable machine-wide suite lock with bounded visible waits, status/release controls, and a lane-exported invocation for serializing outer Vitest runs.
+- Bounded SDK pilot runs now atomically leave a worktree-bound `.lane/worktree-retention.json`, and the shipped worktree remover refuses invalid, foreign, open-card, or board-unavailable cleanup until the card reaches `Done` or `NotDoing` (or no longer exists).
+
+### Tooling
+- Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
+
+### Fixed
+- The What is running pane now shows SDK lifecycle phases without legacy arbiter-cycle stages, names independent review/refutation from frozen lane models, uses neutral word-and-glyph stage states, and no longer reports an empty card branch as merged.
+- Artifact-server Windows lifetime fixtures now distinguish clean monitor departure from forced process death instead of killing the detached server with `taskkill /T`; registration sweeps record test-only classifier diagnostics and reject PID reuse by spawn-recorded identity.
+- Artifact-server registration sweeps now use conclusive Windows `ESRCH` evidence before the bounded process-table fallback, process-spawning fixtures await monitor pipe closure before removing temporary directories, and the retention HTTP fixture answers torn JSON bodies with 400 instead of throwing.
+- dev-implement's cleanup agent now resolves the workflow-toolbox plugin root itself from its own shell (the same CLAUDE_PLUGIN_ROOT/WT_PLUGIN_ROOT/installed_plugins.json fallback the shipped agents use) before running the guarded worktree remover, instead of requiring a launcher-supplied pluginRoot on every path; merged worktrees are retained and reported by path and branch whenever the cleanup agent does not confirm the removal — a refused removal while the card is open (the ordinary case), a failed resolution, or an unanswered cleanup
+- Artifact-server Windows fixtures now pin executable-backed Git and Tailscale seams, startup shutdown has a platform-honest test route, dead registrations use process-table evidence instead of retained-handle signalability, and the pilot continuation lock has a process-spawn-aware local timeout.
+- Windows process-spawning fixtures now wait for spawn-recorded child identities before removing temporary directories, artifact-server state timeouts name their predicate and captured output, configured Tailscale failures report timing and process status, and the board-client protocol lock treats partial request JSON as incomplete input instead of an uncaught exception.
+- The What is running pane now removes ANSI sequences and control characters at its `Text` boundary, cleans log-derived activity in the collector, and shows a reading state before the first collector result instead of reporting a failure.
+- Artifact-server registrations now apply their `0600` mode check only on POSIX, while the Windows end-to-end fixture records each spawned server identity for health-independent teardown and includes monitor output in state-timeout diagnostics.
+- Artifact-server end-to-end cleanup now identity-checks and terminates the detached Windows process tree before retrying temp-directory removal, and its Tailscale fixture invokes a real executable instead of assuming Windows can execute a `.cmd` file through `execFileSync`.
+- The artifact server no longer refuses its state directory on Windows: the POSIX group/other write-bit check is enforced on POSIX platforms only, where Node's synthetic win32 mode had made every Windows start fail with `group- or world-writable`.
+- Release-branch pushes now refuse missing, red, or stale gate evidence unless an exact-command main-guard allow-once entry records and authorizes the exception; version-1 records require a one-time refresh after upgrade.
+- Artifact-server end-to-end fixtures now preserve native system paths, provide Node-backed Windows command shims, avoid Windows-illegal names, and label POSIX-only mode checks; configured Tailscale binaries no longer fall through to ambient discovery, and Windows process identity reads retry transient misses within their existing timeout bound.
+- The artifact-server suite's state watcher canonicalises its temp path before `fs.watch`, so the Windows short-name spelling no longer trips libuv's fs-event assertion and aborts the vitest worker carrying the file.
+- The What is running collector now bounds detailed worktree scans, reports partial discovery when capped, and distinguishes its 8-second timeout from exit failures with the exit code and first stderr line.
+- Artifact-server tests now verify detached server process identity by PID, start time, argv, and executable before cleanup signals it, preventing Windows PID reuse from terminating the Vitest worker.
+- Wake-channel directory watches now canonicalise path aliases before entering libuv, preventing Windows short-name spool paths from aborting the server, and the adopted consent matrix derives its case timeout from all real launcher combinations.
+- The queue-not-empty Stop gate now exits silently for a zero-startable queue and for harness retries marked `stop_hook_active`, preventing an allowed stop from looping on block-shaped feedback.
+- SDK role initialization receipts no longer require a skill declared `user-invocable: false` (the harness never lists one), and the pilot runner exits after a refused receipt instead of idling with the EXIT marker unwritten.
+- SDK role LSP plugins now map .js, .mjs, and .cjs to JavaScript from the same table that drives worktree language detection, so plain .js worktrees are detected and navigable instead of silently unmapped while the receipt reports LSP available.
+- Cross-OS process-spawning locks now pin the shipped wake-channel poll source, supply Windows process identity with spawn-recorded argv, await fixture-child exit before bounded teardown retries, and give measured long-running consent and lifecycle cases local timeout margins.
+- Windows lane supervision now captures launcher and child identities with bounded `Get-Process` reads and spawn-recorded argv instead of CIM/WMI, rejects PID reuse by image and start time, and keeps the wake-channel polling backstop alive after initialization on Windows.
+- Windows lane launcher PID reads now bypass the full CIM table, every PowerShell process read has a 10-second ceiling with unreadable evidence remaining unknown, and cross-OS timing locks follow their provider and polling contracts.
+- Concurrent-test guard coverage injects deterministic process listings while retaining a real-machine count-reporting case; wake and artifact-server delivery bounds now follow their configured polling and readiness intervals, and lane capture fixtures derive their retry windows from the capture cadence.
+- Windows lane launch identity capture now uses a timeout-bounded single-PID query, records the observed command-shim identity or a named capture timeout, and macOS lifecycle coverage waits for the literal terminal receipt while locking stage ordering.
+- macOS process identity refreshes cached snapshots once for a missing PID without restoring polling fork storms, and artifact-server teardown retries bounded concurrent state writes.
+- Windows OpenCode envelopes preserve command-shim stdout without detached spawning, terminate timed-out process trees through `taskkill /T`, persist timestamped launcher stages for timeout diagnosis, and cap the 4-vCPU CI runner at two Vitest workers.
+- macOS process identity and queue enumeration now reuse 100 ms process-wide snapshots, Vitest leaves one runner core free, and the cross-OS probe preserves separate bounded shard logs instead of saturating the runner.
+- Windows OpenCode runner locks now exercise synchronous, detached-pipe, and file-descriptor command-shim launches with output and exit-code diagnostics; envelope fixtures trace whether task children started, and adopted-launcher checks allow for slower Windows identity capture.
+- Windows OpenCode test fixtures now mirror npm command shims' direct `%*` forwarding, and adopted-launcher subprocess checks close stdin and report bounded timeout diagnostics.
+- Cross-OS CI now bounds every matrix step and always uploads the Vitest log plus a final process table; Windows OpenCode `.cmd` launches preserve product-built flags and paths through `cmd.exe`'s two parsing passes.
+- Cross-OS CI now preserves a streaming test log before the job deadline and prints the runner process table; macOS lane identity polls no longer repeat slow `lsof` cwd reads, child cleanup is bounded by observed exit, and Windows `.cmd` OpenCode fixtures retain their arguments without deprecated shell joining.
+- macOS lane capture now waits through transient shell identities, canonicalises equivalent cwd spellings, and reports recorded-versus-live identity fields on timeout; adopted launcher and Windows envelope fixtures now lock their installed provider and native command-shim assumptions.
+- SDK roles resolve the INSTALLED context-mode plugin (the harness's `installed_plugins.json` entry, then the highest cached version) instead of a pinned version directory, so the first session after a context-mode update no longer fails closed on an absent path.
+- macOS supervision now reads untruncated command identities with wide `ps`; Windows supervision reuses one full `Win32_Process` snapshot for 500 ms per worker/child classification, and cross-OS fixtures pin their actual process, path, executable, and signal assumptions.
+- macOS lane launches now retry the native process provider before recording identity, report source-specific unavailable capture instead of a synthetic identity, and enumerate queued lane processes with one quote-aware `ps` query; remaining cross-OS fixtures now pin or name their actual host assumptions.
+- Windows lane supervision now preserves drive-qualified lifecycle fixture paths, enumerates lane processes with one PowerShell CIM query in the queue gate, installs adopted launchers against native `.cmd`/PATH fixtures, and reliably terminates waiter fixture children before bounded cleanup retries.
+- macOS lane lifecycle fixtures now classify live processes through the Darwin provider instead of forcing Linux `/proc`; process evidence pins the C locale, and cross-OS fixtures no longer assume an unconfigured loopback alias, a non-canonical temp spelling, or a short executable path.
+- Windows CI fixtures now preserve native PATH/config semantics, use file URLs for dynamic SDK imports, compare canonical path identities, and skip only tests whose evidence is inherently POSIX-only.
+- Lane supervision now reads process identity from `ps`/`lsof` on macOS and `Win32_Process` through PowerShell on Windows, while reporting source-specific unknown evidence and refusing unsupported external Windows tree termination legibly.
+- Remaining Windows-only test and runtime paths now use file URLs for ESM entry points, canonical path identities and display separators, Node-backed command fixtures, pinned home/config directories, and explicit skips for POSIX-only signal, mode, and permission semantics.
+- Windows OpenCode launches now resolve npm `.cmd`/`.bat` shims and invoke them through the command shell across lane, observer, fence, and envelope paths.
+- macOS test fixtures now use canonical temporary roots, Tailscale detection accepts a pinned binary for hermetic probes, and `/proc`-dependent coverage skips explicitly outside Linux.
+- Cross-platform lifecycle tests now compare canonical directory identities at archive boundaries, inject their process-liveness evidence, and derive assertion paths from the host rather than POSIX literals.
+- Lane launcher and observer tests now provide their OpenCode fake through Node-backed POSIX and Windows command shims instead of assuming a `.sh` file on `PATH` is executable.
+- Lane supervision routes every process read (`/proc` existence and state) through the injected seam, `wt-lane-wait` canonicalises its `--dir`, and the lifecycle, executor, adoption and waiter fixtures canonicalise their temporary roots, so a symlinked `TMPDIR` (macOS) and a fake pid that exists on the host no longer split a path or an identity.
+- Windows subprocess fixtures import ESM sources through `file:` URLs and OpenCode envelope assertions normalise path separators.
+
+### Changed
+- Process-spawning test files now share one low-parallelism Vitest project, with AST-based enumeration and a drift check that requires every newly detected file to join the policy.
+- The What is running pane now reads SDK stages from `.lane/lifecycle.json`, labels log-derived fallback stages, uses the lifecycle state machine's exported phase vocabulary throughout, and states explicitly that phases are unavailable for plain OpenCode/Codex lanes.
+- Claude SDK roles now expose optional TypeScript/JavaScript LSP navigation through their generated
+  role plugin when `typescript-language-server` resolves, and record a visible non-fatal absent state
+  in logs, lifecycle evidence, and closing-report instructions otherwise.
+
 ## [0.181.0] - 2026-09-16
 
 ### Tooling

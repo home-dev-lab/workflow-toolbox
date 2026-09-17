@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
@@ -33,7 +33,9 @@ const initMessage = (model?: string) => ({
   ...(model === undefined ? {} : { model }),
   tools: ['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS), lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }, { path: resolveContextModeRoot(process.env) }, { name: 'wt-sdk-pilot' }],
-  skills: ['wt-sdk-pilot:stale-card-sweep', 'wt-sdk-pilot:lesson-harvest', 'wt-sdk-pilot:deep-grounding'],
+  // `lesson-harvest` is declared `user-invocable: false`, and the real receipt never lists such a skill (measured
+  // 2026-09-17): a fake listing it would pass a check the harness cannot satisfy.
+  skills: ['wt-sdk-pilot:stale-card-sweep', 'wt-sdk-pilot:deep-grounding'],
 })
 const roots: string[] = []
 function fixture() {
@@ -64,7 +66,7 @@ function fakeSdk(root: string, marker: string) {
   writeFileSync(join(packageDir, 'index.cjs'), `module.exports = { marker: ${JSON.stringify(marker)} }\n`)
 }
 function resolveSdkInChild(options: Record<string, unknown>) {
-  const script = `const { resolveAgentSdkRequire } = await import(${JSON.stringify(SDK_RESOLVER)}); try { const require = resolveAgentSdkRequire(${JSON.stringify(options)}); process.stdout.write(JSON.stringify({ marker: require('@anthropic-ai/claude-agent-sdk').marker, path: require.resolve('@anthropic-ai/claude-agent-sdk') })) } catch (error) { process.stdout.write(error.message) }`
+  const script = `const { resolveAgentSdkRequire } = await import(${JSON.stringify(pathToFileURL(SDK_RESOLVER).href)}); try { const require = resolveAgentSdkRequire(${JSON.stringify(options)}); process.stdout.write(JSON.stringify({ marker: require('@anthropic-ai/claude-agent-sdk').marker, path: require.resolve('@anthropic-ai/claude-agent-sdk') })) } catch (error) { process.stdout.write(error.message) }`
   const env = { ...process.env }
   delete env.NODE_PATH
   return spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env })
@@ -96,10 +98,11 @@ describe('SDK pilot runner', () => {
   })
 
   it('parses required arguments and refuses absent card, bad timeout, and malformed profile env', () => {
-    expect(parsePilotRunnerArgs(['--dir', '/tmp/a'])).toMatchObject({ error: 'missing required --card or --dir' })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a'])).toMatchObject({ error: '--card-file is required: the route is derived from the card' })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--timeout', '0'])).toMatchObject({ error: '--timeout must be a positive number of seconds' })
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ cardFile: '/tmp/card.md' })
+    const dir = resolve('/tmp/a'); const cardFile = resolve('/tmp/card.md')
+    expect(parsePilotRunnerArgs(['--dir', dir])).toMatchObject({ error: 'missing required --card or --dir' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir])).toMatchObject({ error: '--card-file is required: the route is derived from the card' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir, '--card-file', cardFile, '--timeout', '0'])).toMatchObject({ error: '--timeout must be a positive number of seconds' })
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir, '--card-file', cardFile])).toMatchObject({ cardFile })
     const f = fixture(); const profile = join(f.root, 'profile.json'); writeFileSync(profile, '{"env":{"X":3}}')
     expect(() => loadProfileEnv(profile)).toThrow('--profile-env env.X must be a string')
     const result = spawnSync(process.execPath, [CLI, '--dir', f.dir], { encoding: 'utf8' })
@@ -107,8 +110,9 @@ describe('SDK pilot runner', () => {
   })
 
   it('parses repeatable absolute plugin directories and refuses a relative one', () => {
-    expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', '/tmp/rules', '--plugin-dir', '/tmp/lsp']))
-      .toMatchObject({ pluginDirs: ['/tmp/rules', '/tmp/lsp'] })
+    const dir = resolve('/tmp/a'); const cardFile = resolve('/tmp/card.md'); const rules = resolve('/tmp/rules'); const lsp = resolve('/tmp/lsp')
+    expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir, '--card-file', cardFile, '--plugin-dir', rules, '--plugin-dir', lsp]))
+      .toMatchObject({ pluginDirs: [rules, lsp] })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--plugin-dir', 'relative/plugin']))
       .toEqual({ error: '--plugin-dir must be an absolute path: relative/plugin' })
   })
@@ -123,16 +127,16 @@ describe('SDK pilot runner', () => {
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md', '--archive-root', 'rel/project'])).toMatchObject({ archiveRoot: resolve('rel/project') })
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', '/tmp/a', '--card-file', '/tmp/card.md'])).toMatchObject({ archiveRoot: null })
     // An explicit project root wins outright.
-    expect(defaultArchiveRoot({ dir: '/tmp/a', projectRoot: '/srv/project' })).toBe('/srv/project')
+    expect(defaultArchiveRoot({ dir: resolve('/tmp/a'), projectRoot: resolve('/srv/project') })).toBe(resolve('/srv/project'))
     // A real worktree resolves to the main checkout that owns it, never to itself.
     const main = mkdtempSync(join(tmpdir(), 'wt-archive-root-main-')); roots.push(main)
     const git = (...args: string[]) => spawnSync('git', args, { cwd: main, encoding: 'utf8' })
     git('init', '-q'); git('config', 'user.email', 'test@example.invalid'); git('config', 'user.name', 'Archive Root'); git('config', 'commit.gpgSign', 'false')
     writeFileSync(join(main, 'tracked.txt'), 'base\n'); git('add', '-A'); git('commit', '-qm', 'base')
     const worktree = join(main, 'wt'); expect(git('worktree', 'add', '-q', '-b', 'archive-root-proof', worktree).status).toBe(0)
-    expect(realpathSync(defaultArchiveRoot({ dir: worktree }))).toBe(realpathSync(main))
+    expect(realpathSync.native(defaultArchiveRoot({ dir: worktree }))).toBe(realpathSync.native(main))
     // A plain repository has no outside: it resolves to itself, and the preflight refuses it.
-    expect(realpathSync(defaultArchiveRoot({ dir: main }))).toBe(realpathSync(main))
+    expect(realpathSync.native(defaultArchiveRoot({ dir: main }))).toBe(realpathSync.native(main))
   })
 
   it('rejects the removed lane-silence option and omits it from usage', () => {
@@ -221,7 +225,9 @@ describe('SDK pilot runner', () => {
     const options = { card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }
     await runPilot(options, { query, resolvePilotModels: models })
     const refusal = await runPilot(options, { query, resolvePilotModels: models }).then(() => null, (error: Error) => error.message)
-    expect(refusal).toMatch(new RegExp(`interrupted lifecycle.*node -e .*${join(f.dir, '.lane').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    expect(refusal).toContain('interrupted lifecycle')
+    expect(refusal).toContain('node -e')
+    expect(refusal).toContain(JSON.stringify(join(f.dir, '.lane')).slice(1, -1))
 
     // The printed remedy KEEPS the interrupted run's evidence: executing it moves .lane aside as a sibling and
     // leaves a fresh empty .lane; a remedy that deleted the directory would destroy the only record of a crash.
@@ -299,6 +305,30 @@ describe('SDK pilot runner', () => {
     expect(windows.stdout).toBe(`@anthropic-ai/claude-agent-sdk is not installed; run: npm install --prefix "${pluginData}" @anthropic-ai/claude-agent-sdk`)
   })
 
+  // Measured 2026-09-17 on the first real LITE run: after a refused receipt the summary and archive were written and
+  // the process stayed alive in an epoll wait, so the launcher's EXIT marker never appeared. A fake SDK that keeps a
+  // timer alive reproduces that shape; without the forced exit this spawn ends by the test timeout, not by code 1.
+  it('exits with code 1 after a refused initialization receipt even when the SDK leaves a handle alive', () => {
+    const f = fixture()
+    const packageDir = join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+    const init = { ...initMessage('sonnet'), skills: [] }
+    writeFileSync(join(packageDir, 'index.cjs'), [
+      'setInterval(() => {}, 1000)',
+      'module.exports = {',
+      `  query: () => (async function* () { yield ${JSON.stringify(init)} })(),`,
+      '  createSdkMcpServer: (options) => ({ type: "sdk", name: options.name, instance: {} }),',
+      '  tool: (name, description, schema, handler) => ({ name, description, schema, handler }),',
+      '}',
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
+      encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_PATH: '', WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') },
+    })
+    expect(result.signal).toBeNull()
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('missingSkills')
+  })
+
   it('starts SDK resolution from an installed plugin using the target project', () => {
     const f = fixture(); fakeSdk(f.dir, 'project')
     const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
@@ -347,6 +377,8 @@ describe('SDK pilot runner', () => {
     })
     expect(logged).toEqual([
       'route=LITE reasons=human Route: LITE model=sonnet effective=sonnet executor=gpt-lane',
+      'SDK role pilot: LSP absent: typescript-language-server not found on PATH',
+      'SDK role pilot: skills loaded through the role plugin but never listed by the initialization receipt (user-invocable: false): lesson-harvest',
       'injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.',
       'served model: unknown (requested sonnet)',
     ])
@@ -596,6 +628,16 @@ describe('SDK pilot runner', () => {
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
     expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: 4, reason, findings: ['tighten the proof'] } } })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toEqual({
+      version: 1,
+      cardId: '1',
+      worktree: realpathSync(f.dir),
+      retainedAt: expect.stringMatching(/^\d{4}-/),
+      reason: `bounded lifecycle spent: ${reason}`,
+      phase: 'critic',
+      expiry: { boardId: null, removeWhen: 'card is absent or in Done or NotDoing' },
+    })
+    expect(readdirSync(join(f.dir, '.lane')).filter((name) => name.endsWith('.tmp'))).toEqual([])
   })
 
   it('re-prompts after a tdd-lane end_turn and completes on the next turn', async () => {
@@ -624,6 +666,7 @@ describe('SDK pilot runner', () => {
     })
     expect(result).toMatchObject({ exitCode: 0, summary: { completed: true, injected_turns: 1 } })
     expect(continuations).toEqual([expect.stringContaining('current phase tdd')])
+    expect(existsSync(join(f.dir, '.lane', 'worktree-retention.json'))).toBe(false)
   })
 
   it('fails after three continuation prompts without lifecycle progress', async () => {
@@ -640,7 +683,9 @@ describe('SDK pilot runner', () => {
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, injected_turns: 3, reason: 'pilot ended its turn 3 times without progress' } })
     expect(result.summary.partial).toMatchObject({ reason: 'pilot ended its turn 3 times without progress' })
     expect(readFileSync(join(result.summary.archive.path, 'summary.json'), 'utf8')).toContain('pilot ended its turn 3 times without progress')
-  }, 2_000)
+  // This case performs runner archive I/O and several spawned model-resolution probes; hosted
+  // Windows cannot reliably complete that process work inside Vitest's former 2-second budget.
+  }, 5_000)
 
   it('records and archives a runner timeout as a lifecycle partial', async () => {
     const f = fixture(); let clock = 0
@@ -652,6 +697,7 @@ describe('SDK pilot runner', () => {
     })
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'runner timeout', partial: { reason: 'runner timeout' } } })
     expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { reason: 'runner timeout' } })
+    expect(existsSync(join(f.dir, '.lane', 'worktree-retention.json'))).toBe(false)
   })
 
   it('writes final receipts and an external partial archive when the initialized SDK stream throws', async () => {
@@ -785,7 +831,7 @@ describe('SDK pilot runner', () => {
       yield initMessage()})() }
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
     expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot'))])
-    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS)])
+    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...Object.values(CONTEXT_MODE_TOOLS)])
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(options!.permissionMode).toBe('default')
     expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
@@ -803,9 +849,10 @@ describe('SDK pilot runner', () => {
     expect(queryPlugins).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot')), first, second])
 
     const missing = fixture(); const omitted = join(missing.root, 'omitted-plugin'); mkdirSync(omitted)
+    const encodedOmitted = JSON.stringify(omitted).slice(1, -1)
     await expect(runPilot({ card: '1', cardFile: missing.cardFile, dir: missing.dir, contract: missing.contract, mailbox: join(missing.root, 'none'), timeout: 1, hard: false, pluginDirs: [omitted] }, {
       query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models,
-    })).rejects.toThrow(new RegExp(`absentPlugins.*${omitted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    })).rejects.toThrow(new RegExp(`absentPlugins.*${encodedOmitted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
   })
 
   it('matches configured plugins to receipt paths through symlinks and trailing separators', async () => {
@@ -839,6 +886,7 @@ describe('SDK pilot runner', () => {
     const f = fixture()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models })
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: expect.stringContaining('without awaiting_fidelity') } })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8')).lsp).toEqual({ available: false, reason: 'typescript-language-server not found on PATH' })
   })
 
   it('confines real Read, Glob, and Grep authorization inputs', () => {

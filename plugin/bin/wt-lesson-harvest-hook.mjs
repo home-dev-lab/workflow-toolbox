@@ -78,7 +78,7 @@ function resolveDefaultDirs(start) {
   return { dirs: conventionalDirs(start), ancestor: '' }
 }
 
-const dirs = (process.env.WT_LESSON_HARVEST_DIRS || '').split(':').filter(Boolean)
+const dirs = (process.env.WT_LESSON_HARVEST_DIRS || '').split(path.delimiter).filter(Boolean)
 const resolvedDefaults = dirs.length ? null : resolveDefaultDirs(cwd)
 const searchDirs = dirs.length ? dirs : resolvedDefaults.dirs
 

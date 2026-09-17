@@ -137,8 +137,9 @@ the tailnet.
 - The default case-insensitive deny list blocks `.git`, `.env*`, `*.pem`, `*.key`, `id_rsa*`,
   `id_ed25519*`, `credentials*`, and `*.secret*`. `artifact_server_deny`, or its
   `WT_ARTIFACT_SERVER_DENY` fallback, adds patterns. Only the test/internal env-only knob
-  `WT_ARTIFACT_SERVER_ALLOW_UNSAFE_DENYLIST=1` replaces the defaults. The other test-only knob,
-  `WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS`, is also env-only. Policy is per registration and
+  `WT_ARTIFACT_SERVER_ALLOW_UNSAFE_DENYLIST=1` replaces the defaults. The other test-only knobs,
+  `WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS` and `WT_ARTIFACT_SERVER_TAILSCALE_BINARY` (a pinned
+  `tailscale` executable for hermetic probes; PATH stays the default), are also env-only. Policy is per registration and
   is checked against canonical path segments plus the root basename, so benign symlink aliases do
   not bypass it.
 - Markdown raw HTML is escaped. `.txt`, `.log`, and `.json` are escaped. HTML is unchanged and
