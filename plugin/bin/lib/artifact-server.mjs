@@ -54,7 +54,7 @@ export function artifactUid() {
 // monitor's stderr read `artifact server state directory is group- or world-writable`). Ownership and
 // access on Windows are ACLs the profile directory already carries; the mode check is not enforced
 // there, and that is stated rather than silently passed.
-export function stateDirModeBitsEnforced(platform = process.platform) {
+function stateDirModeBitsEnforced(platform = process.platform) {
   return platform !== 'win32'
 }
 
