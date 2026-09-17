@@ -8,6 +8,7 @@ const WINDOWS_PROCESS_TABLE_TTL_MS = 500
 const darwinProcessTableCache = new WeakMap()
 const darwinCwdCache = new WeakMap()
 const windowsProcessTableCache = new WeakMap()
+const windowsProcessCache = new WeakMap()
 
 export function sameIdentity(expected, actual) {
   let sameCwd = true
@@ -28,9 +29,9 @@ function evidenceSource(platform) {
   return 'proc'
 }
 
-function runEvidence(command, args, execFile) {
+function runEvidence(command, args, execFile, timeoutMs) {
   try {
-    const result = execFile(command, args, { encoding: 'utf8', windowsHide: true, env: { ...process.env, LC_ALL: 'C' } })
+    const result = execFile(command, args, { encoding: 'utf8', windowsHide: true, env: { ...process.env, LC_ALL: 'C' }, ...(Number.isFinite(timeoutMs) ? { timeout: Math.max(1, timeoutMs) } : {}) })
     if (result.error) return { status: 'unavailable' }
     return { status: result.status, stdout: result.stdout ?? '' }
   } catch { return { status: 'unavailable' } }
@@ -109,6 +110,25 @@ function powershellProcess(pid, execFile) {
   if (table.status === 'unavailable' || table.status !== 0) return table
   const value = table.value.find((row) => Number(row?.ProcessId) === Number(pid))
   return value ? { status: 0, value } : { status: 1, stdout: '' }
+}
+
+function powershellSingleProcess(pid, execFile, timeoutMs, now = Date.now()) {
+  if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return { status: 1, stdout: '' }
+  let cache = windowsProcessCache.get(execFile)
+  if (!cache) { cache = new Map(); windowsProcessCache.set(execFile, cache) }
+  const cached = cache.get(Number(pid))
+  if (cached && now - cached.readAt <= WINDOWS_PROCESS_TABLE_TTL_MS) return cached.result
+  const script = `Get-CimInstance Win32_Process -Filter "ProcessId = ${Number(pid)}" | Select-Object ProcessId,CreationDate,CommandLine,ParentProcessId | ConvertTo-Json -Compress`
+  const evidence = runEvidence('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], execFile, timeoutMs)
+  let result = evidence
+  if (evidence.status === 0) {
+    try {
+      const value = evidence.stdout.trim() ? JSON.parse(evidence.stdout) : null
+      result = value ? { status: 0, value } : { status: 1, stdout: '' }
+    } catch { result = { status: 'unavailable' } }
+  }
+  cache.set(Number(pid), { readAt: now, result })
+  return result
 }
 
 function processStartSeconds(value) {
@@ -277,18 +297,18 @@ function inspectDarwinProcess(pid, execFile, captureCwd) {
   return { pid: row.pid, argv: row.argv, startTime: row.startTime, groupId: row.groupId, cwd: captureCwd ? darwinCwd(pid, execFile) : null }
 }
 
-function inspectWindowsProcess(pid, execFile) {
-  const result = powershellProcess(pid, execFile)
+function inspectWindowsProcess(pid, execFile, singlePid, timeoutMs) {
+  const result = singlePid ? powershellSingleProcess(pid, execFile, timeoutMs) : powershellProcess(pid, execFile)
   if (result.status !== 0 || !result.value) return null
   const startTime = processStartSeconds(result.value.CreationDate)
   if (!Number.isFinite(startTime) || typeof result.value.CommandLine !== 'string') return null
   return { pid, argv: [result.value.CommandLine], startTime, groupId: Number(result.value.ParentProcessId), cwd: null }
 }
 
-export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true } = {}) {
+export function inspectProcess(pid, { procRoot = '/proc', platform = process.platform, spawnSync: execFile = spawnSync, captureCwd = true, singlePid = false, timeoutMs } = {}) {
   if (!Number.isSafeInteger(Number(pid)) || Number(pid) <= 1) return null
   if (platform === 'darwin') return inspectDarwinProcess(Number(pid), execFile, captureCwd)
-  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile)
+  if (platform === 'win32') return inspectWindowsProcess(Number(pid), execFile, singlePid, timeoutMs)
   if (platform !== 'linux') return null
   try {
     const argv = readFileSync(path.join(procRoot, String(pid), 'cmdline')).toString().split('\0').filter(Boolean)

@@ -1,9 +1,12 @@
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { appendSupervisorJournal, classifyLane, inspectProcess, latestWorktreeWrite, processEvidenceStatus, sameIdentity, supervisionUnavailableMessage, terminateLane } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+// @ts-expect-error runtime .mjs launcher helper
+import { inspectStartedProcess } from '../../../../plugin/bin/wt-lane.mjs'
 
 describe('lane supervisor safety core', () => {
   it('returns unknown without a readable attributed record', () => {
@@ -171,6 +174,35 @@ describe('lane supervisor safety core', () => {
       expect.arrayContaining(['-Command', expect.stringContaining('Get-CimInstance Win32_Process |')]),
       expect.any(Object),
     )
+  })
+
+  it('captures a Windows command shim from one timeout-bounded single-pid CIM read', () => {
+    const binary = String.raw`C:\Program Files\opencode\opencode.CMD`
+    const commandLine = String.raw`cmd.exe /d /s /c "C:\Program^ Files\opencode\opencode.CMD run"`
+    const execFile = vi.fn(() => ({ status: 0, stdout: JSON.stringify({ ProcessId: 432, CreationDate: '2026-09-16T19:34:56.000Z', CommandLine: commandLine, ParentProcessId: 431 }) }))
+    const inspect = (pid: number, options: Record<string, unknown>) => inspectProcess(pid, { ...options, spawnSync: execFile })
+
+    expect(inspectStartedProcess(inspect, 432, { platform: 'win32', timeoutMs: 250, expectedCommand: binary }).identity).toMatchObject({
+      pid: 432,
+      argv: [commandLine],
+      startTime: 1_789_587_296,
+    })
+    expect(execFile).toHaveBeenCalledWith(
+      'powershell.exe',
+      expect.arrayContaining(['-Command', expect.stringContaining('ProcessId = 432')]),
+      expect.objectContaining({ timeout: expect.any(Number) }),
+    )
+  })
+
+  it('bounds a slow Windows single-pid provider read by the capture wall deadline', () => {
+    const execFile = ((_program: string, _args: string[], options: Parameters<typeof spawnSync>[2]) =>
+      spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 3000)'], options)) as typeof spawnSync
+    const inspect = (pid: number, options: Record<string, unknown>) => inspectProcess(pid, { ...options, spawnSync: execFile })
+    const started = Date.now()
+
+    expect(inspectStartedProcess(inspect, 432, { platform: 'win32', timeoutMs: 100, expectedCommand: 'opencode.CMD' }))
+      .toEqual({ identity: null, unavailable: 'unavailable (powershell)' })
+    expect(Date.now() - started).toBeLessThan(750)
   })
 
   it('shares one cached Windows table read and refreshes after its 500 ms staleness bound', () => {

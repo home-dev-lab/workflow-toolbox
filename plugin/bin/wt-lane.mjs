@@ -101,11 +101,13 @@ function parseBriefReceipt(encoded) {
   }
 }
 
-export function inspectStartedProcess(inspect, pid, { platform = process.platform, timeoutMs = platform === 'linux' ? 1_000 : 5_000 } = {}) {
+export function inspectStartedProcess(inspect, pid, { platform = process.platform, timeoutMs = platform === 'linux' ? 1_000 : 5_000, expectedCommand = null } = {}) {
   const deadline = Date.now() + timeoutMs
   let candidate = null
   do {
-    const identity = inspect(pid, { platform, captureCwd: false })
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) break
+    const identity = inspect(pid, { platform, captureCwd: false, singlePid: platform === 'win32', timeoutMs: remainingMs })
     if (identity && identity.argv.length > 0 && Number.isFinite(identity.startTime)) {
       candidate = identity
       const commandLine = identity.argv.length === 1 ? identity.argv[0].trim() : identity.argv[0]
@@ -114,16 +116,29 @@ export function inspectStartedProcess(inspect, pid, { platform = process.platfor
         : commandLine.split(/\s+/, 1)[0]
       const command = path.basename(executable).toLowerCase().replace(/^\(|\)$/g, '')
       if (!['sh', 'bash', 'dash', 'zsh', 'ksh'].includes(command)) {
-        if (platform !== 'darwin') return { identity, unavailable: null }
+        const expectedSeen = !expectedCommand || commandLine.replaceAll('^', '').replaceAll('"', '').toLowerCase().includes(String(expectedCommand).replaceAll('"', '').toLowerCase())
+        if (platform !== 'darwin' && (platform !== 'win32' || expectedSeen)) return { identity, unavailable: null }
         const captured = inspect(pid, { platform, captureCwd: true })
-        return { identity: captured ?? identity, unavailable: null }
+        if (platform === 'darwin') return { identity: captured ?? identity, unavailable: null }
       }
     } else if (candidate) return { identity: candidate, unavailable: null }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
   } while (Date.now() < deadline)
-  if (candidate) return { identity: candidate, unavailable: null }
+  if (candidate && platform !== 'win32') return { identity: candidate, unavailable: null }
   const source = platform === 'darwin' ? 'ps' : platform === 'win32' ? 'powershell' : 'proc'
-  return { identity: null, unavailable: `unavailable (${source})` }
+  return { identity: null, unavailable: `unavailable (${source})`, ...(candidate ? { observed: candidate } : {}) }
+}
+
+function captureTimeoutReason(capture) {
+  const observed = capture.observed
+    ? `last observed argv=${JSON.stringify(capture.observed.argv)} startTime=${capture.observed.startTime}`
+    : 'no process identity observed'
+  return `process identity capture timed out (${capture.unavailable}; ${observed})`
+}
+
+function terminateWindowsTree(pid) {
+  const taskkill = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
+  spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { timeout: 5_000, windowsHide: true, stdio: 'ignore' })
 }
 
 function briefEvidenceLines(receipt, upper = false) {
@@ -451,7 +466,15 @@ async function main() {
       writeLaneStage(opts.log, 'worker-spawn-start')
       const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
       writeLaneStage(opts.log, 'worker-identity-capture-start')
-      const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid)
+      const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: process.execPath })
+      if (process.platform === 'win32' && !captured.identity) {
+        const reason = captureTimeoutReason(captured)
+        writeLaneStage(opts.log, `worker-identity-capture-timeout ${reason}`)
+        child.kill('SIGTERM')
+        rmSync(briefSnapshot, { force: true })
+        process.stderr.write(`wt-lane: ${reason}\n`)
+        return 1
+      }
       writeLaneStage(opts.log, 'worker-identity-capture-done')
       const identity = captured.identity
       const timeoutAt = new Date(Date.now() + opts.timeout * 1000).toISOString()
@@ -513,12 +536,39 @@ async function main() {
   const decisionFile = statePaths.decision
   const dataDir = path.join(consentModules.resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
   const journal = (event) => { try { consentModules.appendSupervisorJournal(dataDir, event) } catch { /* supervision must remain bounded when its audit sink is unavailable */ } }
-  appendFileSync(fd, `${new Date().toISOString()} stage=child-identity-capture-start\n`)
-  const childCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid)
-  appendFileSync(fd, `${new Date().toISOString()} stage=child-identity-capture-done\n`)
-  appendFileSync(fd, `${new Date().toISOString()} stage=worker-identity-capture-start\n`)
-  const workerCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, process.pid)
-  appendFileSync(fd, `${new Date().toISOString()} stage=worker-identity-capture-done\n`)
+  const appendWorkerStage = (stage) => {
+    try {
+      const tail = readLaneLog(opts.log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? ''
+      if (/^EXIT=\d+$/.test(tail)) return
+    } catch { /* append the diagnostic below when the existing log is unreadable */ }
+    appendFileSync(fd, `${new Date().toISOString()} stage=${stage}\n`)
+  }
+  appendWorkerStage('child-identity-capture-start')
+  const childCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: opencodeBinary })
+  if (process.platform === 'win32' && !childCapture.identity) {
+    const reason = captureTimeoutReason(childCapture)
+    appendWorkerStage(`child-identity-capture-timeout ${reason}`)
+    consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', worktree: opts.dir, reason })
+    terminateWindowsTree(child.pid)
+    rmSync(opts.brief, { force: true })
+    appendFileSync(fd, 'EXIT=1\n')
+    process.stderr.write(`wt-lane: ${reason}\n`)
+    return 1
+  }
+  appendWorkerStage('child-identity-capture-done')
+  appendWorkerStage('worker-identity-capture-start')
+  const workerCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, process.pid, { expectedCommand: process.execPath })
+  if (process.platform === 'win32' && !workerCapture.identity) {
+    const reason = captureTimeoutReason(workerCapture)
+    appendWorkerStage(`worker-identity-capture-timeout ${reason}`)
+    consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', worktree: opts.dir, reason })
+    terminateWindowsTree(child.pid)
+    rmSync(opts.brief, { force: true })
+    appendFileSync(fd, 'EXIT=1\n')
+    process.stderr.write(`wt-lane: ${reason}\n`)
+    return 1
+  }
+  appendWorkerStage('worker-identity-capture-done')
   const childIdentity = childCapture.identity
   const workerIdentity = workerCapture.identity
   const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(process.platform === 'darwin' ? { workerCwd: workerIdentity?.cwd ?? null } : {}), ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(process.platform === 'darwin' ? { childCwd: childIdentity?.cwd ?? null } : {}), ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
