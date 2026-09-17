@@ -266,7 +266,7 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
   return { profile, pluginPaths, guardPaths, skillPlugin, unlistedSkills, lsp: lspPrepared.state, hooks: guardHooks(profile, guardPaths, { env, ...adapterOptions }) }
 }
 
-// Measured 2026-09-17 (probe `lsp-probe/probe3.mjs`, then the first real LITE run of card 1865938900493534235):
+// Measured 2026-09-17 (probe `lsp-probe/probe3.mjs`, then the first real LITE run on a small card):
 // the SDK `system:init` receipt lists only the plugin skills declared `user-invocable: true`. A skill declared
 // `user-invocable: false` loads through the plugin manifest all the same, but the receipt cannot prove it, so
 // requiring it there refused every pilot run at initialization. Such a skill is recorded and logged instead.
