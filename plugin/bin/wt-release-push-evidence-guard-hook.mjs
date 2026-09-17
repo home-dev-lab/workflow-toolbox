@@ -19,10 +19,22 @@ function remoteDefaultBranch(repo, remote) {
 
 function releaseBranch(repo, remote) {
   const discovered = remoteDefaultBranch(repo, remote)
-  if (discovered) return { name: discovered, source: 'remote default branch' }
+  if (discovered) return { name: discovered, source: `locally cached refs/remotes/${remote}/HEAD` }
   const configured = resolveWorkflowToolboxOption('release_branch').value
   if (configured?.trim()) return { name: configured.trim(), source: 'workflow-toolbox release_branch option' }
   return null
+}
+
+function resolutionText(resolved, remote) {
+  const refresh = resolved.source.startsWith('locally cached ')
+    ? ` Refresh it with: git remote set-head ${remote} --auto.`
+    : ''
+  return `Release branch '${resolved.name}' was resolved from ${resolved.source}.${refresh}`
+}
+
+function refuse(input, target, classification, reason) {
+  recordGuardEvent({ guard: GUARD, decision: 'blocked', class: classification, reason, cwd: target.repo, session: input.session_id, agent: input.agent_id })
+  emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: reason } } })
 }
 
 function warnUnresolved(input, target) {
@@ -42,20 +54,50 @@ function main() {
   const command = input.tool_input?.command
 
   for (const target of targets) {
-    if (!target.remote || !target.destination || !target.source) {
+    if (!target.remote) {
       warnUnresolved(input, target)
       continue
     }
     const resolved = releaseBranch(target.repo, target.remote)
+    if (target.unsafeForm) {
+      if (!resolved) {
+        warnUnresolved(input, target)
+        continue
+      }
+      refuse(input, target, 'release-push-unsafe-form', `[workflow-toolbox release gate] Refused ${target.unsafeForm} because it can update release branch '${resolved.name}' without naming the exact pushed object. ${resolutionText(resolved, target.remote)}`)
+      return
+    }
+    if (!target.destination) {
+      warnUnresolved(input, target)
+      continue
+    }
     const fallbackRelease = target.destination === 'main' || target.destination === 'master'
     if (resolved ? target.destination !== resolved.name : !fallbackRelease) {
       if (!resolved && !fallbackRelease) warnUnresolved(input, target)
       continue
     }
+    const releaseResolution = resolved || { name: target.destination, source: 'literal main/master fallback' }
+    const resolution = resolutionText(releaseResolution, target.remote)
+    if (!target.standalone) {
+      refuse(input, target, 'release-push-compound-command', `[workflow-toolbox release gate] Refused: a release push must be the whole Bash command, not share it with another shell segment. ${resolution}`)
+      return
+    }
+    if (target.deletion) {
+      refuse(input, target, 'release-push-deletion', `[workflow-toolbox release gate] Refused deletion of release branch '${target.destination}'. ${resolution} The main guard independently refuses remote deletion; the two guards compose.`)
+      return
+    }
+    if (!target.source) {
+      warnUnresolved(input, target)
+      continue
+    }
 
     const root = repoRoot(target.repo)
     const declaration = readGateDeclaration(root)
-    if (!declaration) continue
+    if (!declaration) {
+      const message = `[workflow-toolbox release gate] Allowed ${target.remote}/${target.destination}: no .wt-gates.json declaration. ${resolution}`
+      emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { additionalContext: message } } })
+      continue
+    }
     const pushedCommit = gitString(target.repo, ['rev-parse', `${target.source}^{commit}`])
     if (!pushedCommit) {
       warnUnresolved(input, target)
@@ -63,13 +105,15 @@ function main() {
     }
     const problems = requiredGateProblems(root, declaration, { pushedCommit })
     if (!problems.length) {
-      recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'release-gate-evidence-fresh', cwd: root, session: input.session_id, agent: input.agent_id })
+      const message = `[workflow-toolbox release gate] Allowed ${target.remote}/${target.destination} at ${pushedCommit}: gate evidence is fresh. ${resolution}`
+      recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'release-gate-evidence-fresh', reason: resolution, cwd: root, session: input.session_id, agent: input.agent_id })
+      emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { additionalContext: message } } })
       continue
     }
 
     const overrideReason = consumeMainGuardAllowOnce(command)
     if (overrideReason) {
-      const message = `[workflow-toolbox release gate] Consumed one-time release push override: ${overrideReason}`
+      const message = `[workflow-toolbox release gate] Allowed ${target.remote}/${target.destination} by consuming one-time override: ${overrideReason}. ${resolution}`
       recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'release-gate-evidence-override', reason: overrideReason, cwd: root, session: input.session_id, agent: input.agent_id })
       emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { additionalContext: message } } })
       return
@@ -77,7 +121,12 @@ function main() {
 
     const refresh = problems.map(({ gate }) => `  (${gate.cwd}) node "${'${CLAUDE_PLUGIN_ROOT}'}/bin/wt-run-gate.mjs" --record ${gate.name} -- ${gate.command}`).join('\n')
     const problemLines = problems.map(({ gate, status }) => `- ${gate.name}: ${status}`).join('\n')
-    const reason = `Gate evidence is required before pushing ${target.remote}/${target.destination} at ${pushedCommit}:\n${problemLines}\nRun:\n${refresh}\nThe release path does not accept a gates: skipped trailer. If a gate cannot run, write {"command":"${command}","reason":"<why>"} to ~/.local/state/wt-main-guard/allow-once.json and retry; the exact-command override is consumed once.`
+    const legacyRefresh = problems.some(({ status }) => status.includes('predates version 2'))
+      ? `\nSome records predate version 2 — refresh:\n${refresh}`
+      : ''
+    const overrideFile = path.join(mainGuardStateDir(), 'allow-once.json')
+    const overrideExample = JSON.stringify({ command, reason: '<why>' })
+    const reason = `Gate evidence is required before pushing ${target.remote}/${target.destination} at ${pushedCommit}. ${resolution}\n${problemLines}${legacyRefresh}\nRun:\n${refresh}\nThe release path does not accept a gates: skipped trailer. If a gate cannot run, write ${overrideExample} to ${overrideFile} and retry; the exact-command override requires a non-empty reason and is consumed once.`
     recordGuardEvent({ guard: GUARD, decision: 'blocked', class: 'release-gate-evidence-stale', reason: problems.map(({ gate, status }) => `${gate.name}:${status}`).join(', '), cwd: root, session: input.session_id, agent: input.agent_id })
     emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: reason } } })
     return

@@ -99,6 +99,7 @@ export function requiredGateProblems(root, declaration, { signature, paths = [],
     if (!record) return [{ gate, status: 'MISSING' }]
     if (record.exit !== 0) return [{ gate, status: `RED (exit ${record.exit})` }]
     if (pushedCommit) {
+      if (record.version !== 2) return [{ gate, status: 'STALE (record predates version 2)' }]
       return record.version === 2 && record.head === pushedCommit && record.dirty === false
         ? []
         : [{ gate, status: 'STALE (recorded tree does not match pushed commit)' }]

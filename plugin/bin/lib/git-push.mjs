@@ -2,10 +2,40 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 function splitCommandSegments(command) {
-  return String(command || '')
-    .split(/\n|;|&&|\|\||\|/)
-    .map((segment) => segment.trim())
-    .filter(Boolean)
+  const segments = []
+  let current = ''
+  let quote = null
+  let escaped = false
+  const text = String(command || '')
+  for (let index = 0; index < text.length; index += 1) {
+    const ch = text[index]
+    if (escaped) { current += ch; escaped = false; continue }
+    if (ch === '\\') { current += ch; escaped = true; continue }
+    if (quote) {
+      current += ch
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") { current += ch; quote = ch; continue }
+    const width = ch === '&' && text[index + 1] === '&'
+      ? 2
+      : ch === '|' && text[index + 1] === '|' ? 2 : 1
+    if (ch === '\n' || ch === ';' || ch === '|') {
+      if (current.trim()) segments.push(current.trim())
+      current = ''
+      index += width - 1
+      continue
+    }
+    if (width === 2) {
+      if (current.trim()) segments.push(current.trim())
+      current = ''
+      index += 1
+      continue
+    }
+    current += ch
+  }
+  if (current.trim()) segments.push(current.trim())
+  return segments
 }
 
 function tokenize(segment) {
@@ -86,46 +116,80 @@ function parsePushSegment(segment, cwd) {
 
   const positionals = []
   let afterDashDash = false
-  const needsValue = new Set(['--repo', '--receive-pack', '--exec', '--upload-pack', '--push-option', '-o', '--signed', '--recurse-submodules'])
+  let optionRemote = null
+  let deletion = false
+  let aggregateForm = null
+  const needsValue = new Set(['--receive-pack', '--exec', '--upload-pack', '--push-option', '-o', '--recurse-submodules'])
   for (let i = index + 1; i < tokens.length; i += 1) {
     const token = tokens[i]
     if (!afterDashDash && token === '--') { afterDashDash = true; continue }
+    if (!afterDashDash && token === '--repo') { optionRemote = tokens[i + 1] || null; i += 1; continue }
+    if (!afterDashDash && token.startsWith('--repo=')) { optionRemote = token.slice('--repo='.length) || null; continue }
+    if (!afterDashDash && token === '--delete') { deletion = true; continue }
+    if (!afterDashDash && (token === '--all' || token === '--mirror')) { aggregateForm = token; continue }
     if (!afterDashDash && token.startsWith('-')) {
       if (needsValue.has(token)) i += 1
       continue
     }
     positionals.push(token)
   }
-  return { repo, remote: positionals[0] || null, refspecs: positionals.slice(1) }
+  return {
+    repo,
+    remote: optionRemote || positionals[0] || null,
+    refspecs: optionRemote ? positionals : positionals.slice(1),
+    deletion,
+    aggregateForm,
+  }
 }
 
 export function derivePushTargets(input) {
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return []
   const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()
   const targets = []
-  for (const segment of splitCommandSegments(input?.tool_input?.command)) {
+  const segments = splitCommandSegments(input?.tool_input?.command)
+  for (const segment of segments) {
     const parsed = parsePushSegment(segment, cwd)
     if (!parsed) continue
+    const common = { ...parsed, command: segment, standalone: segments.length === 1 }
     const branch = currentBranch(parsed.repo)
     const tracking = pushTrackingRef(parsed.repo)
+    if (parsed.aggregateForm) {
+      targets.push({ ...common, source: null, destination: null, unsafeForm: parsed.aggregateForm })
+      continue
+    }
     if (parsed.refspecs.length === 0) {
-      const match = tracking?.match(/^refs\/remotes\/([^/]+)\/(.+)$/)
-      if (!match || (parsed.remote && parsed.remote !== match[1])) {
-        targets.push({ ...parsed, command: segment, source: null, destination: null })
+      const explicitPrefix = parsed.remote ? `refs/remotes/${parsed.remote}/` : null
+      const explicitDestination = explicitPrefix && tracking?.startsWith(explicitPrefix) ? tracking.slice(explicitPrefix.length) : null
+      const inferred = parsed.remote ? null : tracking?.match(/^refs\/remotes\/([^/]+)\/(.+)$/)
+      if (explicitDestination) {
+        targets.push({ ...common, source: 'HEAD', destination: explicitDestination })
+      } else if (inferred) {
+        targets.push({ ...common, remote: inferred[1], source: 'HEAD', destination: inferred[2] })
       } else {
-        targets.push({ ...parsed, command: segment, remote: parsed.remote || match[1], source: 'HEAD', destination: match[2] })
+        targets.push({ ...common, source: null, destination: null })
       }
       continue
     }
     for (const refspec of parsed.refspecs) {
+      if (refspec === ':') {
+        targets.push({ ...common, source: null, destination: null, unsafeForm: "matching refspec ':'" })
+        continue
+      }
       const [rawSource, rawDestination] = refspec.split(':', 2)
       const source = normalizeSource(rawSource)
-      if (!source) continue
+      const destination = branchFromDestination(rawDestination || defaultDestination(source, branch))
+      if (refspec.includes('*')) {
+        targets.push({ ...common, source, destination, unsafeForm: `wildcard refspec '${refspec}'` })
+        continue
+      }
+      if (parsed.deletion || !source) {
+        targets.push({ ...common, source: null, destination: branchFromDestination(parsed.deletion ? rawSource : rawDestination), deletion: true })
+        continue
+      }
       targets.push({
-        ...parsed,
-        command: segment,
+        ...common,
         source,
-        destination: branchFromDestination(rawDestination || defaultDestination(source, branch)),
+        destination,
       })
     }
   }

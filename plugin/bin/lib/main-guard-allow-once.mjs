@@ -15,8 +15,9 @@ export function consumeMainGuardAllowOnce(command) {
   try {
     const entry = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (!entry || entry.command !== command) return null
+    if (typeof entry.reason !== 'string' || !entry.reason.trim()) return null
     fs.unlinkSync(file)
-    return entry.reason || '(no reason given)'
+    return entry.reason.trim()
   } catch {
     return null
   }
