@@ -371,7 +371,9 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
 
     const first = inspect(42, { platform: 'darwin' })
     expect(first?.argv).toEqual(['(bash)'])
-    expect(inspectStartedProcess(inspect, 42, { platform: 'darwin', timeoutMs: 250 }).identity?.argv)
+    // Each transcript transition now costs one 100 ms table TTL on darwin; the bound is about the
+    // sequence, not about 250 ms (run 23: 250 ms was marginal on the macOS runner).
+    expect(inspectStartedProcess(inspect, 42, { platform: 'darwin', timeoutMs: 2_000 }).identity?.argv)
       .toEqual(['/usr/local/bin/node lane.mjs --worker'])
   })
   it('captures Darwin cwd once when lsof takes two seconds', () => {
