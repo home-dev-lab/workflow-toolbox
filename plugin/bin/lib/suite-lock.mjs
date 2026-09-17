@@ -135,3 +135,38 @@ export function operatorReleaseSuiteLock(options = {}) {
   rmSync(current.lockDir, { recursive: true, force: true })
   return { released: true, reason: options.force ? 'forced' : 'stale', holder: current.holder }
 }
+
+// Windows needs a SHELL only to launch a `.cmd`/`.bat` shim (spawning one directly fails EINVAL).
+// Passing `shell: true` for every command instead re-parses the argv through cmd.exe, which mangles
+// quotes: measured 2026-09-17 on the 0.182.0 tag run, `node -e 'process.stdout.write("ran")'` exited 1
+// on windows-latest while ubuntu and macOS passed. So the shell is decided per EXECUTABLE, never per
+// platform alone. A bare name with no extension is resolved against PATH/PATHEXT because that is how
+// Windows finds `opencode` -> `opencode.cmd`; an unresolvable name returns false so spawn reports its
+// own ENOENT instead of a shell swallowing it.
+const WINDOWS_SHELL_EXTENSIONS = new Set(['.cmd', '.bat'])
+
+export function resolveWindowsExecutable(executable, options = {}) {
+  const env = options.env ?? process.env
+  const exists = options.exists ?? ((candidate) => { try { return statSync(candidate).isFile() } catch { return false } })
+  const pathExt = String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+  const searchPath = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean)
+  for (const directory of searchPath) {
+    for (const extension of pathExt) {
+      const candidate = path.join(directory, `${executable}${extension}`)
+      if (exists(candidate)) return candidate
+    }
+  }
+  return null
+}
+
+export function spawnNeedsShell(executable, options = {}) {
+  const platform = options.platform ?? process.platform
+  if (platform !== 'win32') return false
+  const name = String(executable ?? '')
+  if (!name) return false
+  const extension = path.extname(name).toLowerCase()
+  if (extension) return WINDOWS_SHELL_EXTENSIONS.has(extension)
+  if (name.includes('/') || name.includes('\\')) return false
+  const resolved = options.resolve ? options.resolve(name) : resolveWindowsExecutable(name, options)
+  return resolved ? WINDOWS_SHELL_EXTENSIONS.has(path.extname(resolved).toLowerCase()) : false
+}

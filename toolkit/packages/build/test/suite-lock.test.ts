@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acquireSuiteLock, readSuiteLock, releaseSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { acquireSuiteLock, readSuiteLock, releaseSuiteLock, resolveWindowsExecutable, spawnNeedsShell } from '../../../../plugin/bin/lib/suite-lock.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
@@ -123,5 +123,58 @@ describe('wt-suite-lock CLI', () => {
     expect(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8')).toContain(`"pid": ${process.pid}`)
     expect(cli(['release', '--force'], root).status).toBe(0)
     expect(releaseSuiteLock(lease)).toBe(true)
+  })
+})
+
+describe('spawn shell decision (Windows shims only)', () => {
+  // The 0.182.0 tag run went red on windows-latest with `expected 1 to be +0` on both CLI run tests:
+  // a blanket `shell: true` sent `node -e 'process.stdout.write("ran")'` through cmd.exe, which
+  // re-parsed the quotes. These lock the DECISION, so they fail on any platform when it regresses.
+  it('never asks for a shell off Windows, whatever the executable', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      expect(spawnNeedsShell('pnpm.cmd', { platform })).toBe(false)
+      expect(spawnNeedsShell('pnpm', { platform })).toBe(false)
+      expect(spawnNeedsShell(process.execPath, { platform })).toBe(false)
+    }
+  })
+
+  it('asks for a shell on Windows only for a .cmd or .bat shim', () => {
+    const platform = 'win32' as const
+    expect(spawnNeedsShell('pnpm.cmd', { platform })).toBe(true)
+    expect(spawnNeedsShell('C:\\tools\\opencode.CMD', { platform })).toBe(true)
+    expect(spawnNeedsShell('run.bat', { platform })).toBe(true)
+    expect(spawnNeedsShell('node.exe', { platform })).toBe(false)
+    expect(spawnNeedsShell('C:\\Program Files\\nodejs\\node.exe', { platform })).toBe(false)
+    expect(spawnNeedsShell('C:\\tools\\runner.mjs', { platform })).toBe(false)
+  })
+
+  it('resolves a bare Windows name through PATHEXT and shells only when it lands on a shim', () => {
+    const platform = 'win32' as const
+    expect(spawnNeedsShell('opencode', { platform, resolve: () => 'C:\\npm\\opencode.cmd' })).toBe(true)
+    expect(spawnNeedsShell('node', { platform, resolve: () => 'C:\\nodejs\\node.exe' })).toBe(false)
+    // Unresolvable: no shell, so spawn reports its own ENOENT instead of cmd.exe swallowing it.
+    expect(spawnNeedsShell('nowhere', { platform, resolve: () => null })).toBe(false)
+  })
+
+  it('reads PATH and PATHEXT in order when resolving a bare name', () => {
+    const seen: string[] = []
+    const resolved = resolveWindowsExecutable('tool', {
+      env: { PATH: ['/a', '/b'].join(delimiter), PATHEXT: '.EXE;.CMD' },
+      exists: (candidate: string) => {
+        seen.push(candidate)
+        return candidate.includes('/b') && candidate.endsWith('.CMD')
+      },
+    })
+    expect(resolved).not.toBeNull()
+    expect(String(resolved).endsWith('.CMD')).toBe(true)
+    expect(seen[0]).toBe(join('/a', 'tool.EXE'))
+    expect(seen.length).toBeGreaterThan(1)
+  })
+
+  it('runs a command whose arguments carry quotes, through the lock, exit 0', () => {
+    const root = tempRoot('quoted')
+    const result = cli(['run', '--', process.execPath, '-e', 'process.stdout.write("quoted ok")'], root)
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('quoted ok')
   })
 })
