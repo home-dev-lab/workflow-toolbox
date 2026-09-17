@@ -1289,6 +1289,11 @@ function killIdentity(expected: { pid: number, argv: string[], startTime?: numbe
   const actual = inspectProcess(expected.pid)
   expect(sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, actual)).toBe(true)
   process.kill(expected.pid, signal)
+  const deadline = Date.now() + 5_000
+  while (sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, inspectProcess(expected.pid)) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  }
+  if (sameIdentity({ ...expected, startTime: expected.startTime ?? actual?.startTime }, inspectProcess(expected.pid))) throw new Error(`timed out waiting for test child ${expected.pid} to exit`)
 }
 function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher: string | null = null, laneWaitMs: number | null = null, options: Record<string, unknown> = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-'))); roots.push(root)

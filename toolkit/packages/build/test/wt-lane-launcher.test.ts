@@ -22,7 +22,11 @@ const spawnedGroups: number[] = []
 const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
-  const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve) => child.once('exit', () => resolve())))
+  const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for test child ${child.pid} to exit`)), 5_000)
+    child.once('exit', () => { clearTimeout(timer); resolve() })
+    if (child.exitCode !== null || child.signalCode !== null) { clearTimeout(timer); resolve() }
+  }))
   for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
   for (const group of spawnedGroups.splice(0)) try { process.kill(-group, 'SIGKILL') } catch {}
   await Promise.all(exits)
@@ -349,7 +353,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       calls += 1
       return calls < 3 ? null : expected
     }, 42, { platform: 'darwin', timeoutMs: 500 })
-    expect(calls).toBe(3)
+    expect(calls).toBe(4)
     expect(result).toEqual({ identity: expected, unavailable: null })
   })
   it('waits through a transient Darwin shell transcript before capturing the stable command', () => {
@@ -369,6 +373,24 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(inspectStartedProcess(inspect, 42, { platform: 'darwin', timeoutMs: 100 }).identity?.argv)
       .toEqual(['/usr/local/bin/node lane.mjs --worker'])
   })
+  it('captures Darwin cwd once when lsof takes two seconds', () => {
+    let lsofCalls = 0
+    const execFile = ((program: string, args: string[]) => {
+      if (program === 'lsof') {
+        lsofCalls += 1
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_000)
+        return { status: 0, stdout: 'p42\nfcwd\nn/private/var/folders/lane\n' }
+      }
+      if (args.includes('lstart=,pgid=,command=')) return { status: 0, stdout: 'Wed Sep 16 12:34:56 2026   42 /usr/local/bin/node lane.mjs --worker\n' }
+      return { status: 0, stdout: 'S\n' }
+    }) as typeof spawnSync
+    const inspect = (pid: number, options: { platform: NodeJS.Platform, captureCwd?: boolean }) => inspectProcess(pid, { ...options, spawnSync: execFile })
+    const started = Date.now()
+
+    expect(inspectStartedProcess(inspect, 42, { platform: 'darwin', timeoutMs: 5_000 }).identity?.cwd).toBe('/private/var/folders/lane')
+    expect(Date.now() - started).toBeLessThan(3_000)
+    expect(lsofCalls).toBe(1)
+  }, 3_500)
   it('records a source-specific unavailable state instead of a synthetic identity', () => {
     expect(inspectStartedProcess(() => null, 42, { platform: 'darwin', timeoutMs: 20 })).toEqual({ identity: null, unavailable: 'unavailable (ps)' })
     expect(classifyLane({ runId: '42-1', state: 'running', workerPid: 42, workerArgv: null, workerStartTime: null, workerIdentity: 'unavailable (ps)', childPid: null, childArgv: null }, { platform: 'darwin' }))
