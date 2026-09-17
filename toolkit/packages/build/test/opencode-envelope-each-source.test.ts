@@ -38,6 +38,27 @@ function portablePath(filePath: string) {
   return filePath.replace(/\\/g, '/')
 }
 
+function envelopeFailure(root: string, result: ReturnType<typeof spawnSync>, startedAt: number) {
+  const fixture = (name: string) => {
+    const file = join(root, name)
+    return existsSync(file) ? readFileSync(file, 'utf8') : '<missing>'
+  }
+  return [
+    `status=${String(result.status)}`,
+    `signal=${String(result.signal)}`,
+    `stdout=${JSON.stringify(String(result.stdout ?? ''))}`,
+    `stderr=${JSON.stringify(String(result.stderr ?? ''))}`,
+    `elapsed=${Date.now() - startedAt}ms`,
+    `ran.txt=${JSON.stringify(fixture('ran.txt'))}`,
+    `argv.json=${JSON.stringify(fixture('argv.json'))}`,
+  ].join(' ')
+}
+
+function clearFixtureTrace(root: string) {
+  rmSync(join(root, 'ran.txt'), { force: true })
+  rmSync(join(root, 'argv.json'), { force: true })
+}
+
 function installFakeOpencode(root: string) {
   const bin = join(root, 'opencode')
   const script = `${bin}.cjs`
@@ -46,6 +67,9 @@ function installFakeOpencode(root: string) {
     "if (process.argv[2] === '--pure') { console.log('[]'); process.exit(0) }",
     "if (process.argv[2] === 'debug' && process.argv[3] === 'skill') { console.log('[]'); process.exit(0) }",
     "if (process.argv[2] === 'providers') process.exit(0)",
+    "const fs = require('node:fs')",
+    "fs.writeFileSync(__dirname + '/ran.txt', 'task child started\\n')",
+    "fs.writeFileSync(__dirname + '/argv.json', JSON.stringify(process.argv.slice(2)))",
     "const taskFile = process.argv[process.argv.indexOf('-f') + 1]",
     "if (process.env.FAKE_CONCURRENCY_LOG) {",
     "  const fs = require('node:fs')",
@@ -163,31 +187,40 @@ describe('wt-opencode-envelope generated task sources', () => {
       FAKE_ANSWER: 'line one\n"line two"',
       FAKE_MODEL_CAPTURE: modelCapture,
     }
+    clearFixtureTrace(root)
+    const startedAt = Date.now()
     const result = spawnSync(process.execPath, [
       SCRIPT, tasks, '--dir', workdir, '--model', 'nonexistent/provider-model', '--manifest', manifestPath,
     ], { encoding: 'utf8', env })
+    const details = envelopeFailure(root, result, startedAt)
 
-    expect(result.status, result.stderr).toBe(0)
+    expect(result.status, details).toBe(0)
     const outputManifest = manifestPathFromStdout(result.stdout)
-    expect(portablePath(outputManifest!)).toMatch(/\/envelope\.manifest\.json$/)
-    expect(result.stdout, result.stderr).toBe(`MANIFEST: ${outputManifest} ANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
+    expect(portablePath(outputManifest!), details).toMatch(/\/envelope\.manifest\.json$/)
+    expect(result.stdout, details).toBe(`MANIFEST: ${outputManifest} ANSWER: ${JSON.stringify('line one\n"line two"')}\n`)
     expect(readFileSync(modelCapture, 'utf8')).toBe('nonexistent/provider-model')
     expect(JSON.parse(readFileSync(outputManifest!, 'utf8')).tasks[0]).toMatchObject({
       status: 'answer', requestedModel: 'nonexistent/provider-model', model: 'nonexistent/provider-model',
     })
 
     writeFileSync(tasks, JSON.stringify([{ id: 'one', prompt: 'first' }, { id: 'two', prompt: 'second' }]))
+    clearFixtureTrace(root)
+    const batchStartedAt = Date.now()
     const batch = spawnSync(process.execPath, [SCRIPT, tasks, '--dir', workdir, '--manifest', manifestPath], { encoding: 'utf8', env })
-    expect(batch.status).toBe(0)
-    expect(batch.stdout).toBe(`MANIFEST: ${manifestPathFromStdout(batch.stdout)}\n`)
+    const batchDetails = envelopeFailure(root, batch, batchStartedAt)
+    expect(batch.status, batchDetails).toBe(0)
+    expect(batch.stdout, batchDetails).toBe(`MANIFEST: ${manifestPathFromStdout(batch.stdout)}\n`)
 
     writeFileSync(tasks, JSON.stringify([{ id: 'failed', prompt: 'fail this' }]))
+    clearFixtureTrace(root)
+    const failedStartedAt = Date.now()
     const failed = spawnSync(process.execPath, [SCRIPT, tasks, '--dir', workdir, '--model', 'does-not-exist', '--manifest', manifestPath], {
       encoding: 'utf8', env: { ...env, FAKE_EXIT_CODE: '1' },
     })
-    expect(failed.status).toBe(0)
+    const failedDetails = envelopeFailure(root, failed, failedStartedAt)
+    expect(failed.status, failedDetails).toBe(0)
     const failedManifest = manifestPathFromStdout(failed.stdout)
-    expect(failed.stdout).toBe(`MANIFEST: ${failedManifest} ERROR: ${JSON.stringify('opencode exited 1 (model does-not-exist)')}\n`)
+    expect(failed.stdout, failedDetails).toBe(`MANIFEST: ${failedManifest} ERROR: ${JSON.stringify('opencode exited 1 (model does-not-exist)')}\n`)
     expect(JSON.parse(readFileSync(failedManifest!, 'utf8')).tasks[0]).toMatchObject({
       status: 'error', requestedModel: 'does-not-exist', model: 'does-not-exist', reason: expect.stringContaining('does-not-exist'),
     })
@@ -205,18 +238,26 @@ describe('wt-opencode-envelope generated task sources', () => {
     writeFileSync(generatedSource, '["one"]\n')
     writeFileSync(inlineSource, JSON.stringify([{ id: 'inline', prompt: 'answer inline' }]))
     const env = { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config') }
-    const runEach = () => spawnSync(process.execPath, [
-      SCRIPT, '--each-json', generatedSource, '--prompt-template', 'Answer {{item}}', '--id-template', '{{item}}', '--dir', workdir,
-    ], { encoding: 'utf8', env })
+    const runEach = () => {
+      clearFixtureTrace(root)
+      const startedAt = Date.now()
+      const result = spawnSync(process.execPath, [
+        SCRIPT, '--each-json', generatedSource, '--prompt-template', 'Answer {{item}}', '--id-template', '{{item}}', '--dir', workdir,
+      ], { encoding: 'utf8', env })
+      return { result, details: envelopeFailure(root, result, startedAt) }
+    }
 
     const first = runEach()
     const second = runEach()
+    clearFixtureTrace(root)
+    const inlineStartedAt = Date.now()
     const inline = spawnSync(process.execPath, [SCRIPT, inlineSource, '--dir', workdir], { encoding: 'utf8', env })
-    expect(first.status, first.stderr).toBe(0)
-    expect(second.status, second.stderr).toBe(0)
-    expect(inline.status, inline.stderr).toBe(0)
-    const manifests = [first, second, inline].map((run) => manifestPathFromStdout(run.stdout))
-    expect(manifests.every((manifest) => typeof manifest === 'string')).toBe(true)
+    const inlineDetails = envelopeFailure(root, inline, inlineStartedAt)
+    expect(first.result.status, first.details).toBe(0)
+    expect(second.result.status, second.details).toBe(0)
+    expect(inline.status, inlineDetails).toBe(0)
+    const manifests = [first.result, second.result, inline].map((run) => manifestPathFromStdout(run.stdout))
+    expect(manifests.every((manifest) => typeof manifest === 'string'), `${first.details}\n${second.details}\n${inlineDetails}`).toBe(true)
     expect(new Set(manifests).size).toBe(3)
     for (const manifestPath of manifests) {
        expect(portablePath(manifestPath!)).toMatch(new RegExp(`^${portablePath(root)}/wt-envelope/[^/]+/envelope\\.manifest\\.json$`))
@@ -336,13 +377,16 @@ describe('wt-opencode-envelope generated task sources', () => {
     }))
     const manifestPath = join(root, 'reduce.manifest.json')
     const promptCapture = join(root, 'reduce-prompt.txt')
+    clearFixtureTrace(root)
+    const startedAt = Date.now()
     const result = spawnSync(process.execPath, [
       SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', 'Synthesize:\n{{answers}}',
       '--dir', workdir, '--manifest', manifestPath,
     ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), FAKE_PROMPT_CAPTURE: promptCapture } })
+    const details = envelopeFailure(root, result, startedAt)
 
-    expect(result.status).toBe(0)
-    expect(result.stdout).toBe(`MANIFEST: ${manifestPathFromStdout(result.stdout)}\n`)
+    expect(result.status, details).toBe(0)
+    expect(result.stdout, details).toBe(`MANIFEST: ${manifestPathFromStdout(result.stdout)}\n`)
     expect(readFileSync(promptCapture, 'utf8')).toBe('Synthesize:\n--- BEGIN ANSWER id=first exitStatus=0 ---\nfirst result\n--- END ANSWER id=first ---')
     const manifest = JSON.parse(readFileSync(manifestPathFromStdout(result.stdout)!, 'utf8'))
     expect(manifest, result.stderr).toMatchObject({ total: 1, answered: 1, errored: 0, skippedFailedTaskIds: ['broken'] })
@@ -399,21 +443,25 @@ describe('wt-opencode-envelope generated task sources', () => {
     writeFileSync(sourceA, JSON.stringify({ tasks: [{ id: 'a', status: 'answer', exitStatus: 0, answerFile: answerA }] }))
     writeFileSync(sourceB, JSON.stringify({ tasks: [{ id: 'b', status: 'answer', exitStatus: 0, answerFile: answerB }] }))
     const env = { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config') }
-    const run = (source: string, manifest: string) =>
-      spawnSync(process.execPath, [
+    const run = (source: string, manifest: string) => {
+      clearFixtureTrace(root)
+      const startedAt = Date.now()
+      const result = spawnSync(process.execPath, [
         SCRIPT, '--reduce', source, '--reduce-prompt', 'Synthesize:\n{{answers}}',
         '--dir', workdir, '--manifest', manifest,
       ], { encoding: 'utf8', env })
+      return { result, details: envelopeFailure(root, result, startedAt) }
+    }
 
     const manifestA = join(root, 'reduce-a.manifest.json')
     const manifestB = join(root, 'reduce-b.manifest.json')
     const runA = run(sourceA, manifestA)
     const runB = run(sourceB, manifestB)
-    expect(runA.status, runA.stderr).toBe(0)
-    expect(runB.status, runB.stderr).toBe(0)
+    expect(runA.result.status, runA.details).toBe(0)
+    expect(runB.result.status, runB.details).toBe(0)
 
-    const fileA = JSON.parse(readFileSync(manifestPathFromStdout(runA.stdout)!, 'utf8')).tasks[0].answerFile
-    const fileB = JSON.parse(readFileSync(manifestPathFromStdout(runB.stdout)!, 'utf8')).tasks[0].answerFile
+    const fileA = JSON.parse(readFileSync(manifestPathFromStdout(runA.result.stdout)!, 'utf8')).tasks[0].answerFile
+    const fileB = JSON.parse(readFileSync(manifestPathFromStdout(runB.result.stdout)!, 'utf8')).tasks[0].answerFile
     expect(fileA).not.toBe(fileB)
     // and the first answer must still exist after the second run
     expect(existsSync(fileA)).toBe(true)
