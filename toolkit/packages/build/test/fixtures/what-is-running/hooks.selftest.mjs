@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as hooksModule from '../../../../../../plugin/hooks/hooks.js';
 import * as artifactHelpers from '../../../../../../plugin/hooks/snapshot-program.js';
+import { PHASES } from '../../../../../../plugin/bin/lib/lifecycle-state-machine.mjs';
 import { captureHasPane } from './host-capture-match.mjs';
 
 const { readSnapshot, register } = hooksModule;
@@ -150,6 +151,7 @@ let testCount = 0;
 const testFilter = process.env.WT_WIR_SELFTEST_FILTER;
 let finishedOnlySnapshot;
 let cappedDiscoverySnapshot;
+let structuredLifecycleSnapshot;
 async function test(name, fn) {
   if (testFilter && !name.includes(testFilter)) return;
   testCount += 1;
@@ -282,17 +284,15 @@ await test('[Missed card-id collision] running lane wins in both directory order
   }
 });
 await test('[A-1][B-1] SDK phase map uses every authoritative lifecycle phase', async () => {
+  assert.deepEqual(hooksModule.PANE_PHASES.map(([phase]) => phase), PHASES);
+  assert(hooksModule.PANE_PHASES.every(([, label]) => typeof label === 'string' && label.length > 0));
   const snapshot = await readSnapshot({ process: processCapability }, paths);
   const running = snapshot.rows.find((row) => row.id === '1862698281071544190');
   assert.equal(running.phase, 'awaiting_fidelity');
   assert.equal(running.criticRounds, 2);
 
-  const phaseCases = {
-    discovery: 'discovery', plan: 'plan', critic: 'critic', tdd: 'tdd', verify: 'verify',
-    review: 'review', refutation: 'refutation', harden: 'harden', report: 'report',
-    awaiting_fidelity: 'awaiting_fidelity',
-  };
-  for (const [index, emitted] of Object.keys(phaseCases).entries()) {
+  const phaseCases = [...PHASES, 'awaiting_fidelity'];
+  for (const [index, emitted] of phaseCases.entries()) {
     const dir = join(suiteRoot, 'worktrees', `sdk-phase-${emitted}`);
     const id = String(1862698281071544100n + BigInt(index));
     mkdirSync(join(dir, '.lane'), { recursive: true });
@@ -300,10 +300,38 @@ await test('[A-1][B-1] SDK phase map uses every authoritative lifecycle phase', 
     writeFileSync(join(dir, '.lane', 'runner-stdout.log'), `lifecycle: accepted phase=${emitted}\n`);
   }
   const phases = await readSnapshot({ process: processCapability }, paths);
-  for (const [index, expected] of Object.values(phaseCases).entries()) {
+  for (const [index, expected] of phaseCases.entries()) {
     const id = String(1862698281071544100n + BigInt(index));
     assert.equal(phases.rows.find((row) => row.id === id).phase, expected);
   }
+});
+await test('[lifecycle source] structured timeline wins over log fallback and drives rendered stages', async () => {
+  const isolated = join(root, 'structured-lifecycle');
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now };
+  mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true });
+  mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true });
+  mkdirSync(isolatedPaths.livenessDir, { recursive: true });
+  const cardId = '1862698281071544149';
+  const dir = join(isolatedPaths.suiteRoot, 'worktrees', 'timeline');
+  mkdirSync(join(dir, '.lane'), { recursive: true });
+  writeFileSync(join(dir, '.lane', 'route.json'), JSON.stringify({ cardId, route: 'LITE' }));
+  writeFileSync(join(dir, '.lane', 'card.md'), `# Structured lifecycle ${cardId}\n`);
+  writeFileSync(join(dir, '.lane', 'runner-stdout.log'), 'lifecycle: accepted phase=plan\n');
+  writeFileSync(join(dir, '.lane', 'lifecycle.json'), JSON.stringify({
+    version: 2, started_at: 1, ended_at: null,
+    phases: [
+      { phase: 'discovery', round: null, entered_at: 1, exited_at: 2 },
+      { phase: 'tdd', round: null, entered_at: 2, exited_at: 3 },
+      { phase: 'verify', round: null, entered_at: 3, exited_at: null },
+    ],
+  }));
+  structuredLifecycleSnapshot = await readSnapshot({ process: processCapability }, isolatedPaths);
+  const row = structuredLifecycleSnapshot.rows.find((item) => item.id === cardId);
+  assert.equal(row.phase, 'verify');
+  assert.equal(row.phaseSource, 'lifecycle');
+  assert.equal(row.phaseStates.discovery, 'done');
+  assert.equal(row.phaseStates.tdd, 'done');
+  assert.equal(row.phaseStates.verify, 'running');
 });
 await test('[changed Round 3 terminal state][A-2][incorrect completion] accepted history preserves loops and marks jumps skipped', async () => {
   const jump = join(suiteRoot, 'worktrees', 'sdk-jump-report');
@@ -1549,6 +1577,19 @@ await test('[changed Step 7 unknown omission][DoD 3] unknown phase has no phase 
   assert.equal(descendants(tree, (item) => item.name === 'Button' && String(item.props.key || '').startsWith('phase:')).length, 0);
   assert(!text.includes('not started'));
 });
+await test('[lifecycle source] structured timeline renders the work-stage row', async () => {
+  const text = JSON.stringify((await renderSnapshot(structuredLifecycleSnapshot)).tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
+  assert.match(text, /Work stages:/);
+  assert.doesNotMatch(text, /from log/);
+});
+await test('[lifecycle fallback] log-derived stages say where they came from', async () => {
+  const snapshot = { discovery: 'available', rows: [{
+    id: 'log-fallback', kind: 'pilot', title: 'log-fallback', phase: 'tdd', phaseSource: 'log',
+    phaseStates: { discovery: 'done', tdd: 'running' }, outcome: 'running', gates: {}, review: {}, inspectors: {}, lanes: [], sources: {},
+  }], collectedAt: paths.now };
+  const text = JSON.stringify((await renderSnapshot(snapshot)).tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
+  assert.match(text, /Work stages \(from log\):/);
+});
 await test('[DoD 4] phase and outcome Text nodes carry semantic style props', async () => {
   const snapshot = { discovery: 'available', rows: [{
     id: 'styled', kind: 'pilot', title: 'styled', phase: 'tdd', outcome: 'failed',
@@ -1584,14 +1625,14 @@ await test('[changed Step 8 content gating][Missed A] lifecycle-only phases with
   assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.some((child) => String(child).includes('Verify ●')) && item.props.color === 'yellowBright'));
   assert.match(text, /Pilot review ·.*not started/);
 });
-await test('[changed Round 2 wrapping][DoD 2][DoD 4] standalone external lanes show stripped title, model, activity, accent, and no phases', async () => {
+await test('[changed Round 2 wrapping][DoD 2][DoD 4] standalone external lanes state that phases are unavailable', async () => {
   const snapshot = { discovery: 'available', rows: [{
     id: 'lane:/tmp/external', kind: 'external', title: 'Ship the artifact server', phase: 'unknown', outcome: 'running', model: 'gpt-5.6', activity: 'last write 2 min ago', sources: {},
   }], collectedAt: paths.now };
   const { tree } = await renderSnapshot(snapshot);
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
   assert.match(text, /External lane/); assert.match(text, /Ship the artifact server/); assert.match(text, /gpt-5\.6/); assert.match(text, /last write 2 min ago/);
-  assert(!text.includes('phase unknown')); assert(!text.includes('not started'));
+  assert.match(text, /phases: n\/a \(plain lane\)/); assert(!text.includes('phase unknown')); assert(!text.includes('not started'));
   assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.includes('Ship the artifact server') && item.props.color && item.props.wrap === 'wrap'));
 });
 await test('[changed Step 7 plain card ID][Step 4 valid card URL] card IDs are bold Text and accepted URLs move to open-card detail Links', async () => {

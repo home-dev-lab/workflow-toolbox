@@ -1,4 +1,5 @@
 import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
+import { PHASES } from './lifecycle-phases.js';
 
 const PANE_ID = 'wt-what-is-running';
 export const WORKFLOW_TOOLBOX_LAYOUT = Object.freeze({
@@ -110,11 +111,11 @@ export function isValidLinkHref(href) {
   }
 }
 
-const PHASES = [
-  ['discovery', 'Discovery'], ['plan', 'Plan'], ['critic', 'Critic'], ['tdd', 'TDD'],
-  ['verify', 'Verify'], ['review', 'Pilot review'], ['refutation', 'Pilot refutation'],
-  ['harden', 'Harden'], ['report', 'Report'],
-];
+const PHASE_LABELS = Object.freeze({
+  discovery: 'Discovery', plan: 'Plan', critic: 'Critic', tdd: 'TDD', verify: 'Verify',
+  review: 'Pilot review', refutation: 'Pilot refutation', harden: 'Harden', report: 'Report',
+});
+export const PANE_PHASES = Object.freeze(PHASES.map((phase) => Object.freeze([phase, PHASE_LABELS[phase]])));
 
 function stateOf(row, phase) {
   const words = row.phaseStates?.[phase] || 'not started';
@@ -123,7 +124,7 @@ function stateOf(row, phase) {
 
 function phaseLabel(phase) {
   if (phase === 'awaiting_fidelity') return 'Waiting for arbiter review';
-  return PHASES.find(([id]) => id === phase)?.[1] || phase;
+  return PANE_PHASES.find(([id]) => id === phase)?.[1] || phase;
 }
 
 function knownDetails(row) {
@@ -209,7 +210,12 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   const renderExternal = (row, indent = 0, showCard = true) => {
     const cardId = renderCardId(row);
     const label = `${row.label || 'External lane'}${row.roleInferred ? ' (inferred)' : ''}`;
-    const details = [row.model && row.model !== 'unknown' ? `model ${row.model}` : null, row.activity && row.activity !== 'unknown' ? row.activity : null, row.elapsed && row.elapsed !== 'unknown' ? `elapsed ${row.elapsed}` : null].filter(Boolean).join(' · ');
+    const details = [
+      `phases: n/a (${row.phaseAvailability || 'plain lane'})`,
+      row.model && row.model !== 'unknown' ? `model ${row.model}` : null,
+      row.activity && row.activity !== 'unknown' ? row.activity : null,
+      row.elapsed && row.elapsed !== 'unknown' ? `elapsed ${row.elapsed}` : null,
+    ].filter(Boolean).join(' · ');
     return node(Box, { key: row.id, flexDirection: 'column', paddingLeft: indent },
       node(Box, { flexDirection: 'row', columnGap: 1 },
         fixedText({ color: COLORS.external }, label),
@@ -229,7 +235,8 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     const selection = selected.get(row.id);
     const inspector = selection ? row.inspectors?.[selection.toLowerCase()] : null;
     const phaseKnown = row.phase && row.phase !== 'unknown';
-    const visiblePhases = phaseKnown ? PHASES : [];
+    const visiblePhases = phaseKnown ? PANE_PHASES : [];
+    const stageHeading = row.phaseSource === 'log' ? 'Work stages (from log):' : 'Work stages:';
     const phaseButtons = visiblePhases.map(([phase, label]) => {
       const state = stateOf(row, phase);
       const buttonKey = `detail-toggle:stage:${row.id}:${phase}`;
@@ -249,7 +256,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
       row.watchdog && row.watchdog !== 'unknown' ? node(Text, { dimColor: true }, `watchdog: ${row.watchdog}`) : null,
     ] : [];
     const inspectorButtonKey = selection ? `detail-toggle:stage:${row.id}:${selection}` : null;
-    const inspectorNodes = !selection ? [] : [renderOpenDetail(inspectorButtonKey, PHASES.find(([phase]) => phase === selection)?.[1] || selection, () => actions.closeView(row.id),
+    const inspectorNodes = !selection ? [] : [renderOpenDetail(inspectorButtonKey, PANE_PHASES.find(([phase]) => phase === selection)?.[1] || selection, () => actions.closeView(row.id),
       ...renderEvidence(inspector?.summary || (inspector?.href ? 'A report was recorded.' : '')),
       Link && isValidLinkHref(inspector?.href) ? linked({ href: inspector.href, label: '[Open report]' }) : null,
     )];
@@ -264,7 +271,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
         failed ? fixedText({ color: COLORS.error, bold: true }, ` · ${row.outcome}`) : null,
       ),
       showCard ? renderCardLink(row) : null,
-      showStages && phaseKnown ? node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1, paddingLeft: 1 }, fixedText({ bold: true }, 'Work stages:'), ...phaseButtons.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])) : null,
+      showStages && phaseKnown ? node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1, paddingLeft: 1 }, fixedText({ bold: true }, stageHeading), ...phaseButtons.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])) : null,
       rounds ? node(Box, { paddingLeft: 1 }, node(Text, { dimColor: true }, rounds)) : null,
       ...(showStages ? inspectorNodes : []),
       isExpanded ? renderOpenDetail(`detail-toggle:row:${row.id}`, `${row.label || 'Pilot'} details`, () => actions.toggle(row.id), ...expandedLines) : null,
@@ -278,7 +285,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     const key = `timeline:${sessionId}:${card.id}`;
     const selection = selected.get(key);
     const stages = [];
-    if (pilot) for (const [id, label] of PHASES) {
+    if (pilot) for (const [id, label] of PANE_PHASES) {
       const state = stateOf(pilot, id);
       const inspector = pilot.inspectors?.[id];
       stages.push({ id, label, state, summary: inspector?.summary || (inspector?.href ? 'A report was recorded.' : null), href: inspector?.href });

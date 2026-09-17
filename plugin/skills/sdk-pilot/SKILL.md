@@ -62,3 +62,6 @@ To total archived costs mechanically, run `node "${CLAUDE_PLUGIN_ROOT}/bin/wt-ru
 run's unknown count, and lists partial or unknown-outcome runs separately; add `--include-partial` only
 when those runs should enter route totals. Legacy run and lane windows are inferred from archived
 timestamps or documented mtime fallbacks, so do not hand-enter a window for routine aggregation.
+
+For the repeatable real-host phase-transition check, follow
+[`references/what-is-running-e2e.md`](references/what-is-running-e2e.md).

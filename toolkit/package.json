@@ -20,6 +20,7 @@
     "wt:pipeline": "tsx packages/build/src/cli.ts pipeline",
     "wt:check": "tsx packages/build/src/cli.ts check",
     "mirror:plugin-workflow": "tsx packages/build/src/cli.ts build examples/independent-analysis.workflow.ts && node -e \"require('fs').copyFileSync('workflows/independent-analysis.js','../plugin/workflows/independent-analysis.js')\"",
+    "mirror:lifecycle-phases": "node scripts/mirror-lifecycle-phases.mjs",
     "wt:debug": "tsx packages/debugger/src/cli.ts",
     "wt:report": "tsx packages/debugger/src/report-cli.ts",
     "wt:card-cost": "tsx packages/debugger/src/card-cost-cli.ts",

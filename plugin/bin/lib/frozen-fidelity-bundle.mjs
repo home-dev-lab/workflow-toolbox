@@ -4,11 +4,12 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { treeSignature } from './gate-evidence.mjs'
+import { PHASES } from './lifecycle-state-machine.mjs'
 
 const MANIFEST = 'fidelity-manifest.json'
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const GATES = new Set(['typecheck', 'lint', 'test'])
-const LIFECYCLE_PHASES = new Set(['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report'])
+const LIFECYCLE_PHASES = new Set(PHASES)
 const INTEGER_EXIT = /^-?\d+$/
 
 function safeName(name) {
