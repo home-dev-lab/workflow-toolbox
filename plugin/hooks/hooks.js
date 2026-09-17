@@ -31,8 +31,7 @@ const COLORS = {
   // Button and Link text colour cannot be set in the host, and button text renders light: every button background
   // must be DARK for contrast (owner is colour blind, 2026-09-14 #2286 — whiteBright under light text was unreadable).
   // Link text renders blue: its background must be LIGHT.
-  action: 'black', actionOpen: 'blue', close: 'black', link: 'whiteBright',
-  running: 'yellowBright', done: 'blue', skipped: 'magenta', waiting: 'whiteBright',
+  action: 'black', actionOpen: 'gray', close: 'black', link: 'whiteBright',
   external: 'cyanBright', error: 'redBright',
 };
 
@@ -136,9 +135,15 @@ export function isValidLinkHref(href) {
 
 const PHASE_LABELS = Object.freeze({
   discovery: 'Discovery', plan: 'Plan', critic: 'Critic', tdd: 'TDD', verify: 'Verify',
-  review: 'Pilot review', refutation: 'Pilot refutation', harden: 'Harden', report: 'Report',
+  review: 'Independent review', refutation: 'Independent refutation', harden: 'Harden', report: 'Report',
 });
 export const PANE_PHASES = Object.freeze(PHASES.map((phase) => Object.freeze([phase, PHASE_LABELS[phase]])));
+
+function phaseLabelFor(row, phase) {
+  const label = PHASE_LABELS[phase] || phase;
+  const model = phase === 'review' ? row.models?.review : phase === 'refutation' ? row.models?.refutation : null;
+  return model && model !== 'unknown' ? `${label} (${model})` : label;
+}
 
 function stateOf(row, phase) {
   const words = row.phaseStates?.[phase] || 'not started';
@@ -201,13 +206,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     return shown;
   };
   const renderStateSegment = ({ key, buttonKey, label, state, open = false, onPress = null }) => {
-    const style = state.words === 'not started' ? { dimColor: true }
-      : state.words === 'running' ? { color: COLORS.running, bold: true }
-      : state.words === 'done' ? { color: COLORS.done }
-      : state.words === 'skipped' ? { color: COLORS.skipped, inverse: true }
-      : state.words === 'waiting for arbiter review' ? { color: COLORS.waiting, inverse: true }
-      : /^(?:error|failed|fail)/i.test(state.words) ? { color: COLORS.error, bold: true }
-      : { color: COLORS.external };
+    const style = state.words === 'running' ? { bold: true } : {};
     return node(Box, { key, flexDirection: 'row', columnGap: 1 },
       onPress
         ? control({ key: buttonKey, plain: true, onPress }, `${open ? '▼' : '▶'} ${label} ${state.glyph}`, open ? COLORS.actionOpen : COLORS.action)
@@ -264,7 +263,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
       const state = stateOf(row, phase);
       const buttonKey = `detail-toggle:stage:${row.id}:${phase}`;
       const hasEvidence = Boolean(row.inspectors?.[phase]?.summary || row.inspectors?.[phase]?.href) && !['not started', 'skipped'].includes(state.words);
-      return renderStateSegment({ key: `phase-state:${row.id}:${phase}`, buttonKey, label, state, open: selection === phase, onPress: hasEvidence ? () => actions.select(row.id, phase) : null });
+      return renderStateSegment({ key: `phase-state:${row.id}:${phase}`, buttonKey, label: phaseLabelFor(row, phase), state, open: selection === phase, onPress: hasEvidence ? () => actions.select(row.id, phase) : null });
     });
     const rounds = row.criticRounds > 0
       ? `Plan ↔ Critic: ${row.runnerLogTruncated ? 'at least ' : ''}${row.criticRounds} ${row.criticRounds === 1 ? 'round' : 'rounds'}`
@@ -304,18 +303,21 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   const grouped = [];
   const deepActors = (actors) => (actors || []).flatMap((actor) => [actor, ...deepActors([...(actor.lanes || []), ...(actor.children || [])])]);
   const renderCardStages = (card, sessionId) => {
-    const pilot = deepActors(card.actors).find((actor) => actor.kind === 'pilot' && actor.phase && actor.phase !== 'unknown');
+    // `sdkLifecycle` is the deciding field: lifecycle phases replace, rather than extend, the legacy dev cycle.
+    const pilot = deepActors(card.actors).find((actor) => actor.sdkLifecycle === true && actor.phase && actor.phase !== 'unknown');
     const key = `timeline:${sessionId}:${card.id}`;
     const selection = selected.get(key);
     const stages = [];
-    if (pilot) for (const [id, label] of PANE_PHASES) {
+    if (pilot) for (const [id] of PANE_PHASES) {
       const state = stateOf(pilot, id);
       const inspector = pilot.inspectors?.[id];
-      stages.push({ id, label, state, summary: inspector?.summary || (inspector?.href ? 'A report was recorded.' : null), href: inspector?.href });
+      stages.push({ id, label: phaseLabelFor(pilot, id), state, summary: inspector?.summary || (inspector?.href ? 'A report was recorded.' : null), href: inspector?.href });
+    }
+    if (pilot?.phaseStates?.awaiting_fidelity && pilot.phaseStates.awaiting_fidelity !== 'not started') {
+      stages.push({ id: 'awaiting_fidelity', label: 'Fidelity', state: stateOf(pilot, 'awaiting_fidelity'), summary: null, href: null });
     }
     const cycleLabels = { implementation: 'Implementation', review: 'Sol review', refutation: 'Astra refutation', arbiter: 'Decision', fix: 'Fix', merge: 'Merge' };
-    for (const stage of card.devCycle?.stages || []) {
-      if (pilot && stage.id === 'implementation') continue;
+    for (const stage of pilot ? [] : card.devCycle?.stages || []) {
       const fixRounds = card.devCycle?.fixRounds || 0;
       const summary = stage.id === 'fix' && fixRounds > 0
         ? `${fixRounds} fix ${fixRounds === 1 ? 'round was' : 'rounds were'} requested.`
@@ -332,7 +334,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
     const openButtonKey = openStage ? `detail-toggle:stage:${sessionId}:${card.id}:${openStage.id}` : null;
     return node(Box, { key, flexDirection: 'column', paddingLeft: 1 },
       node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 }, fixedText({ bold: true }, 'Work stages:'), ...segments.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])),
-      card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0
+      !pilot && (card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0)
         ? node(Text, { dimColor: true }, `review rounds: ${card.devCycle?.rounds || 0} · fix rounds: ${card.devCycle?.fixRounds || 0}`)
         : null,
       openStage ? renderOpenDetail(openButtonKey, openStage.label, () => actions.closeView(key), ...renderEvidence(openStage.summary), Link && isValidLinkHref(openStage.href) ? linked({ href: openStage.href, label: '[Open report]' }) : null) : null,

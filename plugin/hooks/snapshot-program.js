@@ -921,6 +921,7 @@ for (const id of ids) {
   const waitingForArbiter = lane?.phase === 'awaiting_fidelity';
   const sdkRunner = worktree ? sdkRunnerByWorktree.get(worktree) : null;
   const phaseStates = statesOf(lane?.phaseHistory?.length ? lane.phaseHistory : record?.phase ? [record.phase] : [], lane?.route);
+  const frozenRoute = worktree ? json(lanePath(worktree, 'route.json')) : null;
   if (waitingForArbiter) phaseStates.awaiting_fidelity = 'waiting for arbiter review';
   const { source: reviewSource, ...review } = reviewResult;
   rows.push({
@@ -928,6 +929,7 @@ for (const id of ids) {
     cardId: id,
     cardUrl: cardUrl(id),
     kind: 'pilot',
+    sdkLifecycle: true,
     label: 'SDK pilot',
     title,
     waveId: wave?.waveId || null,
@@ -937,6 +939,7 @@ for (const id of ids) {
     phaseStates,
     outcome: waitingForArbiter ? 'waiting for arbiter review' : lane?.outcome || failedOutcome || UNKNOWN,
     model: lane?.model || workers[0]?.model || UNKNOWN,
+    models: frozenRoute?.models || {},
     criticRounds: lane?.criticRounds,
     runnerLogTruncated: lane?.runnerLogTruncated || false,
     who,
@@ -946,7 +949,7 @@ for (const id of ids) {
     tokens: usageResult.value,
     usage: usageResult.totals,
     watchdog,
-    inspectors: inspectors(worktree, lane ? json(lanePath(worktree, 'route.json')) : null, lane ? tail(sdkLogFile(worktree)) : null),
+    inspectors: inspectors(worktree, lane ? frozenRoute : null, lane ? tail(sdkLogFile(worktree)) : null),
     lanes: [nestedLane(lane, id)].filter(Boolean),
     worktree,
     launcherSessionId: lane?.launcherSessionId || laneSessionId(worktree),
@@ -1025,6 +1028,13 @@ function branchMerged(worktree, id) {
     const headResult = runGit(['rev-parse', 'HEAD']);
     const head = String(headResult.stdout || '').trim();
     if (headResult.error || headResult.status !== 0 || !head) return { value: false, availability: { status: UNKNOWN, reason: 'git HEAD probe unavailable' } };
+    const reflogResult = runGit(['reflog', 'show', '--format=%H', branch]);
+    if (reflogResult.error || reflogResult.status !== 0) return { value: false, availability: { status: UNKNOWN, reason: 'git branch history probe unavailable' } };
+    const createdAt = String(reflogResult.stdout || '').trim().split(/\r?\n/).filter(Boolean).at(-1);
+    if (!createdAt || createdAt === head) return { value: false, availability: { status: 'available' } };
+    const aheadResult = runGit(['rev-list', createdAt + '..' + branch]);
+    if (aheadResult.error || aheadResult.status !== 0) return { value: false, availability: { status: UNKNOWN, reason: 'git branch ahead probe unavailable' } };
+    if (!String(aheadResult.stdout || '').trim()) return { value: false, availability: { status: 'available' } };
     let baseMeasured = false;
     for (const base of baseBranches) {
       const baseResult = runGit(['rev-parse', base]);

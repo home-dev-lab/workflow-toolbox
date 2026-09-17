@@ -1623,15 +1623,15 @@ await test('[lifecycle fallback] log-derived stages say where they came from', a
   const text = JSON.stringify((await renderSnapshot(snapshot)).tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
   assert.match(text, /Work stages \(from log\):/);
 });
-await test('[DoD 4] phase and outcome Text nodes carry semantic style props', async () => {
+await test('[DoD 4] phase state is carried by words and the running glyph, not colour', async () => {
   const snapshot = { discovery: 'available', rows: [{
     id: 'styled', kind: 'pilot', title: 'styled', phase: 'tdd', outcome: 'failed',
     phaseStates: { discovery: 'done', plan: 'skipped', tdd: 'running' }, gates: {}, review: {}, inspectors: {}, lanes: [], sources: {},
   }], collectedAt: paths.now };
   const { tree } = await renderSnapshot(snapshot);
   assert(!hasDescendant(tree, (item) => item.name === 'Button' && item.props.children.join('').includes('●')));
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('running') && item.props.color === 'yellowBright' && item.props.bold === true));
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('skipped') && item.props.color && item.props.inverse === true));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('running') && item.props.bold === true && !item.props.color));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('skipped') && !item.props.color));
   assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.join('').includes('failed') && item.props.color && item.props.bold === true));
 });
 await test('[R1] every Button in the whole rendered tree has only string children', async () => {
@@ -1655,8 +1655,8 @@ await test('[changed Step 8 content gating][Missed A] lifecycle-only phases with
   const { tree } = await renderSnapshot(snapshot);
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
   assert(!findButton(tree, 'Verify ●'));
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.some((child) => String(child).includes('Verify ●')) && item.props.color === 'yellowBright'));
-  assert.match(text, /Pilot review ·.*not started/);
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.some((child) => String(child).includes('Verify ●')) && item.props.bold === true && !item.props.color));
+  assert.match(text, /Independent review ·.*not started/);
 });
 await test('[changed Round 2 wrapping][DoD 2][DoD 4] standalone external lanes state that phases are unavailable', async () => {
   const snapshot = { discovery: 'available', rows: [{
@@ -2589,7 +2589,7 @@ await test('[changed Step 8 single bar][Round 3 shared state segments and card h
   const snapshot = { discovery: 'available', rows: [], sessions: [{ id: 'session:round3', launcher: 'Claude pid 1', cards: [{
     id, cardUrl: null, title: 'A card title long enough to wrap onto a continuation line without carrying a separator',
     devCycle: { stages: [{ id: 'implementation', label: 'Implementation lane', state: 'not started', summary: 'Not reached.' }], rounds: 0 },
-    actors: [{ id: 'pilot:round3', kind: 'pilot', label: 'SDK pilot', title: 'Pilot', phase: 'plan', outcome: 'running', phaseStates: { plan: 'running' }, inspectors: {}, lanes: [], gates: {}, review: {}, sources: {} }],
+    actors: [{ id: 'pilot:round3', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', title: 'Pilot', phase: 'plan', outcome: 'running', phaseStates: { plan: 'running' }, inspectors: {}, lanes: [], gates: {}, review: {}, sources: {} }],
   }], actors: [] }], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] }, collectedAt: paths.now };
   const { tree } = await renderSnapshot(snapshot);
   const segment = descendants(tree, (item) => item.name === 'Box' && item.props.key === `stage-state:session:round3:${id}:plan`)[0];
@@ -2612,10 +2612,10 @@ await test('[changed Step 8 content gating][Round 2 item 1] absent phase evidenc
     make('lite-skipped', 'tdd', 'LITE', { discovery: 'done', plan: 'skipped', tdd: 'running' }),
     make('running-empty', 'review', 'FULL', { review: 'running' }),
   ];
-  for (const [id, label, dim] of [['not-reached', 'Critic', true], ['lite-skipped', 'Plan', false], ['running-empty', 'Pilot review', false]]) {
+  for (const [id, label] of [['not-reached', 'Critic'], ['lite-skipped', 'Plan'], ['running-empty', 'Independent review']]) {
     const { tree } = await renderSnapshot({ discovery: 'available', rows: [rows.find((row) => row.id === id)], collectedAt: paths.now });
     assert(!findButton(tree, label), label);
-    assert(hasDescendant(tree, (item) => item.name === 'Text' && (dim ? item.props.dimColor === true : Boolean(item.props.color)) && item.props.children.some((child) => String(child).includes(label))), label);
+    assert(hasDescendant(tree, (item) => item.name === 'Text' && !item.props.color && item.props.children.some((child) => String(child).includes(label))), label);
   }
 });
 
@@ -2683,7 +2683,7 @@ await test('[Round 2 items 7-8] SDK metadata is runner-derived and expanded rows
   mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(isolatedPaths.livenessDir, { recursive: true }); mkdirSync(isolatedPaths.procRoot, { recursive: true });
   writeFileSync(join(isolatedPaths.procRoot, 'uptime'), '20000.00 1000.00\n');
   const worktree = join(isolatedPaths.suiteRoot, 'worktrees', 'metadata'); const lane = join(worktree, '.lane'); mkdirSync(lane, { recursive: true });
-  writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId: id, route: 'LITE', models: { lane: 'terra' } }));
+  writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId: id, route: 'LITE', models: { lane: 'terra', review: 'sol', refutation: 'astra' } }));
   writeFileSync(join(lane, 'card.md'), `# card ${id}, step 6. Clean title after prefixes\n`);
   writeFileSync(join(lane, 'runner-stdout.log'), 'route=LITE model=opus effective=opus\nlifecycle: accepted phase=tdd\n');
   writeFileSync(join(lane, 'pid'), '910');
@@ -2691,7 +2691,7 @@ await test('[Round 2 items 7-8] SDK metadata is runner-derived and expanded rows
   mkdirSync(join(isolatedPaths.procRoot, '910')); writeFileSync(join(isolatedPaths.procRoot, '910', 'status'), 'PPid:\t909\n'); writeFileSync(join(isolatedPaths.procRoot, '910', 'cmdline'), ['node', '/plugin/bin/wt-lane.mjs', '--worker', '--dir', worktree, '--model', 'terra'].join('\0') + '\0'); writeFileSync(join(isolatedPaths.procRoot, '910', 'stat'), `910 (runner) S 909 ${Array(17).fill('0').join(' ')} 1976000\n`);
   const snapshot = await readSnapshot({ process: processCapability }, isolatedPaths);
   const actor = snapshot.rows.find((item) => item.id === id);
-  assert.equal(actor.label, 'SDK pilot'); assert.equal(actor.model, 'opus'); assert.equal(actor.elapsed, '20 min'); assert.equal(actor.title, 'Clean title after prefixes');
+  assert.equal(actor.label, 'SDK pilot'); assert.equal(actor.model, 'opus'); assert.equal(actor.elapsed, '20 min'); assert.equal(actor.title, 'Clean title after prefixes'); assert.deepEqual(actor.models, { lane: 'terra', review: 'sol', refutation: 'astra' });
   const rendered = await renderSnapshot(snapshot); descendants(rendered.tree, (item) => item.name === 'Button').find((item) => item.props.key === `detail-toggle:row:${id}`).props.onPress();
   const expanded = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   const text = JSON.stringify(expanded, (_key, value) => typeof value === 'function' ? '[function]' : value);
@@ -2742,7 +2742,7 @@ await test('[Round 2 item 9] historical same-card reviews do not complete the cu
   assert.equal(card.devCycle.stages.find((stage) => stage.id === 'merge').state, 'unknown');
 });
 
-await test('[Round 2 item 9] a branch tip equal to main is not positive merge evidence', async () => {
+await test('[merge false positive] an empty card branch behind main is not positive merge evidence', async () => {
   const isolated = join(root, 'equal-main'); const id = '1862698281071544178';
   const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now };
   mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true }); mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true }); mkdirSync(isolatedPaths.livenessDir, { recursive: true }); mkdirSync(join(isolatedPaths.suiteRoot, 'worktrees'), { recursive: true });
@@ -2751,6 +2751,7 @@ await test('[Round 2 item 9] a branch tip equal to main is not positive merge ev
   git(['init', '-b', 'main']);
   const lane = join(isolatedPaths.suiteRoot, 'worktrees', 'equal', '.lane'); mkdirSync(lane, { recursive: true }); writeFileSync(join(lane, 'brief.md'), `# Brief: card ${id}: Equal tip\n`); writeFileSync(join(lane, 'run.log'), 'working\n');
   git(['add', '.']); git(['commit', '-m', 'base']); git(['branch', `card/${id.slice(0, 10)}-equal`]);
+  writeFileSync(join(isolatedPaths.suiteRoot, 'base-advanced.txt'), 'base advanced\n'); git(['add', '.']); git(['commit', '-m', 'advance base']);
   git(['checkout', `card/${id.slice(0, 10)}-equal`]);
   const card = (await readSnapshot({ process: processCapability }, isolatedPaths)).sessions.flatMap((session) => session.cards).find((item) => item.id === id);
   assert.equal(card.devCycle.stages.find((stage) => stage.id === 'merge').state, 'not started');
@@ -2911,7 +2912,7 @@ await test('[Step 7 DoD 5] card URLs occur only in open-card detail Links, never
 
 await test('[changed Step 8 close rule][Step 7 DoD 6] every open row and stage detail keeps its toggle and has one working Close', async () => {
   const id = '1862698281071544106';
-  const snapshot = { discovery: 'available', rows: [], sessions: [{ id: 'session:folds', project: 'project', sessionId: 'abcdefgh-1234', name: null, cards: [{ id, cardUrl: null, title: 'Folds', devCycle: { stages: [{ id: 'implementation', label: 'Implementation lane', state: 'running', summary: 'Cycle detail' }], rounds: 0, fixRounds: 0 }, actors: [{ id: 'pilot:folds', kind: 'pilot', label: 'SDK pilot', title: 'Folds', phase: 'plan', outcome: 'running', phaseStates: { plan: 'running' }, inspectors: { plan: { summary: 'Phase detail' } }, lanes: [], gates: {}, review: {}, activity: 'active' }] }], actors: [] }], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] }, collectedAt: paths.now };
+  const snapshot = { discovery: 'available', rows: [], sessions: [{ id: 'session:folds', project: 'project', sessionId: 'abcdefgh-1234', name: null, cards: [{ id, cardUrl: null, title: 'Folds', devCycle: { stages: [{ id: 'implementation', label: 'Implementation lane', state: 'running', summary: 'Cycle detail' }], rounds: 0, fixRounds: 0 }, actors: [{ id: 'pilot:folds', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', title: 'Folds', phase: 'plan', outcome: 'running', phaseStates: { plan: 'running' }, inspectors: { plan: { summary: 'Phase detail' } }, lanes: [], gates: {}, review: {}, activity: 'active' }] }], actors: [] }], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] }, collectedAt: paths.now };
   const rendered = await renderSnapshot(snapshot);
   let tree = rendered.tree;
   for (const label of ['SDK pilot', 'Plan']) findButton(tree, label).props.onPress();
@@ -2985,7 +2986,7 @@ const step8Fixture = () => {
         { id: 'merge', label: 'Merge', state: 'not started', summary: 'Not reached.' },
       ], rounds: 1, fixRounds: 0 },
       actors: [{
-        id: 'pilot:step8', kind: 'pilot', label: 'SDK pilot', title: 'One interaction model', phase: 'awaiting_fidelity', outcome: 'waiting for arbiter review', activity: 'active',
+        id: 'pilot:step8', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', title: 'One interaction model', phase: 'awaiting_fidelity', outcome: 'waiting for arbiter review', activity: 'active', models: { review: 'sol', refutation: 'astra' },
         phaseStates: { discovery: 'done', plan: 'skipped', critic: 'skipped', tdd: 'done', verify: 'done', review: 'skipped', refutation: 'skipped', harden: 'skipped', report: 'done', awaiting_fidelity: 'waiting for arbiter review' },
         inspectors: { discovery: { summary: 'Route selected.' }, tdd: { summary: Array.from({ length: 12 }, (_, index) => `evidence ${index + 1}`).join('\n'), href: 'https://artifacts.example.test/tdd.html', artifact: 'tdd-report.md' }, verify: { summary: 'All gates passed.' }, report: { summary: 'Implementation reported.' } },
         lanes: [], gates: { test: 'pass' }, review: {}, sources: {},
@@ -3008,14 +3009,40 @@ await test('[Step 8 rule 1] each card has one chronologically ordered, non-contr
   assert.equal((labels.match(/Work stages:/g) || []).length, 1);
   assert(!labels.includes('Card cycle:'));
   assert(!labels.includes('Pilot phases:'));
-  const ordered = ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Pilot review', 'Pilot refutation', 'Harden', 'Report', 'Sol review', 'Astra refutation', 'Decision', 'Fix', 'Merge'];
+  const ordered = ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Independent review (sol)', 'Independent refutation (astra)', 'Harden', 'Report'];
   let previous = -1;
   for (const label of ordered) {
     const next = labels.indexOf(label);
     assert(next > previous, `${label}: ${labels}`);
     previous = next;
   }
+  for (const legacy of ['Sol review', 'Astra refutation', 'Decision', 'Fix', 'Merge']) assert(!labels.includes(legacy), legacy);
   assert.equal((labels.match(/TDD/g) || []).length, 1, 'implementation must not duplicate the SDK TDD/verify state');
+});
+
+await test('[SDK lifecycle row] Report is last and legacy Merge is absent', async () => {
+  const { snapshot } = step8Fixture();
+  const pilot = snapshot.sessions[0].cards[0].actors[0];
+  pilot.phase = 'verify';
+  pilot.phaseStates.awaiting_fidelity = 'not started';
+  const { tree } = await renderSnapshot(snapshot);
+  const row = descendants(tree, (item) => item.name === 'Box' && item.props.flexWrap === 'wrap' && hasDescendant(item, (child) => child.name === 'Text' && child.props.children.includes('Work stages:')))[0];
+  const labels = descendants(row, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
+  assert(labels.includes('Report'));
+  assert.equal(labels.includes('Merge'), false);
+  assert.equal(descendants(tree, (item) => item.name === 'Text').flatMap((item) => item.props.children).join(' ').includes('review rounds:'), false);
+  assert(labels.lastIndexOf('Report') > labels.lastIndexOf('Harden'));
+});
+
+await test('[legacy cycle row] legacy evidence remains the source when no SDK lifecycle exists', async () => {
+  const { snapshot } = step8Fixture();
+  const card = snapshot.sessions[0].cards[0];
+  card.actors[0].sdkLifecycle = false;
+  const { tree } = await renderSnapshot(snapshot);
+  const text = descendants(tree, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
+  assert(text.includes('Sol review'));
+  assert(text.includes('Merge'));
+  assert.equal(text.includes('Independent review'), false);
 });
 
 await test('[Step 8 rule 2] every detail toggle stays in place and toggles its own detail', async () => {
@@ -3047,14 +3074,12 @@ await test('[Step 8 rule 2 close] every open detail has exactly one Close contro
   }
 });
 
-await test('[Step 8 rule 3] skipped stages are coloured while not-started stages are dim plain Text', async () => {
+await test('[Step 8 rule 3] every lifecycle stage state is neutral text', async () => {
   const { snapshot } = step8Fixture();
   const { tree } = await renderSnapshot(snapshot);
-  for (const label of ['Plan', 'Critic', 'Pilot review', 'Pilot refutation', 'Harden', 'Fix', 'Merge']) {
+  for (const label of ['Plan', 'Critic', 'Independent review', 'Independent refutation', 'Harden']) {
     assert(!findButton(tree, label), `${label} should not be clickable`);
-    const skipped = ['Plan', 'Critic', 'Pilot review', 'Pilot refutation', 'Harden'].includes(label);
-    const dim = label === 'Merge';
-    assert(hasDescendant(tree, (item) => item.name === 'Text' && (skipped ? Boolean(item.props.color) && item.props.inverse === true : dim ? item.props.dimColor === true : Boolean(item.props.color)) && item.props.children.some((child) => String(child).includes(label))), `${label} should have its state style`);
+    assert(hasDescendant(tree, (item) => item.name === 'Text' && !item.props.color && item.props.children.some((child) => String(child).includes(label))), `${label} should have neutral text`);
   }
   for (const text of descendants(tree, (item) => item.name === 'Text')) assert.doesNotMatch(text.props.children.map(String).join(''), /\[[^\]]+\]/);
 });
@@ -3163,7 +3188,7 @@ await test('[increment UI invariant] all rendered clickables are coloured and ev
   assertClickableColourAndToggleMarkers(open);
 });
 
-await test('[increment stage row] stages are visibly separated, run states are coloured, and not-started stages are dim', async () => {
+await test('[increment stage row] stages are visibly separated and no stage node carries a state colour', async () => {
   const { snapshot } = step8Fixture();
   const { tree } = await renderSnapshot(snapshot);
   const stageRow = descendants(tree, (item) => item.name === 'Box' && item.props.flexWrap === 'wrap' && hasDescendant(item, (child) => child.name === 'Text' && child.props.children.includes('Work stages:')))[0];
@@ -3171,10 +3196,7 @@ await test('[increment stage row] stages are visibly separated, run states are c
   const separators = descendants(stageRow, (item) => item.name === 'Text' && item.props.children.join('') === '│');
   assert.equal(separators.length, segments.length - 1);
   for (const segment of segments) {
-    const text = descendants(segment, (item) => item.name === 'Text');
-    const words = text.flatMap((item) => item.props.children).join(' ');
-    if (words.includes('not started')) assert(text.some((item) => item.props.dimColor === true), words);
-    else assert(hasDescendant(segment, (item) => Boolean(item.props?.color || item.props?.backgroundColor)), words);
+    for (const item of descendants(segment, () => true)) assert.equal(item.props?.color, undefined);
   }
 });
 
