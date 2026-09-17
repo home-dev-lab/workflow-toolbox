@@ -31,11 +31,16 @@ export function opencodeChildEnv(env = process.env) {
 
 export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform) {
   if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(bin)) {
-    // Invoke the shim through cmd explicitly. Node's shell:true argv joining is both deprecated
-    // and lossy for quoted paths/arguments on Windows.
-    const quote = (value) => `"${String(value).replace(/"/g, '""')}"`
-    const command = [quote(bin), ...args.map(quote)].join(' ')
-    return spawnFn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', command], options)
+    // cmd parses a shim invocation twice. Escape metacharacters for both passes, and preserve the
+    // outer quote pair that /s /c requires around a quoted command line.
+    const metacharacters = /([()\][%!^"`<>&|;, *?])/g
+    const escapeArgument = (value) => {
+      let escaped = String(value).replace(/(?=(\\+?)?)\1"/g, '$1$1\\"').replace(/(?=(\\+?)?)\1$/g, '$1$1')
+      escaped = `"${escaped}"`.replace(metacharacters, '^$1')
+      return escaped.replace(metacharacters, '^$1')
+    }
+    const command = [String(bin).replace(metacharacters, '^$1'), ...args.map(escapeArgument)].join(' ')
+    return spawnFn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], { ...options, windowsVerbatimArguments: true })
   }
   return spawnFn(bin, args, options)
 }

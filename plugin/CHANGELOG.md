@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Cross-OS CI now bounds every matrix step and always uploads the Vitest log plus a final process table; Windows OpenCode `.cmd` launches preserve product-built flags and paths through `cmd.exe`'s two parsing passes.
 - Cross-OS CI now preserves a streaming test log before the job deadline and prints the runner process table; macOS lane identity polls no longer repeat slow `lsof` cwd reads, child cleanup is bounded by observed exit, and Windows `.cmd` OpenCode fixtures retain their arguments without deprecated shell joining.
 - macOS lane capture now waits through transient shell identities, canonicalises equivalent cwd spellings, and reports recorded-versus-live identity fields on timeout; adopted launcher and Windows envelope fixtures now lock their installed provider and native command-shim assumptions.
 - SDK roles resolve the INSTALLED context-mode plugin (the harness's `installed_plugins.json` entry, then the highest cached version) instead of a pinned version directory, so the first session after a context-mode update no longer fails closed on an absent path.
