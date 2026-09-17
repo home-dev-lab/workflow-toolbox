@@ -54,8 +54,10 @@ function pluginRepo(): string {
   write(root, 'plugin/.claude-plugin/plugin.json', JSON.stringify({ version: '0.1.0' }))
   write(root, 'plugin/CHANGELOG.md', '# Changelog\n')
   write(root, 'plugin/bin/thing.mjs', '// v1\n')
+  write(root, 'toolkit/quality-baseline.json', JSON.stringify({ releaseTag: 'workflow-toolbox--v0.1.0', metrics: { fileLines: { value: 10 } } }))
   git(root, 'add', '.')
   git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'base')
+  git(root, 'tag', 'workflow-toolbox--v0.1.0')
   return root
 }
 
@@ -81,6 +83,37 @@ function run(cwd: string, command = 'git commit -m x') {
 }
 
 describe('wt-plugin-release-record-guard-hook', () => {
+  it('refuses a release commit without a newly staged Quality section', () => {
+    const root = pluginRepo()
+    write(root, 'plugin/CHANGELOG.md', '# Changelog\n\n## [0.2.0]\n\n### Fixed\n- fix\n')
+    git(root, 'add', 'plugin/CHANGELOG.md')
+    const result = run(root, 'git commit -m "release: 0.2.0"')
+    expect(result.denied).toBe(true)
+    expect(result.stdout).toContain('pnpm quality:delta')
+  })
+
+  it('refuses a release commit when no ratchet improved', () => {
+    const root = pluginRepo()
+    write(root, 'plugin/CHANGELOG.md', '# Changelog\n\n## [0.2.0]\n\n### Quality\n| judge | before | after |\n')
+    git(root, 'add', 'plugin/CHANGELOG.md', 'toolkit/quality-baseline.json')
+    const result = run(root, 'git commit -m "release: 0.2.0"')
+    expect(result.denied).toBe(true)
+    expect(result.stdout).toContain('no quality ratchet decreased')
+    expect(result.stdout).toContain('pnpm quality:baseline')
+  })
+
+  it('accepts a release when one ratchet improved or the documented escape is present', () => {
+    const root = pluginRepo()
+    write(root, 'plugin/CHANGELOG.md', '# Changelog\n\n## [0.2.0]\n\n### Quality\n| judge | before | after |\n')
+    write(root, 'toolkit/quality-baseline.json', JSON.stringify({ releaseTag: 'workflow-toolbox--v0.2.0', metrics: { fileLines: { value: 9 } } }))
+    git(root, 'add', 'plugin/CHANGELOG.md', 'toolkit/quality-baseline.json')
+    expect(run(root, 'git commit -m "release: 0.2.0"').denied).toBe(false)
+
+    write(root, 'toolkit/quality-baseline.json', JSON.stringify({ releaseTag: 'workflow-toolbox--v0.1.0', metrics: { fileLines: { value: 10 } } }))
+    git(root, 'add', 'toolkit/quality-baseline.json')
+    expect(run(root, 'git commit -m "release: 0.2.0\n\ngates: quality-skipped — urgent"').denied).toBe(false)
+  })
+
   // THE case. A broken guard most plausibly fails by staying silent here, so this is the row that
   // has to be red under mutation for any of the others to mean anything.
   it('warns when a plugin change is staged with neither the version nor the changelog', () => {

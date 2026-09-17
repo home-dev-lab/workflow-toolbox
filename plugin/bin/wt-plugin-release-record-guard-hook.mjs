@@ -50,6 +50,7 @@ import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 const PLUGIN_MANIFEST = 'plugin/.claude-plugin/plugin.json'
 const PLUGIN_CHANGELOG = 'plugin/CHANGELOG.md'
+const QUALITY_BASELINE = 'toolkit/quality-baseline.json'
 
 // `git commit`, not `git commit-tree`, and not a word merely containing "commit".
 const GIT_COMMIT = /\bgit\b[^\n;&|]*\bcommit\b(?!-)/
@@ -91,6 +92,79 @@ function stagedPaths(cwd) {
   }
 }
 
+function gitText(cwd, args) {
+  try {
+    // One fixed Git executable is the repository query boundary; arguments are never shell text.
+    // eslint-disable-next-line sonarjs/no-os-command-from-path
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return null
+  }
+}
+
+function stagedJson(cwd, path) {
+  const text = gitText(cwd, ['show', `:${path}`])
+  if (text === null) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
+function previousBaseline(cwd, current) {
+  const tag = gitText(cwd, ['tag', '--list', 'workflow-toolbox--v*', '--sort=-v:refname'])?.split('\n')[0]
+  if (!tag) return null
+  const tagged = gitText(cwd, ['show', `${tag}:${QUALITY_BASELINE}`])
+  if (tagged !== null) {
+    try {
+      return JSON.parse(tagged)
+    } catch {
+      return null
+    }
+  }
+  // Bootstrap: 0.181.0 predates the generated file; its generated baseline names that tag.
+  return current?.releaseTag === tag ? current : null
+}
+
+function hasImprovement(before, after) {
+  if (!before?.metrics || !after?.metrics) return false
+  return Object.keys(before.metrics).some((name) => {
+    const oldValue = before.metrics[name]?.value
+    const newValue = after.metrics[name]?.value
+    if (typeof oldValue !== 'number' || typeof newValue !== 'number') return false
+    return name.startsWith('coverage') ? newValue > oldValue : newValue < oldValue
+  })
+}
+
+function blockRelease(input, reason) {
+  recordGuardEvent({
+    guard: 'wt-plugin-release-record-guard-hook.mjs',
+    decision: 'blocked',
+    session: input.session_id,
+    agent: input.agent_id,
+    class: 'release-quality-record-missing',
+    reason,
+  })
+  emitGuardNotice({
+    payload: input,
+    stdoutJson: {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `[workflow-toolbox release quality guard] ${reason}\n` +
+          'Run `pnpm quality:delta` to generate the changelog table and `pnpm quality:baseline` ' +
+          'after tightening at least one ratchet. To accept a measured exception, add the commit ' +
+          'trailer `gates: quality-skipped — <reason>`.',
+      },
+    },
+  })
+}
+
 /**
  * Current branch name, or null when it can't be determined (detached HEAD, git failure). Fail
  * open toward the MAIN-branch remedy: an unknown branch gets the same wording main gets today,
@@ -118,6 +192,28 @@ function main() {
   const cmd =
     input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : ''
   if (!cmd || !GIT_COMMIT.test(cmd)) return
+
+  const releaseCommit = /(?:^|[\s"'])release:/.test(cmd)
+  if (releaseCommit && !/gates:\s*quality-skipped\s*[—-]\s*\S/i.test(cmd)) {
+    const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()
+    const root = repoRoot(cwd)
+    if (root === null || !existsSync(join(root, PLUGIN_MANIFEST))) return
+    const changelogDiff = gitText(cwd, ['diff', '--cached', '-U0', '--', PLUGIN_CHANGELOG]) ?? ''
+    if (!/^\+### Quality\s*$/m.test(changelogDiff)) {
+      blockRelease(input, 'Refusing `release:` commit: the staged changelog adds no `### Quality` section.')
+      return
+    }
+    const current = stagedJson(cwd, QUALITY_BASELINE)
+    const previous = previousBaseline(cwd, current)
+    if (!current || !previous) {
+      blockRelease(input, 'Refusing `release:` commit: the staged or previous-release quality baseline is missing or invalid.')
+      return
+    }
+    if (!hasImprovement(previous, current)) {
+      blockRelease(input, 'Refusing `release:` commit: no quality ratchet decreased since the previous release.')
+      return
+    }
+  }
 
   const cwd = typeof input.cwd === 'string' && input.cwd ? input.cwd : process.cwd()
   const root = repoRoot(cwd)

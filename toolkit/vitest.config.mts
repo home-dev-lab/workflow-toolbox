@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config'
+import { resolve } from 'node:path'
 
 const skillFenceTest = 'packages/build/test/opencode-skill-fence.integration.test.ts'
 const include = [
@@ -51,5 +52,28 @@ export default defineConfig({
         },
       },
     ],
+    coverage: {
+      provider: 'v8',
+      allowExternal: true,
+      reportOnFailure: true,
+      reporter: ['text', 'json-summary'],
+      reportsDirectory: '.lane/coverage',
+      include: ['packages/*/src/**/*.ts', resolve(import.meta.dirname, '../plugin/bin/**/*.mjs')],
+      exclude: [
+        '**/*.test.ts',
+        '**/test/**',
+        '**/fixtures/**',
+        '**/dist/**',
+        '../plugin/bin/**/*fixture*',
+      ],
+      thresholds: {
+        // ratchet 2026-09-17: one-hundredth below the observed floor across repeated runs;
+        // process-isolated coverage varied by up to 0.02 points on the unchanged tree.
+        lines: 41.99,
+        branches: 40.11,
+        functions: 44.47,
+        statements: 40.61,
+      },
+    },
   },
 })

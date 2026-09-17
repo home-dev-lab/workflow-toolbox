@@ -12,8 +12,12 @@
     "quality:dup": "jscpd packages/runtime/src packages/patterns/src packages/build/src packages/std/src packages/pipeline-spec/src packages/comm/src packages/debugger/src packages/scaffold/src packages/smoke/src ../plugin --config .jscpd.json",
     "quality:dead": "cd .. && node toolkit/node_modules/knip/bin/knip.js --config knip.json --max-issues 221",
     "quality:deps": "depcruise packages/runtime/src packages/patterns/src packages/build/src packages/std/src packages/pipeline-spec/src packages/comm/src packages/debugger/src packages/scaffold/src packages/smoke/src ../plugin --config .dependency-cruiser.cjs --ignore-known .dependency-cruiser-known-violations.json",
+    "quality:coverage": "pnpm test",
+    "quality:baseline": "node scripts/quality.mjs baseline",
+    "quality:delta": "node scripts/quality.mjs delta",
+    "quality:debt-cards": "node scripts/quality.mjs debt-cards",
     "quality": "pnpm run quality:lint && pnpm run quality:dup && pnpm run quality:dead && pnpm run quality:deps",
-    "test": "pnpm build:dist && node scripts/cross-repo-typecheck.mjs && vitest run",
+    "test": "pnpm build:dist && node scripts/cross-repo-typecheck.mjs && vitest run --coverage",
     "test:under-load": "node scripts/suite-under-load.mjs",
     "test:cross-repo": "node scripts/cross-repo-typecheck.mjs",
     "wt:build": "tsx packages/build/src/cli.ts build",
@@ -44,12 +48,14 @@
   "qualityRatchets": {
     "// ratchet 2026-09-16: worst=687 warnings across toolkit/packages/*/src and plugin": "quality:lint --max-warnings",
     "// ratchet 2026-09-16: worst=3% duplication (2.91% measured) across toolkit/packages/*/src and plugin": "quality:dup threshold",
-    "// ratchet 2026-09-16: worst=221 issues across toolkit packages and plugin": "quality:dead --max-issues"
+    "// ratchet 2026-09-16: worst=221 issues across toolkit packages and plugin": "quality:dead --max-issues",
+    "// ratchet 2026-09-17: coverage percentages are pinned in vitest.config.mts and judged by pnpm test itself (one suite run; quality:coverage is an alias, never a second suite)": "coverage thresholds"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.273",
     "@changesets/cli": "^2.31.1",
     "@eslint/js": "^10.0.1",
+    "@vitest/coverage-v8": "4.1.11",
     "@types/node": "^24.0.0",
     "dependency-cruiser": "^18.3.1",
     "eslint": "^10.10.0",

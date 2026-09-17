@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Tooling
+- Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
+
 ### Fixed
 - Cross-OS CI now preserves a streaming test log before the job deadline and prints the runner process table; macOS lane identity polls no longer repeat slow `lsof` cwd reads, child cleanup is bounded by observed exit, and Windows `.cmd` OpenCode fixtures retain their arguments without deprecated shell joining.
 - macOS lane capture now waits through transient shell identities, canonicalises equivalent cwd spellings, and reports recorded-versus-live identity fields on timeout; adopted launcher and Windows envelope fixtures now lock their installed provider and native command-shim assumptions.
