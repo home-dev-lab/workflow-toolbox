@@ -177,14 +177,25 @@ function posixCommandArgs(commandLine) {
   return args
 }
 
-function scanDarwinLaneProcesses(spawnSyncImpl) {
+const DARWIN_PROCESS_SCAN_TTL_MS = 100
+const darwinProcessScanCache = new WeakMap()
+
+function scanDarwinLaneProcesses(spawnSyncImpl, now = Date.now()) {
+  const cached = darwinProcessScanCache.get(spawnSyncImpl)
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_SCAN_TTL_MS) return cached.result
   let result
   try {
     result = spawnSyncImpl('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', timeout: 5_000, env: { ...process.env, LC_ALL: 'C' } })
   } catch {
-    return { status: 'unknown', processes: [], source: 'ps' }
+    result = { status: 'unknown', processes: [], source: 'ps' }
+    darwinProcessScanCache.set(spawnSyncImpl, { readAt: now, result })
+    return result
   }
-  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return { status: 'unknown', processes: [], source: 'ps' }
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') {
+    result = { status: 'unknown', processes: [], source: 'ps' }
+    darwinProcessScanCache.set(spawnSyncImpl, { readAt: now, result })
+    return result
+  }
   const rows = result.stdout.split(/\r?\n/).map((line) => /^\s*(\d+)\s+(.+)$/.exec(line)).filter(Boolean)
   const processes = []
   for (const row of rows.slice(0, PROCESS_SCAN_MAX_ENTRIES)) {
@@ -192,7 +203,9 @@ function scanDarwinLaneProcesses(spawnSyncImpl) {
     const dir = laneDirFromArgs(args)
     if (dir) processes.push({ pid: row[1], dir, command: args.map((arg) => basename(arg)).slice(0, 2).join(' ') })
   }
-  return { status: rows.length > PROCESS_SCAN_MAX_ENTRIES ? 'capped' : 'known', processes }
+  result = { status: rows.length > PROCESS_SCAN_MAX_ENTRIES ? 'capped' : 'known', processes }
+  darwinProcessScanCache.set(spawnSyncImpl, { readAt: now, result })
+  return result
 }
 
 function scanWindowsLaneProcesses(spawnSyncImpl) {

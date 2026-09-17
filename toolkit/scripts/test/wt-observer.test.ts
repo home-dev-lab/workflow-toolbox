@@ -14,13 +14,26 @@ const fakeOpencodeScript = fileURLToPath(new URL('../../packages/build/test/fixt
 const children: ChildProcessWithoutNullStreams[] = []
 const tempDirs: string[] = []
 
+function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number) {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true)
+  return new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs)
+    child.once('exit', () => { clearTimeout(timer); resolve(true) })
+  })
+}
+
 afterEach(async () => {
   const spawned = children.splice(0)
-  for (const child of spawned) child.kill('SIGTERM')
-  await Promise.all(spawned.map((child) => child.exitCode !== null
-    ? Promise.resolve()
-    : new Promise<void>((resolve) => { child.once('exit', () => resolve()); setTimeout(resolve, 5_000) })))
+  const failures: Error[] = []
+  await Promise.all(spawned.map(async (child) => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    child.kill('SIGTERM')
+    if (await waitForExit(child, 5_000)) return
+    child.kill('SIGKILL')
+    if (!await waitForExit(child, 2_000)) failures.push(new Error(`observer fixture child ${child.pid} survived SIGKILL`))
+  }))
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  if (failures.length) throw failures[0]
 })
 
 function tempRoot(prefix: string) {

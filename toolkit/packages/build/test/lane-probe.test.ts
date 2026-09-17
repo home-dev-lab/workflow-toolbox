@@ -84,14 +84,20 @@ describeIfSupported('wt-lane-probe.mjs', () => {
   const spawned: ChildProcess[] = []
   const dirs: string[] = []
 
-  afterEach(() => {
+  afterEach(async () => {
+    const exits: Promise<void>[] = []
     for (const child of spawned.splice(0)) {
+      if (child.exitCode === null && child.signalCode === null) exits.push(new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`lane-probe fixture child ${child.pid} did not exit within 5 seconds`)), 5_000)
+        child.once('exit', () => { clearTimeout(timer); resolve() })
+      }))
       try {
         child.kill('SIGKILL')
       } catch {
         // already dead — fine
       }
     }
+    await Promise.all(exits)
     for (const dir of dirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true })
     }

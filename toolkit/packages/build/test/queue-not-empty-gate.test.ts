@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // @ts-expect-error TS7016 -- lane-live-scan.mjs is a shipped plain-JS plugin script.
 import { registeredWorktrees, scanLiveLaneProcesses } from '../../../../plugin/bin/lib/lane-live-scan.mjs'
@@ -150,6 +150,18 @@ describe('scanLiveLaneProcesses', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]?.slice(0, 2)).toEqual(['ps', ['-axo', 'pid=,command=']])
     expect(result).toEqual({ status: 'known', processes: [{ pid: '101', dir: '/tmp/work trees/lane 15', command: 'node wt-lane.mjs' }] })
+  })
+
+  it('bounds Darwin enumeration forks by the 100 ms snapshot TTL under a 10 ms poll', () => {
+    vi.useFakeTimers()
+    try {
+      const spawnSyncImpl = vi.fn(() => ({ status: 0, stdout: '  101 node /tools/wt-lane.mjs --dir /tmp/lane\n' }))
+      for (let tick = 0; tick < 100; tick += 1) {
+        expect(scanLiveLaneProcesses({ platform: 'darwin', spawnSyncImpl }).status).toBe('known')
+        vi.advanceTimersByTime(10)
+      }
+      expect(spawnSyncImpl).toHaveBeenCalledTimes(10)
+    } finally { vi.useRealTimers() }
   })
 
   it('names ps when Darwin process enumeration is unavailable', () => {
