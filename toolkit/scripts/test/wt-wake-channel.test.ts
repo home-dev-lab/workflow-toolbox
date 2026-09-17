@@ -47,7 +47,7 @@ afterEach(async () => {
       await exited
     }
   }))
-  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 // ⚠ `pollMs` is a parameter and not a constant for one reason worth stating, because it decides
@@ -222,6 +222,7 @@ describe('wt-wake-channel MCP server', () => {
   // The channel promises fs.watch as a fast path and polling as the delivery backstop. This locks
   // the latter, so a host that drops watch events remains a valid test environment.
   it('delivers a message deposited AFTER initialization within the configured poll interval plus margin', async () => {
+    expect(readFileSync(serverScript, 'utf8')).toContain('setInterval(drain, pollMs)')
     const { child, spool, messages, stderr } = startServer(String(POST_INITIALIZATION_POLL_MS))
     await initialize(child, messages)
     expect(channelMessages(messages)).toEqual([])
@@ -229,6 +230,9 @@ describe('wt-wake-channel MCP server', () => {
     writeFileSync(join(spool, 'post-init.txt'), 'the observer speaks', 'utf8')
 
     await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel', POST_INITIALIZATION_DELIVERY_BOUND_MS)
+      .catch((error: unknown) => {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}; child exit=${child.exitCode ?? child.signalCode ?? 'running'}; stderr=${stderr() || '<empty>'}`)
+      })
     expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
       '<observer source="wt-wake-channel">the observer speaks</observer>',
     ])

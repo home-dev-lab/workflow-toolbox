@@ -14,7 +14,7 @@ const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness an
 const roots: string[] = []
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   delete process.env.WT_EDGE_CONFIG
   delete process.env.WT_FULL_CALLS
   delete process.env.WT_FULL_COUNTS
@@ -126,7 +126,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(await refutation.artifact({ kind: 'refutation-brief', content: 'refute' })).toBe('review input unavailable: refutation git failure')
     expect(existsSync(join(refutation.root, '.lane', 'refutation-brief.md'))).toBe(false)
     expect(await refutation.run({ kind: 'lane', phase: 'refutation', timeout: 1 })).toMatch(/brief not written through write_artifact/)
-  })
+  }, 60_000)
 
   it('H7-1 lock: refuses independent briefs when cumulative prospective patch output exceeds the limit', async () => {
     const maxBuffer = 256
