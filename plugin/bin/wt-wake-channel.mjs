@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, watch } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, watch } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -188,7 +188,12 @@ try {
 // The result: a normal wake arrives in milliseconds via the watch; a wake whose event was
 // dropped still arrives, at worst one backstop period late, instead of never.
 try {
-  watcher = watch(spool, { persistent: false }, () => {
+  // libuv's Windows watcher requires the watched directory and reported event path to use the
+  // same spelling. Resolve aliases (notably 8.3 short names) before entering libuv; spool I/O
+  // deliberately keeps using the configured path.
+  const watchTarget = realpathSync.native(spool)
+  debug(`watching ${watchTarget}`)
+  watcher = watch(watchTarget, { persistent: false }, () => {
     try {
       drain()
     } catch (error) {

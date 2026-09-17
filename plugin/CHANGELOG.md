@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added coverage as the fifth ratcheted quality judge, generated baseline and release-delta reports, release quality enforcement, and tracker-neutral debt-card output.
 
 ### Fixed
+- Wake-channel directory watches now canonicalise path aliases before entering libuv, preventing Windows short-name spool paths from aborting the server, and the adopted consent matrix derives its case timeout from all real launcher combinations.
 - SDK role initialization receipts no longer require a skill declared `user-invocable: false` (the harness never lists one), and the pilot runner exits after a refused receipt instead of idling with the EXIT marker unwritten.
 - Cross-OS process-spawning locks now pin the shipped wake-channel poll source, supply Windows process identity with spawn-recorded argv, await fixture-child exit before bounded teardown retries, and give measured long-running consent and lifecycle cases local timeout margins.
 - Windows lane supervision now captures launcher and child identities with bounded `Get-Process` reads and spawn-recorded argv instead of CIM/WMI, rejects PID reuse by image and start time, and keeps the wake-channel polling backstop alive after initialization on Windows.

@@ -11,6 +11,19 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const INSTALLER = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 const roots: string[] = []
 const CHILD_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 10_000
+const CONSENT_ACCOUNTS = [
+  { name: 'settings true', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },
+  { name: 'settings false', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'false' } } },
+  { name: 'settings absent', settings: {} },
+  { name: 'userConfig true', settings: { pluginConfigs: { 'workflow-toolbox@fixture': { options: { executor_lane_consent: true } } } } },
+  { name: 'userConfig false', settings: { pluginConfigs: { 'workflow-toolbox@fixture': { options: { executor_lane_consent: false } } } } },
+]
+const CONSENT_PROJECTS = [
+  { name: 'project absent', settings: null },
+  { name: 'project permits', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },
+  { name: 'project narrows', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'false' } } },
+]
+const CONSENT_MATRIX_TIMEOUT_MS = CHILD_TIMEOUT_MS * CONSENT_ACCOUNTS.length * CONSENT_PROJECTS.length + 15_000
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -200,21 +213,8 @@ describe('adopted wt-lane consent resolver', () => {
   })
 
   it('uses the real resolver for account and project consent fixtures', () => {
-    const accounts = [
-      { name: 'settings true', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },
-      { name: 'settings false', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'false' } } },
-      { name: 'settings absent', settings: {} },
-      { name: 'userConfig true', settings: { pluginConfigs: { 'workflow-toolbox@fixture': { options: { executor_lane_consent: true } } } } },
-      { name: 'userConfig false', settings: { pluginConfigs: { 'workflow-toolbox@fixture': { options: { executor_lane_consent: false } } } } },
-    ]
-    const projects = [
-      { name: 'project absent', settings: null },
-      { name: 'project permits', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'true' } } },
-      { name: 'project narrows', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'false' } } },
-    ]
-
-    for (const account of accounts) {
-      for (const project of projects) {
+    for (const account of CONSENT_ACCOUNTS) {
+      for (const project of CONSENT_PROJECTS) {
         const f = fixture()
         writeFileSync(join(f.config, 'settings.json'), JSON.stringify(account.settings))
         if (project.settings) writeFileSync(join(f.project, '.claude', 'settings.local.json'), JSON.stringify(project.settings))
@@ -223,7 +223,7 @@ describe('adopted wt-lane consent resolver', () => {
         expect(actual.status, `${account.name}; ${project.name}: ${actual.stderr}`).toBe(expected === 'true' ? 0 : 1)
       }
     }
-  }, CHILD_TIMEOUT_MS + 15_000)
+  }, CONSENT_MATRIX_TIMEOUT_MS)
 
   it('refuses when no installed plugin root can provide the real resolver', () => {
     const f = fixture()
