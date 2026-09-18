@@ -12,6 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added `wt-lane.mjs integrate`, which commits a delivered lane from an explicit message file, merges it in a named same-repository worktree, verifies its `.lane/` archive before optional removal, and can authorize, push, dispatch, and inspect an explicitly requested CI branch.
 
 ### Fixed
+- The second-opinion Fable route now refuses when the quota probe reports no Claude Fable weekly scope; an empty measurement used to read as headroom and the query ran unguarded.
 - The delegation-ladder rule no longer tells a session to release a finished sub-agent with a shutdown request: it now says to leave it idle, after two session terminations observed within seconds of that message.
 - Destructive one-shot claims, lane integration evidence/removal and CI correlation, Windows suite-lock shims, contradictory run-cost families, and the pilot runner's spawned SDK fixture now fail closed under races and ambiguous inputs.
 - The SDK pilot runner no longer aborts at startup when the SDK emits an account-level `rate_limit_event` before its initialization message (seen on a fresh account window); the ordering check still refuses any model message that precedes the receipt.

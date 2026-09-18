@@ -140,6 +140,19 @@ describe('second-opinion advisor', () => {
     expect(lines(f.out)).toEqual(['REFUSED: --request is required', 'EXIT=2'])
   })
 
+  it('refuses Fable when the quota probe reports no Fable scope, instead of reading silence as headroom', async () => {
+    const f = fixture(false)
+    const deps = dependencies({ probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Opus', percent: 3 }] })) })
+    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
+
+    expect(lines(f.out)).toEqual([
+      'ROUTE=claude-fable',
+      'REFUSED: the quota probe reported no Claude Fable weekly scope, so the Fable quota guard cannot be applied.',
+      'EXIT=1',
+    ])
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+  })
+
   it('applies the Fable quota guard when Fable is forced despite active lane consent', async () => {
     const f = fixture(true)
     const deps = dependencies({
