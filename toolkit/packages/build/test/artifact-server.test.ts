@@ -1732,8 +1732,10 @@ describe('review decisions: serving security matrix', () => {
     const project = temporaryDir('rich-project')
     const root = temporaryDir('rich-root')
     const stateHome = temporaryDir('rich-state')
-    let sinkRequests = 0
-    const sink = createServer((_request, response) => { sinkRequests += 1; response.end('reachable') })
+    // The sink listens on an ephemeral port, and artifact servers on this machine probe a run of ports for their own
+    // health path while discovering each other. Only the two paths the PAGE asks for prove a leak.
+    const sinkPaths: string[] = []
+    const sink = createServer((request, response) => { sinkPaths.push(request.url ?? ''); response.end('reachable') })
     await new Promise<void>((resolve, reject) => {
       sink.once('error', reject)
       sink.listen(0, '127.0.0.1', resolve)
@@ -1760,7 +1762,7 @@ describe('review decisions: serving security matrix', () => {
       expect(plain.code, plain.stderr).toBe(0)
       expect(plain.stdout).toContain('data-script="not-run"')
       expect(plain.stdout).not.toContain('data-script="ran"')
-      expect(sinkRequests).toBe(0)
+      expect(sinkPaths.filter((path) => path === '/fetch' || path === '/image'), `sink saw: ${sinkPaths.join(', ')}`).toEqual([])
     } finally {
       await closeServer(sink)
     }
