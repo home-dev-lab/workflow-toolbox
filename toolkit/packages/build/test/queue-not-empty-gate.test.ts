@@ -288,6 +288,27 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(proposalOld.replace(` · ${explanation}`, '')).toBe(fresh.replace(` · next: ${proposal}`, ''))
   })
 
+  it('falls back from a non-numeric proposal bound instead of naming an old card', () => {
+    const { env, payload, stateDir, cwd } = scaffold('proposal-invalid-bound')
+    writeSnapshot(stateDir, cwd, { at: Date.now() - 60 * 60_000, startable: 2, awaitingOwner: 0, unclassified: 0, next: 'CARD-OLD' })
+
+    const text = blockText(runHook(payload, { ...env, WT_QUEUE_PROPOSAL_MAX_AGE_MS: 'not-a-number' }))
+    expect(text).toContain('2 startable (0 awaiting owner, 0 unclassified)')
+    expect(text).toContain('not proposing a card')
+    expect(text).not.toContain('CARD-OLD')
+  })
+
+  it('reports a future snapshot as unusable without dropping its count or refusal', () => {
+    const { env, payload, stateDir, cwd } = scaffold('proposal-future')
+    writeSnapshot(stateDir, cwd, { at: Date.now() + 24 * 60 * 60_000, startable: 2, awaitingOwner: 0, unclassified: 0, next: 'CARD-FUTURE' })
+
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('2 startable (0 awaiting owner, 0 unclassified)')
+    expect(text).toContain('snapshot timestamp is in the future')
+    expect(text).toContain('not proposing a card')
+    expect(text).not.toContain('CARD-FUTURE')
+  })
+
   it('uses one exported 12-minute window for registered-worktree and lane-log liveness', () => {
     expect(readFileSync(LANE_LIVE_SCAN, 'utf8')).toContain('export const ACTIVITY_WINDOW_MIN = 12')
   })

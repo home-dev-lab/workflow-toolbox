@@ -139,6 +139,74 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
+  it('keeps live phase cost unknown when required input usage is absent', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-live-cost-unknown-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1866347363803596067'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'live-cost-unknown')
+      const lane = join(worktree, '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'LITE' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Live cost unknown\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=discovery\n')
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [{ phase: 'discovery', round: null, entered_at: 1000, exited_at: null }], lanes: [] }))
+      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [{ arrived_at: '1970-01-01T00:00:02.000Z', output: 2 }] }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row.phaseCosts.discovery).toBe('unknown')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('accumulates repeated archived lifecycle rounds for one normalized phase', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-phase-rounds-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1866347363803596068'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'phase-rounds')
+      const lane = join(worktree, '.lane')
+      const archive = join(paths.suiteRoot, 'reports', `${cardId}-fixture`)
+      mkdirSync(lane, { recursive: true }); mkdirSync(archive, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Phase rounds\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=critic\n')
+      writeFileSync(join(lane, 'summary.json'), JSON.stringify({ archive: { path: archive } }))
+      writeFileSync(join(archive, 'cost.json'), JSON.stringify({ phases: [
+        { phase: 'critic', round: 1, models: { opus: { input: 100, output: 1, cache_read: 2, cache_write: 3 } }, unknown: [] },
+        { phase: 'critic', round: 2, models: { opus: { input: 20, output: 4, cache_read: 5, cache_write: 6 } }, unknown: [] },
+      ] }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row.phaseCosts.critic).toEqual({ input: 120, output: 5, cacheRead: 7, cacheWrite: 9, total: 141 })
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('surfaces malformed archived cost instead of falling back to live usage', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-malformed-archive-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1866347363803596069'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'malformed-archive')
+      const lane = join(worktree, '.lane')
+      const archive = join(paths.suiteRoot, 'reports', `${cardId}-fixture`)
+      mkdirSync(lane, { recursive: true }); mkdirSync(archive, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'LITE' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Malformed archive\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=discovery\n')
+      writeFileSync(join(lane, 'summary.json'), JSON.stringify({ archive: { path: archive } }))
+      writeFileSync(join(archive, 'cost.json'), '{broken')
+      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [{ arrived_at: '1970-01-01T00:00:02.000Z', input: 10, output: 2 }] }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row.phaseCostSource).toBe(join(archive, 'cost.json'))
+      expect(row.phaseCostSourceKind).toBe('malformed archive cost.json')
+      expect(row.phaseCosts.discovery).toBe('unknown')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('removes every control character from Text children in the captured reproducing snapshot', async () => {
     const captured = join(REPO_ROOT, '.lane', 'snapshot-with-control-chars.json')
     const snapshot = existsSync(captured)

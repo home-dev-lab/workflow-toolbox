@@ -5,10 +5,8 @@
 // `git merge <source> <target>` can therefore advance HEAD with both refs instead of advancing
 // the branch the caller intended to name as the target.
 //
-// Quoted strings are blanked before the merge arguments are tokenised. In particular, the words
-// in `git merge -m 'merge: card X into develop' <branch>` are message data, not refs. Without
-// blanking, that common correct command is indistinguishable from a many-ref merge and this guard
-// would warn on routine work.
+// Shell words are tokenised with quotes preserved as one argument. Option values such as the words
+// in `git merge -m 'merge: card X into develop' <branch>` are skipped, while quoted refs still count.
 //
 // `merge` is matched as the exact git subcommand, not with `\bmerge\b`: a word boundary also
 // exists before the hyphen in `merge-base`, `merge-tree`, `merge-file`, and `merge-index`.
@@ -20,18 +18,18 @@
 //
 // WHAT THIS DOES NOT COVER:
 //   - whether the current checkout is a protected branch (shape 2, described above);
-//   - refs supplied inside quoted strings, because quoted strings are deliberately treated as
-//     indivisible data to avoid interpreting commit-message words as refs;
 //   - shell expansions or wrappers whose eventual arguments are not visible in the command text.
+//   - intentional octopus merges: this warning-only guard cannot distinguish them from a mistaken
+//     source/target spelling, so that false positive is accepted rather than weakening the warning.
 
 import { readFileSync } from 'node:fs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 
 const GUARD = 'wt-merge-target-guard-hook.mjs'
-const MERGE_ANCHOR = /^git(?:\s+-C\s+(?:""|\S+))?\s+merge(?:\s|$)/
 const MERGE_STATE_OPERATION = /^--(?:abort|continue|quit)$/
-const OPTIONS_WITH_VALUE = new Set(['-m', '--message', '-F', '--file', '-s', '--strategy', '-X', '--strategy-option', '--into-name'])
+const GIT_OPTIONS_WITH_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--super-prefix', '--config-env', '--exec-path'])
+const OPTIONS_WITH_VALUE = new Set(['-m', '--message', '-F', '--file', '-s', '--strategy', '-X', '--strategy-option', '--into-name', '--cleanup', '--log', '--gpg-sign'])
 
 function readInput() {
   try {
@@ -41,27 +39,82 @@ function readInput() {
   }
 }
 
-function blankQuotedStrings(command) {
-  return command.replace(/'[^']*'|"[^"]*"/g, '""')
+function withoutHeredocBodies(command) {
+  const output = []
+  let delimiter = null
+  for (const line of command.split(/\r?\n/)) {
+    if (delimiter !== null) {
+      if (line.trim() === delimiter) delimiter = null
+      continue
+    }
+    output.push(line)
+    const match = line.match(/<<-?\s*(['"]?)([A-Za-z0-9_]+)\1/)
+    if (match) delimiter = match[2]
+  }
+  return output.join('\n')
 }
 
 function splitSegments(command) {
-  return command
-    .split(/\n|;|&&|\|\||\|/)
-    .map((segment) => segment.trim())
-    .filter(Boolean)
+  const segments = []
+  let current = ''; let quote = null
+  for (let index = 0; index < command.length; index++) {
+    const char = command[index]
+    if (quote) {
+      current += char
+      if (char === quote && command[index - 1] !== '\\') quote = null
+      continue
+    }
+    if (char === "'" || char === '"') { quote = char; current += char; continue }
+    if (char === '\n' || char === ';' || char === '|') {
+      if (current.trim()) segments.push(current.trim())
+      current = ''
+      if (char === '|' && command[index + 1] === '|') index++
+      continue
+    }
+    if (char === '&' && command[index + 1] === '&') {
+      if (current.trim()) segments.push(current.trim())
+      current = ''; index++; continue
+    }
+    current += char
+  }
+  if (current.trim()) segments.push(current.trim())
+  return segments
+}
+
+function shellWords(segment) {
+  const words = []
+  let current = ''; let quote = null
+  for (let index = 0; index < segment.length; index++) {
+    const char = segment[index]
+    if (quote) {
+      if (char === quote) quote = null
+      else if (char === '\\' && quote === '"' && index + 1 < segment.length) current += segment[++index]
+      else current += char
+    } else if (char === "'" || char === '"') quote = char
+    else if (/\s/.test(char)) { if (current) { words.push(current); current = '' } }
+    else if (char === '\\' && index + 1 < segment.length) current += segment[++index]
+    else current += char
+  }
+  if (current) words.push(current)
+  return words
 }
 
 function hasMultipleRefs(segment) {
-  const match = segment.match(MERGE_ANCHOR)
-  if (!match) return false
-
-  const words = segment.slice(match[0].length).trim().split(/\s+/).filter(Boolean)
+  const command = shellWords(segment)
+  if (command[0] !== 'git') return false
+  let subcommand = 1
+  while (subcommand < command.length && command[subcommand] !== 'merge') {
+    const option = command[subcommand]
+    if (!option.startsWith('-')) return false
+    if (GIT_OPTIONS_WITH_VALUE.has(option)) subcommand++
+    subcommand++
+  }
+  if (command[subcommand] !== 'merge') return false
+  const words = command.slice(subcommand + 1)
   if (words.some((word) => MERGE_STATE_OPERATION.test(word))) return false
   let refs = 0
   for (let i = 0; i < words.length; i++) {
     const word = words[i]
-    if (word === '""') continue
     if (/^\d*(?:>>?|<<?)$/.test(word)) {
       i++
       continue
@@ -86,7 +139,7 @@ function main() {
     : ''
   if (!command) return
 
-  const found = splitSegments(blankQuotedStrings(command)).some(hasMultipleRefs)
+  const found = splitSegments(withoutHeredocBodies(command)).some(hasMultipleRefs)
   if (!found) return
 
   recordGuardEvent({

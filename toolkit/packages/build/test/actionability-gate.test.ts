@@ -349,6 +349,43 @@ describe('wt-actionable-gate-hook', () => {
     expect(text).not.toContain('CARD-STALE')
   })
 
+  it('falls back from a non-numeric proposal bound instead of naming an old card', () => {
+    const { env, payload, stateDir, cwd } = scaffold('proposal-invalid-bound')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now() - 60 * 60_000,
+      actionable: 3,
+      next: 'CARD-OLD',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+
+    const text = blockText(runHook(payload, { ...env, WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS: 'garbage' }))
+    expect(text).toContain('3 actionable item(s) remain')
+    expect(text).toContain('not proposing a card because the snapshot is stale')
+    expect(text).not.toContain('CARD-OLD')
+  })
+
+  it('reports a future snapshot as unusable without dropping its count or refusal', () => {
+    const { env, payload, stateDir, cwd } = scaffold('proposal-future')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now() + 24 * 60 * 60_000,
+      actionable: 3,
+      next: 'CARD-FUTURE',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('3 actionable item(s) remain')
+    expect(text).toContain('snapshot timestamp is in the future')
+    expect(text).toContain('not proposing a card')
+    expect(text).not.toContain('CARD-FUTURE')
+  })
+
   it('actionable:3, work in flight -> no block, and the counter resets', () => {
     const { env, payload, stateDir, cwd, subagentsDir } = scaffold('inflight')
     writeSnapshot(stateDir, cwd, {

@@ -139,6 +139,7 @@ import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { ACTIVITY_WINDOW_MIN, hasActiveLaneLog, registeredWorktrees, registeredWorktreeActivity, scanLiveLaneProcesses, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { expireMarker, expireOwnedMarkers } from './lib/queue-gate-marker-expiry.mjs'
 import { parseQueueSnapshot } from './lib/queue-snapshot-contract.mjs'
+import { positiveMilliseconds, proposalAge } from './lib/proposal-age.mjs'
 
 const STATE_DIR = process.env.WT_QUEUE_GATE_DIR
   || join(homedir(), '.local', 'state', 'wt-queue-gate')
@@ -146,7 +147,7 @@ const HELP_PATH = new URL('wt-queue-not-empty-gate-hook.help.md', import.meta.ur
 const COOLDOWN_MIN = 45 // never block more often than this, per session
 const INFLIGHT_MIN = 3 // a subagent transcript touched this recently ⇒ work is running
 const SNAPSHOT_MAX_AGE_MIN = 120
-const PROPOSAL_MAX_AGE_MS = Number(process.env.WT_QUEUE_PROPOSAL_MAX_AGE_MS || 15 * 60 * 1000)
+const PROPOSAL_MAX_AGE_MS = positiveMilliseconds(process.env.WT_QUEUE_PROPOSAL_MAX_AGE_MS, 15 * 60 * 1000)
 
 function resolveActivityRoot(start) {
   try {
@@ -477,7 +478,10 @@ recordGuardEvent({
   class: `activity:${activityStatus}`,
   reason: openCount === null ? `queue:${queueStatus}` : queue.kind === 'known' ? `queue:${openCount}-startable` : `queue:${openCount}-open`,
 })
-const proposalTooOld = queueStatus === 'known' && snapshotAgeMs !== null && snapshotAgeMs > PROPOSAL_MAX_AGE_MS
+const proposal = proposalAge(queueStatus === 'known' ? queue.at : null, Date.now(), PROPOSAL_MAX_AGE_MS)
+const proposalRefusal = proposal.reason === 'future'
+  ? 'The gate is not proposing a card: the snapshot timestamp is in the future and is unusable.'
+  : 'The gate is not proposing a card: the snapshot is older than the proposal bound.'
 process.stdout.write(
   JSON.stringify({
     hookSpecificOutput: {
@@ -518,8 +522,8 @@ process.stdout.write(
             ? `${queue.startable} startable (${queue.awaitingOwner} awaiting owner, ${queue.unclassified} unclassified)`
             : `${openCount} open [legacy snapshot: classification unknown]`) +
         `${nextItem
-          ? proposalTooOld
-            ? ' · The gate is not proposing a card: the snapshot is older than the proposal bound.'
+          ? !proposal.usable
+            ? ` · ${proposalRefusal}`
             : ` · next: ${nextItem}`
           : ''} — chain or say why · ${HELP_PATH}`,
     },
