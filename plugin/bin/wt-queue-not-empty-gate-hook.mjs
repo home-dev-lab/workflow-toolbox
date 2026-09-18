@@ -324,7 +324,6 @@ let nextItem = ''
 // from fresh. The age is already computed below to decide staleness; carrying it into the
 // message costs nothing and stops the number from lying by omission.
 let snapshotAgeMin = null
-let snapshotAgeMs = null
 let queueStatus = 'known'
 let queue = { kind: 'unknown', reason: 'unreadable queue snapshot' }
 try {
@@ -361,7 +360,6 @@ try {
   } else if (queue.kind === 'legacy') {
     openCount = queue.open
     nextItem = queue.next
-    snapshotAgeMs = age
     snapshotAgeMin = Math.round(age / 60_000)
     queueStatus = 'known'
   }
@@ -374,8 +372,7 @@ if (queue.kind === 'known' && queue.startable === 0) {
 if (queue.kind === 'known') {
   openCount = queue.startable
   nextItem = queue.next
-  snapshotAgeMs = Date.now() - queue.at
-  snapshotAgeMin = Math.round(snapshotAgeMs / 60_000)
+  snapshotAgeMin = Math.round((Date.now() - queue.at) / 60_000)
 }
 if (openCount === 0) runningBail() // the queue really is empty — stopping needs no justification
 
