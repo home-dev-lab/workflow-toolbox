@@ -351,6 +351,12 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         tool_name: 'Bash',
         tool_input: { command: 'git merge branch && pnpm test' },
       }
+    case 'wt-merge-target-guard-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git merge --ff-only abc123 develop' },
+      }
     case 'wt-concurrent-test-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
