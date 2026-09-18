@@ -590,7 +590,7 @@ printf 'report\n' > "$report"
     writeFileSync(join(worktree, '.lane', 'worktree-retention.json'), JSON.stringify({
       version: 1, cardId: '1864705186723792821', retainedAt: '2026-09-17T10:00:00.000Z',
       worktree: realpathSync(worktree),
-      reason: 'bounded lifecycle spent: plan not approved after 4 critic rounds', phase: 'critic',
+      reason: 'bounded lifecycle spent: plan not approved after 3 critic rounds', phase: 'critic',
       expiry: { boardId: 'board', removeWhen: 'card is absent or in Done or NotDoing' },
     }))
     const openBoard = { getCard: async () => ({ listId: 'doing' }), listNameOf: async () => 'Doing' }

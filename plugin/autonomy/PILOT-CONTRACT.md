@@ -55,7 +55,7 @@ carries the plan's `## Tasks` block byte-identically.
 | report | Write/transition it; non-proven DoD or unrun E2E makes archive partial. |
 
 Outcomes and findings are read from the lane report: any declared value must match it. Review and
-refutation changes-requested outcomes need findings; there are at most three harden rounds. When a
+refutation changes-requested outcomes need findings; they share three passes in all. When a
 critic, review, or refutation bound is spent, the server routes to report and records the run as
 partial. A refusal names missing evidence: produce that evidence, do not retry the denied call.
 The critic accepts routed L4 and refuses bare deferral. One blocking `CONTEST routed card <id>:` gets

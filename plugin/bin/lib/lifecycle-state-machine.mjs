@@ -15,7 +15,10 @@ import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
 export const AWAITING_FIDELITY_RESULT = 'accepted phase=awaiting_fidelity'
-export const MAX_CRITIC_ROUNDS = 4
+// Owner rule: a loop gets three passes in all, never a fourth. The third refusal ends the run as a partial
+// report; whoever reads that report escalates. One number for both loops, so they cannot drift apart again.
+export const MAX_CRITIC_ROUNDS = 3
+export const MAX_REVIEW_ROUNDS = 3
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
 
 export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
@@ -723,9 +726,9 @@ export function createLifecycleStateMachine({
       if (verdict.outcome === 'changes-requested' && verdict.findings.length === 0) {
         return refusal(`${state.phase}->harden`, 'findings', path.join(laneDir, `${state.phase}-report.md`))
       }
-      if (verdict.outcome === 'changes-requested' && ++state.reviewRound > 3) {
+      if (verdict.outcome === 'changes-requested' && ++state.reviewRound >= MAX_REVIEW_ROUNDS) {
         const phase = state.phase
-        const reason = `${phase} still requests changes after 3 harden rounds`
+        const reason = `${phase} still requests changes after ${MAX_REVIEW_ROUNDS - 1} harden rounds`
         state.partial = { phase, round: state.reviewRound, reason, findings: verdict.findings }
         next = 'report'
         resultDetail = ` (round bound reached: partial run, ${reason})`

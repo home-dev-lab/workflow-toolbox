@@ -653,7 +653,7 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
-    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: 4, reason, findings: ['tighten the proof'] } } })
+    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } } })
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toEqual({
       version: 1,
       cardId: '1',
@@ -804,6 +804,20 @@ describe('SDK pilot runner', () => {
     })()
     await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: late, resolvePilotModels: models, sleep: async () => {} }))
       .rejects.toThrow(/receipt never arrived/)
+  })
+
+  // The SDK can emit an account-level `rate_limit_event` BEFORE its init message (measured on a fresh
+  // account window). It carries no model output, so it must not count as "another message first".
+  it('tolerates a rate_limit_event that precedes the initialization receipt', async () => {
+    const f = fixture()
+    const rateLimitedFirst = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }
+      yield initMessage()
+      await prompt.next()
+    })()
+    const outcome = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: rateLimitedFirst, resolvePilotModels: models, sleep: async () => {} })
+      .then(() => 'completed', (error: Error) => error.message)
+    expect(outcome).not.toMatch(/receipt never arrived/)
   })
 
   it('refuses an initialization receipt that omits the artifact tool or the guard plugin', async () => {

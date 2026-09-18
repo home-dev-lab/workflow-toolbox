@@ -365,6 +365,8 @@ export async function runPilot(options, dependencies) {
     const stream = query({ prompt: prompt(), options: queryOptions })
     for await (const message of stream) {
       transcript.push(message)
+      // An account-level rate-limit notice can precede init; it carries no model output and is not "another message first".
+      if (!initReceiptSeen && message.type === 'rate_limit_event') continue
       if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) {
         throw new Error('SDK pilot initialization receipt never arrived: the first message was ' + message.type + '/' + (message.subtype ?? 'none'))
       }

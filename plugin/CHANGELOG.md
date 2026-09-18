@@ -11,6 +11,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added `wt-lane.mjs integrate`, which commits a delivered lane from an explicit message file, merges it in a named same-repository worktree, verifies its `.lane/` archive before optional removal, and can authorize, push, dispatch, and inspect an explicitly requested CI branch.
 
 ### Fixed
+- The SDK pilot runner no longer aborts at startup when the SDK emits an account-level `rate_limit_event` before its initialization message (seen on a fresh account window); the ordering check still refuses any model message that precedes the receipt.
+- The SDK lifecycle now allows three passes in all on both bounded loops (plan ↔ critic, and review/refutation ↔ harden) instead of four: the third refusal ends the run as an archived partial report for its reader to escalate.
 - The What is running pane now labels a card id on rows rendered outside a session (`Card <id>` instead of a bare number), and a test locks that a skipped or not-started stage offers no button even when evidence is recorded for it.
 - `wt-lane integrate --dry-run` now prints the resolved lane, target, subjects, archive/removal, and CI authorization plan; real merges use a distinct `merge: <lane subject>` by default (with an override), and refuse to change an integration tree used by the active machine-wide suite unless `--force` is passed.
 - SDK pilot timeouts now default by route (90 minutes for LITE, 6 hours for FULL), warn without refusing shorter explicit bounds, and stop at the next lifecycle phase boundary with an archived timeout report and worktree-retention marker instead of injecting an ignorable prompt mid-phase.
