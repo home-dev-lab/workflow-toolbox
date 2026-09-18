@@ -145,6 +145,7 @@ export const spawningTestFiles = [
   'packages/build/test/wt-shipped-twin-check-hook.test.ts',
   'packages/debugger/test/stop-hook.integration.test.ts',
   'packages/patterns/test/provenance-gate.test.ts',
+  'scripts/test/child-process-coverage.test.ts',
   'scripts/test/citation-marker-check.test.ts',
   'scripts/test/label-intent-lens.test.ts',
   'scripts/test/suite-under-load.test.ts',
