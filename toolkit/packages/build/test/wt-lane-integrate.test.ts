@@ -57,6 +57,7 @@ function options(f: ReturnType<typeof fixture>, extra: Record<string, unknown> =
     keepWorktree: true,
     stdout: (line: string) => f.stdout.push(line),
     stderr: (line: string) => f.stderr.push(line),
+    readSuiteLock: () => ({ held: false, holder: null, ageMs: null }),
     ...extra,
   }
 }
@@ -76,6 +77,8 @@ describe('lane integration', () => {
     expect(existsSync(join(f.archiveRoot, 'lane', 'lane', 'report.md'))).toBe(true)
     expect(git(f.into, 'show', 'HEAD:delivered.txt')).toBe('delivered')
     expect(command('git', ['-C', f.lane, 'cat-file', '-e', 'HEAD:.lane/report.md']).status).not.toBe(0)
+    expect(git(f.into, 'log', '-1', '--format=%s')).toBe('merge: Integrate fixture lane')
+    expect(git(f.into, 'show', '-s', '--format=%s', 'HEAD^2')).toBe('Integrate fixture lane')
     const merge = calls.filter((argv) => argv[0] === 'git' && argv.includes('merge') && argv.includes('--no-ff'))
     expect(merge).toHaveLength(1)
     expect(merge[0]!.some((arg) => arg.includes('&&') || arg.includes(';'))).toBe(false)
@@ -164,13 +167,67 @@ describe('lane integration', () => {
     expect(command('git', ['-C', removed.into, 'show-ref', '--verify', '--quiet', 'refs/heads/card/test-lane']).status).not.toBe(0)
   })
 
-  it('parses integration options without changing launcher option names and dry-runs no commands', async () => {
-    const parsed = parseIntegrateArgs(['--dir', 'lane', '--into', 'develop', '--message', 'message.txt', '--pre-remove-check', 'node', 'check.mjs', '--keep-worktree', '--dry-run'])
-    expect(parsed).toMatchObject({ preRemoveCheck: ['node', 'check.mjs'], keepWorktree: true, dryRun: true })
-    const output: string[] = []
-    const code = await integrateLane({ ...parsed, runner: () => { throw new Error('dry-run executed a command') }, stdout: (line: string) => output.push(line) })
-    expect(code).toBe(0)
-    expect(output).toHaveLength(6)
+  it('prints a checkable dry-run plan with every resolved value and writes nothing', async () => {
+    const f = fixture(); writeFileSync(join(f.lane, 'change.txt'), 'change\n')
+    const remote = join(f.root, 'public.git'); mkdirSync(remote); git(remote, 'init', '--bare', '-q')
+    git(f.repository, 'remote', 'add', 'public', remote)
+    git(f.repository, 'push', '-q', 'public', 'fixture-root:main')
+    git(f.repository, 'fetch', '-q', 'public')
+    const authorizeFile = join(f.root, 'authorized.json')
+    const parsed = parseIntegrateArgs(['--dir', f.lane, '--into', f.into, '--message', f.message, '--archive-root', f.archiveRoot, '--pre-remove-check', 'node', 'check.mjs', '--ci-branch', 'ci/test', '--remote', 'public', '--authorize-file', authorizeFile, '--merge-subject', 'custom merge subject', '--dry-run', '--force'])
+    expect(parsed).toMatchObject({ preRemoveCheck: ['node', 'check.mjs'], dryRun: true, force: true, mergeSubject: 'custom merge subject' })
+    const laneHead = git(f.lane, 'rev-parse', 'HEAD'); const intoHead = git(f.into, 'rev-parse', 'HEAD')
+
+    const code = await integrateLane(options(f, parsed))
+
+    expect(code, f.stderr.join('\n')).toBe(0)
+    const plan = f.stdout.join('\n')
+    expect(plan).toContain(`lane branch=card/test-lane tip=${laneHead}`)
+    expect(plan).toContain(`integration tree=${f.into} HEAD=${intoHead}`)
+    expect(plan).toContain('commit subject=Integrate fixture lane')
+    expect(plan).toContain('merge subject=custom merge subject')
+    expect(plan).toContain(`archive destination=${join(f.archiveRoot, 'lane', 'lane')}`)
+    expect(plan).toContain('remove worktree=yes')
+    expect(plan).toContain(`remote=public authorization file=${authorizeFile} commits=2`)
+    expect(git(f.lane, 'rev-parse', 'HEAD')).toBe(laneHead)
+    expect(git(f.into, 'rev-parse', 'HEAD')).toBe(intoHead)
+    expect(git(f.lane, 'status', '--porcelain')).toContain('change.txt')
+    expect(existsSync(f.archiveRoot)).toBe(false)
+    expect(existsSync(authorizeFile)).toBe(false)
+  })
+
+  it('refuses a suite lock held inside the integration tree, but not one elsewhere, unless forced', async () => {
+    const inside = fixture(); writeFileSync(join(inside.lane, 'change.txt'), 'change\n')
+    const insideHead = git(inside.into, 'rev-parse', 'HEAD')
+    const heldInside = () => ({ held: true, holder: { pid: 4242, cwd: join(inside.into, 'toolkit'), startedAt: new Date(Date.now() - 65_000).toISOString() }, ageMs: 65_000 })
+    mkdirSync(join(inside.into, 'toolkit'))
+    expect(await integrateLane(options(inside, { readSuiteLock: heldInside }))).toBe(1)
+    expect(inside.stdout.at(-1)).toBe('step 3 merge: EXIT=1')
+    expect(inside.stderr.join('\n')).toContain('holder pid 4242')
+    expect(inside.stderr.join('\n')).toContain('held for 1m5s')
+    expect(git(inside.into, 'rev-parse', 'HEAD')).toBe(insideHead)
+    expect(await integrateLane(options(inside)), inside.stderr.join('\n')).toBe(0)
+    expect(git(inside.into, 'show', 'HEAD:change.txt')).toBe('change')
+
+    const elsewhere = fixture(); writeFileSync(join(elsewhere.lane, 'change.txt'), 'change\n')
+    const otherCwd = join(elsewhere.root, 'other'); mkdirSync(otherCwd)
+    expect(await integrateLane(options(elsewhere, { readSuiteLock: () => ({ held: true, holder: { pid: 4343, cwd: otherCwd, startedAt: new Date().toISOString() }, ageMs: 0 }) })), elsewhere.stderr.join('\n')).toBe(0)
+
+    const forced = fixture(); writeFileSync(join(forced.lane, 'change.txt'), 'change\n'); mkdirSync(join(forced.into, 'toolkit'))
+    expect(await integrateLane(options(forced, { force: true, readSuiteLock: () => ({ held: true, holder: { pid: 4444, cwd: join(forced.into, 'toolkit'), startedAt: new Date().toISOString() }, ageMs: 0 }) })), forced.stderr.join('\n')).toBe(0)
+  })
+
+  it('refuses a held suite lock whose cwd cannot be read', async () => {
+    const f = fixture(); writeFileSync(join(f.lane, 'change.txt'), 'change\n')
+    expect(await integrateLane(options(f, { readSuiteLock: () => ({ held: true, holder: { pid: 4545, cwd: join(f.root, 'gone'), startedAt: new Date().toISOString() }, ageMs: 0 }) }))).toBe(1)
+    expect(f.stderr.join('\n')).toContain('cwd is unreadable')
+    expect(f.stdout.at(-1)).toBe('step 3 merge: EXIT=1')
+  })
+
+  it('accepts an explicit merge subject override', async () => {
+    const f = fixture(); writeFileSync(join(f.lane, 'change.txt'), 'change\n')
+    expect(await integrateLane(options(f, { mergeSubject: 'land: explicit fixture' })), f.stderr.join('\n')).toBe(0)
+    expect(git(f.into, 'log', '-1', '--format=%s')).toBe('land: explicit fixture')
   })
 
   it('writes exactly the authorized rev-list before pushing the CI branch', async () => {
