@@ -79,7 +79,8 @@ describe.sequential('wt-quota-watch proxy route', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain(`route=proxy ${base} family=codex`)
     expect(result.stdout, requestTrail()).toContain('QUOTA codex 7d: 80%')
-    expect(result.stdout).not.toContain('5h')
+    // Match the quota LINE, never a bare substring: the test-mode banner prints a random temp directory name.
+    expect(result.stdout).not.toMatch(/^QUOTA \S+ 5h:/m)
   })
 
   it('a drop before the previously reported reset time is a DROP with the reset unverified (card 1860461290531588066)', async () => {
