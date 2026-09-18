@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
 import { DELEGATION_EXPECTATIONS } from '@workflow-toolbox/debugger/external-delegation'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LADDER_HOOK = join(REPO_ROOT, 'plugin/bin/wt-delegation-ladder-hook.mjs')
@@ -59,10 +60,11 @@ interface Run {
   json: Record<string, unknown> | null
 }
 function runHook(hookPath: string, payload: unknown, env?: NodeJS.ProcessEnv): Run {
+  const root = mkRoot('hook-env')
   const res = spawnSync(process.execPath, [hookPath], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, WT_GUARD_JOURNAL_DIR: mkRoot('guard-journal'), ...(env ?? {}) },
+    env: sealedPluginCliEnv(root, { WT_GUARD_JOURNAL_DIR: mkRoot('guard-journal'), ...(env ?? {}) }),
   })
   const stdout = (res.stdout ?? '').trim()
   const stderr = (res.stderr ?? '').trim()

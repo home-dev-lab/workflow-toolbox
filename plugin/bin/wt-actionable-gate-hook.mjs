@@ -364,14 +364,12 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, ma
     actionableLine = `${snapshot.actionable} actionable item(s) remain. ${actionableLine}`
   }
   const proposal = proposalAge(snapshot?.status === 'present' ? snapshot.at : null, now, PROPOSAL_MAX_AGE_MS)
-  const ageLine = proposal.reason === 'future'
-    ? 'The snapshot timestamp is in the future and is unusable for a proposal.'
-    : proposal.ageMs === null
-    ? 'The snapshot is missing; age is unknown.'
-    : `Snapshot is ${formatSnapshotAge(proposal.ageMs)} old.`
-  const proposalLine = !proposal.usable
-    ? 'The gate is not proposing a card because the snapshot is stale or its age is unknown.'
-    : `Next: ${decision.next ? decision.next : 'unknown'}.`
+  let ageLine
+  if (proposal.reason === 'future') ageLine = 'The snapshot timestamp is in the future and is unusable for a proposal.'
+  else if (proposal.ageMs === null) ageLine = 'The snapshot is missing; age is unknown.'
+  else ageLine = `Snapshot is ${formatSnapshotAge(proposal.ageMs)} old.`
+  let proposalLine = 'The gate is not proposing a card because the snapshot is stale or its age is unknown.'
+  if (proposal.usable) proposalLine = `Next: ${decision.next ? decision.next : 'unknown'}.`
   // ⚠ ONE LINE, and the length lock below is what keeps it that way.
   // Measured 2026-08-06 on this harness: NO Stop-hook emission shape hides its text from the
   // USER's terminal. `decision:block` renders as "Stop hook error"; `additionalContext` renders

@@ -5,7 +5,7 @@ import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acquireSuiteLock, readSuiteLock, releaseSuiteLock, resolveWindowsExecutable, spawnNeedsShell, windowsShimArgumentRefusal } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { acquireSuiteLock, readSuiteLock, releaseSuiteLock, spawnNeedsShell, windowsShimArgumentRefusal } from '../../../../plugin/bin/lib/suite-lock.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
@@ -158,27 +158,27 @@ describe('spawn shell decision (Windows shims only)', () => {
 
   it('reads PATH and PATHEXT in order when resolving a bare name', () => {
     const seen: string[] = []
-    const resolved = resolveWindowsExecutable('tool', {
+    const needsShell = spawnNeedsShell('tool', {
+      platform: 'win32',
       env: { PATH: ['/a', '/b'].join(delimiter), PATHEXT: '.EXE;.CMD' },
       exists: (candidate: string) => {
         seen.push(candidate)
         return candidate.includes('/b') && candidate.endsWith('.CMD')
       },
     })
-    expect(resolved).not.toBeNull()
-    expect(String(resolved).endsWith('.CMD')).toBe(true)
+    expect(needsShell).toBe(true)
     expect(seen[0]).toBe(join('/a', 'tool.EXE'))
     expect(seen.length).toBeGreaterThan(1)
   })
 
   it('resolves an extensionless Windows path against PATHEXT', () => {
     const seen: string[] = []
-    const resolved = resolveWindowsExecutable('C:\\tools\\opencode', {
+    const needsShell = spawnNeedsShell('C:\\tools\\opencode', {
+      platform: 'win32',
       env: { PATHEXT: '.EXE;.CMD' },
       exists: (candidate: string) => { seen.push(candidate); return candidate.endsWith('.CMD') },
     })
-    expect(resolved).toBe('C:\\tools\\opencode.CMD')
-    expect(spawnNeedsShell('C:\\tools\\opencode', { platform: 'win32', resolve: () => resolved })).toBe(true)
+    expect(needsShell).toBe(true)
     expect(seen).toEqual(['C:\\tools\\opencode.EXE', 'C:\\tools\\opencode.CMD'])
   })
 

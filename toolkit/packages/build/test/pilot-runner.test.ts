@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -350,7 +351,7 @@ describe('SDK pilot runner', () => {
       'export const tool = (name, description, schema, handler) => ({ name, description, schema, handler })',
     ].join('\n'))
     const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
-      encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_ENV: 'test', NODE_PATH: '', WT_PILOT_TEST_SDK_MANIFEST: join(f.dir, 'package.json'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') },
+      encoding: 'utf8', timeout: 20_000, env: sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_PILOT_TEST_SDK_MANIFEST: join(f.dir, 'package.json'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') }),
     })
     expect(result.signal).toBeNull()
     expect(result.status).toBe(1)

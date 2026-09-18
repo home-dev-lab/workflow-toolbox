@@ -145,7 +145,7 @@ export function operatorReleaseSuiteLock(options = {}) {
 // own ENOENT instead of a shell swallowing it.
 const WINDOWS_SHELL_EXTENSIONS = new Set(['.cmd', '.bat'])
 
-export function resolveWindowsExecutable(executable, options = {}) {
+function resolveWindowsExecutable(executable, options = {}) {
   const env = options.env ?? process.env
   const exists = options.exists ?? ((candidate) => { try { return statSync(candidate).isFile() } catch { return false } })
   const pathExt = String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)

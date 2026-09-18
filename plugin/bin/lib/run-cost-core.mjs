@@ -74,13 +74,13 @@ function defaultOpenCodeDb(options) {
 }
 
 function laneFamily(lane) {
-  const executorFamily = lane.executor === 'claude-sdk' ? 'anthropic' : lane.executor === 'gpt-lane' || lane.executor === 'opencode' ? 'openai' : null
+  let executorFamily = null
+  if (lane.executor === 'claude-sdk') executorFamily = 'anthropic'
+  else if (lane.executor === 'gpt-lane' || lane.executor === 'opencode') executorFamily = 'openai'
   const model = String(lane.model ?? '').toLowerCase()
-  const modelFamily = model.startsWith('openai/') || model.startsWith('gpt-')
-    ? 'openai'
-    : model.startsWith('anthropic/') || model.startsWith('claude-') || /^(?:opus|sonnet|haiku)$/.test(model)
-      ? 'anthropic'
-      : null
+  let modelFamily = null
+  if (model.startsWith('openai/') || model.startsWith('gpt-')) modelFamily = 'openai'
+  else if (model.startsWith('anthropic/') || model.startsWith('claude-') || /^(?:opus|sonnet|haiku)$/.test(model)) modelFamily = 'anthropic'
   if (executorFamily && modelFamily && executorFamily !== modelFamily) return null
   return executorFamily ?? modelFamily
 }
