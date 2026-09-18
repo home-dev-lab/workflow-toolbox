@@ -72,6 +72,7 @@ export const spawningTestFiles = [
   'packages/build/test/main-guard-hook.test.ts',
   'packages/build/test/memory-index-check.test.ts',
   'packages/build/test/merge-chain-guard-hook.test.ts',
+  'packages/build/test/merge-target-guard-hook.test.ts',
   'packages/build/test/missing-package-script-guard-hook.test.ts',
   'packages/build/test/no-committed-conflict-markers.test.ts',
   'packages/build/test/observer-pairing-check.test.ts',
