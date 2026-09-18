@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -30,6 +30,19 @@ describe('run cost', () => {
       lanes,
     }))
     return { lane, sessions }
+  }
+
+  function cliLane() {
+    const lane = root()
+    writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId: 'cli-card', route: 'LITE', executor: 'claude-sdk' }))
+    writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, served_model: 'claude-sonnet-5' }))
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} }))
+    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 2000, phases: [], lanes: [] }))
+    return lane
+  }
+
+  function spawnCompute(lane: string, output: string, ...args: string[]) {
+    return spawnSync(process.execPath, [CLI, '--compute', lane, '--output', output, '--worktree', '/work/cli', ...args], { encoding: 'utf8' })
   }
 
   function realOutputUndercountLane(resultOutput = 134665) {
@@ -359,5 +372,102 @@ describe('run cost', () => {
     expect(partialCli.status).toBe(0)
     expect(formatAggregate(aggregateRunCosts(reports, { includePartial: true }))).toContain('FULL | openai | 2 | incomplete (1 unknown) | 1100 | not measured | 1400 | 1050 | 1025 | 1100 | 3175 | 500')
     expect(spawnSync(process.execPath, [CLI], { encoding: 'utf8' }).status).toBe(2)
+  })
+
+  it('parses every compute option through the spawned CLI', () => {
+    const lane = cliLane()
+    const output = join(root(), 'cost.json')
+    const result = spawnCompute(lane, output, '--db', '/tmp/opencode.db', '--route', 'HARD', '--started-at', '2026-01-01T00:00:00.000Z', '--ended-at', '2026-01-01T00:01:00.000Z')
+
+    expect(result.status).toBe(0)
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({
+      route: 'HARD',
+      worktree: '/work/cli',
+      window: { started_at: '2026-01-01T00:00:00.000Z', ended_at: '2026-01-01T00:01:00.000Z' },
+    })
+  })
+
+  it('prints usage and exits 2 when compute is missing a required option', () => {
+    const result = spawnSync(process.execPath, [CLI, '--compute', cliLane(), '--worktree', '/work/cli'], { encoding: 'utf8' })
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toMatch(/^Usage: node wt-run-cost\.mjs /)
+  })
+
+  it('prints usage and exits 2 for an unrecognised compute option', () => {
+    const result = spawnCompute(cliLane(), join(root(), 'cost.json'), '--unexpected')
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toMatch(/^Usage: node wt-run-cost\.mjs /)
+  })
+
+  it('reports an invalid explicit date through the CLI error boundary', () => {
+    const result = spawnCompute(cliLane(), join(root(), 'cost.json'), '--started-at', 'not-a-date', '--ended-at', '2026-01-01T00:01:00.000Z')
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toBe('wt-run-cost: Invalid time value\n')
+  })
+
+  it('creates missing output parent directories on compute success', () => {
+    const output = join(root(), 'missing', 'parents', 'cost.json')
+    const result = spawnCompute(cliLane(), output)
+
+    expect(result.status).toBe(0)
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({ card_id: 'cli-card', route: 'LITE' })
+  })
+
+  it('writes a merged pilot report next to the compute output', () => {
+    const lane = cliLane()
+    const source = '# Pilot\n\nExisting text\n'
+    writeFileSync(join(lane, 'pilot-report.md'), source)
+    const destination = root()
+    const result = spawnCompute(lane, join(destination, 'cost.json'))
+
+    expect(result.status).toBe(0)
+    expect(readFileSync(join(lane, 'pilot-report.md'), 'utf8')).toBe(source)
+    expect(readFileSync(join(destination, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
+  })
+
+  it('does not create a pilot report when the lane has none', () => {
+    const destination = root()
+    const result = spawnCompute(cliLane(), join(destination, 'cost.json'))
+
+    expect(result.status).toBe(0)
+    expect(existsSync(join(destination, 'pilot-report.md'))).toBe(false)
+  })
+
+  it('prints the exact compute success receipt shape', () => {
+    const output = join(root(), 'cost.json')
+    const result = spawnCompute(cliLane(), output)
+
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ output, route: 'LITE', outcome: { status: 'complete' }, unknown: 0 })
+  })
+
+  it('prints usage successfully for both help switches', () => {
+    const help = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' })
+    const shortHelp = spawnSync(process.execPath, [CLI, '-h'], { encoding: 'utf8' })
+
+    expect(help.status).toBe(0)
+    expect(shortHelp.status).toBe(0)
+    expect(help.stderr).toBe('')
+    expect(shortHelp.stderr).toBe('')
+    expect(shortHelp.stdout).toBe(help.stdout)
+    expect(help.stdout).toMatch(/^Usage: node wt-run-cost\.mjs /)
+  })
+
+  it('prefixes thrown compute errors and exits 2', () => {
+    const lane = root()
+    const result = spawnCompute(lane, join(root(), 'cost.json'))
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain(`wt-run-cost: ENOENT: no such file or directory, open '${join(lane, 'route.json')}'`)
+  })
+
+  it('rejects a stray aggregate argument with usage and exit 2', () => {
+    const result = spawnSync(process.execPath, [CLI, root(), '--stray'], { encoding: 'utf8' })
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toMatch(/^Usage: node wt-run-cost\.mjs /)
   })
 })
