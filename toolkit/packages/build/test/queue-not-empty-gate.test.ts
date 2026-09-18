@@ -262,6 +262,32 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(runHook(payload, env))).toContain('2 open [legacy snapshot: classification unknown]')
   })
 
+  it('drops only the proposal after its shorter freshness bound', () => {
+    const proposal = 'CARD-PROPOSAL was moved to Blocked'
+    const emitAtAge = (tag: string, ageMinutes: number): string => {
+      const { env, payload, stateDir, cwd } = scaffold(tag)
+      writeSnapshot(stateDir, cwd, {
+        at: Date.now() - ageMinutes * 60_000,
+        startable: 2,
+        awaitingOwner: 3,
+        unclassified: 1,
+        next: proposal,
+      })
+      return blockText(runHook(payload, { ...env, WT_QUEUE_PROPOSAL_MAX_AGE_MS: '600000' }))
+    }
+
+    const fresh = emitAtAge('proposal-fresh', 5)
+    const proposalOld = emitAtAge('proposal-old', 20)
+    const explanation = 'The gate is not proposing a card: the snapshot is older than the proposal bound.'
+
+    expect(fresh).toContain(`next: ${proposal}`)
+    expect(fresh).not.toContain(explanation)
+    expect(proposalOld).toContain('2 startable (3 awaiting owner, 1 unclassified)')
+    expect(proposalOld).not.toContain(proposal)
+    expect(proposalOld).toContain(explanation)
+    expect(proposalOld.replace(` · ${explanation}`, '')).toBe(fresh.replace(` · next: ${proposal}`, ''))
+  })
+
   it('uses one exported 12-minute window for registered-worktree and lane-log liveness', () => {
     expect(readFileSync(LANE_LIVE_SCAN, 'utf8')).toContain('export const ACTIVITY_WINDOW_MIN = 12')
   })
