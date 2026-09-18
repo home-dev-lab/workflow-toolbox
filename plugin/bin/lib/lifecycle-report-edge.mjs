@@ -35,7 +35,8 @@ function divergentCostLine(expected, actual) {
       const columns = ['Phase', 'Family', 'Model', 'Input', 'Cache write', 'Cache read', 'Output', 'Reasoning', 'First-pass input', 'Fresh', 'Wall ms']
       const cell = Math.max(0, expectedCells.findIndex((value, offset) => value !== actualCells[offset]))
       const phase = actualCells[0] || expectedCells[0] || 'unknown'
-      return `phase ${JSON.stringify(phase)}, ${columns[cell] ?? `column ${cell + 1}`} expected ${JSON.stringify(expectedCells[cell] ?? '<missing>')} but report has ${JSON.stringify(actualCells[cell] ?? '<missing>')}`
+      const column = columns[cell] ?? `column ${cell + 1}`
+      return `phase ${JSON.stringify(phase)}, ${column} expected ${JSON.stringify(expectedCells[cell] ?? '<missing>')} but report has ${JSON.stringify(actualCells[cell] ?? '<missing>')}`
     }
     return `line ${index + 1} expected ${JSON.stringify(expectedLine ?? '<missing>')} but report has ${JSON.stringify(actualLine ?? '<missing>')}`
   }
@@ -49,7 +50,8 @@ export function assertCostReportMatches({ report, cost, reportPath, costPath }) 
   for (const [index, block] of blocks.entries()) {
     if (block === expected) continue
     // Never repair a stale report here: doing so would hide the ordering hazard this publication check exists to expose.
-    throw new Error(`cost report consistency refused: first divergent row ${divergentCostLine(expected, block)}; report ${reportPath}; cost ${costPath}${index === 0 ? '' : `; block ${index + 1}`}`)
+    const blockDetail = index === 0 ? '' : `; block ${index + 1}`
+    throw new Error(`cost report consistency refused: first divergent row ${divergentCostLine(expected, block)}; report ${reportPath}; cost ${costPath}${blockDetail}`)
   }
 }
 
