@@ -10,6 +10,10 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
+// A synchronous scan of every test file in the repository: seconds when idle, far longer beside a full
+// suite. The default 20 s cap timed out once under that load (certification c4, 2026-09-18).
+const WHOLE_TREE_SCAN_TIMEOUT_MS = 120_000
+
 describe('ambient-state census', () => {
   it('detects controls for every mechanical signal', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-ambient-census-'))
@@ -63,5 +67,5 @@ homedir()
     const result = checkAmbientState()
     expect(result.unapproved, `Approve or isolate:\n${result.unapproved.map((finding) => `${finding.file}:${finding.line} ${finding.signal}: ${finding.detail}`).join('\n')}`).toEqual([])
     expect(result.stale, `Remove stale approvals:\n${result.stale.join('\n')}`).toEqual([])
-  })
+  }, WHOLE_TREE_SCAN_TIMEOUT_MS)
 })
