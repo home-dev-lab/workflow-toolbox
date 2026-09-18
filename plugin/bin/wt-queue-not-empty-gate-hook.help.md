@@ -36,6 +36,13 @@ The hook persists the open-work and running verdict it already reported. It stay
 decision state remains identical in the same idle stretch, speaks again as soon as the state changes,
 and rearms after visible work runs. Legacy cooldown-only records retain their old bounded behavior.
 
+## Why it can omit the next card
+
+The queue count remains usable for up to two hours, but a specific next-card proposal is trusted for
+only 15 minutes by default because any board write can invalidate it. After that shorter bound the
+gate still reports the count and refuses the same stop, but omits `next:` and says that it is not
+proposing a card. Set `WT_QUEUE_PROPOSAL_MAX_AGE_MS` to override this wording-only bound.
+
 ## This file's status
 
 This hook ships for backward compatibility with adopters who wired it directly before it was

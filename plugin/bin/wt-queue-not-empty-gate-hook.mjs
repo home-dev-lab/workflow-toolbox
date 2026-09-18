@@ -126,6 +126,9 @@
 // the same stop, which is harmless (each throttles independently) and deliberate, not a bug.
 // Their emitted messages are already distinguishable ("Actionability gate: …" vs "open work
 // remains … N open …") so a reader can tell which one spoke.
+// Card proposals are trusted for 15 minutes by default: this is far below the observed
+// 53-minute wrong proposal age while leaving routine nearby Stops useful. Override with
+// WT_QUEUE_PROPOSAL_MAX_AGE_MS; this affects wording only, never the blocking decision.
 
 import { readFileSync, realpathSync, statSync, readdirSync, existsSync } from 'node:fs'
 import { isAbsolute, join, dirname, relative, resolve } from 'node:path'
@@ -143,6 +146,7 @@ const HELP_PATH = new URL('wt-queue-not-empty-gate-hook.help.md', import.meta.ur
 const COOLDOWN_MIN = 45 // never block more often than this, per session
 const INFLIGHT_MIN = 3 // a subagent transcript touched this recently ⇒ work is running
 const SNAPSHOT_MAX_AGE_MIN = 120
+const PROPOSAL_MAX_AGE_MS = Number(process.env.WT_QUEUE_PROPOSAL_MAX_AGE_MS || 15 * 60 * 1000)
 
 function resolveActivityRoot(start) {
   try {
@@ -319,6 +323,7 @@ let nextItem = ''
 // from fresh. The age is already computed below to decide staleness; carrying it into the
 // message costs nothing and stops the number from lying by omission.
 let snapshotAgeMin = null
+let snapshotAgeMs = null
 let queueStatus = 'known'
 let queue = { kind: 'unknown', reason: 'unreadable queue snapshot' }
 try {
@@ -355,6 +360,7 @@ try {
   } else if (queue.kind === 'legacy') {
     openCount = queue.open
     nextItem = queue.next
+    snapshotAgeMs = age
     snapshotAgeMin = Math.round(age / 60_000)
     queueStatus = 'known'
   }
@@ -367,7 +373,8 @@ if (queue.kind === 'known' && queue.startable === 0) {
 if (queue.kind === 'known') {
   openCount = queue.startable
   nextItem = queue.next
-  snapshotAgeMin = Math.round((Date.now() - queue.at) / 60_000)
+  snapshotAgeMs = Date.now() - queue.at
+  snapshotAgeMin = Math.round(snapshotAgeMs / 60_000)
 }
 if (openCount === 0) runningBail() // the queue really is empty — stopping needs no justification
 
@@ -470,6 +477,7 @@ recordGuardEvent({
   class: `activity:${activityStatus}`,
   reason: openCount === null ? `queue:${queueStatus}` : queue.kind === 'known' ? `queue:${openCount}-startable` : `queue:${openCount}-open`,
 })
+const proposalTooOld = queueStatus === 'known' && snapshotAgeMs !== null && snapshotAgeMs > PROPOSAL_MAX_AGE_MS
 process.stdout.write(
   JSON.stringify({
     hookSpecificOutput: {
@@ -509,7 +517,11 @@ process.stdout.write(
           : queue.kind === 'known'
             ? `${queue.startable} startable (${queue.awaitingOwner} awaiting owner, ${queue.unclassified} unclassified)`
             : `${openCount} open [legacy snapshot: classification unknown]`) +
-        `${nextItem ? ` · next: ${nextItem}` : ''} — chain or say why · ${HELP_PATH}`,
+        `${nextItem
+          ? proposalTooOld
+            ? ' · The gate is not proposing a card: the snapshot is older than the proposal bound.'
+            : ` · next: ${nextItem}`
+          : ''} — chain or say why · ${HELP_PATH}`,
     },
   }),
 )
