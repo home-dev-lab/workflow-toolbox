@@ -21,6 +21,7 @@
     "test:shard": "vitest run",
     "test:under-load": "node scripts/suite-under-load.mjs",
     "test:spawning-files": "node scripts/spawning-test-files.mjs --check",
+    "test:ambient-state": "node scripts/ambient-state-census.mjs --check",
     "test:cross-repo": "node scripts/cross-repo-typecheck.mjs",
     "wt:build": "tsx packages/build/src/cli.ts build",
     "wt:pipeline": "tsx packages/build/src/cli.ts pipeline",
