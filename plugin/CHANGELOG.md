@@ -11,6 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Added `wt-lane.mjs integrate`, which commits a delivered lane from an explicit message file, merges it in a named same-repository worktree, verifies its `.lane/` archive before optional removal, and can authorize, push, dispatch, and inspect an explicitly requested CI branch.
 
 ### Fixed
+- The What is running pane now labels a card id on rows rendered outside a session (`Card <id>` instead of a bare number), and a test locks that a skipped or not-started stage offers no button even when evidence is recorded for it.
 - `wt-lane integrate --dry-run` now prints the resolved lane, target, subjects, archive/removal, and CI authorization plan; real merges use a distinct `merge: <lane subject>` by default (with an override), and refuse to change an integration tree used by the active machine-wide suite unless `--force` is passed.
 - SDK pilot timeouts now default by route (90 minutes for LITE, 6 hours for FULL), warn without refusing shorter explicit bounds, and stop at the next lifecycle phase boundary with an archived timeout report and worktree-retention marker instead of injecting an ignorable prompt mid-phase.
 - Main-guard one-shot allowances now key consumption to `tool_use_id`, so duplicate hook registrations agree on one Bash call while a later call is refused; SessionStart warns when an enabled marketplace copy overlaps the current plugin root, and the guard now states that API/`gh` deletions are outside its Bash-text coverage.

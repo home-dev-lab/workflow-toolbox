@@ -216,6 +216,44 @@ describe('What is running collector seam', () => {
     expect(text).not.toContain('Nothing running in the background.')
   })
 
+  it('never prints a card id as a bare number on a row rendered outside a session', async () => {
+    const cardId = '1863263447479747593'
+    const snapshot = {
+      discovery: 'available', sessions: undefined,
+      rows: [
+        { id: cardId, kind: 'pilot', label: 'Pilot', project: 'wt-suite', phase: 'unknown' },
+        { id: 'lane-1', cardId, kind: 'external', label: 'External lane', project: 'wt-suite' },
+      ],
+      services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
+    }
+    const texts = textChildren(await renderedTree(snapshot))
+    expect(texts.filter((value) => value.includes(cardId))).toEqual([`Card ${cardId}`, `Card ${cardId}`])
+  })
+
+  it('offers no button on a skipped or not-started stage even when evidence is recorded for it', async () => {
+    const evidence = { summary: 'Something was recorded.' }
+    const pilot = {
+      id: 'pilot-1', kind: 'pilot', label: 'Pilot', project: 'wt-suite', sdkLifecycle: true, phase: 'tdd',
+      phaseStates: { discovery: 'done', plan: 'skipped', tdd: 'running' },
+      inspectors: { discovery: evidence, plan: evidence, verify: evidence },
+      phaseCosts: { plan: 'unknown', verify: 'unknown' },
+    }
+    const buttonLabels = (tree: unknown): string[] => {
+      if (!tree || typeof tree !== 'object') return []
+      const item = tree as { name?: string; props?: { children?: unknown } }
+      const children = Array.isArray(item.props?.children) ? item.props.children : [item.props?.children]
+      return item.name === 'Button' ? children.filter((value): value is string => typeof value === 'string') : children.flatMap(buttonLabels)
+    }
+    for (const snapshot of [
+      { discovery: 'available', rows: [pilot] },
+      { discovery: 'available', rows: [], sessions: [{ id: 'session-1', project: 'wt-suite', cards: [{ id: '1863263447479747593', actors: [pilot] }], actors: [] }] },
+    ]) {
+      const labels = buttonLabels(await renderedTree({ ...snapshot, services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] } }))
+      expect(labels.some((label) => label.includes('Discovery'))).toBe(true)
+      expect(labels.filter((label) => /Plan|Verify/.test(label))).toEqual([])
+    }
+  })
+
   it.skipIf(process.platform === 'win32')('renders unknown process age when getconf is unavailable [synthetic Linux /proc collector]', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-clock-'))
     try {

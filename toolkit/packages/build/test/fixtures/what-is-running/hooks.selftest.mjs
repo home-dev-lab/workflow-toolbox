@@ -1679,7 +1679,7 @@ await test('[changed Step 7 plain card ID][Step 4 valid card URL] card IDs are b
   assert.equal(links.length, 2);
   assert(links.every((link) => hooksModule.isValidLinkHref(link.props.href)));
   assert.equal(descendants(tree, (item) => item.name === 'Link' && linkText(item).includes(id)).length, 0);
-  assert.equal(descendants(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes(id)).length, 2);
+  assert.equal(descendants(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes(`Card ${id}`)).length, 2);
 });
 await test('[changed Step 7 bold card ID][Step 4 invalid card URL] rejected card URLs render IDs as bold Text without a detail Link', async () => {
   const id = '1862698281071544151';
@@ -1687,7 +1687,7 @@ await test('[changed Step 7 bold card ID][Step 4 invalid card URL] rejected card
     id: 'lane:/tmp/invalid', cardId: id, cardUrl: `http://example.test/cards/${id}`, kind: 'external', title: 'External title', model: 'gpt', activity: 'active', sources: {},
   }], collectedAt: paths.now });
   assert.equal(descendants(tree, (item) => item.name === 'Link').length, 0);
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes(id)));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes(`Card ${id}`)));
 });
 await test('[changed Step 7 bold card ID][Step 4 absent card URL] missing card URLs render IDs as bold Text without a detail Link', async () => {
   const id = '1862698281071544152';
@@ -1695,7 +1695,7 @@ await test('[changed Step 7 bold card ID][Step 4 absent card URL] missing card U
     id, cardId: id, cardUrl: null, kind: 'pilot', title: 'Pilot title', phase: 'unknown', phaseStates: {}, outcome: 'running', gates: {}, review: {}, inspectors: {}, lanes: [], sources: {},
   }], collectedAt: paths.now });
   assert.equal(descendants(tree, (item) => item.name === 'Link').length, 0);
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes(id)));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes(`Card ${id}`)));
 });
 await test('[changed Step 8 open-detail header][changed Round 3 report sections][DoD 3] inspector extracts bounded summaries and selection survives refresh', async () => {
   await forwarded(hookFor('command.run'), { command: 'wir' });

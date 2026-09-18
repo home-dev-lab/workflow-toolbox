@@ -235,7 +235,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   const renderCardId = (row) => {
     const id = row.cardId || (/^\d{19}$/.test(String(row.id || '')) ? row.id : null);
     if (!id) return null;
-    return fixed(node(Text, { bold: true }, id));
+    return fixed(node(Text, { bold: true }, `Card ${id}`));
   };
   const renderCardLink = (row) => Link && isValidLinkHref(row.cardUrl)
     ? node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, linked({ href: row.cardUrl, label: 'open card' }))
