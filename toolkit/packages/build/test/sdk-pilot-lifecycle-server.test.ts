@@ -448,6 +448,19 @@ printf 'report\n' > "$report"
     expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
   })
 
+  it('fixture gate receipts land past the filesystem clock tick of the lane receipt', async () => {
+    // The server appends EXIT= to a gate log AFTER the fixture runner returns, so the receipt carries the real
+    // clock. A fake gate is instantaneous: without a deliberate pause both writes can share one coarse
+    // filesystem tick, and production rightly refuses a gate that is not strictly newer than the lane receipt.
+    const lifecycle = await lifecycleReadyForReport()
+    const gateLogs = ['typecheck.log', 'lint.log', 'test.log']
+    const laneDir = join(lifecycle.root, '.lane')
+    const laneLogs = fs.readdirSync(laneDir).filter((name) => name.endsWith('.log') && !gateLogs.includes(name))
+    expect(laneLogs.length).toBeGreaterThan(0)
+    const laneReceipt = Math.max(...laneLogs.map((name) => fs.statSync(join(laneDir, name)).mtimeMs))
+    for (const name of gateLogs) expect(fs.statSync(join(laneDir, name)).mtimeMs - laneReceipt).toBeGreaterThanOrEqual(20)
+  })
+
   it('does not publish an archive when post-copy validation dirties the tree', async () => {
     let revisions = 0; let statusReads = 0
     const git = (_program: string, call: string[]) => {
@@ -563,7 +576,7 @@ printf 'report\n' > "$report"
     expect(projectGit('add', '-A').status).toBe(0); expect(projectGit('commit', '-qm', 'base').status).toBe(0)
     expect(projectGit('worktree', 'add', '-q', '-b', 'archive-proof', worktree).status).toBe(0)
     mkdirSync(join(worktree, '.lane'))
-    const server = createLifecycleServer({ worktree, archiveRoot: project, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'removal-proof', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, rules: [] })
+    const server = createLifecycleServer({ worktree, archiveRoot: project, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'removal-proof', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: 100, gateRunner: async ({ log }: { log: string }) => { await pastFilesystemTick(); writeFileSync(log, 'gate\n'); return 0 }, rules: [] })
     const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
     const transition = (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' ? { ...args, record: 'test discovery\n' } : args)
     await transition({ phase: 'discovery', tool_use_id: 'start' }); await tools.write_artifact!.handler({ kind: 'brief', content: 'brief\n' })
@@ -1470,6 +1483,9 @@ printf 'report\n' > "$report"
   })
 })
 
+// A fake gate is instantaneous; the server stamps its receipt with the real clock after the runner returns.
+// Pause past one coarse filesystem tick so the receipt is strictly newer than the lane receipt it follows.
+const pastFilesystemTick = () => new Promise<void>((resolve) => setTimeout(resolve, 25))
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) })
 // The win32 provider echoes the spawn-recorded argv (Get-Process has no command line); the POSIX providers
@@ -1511,7 +1527,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n')
   spawnSync('git', ['init', '-q'], { cwd: root })
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
-  const gateRunner = ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); const next = (Date.now() + 1_000) / 1_000; utimesSync(log, next, next); return Number(gateResults[name]?.exit ?? '0') }
+  const gateRunner = async ({ name, log }: { name: string, log: string }) => { await pastFilesystemTick(); writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') }
   const server = createLifecycleServer({ worktree: root, archiveRoot, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs, gateRunner, rules: [], ...options })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
@@ -1530,7 +1546,7 @@ function realGitLifecycle() {
   expect(git('add', '-A').status).toBe(0)
   expect(git('commit', '-qm', 'base').status).toBe(0)
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
-  const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: 100, gateRunner: ({ name, log }: { name: string, log: string }) => { writeFileSync(log, 'gate\n'); const next = (Date.now() + 1_000) / 1_000; utimesSync(log, next, next); return Number(gateResults[name]?.exit ?? '0') }, rules: [] })
+  const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: 100, gateRunner: async ({ name, log }: { name: string, log: string }) => { await pastFilesystemTick(); writeFileSync(log, 'gate\n'); return Number(gateResults[name]?.exit ?? '0') }, rules: [] })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args)
@@ -1598,9 +1614,15 @@ async function lifecycleReadyForReport(options: Record<string, unknown> = {}) {
   expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }))).toBe('lane tdd EXIT=0')
   expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toBe('accepted phase=verify')
   await writeGates(lifecycle)
-  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
+  const verified = await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))
+  expect(verified, laneDirClock(lifecycle.root)).toBe('accepted phase=report')
   expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: liteReport }))).toBe('wrote pilot-report')
   return lifecycle
+}
+// A refused freshness edge is unreadable without the clocks it compared: name every receipt with its mtime.
+function laneDirClock(root: string) {
+  const dir = join(root, '.lane')
+  return `now=${Date.now()} ` + readdirSync(dir).map((name) => `${name}=${fs.statSync(join(dir, name)).mtimeMs}`).join(' ')
 }
 async function writeGates(lifecycle: ReturnType<typeof testLifecycle>, overrides: Record<string, { exit?: string, mtime?: number }> = {}) {
   for (const name of ['typecheck', 'lint', 'test']) {

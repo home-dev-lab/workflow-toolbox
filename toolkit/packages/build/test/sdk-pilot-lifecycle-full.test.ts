@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -11,6 +11,9 @@ import { MAX_CRITIC_ROUNDS, MAX_REVIEW_ROUNDS } from '../../../../plugin/bin/lib
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
 const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
+// A fake gate is instantaneous; the server stamps its receipt with the real clock after the runner returns.
+// Pause past one coarse filesystem tick so the receipt is strictly newer than the lane receipt it follows.
+const pastFilesystemTick = () => new Promise<void>((resolve) => setTimeout(resolve, 25))
 const roots: string[] = []
 
 afterEach(() => {
@@ -336,14 +339,14 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
-  const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 1_000, now: () => Date.now() - 1_000, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); const next = (Date.now() + 1_000) / 1_000; utimesSync(log, next, next); return 0 }, rules: [], ...options })
+  const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 1_000, now: () => Date.now() - 1_000, gateRunner: async ({ log }: { log: string }) => { await pastFilesystemTick(); writeFileSync(log, 'gate\n'); return 0 }, rules: [], ...options })
   return { ...handlers(server), calls, base, root: worktree, state: server.state }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
-  const server = createLifecycleServer({ worktree, archiveRoot, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 1_000, now: () => Date.now() - 1_000, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); const next = (Date.now() + 1_000) / 1_000; utimesSync(log, next, next); return 0 }, rules: [] })
+  const server = createLifecycleServer({ worktree, archiveRoot, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 1_000, now: () => Date.now() - 1_000, gateRunner: async ({ log }: { log: string }) => { await pastFilesystemTick(); writeFileSync(log, 'gate\n'); return 0 }, rules: [] })
   return { ...handlers(server), root: worktree }
 }
 async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }) {
