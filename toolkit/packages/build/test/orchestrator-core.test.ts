@@ -422,7 +422,11 @@ describe('orchestrator driver', () => {
   it('resolves the SDK even when the installed profile has no lane consent', () => {
     const f = repoFixture(); const installed = join(f.root, 'installed-plugin'); cpSync(join(ROOT, 'plugin'), installed, { recursive: true })
     const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '' } })
+    // The machine may carry a globally installed SDK, or a session may export another plugin's data directory:
+    // without an empty npm prefix and without CLAUDE_PLUGIN_DATA this case reads the machine, not the subject.
+    const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') }
+    delete env.CLAUDE_PLUGIN_DATA
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env })
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('@anthropic-ai/claude-agent-sdk is not installed')
   })
