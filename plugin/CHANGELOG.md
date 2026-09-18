@@ -5,6 +5,28 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- The second-opinion CLI now accepts `--route auto|astra|fable`, allowing callers to force the existing quota-guarded Fable route or require consented Astra without silent fallback. A route outside those three is refused by the library as well as by the CLI, and a forced-Astra refusal says so when the consent setting could not be read.
+- Lifecycle archive publication now verifies that a report's measured-cost block exactly matches its adjacent `cost.json`, refusing stale, unpaired, or unreadable receipts before the destination is published.
+- The What is running pane now shows each running SDK lifecycle phase's measured input, output, cache-read, and cache-write tokens, names whether archived cost or live usage supplied them, and drops compact totals before stage words at narrow widths.
+- Added `wt-lane.mjs integrate`, which commits a delivered lane from an explicit message file, merges it in a named same-repository worktree, verifies its `.lane/` archive before optional removal, and can authorize, push, dispatch, and inspect an explicitly requested CI branch.
+
+### Fixed
+- The second-opinion Fable route now refuses when the quota probe reports no Claude Fable weekly scope; an empty measurement used to read as headroom and the query ran unguarded.
+- The What is running pane now sanitizes every string in its returned tree, falls back to an explanatory pane when rendering throws, records bounded persistent render diagnostics, and redraws through its existing refresh timer after a failed or repaired render.
+- The What is running pane no longer turns into an empty grey frame after a while: one refresh tick without a render used to be read as "the pane was closed" and stopped it for good, although a tick can land between the end of a collection and the redraw it asked for. Three consecutive misses are now required, a pane the host still renders re-arms itself (never after its own Close control, never in a session that did not open it), and the collector timeout is now actually passed to the host call.
+- The delegation-ladder rule no longer tells a session to release a finished sub-agent with a shutdown request: it now says to leave it idle, after two session terminations observed within seconds of that message.
+- Destructive one-shot claims, lane integration evidence/removal and CI correlation, Windows suite-lock shims, contradictory run-cost families, and the pilot runner's spawned SDK fixture now fail closed under races and ambiguous inputs.
+- The SDK pilot runner no longer aborts at startup when the SDK emits an account-level `rate_limit_event` before its initialization message (seen on a fresh account window); the ordering check still refuses any model message that precedes the receipt.
+- The SDK lifecycle now allows three passes in all on both bounded loops (plan ↔ critic, and review/refutation ↔ harden) instead of four: the third refusal ends the run as an archived partial report for its reader to escalate.
+- Pilot timeouts now force an SDK abort after a ten-minute phase-boundary grace; Stop-gate proposals reject invalid bounds and future snapshots; lifecycle costs preserve unknowns, rounds, and malformed archives; cost publication checks every generated block; and the merge-target warning handles Git options, quoted refs, option values, and heredocs.
+- The What is running pane now labels a card id on rows rendered outside a session (`Card <id>` instead of a bare number), and a test locks that a skipped or not-started stage offers no button even when evidence is recorded for it.
+- `wt-lane integrate --dry-run` now prints the resolved lane, target, subjects, archive/removal, and CI authorization plan; real merges use a distinct `merge: <lane subject>` by default (with an override), and refuse to change an integration tree used by the active machine-wide suite unless `--force` is passed.
+- SDK pilot timeouts now default by route (90 minutes for LITE, 6 hours for FULL), warn without refusing shorter explicit bounds, and stop at the next lifecycle phase boundary with an archived timeout report and worktree-retention marker instead of injecting an ignorable prompt mid-phase.
+- Main-guard one-shot allowances now key consumption to `tool_use_id`, so duplicate hook registrations agree on one Bash call while a later call is refused; SessionStart warns when an enabled marketplace copy overlaps the current plugin root, and the guard now states that API/`gh` deletions are outside its Bash-text coverage.
+- Run-cost reconciliation now attributes each lane through its recorded executor/model family, reading Claude usage receipts or matching OpenCode session rows per lane, and reports family-specific unknowns instead of applying the run executor to every lane.
+- The suite lock decides the Windows command shell per EXECUTABLE instead of per platform: a `.cmd`/`.bat` shim (including a bare name that PATHEXT resolves to one) still runs through the shell, every other command is spawned directly, so quoted arguments are no longer re-parsed by `cmd.exe`.
+
 ## [0.182.0] - 2026-09-17
 
 ### Added

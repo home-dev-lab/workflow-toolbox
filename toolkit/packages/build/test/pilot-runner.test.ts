@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
@@ -12,6 +13,10 @@ import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunn
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { assertCostReportMatches } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
 const CONTEXT_MODE_TOOLS = {
   batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`, doctor: `${CONTEXT_PREFIX}ctx_doctor`, execute: `${CONTEXT_PREFIX}ctx_execute`,
@@ -25,6 +30,7 @@ const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
 const PLUGIN_ROOT = join(ROOT, 'plugin')
 const SDK_RESOLVER = join(PLUGIN_ROOT, 'bin/lib/sdk-resolution.mjs')
+const ZOD_ROOT = dirname(createRequire(import.meta.url).resolve('zod/package.json'))
 // The runner now REQUIRES a valid first `system:init` receipt: a fake stream without one used to
 // pass while proving nothing about whether any plugin or lifecycle tool ever loaded.
 const initMessage = (model?: string) => ({
@@ -107,6 +113,28 @@ describe('SDK pilot runner', () => {
     expect(() => loadProfileEnv(profile)).toThrow('--profile-env env.X must be a string')
     const result = spawnSync(process.execPath, [CLI, '--dir', f.dir], { encoding: 'utf8' })
     expect(result.status).toBe(2); expect(result.stderr).toContain('missing required --card or --dir')
+  })
+
+  it.each([
+    ['LITE', 5_400],
+    ['FULL', 21_600],
+  ])('derives the %s timeout default from the frozen card route', async (route, expected) => {
+    const f = fixture(); writeFileSync(f.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    const query = () => (async function* () { yield initMessage() })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: null, timeoutExplicit: false, hard: false }, { query, resolvePilotModels: models })
+    expect(result.summary).toMatchObject({ route, runner_timeout_seconds: expected, runner_timeout_explicit: false })
+  })
+
+  it.each([
+    ['LITE', 'LITE runs are budgeted for 1 h 30'],
+    ['FULL', 'FULL runs here have taken up to 3 h 11'],
+  ])('honours and warns about an explicit short %s timeout', async (route, reference) => {
+    const f = fixture(); const logged: string[] = []
+    writeFileSync(f.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    const query = () => (async function* () { yield initMessage() })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 60, timeoutExplicit: true, hard: false }, { query, resolvePilotModels: models, log: (line: string) => logged.push(line) })
+    expect(result.summary).toMatchObject({ runner_timeout_seconds: 60, runner_timeout_explicit: true })
+    expect(logged).toContain(`warning: ${route} timeout 60s is below the route's expected duration; ${reference}`)
   })
 
   it('parses repeatable absolute plugin directories and refuses a relative one', () => {
@@ -311,22 +339,23 @@ describe('SDK pilot runner', () => {
   it('exits with code 1 after a refused initialization receipt even when the SDK leaves a handle alive', () => {
     const f = fixture()
     const packageDir = join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
-    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+    symlinkSync(ZOD_ROOT, join(f.dir, 'node_modules', 'zod'), 'dir')
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', type: 'module', main: 'index.mjs' }))
     const init = { ...initMessage('sonnet'), skills: [] }
-    writeFileSync(join(packageDir, 'index.cjs'), [
+    writeFileSync(join(packageDir, 'index.mjs'), [
+      `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(join(f.root, 'loaded-sdk.txt'))}, 'fixture-sdk')`,
       'setInterval(() => {}, 1000)',
-      'module.exports = {',
-      `  query: () => (async function* () { yield ${JSON.stringify(init)} })(),`,
-      '  createSdkMcpServer: (options) => ({ type: "sdk", name: options.name, instance: {} }),',
-      '  tool: (name, description, schema, handler) => ({ name, description, schema, handler }),',
-      '}',
+      `export const query = () => (async function* () { yield ${JSON.stringify(init)} })()`,
+      'export const createSdkMcpServer = (options) => ({ type: "sdk", name: options.name, instance: {} })',
+      'export const tool = (name, description, schema, handler) => ({ name, description, schema, handler })',
     ].join('\n'))
     const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
-      encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_PATH: '', WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') },
+      encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_ENV: 'test', NODE_PATH: '', WT_PILOT_TEST_SDK_MANIFEST: join(f.dir, 'package.json'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') },
     })
     expect(result.signal).toBeNull()
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('missingSkills')
+    expect(readFileSync(join(f.root, 'loaded-sdk.txt'), 'utf8')).toBe('fixture-sdk')
   })
 
   it('starts SDK resolution from an installed plugin using the target project', () => {
@@ -358,31 +387,6 @@ describe('SDK pilot runner', () => {
     await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, { query, resolvePilotModels: models, sleep: async () => {} })
     expect(continuation).toContain(PLAN_SHAPE_DESCRIPTION)
     expect(refusal).toContain(PLAN_SHAPE_DESCRIPTION)
-  })
-
-  it('logs a timeout injection and counts it in the summary', async () => {
-    const f = fixture(); const logged: string[] = []; let calls = 0
-    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield initMessage()
-      await prompt.next()
-      const timeout = await prompt.next()
-      expect(timeout.value.message.content).toContain('Runner timeout reached')
-    })()
-    const result = await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, {
-      query,
-      resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
-      resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }),
-      now: () => calls++ === 0 ? 0 : 1001,
-      log: (line: string) => logged.push(line),
-    })
-    expect(logged).toEqual([
-      'route=LITE reasons=human Route: LITE model=sonnet effective=sonnet executor=gpt-lane',
-      'SDK role pilot: LSP absent: typescript-language-server not found on PATH',
-      'SDK role pilot: skills loaded through the role plugin but never listed by the initialization receipt (user-invocable: false): lesson-harvest',
-      'injected: timeout Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.',
-      'served model: unknown (requested sonnet)',
-    ])
-    expect(result.summary.injected_turns).toBe(1)
   })
 
   it('records requested and SDK-served models without trusting pilot prose', async () => {
@@ -552,12 +556,39 @@ describe('SDK pilot runner', () => {
     expect(usage.turns[0]).toMatchObject({ model: 'sonnet', input: 1, output: 1, ended_at: expect.stringMatching(/^\d{4}-/) })
     const timeline = JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8') as string)
     expect(timeline.phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd', 'verify', 'report'])
-    expect(timeline.lanes[0]).toMatchObject({ phase: 'tdd', started_at: expect.any(Number), ended_at: expect.any(Number) })
+    expect(timeline.lanes[0]).toMatchObject({ phase: 'tdd', executor: 'gpt-lane', started_at: expect.any(Number), ended_at: expect.any(Number) })
     const cost = JSON.parse(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8') as string)
-    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: [expect.stringContaining('no OpenCode session matched')] })
+    expect(cost).toMatchObject({ route: 'LITE', outcome: { status: 'complete' }, unknown: [expect.stringContaining('OpenAI lane usage unavailable')] })
     expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
     expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
     expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
+  })
+
+  it('refuses and withdraws an archive whose pre-reconciliation cost block is stale at final cost publication', async () => {
+    const f = fixture(); let heads = 0
+    const launcher = join(f.root, 'launcher.mjs')
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'report\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    const staleCost = { route: 'LITE', outcome: { status: 'complete' }, unknown: [], totals: { wall_time_ms: 1 }, phases: [{ phase: 'tdd', round: null, wall_time_ms: 1, unknown: [], models: { stale: { family: 'anthropic', input: 99, cache_write: 0, cache_read: 0, output: 1, reasoning: 'not measured', first_pass_input: 99, fresh_tokens: 100 } } }], reconciled: [], cross_checks: {} }
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const tools = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools
+      const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
+      yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
+      await artifact({ kind: 'pilot-report', content: `# report\n\n## E2E\nProcedure: stale ordering fixture\nVerbatim output: exercised\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n\n${costReportSection(staleCost)}` })
+      writeFileSync(join(f.dir, '.lane', 'cost.json'), `${JSON.stringify(staleCost, null, 2)}\n`)
+      const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+    })()
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: models, resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }), costSessions: [], lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
+    })).rejects.toThrow(/cost report consistency refused: first divergent row/)
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(existsSync(summary.archive.path)).toBe(false)
   })
 
   it.each([
@@ -627,7 +658,7 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
-    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: 4, reason, findings: ['tighten the proof'] } } })
+    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } } })
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toEqual({
       version: 1,
       cardId: '1',
@@ -687,17 +718,64 @@ describe('SDK pilot runner', () => {
   // Windows cannot reliably complete that process work inside Vitest's former 2-second budget.
   }, 5_000)
 
-  it('records and archives a runner timeout as a lifecycle partial', async () => {
-    const f = fixture(); let clock = 0
-    const query = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
-      yield initMessage(); await prompt.next(); await prompt.next()
+  it('stops a fake pilot at the next phase boundary and retains its timeout partial', async () => {
+    const f = fixture(); let fireTimeout: (() => void) | undefined; let heads = 0; const attempted: string[] = []
+    const launcher = join(f.root, 'launcher.mjs')
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'phase complete\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const tools = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools
+      yield initMessage(); await prompt.next()
+      await tools.transition!.handler({ phase: 'discovery', record: 'discovered\n', tool_use_id: 'discovery' })
+      await tools.write_artifact!.handler({ kind: 'brief', content: 'finish tdd\n' })
+      await tools.run!.handler({ kind: 'lane', phase: 'tdd', timeout: 1 })
+      fireTimeout?.()
+      attempted.push((await tools.transition!.handler({ phase: 'tdd', tool_use_id: 'tdd' })).content[0]!.text)
+      attempted.push((await tools.run!.handler({ kind: 'gate', name: 'typecheck' })).content[0]!.text)
     })()
-    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
-      query, resolvePilotModels: models, now: () => { clock += 2_000; return clock }, sleep: async () => {},
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, timeoutExplicit: true, hard: false }, {
+      query, resolvePilotModels: models,
+      setTimer: (callback: () => void) => { fireTimeout = callback; return 1 }, clearTimer: () => {},
+      lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' },
     })
-    expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'runner timeout', partial: { reason: 'runner timeout' } } })
-    expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { reason: 'runner timeout' } })
-    expect(existsSync(join(f.dir, '.lane', 'worktree-retention.json'))).toBe(false)
+    expect(attempted).toEqual(['stopped phase=tdd reason=timeout', expect.stringContaining('timeout already stopped the lifecycle')])
+    expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'timeout', partial: { phase: 'tdd', reason: 'timeout' } } })
+    expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('Partial: timeout\nPhase reached: tdd\nReason: timeout')
+    expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { phase: 'tdd', reason: 'timeout' } })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toMatchObject({ reason: 'bounded lifecycle spent: timeout', phase: 'tdd' })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8')).phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd'])
+  })
+
+  it('hard-aborts a stub SDK query that never reaches another phase boundary and archives timeout', async () => {
+    const f = fixture(); const timers: Array<() => void> = []; let aborted = false; let queryReady = false
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<unknown>, options: { abortController: AbortController } }) => (async function* () {
+      yield initMessage(); await prompt.next()
+      await new Promise<void>((resolve) => {
+        queryReady = true
+        options.abortController.signal.addEventListener('abort', () => { aborted = true; resolve() }, { once: true })
+      })
+    })()
+    const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, timeoutExplicit: true, hard: false }, {
+      query, resolvePilotModels: models,
+      setTimer: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimer: () => {},
+    })
+    while (!queryReady) await new Promise((resolve) => setTimeout(resolve, 1))
+    timers[0]!()
+    expect(timers).toHaveLength(2)
+    timers[1]!()
+    const result = await running
+
+    expect(aborted).toBe(true)
+    expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'timeout', partial: { phase: 'discovery', reason: 'timeout' } } })
+    expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { phase: 'discovery', reason: 'timeout' } })
+  })
+
+  it('refuses a report when any measured run-cost block disagrees with the receipt', () => {
+    const cost = { version: 2, route: 'LITE', outcome: { status: 'partial', reason: 'fixture' }, phases: [], totals: 'unknown', unknown: ['fixture'] }
+    const correct = costReportSection(cost)
+    const report = `# report\n\n${correct}\n<!-- run-cost -->\nforged\n<!-- /run-cost -->\n`
+    expect(() => assertCostReportMatches({ report, cost, reportPath: '/report.md', costPath: '/cost.json' }))
+      .toThrow(/cost report consistency refused/)
   })
 
   it('writes final receipts and an external partial archive when the initialized SDK stream throws', async () => {
@@ -763,6 +841,20 @@ describe('SDK pilot runner', () => {
     })()
     await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: late, resolvePilotModels: models, sleep: async () => {} }))
       .rejects.toThrow(/receipt never arrived/)
+  })
+
+  // The SDK can emit an account-level `rate_limit_event` BEFORE its init message (measured on a fresh
+  // account window). It carries no model output, so it must not count as "another message first".
+  it('tolerates a rate_limit_event that precedes the initialization receipt', async () => {
+    const f = fixture()
+    const rateLimitedFirst = ({ prompt }: { prompt: AsyncGenerator<{ message: { content: string } }> }) => (async function* () {
+      yield { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }
+      yield initMessage()
+      await prompt.next()
+    })()
+    const outcome = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query: rateLimitedFirst, resolvePilotModels: models, sleep: async () => {} })
+      .then(() => 'completed', (error: Error) => error.message)
+    expect(outcome).not.toMatch(/receipt never arrived/)
   })
 
   it('refuses an initialization receipt that omits the artifact tool or the guard plugin', async () => {

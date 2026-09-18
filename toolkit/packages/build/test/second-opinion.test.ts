@@ -1,10 +1,12 @@
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 
+const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
 afterEach(() => {
   vi.restoreAllMocks()
@@ -54,6 +56,119 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 }
 
 describe('second-opinion advisor', () => {
+  it('keeps automatic routing on Astra when lane consent is active', async () => {
+    const f = fixture(true)
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, route: 'auto' }, deps, f.env)).toBe(0)
+
+    expect(lines(f.out)[0]).toBe('ROUTE=gpt-astra')
+    expect(deps.runCodex).toHaveBeenCalledOnce()
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+  })
+
+  it('uses Astra when that route is forced and lane consent is active', async () => {
+    const f = fixture(true)
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(0)
+
+    expect(lines(f.out)[0]).toBe('ROUTE=gpt-astra')
+    expect(deps.runCodex).toHaveBeenCalledOnce()
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+  })
+
+  it('uses Fable when that route is forced despite active lane consent', async () => {
+    const f = fixture(true)
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, route: 'fable' }, deps, f.env)).toBe(0)
+
+    expect(lines(f.out)[0]).toBe('ROUTE=claude-fable')
+    expect(deps.resolveSdkQuery).toHaveBeenCalledOnce()
+    expect(deps.runCodex).not.toHaveBeenCalled()
+  })
+
+  it('refuses forced Astra with a named reason when lane consent is not active', async () => {
+    const f = fixture(false)
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+
+    expect(lines(f.out)).toEqual([
+      'REFUSED: Astra requires active GPT lane consent.',
+      'EXIT=1',
+    ])
+    expect(deps.runCodex).not.toHaveBeenCalled()
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+  })
+
+  it('refuses a route outside auto, astra and fable instead of running Fable', async () => {
+    const f = fixture(true)
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, route: 'Astra' }, deps, f.env)).toBe(2)
+
+    expect(lines(f.out)).toEqual([
+      'REFUSED: unknown route "Astra"; use auto, astra, or fable.',
+      'EXIT=2',
+    ])
+    expect(deps.runCodex).not.toHaveBeenCalled()
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+  })
+
+  it('names an unreadable consent setting when forced Astra is refused', async () => {
+    const f = fixture(false)
+    writeFileSync(join(f.env.CLAUDE_CONFIG_DIR, 'settings.json'), '{ not json')
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+
+    expect(lines(f.out)[0]).toContain('the consent setting could not be read')
+    expect(lines(f.out).at(-1)).toBe('EXIT=1')
+    expect(deps.runCodex).not.toHaveBeenCalled()
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+  })
+
+  it('refuses an invalid --route value at the CLI before any collaborator runs', () => {
+    const f = fixture(true)
+    const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'fabel'], { encoding: 'utf8', env: { ...process.env, ...f.env } })
+
+    expect(result.status).toBe(2)
+    expect(lines(f.out)).toEqual(['REFUSED: --route must be auto, astra, or fable', 'EXIT=2'])
+  })
+
+  it('accepts --route as a CLI flag rather than reporting an unknown argument', () => {
+    const f = fixture(true)
+    const result = spawnSync(process.execPath, [CLI, '--out', f.out, '--route', 'fable'], { encoding: 'utf8', env: { ...process.env, ...f.env } })
+
+    expect(result.status).toBe(2)
+    expect(lines(f.out)).toEqual(['REFUSED: --request is required', 'EXIT=2'])
+  })
+
+  it('refuses Fable when the quota probe reports no Fable scope, instead of reading silence as headroom', async () => {
+    const f = fixture(false)
+    const deps = dependencies({ probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Opus', percent: 3 }] })) })
+    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
+
+    expect(lines(f.out)).toEqual([
+      'ROUTE=claude-fable',
+      'REFUSED: the quota probe reported no Claude Fable weekly scope, so the Fable quota guard cannot be applied.',
+      'EXIT=1',
+    ])
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+  })
+
+  it('applies the Fable quota guard when Fable is forced despite active lane consent', async () => {
+    const f = fixture(true)
+    const deps = dependencies({
+      probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Fable', percent: 90 }] })),
+    })
+    expect(await runSecondOpinion({ ...f.options, route: 'fable' }, deps, f.env)).toBe(1)
+
+    expect(lines(f.out)).toEqual([
+      'ROUTE=claude-fable',
+      'REFUSED: Claude Fable weekly scoped quota is 90%, at or above the 90% limit.',
+      'EXIT=1',
+    ])
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+    expect(deps.runCodex).not.toHaveBeenCalled()
+  })
+
   it('uses Astra exactly once when lane consent and the Codex runtime are present', async () => {
     const f = fixture(true)
     const deps = dependencies()

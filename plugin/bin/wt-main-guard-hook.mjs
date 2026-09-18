@@ -14,7 +14,8 @@
 // - It acts ONLY on the MAIN session: `agent_id` present ⇒ sub-agent ⇒ no-op (the pilot guard
 //   already covers that case; two guards denying the same command would double-message the
 //   user for no benefit).
-// - It only inspects Bash commands. Every other tool → no-op.
+// - It only inspects Bash command TEXT. Every other tool → no-op. API deletion paths such as
+//   `gh api -X DELETE .../git/refs/heads/...` are NOT covered by the git-push text classifier.
 // - DENY (never happens without the user, rare enough that a false positive is
 //   near-impossible): npm/pnpm/yarn publish; a force-push; a remote branch deletion; a
 //   catastrophic `rm -rf` (root, home, a git repo root, or a target that cannot be statically
@@ -38,8 +39,9 @@
 // Escape hatch: a denial the operator cannot clear turns into a bypass. A ONE-TIME, file-based
 // override at ~/.local/state/wt-main-guard/allow-once.json — not an env var, because an env
 // var can be set once and forgotten, silently disarming the guard for every future command.
-// The file must contain the EXACT command string being run; it is deleted on use (single-use),
-// and the override itself is journalled with its stated reason.
+// The file must contain the EXACT command string being run. Consumption records the payload's
+// `tool_use_id`, so duplicate registrations agree on one tool call; a later call spends and
+// removes the record. The override itself is journalled with its stated reason.
 //
 // Allow path is SILENT exit 0 (no JSON): emitting permissionDecision:"allow" would AUTO-APPROVE
 // the call and bypass the user's normal permission prompts — the guard must never widen
@@ -426,7 +428,7 @@ function main() {
   }
 
   // result.kind === 'deny'
-  const overrideReason = consumeMainGuardAllowOnce(command)
+  const overrideReason = consumeMainGuardAllowOnce(command, input.tool_use_id)
   if (overrideReason) {
     journal({
       class: result.class,
@@ -454,8 +456,9 @@ function main() {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason:
-          `[workflow-toolbox main guard] Refused: ${result.reason}. This is an irreversible ` +
-          'action with no undo — if it is genuinely intended, write {"command": "<exact ' +
+          `[workflow-toolbox main guard] Refused: ${result.reason}. This Bash-text action has ` +
+          'no undo; API deletions and gh calls are outside this guard. If it is genuinely ' +
+          'intended, write {"command": "<exact ' +
           'command>", "reason": "<why>"} to ~/.local/state/wt-main-guard/allow-once.json and ' +
           'retry (single use).',
       },

@@ -4,6 +4,9 @@
 // enforces the contract's stop-time invariants.
 // External-lane detection is Linux-only; unsupported platforms and detection errors
 // degrade legibly to transcript and declared-bound evidence.
+// Card proposals are trusted for 15 minutes by default: this is shorter than the observed
+// 21-minute fresh-to-wrong interval while leaving routine nearby Stops useful. Override with
+// WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS; this affects wording only, never the blocking decision.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
@@ -14,6 +17,7 @@ import { decide } from './lib/actionability-core.mjs'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { positiveMilliseconds, proposalAge } from './lib/proposal-age.mjs'
 import {
   stateRoot,
   projectStatePath,
@@ -22,6 +26,7 @@ import {
 } from './lib/actionability-state-paths.mjs'
 
 const STALE_AFTER_MS = Number(process.env.WT_ACTIONABLE_STALE_AFTER_MS || 2 * 60 * 60 * 1000)
+const PROPOSAL_MAX_AGE_MS = positiveMilliseconds(process.env.WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS, 15 * 60 * 1000)
 const BLOCK_MAX = Number(process.env.WT_ACTIONABLE_BLOCK_MAX || 3)
 const INFLIGHT_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_MS || 3 * 60 * 1000)
 // Caps a DECLARED inFlightUntil from the moment the snapshot was WRITTEN (snapshot.at), never
@@ -323,6 +328,17 @@ function contextPct(transcriptPath) {
   return null
 }
 
+function formatSnapshotAge(ageMs) {
+  const seconds = Math.max(0, Math.floor(ageMs / 1000))
+  if (seconds < 60) return 'less than 1 minute'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'}`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'}`
+  const days = Math.floor(hours / 24)
+  return `${days} day${days === 1 ? '' : 's'}`
+}
+
 function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, mandateKind) {
   // Factual, not imperative — see the emission comment in main() for why. Keep the exact
   // substrings 'actionable item(s) remain' and 'Block N of M':
@@ -344,7 +360,18 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, ma
   if (decision.reason === 'snapshot-stale' && !actionableLine.includes('refresh the board snapshot')) {
     actionableLine += ' Refresh the board snapshot.'
   }
-  const nextLine = decision.next ? decision.next : 'unknown'
+  if (decision.reason === 'snapshot-stale' && finiteNumber(snapshot?.actionable)) {
+    actionableLine = `${snapshot.actionable} actionable item(s) remain. ${actionableLine}`
+  }
+  const proposal = proposalAge(snapshot?.status === 'present' ? snapshot.at : null, now, PROPOSAL_MAX_AGE_MS)
+  const ageLine = proposal.reason === 'future'
+    ? 'The snapshot timestamp is in the future and is unusable for a proposal.'
+    : proposal.ageMs === null
+    ? 'The snapshot is missing; age is unknown.'
+    : `Snapshot is ${formatSnapshotAge(proposal.ageMs)} old.`
+  const proposalLine = !proposal.usable
+    ? 'The gate is not proposing a card because the snapshot is stale or its age is unknown.'
+    : `Next: ${decision.next ? decision.next : 'unknown'}.`
   // ⚠ ONE LINE, and the length lock below is what keeps it that way.
   // Measured 2026-08-06 on this harness: NO Stop-hook emission shape hides its text from the
   // USER's terminal. `decision:block` renders as "Stop hook error"; `additionalContext` renders
@@ -368,7 +395,7 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, ma
     ? ` lane detection unavailable: ${externalLane.reason.split(/\r?\n/, 1)[0]}.`
     : ''
   const effectiveBlockMax = decision.reason === 'snapshot-stale' ? 1 : blockMax
-  return `[for Claude, not the user] Actionability gate:${mandateClause} ${actionableLine} Next: ${nextLine}.${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${effectiveBlockMax}.${laneClause}`
+  return `[for Claude, not the user] Actionability gate:${mandateClause} ${actionableLine} ${ageLine} ${proposalLine}${ctxClause} Block ${decision.nextConsecutiveBlocks} of ${effectiveBlockMax}.${laneClause}`
 }
 
 function main() {
@@ -383,7 +410,12 @@ function main() {
   const now = Date.now()
   const root = stateRoot()
   const snapshot = readSnapshot(root, cwd, now)
-  if (snapshot.status === 'invalid') return
+  if (snapshot.status === 'invalid') {
+    process.stdout.write(JSON.stringify({
+      systemMessage: '[for Claude, not the user] Actionability snapshot is unreadable; age is unknown, so no card is proposed.',
+    }))
+    return
+  }
 
   const mandate = classifyMandate(mandatePath(cwd), MANDATE_FRESHNESS_MS, now, sessionId)
   const protectsStop = mandate.kind === 'live' || mandate.kind === 'unknown'

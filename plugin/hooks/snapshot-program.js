@@ -246,7 +246,7 @@ function lifecycleTimeline(worktree) {
   const phaseHistory = value.phases.map(item => item.phase);
   if (Number.isFinite(value.ended_at) && phaseHistory.at(-1) === 'report') phaseHistory.push('awaiting_fidelity');
   const criticRounds = value.phases.filter(item => item.phase === 'critic').reduce((count, item) => Math.max(count, item.round || 0), 0);
-  return { source, phaseHistory, criticRounds };
+  return { source, phaseHistory, criticRounds, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
 }
 function info(file) { const safeFile = safePath(file); return safeFile ? infoUnrestricted(safeFile) : null; }
 function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : null; } catch { return null; } }
@@ -584,6 +584,87 @@ function usage(worktree, model) {
   for (const file of files) { const value = json(file); if (value !== null) source ||= file; visit(value); }
   return { value: measured ? String(total) : UNKNOWN, totals: null, source };
 }
+function tokenValue(value, ...names) {
+  for (const name of names) if (Number.isFinite(value?.[name])) return Number(value[name]);
+  return null;
+}
+function phaseCostRows(phases) {
+  const result = {};
+  for (const phase of Array.isArray(phases) ? phases : []) {
+    const id = phaseOf(phase?.phase);
+    if (id === UNKNOWN) continue;
+    if (result[id] === UNKNOWN || (Array.isArray(phase.unknown) && phase.unknown.length) || !phase.models || typeof phase.models !== 'object') {
+      result[id] = UNKNOWN;
+      continue;
+    }
+    const previous = result[id];
+    const totals = previous ? { input: previous.input, output: previous.output, cacheRead: previous.cacheRead, cacheWrite: previous.cacheWrite } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    let measured = false; let incomplete = false;
+    for (const model of Object.values(phase.models)) {
+      const values = {
+        input: tokenValue(model, 'input', 'input_tokens', 'tokens_input'),
+        output: tokenValue(model, 'output', 'output_tokens', 'tokens_output'),
+        cacheRead: tokenValue(model, 'cache_read', 'cache_read_input_tokens', 'cacheRead', 'tokens_cache_read'),
+        cacheWrite: tokenValue(model, 'cache_write', 'cache_creation', 'cache_creation_input_tokens', 'cacheWrite', 'tokens_cache_write'),
+      };
+      if (Object.values(values).some(value => value === null)) { incomplete = true; break; }
+      measured = true;
+      for (const key of Object.keys(totals)) totals[key] += values[key];
+    }
+    result[id] = measured && !incomplete ? { input: totals.input, output: totals.output, cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite, total: totals.input + totals.output + totals.cacheRead + totals.cacheWrite } : UNKNOWN;
+  }
+  return result;
+}
+function livePhaseCosts(worktree, timeline) {
+  const buckets = new Map();
+  const unknown = new Set();
+  const add = (phase, usageValue) => {
+    const id = phaseOf(phase); if (id === UNKNOWN) return;
+    const values = {
+      input: tokenValue(usageValue, 'input', 'input_tokens', 'tokens_input'),
+      output: tokenValue(usageValue, 'output', 'output_tokens', 'tokens_output'),
+      cacheRead: tokenValue(usageValue, 'cache_read', 'cache_read_input_tokens', 'cacheRead', 'tokens_cache_read'),
+      cacheWrite: tokenValue(usageValue, 'cache_write', 'cache_creation', 'cache_creation_input_tokens', 'cacheWrite', 'tokens_cache_write'),
+    };
+    if (values.input === null || values.output === null) { unknown.add(id); return; }
+    // Live SDK receipts omit zero-valued cache fields on some versions; only absent cache fields are measured zero.
+    for (const key of ['cacheRead', 'cacheWrite']) if (values[key] === null) values[key] = 0;
+    const target = buckets.get(id) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    for (const key of Object.keys(target)) target[key] += values[key];
+    buckets.set(id, target);
+  };
+  const usageFile = lanePath(worktree, 'usage.json');
+  const liveUsage = json(usageFile);
+  if (Array.isArray(liveUsage?.phases)) return { costs: phaseCostRows(liveUsage.phases), source: usageFile };
+  for (const message of liveUsage?.messages || liveUsage?.turns || []) {
+    const timestamp = Date.parse(message.arrived_at || message.ended_at || message.timestamp || '');
+    const phase = timeline?.phases?.find(item => timestamp >= item.entered_at && timestamp <= (item.exited_at ?? Infinity));
+    if (phase) add(phase.phase, message);
+  }
+  for (const lane of timeline?.lanes || []) {
+    const file = typeof lane?.usage_file === 'string' ? lanePath(worktree, lane.usage_file) : null;
+    const laneUsage = file ? json(file) : null;
+    if (!laneUsage) { unknown.add(phaseOf(lane?.phase)); continue; }
+    add(lane.phase, laneUsage.totals || laneUsage);
+  }
+  const costs = {};
+  for (const [phase, totals] of buckets) costs[phase] = unknown.has(phase) ? UNKNOWN : { ...totals, total: Object.values(totals).reduce((sum, value) => sum + value, 0) };
+  for (const phase of unknown) if (phase !== UNKNOWN && !Object.hasOwn(costs, phase)) costs[phase] = UNKNOWN;
+  return { costs, source: liveUsage || timeline?.lanes?.length ? usageFile : null };
+}
+function phaseCosts(worktree, timeline) {
+  const summary = json(lanePath(worktree, 'summary.json'));
+  const archivePath = summary?.archive?.path;
+  const reportsRoot = path.join(config.suiteRoot, 'reports');
+  if (typeof archivePath === 'string' && path.isAbsolute(archivePath) && under(reportsRoot, archivePath)) {
+    const archiveCost = path.join(archivePath, 'cost.json');
+    const cost = json(archiveCost);
+    if (cost) return { costs: phaseCostRows(cost.phases), source: archiveCost, kind: 'archive cost.json' };
+    if (slice(archiveCost, JSON_BYTES, false, true) !== null) return { costs: Object.fromEntries(PHASES.map(phase => [phase, UNKNOWN])), source: archiveCost, kind: 'malformed archive cost.json' };
+  }
+  const live = livePhaseCosts(worktree, timeline);
+  return { ...live, kind: live.source ? 'live usage file' : null };
+}
 
 const lifecycleStartedAt = Date.now();
 const lifecycle = new Map();
@@ -917,6 +998,7 @@ for (const id of ids) {
   const gateResults = worktree ? { test: gate(worktree, 'test'), typecheck: gate(worktree, 'typecheck'), lint: gate(worktree, 'lint') } : null;
   const reviewResult = worktree ? reviews(worktree, id) : { lenses: UNKNOWN, findings: UNKNOWN, decision: UNKNOWN, source: null };
   const usageResult = worktree ? usage(worktree, lane?.model || workers[0]?.model) : { value: UNKNOWN, totals: null, source: null };
+  const phaseCostResult = worktree ? phaseCosts(worktree, lane ? lifecycleTimeline(worktree) : null) : { costs: {}, source: null, kind: null };
   const failedOutcome = [record?.outcome, record?.status, record?.state].find(value => /^(?:error|failed|fail)/i.test(String(value || '')));
   const waitingForArbiter = lane?.phase === 'awaiting_fidelity';
   const sdkRunner = worktree ? sdkRunnerByWorktree.get(worktree) : null;
@@ -948,6 +1030,9 @@ for (const id of ids) {
     review,
     tokens: usageResult.value,
     usage: usageResult.totals,
+    phaseCosts: phaseCostResult.costs,
+    phaseCostSource: phaseCostResult.source || UNKNOWN,
+    phaseCostSourceKind: phaseCostResult.kind || UNKNOWN,
     watchdog,
     inspectors: inspectors(worktree, lane ? frozenRoute : null, lane ? tail(sdkLogFile(worktree)) : null),
     lanes: [nestedLane(lane, id)].filter(Boolean),
@@ -963,6 +1048,7 @@ for (const id of ids) {
       gateLogs: gateResults && Object.values(gateResults).some(result => result.source) ? lanePath(worktree) : UNKNOWN,
       reviews: reviewSource || UNKNOWN,
       usage: usageResult.source || UNKNOWN,
+      phaseCosts: phaseCostResult.source || UNKNOWN,
     },
   });
 }

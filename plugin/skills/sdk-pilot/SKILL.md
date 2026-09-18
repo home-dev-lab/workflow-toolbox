@@ -45,7 +45,9 @@ setsid nohup sh -c 'node "${CLAUDE_PLUGIN_ROOT}/bin/wt-pilot-runner.mjs" \
 Omit `--knowledge-base-index` when no prompt-level value is available. Omit either repeatable
 `--plugin-dir` when that local plugin is not configured; every supplied path must be absolute and the
 runner refuses an initialization receipt that omits it. Other optional flags include `--profile-env`,
-`--contract`, `--hard`, `--mailbox`, and `--timeout`.
+`--contract`, `--hard`, `--mailbox`, and `--timeout`. Without `--timeout`, LITE runs use 90 minutes
+and FULL runs use 6 hours. A shorter explicit value is allowed and prints the route-specific warning;
+expiry stops at the next completed lifecycle phase boundary rather than killing work in flight.
 
 On Windows, launch the same Node command with `Start-Process` rather than `setsid nohup`.
 

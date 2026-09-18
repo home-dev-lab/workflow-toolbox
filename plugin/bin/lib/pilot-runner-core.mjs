@@ -1,5 +1,5 @@
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -13,11 +13,15 @@ import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './sdk-role-profile.mjs'
-import { writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
+import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 
-export const DEFAULT_TIMEOUT = 5400
+export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
+const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
 const POLL_MS = 250
 const MAX_UNPRODUCTIVE_TURNS = 3
+// A phase routinely runs for many minutes, so a 30-second grace would make the clean boundary stop dead code:
+// ten minutes lets a phase that is about to finish reach its boundary, and still bounds a hung one.
+export const TIMEOUT_BOUNDARY_GRACE_MS = 10 * 60_000
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 const NEXT_BY_PHASE = {
   discovery: 'transition discovery using the frozen route',
@@ -40,7 +44,7 @@ const PLANKA_TOOLS = new Set([
 ])
 
 export function parsePilotRunnerArgs(argv) {
-  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: DEFAULT_TIMEOUT }
+  const options = { card: null, cardFile: null, dir: null, profileEnv: null, contract: null, boardContract: null, hard: false, mailbox: null, knowledgeBaseIndex: null, archiveRoot: null, pluginDirs: [], timeout: null, timeoutExplicit: false }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--card') options.card = argv[++i] ?? null
@@ -57,14 +61,14 @@ export function parsePilotRunnerArgs(argv) {
       if (!isAbsolute(pluginDir)) return { error: `--plugin-dir must be an absolute path: ${pluginDir}` }
       options.pluginDirs.push(resolve(pluginDir))
     }
-    else if (arg === '--timeout') options.timeout = Number(argv[++i])
+    else if (arg === '--timeout') { options.timeout = Number(argv[++i]); options.timeoutExplicit = true }
     else if (arg === '--hard') options.hard = true
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
   if (!options.card || !options.dir) return { error: 'missing required --card or --dir' }
   if (!options.cardFile) return { error: '--card-file is required: the route is derived from the card' }
-  if (!Number.isFinite(options.timeout) || options.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
+  if (options.timeout !== null && (!Number.isFinite(options.timeout) || options.timeout <= 0)) return { error: '--timeout must be a positive number of seconds' }
   options.dir = resolve(options.dir)
   options.contract = resolve(options.contract ?? join(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md'))
   options.mailbox = resolve(options.mailbox ?? join(options.dir, '.lane', 'pilot-mailbox.txt'))
@@ -204,8 +208,25 @@ function assertPilotInitReceipt(message, sdkRole) {
   if (missing.length > 0) throw new Error(RECEIPT_ERROR + JSON.stringify({ missingTools: missing, tools: initTools }))
 }
 
+function reconciledCostReport({ reportContent, cost, archive, report, dir }) {
+  if (reportContent.includes('<!-- run-cost -->')) {
+    assertCostReportMatches({ report: reportContent, cost, reportPath: archive ? join(archive, 'pilot-report.md') : report, costPath: archive ? join(archive, 'cost.json') : join(dir, '.lane', 'cost.json') })
+  }
+  return appendCostReport(reportContent, cost)
+}
+
+function costPublicationFailure(error, archive, priorError, log) {
+  if (!archive) {
+    log(`cost receipt unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    return priorError
+  }
+  rmSync(archive, { recursive: true, force: true })
+  log(`archive publication refused: ${error instanceof Error ? error.message : String(error)}`)
+  return priorError ?? error
+}
+
 export async function runPilot(options, dependencies) {
-  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
+  const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
   if ((options.pluginDirs ?? []).some((pluginDir) => !isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
   const effectiveEnv = { ...env, ...profileEnv }
@@ -227,6 +248,13 @@ export async function runPilot(options, dependencies) {
   const boardContract = loadBoardContract(options.boardContract, readFile)
   if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
   const routing = deriveRoute(cardText)
+  const timeoutExplicit = options.timeoutExplicit === true
+  const timeoutSeconds = options.timeout ?? ROUTE_TIMEOUTS[routing.route]
+  if (timeoutExplicit && timeoutSeconds < ROUTE_EXPECTED_SECONDS[routing.route]) {
+    const reference = routing.route === 'FULL' ? 'FULL runs here have taken up to 3 h 11' : 'LITE runs are budgeted for 1 h 30'
+    log(`warning: ${routing.route} timeout ${timeoutSeconds}s is below the route's expected duration; ${reference}`)
+  }
+  options = { ...options, timeout: timeoutSeconds, timeoutExplicit }
   const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
   log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} executor=${executorProfile.executor}`)
   const report = join(options.dir, '.lane', 'pilot-report.md')
@@ -259,6 +287,7 @@ export async function runPilot(options, dependencies) {
   let servedModelFirstTurn
   let firstAssistantSeen = false
   let streamError = null
+  let timeoutBoundary = null
   const pluginRoot = resolve(MODULE_DIR, '../..')
   const configuredPlugins = options.pluginDirs ?? []
   const sdkRole = (dependencies.prepareSdkRole ?? prepareSdkRole)('pilot', { worktree: options.dir, env: effectiveEnv, pluginRoot, adapterOptions: { log } })
@@ -280,13 +309,27 @@ export async function runPilot(options, dependencies) {
       : async () => { throw new Error('board unavailable: planka_mcp_url is not configured') }
     : null
   const resolveRoutedFinding = boardContract && board && typeof board.resolveRoutedCard === 'function' ? (card) => board.resolveRoutedCard(card) : null
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions })
+  const abortController = new AbortController()
+  let timeoutGraceTimer = null
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
+  const timeoutTimer = setTimer(() => {
+    if (lifecycleServer.requestStop('timeout')) {
+      incompleteReason = 'timeout'
+      log(`timeout requested; waiting up to ${TIMEOUT_BOUNDARY_GRACE_MS / 60_000} min for the ${lifecycleServer.state().phase} phase boundary`)
+      timeoutGraceTimer = setTimer(() => {
+        if (!timeoutBoundary) {
+          log('timeout boundary grace elapsed; aborting the SDK run')
+          abortController.abort()
+        }
+      }, TIMEOUT_BOUNDARY_GRACE_MS)
+    }
+  }, options.timeout * 1000)
 
   async function* prompt() {
     const lspLine = sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
     yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
-    while (!completed && now() - started < options.timeout * 1000) {
+    while (!completed && !timeoutBoundary) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
       if (pendingTurnEnds > 0) {
         pendingTurnEnds -= 1
@@ -316,13 +359,6 @@ export async function runPilot(options, dependencies) {
       }
       else await sleep(POLL_MS)
     }
-    if (!completed) {
-      incompleteReason = 'runner timeout'
-      const content = 'Runner timeout reached. Write .lane/pilot-report.md with the current state and end your turn.'
-      injectedTurns += 1
-      log(`injected: timeout ${content}`)
-      yield { type: 'user', message: { role: 'user', content } }
-    }
   }
 
   try {
@@ -337,10 +373,13 @@ export async function runPilot(options, dependencies) {
       canUseTool: async (toolName, input) => lifecycleCanUseTool(options.dir, toolName, input, { boardMoves: options.boardMoves ?? true, knowledgeBaseIndex: knowledgeBase.path, profile: sdkRole.profile }),
       permissionMode: 'default',
       env: { ...effectiveEnv, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+      abortController,
     }, sdkRole)
     const stream = query({ prompt: prompt(), options: queryOptions })
     for await (const message of stream) {
       transcript.push(message)
+      // An account-level rate-limit notice can precede init; it carries no model output and is not "another message first".
+      if (!initReceiptSeen && message.type === 'rate_limit_event') continue
       if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) {
         throw new Error('SDK pilot initialization receipt never arrived: the first message was ' + message.type + '/' + (message.subtype ?? 'none'))
       }
@@ -394,8 +433,13 @@ export async function runPilot(options, dependencies) {
     }
     if (!initReceiptSeen) throw new Error('SDK pilot run ended without an initialization receipt')
   } catch (error) {
-    streamError = error
-    if (initReceiptSeen) incompleteReason = `sdk stream error: ${error instanceof Error ? error.message : String(error)}`
+    if (!timeoutBoundary) {
+      streamError = error
+      if (initReceiptSeen) incompleteReason = `sdk stream error: ${error instanceof Error ? error.message : String(error)}`
+    }
+  } finally {
+    clearTimer(timeoutTimer)
+    if (timeoutGraceTimer !== null) clearTimer(timeoutGraceTimer)
   }
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
@@ -412,7 +456,7 @@ export async function runPilot(options, dependencies) {
   const partial = lifecycleSummary.partial ?? lifecycleServer.state().partial ?? null
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
-  const summary = { ...lifecycleSummary, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
@@ -428,7 +472,8 @@ export async function runPilot(options, dependencies) {
     writeFile(join(options.dir, '.lane', 'cost.json'), costContent)
     let costReport = null
     if (exists(report)) {
-      costReport = appendCostReport(readFile(report, 'utf8'), cost)
+      const reportContent = readFile(report, 'utf8')
+      costReport = reconciledCostReport({ reportContent, cost, archive: lifecycleSummary.archive?.path, report, dir: options.dir })
       writeFile(report, costReport)
     }
     const archive = lifecycleSummary.archive?.path
@@ -440,7 +485,7 @@ export async function runPilot(options, dependencies) {
       if (costReport !== null) writeFile(join(archive, 'pilot-report.md'), costReport)
     }
   } catch (error) {
-    log(`cost receipt unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    finalizationError = costPublicationFailure(error, lifecycleSummary.archive?.path, finalizationError, log)
   }
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   if (finalizationError) throw finalizationError

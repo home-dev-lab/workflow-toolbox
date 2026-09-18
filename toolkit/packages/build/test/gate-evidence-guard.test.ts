@@ -15,6 +15,7 @@ const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 const HERMETIC = { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
 const made: string[] = []
 const states = new Map<string, string>()
+let toolUseSequence = 0
 
 afterEach(() => {
   for (const root of made.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -66,7 +67,7 @@ function run(root: string, command = 'git commit -m x') {
     cwd: root,
     encoding: 'utf8',
     env: env(root),
-    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: root, tool_input: { command } }),
+    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `release-push-${++toolUseSequence}`, cwd: root, tool_input: { command } }),
   })
   return { stdout: result.stdout, status: result.status }
 }
@@ -76,7 +77,7 @@ function runReleasePush(root: string, command = 'git push public HEAD:main', ext
     cwd: root,
     encoding: 'utf8',
     env: { ...env(root), ...extraEnv },
-    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', cwd: root, tool_input: { command } }),
+    input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `release-push-${++toolUseSequence}`, cwd: root, tool_input: { command } }),
   })
   return { stdout: result.stdout, stderr: result.stderr, status: result.status }
 }
@@ -207,8 +208,9 @@ describe('wt-release-push-evidence-guard-hook', () => {
     const allowed = runReleasePush(root, command)
     expect(allowed.stdout).toContain('release owner accepted the outage')
     expect(allowed.stdout).not.toContain('"deny"')
-    expect(existsSync(allowOnce)).toBe(false)
+    expect(existsSync(allowOnce)).toBe(true)
     expect(JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+    expect(existsSync(allowOnce)).toBe(false)
   })
 
   it('is silent for a push to a non-release ref', () => {

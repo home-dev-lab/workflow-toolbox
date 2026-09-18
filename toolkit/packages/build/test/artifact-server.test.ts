@@ -6,7 +6,7 @@ import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl, registrationPidStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl, probeArtifactServer, registrationPidStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
@@ -193,7 +193,8 @@ function baseEnv(stateHome: string, extra: NodeJS.ProcessEnv = {}): NodeJS.Proce
   return {
     ...process.env, PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: stateHome,
     WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
-    WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1', ...extra,
+    WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '25', WT_ARTIFACT_SERVER_TEST_MODE: '1',
+    WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1', ...extra,
   }
 }
 
@@ -206,6 +207,26 @@ async function reservePort(host = '127.0.0.1') {
   const address = server.address()
   if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
   return { port: address.port, server }
+}
+
+async function listenWithReservedFallback(first: Server) {
+  while (true) {
+    const fallback = await reservePort()
+    if (fallback.port <= 1) { await closeServer(fallback.server); continue }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => reject(error)
+        first.once('error', onError)
+        first.listen(fallback.port - 1, '127.0.0.1', () => {
+          first.removeListener('error', onError)
+          resolve()
+        })
+      })
+      return { port: fallback.port - 1, fallback }
+    } catch {
+      await closeServer(fallback.server)
+    }
+  }
 }
 
 async function closeServer(server: Server) {
@@ -1132,18 +1153,14 @@ describe('owner decision 2: discovery and one instance', () => {
     const { project } = projectWithRoots('fallback')
     const stateHome = temporaryDir('fallback-state')
     const foreign = createServer((_request, response) => response.end('foreign'))
-    const reservation = await reservePort()
-    const port = reservation.port
-    await closeServer(reservation.server)
-    await new Promise<void>((resolve, reject) => {
-      foreign.once('error', reject)
-      foreign.listen(port, '127.0.0.1', resolve)
-    })
+    const { port, fallback } = await listenWithReservedFallback(foreign)
     try {
       const env = baseEnv(stateHome, {
         WT_ARTIFACT_SERVER_PORT: String(port),
+        WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '2',
         WT_ARTIFACT_SERVER_TEST_READINESS_MS: String(FALLBACK_READINESS_MS),
       })
+      await closeServer(fallback.server)
       spawnEnsure(project, env)
       const state = await waitForState(stateHome, () => true, FALLBACK_DISCOVERY_BOUND_MS)
       expect(state.port).toBe(port + 1)
@@ -1153,12 +1170,19 @@ describe('owner decision 2: discovery and one instance', () => {
       await waitFor(async () => (await health(state)).registeredSessions === 2 ? true : null)
       expect(readState(stateHome)?.pid).toBe(state.pid)
     } finally {
+      if (fallback.server.listening) await closeServer(fallback.server)
       if (foreign.listening) await closeServer(foreign)
     }
   }, FALLBACK_DISCOVERY_BOUND_MS + 2_000)
 
   it('[E-04] refuses uid mismatch attachment and same-process forged stop identity', async () => {
     const stateHome = temporaryDir('mismatch-state')
+    const diagnosticDir = temporaryDir('mismatch-diagnostic')
+    const serverDiagnostic = join(diagnosticDir, 'server.jsonl')
+    const serverProcessLog = join(diagnosticDir, 'server-processes.log')
+    const preload = join(diagnosticDir, 'capture-server.cjs')
+    writeFileSync(preload, `const cp = require('node:child_process'); const fs = require('node:fs'); const original = cp.spawn; const log = (value) => fs.appendFileSync(${JSON.stringify(serverDiagnostic)}, JSON.stringify({ at: new Date().toISOString(), ...value }) + '\\n'); cp.spawn = function(command, args, options) { if (!args?.[0]?.endsWith('wt-artifact-server.mjs') || args?.[1] !== 'serve') return original.call(this, command, args, options); const child = original.call(this, command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] }); log({ event: 'spawn', pid: child.pid, port: options?.env?.WT_ARTIFACT_SERVER_PORT }); child.stdout?.on('data', (chunk) => log({ event: 'stdout', pid: child.pid, text: String(chunk) })); child.stderr?.on('data', (chunk) => log({ event: 'stderr', pid: child.pid, text: String(chunk) })); child.once('error', (error) => log({ event: 'error', pid: child.pid, message: error.message, code: error.code })); child.once('exit', (code, signal) => log({ event: 'exit', pid: child.pid, code, signal })); return child }\n`)
+    watchSpawnedServers(serverProcessLog)
     const decoy = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
     children.add(decoy)
     if (!decoy.pid) throw new Error('decoy process has no pid')
@@ -1167,10 +1191,7 @@ describe('owner decision 2: discovery and one instance', () => {
       response.end(JSON.stringify({ service: 'workflow-toolbox-artifact-server', version: 'x', uid: 'foreign-user', pid: decoy.pid, port: addressPort, registeredSessions: 0 }))
     })
     let addressPort = 0
-    await new Promise<void>((resolve, reject) => {
-      foreign.once('error', reject)
-      foreign.listen(0, '127.0.0.1', resolve)
-    })
+    const { fallback } = await listenWithReservedFallback(foreign)
     const address = foreign.address()
     if (!address || typeof address === 'string') throw new Error('foreign listener has no port')
     addressPort = address.port
@@ -1180,6 +1201,22 @@ describe('owner decision 2: discovery and one instance', () => {
       remoteUrl: null, roots: [], startedAt: new Date().toISOString(),
     }))
     chmodSync(statePath(stateHome), 0o600)
+    const candidateObservations: Array<{ port: number, kind: string, pid?: number, uid?: number | string }> = []
+    let observing = true
+    const observeCandidates = (async () => {
+      const seen = new Set<string>()
+      while (observing) {
+        for (const port of [address.port, address.port + 1]) {
+          const probe = await probeArtifactServer(port, 100)
+          const observation = probe.kind === 'ours'
+            ? { port, kind: probe.kind, pid: probe.health.pid, uid: probe.health.uid }
+            : { port, kind: probe.kind }
+          const key = JSON.stringify(observation)
+          if (!seen.has(key)) { seen.add(key); candidateObservations.push(observation) }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+    })()
     try {
       const stopped = await runCli(['stop', '--force'], baseEnv(stateHome))
       expect(stopped.code).not.toBe(0)
@@ -1187,12 +1224,22 @@ describe('owner decision 2: discovery and one instance', () => {
       expect(foreign.listening).toBe(true)
 
       const { project } = projectWithRoots('uid-mismatch')
-      const monitor = spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
+      await closeServer(fallback.server)
+      const monitor = spawnEnsure(project, baseEnv(stateHome, {
+        WT_ARTIFACT_SERVER_PORT: String(address.port),
+        WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '2',
+        WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG: serverProcessLog,
+        NODE_OPTIONS: `--require=${preload}`,
+      }))
       const output = childOutput(monitor)
       const own = await waitForState(stateHome, (value) => value.port !== address.port, 30_000)
         .catch(() => readState(stateHome))
-      expect(own?.port, `monitor stdout=${output.stdout()} stderr=${output.stderr()}`).not.toBe(address.port)
+      const serverEvents = spawnReceipts(serverDiagnostic).map((line) => JSON.parse(line) as unknown)
+      expect(own?.port, `ports=${address.port},${address.port + 1} candidate observations=${JSON.stringify(candidateObservations)} server events=${JSON.stringify(serverEvents)} monitor pid=${monitor.pid} exit=${monitor.exitCode} signal=${monitor.signalCode} stdout=${output.stdout()} stderr=${output.stderr()}`).not.toBe(address.port)
     } finally {
+      observing = false
+      await observeCandidates
+      if (fallback.server.listening) await closeServer(fallback.server)
       await closeServer(foreign)
     }
   }, 40_000)
@@ -1732,8 +1779,10 @@ describe('review decisions: serving security matrix', () => {
     const project = temporaryDir('rich-project')
     const root = temporaryDir('rich-root')
     const stateHome = temporaryDir('rich-state')
-    let sinkRequests = 0
-    const sink = createServer((_request, response) => { sinkRequests += 1; response.end('reachable') })
+    // The sink listens on an ephemeral port, and artifact servers on this machine probe a run of ports for their own
+    // health path while discovering each other. Only the two paths the PAGE asks for prove a leak.
+    const sinkPaths: string[] = []
+    const sink = createServer((request, response) => { sinkPaths.push(request.url ?? ''); response.end('reachable') })
     await new Promise<void>((resolve, reject) => {
       sink.once('error', reject)
       sink.listen(0, '127.0.0.1', resolve)
@@ -1760,7 +1809,7 @@ describe('review decisions: serving security matrix', () => {
       expect(plain.code, plain.stderr).toBe(0)
       expect(plain.stdout).toContain('data-script="not-run"')
       expect(plain.stdout).not.toContain('data-script="ran"')
-      expect(sinkRequests).toBe(0)
+      expect(sinkPaths.filter((path) => path === '/fetch' || path === '/image'), `sink saw: ${sinkPaths.join(', ')}`).toEqual([])
     } finally {
       await closeServer(sink)
     }

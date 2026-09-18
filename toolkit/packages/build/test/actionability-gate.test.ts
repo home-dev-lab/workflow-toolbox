@@ -56,6 +56,16 @@ function blockText(r: { stdout: string }): string {
   }
 }
 
+function systemMessage(r: { stdout: string }): string {
+  if (!r.stdout) return ''
+  try {
+    const parsed = JSON.parse(r.stdout) as { systemMessage?: unknown }
+    return typeof parsed?.systemMessage === 'string' ? parsed.systemMessage : ''
+  } catch {
+    return ''
+  }
+}
+
 function writeLaneFixture(root: string, processes: unknown[] = []): string {
   const path = join(root, 'lane-fixture.json')
   writeFileSync(path, JSON.stringify({ hookPid: 100, processes }), 'utf8')
@@ -313,7 +323,67 @@ describe('wt-actionable-gate-hook', () => {
     const text = blockText(r)
     expect(text).toContain('3 actionable item(s) remain')
     expect(text).toContain('CARD-42 fix the parser')
+    expect(text).toContain('Snapshot is less than 1 minute old')
     expect(text).toContain('Block 1 of 3')
+  })
+
+  it('a snapshot past the proposal bound reports count and age without naming a card', () => {
+    const { env, payload, stateDir, cwd } = scaffold('proposal-stale')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now() - 20 * 60_000,
+      actionable: 3,
+      next: 'CARD-STALE was moved to Blocked',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+
+    const result = runHook(payload, { ...env, WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS: '600000' })
+    const text = blockText(result)
+
+    expect(result.code).toBe(0)
+    expect(text).toContain('3 actionable item(s) remain')
+    expect(text).toContain('Snapshot is 20 minutes old')
+    expect(text).toContain('not proposing a card because the snapshot is stale')
+    expect(text).not.toContain('CARD-STALE')
+  })
+
+  it('falls back from a non-numeric proposal bound instead of naming an old card', () => {
+    const { env, payload, stateDir, cwd } = scaffold('proposal-invalid-bound')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now() - 60 * 60_000,
+      actionable: 3,
+      next: 'CARD-OLD',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+
+    const text = blockText(runHook(payload, { ...env, WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS: 'garbage' }))
+    expect(text).toContain('3 actionable item(s) remain')
+    expect(text).toContain('not proposing a card because the snapshot is stale')
+    expect(text).not.toContain('CARD-OLD')
+  })
+
+  it('reports a future snapshot as unusable without dropping its count or refusal', () => {
+    const { env, payload, stateDir, cwd } = scaffold('proposal-future')
+    writeSnapshot(stateDir, cwd, {
+      at: Date.now() + 24 * 60 * 60_000,
+      actionable: 3,
+      next: 'CARD-FUTURE',
+      workPossible: true,
+      reason: '',
+      blockedUntil: null,
+      inFlightUntil: null,
+    })
+
+    const text = blockText(runHook(payload, env))
+    expect(text).toContain('3 actionable item(s) remain')
+    expect(text).toContain('snapshot timestamp is in the future')
+    expect(text).toContain('not proposing a card')
+    expect(text).not.toContain('CARD-FUTURE')
   })
 
   it('actionable:3, work in flight -> no block, and the counter resets', () => {
@@ -656,13 +726,16 @@ describe('wt-actionable-gate-hook', () => {
     expect(blockText(r4)).toBe('')
   })
 
-  it('malformed JSON -> no block, no throw', () => {
+  it('malformed JSON -> no block, but reports unknown snapshot age', () => {
     const { env, payload, stateDir, cwd } = scaffold('malformed')
     mkdirSync(stateDir, { recursive: true })
     writeFileSync(join(stateDir, `${slug(cwd)}.json`), '{"at":', 'utf8')
     const r = runHook(payload, env)
     expect(r.code).toBe(0)
     expect(r.stderr).toBe('')
+    expect(blockText(r)).toBe('')
+    expect(systemMessage(r)).toContain('snapshot is unreadable')
+    expect(systemMessage(r)).toContain('age is unknown')
   })
 
   it('once opted in, deleting the snapshot blocks on the next stop', () => {
@@ -681,6 +754,7 @@ describe('wt-actionable-gate-hook', () => {
     const missing = runHook(payload, env)
     expect(missing.code).toBe(0)
     expect(blockText(missing)).toContain('wire the producer')
+    expect(blockText(missing)).toContain('snapshot is missing; age is unknown')
   })
 
   it('reads only subagent mtimes, not the main transcript touched by the turn', () => {
@@ -768,7 +842,9 @@ describe('wt-actionable-gate-hook', () => {
     })
     const r = runHook(payload, env)
     expect(r.code).toBe(0)
-    expect(blockText(r)).toContain('CARD-54 generous bound written long ago')
+    expect(blockText(r)).toContain('3 actionable item(s) remain')
+    expect(blockText(r)).toContain('Snapshot is 40 minutes old')
+    expect(blockText(r)).not.toContain('CARD-54 generous bound written long ago')
   })
 
   it('a lane of this session detected by ancestry + cwd -> no block, and the counter resets', () => {

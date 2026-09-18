@@ -4,8 +4,70 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { treeSignature } from './gate-evidence.mjs'
+import { costReportSection } from './run-cost-core.mjs'
 
 const WORKTREE_RETENTION_FILE = path.join('.lane', 'worktree-retention.json')
+const COST_BLOCK = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/g
+
+function archiveFile(file) {
+  let stat
+  try { stat = fs.lstatSync(file) } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw new Error(`cannot read archive receipt ${file}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`cannot read archive receipt ${file}: not a regular file`)
+  try { return fs.readFileSync(file, 'utf8') } catch (error) {
+    throw new Error(`cannot read archive receipt ${file}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+  }
+}
+
+function divergentCostLine(expected, actual) {
+  const expectedLines = expected.split('\n')
+  const actualLines = actual.split('\n')
+  const limit = Math.max(expectedLines.length, actualLines.length)
+  for (let index = 0; index < limit; index += 1) {
+    const expectedLine = expectedLines[index]
+    const actualLine = actualLines[index]
+    if (expectedLine === actualLine) continue
+    if (expectedLine?.startsWith('| ') && actualLine?.startsWith('| ')) {
+      const expectedCells = expectedLine.slice(1, -1).split('|').map((cell) => cell.trim())
+      const actualCells = actualLine.slice(1, -1).split('|').map((cell) => cell.trim())
+      const columns = ['Phase', 'Family', 'Model', 'Input', 'Cache write', 'Cache read', 'Output', 'Reasoning', 'First-pass input', 'Fresh', 'Wall ms']
+      const cell = Math.max(0, expectedCells.findIndex((value, offset) => value !== actualCells[offset]))
+      const phase = actualCells[0] || expectedCells[0] || 'unknown'
+      return `phase ${JSON.stringify(phase)}, ${columns[cell] ?? `column ${cell + 1}`} expected ${JSON.stringify(expectedCells[cell] ?? '<missing>')} but report has ${JSON.stringify(actualCells[cell] ?? '<missing>')}`
+    }
+    return `line ${index + 1} expected ${JSON.stringify(expectedLine ?? '<missing>')} but report has ${JSON.stringify(actualLine ?? '<missing>')}`
+  }
+  return 'unknown divergence'
+}
+
+export function assertCostReportMatches({ report, cost, reportPath, costPath }) {
+  const blocks = report?.match(COST_BLOCK) ?? []
+  if (blocks.length === 0) throw new Error(`cost report consistency refused: missing Measured Run Cost block in ${reportPath}; cost receipt is ${costPath}`)
+  const expected = costReportSection(cost).trimEnd()
+  for (const [index, block] of blocks.entries()) {
+    if (block === expected) continue
+    // Never repair a stale report here: doing so would hide the ordering hazard this publication check exists to expose.
+    throw new Error(`cost report consistency refused: first divergent row ${divergentCostLine(expected, block)}; report ${reportPath}; cost ${costPath}${index === 0 ? '' : `; block ${index + 1}`}`)
+  }
+}
+
+function assertArchiveCostReport(directory, publishedDirectory = directory) {
+  const report = archiveFile(path.join(directory, 'pilot-report.md'))
+  const costContent = archiveFile(path.join(directory, 'cost.json'))
+  const publishedReport = path.join(publishedDirectory, 'pilot-report.md')
+  const publishedCost = path.join(publishedDirectory, 'cost.json')
+  const block = report?.match(COST_BLOCK)?.[0] ?? null
+  if (block === null && costContent === null) return
+  if (block === null) throw new Error(`cost report consistency refused: missing Measured Run Cost block in ${publishedReport}; cost receipt is ${publishedCost}`)
+  if (costContent === null) throw new Error(`cost report consistency refused: ${publishedReport} has a Measured Run Cost block but ${publishedCost} is missing`)
+  let cost
+  try { cost = JSON.parse(costContent) } catch (error) {
+    throw new Error(`cost report consistency refused: cannot parse ${publishedCost}: ${error instanceof Error ? error.message : String(error)}; report is ${publishedReport}`, { cause: error })
+  }
+  assertCostReportMatches({ report, cost, reportPath: publishedReport, costPath: publishedCost })
+}
 
 export function readWorktreeRetentionMarker(root) {
   const markerPath = path.join(root, WORKTREE_RETENTION_FILE)
@@ -40,6 +102,7 @@ export function readWorktreeRetentionMarker(root) {
 
 export function writeWorktreeRetentionMarker({ root, cardId, partial, boardId = null, retainedAt }) {
   const spentBound = partial && (
+    partial.reason === 'timeout' ||
     (partial.phase === 'critic' && /^plan not approved after \d+ critic rounds$/.test(partial.reason)) ||
     (['review', 'refutation'].includes(partial.phase) && new RegExp(`^${partial.phase} still requests changes after \\d+ harden rounds$`).test(partial.reason))
   )
@@ -138,6 +201,7 @@ export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, he
     assertDirectories()
     const statusBefore = git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' })
     copy(laneDir, temporary, { recursive: true, dereference: false })
+    assertArchiveCostReport(temporary, target)
     writeRegularFile(path.join(temporary, 'manifest.json'), manifestContent)
     writeRegularFile(path.join(temporary, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)
     writeRegularFile(path.join(laneDir, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)

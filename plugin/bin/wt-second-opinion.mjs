@@ -3,14 +3,14 @@ import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } fro
 import path from 'node:path'
 import { runSecondOpinion } from './lib/second-opinion-core.mjs'
 
-const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--repo <dir>]'
+const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|fable] [--repo <dir>]'
 
 function parseArgs(argv) {
-  const options = { effort: 'medium', repo: process.cwd() }
+  const options = { effort: 'medium', route: 'auto', repo: process.cwd() }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--help' || arg === '-h') return { help: true }
-    if (['--request', '--out', '--effort', '--repo'].includes(arg)) {
+    if (['--request', '--out', '--effort', '--route', '--repo'].includes(arg)) {
       if (!argv[i + 1]) return { error: `${arg} requires a value`, out: options.out }
       options[arg.slice(2)] = argv[++i]
     } else return { error: `unknown argument: ${arg}`, out: options.out }
@@ -18,6 +18,7 @@ function parseArgs(argv) {
   if (!options.request) return { error: '--request is required', out: options.out }
   if (!options.out) return { error: '--out is required' }
   if (!['low', 'medium', 'high'].includes(options.effort)) return { error: '--effort must be low, medium, or high', out: options.out }
+  if (!['auto', 'astra', 'fable'].includes(options.route)) return { error: '--route must be auto, astra, or fable', out: options.out }
   options.request = path.resolve(options.request)
   options.out = path.resolve(options.out)
   options.repo = path.resolve(options.repo)

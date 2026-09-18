@@ -111,7 +111,7 @@ function main() {
       continue
     }
 
-    const overrideReason = consumeMainGuardAllowOnce(command)
+    const overrideReason = consumeMainGuardAllowOnce(command, input.tool_use_id)
     if (overrideReason) {
       const message = `[workflow-toolbox release gate] Allowed ${target.remote}/${target.destination} by consuming one-time override: ${overrideReason}. ${resolution}`
       recordGuardEvent({ guard: GUARD, decision: 'silent', class: 'release-gate-evidence-override', reason: overrideReason, cwd: root, session: input.session_id, agent: input.agent_id })

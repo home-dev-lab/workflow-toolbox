@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +9,8 @@ import { aggregateRunCosts, appendCostReport, attributePilotTurns, computeRunCos
 
 const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-run-cost.mjs', import.meta.url))
 const OUTPUT_UNDERCOUNT_FIXTURE = new URL('./fixtures/run-cost/sdk-output-undercount.json', import.meta.url)
+const LANE_FAMILIES_FIXTURE = new URL('./fixtures/run-cost/lane-families.json', import.meta.url)
+type LaneFixture = { phase: string, round: number | null, started_at: number, ended_at: number, [key: string]: unknown }
 
 const roots: string[] = []
 const root = () => { const value = mkdtempSync(join(tmpdir(), 'wt-run-cost-')); roots.push(value); return value }
@@ -16,6 +18,33 @@ const root = () => { const value = mkdtempSync(join(tmpdir(), 'wt-run-cost-')); 
 afterEach(() => { for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true }) })
 
 describe('run cost', () => {
+  function archiveDerivedLaneCost(route: object, lanes: LaneFixture[], sessions: object[] = []) {
+    const lane = root()
+    writeFileSync(join(lane, 'route.json'), JSON.stringify(route))
+    writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, served_model: 'claude-opus-5' }))
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} }))
+    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({
+      started_at: Math.min(...lanes.map((item) => item.started_at)) - 1,
+      ended_at: Math.max(...lanes.map((item) => item.ended_at)) + 1,
+      phases: lanes.map((item) => ({ phase: item.phase, round: item.round, entered_at: item.started_at, exited_at: item.ended_at })),
+      lanes,
+    }))
+    return { lane, sessions }
+  }
+
+  function cliLane() {
+    const lane = root()
+    writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId: 'cli-card', route: 'LITE', executor: 'claude-sdk' }))
+    writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, served_model: 'claude-sonnet-5' }))
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} }))
+    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 2000, phases: [], lanes: [] }))
+    return lane
+  }
+
+  function spawnCompute(lane: string, output: string, ...args: string[]) {
+    return spawnSync(process.execPath, [CLI, '--compute', lane, '--output', output, '--worktree', '/work/cli', ...args], { encoding: 'utf8' })
+  }
+
   function realOutputUndercountLane(resultOutput = 134665) {
     const fixture = JSON.parse(readFileSync(OUTPUT_UNDERCOUNT_FIXTURE, 'utf8'))
     const lane = root()
@@ -160,17 +189,107 @@ describe('run cost', () => {
   it('counts OpenAI reasoning in fresh tokens while preserving raw columns', () => {
     const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL', executor: 'opencode' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true }))
     writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: { input: 0, cache_creation: 0, cache_read: 0, output: 0 } }))
-    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 3000, phases: [], lanes: [{ phase: 'critic', round: 1, started_at: 1000, ended_at: 3000 }] }))
+    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 3000, phases: [], lanes: [{ phase: 'critic', round: 1, executor: 'gpt-lane', model: 'openai/gpt', started_at: 1000, ended_at: 3000 }] }))
     const cost = computeRunCost({ laneDir: lane, worktree: '/work/a', sessions: [{ id: 's', directory: '/work/a', model: { providerID: 'openai', id: 'gpt' }, tokens_input: 100, tokens_output: 20, tokens_reasoning: 30, tokens_cache_read: 40, time_created: 1200, time_updated: 2800 }] })
     expect(cost.phases[0].models['openai/gpt']).toEqual({ family: 'openai', input: 100, cache_write: 'not measured', cache_read: 40, output: 20, reasoning: 30, first_pass_input: 100, fresh_tokens: 150 })
   })
 
+  it('attributes each lane by its own model family when a run mixes Claude and GPT lanes', () => {
+    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const claudeLane = { ...fixture.claude.lane, executor: 'claude-sdk' }
+    const gptLane = { ...fixture.gpt.lane, executor: 'gpt-lane' }
+    const { lane, sessions } = archiveDerivedLaneCost(
+      { ...fixture.claude.route, executor: 'claude-sdk' },
+      [claudeLane, gptLane],
+      [fixture.gpt.session],
+    )
+    writeFileSync(join(lane, claudeLane.usage_file), JSON.stringify(fixture.claude.usage))
+
+    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, sessions })
+
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'tdd').models['claude-sonnet-5'])
+      .toMatchObject({ family: 'anthropic', input: 266, output: 77146, fresh_tokens: 296546 })
+    expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'critic').models['openai/gpt-5.6-sol'])
+      .toMatchObject({ family: 'openai', input: 85338, output: 3483, reasoning: 1790, fresh_tokens: 90611 })
+    expect(cost.unknown).toEqual([])
+  })
+
+  it('uses archived lane model evidence instead of a contradictory run executor', () => {
+    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const { lane, sessions } = archiveDerivedLaneCost(
+      { ...fixture.gpt.route, executor: 'claude-sdk' },
+      [fixture.gpt.lane],
+      [fixture.gpt.session],
+    )
+
+    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, sessions })
+
+    expect(cost.phases[0].models['openai/gpt-5.6-sol']).toMatchObject({ family: 'openai', fresh_tokens: 90611 })
+    expect(cost.unknown).toEqual([])
+  })
+
+  it('reports contradictory executor and model evidence on one lane as unknown', () => {
+    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const contradictory = { ...fixture.gpt.lane, executor: 'opencode', model: 'anthropic/claude-sonnet-5' }
+    const { lane, sessions } = archiveDerivedLaneCost(fixture.gpt.route, [contradictory], [fixture.gpt.session])
+
+    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, sessions })
+
+    expect(cost.phases[0].models).toEqual({})
+    expect(cost.phases[0].unknown[0]).toContain('contradictory executor/model family evidence')
+    expect(cost.families).toEqual({ anthropic: null, openai: null })
+  })
+
+  it('names an OpenAI lane lookup miss instead of recording zero or the run family', () => {
+    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane])
+
+    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, sessions: [] })
+
+    expect(cost.phases[0].models).toEqual({})
+    expect(cost.phases[0].unknown).toEqual([
+      `OpenAI lane usage unavailable for critic round 1: no OpenCode session row for worktree ${fixture.gpt.worktree} within 1789664921848..1789665120275`,
+    ])
+    expect(cost.families.openai).toBeNull()
+  })
+
+  it('reports an unknown lane family explicitly instead of assuming the run executor', () => {
+    const laneRecord = { phase: 'critic', round: 1, model: 'unknown', started_at: 1000, ended_at: 2000, usage_file: null }
+    const { lane } = archiveDerivedLaneCost({ route: 'FULL', executor: 'claude-sdk' }, [laneRecord])
+
+    const cost = computeRunCost({ laneDir: lane, worktree: '/work/a', sessions: [] })
+
+    expect(cost.phases[0].unknown).toEqual([
+      'lane usage family unavailable for critic round 1: executor and model do not identify Anthropic or OpenAI',
+    ])
+    expect(cost.families).toEqual({ anthropic: null, openai: null })
+  })
+
   it('passes hostile-looking database paths after sqlite option termination with a raised buffer', () => {
-    const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL', executor: 'opencode' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true })); writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} })); writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 2000, phases: [], lanes: [] }))
+    const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL', executor: 'opencode' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true })); writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} })); writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 2000, phases: [], lanes: [{ phase: 'critic', round: 1, executor: 'gpt-lane', model: 'openai/gpt', started_at: 1000, ended_at: 2000 }] }))
     let receipt: { args?: string[], maxBuffer?: number } = {}
     computeRunCost({ laneDir: lane, worktree: '/work/a', dbPath: '-database', execFile: (_program: string, args: string[], options: { maxBuffer: number }) => { receipt = { args, maxBuffer: options.maxBuffer }; return '[]' } })
     expect(receipt.args?.slice(0, 4)).toEqual(['-readonly', '-json', '--', '-database'])
     expect(receipt.maxBuffer).toBe(64 * 1024 * 1024)
+  })
+
+  it('degrades an unavailable OpenCode store to a family-specific unknown', () => {
+    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane])
+    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, dbPath: '/missing/opencode.db', execFile: () => { throw new Error('sqlite unavailable') } })
+
+    expect(cost.phases[0].models).toEqual({})
+    expect(cost.phases[0].unknown[0]).toContain('OpenAI lane usage unavailable for critic round 1: OpenCode session store query failed: sqlite unavailable')
+    expect(cost.families.openai).toBeNull()
+  })
+
+  it('requires an injected OpenCode DB path on unverified operating systems', () => {
+    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane])
+    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, platform: 'win32' })
+
+    expect(cost.phases[0].unknown[0]).toContain('OpenCode session store location is unverified on win32; pass --db or set WT_OPENCODE_DB')
+    expect(cost.families.openai).toBeNull()
   })
 
   it('derives wall time from archived transcript timestamps and marks it inferred', () => {
@@ -197,12 +316,12 @@ describe('run cost', () => {
   it('reports an unmatched lane as unknown with a reason, never zero', () => {
     expect(matchLaneSessions([], '/work/a', 100, 200, { explain: true })).toEqual({
       status: 'unknown',
-      reason: 'no OpenCode session matched directory /work/a and lane window 100..200',
+      reason: 'no OpenCode session row for worktree /work/a within 100..200',
     })
   })
 
   it('matches inferred logs by their own timestamps and retains unmatched sessions', () => {
-    const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL', executor: 'opencode' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true })); writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} }))
+    const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'FULL', executor: 'opencode', models: { critic: 'openai/critic', review: 'openai/review', code: 'openai/code' } })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true })); writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} }))
     writeFileSync(join(lane, 'critic-run.z.log'), '2026-01-01T00:02:00.000Z start\n2026-01-01T00:03:00.000Z end\n')
     writeFileSync(join(lane, 'review-run.a.log'), '2026-01-01T00:05:00.000Z start\n2026-01-01T00:06:00.000Z end\n')
     writeFileSync(join(lane, 'harden-run.empty.log'), '2026-01-01T00:08:00.000Z start\n2026-01-01T00:09:00.000Z end\n')
@@ -253,5 +372,102 @@ describe('run cost', () => {
     expect(partialCli.status).toBe(0)
     expect(formatAggregate(aggregateRunCosts(reports, { includePartial: true }))).toContain('FULL | openai | 2 | incomplete (1 unknown) | 1100 | not measured | 1400 | 1050 | 1025 | 1100 | 3175 | 500')
     expect(spawnSync(process.execPath, [CLI], { encoding: 'utf8' }).status).toBe(2)
+  })
+
+  it('parses every compute option through the spawned CLI', () => {
+    const lane = cliLane()
+    const output = join(root(), 'cost.json')
+    const result = spawnCompute(lane, output, '--db', '/tmp/opencode.db', '--route', 'HARD', '--started-at', '2026-01-01T00:00:00.000Z', '--ended-at', '2026-01-01T00:01:00.000Z')
+
+    expect(result.status).toBe(0)
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({
+      route: 'HARD',
+      worktree: '/work/cli',
+      window: { started_at: '2026-01-01T00:00:00.000Z', ended_at: '2026-01-01T00:01:00.000Z' },
+    })
+  })
+
+  it('prints usage and exits 2 when compute is missing a required option', () => {
+    const result = spawnSync(process.execPath, [CLI, '--compute', cliLane(), '--worktree', '/work/cli'], { encoding: 'utf8' })
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toMatch(/^Usage: node wt-run-cost\.mjs /)
+  })
+
+  it('prints usage and exits 2 for an unrecognised compute option', () => {
+    const result = spawnCompute(cliLane(), join(root(), 'cost.json'), '--unexpected')
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toMatch(/^Usage: node wt-run-cost\.mjs /)
+  })
+
+  it('reports an invalid explicit date through the CLI error boundary', () => {
+    const result = spawnCompute(cliLane(), join(root(), 'cost.json'), '--started-at', 'not-a-date', '--ended-at', '2026-01-01T00:01:00.000Z')
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toBe('wt-run-cost: Invalid time value\n')
+  })
+
+  it('creates missing output parent directories on compute success', () => {
+    const output = join(root(), 'missing', 'parents', 'cost.json')
+    const result = spawnCompute(cliLane(), output)
+
+    expect(result.status).toBe(0)
+    expect(JSON.parse(readFileSync(output, 'utf8'))).toMatchObject({ card_id: 'cli-card', route: 'LITE' })
+  })
+
+  it('writes a merged pilot report next to the compute output', () => {
+    const lane = cliLane()
+    const source = '# Pilot\n\nExisting text\n'
+    writeFileSync(join(lane, 'pilot-report.md'), source)
+    const destination = root()
+    const result = spawnCompute(lane, join(destination, 'cost.json'))
+
+    expect(result.status).toBe(0)
+    expect(readFileSync(join(lane, 'pilot-report.md'), 'utf8')).toBe(source)
+    expect(readFileSync(join(destination, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
+  })
+
+  it('does not create a pilot report when the lane has none', () => {
+    const destination = root()
+    const result = spawnCompute(cliLane(), join(destination, 'cost.json'))
+
+    expect(result.status).toBe(0)
+    expect(existsSync(join(destination, 'pilot-report.md'))).toBe(false)
+  })
+
+  it('prints the exact compute success receipt shape', () => {
+    const output = join(root(), 'cost.json')
+    const result = spawnCompute(cliLane(), output)
+
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ output, route: 'LITE', outcome: { status: 'complete' }, unknown: 0 })
+  })
+
+  it('prints usage successfully for both help switches', () => {
+    const help = spawnSync(process.execPath, [CLI, '--help'], { encoding: 'utf8' })
+    const shortHelp = spawnSync(process.execPath, [CLI, '-h'], { encoding: 'utf8' })
+
+    expect(help.status).toBe(0)
+    expect(shortHelp.status).toBe(0)
+    expect(help.stderr).toBe('')
+    expect(shortHelp.stderr).toBe('')
+    expect(shortHelp.stdout).toBe(help.stdout)
+    expect(help.stdout).toMatch(/^Usage: node wt-run-cost\.mjs /)
+  })
+
+  it('prefixes thrown compute errors and exits 2', () => {
+    const lane = root()
+    const result = spawnCompute(lane, join(root(), 'cost.json'))
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain(`wt-run-cost: ENOENT: no such file or directory, open '${join(lane, 'route.json')}'`)
+  })
+
+  it('rejects a stray aggregate argument with usage and exit 2', () => {
+    const result = spawnSync(process.execPath, [CLI, root(), '--stray'], { encoding: 'utf8' })
+
+    expect(result.status).toBe(2)
+    expect(result.stderr).toMatch(/^Usage: node wt-run-cost\.mjs /)
   })
 })

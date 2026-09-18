@@ -668,6 +668,12 @@ async function loadAdoptedConsentModules() {
   }
 }`)
   adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
+  adopted = replaceExactlyOnce(adopted, "async function loadIntegrationModule() {\n  return import('./lib/lane-integrate.mjs')\n}", `async function loadIntegrationModule() {
+  const root = pluginRoot()
+  if (!root) throw new Error('could not locate workflow-toolbox plugin root via CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT, or plugins/installed_plugins.json')
+  const integration = path.join(root, 'bin', 'lib', 'lane-integrate.mjs')
+  return import(pathToFileURL(integration).href)
+}`)
   adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
   const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
   if (relativeRuntimeImport) {
@@ -699,21 +705,19 @@ function adoptedLauncherPluginRoot(env = process.env) {
   return null
 }
 
-/** Extract the runtime modules from the generated loader itself. Keeping no parallel module
- * list means a future path joined from root and passed to import() in
- * loadAdoptedConsentModules is automatically part of this preflight. */
+/** Extract runtime modules from the generated dynamic loaders. Keeping no parallel module
+ * list means a future path joined from root and passed to import() is automatically part of
+ * this preflight. */
 function adoptedLauncherRuntimeModules(adopted, runtimeRoot) {
-  const loader = /async function loadAdoptedConsentModules\(\) \{([\s\S]*?)\n\}/.exec(adopted)?.[1]
-  if (!loader) fail('launcher transformation did not produce loadAdoptedConsentModules')
   const moduleByVariable = new Map()
-  for (const match of loader.matchAll(/const\s+(\w+)\s*=\s*path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
+  for (const match of adopted.matchAll(/const\s+(\w+)\s*=\s*path\.join\(root,\s*((?:'[^']+'(?:,\s*)?)+)\)/g)) {
     const segments = [...match[2].matchAll(/'([^']+)'/g)].map((segment) => segment[1])
     if (segments.length > 0) moduleByVariable.set(match[1], path.join(runtimeRoot, ...segments))
   }
-  const modules = [...loader.matchAll(/import\(pathToFileURL\((\w+)\)\.href\)/g)]
+  const modules = [...adopted.matchAll(/import\(pathToFileURL\((\w+)\)\.href\)/g)]
     .map((match) => moduleByVariable.get(match[1]))
     .filter(Boolean)
-  if (modules.length === 0) fail('launcher transformation produced no runtime modules in loadAdoptedConsentModules')
+  if (modules.length === 0) fail('launcher transformation produced no runtime modules')
   return modules
 }
 

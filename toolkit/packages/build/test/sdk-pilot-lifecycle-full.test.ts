@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { MAX_CRITIC_ROUNDS } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+import { MAX_CRITIC_ROUNDS, MAX_REVIEW_ROUNDS } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
@@ -194,7 +194,12 @@ describe('real SDK lifecycle server FULL sequence', () => {
     expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.briefText.includes('# Write release records'))).toBe(true)
   })
 
-  it('H14-1 lock: completes the exact fourth-critic sequence as a partial committed and archived run', async () => {
+  it('owner rule: both loops allow three passes in all, never a fourth', () => {
+    expect(MAX_CRITIC_ROUNDS).toBe(3)
+    expect(MAX_REVIEW_ROUNDS).toBe(3)
+  })
+
+  it('H14-1 lock: completes the exact last-critic-pass sequence as a partial committed and archived run', async () => {
     const lifecycle = fullLifecycle()
     const criticRounds = MAX_CRITIC_ROUNDS
     const reason = `plan not approved after ${criticRounds} critic rounds`
@@ -210,33 +215,33 @@ describe('real SDK lifecycle server FULL sequence', () => {
         ? 'accepted phase=plan'
         : `accepted phase=report (round bound reached: partial run, ${reason})`)
     }
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: 4, reason, findings: ['tighten the proof'] } })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } })
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# partial report\n' }))
       .toBe(`pilot-report: partial run, add the line "Partial: ${reason}"`)
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: `${fullReport}Partial: ${reason}\n` })).toBe('wrote pilot-report')
     expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toBe('accepted phase=awaiting_fidelity')
     expect(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout.trim()).toBe('2')
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
-    expect(summary.partial).toEqual({ phase: 'critic', round: 4, reason, findings: ['tighten the proof'] })
+    expect(summary.partial).toEqual({ phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] })
     const manifest = JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))
     expect(manifest.partial).toEqual(summary.partial)
   })
 
-  it('H14-1 review lock: routes the fourth review changes-requested verdict to a partial report', async () => {
+  it('H14-1 review lock: routes the last allowed review changes-requested verdict to a partial report', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
-    const reason = 'review still requests changes after 3 harden rounds'
+    const reason = `review still requests changes after ${MAX_REVIEW_ROUNDS - 1} harden rounds`
     edgeConfig({ review: { verdict: 'changes-requested', findings: ['finding'] } })
-    for (let round = 1; round <= 4; round += 1) {
+    for (let round = 1; round <= MAX_REVIEW_ROUNDS; round += 1) {
       await lifecycle.artifact({ kind: 'review-brief', content: `review ${round}` }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
       const result = await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['finding'], tool_use_id: `review-${round}` })
-      if (round === 4) expect(result).toBe(`accepted phase=report (round bound reached: partial run, ${reason})`)
+      if (round === MAX_REVIEW_ROUNDS) expect(result).toBe(`accepted phase=report (round bound reached: partial run, ${reason})`)
       else {
         expect(result).toBe('accepted phase=harden')
         await lifecycle.artifact({ kind: 'harden-brief', content: 'harden' }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 }); await lifecycle.transition({ phase: 'harden', tool_use_id: `harden-${round}` })
         await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: `verify-${round}` })
       }
     }
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: 4, reason, findings: ['finding'] } })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: MAX_REVIEW_ROUNDS, reason, findings: ['finding'] } })
   })
 
   it.each([
@@ -255,7 +260,7 @@ describe('real SDK lifecycle server FULL sequence', () => {
     ['report edge with a stale pilot-report never registered this run is refused (Sol round 14)', async () => reportEdge(false, false, 'stale'), /pilot report registered this run/],
     ['report edge with a pilot-report modified after write_artifact is refused (Sol round 14)', async () => reportEdge(true, false, 'modified'), /pilot report unchanged since write_artifact/],
     ['spent planRound bound', criticBound, new RegExp(`^accepted phase=report \\(round bound reached: partial run, plan not approved after ${MAX_CRITIC_ROUNDS} critic rounds\\)$`)],
-    ['spent reviewRound bound', reviewBound, /^accepted phase=report \(round bound reached: partial run, review still requests changes after 3 harden rounds\)$/],
+    ['spent reviewRound bound', reviewBound, new RegExp(`^accepted phase=report \\(round bound reached: partial run, review still requests changes after ${MAX_REVIEW_ROUNDS - 1} harden rounds\\)$`)],
     ['verdict and outcome mismatch', async () => reviewEdge('clear', 0, 'changes-requested'), /outcome does not match the lane report/],
     ['findings mismatch', async () => reviewEdge('changes-requested', 0, 'changes-requested', ['wrong finding']), /findings do not match the lane report/],
     ['report without a VERDICT block', async () => reviewEdge('clear', 0, 'clear', undefined, true), /VERDICT block/],
@@ -361,9 +366,9 @@ async function criticBound() {
 }
 async function reviewBound() {
   const lifecycle = fullLifecycle(); await reachReview(lifecycle); edgeConfig({ review: { verdict: 'changes-requested', findings: ['finding'] } })
-  for (let round = 1; round <= 4; round += 1) {
+  for (let round = 1; round <= MAX_REVIEW_ROUNDS; round += 1) {
     await lifecycle.artifact({ kind: 'review-brief', content: 'review\n' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
-    const result = await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['finding'], tool_use_id: `review-${round}` }); if (round === 4) return result
+    const result = await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['finding'], tool_use_id: `review-${round}` }); if (round === MAX_REVIEW_ROUNDS) return result
     await lifecycle.artifact({ kind: 'harden-brief', content: 'harden\n' }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 }); await lifecycle.transition({ phase: 'harden', tool_use_id: `harden-${round}` }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: `verify-${round}` })
   }
   throw new Error('unreachable')

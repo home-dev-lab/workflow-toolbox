@@ -123,8 +123,24 @@ export const defaultSecondOpinionDependencies = {
 export async function runSecondOpinion(options, dependencies = defaultSecondOpinionDependencies, env = process.env) {
   const request = readFileSync(options.request, 'utf8')
   const consent = resolveConsent(options.repo, env)
+  const route = options.route ?? 'auto'
 
-  if (consent.outcome === 'true') {
+  // The CLI validates the value; a direct caller gets the same refusal rather than a silent Fable run.
+  if (!['auto', 'astra', 'fable'].includes(route)) {
+    writeFileSync(options.out, `REFUSED: unknown route ${JSON.stringify(route)}; use auto, astra, or fable.\n`)
+    appendLine(options.out, 'EXIT=2')
+    return 2
+  }
+
+  if (route === 'astra' && consent.outcome !== 'true') {
+    writeFileSync(options.out, consent.outcome === 'unknown'
+      ? 'REFUSED: Astra requires active GPT lane consent, and the consent setting could not be read; check executor_lane_consent in the plugin settings of this profile and project.\n'
+      : 'REFUSED: Astra requires active GPT lane consent.\n')
+    appendLine(options.out, 'EXIT=1')
+    return 1
+  }
+
+  if (route === 'astra' || (route === 'auto' && consent.outcome === 'true')) {
     const companion = dependencies.resolveCodexCompanion(env)
     if (!companion) {
       writeFileSync(options.out, 'REFUSED: GPT lane consent is active, but the Codex companion runtime is not installed; install the openai-codex plugin.\n')
@@ -182,6 +198,12 @@ export async function runSecondOpinion(options, dependencies = defaultSecondOpin
   const fableScopes = Array.isArray(quota.weekly_scoped)
     ? quota.weekly_scoped.filter((item) => /fable/i.test(String(item?.scope)) && Number.isFinite(item?.percent))
     : []
+  // No Fable scope means the guard has nothing to measure; silence is not headroom.
+  if (fableScopes.length === 0) {
+    appendLine(options.out, 'REFUSED: the quota probe reported no Claude Fable weekly scope, so the Fable quota guard cannot be applied.')
+    appendLine(options.out, 'EXIT=1')
+    return 1
+  }
   const percent = fableScopes.reduce((maximum, item) => Math.max(maximum, item.percent), -Infinity)
   if (percent >= threshold) {
     appendLine(options.out, `REFUSED: Claude Fable weekly scoped quota is ${percent}%, at or above the ${threshold}% limit.`)

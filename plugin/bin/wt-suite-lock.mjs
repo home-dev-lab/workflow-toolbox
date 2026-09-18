@@ -8,6 +8,8 @@ import {
   operatorReleaseSuiteLock,
   readSuiteLock,
   releaseSuiteLock,
+  spawnNeedsShell,
+  windowsShimArgumentRefusal,
 } from './lib/suite-lock.mjs'
 
 const USAGE = `Usage:
@@ -60,9 +62,13 @@ async function run(args) {
 
 function spawnCommand(command) {
   return new Promise((resolve, reject) => {
+    const refusal = windowsShimArgumentRefusal(command)
+    if (refusal) { reject(new Error(refusal)); return }
     const child = spawn(command[0], command.slice(1), {
       stdio: 'inherit',
-      shell: process.platform === 'win32',
+      // Per EXECUTABLE, never per platform: a blanket shell on win32 re-parses argv through cmd.exe
+      // and mangles quoted arguments (see spawnNeedsShell in lib/suite-lock.mjs).
+      shell: spawnNeedsShell(command[0]),
     })
     let forwardedSignal = null
     const forward = (signal) => {

@@ -87,6 +87,29 @@ hop, never free — multiplies along three axes:
 Batch guidance into fewer complete messages; require same of every coordinator — reporting
 per-step instead of per-milestone pays the envelope to say nothing.
 
+### What an envelope is made of — and why delegating is cheaper at the SAME tier
+
+The bill is **number of model calls × size of the re-read**. The overwhelming majority of the
+tokens billed on a turn are the conversation being re-ingested; what the session writes is
+negligible beside it. Both factors are yours to move, and the second is the one most often
+treated as fixed:
+
+- **A tool round IS a model call.** Five separate searches cost five full re-reads of the whole
+  conversation; the same five issued in one message cost one. Batching independent commands is a
+  multiple-fold saving on that step, not tidiness.
+- **The same tool round costs far less in a fresh context than in a loaded one** — a large enough
+  gap that delegating is cheaper than working inline EVEN WHEN the delegate is the same tier doing
+  the same work. "Too small to delegate" is backwards: the smaller the task, the higher the share
+  of its cost that is the re-read it triggers.
+- **A watcher wake on an idle session is a real, billed model call**, paid as a full re-read, and
+  on a long-idle session as a context rebuild. Keep watchers that wake for a REASON; a periodic
+  tick that wakes to find nothing pays the envelope to say nothing, exactly like a per-step
+  report. Event-driven, fewer wakes — never quieter wakes, since a watcher that goes silent to be
+  polite is indistinguishable from one that died.
+
+⚠ State the ratios you measure on your own setup rather than assuming these hold; what is
+structural is the SHAPE — calls times re-read — not any particular multiple.
+
 ## Picking the tier and effort at each spawn
 
 Choose BOTH axes by task, never by identity or what session happens to run:
@@ -169,7 +192,9 @@ unenforceable, silently ignored — agent grinding a wrong hypothesis feels busy
 only a counting rule fires regardless.
 
 Green report = EVIDENCE, not proof: rerun gates by exit code, read diff yourself before
-committing. Release agent (shutdown request) only when arc complete. Terminated/quota-killed
+committing. Arc complete → LEAVE the agent idle; do not send it a shutdown request. ⚠ Observed twice out of twice on one
+harness version: a shutdown request accepted by an in-process sub-agent was followed within seconds by the
+end of the SPAWNING session itself (unproven as a cause — no counter-example sought); an idle agent costs nothing. Terminated/quota-killed
 agent resumes from transcript on next message — try resuming before respawning; never spawn a
 successor into same worktree before predecessor's death confirmed (two writers corrupt one
 tree). Before assuming agent stuck, check observable state (git status, file mtimes, HEAD)
