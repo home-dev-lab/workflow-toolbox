@@ -80,6 +80,24 @@ describe('wt-merge-target-guard-hook', () => {
     expect(run('git merge -s ours source target').warned).toBe(true)
   })
 
+  it('WARN: valid git global options do not hide a multi-ref merge', () => {
+    expect(run('git -c merge.conflictStyle=diff3 merge source target').warned).toBe(true)
+    expect(run('git --no-pager merge source target').warned).toBe(true)
+  })
+
+  it('WARN: quoted refs remain merge arguments', () => {
+    expect(run('git merge "source" target').warned).toBe(true)
+  })
+
+  it('SILENT: heredoc body text is not parsed as a command', () => {
+    expect(run("cat <<'EOF' > script.sh\ngit merge source target\nEOF").stdout).toBe('')
+  })
+
+  it('SILENT: separate values for merge options are not counted as refs', () => {
+    expect(run('git merge --cleanup strip source').stdout).toBe('')
+    expect(run('git merge --log 20 source').stdout).toBe('')
+  })
+
   it('SILENT: merge state operations are excluded', () => {
     for (const operation of ['--abort', '--continue', '--quit']) {
       const r = run(`git merge ${operation}`)

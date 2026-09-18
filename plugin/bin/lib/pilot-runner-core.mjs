@@ -19,6 +19,9 @@ export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
 const POLL_MS = 250
 const MAX_UNPRODUCTIVE_TURNS = 3
+// A phase routinely runs for many minutes, so a 30-second grace would make the clean boundary stop dead code:
+// ten minutes lets a phase that is about to finish reach its boundary, and still bounds a hung one.
+export const TIMEOUT_BOUNDARY_GRACE_MS = 10 * 60_000
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 const NEXT_BY_PHASE = {
   discovery: 'transition discovery using the frozen route',
@@ -307,9 +310,19 @@ export async function runPilot(options, dependencies) {
     : null
   const resolveRoutedFinding = boardContract && board && typeof board.resolveRoutedCard === 'function' ? (card) => board.resolveRoutedCard(card) : null
   const abortController = new AbortController()
+  let timeoutGraceTimer = null
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const timeoutTimer = setTimer(() => {
-    if (lifecycleServer.requestStop('timeout')) log(`timeout requested; waiting for the ${lifecycleServer.state().phase} phase boundary`)
+    if (lifecycleServer.requestStop('timeout')) {
+      incompleteReason = 'timeout'
+      log(`timeout requested; waiting up to ${TIMEOUT_BOUNDARY_GRACE_MS / 60_000} min for the ${lifecycleServer.state().phase} phase boundary`)
+      timeoutGraceTimer = setTimer(() => {
+        if (!timeoutBoundary) {
+          log('timeout boundary grace elapsed; aborting the SDK run')
+          abortController.abort()
+        }
+      }, TIMEOUT_BOUNDARY_GRACE_MS)
+    }
   }, options.timeout * 1000)
 
   async function* prompt() {
@@ -426,6 +439,7 @@ export async function runPilot(options, dependencies) {
     }
   } finally {
     clearTimer(timeoutTimer)
+    if (timeoutGraceTimer !== null) clearTimer(timeoutGraceTimer)
   }
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.

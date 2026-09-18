@@ -17,6 +17,7 @@ import { decide } from './lib/actionability-core.mjs'
 import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { positiveMilliseconds, proposalAge } from './lib/proposal-age.mjs'
 import {
   stateRoot,
   projectStatePath,
@@ -25,7 +26,7 @@ import {
 } from './lib/actionability-state-paths.mjs'
 
 const STALE_AFTER_MS = Number(process.env.WT_ACTIONABLE_STALE_AFTER_MS || 2 * 60 * 60 * 1000)
-const PROPOSAL_MAX_AGE_MS = Number(process.env.WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS || 15 * 60 * 1000)
+const PROPOSAL_MAX_AGE_MS = positiveMilliseconds(process.env.WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS, 15 * 60 * 1000)
 const BLOCK_MAX = Number(process.env.WT_ACTIONABLE_BLOCK_MAX || 3)
 const INFLIGHT_MS = Number(process.env.WT_ACTIONABLE_INFLIGHT_MS || 3 * 60 * 1000)
 // Caps a DECLARED inFlightUntil from the moment the snapshot was WRITTEN (snapshot.at), never
@@ -362,11 +363,13 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, ma
   if (decision.reason === 'snapshot-stale' && finiteNumber(snapshot?.actionable)) {
     actionableLine = `${snapshot.actionable} actionable item(s) remain. ${actionableLine}`
   }
-  const snapshotAgeMs = snapshot?.status === 'present' && finiteNumber(snapshot.at) ? Math.max(0, now - snapshot.at) : null
-  const ageLine = snapshotAgeMs === null
+  const proposal = proposalAge(snapshot?.status === 'present' ? snapshot.at : null, now, PROPOSAL_MAX_AGE_MS)
+  const ageLine = proposal.reason === 'future'
+    ? 'The snapshot timestamp is in the future and is unusable for a proposal.'
+    : proposal.ageMs === null
     ? 'The snapshot is missing; age is unknown.'
-    : `Snapshot is ${formatSnapshotAge(snapshotAgeMs)} old.`
-  const proposalLine = snapshotAgeMs === null || snapshotAgeMs > PROPOSAL_MAX_AGE_MS
+    : `Snapshot is ${formatSnapshotAge(proposal.ageMs)} old.`
+  const proposalLine = !proposal.usable
     ? 'The gate is not proposing a card because the snapshot is stale or its age is unknown.'
     : `Next: ${decision.next ? decision.next : 'unknown'}.`
   // ⚠ ONE LINE, and the length lock below is what keeps it that way.

@@ -14,6 +14,8 @@ import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { assertCostReportMatches } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
 const CONTEXT_MODE_TOOLS = {
   batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`, doctor: `${CONTEXT_PREFIX}ctx_doctor`, execute: `${CONTEXT_PREFIX}ctx_execute`,
@@ -739,6 +741,38 @@ describe('SDK pilot runner', () => {
     expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { phase: 'tdd', reason: 'timeout' } })
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toMatchObject({ reason: 'bounded lifecycle spent: timeout', phase: 'tdd' })
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8')).phases.map((phase: { phase: string }) => phase.phase)).toEqual(['discovery', 'tdd'])
+  })
+
+  it('hard-aborts a stub SDK query that never reaches another phase boundary and archives timeout', async () => {
+    const f = fixture(); const timers: Array<() => void> = []; let aborted = false; let queryReady = false
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<unknown>, options: { abortController: AbortController } }) => (async function* () {
+      yield initMessage(); await prompt.next()
+      await new Promise<void>((resolve) => {
+        queryReady = true
+        options.abortController.signal.addEventListener('abort', () => { aborted = true; resolve() }, { once: true })
+      })
+    })()
+    const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, timeoutExplicit: true, hard: false }, {
+      query, resolvePilotModels: models,
+      setTimer: (callback: () => void) => { timers.push(callback); return timers.length }, clearTimer: () => {},
+    })
+    while (!queryReady) await new Promise((resolve) => setTimeout(resolve, 1))
+    timers[0]!()
+    expect(timers).toHaveLength(2)
+    timers[1]!()
+    const result = await running
+
+    expect(aborted).toBe(true)
+    expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: 'timeout', partial: { phase: 'discovery', reason: 'timeout' } } })
+    expect(JSON.parse(readFileSync(join(result.summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: { phase: 'discovery', reason: 'timeout' } })
+  })
+
+  it('refuses a report when any measured run-cost block disagrees with the receipt', () => {
+    const cost = { version: 2, route: 'LITE', outcome: { status: 'partial', reason: 'fixture' }, phases: [], totals: 'unknown', unknown: ['fixture'] }
+    const correct = costReportSection(cost)
+    const report = `# report\n\n${correct}\n<!-- run-cost -->\nforged\n<!-- /run-cost -->\n`
+    expect(() => assertCostReportMatches({ report, cost, reportPath: '/report.md', costPath: '/cost.json' }))
+      .toThrow(/cost report consistency refused/)
   })
 
   it('writes final receipts and an external partial archive when the initialized SDK stream throws', async () => {

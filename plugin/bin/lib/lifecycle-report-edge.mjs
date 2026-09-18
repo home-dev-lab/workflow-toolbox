@@ -7,7 +7,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { costReportSection } from './run-cost-core.mjs'
 
 const WORKTREE_RETENTION_FILE = path.join('.lane', 'worktree-retention.json')
-const COST_BLOCK = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/
+const COST_BLOCK = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/g
 
 function archiveFile(file) {
   let stat
@@ -43,12 +43,14 @@ function divergentCostLine(expected, actual) {
 }
 
 export function assertCostReportMatches({ report, cost, reportPath, costPath }) {
-  const block = report?.match(COST_BLOCK)?.[0] ?? null
-  if (block === null) throw new Error(`cost report consistency refused: missing Measured Run Cost block in ${reportPath}; cost receipt is ${costPath}`)
+  const blocks = report?.match(COST_BLOCK) ?? []
+  if (blocks.length === 0) throw new Error(`cost report consistency refused: missing Measured Run Cost block in ${reportPath}; cost receipt is ${costPath}`)
   const expected = costReportSection(cost).trimEnd()
-  if (block === expected) return
-  // Never repair a stale report here: doing so would hide the ordering hazard this publication check exists to expose.
-  throw new Error(`cost report consistency refused: first divergent row ${divergentCostLine(expected, block)}; report ${reportPath}; cost ${costPath}`)
+  for (const [index, block] of blocks.entries()) {
+    if (block === expected) continue
+    // Never repair a stale report here: doing so would hide the ordering hazard this publication check exists to expose.
+    throw new Error(`cost report consistency refused: first divergent row ${divergentCostLine(expected, block)}; report ${reportPath}; cost ${costPath}${index === 0 ? '' : `; block ${index + 1}`}`)
+  }
 }
 
 function assertArchiveCostReport(directory, publishedDirectory = directory) {

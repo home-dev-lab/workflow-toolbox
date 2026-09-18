@@ -593,11 +593,12 @@ function phaseCostRows(phases) {
   for (const phase of Array.isArray(phases) ? phases : []) {
     const id = phaseOf(phase?.phase);
     if (id === UNKNOWN) continue;
-    if ((Array.isArray(phase.unknown) && phase.unknown.length) || !phase.models || typeof phase.models !== 'object') {
+    if (result[id] === UNKNOWN || (Array.isArray(phase.unknown) && phase.unknown.length) || !phase.models || typeof phase.models !== 'object') {
       result[id] = UNKNOWN;
       continue;
     }
-    const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const previous = result[id];
+    const totals = previous ? { input: previous.input, output: previous.output, cacheRead: previous.cacheRead, cacheWrite: previous.cacheWrite } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     let measured = false; let incomplete = false;
     for (const model of Object.values(phase.models)) {
       const values = {
@@ -610,7 +611,7 @@ function phaseCostRows(phases) {
       measured = true;
       for (const key of Object.keys(totals)) totals[key] += values[key];
     }
-    result[id] = measured && !incomplete ? { ...totals, total: Object.values(totals).reduce((sum, value) => sum + value, 0) } : UNKNOWN;
+    result[id] = measured && !incomplete ? { input: totals.input, output: totals.output, cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite, total: totals.input + totals.output + totals.cacheRead + totals.cacheWrite } : UNKNOWN;
   }
   return result;
 }
@@ -625,8 +626,9 @@ function livePhaseCosts(worktree, timeline) {
       cacheRead: tokenValue(usageValue, 'cache_read', 'cache_read_input_tokens', 'cacheRead', 'tokens_cache_read'),
       cacheWrite: tokenValue(usageValue, 'cache_write', 'cache_creation', 'cache_creation_input_tokens', 'cacheWrite', 'tokens_cache_write'),
     };
-    // Live SDK receipts omit zero-valued cache fields on some versions; an absent token field is a measured zero.
-    for (const key of Object.keys(values)) if (values[key] === null) values[key] = 0;
+    if (values.input === null || values.output === null) { unknown.add(id); return; }
+    // Live SDK receipts omit zero-valued cache fields on some versions; only absent cache fields are measured zero.
+    for (const key of ['cacheRead', 'cacheWrite']) if (values[key] === null) values[key] = 0;
     const target = buckets.get(id) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     for (const key of Object.keys(target)) target[key] += values[key];
     buckets.set(id, target);
@@ -658,6 +660,7 @@ function phaseCosts(worktree, timeline) {
     const archiveCost = path.join(archivePath, 'cost.json');
     const cost = json(archiveCost);
     if (cost) return { costs: phaseCostRows(cost.phases), source: archiveCost, kind: 'archive cost.json' };
+    if (slice(archiveCost, JSON_BYTES, false, true) !== null) return { costs: Object.fromEntries(PHASES.map(phase => [phase, UNKNOWN])), source: archiveCost, kind: 'malformed archive cost.json' };
   }
   const live = livePhaseCosts(worktree, timeline);
   return { ...live, kind: live.source ? 'live usage file' : null };
