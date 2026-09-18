@@ -5,7 +5,37 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
-## [0.183.0] - 2026-09-18
+## [0.183.1] - 2026-09-18
+
+### Fixed
+- The 0.183.0 quality gate failed on every CI system: seven ESLint warnings above the 687 ratchet and one knip issue above 221, introduced by that release and named in its own notes. They are resorbed by behaviour-neutral rewrites (two nested template literals, four nested conditionals, one useless assignment, and one internal helper that no longer needs to be exported); no ratchet was raised and no rule was disabled.
+- The test suite no longer reads the machine it runs on: the plugin command-line tools and hooks it launches get a sealed home, config, state, npm and plugin-data directory, and a census test fails when a new test lets a child process inherit them without a stated reason.
+- The SDK lifecycle tests no longer fail intermittently under load. Their shared helpers now check every step and stop at the first refusal; their fake gates wait until the file timestamp is really newer than the lane receipt, which a clock that steps back had broken; and fake lanes that are expected to succeed get a realistic wait instead of one second.
+
+### Quality
+- Delta measured on the release tree (`pnpm quality:delta`). "Before" is the stored quality baseline, which is still the one recorded at 0.181.0 (it was not refreshed at 0.182.0 or 0.183.0, and is not refreshed now, so no regression gets recorded as the new normal):
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 127 | 0 | 72 -> 77 | - |
+| Cognitive complexity | 261 -> 277 | +16 | - -> - | - |
+| Biggest file (lines) | 2729 -> 2729 | 0 | - -> - | - |
+| Longest function (lines) | 708 -> 694 | -14 | - -> - | - |
+| Max depth | 7 -> 7 | 0 | - -> - | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 687 -> 687 | 0 | 11 -> 11 | - |
+| Duplication % | 2.89 -> 2.81 | -0.07 | - -> - | - |
+| Knip issues | 221 -> 221 | 0 | - -> - | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 76.96 | +34.96 | - -> - | - |
+| Coverage branches % | 40.12 -> 68.12 | +28 | - -> - | - |
+| Coverage functions % | 44.48 -> 77.98 | +33.5 | - -> - | - |
+| Coverage statements % | 40.62 -> 74.25 | +33.63 | - -> - | - |
+
+- Read plainly: the two ratchets that failed 0.183.0 in CI are back at their ceilings (ESLint 687, knip 221) and `pnpm quality` exits 0 on this tree. Cognitive complexity +16 against the baseline is the debt carried since 0.183.0, unchanged by this patch. Coverage is the instrument repair of 0.183.0.
+- Windows: 30 tests in 6 files were red on the 0.183.0 tag run; this patch does not address them.
+- SDK Runner status unchanged: EXPERIMENTAL.
+
 
 ### Added
 - The second-opinion CLI now accepts `--route auto|astra|fable`, allowing callers to force the existing quota-guarded Fable route or require consented Astra without silent fallback. A route outside those three is refused by the library as well as by the CLI, and a forced-Astra refusal says so when the consent setting could not be read.
