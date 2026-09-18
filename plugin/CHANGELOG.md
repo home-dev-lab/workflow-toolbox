@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.183.0] - 2026-09-18
+
 ### Added
 - The second-opinion CLI now accepts `--route auto|astra|fable`, allowing callers to force the existing quota-guarded Fable route or require consented Astra without silent fallback. A route outside those three is refused by the library as well as by the CLI, and a forced-Astra refusal says so when the consent setting could not be read.
 - Lifecycle archive publication now verifies that a report's measured-cost block exactly matches its adjacent `cost.json`, refusing stale, unpaired, or unreadable receipts before the destination is published.
@@ -26,6 +28,35 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Main-guard one-shot allowances now key consumption to `tool_use_id`, so duplicate hook registrations agree on one Bash call while a later call is refused; SessionStart warns when an enabled marketplace copy overlaps the current plugin root, and the guard now states that API/`gh` deletions are outside its Bash-text coverage.
 - Run-cost reconciliation now attributes each lane through its recorded executor/model family, reading Claude usage receipts or matching OpenCode session rows per lane, and reports family-specific unknowns instead of applying the run executor to every lane.
 - The suite lock decides the Windows command shell per EXECUTABLE instead of per platform: a `.cmd`/`.bat` shim (including a bare name that PATHEXT resolves to one) still runs through the shell, every other command is spawned directly, so quoted arguments are no longer re-parsed by `cmd.exe`.
+
+### Quality
+- Delta since 0.182.0, measured on the release tree (`pnpm quality:delta`):
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 127 | 0 | 112 -> 127 | - |
+| Cognitive complexity | 261 -> 277 | +16 | 261 -> 277 | - |
+| Biggest file (lines) | 2729 -> 2729 | 0 | 1747 -> 1752 | - |
+| Longest function (lines) | 708 -> 694 | -14 | 708 -> 694 | plugin/bin/lib/lifecycle-state-machine.mjs |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 687 -> 694 | +7 | 41 -> 41 | plugin/hooks/hooks.js |
+| Duplication % | 2.89 -> 2.81 | -0.07 | 150 -> 150 | - |
+| Knip issues | 221 -> 222 | +1 | 4 -> 5 | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 77 | +35 | - -> - | - |
+| Coverage branches % | 40.12 -> 68.19 | +28.07 | - -> - | - |
+| Coverage functions % | 44.48 -> 78.08 | +33.6 | - -> - | - |
+| Coverage statements % | 40.62 -> 74.29 | +33.67 | - -> - | - |
+
+- Read plainly: the coverage jump is an INSTRUMENT repair, not new tests alone — coverage now counts code exercised through
+  spawned processes (lines 42 % -> 77 %), and the vitest thresholds were raised to the measured floor (76.3 / 67.5 / 77.5 /
+  73.6). The longest function and duplication went down. THREE judges went the wrong way and no ratchet was loosened for
+  them: cognitive complexity +16 (worst 277), ESLint warnings +7 (694, above the 687 ratchet that `pnpm quality:lint`
+  enforces — it fails until those seven are resorbed), knip issues +1 (222 against 221). They are debt of this release,
+  tracked, not accepted as the new normal.
+- SDK Runner status unchanged: EXPERIMENTAL. No real LITE run has ever been made and every real FULL run so far ended
+  partial at the plan gate; both lifecycle loops now allow three passes in all.
 
 ## [0.182.0] - 2026-09-17
 
