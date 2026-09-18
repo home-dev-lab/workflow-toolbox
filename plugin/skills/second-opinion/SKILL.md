@@ -6,6 +6,11 @@ description: >
   Astra when GPT-lane consent and its runtime are available, otherwise Claude
   Fable when its scoped quota permits. The main session keeps the task, edits,
   verification, and final decision.
+when_to_use: >
+  Use for a difficult, ambiguous, high-risk, or stuck question that needs one
+  independent challenge. Force Fable when the session is not on Fable and the
+  question is ours to arbitrate, such as grounding a card or confirming a
+  verdict. Force Astra when a decorrelated model family is wanted.
 ---
 
 # Second opinion
@@ -40,6 +45,11 @@ Choose effort once: `low` for a scoped challenge or review, `medium` for an
 unclear cause or real trade-off, and `high` for failed attempts, subtle
 cross-system behavior, or an expensive-to-reverse decision.
 
+Choose `auto` to preserve consent-based routing. Choose `fable` only when the
+session is not on Fable and the question is ours to arbitrate, such as grounding
+a card or confirming a verdict. Choose `astra` when a decorrelated model family
+is wanted.
+
 ## Launch detached
 
 Run from the repository the question concerns. Use absolute paths for the
@@ -48,6 +58,7 @@ request and output files.
 ```bash
 setsid nohup node "${CLAUDE_PLUGIN_ROOT}/bin/wt-second-opinion.mjs" \
   --request <request-file> --out <out-file> --effort <low|medium|high> \
+  --route <auto|astra|fable> \
   --repo <repository> >/dev/null 2>&1 < /dev/null &
 ```
 

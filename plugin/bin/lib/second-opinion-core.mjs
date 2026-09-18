@@ -123,8 +123,24 @@ export const defaultSecondOpinionDependencies = {
 export async function runSecondOpinion(options, dependencies = defaultSecondOpinionDependencies, env = process.env) {
   const request = readFileSync(options.request, 'utf8')
   const consent = resolveConsent(options.repo, env)
+  const route = options.route ?? 'auto'
 
-  if (consent.outcome === 'true') {
+  // The CLI validates the value; a direct caller gets the same refusal rather than a silent Fable run.
+  if (!['auto', 'astra', 'fable'].includes(route)) {
+    writeFileSync(options.out, `REFUSED: unknown route ${JSON.stringify(route)}; use auto, astra, or fable.\n`)
+    appendLine(options.out, 'EXIT=2')
+    return 2
+  }
+
+  if (route === 'astra' && consent.outcome !== 'true') {
+    writeFileSync(options.out, consent.outcome === 'unknown'
+      ? 'REFUSED: Astra requires active GPT lane consent, and the consent setting could not be read; check executor_lane_consent in the plugin settings of this profile and project.\n'
+      : 'REFUSED: Astra requires active GPT lane consent.\n')
+    appendLine(options.out, 'EXIT=1')
+    return 1
+  }
+
+  if (route === 'astra' || (route === 'auto' && consent.outcome === 'true')) {
     const companion = dependencies.resolveCodexCompanion(env)
     if (!companion) {
       writeFileSync(options.out, 'REFUSED: GPT lane consent is active, but the Codex companion runtime is not installed; install the openai-codex plugin.\n')
