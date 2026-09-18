@@ -4,6 +4,23 @@ import { stripAnsiAndControl } from './text-sanitize.js';
 
 const PANE_ID = 'wt-what-is-running';
 export const COLLECTOR_TIMEOUT_MS = 8000;
+export const SLOW_RENDER_THRESHOLD_MS = 50;
+export const MISSED_RENDERS_BEFORE_STOP = 3;
+export const RENDER_JOURNAL_MAX_BYTES = 64 * 1024;
+const RENDER_JOURNAL_PROGRAM = String.raw`
+const fs = require('node:fs');
+const path = require('node:path');
+const [file, line, maxText] = process.argv.slice(1);
+const max = Number(maxText);
+fs.mkdirSync(path.dirname(file), { recursive: true });
+let lines = [];
+try { lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean); } catch {}
+lines.push(line);
+while (lines.length > 1 && Buffer.byteLength(lines.join('\n') + '\n') > max) lines.shift();
+let output = lines.join('\n') + '\n';
+if (Buffer.byteLength(output) > max) output = line.slice(0, Math.max(0, max - 1)) + '\n';
+fs.writeFileSync(file, output);
+`;
 export const WORKFLOW_TOOLBOX_LAYOUT = Object.freeze({
   laneDirName: '.lane',
   worktreesDirName: 'worktrees',
@@ -115,10 +132,25 @@ function node(Component, props = {}, ...children) {
   return Component(kept.length ? { ...props, children: kept } : props);
 }
 
-function sanitizeRenderedText(value) {
-  if (typeof value === 'string') return stripAnsiAndControl(value).replace(/\[/g, '(').replace(/\]/g, ')');
-  if (Array.isArray(value)) return value.map(sanitizeRenderedText);
+function sanitizeRenderedText(value, repairs, path = '$') {
+  if (typeof value === 'string') {
+    const stripped = stripAnsiAndControl(value);
+    if (repairs && stripped !== value) repairs.push({ path, before: value, after: stripped });
+    return stripped.replace(/\[/g, '(').replace(/\]/g, ')');
+  }
+  if (Array.isArray(value)) return value.map((item, index) => sanitizeRenderedText(item, repairs, `${path}[${index}]`));
   return value;
+}
+
+export function sanitizePaneTree(value, path = '$', repairs = []) {
+  if (typeof value === 'string') {
+    const sanitized = stripAnsiAndControl(value);
+    if (sanitized !== value) repairs.push({ path, before: value, after: sanitized });
+    return sanitized;
+  }
+  if (Array.isArray(value)) return value.map((item, index) => sanitizePaneTree(item, `${path}[${index}]`, repairs));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizePaneTree(item, `${path}.${key}`, repairs)]));
 }
 
 export function isValidLinkHref(href) {
@@ -168,10 +200,12 @@ function knownDetails(row) {
   return details;
 }
 
-function renderPane(ui, snapshot, expanded, selected, currentProject, allProjects, actions) {
+export function renderPane(ui, snapshot, expanded, selected, currentProject, allProjects, actions) {
   const { Box, Button, Link } = ui;
+  const repairs = [];
+  let textIndex = 0;
   const Text = (props = {}) => ui.Text(Object.hasOwn(props, 'children')
-    ? { ...props, children: sanitizeRenderedText(props.children) }
+    ? { ...props, children: sanitizeRenderedText(props.children, repairs, `$.Text[${textIndex++}].props.children`) }
     : props);
   const buttonLabel = (label) => `[${label}]`;
   const fixed = (...children) => node(Box, { flexShrink: 0 }, ...children);
@@ -436,7 +470,7 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
   let lines = grouped;
   if (snapshot.discovery === 'unknown') lines = [node(Text, { dimColor: true }, unavailableText)];
   else if (!grouped.length) lines = [node(Text, { dimColor: true }, 'Nothing running in the background.')];
-  return node(Box, { flexDirection: 'column' },
+  const tree = node(Box, { flexDirection: 'column' },
     node(Box, { flexDirection: 'row', columnGap: 2 },
       fixedText({ bold: true }, 'What is running'),
       fixedText({ dimColor: true }, allProjects ? 'Scope: all projects' : `Scope: this project · ${currentProject}`),
@@ -445,6 +479,19 @@ function renderPane(ui, snapshot, expanded, selected, currentProject, allProject
       control({ key: 'close', plain: true, onPress: actions.close }, 'Close', COLORS.close),
     ),
     ...lines,
+  );
+  const sanitized = sanitizePaneTree(tree, '$', repairs);
+  if (repairs.length) actions.onRepair?.(repairs);
+  return sanitized;
+}
+
+function renderFailurePane(ui, close, error) {
+  const detail = stripAnsiAndControl(String(error?.message || error || 'unknown error')).slice(0, 160);
+  return node(ui.Box, { flexDirection: 'column' },
+    node(ui.Text, { bold: true }, 'What is running'),
+    node(ui.Text, { color: COLORS.error, wrap: 'wrap' }, `The display failed: ${detail}`),
+    node(ui.Box, { key: 'control:close', flexShrink: 0, backgroundColor: COLORS.close },
+      node(ui.Button, { key: 'close', plain: true, hover: { color: 'black', backgroundColor: 'whiteBright', bold: true }, onPress: close }, '[Close]')),
   );
 }
 
@@ -456,6 +503,9 @@ export const registerWithLayout = (on, options, layout) => {
   let snapshot = UNKNOWN_SNAPSHOT;
   let generation = 0;
   let paneObserved = false;
+  let missedRenders = 0;
+  let closedOnPurpose = false;
+  let openedHere = false;
   let refreshing = false;
   let processRefusalStreaks = new Map();
   let currentProject = null;
@@ -463,6 +513,19 @@ export const registerWithLayout = (on, options, layout) => {
   const expanded = new Set();
   const selected = new Map();
   const pollMs = Number(options?.pollMs) > 0 ? Number(options.pollMs) : 2000;
+  const slowRenderMs = Number(options?.slowRenderMs) >= 0 ? Number(options.slowRenderMs) : SLOW_RENDER_THRESHOLD_MS;
+
+  const recordRenderEvent = (kind, detail, viewport) => {
+    if (!host) return;
+    const event = JSON.stringify({
+      timestamp: new Date().toISOString(),
+      kind,
+      detail: stripAnsiAndControl(String(detail || '')).slice(0, 240),
+      viewport: { columns: viewport?.bodyColumns ?? null, rows: viewport?.bodyRows ?? null },
+    });
+    // Diagnostics must never become another render failure. The subprocess keeps all file access outside the hook sandbox.
+    void host.appendJournal(event).catch(() => {});
+  };
 
   const stopPolling = (request) => {
     if (request !== undefined && request !== generation) return;
@@ -497,6 +560,7 @@ export const registerWithLayout = (on, options, layout) => {
   };
   const close = async () => {
     if (!host) return;
+    closedOnPurpose = true;
     stopPolling();
     const closing = host.close({ id: PANE_ID });
     await closing;
@@ -508,18 +572,35 @@ export const registerWithLayout = (on, options, layout) => {
         return;
       }
       if (refreshing) return;
+      // No render since the last tick is how a pane closed by the host's own cross is noticed. One miss is not
+      // that: a tick can land between the end of a collection and the render it asked for.
       if (!paneObserved) {
-        stopPolling(request);
-        return;
-      }
+        missedRenders += 1;
+        if (missedRenders >= MISSED_RENDERS_BEFORE_STOP) {
+          stopPolling(request);
+          return;
+        }
+      } else missedRenders = 0;
       paneObserved = false;
       await refresh(request);
     });
+  };
+  // The host renders only a pane that is on screen. A render of ours while polling is stopped, without a
+  // deliberate close, means the no-render detector was wrong: come back instead of leaving an empty frame.
+  const rearm = () => {
+    const request = generation;
+    open = true;
+    missedRenders = 0;
+    startPolling(request);
+    void refresh(request).catch(() => {});
   };
   const show = async (focus = true) => {
     if (!host) return;
     stopPolling();
     processRefusalStreaks.clear();
+    closedOnPurpose = false;
+    openedHere = true;
+    missedRenders = 0;
     const request = generation;
     open = true;
     allProjects = false;
@@ -531,13 +612,15 @@ export const registerWithLayout = (on, options, layout) => {
     currentProject = pathBase(projectRootOf(event.cwd));
     let snapshotFile;
     try { snapshotFile = await $.env.get('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch { snapshotFile = undefined; }
+    const paths = await pathsOf($, options, event.cwd);
     host = {
-      paths: await pathsOf($, options, event.cwd),
-      readSnapshot: (paths) => readSnapshot({ env: { get: async () => snapshotFile }, process: { run: (argv) => $.process.run(argv) } }, paths, layout),
+      paths,
+      readSnapshot: (paths) => readSnapshot({ env: { get: async () => snapshotFile }, process: { run: (argv, init) => $.process.run(argv, init) } }, paths, layout),
       invalidate: () => $.ui.invalidate('ui.render'),
       open: (pane) => $.ui.open(pane),
       close: (pane) => $.ui.close(pane),
       every: (ms, fn) => $.clock.every(ms, fn),
+      appendJournal: (line) => $.process.run(['node', '-e', RENDER_JOURNAL_PROGRAM, pathJoin(pathJoin(paths.configDir, 'plugins/data'), 'wt-what-is-running-render.jsonl'), line, String(RENDER_JOURNAL_MAX_BYTES)]),
     };
     try { await $.command.register({ name: 'wir', description: 'Open the What is running view' }); }
     catch { await $.ui.log('wt-what-is-running: /wir unavailable'); }
@@ -554,19 +637,34 @@ export const registerWithLayout = (on, options, layout) => {
   on('ui.render', { component: 'Pane' }, async ($, event, next) => {
     const result = await next(event);
     if (event.requestId !== PANE_ID) return result;
-    if (!open) return result;
+    if (!open) {
+      // Only the registration that opened this pane may bring it back: another session never adopts it.
+      if (!host || !openedHere || closedOnPurpose) return result;
+      recordRenderEvent('rearmed', 'the host rendered the pane after the no-render detector had stopped it', event.props);
+      rearm();
+    }
     paneObserved = true;
     let ui;
     try { ui = await $.ui.resolve(event); } catch { return result; }
     if (!ui?.Box || !ui?.Text || !ui?.Button) return result;
-    return renderPane(ui, snapshot, expanded, selected, currentProject, allProjects, {
-      close,
-      switchScope: () => { allProjects = !allProjects; $.ui.invalidate('ui.render'); },
-      toggle: (id) => { expanded.has(id) ? expanded.delete(id) : expanded.add(id); $.ui.invalidate('ui.render'); },
-      select: (id, phase) => { selected.get(id) === phase ? selected.delete(id) : selected.set(id, phase); $.ui.invalidate('ui.render'); },
-      closeView: (id) => { selected.delete(id); $.ui.invalidate('ui.render'); },
-      bodyColumns: event.props?.bodyColumns,
-    });
+    const startedAt = Date.now();
+    try {
+      const tree = renderPane(ui, snapshot, expanded, selected, currentProject, allProjects, {
+        close,
+        switchScope: () => { allProjects = !allProjects; $.ui.invalidate('ui.render'); },
+        toggle: (id) => { expanded.has(id) ? expanded.delete(id) : expanded.add(id); $.ui.invalidate('ui.render'); },
+        select: (id, phase) => { selected.get(id) === phase ? selected.delete(id) : selected.set(id, phase); $.ui.invalidate('ui.render'); },
+        closeView: (id) => { selected.delete(id); $.ui.invalidate('ui.render'); },
+        bodyColumns: event.props?.bodyColumns,
+        onRepair: (repairs) => recordRenderEvent('repaired-tree', `${repairs.length} string(s); first ${repairs[0].path}`, event.props),
+      });
+      const elapsedMs = Date.now() - startedAt;
+      if (elapsedMs > slowRenderMs) recordRenderEvent('slow-render', `${elapsedMs} ms (threshold ${slowRenderMs} ms)`, event.props);
+      return tree;
+    } catch (error) {
+      recordRenderEvent('render-throw', error?.message || error || 'unknown error', event.props);
+      return renderFailurePane(ui, close, error);
+    }
   });
 
   on('ui.render', { component: 'PromptHint' }, async ($, event, next) => {

@@ -1936,6 +1936,11 @@ await test('polling is 2 seconds and stops after host-side pane disposal', async
   await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
   await timer.fn();
   assert(!timer.cancelled);
+  // One tick without a render is a collection racing its own redraw, not a disposed pane: the third miss stops it.
+  await timer.fn();
+  assert(!timer.cancelled);
+  await timer.fn();
+  assert(!timer.cancelled);
   await timer.fn();
   assert(timer.cancelled);
 });
