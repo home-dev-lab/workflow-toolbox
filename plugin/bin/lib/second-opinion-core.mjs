@@ -198,6 +198,12 @@ export async function runSecondOpinion(options, dependencies = defaultSecondOpin
   const fableScopes = Array.isArray(quota.weekly_scoped)
     ? quota.weekly_scoped.filter((item) => /fable/i.test(String(item?.scope)) && Number.isFinite(item?.percent))
     : []
+  // No Fable scope means the guard has nothing to measure; silence is not headroom.
+  if (fableScopes.length === 0) {
+    appendLine(options.out, 'REFUSED: the quota probe reported no Claude Fable weekly scope, so the Fable quota guard cannot be applied.')
+    appendLine(options.out, 'EXIT=1')
+    return 1
+  }
   const percent = fableScopes.reduce((maximum, item) => Math.max(maximum, item.percent), -Infinity)
   if (percent >= threshold) {
     appendLine(options.out, `REFUSED: Claude Fable weekly scoped quota is ${percent}%, at or above the ${threshold}% limit.`)
