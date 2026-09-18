@@ -34,7 +34,10 @@ const commonTestConfig = {
   // never named WT_GUARD_JOURNAL_DIR); globalSetup makes a REGRESSION of that default
   // mechanically fail the suite instead of silently reintroducing the leak. See both files'
   // own headers for why this is two layers, not one.
-  setupFiles: ['./test-support/guard-journal-isolation.setup.ts'],
+  setupFiles: [
+    './test-support/guard-journal-isolation.setup.ts',
+    './test-support/child-process-coverage.setup.ts',
+  ],
   globalSetup: ['./test-support/guard-journal-isolation.global-setup.ts'],
 }
 
@@ -63,7 +66,8 @@ export default defineConfig({
       },
     ],
     coverage: {
-      provider: 'v8',
+      provider: 'custom',
+      customProviderModule: './scripts/child-process-coverage-provider.mjs',
       allowExternal: true,
       reportOnFailure: true,
       reporter: ['text', 'json-summary'],
@@ -77,15 +81,15 @@ export default defineConfig({
         '../plugin/bin/**/*fixture*',
       ],
       thresholds: {
-        // ratchet 2026-09-17: 0.3 points below the observed floor (42.02 / 40.10 / 44.43 / 40.63 on
-        // develop a94fc461). A threshold pinned at the exact floor fails on the first timed-out or
+        // ratchet 2026-09-18: 0.3 points below the child-process-aware observed floor
+        // (76.69 / 67.81 / 77.85 / 73.91). A threshold pinned at the exact floor fails on the first timed-out or
         // skipped test (one 30 s fs.watch timeout moved functions by 0.04 and branches by 0.01);
         // the margin absorbs one such flake, never a real regression, which lands whole points.
         // Real improvement is judged by scripts/quality.mjs against quality-baseline.json, not here.
-        lines: 41.7,
-        branches: 39.8,
-        functions: 44.1,
-        statements: 40.3,
+        lines: 76.3,
+        branches: 67.5,
+        functions: 77.5,
+        statements: 73.6,
       },
     },
   },
