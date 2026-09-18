@@ -149,6 +149,13 @@ export function resolveWindowsExecutable(executable, options = {}) {
   const env = options.env ?? process.env
   const exists = options.exists ?? ((candidate) => { try { return statSync(candidate).isFile() } catch { return false } })
   const pathExt = String(env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+  if (String(executable).includes('/') || String(executable).includes('\\')) {
+    for (const extension of pathExt) {
+      const candidate = `${executable}${extension}`
+      if (exists(candidate)) return candidate
+    }
+    return null
+  }
   const searchPath = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean)
   for (const directory of searchPath) {
     for (const extension of pathExt) {
@@ -166,7 +173,12 @@ export function spawnNeedsShell(executable, options = {}) {
   if (!name) return false
   const extension = path.extname(name).toLowerCase()
   if (extension) return WINDOWS_SHELL_EXTENSIONS.has(extension)
-  if (name.includes('/') || name.includes('\\')) return false
   const resolved = options.resolve ? options.resolve(name) : resolveWindowsExecutable(name, options)
   return resolved ? WINDOWS_SHELL_EXTENSIONS.has(path.extname(resolved).toLowerCase()) : false
+}
+
+export function windowsShimArgumentRefusal(command, options = {}) {
+  if (!Array.isArray(command) || !spawnNeedsShell(command[0], options)) return null
+  const unsafe = command.slice(1).find((argument) => /[\r\n"%!^&|<>()]/.test(String(argument)))
+  return unsafe === undefined ? null : `unsafe Windows shim argument refused because cmd.exe would re-parse it: ${JSON.stringify(String(unsafe))}`
 }

@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { createRequire } from 'node:module'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
@@ -29,6 +30,7 @@ const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
 const PLUGIN_ROOT = join(ROOT, 'plugin')
 const SDK_RESOLVER = join(PLUGIN_ROOT, 'bin/lib/sdk-resolution.mjs')
+const ZOD_ROOT = dirname(createRequire(import.meta.url).resolve('zod/package.json'))
 // The runner now REQUIRES a valid first `system:init` receipt: a fake stream without one used to
 // pass while proving nothing about whether any plugin or lifecycle tool ever loaded.
 const initMessage = (model?: string) => ({
@@ -337,22 +339,23 @@ describe('SDK pilot runner', () => {
   it('exits with code 1 after a refused initialization receipt even when the SDK leaves a handle alive', () => {
     const f = fixture()
     const packageDir = join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
-    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+    symlinkSync(ZOD_ROOT, join(f.dir, 'node_modules', 'zod'), 'dir')
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', type: 'module', main: 'index.mjs' }))
     const init = { ...initMessage('sonnet'), skills: [] }
-    writeFileSync(join(packageDir, 'index.cjs'), [
+    writeFileSync(join(packageDir, 'index.mjs'), [
+      `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(join(f.root, 'loaded-sdk.txt'))}, 'fixture-sdk')`,
       'setInterval(() => {}, 1000)',
-      'module.exports = {',
-      `  query: () => (async function* () { yield ${JSON.stringify(init)} })(),`,
-      '  createSdkMcpServer: (options) => ({ type: "sdk", name: options.name, instance: {} }),',
-      '  tool: (name, description, schema, handler) => ({ name, description, schema, handler }),',
-      '}',
+      `export const query = () => (async function* () { yield ${JSON.stringify(init)} })()`,
+      'export const createSdkMcpServer = (options) => ({ type: "sdk", name: options.name, instance: {} })',
+      'export const tool = (name, description, schema, handler) => ({ name, description, schema, handler })',
     ].join('\n'))
     const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
-      encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_PATH: '', WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') },
+      encoding: 'utf8', timeout: 20_000, env: { ...process.env, NODE_ENV: 'test', NODE_PATH: '', WT_PILOT_TEST_SDK_MANIFEST: join(f.dir, 'package.json'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') },
     })
     expect(result.signal).toBeNull()
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('missingSkills')
+    expect(readFileSync(join(f.root, 'loaded-sdk.txt'), 'utf8')).toBe('fixture-sdk')
   })
 
   it('starts SDK resolution from an installed plugin using the target project', () => {

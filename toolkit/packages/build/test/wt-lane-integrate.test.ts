@@ -2,11 +2,13 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { integrateLane, parseIntegrateArgs } from '../../../../plugin/bin/lib/lane-integrate.mjs'
 
 const roots: string[] = []
+const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
 const HERMETIC = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
 
 afterEach(() => {
@@ -113,6 +115,25 @@ describe('lane integration', () => {
     expect(f.stderr.join('\n')).toContain('same repository')
   })
 
+  it('integrates a clean lane that is already ahead without trying to commit nothing', async () => {
+    const f = fixture(); writeFileSync(join(f.lane, 'ahead.txt'), 'ahead\n')
+    git(f.lane, 'add', 'ahead.txt'); git(f.lane, 'commit', '-qm', 'already committed')
+    writeFileSync(f.report, '# Report\n\n## Verification\nCommitted changes passed focused tests.\n')
+
+    expect(await integrateLane(options(f)), f.stderr.join('\n')).toBe(0)
+    expect(git(f.into, 'show', 'HEAD:ahead.txt')).toBe('ahead')
+  })
+
+  it('refuses a dirty integration worktree before committing or merging the lane', async () => {
+    const f = fixture(); writeFileSync(join(f.lane, 'change.txt'), 'lane\n'); writeFileSync(join(f.into, 'local-notes.txt'), 'local\n')
+    const laneHead = git(f.lane, 'rev-parse', 'HEAD'); const intoHead = git(f.into, 'rev-parse', 'HEAD')
+
+    expect(await integrateLane(options(f))).toBe(1)
+    expect(f.stderr.join('\n')).toContain('integration worktree is dirty')
+    expect(git(f.lane, 'rev-parse', 'HEAD')).toBe(laneHead)
+    expect(git(f.into, 'rev-parse', 'HEAD')).toBe(intoHead)
+  })
+
   it('resolves a CHANGELOG-only conflict with ours before theirs', async () => {
     const f = fixture()
     writeFileSync(join(f.into, 'plugin', 'CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n- ours\n')
@@ -134,6 +155,21 @@ describe('lane integration', () => {
     expect(f.stderr.join('\n')).toContain('base.txt')
     expect(existsSync(join(f.repository, '.git', 'worktrees', 'into', 'MERGE_HEAD'))).toBe(false)
     expect(f.stdout.at(-1)).toBe('step 3 merge: EXIT=1')
+  })
+
+  it('aborts a CHANGELOG-only merge when the resolution commit fails', async () => {
+    const f = fixture()
+    writeFileSync(join(f.into, 'plugin', 'CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n- ours\n')
+    git(f.into, 'add', '.'); git(f.into, 'commit', '-qm', 'ours')
+    writeFileSync(join(f.lane, 'plugin', 'CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n- theirs\n')
+    const runner = (program: string, args: string[], runOptions: Record<string, unknown>) => {
+      if (program === 'git' && args.includes('commit') && args.includes('--no-edit')) return { status: 1, stdout: '', stderr: 'fixture commit hook refused' }
+      return command(program, args, { ...runOptions, env: HERMETIC })
+    }
+
+    expect(await integrateLane(options(f, { runner }))).toBe(1)
+    expect(f.stderr.join('\n')).toContain('fixture commit hook refused')
+    expect(existsSync(join(f.repository, '.git', 'worktrees', 'into', 'MERGE_HEAD'))).toBe(false)
   })
 
   it('verifies the copied archive before removing the worktree', async () => {
@@ -165,6 +201,30 @@ describe('lane integration', () => {
     expect(await integrateLane(options(removed, { keepWorktree: false })), removed.stderr.join('\n')).toBe(0)
     expect(existsSync(removed.lane)).toBe(false)
     expect(command('git', ['-C', removed.into, 'show-ref', '--verify', '--quiet', 'refs/heads/card/test-lane']).status).not.toBe(0)
+  })
+
+  it('re-verifies the live lane archive after a successful pre-remove check mutates evidence', async () => {
+    const f = fixture(); writeFileSync(join(f.lane, 'change.txt'), 'change\n')
+    const source = `require('node:fs').writeFileSync(require('node:path').join(process.argv[1], '.lane', 'final-check.json'), '{"ok":true}\\n')`
+
+    expect(await integrateLane(options(f, { keepWorktree: false, preRemoveCheck: [process.execPath, '-e', source] }))).toBe(1)
+    expect(f.stdout.at(-1)).toBe('step 6 remove: EXIT=1')
+    expect(f.stderr.join('\n')).toContain('final-check.json')
+    expect(existsSync(f.lane)).toBe(true)
+    expect(git(f.into, 'show', 'HEAD:change.txt')).toBe('change')
+  })
+
+  it('real integrate CLI keeps the merged lane when a successful check adds unarchived evidence', () => {
+    const f = fixture(); writeFileSync(join(f.lane, 'change.txt'), 'change\n')
+    const source = `require('node:fs').writeFileSync(require('node:path').join(process.argv[1], '.lane', 'cli-final.json'), '{"ok":true}\\n')`
+
+    const result = command(process.execPath, [CLI, 'integrate', '--dir', f.lane, '--into', f.into, '--message', f.message, '--archive-root', f.archiveRoot, '--pre-remove-check', process.execPath, '-e', source])
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('step 6 remove: EXIT=1')
+    expect(result.stderr).toContain('archive verification failed: missing cli-final.json')
+    expect(existsSync(f.lane)).toBe(true)
+    expect(git(f.into, 'show', 'HEAD:change.txt')).toBe('change')
   })
 
   it('prints a checkable dry-run plan with every resolved value and writes nothing', async () => {
@@ -251,11 +311,12 @@ describe('lane integration', () => {
     git(f.repository, 'fetch', '-q', 'public')
     writeFileSync(join(f.lane, 'change.txt'), 'change\n')
     const calls: string[][] = []
+    let dispatched = false
     const runner = (program: string, args: string[], runOptions: Record<string, unknown>) => {
       calls.push([program, ...args])
       if (program === 'git') return command(program, args, { ...runOptions, env: HERMETIC })
-      if (args[0] === 'workflow') return { status: 0, stdout: '', stderr: '' }
-      if (args[0] === 'run' && args[1] === 'list') return { status: 0, stdout: '[{"databaseId":42,"status":"completed","conclusion":"failure"}]', stderr: '' }
+      if (args[0] === 'workflow') { dispatched = true; return { status: 0, stdout: '', stderr: '' } }
+      if (args[0] === 'run' && args[1] === 'list') return { status: 0, stdout: dispatched ? '[{"databaseId":42,"status":"completed","conclusion":"failure","event":"workflow_dispatch"}]' : '[]', stderr: '' }
       if (args.includes('--json') && args.includes('url')) return { status: 0, stdout: 'https://example.test/actions/runs/42\n', stderr: '' }
       if (args.includes('--json') && args.includes('jobs')) return { status: 0, stdout: '{"jobs":[{"name":"test","conclusion":"failure"}]}', stderr: '' }
       if (args.includes('nameWithOwner')) return { status: 0, stdout: 'owner/repo\n', stderr: '' }
@@ -268,5 +329,24 @@ describe('lane integration', () => {
     expect(f.stdout).toContain('job test: failure')
     expect(f.stdout).toContain('log: 0 bytes (fallback empty — not evidence of no failures)')
     expect(calls.find((argv) => argv[0] === 'gh' && argv[1] === 'api')).toBeTruthy()
+  })
+
+  it('selects the new workflow run dispatched by this command instead of the pre-existing newest run', async () => {
+    const f = fixture(); const remote = join(f.root, 'public.git'); mkdirSync(remote); git(remote, 'init', '--bare', '-q')
+    git(f.repository, 'remote', 'add', 'public', remote); git(f.repository, 'push', '-q', 'public', 'fixture-root:main'); git(f.repository, 'fetch', '-q', 'public')
+    writeFileSync(join(f.lane, 'change.txt'), 'change\n')
+    let dispatched = false
+    const runner = (program: string, args: string[], runOptions: Record<string, unknown>) => {
+      if (program === 'git') return command(program, args, { ...runOptions, env: HERMETIC })
+      if (args[0] === 'workflow') { dispatched = true; return { status: 0, stdout: '', stderr: '' } }
+      if (args[0] === 'run' && args[1] === 'list') return { status: 0, stdout: JSON.stringify(dispatched
+        ? [{ databaseId: 41, status: 'completed', conclusion: 'success', event: 'workflow_dispatch', createdAt: '2026-09-18T09:00:00Z' }, { databaseId: 42, status: 'completed', conclusion: 'success', event: 'workflow_dispatch', createdAt: new Date().toISOString() }]
+        : [{ databaseId: 41, status: 'completed', conclusion: 'success', event: 'workflow_dispatch', createdAt: '2026-09-18T09:00:00Z' }]), stderr: '' }
+      if (args.includes('--json') && args.includes('url')) return { status: 0, stdout: `https://example.test/actions/runs/${args[2]}\n`, stderr: '' }
+      return { status: 1, stdout: '', stderr: 'unexpected gh command' }
+    }
+
+    expect(await integrateLane(options(f, { ciBranch: 'ci/dispatch-own', authorizeFile: join(f.root, 'authorized.json'), dispatch: 'cross-os.yml', runner })), f.stderr.join('\n')).toBe(0)
+    expect(f.stdout).toContain('run id=42 url=https://example.test/actions/runs/42')
   })
 })

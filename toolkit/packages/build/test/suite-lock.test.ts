@@ -5,7 +5,7 @@ import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acquireSuiteLock, readSuiteLock, releaseSuiteLock, resolveWindowsExecutable, spawnNeedsShell } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { acquireSuiteLock, readSuiteLock, releaseSuiteLock, resolveWindowsExecutable, spawnNeedsShell, windowsShimArgumentRefusal } from '../../../../plugin/bin/lib/suite-lock.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
@@ -169,6 +169,23 @@ describe('spawn shell decision (Windows shims only)', () => {
     expect(String(resolved).endsWith('.CMD')).toBe(true)
     expect(seen[0]).toBe(join('/a', 'tool.EXE'))
     expect(seen.length).toBeGreaterThan(1)
+  })
+
+  it('resolves an extensionless Windows path against PATHEXT', () => {
+    const seen: string[] = []
+    const resolved = resolveWindowsExecutable('C:\\tools\\opencode', {
+      env: { PATHEXT: '.EXE;.CMD' },
+      exists: (candidate: string) => { seen.push(candidate); return candidate.endsWith('.CMD') },
+    })
+    expect(resolved).toBe('C:\\tools\\opencode.CMD')
+    expect(spawnNeedsShell('C:\\tools\\opencode', { platform: 'win32', resolve: () => resolved })).toBe(true)
+    expect(seen).toEqual(['C:\\tools\\opencode.EXE', 'C:\\tools\\opencode.CMD'])
+  })
+
+  it('refuses Windows shim arguments that cmd.exe would re-parse', () => {
+    expect(windowsShimArgumentRefusal(['C:\\tools\\tool.cmd', 'safe & whoami'], { platform: 'win32' })).toContain('unsafe Windows shim argument')
+    expect(windowsShimArgumentRefusal(['C:\\tools\\tool.bat', 'say "hello"'], { platform: 'win32' })).toContain('unsafe Windows shim argument')
+    expect(windowsShimArgumentRefusal(['C:\\tools\\tool.cmd', '--reporter=dot'], { platform: 'win32' })).toBeNull()
   })
 
   it('runs a command whose arguments carry quotes, through the lock, exit 0', () => {

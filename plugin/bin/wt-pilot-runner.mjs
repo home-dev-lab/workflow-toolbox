@@ -19,7 +19,9 @@ async function main() {
   if (!existsSync(options.contract)) { process.stderr.write(`wt-pilot-runner: --contract does not exist: ${options.contract}\n`); return 2 }
   if (!existsSync(options.cardFile)) { process.stderr.write(`wt-pilot-runner: --card-file does not exist: ${options.cardFile}\n`); return 2 }
   try {
-    const require = resolveAgentSdkRequire({ projectDir: options.dir })
+    // Test-only manifest injection seals spawned CLI fixtures without changing real-user resolution order.
+    const testManifest = process.env.NODE_ENV === 'test' ? process.env.WT_PILOT_TEST_SDK_MANIFEST : null
+    const require = resolveAgentSdkRequire({ projectDir: options.dir, ...(testManifest ? { ownToolkitManifest: testManifest } : {}) })
     const sdk = await import(pathToFileURL(require.resolve('@anthropic-ai/claude-agent-sdk')).href)
     const result = await runPilot(options, { query: sdk.query, resolvePilotModels, lifecycleOptions: { sdk, sdkRequire: require } })
     process.stdout.write(`fresh=${result.summary.fresh_tokens} turns=${result.summary.turns} report=${result.summary.report_exists} requested_model=${result.summary.requested_model} served_model=${result.summary.served_model ?? 'unknown'} served_model_first_turn=${result.summary.served_model_first_turn ?? 'unknown'} served_model_agreement=${result.summary.served_model_agreement}\n`)

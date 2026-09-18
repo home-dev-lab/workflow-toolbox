@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -39,6 +39,31 @@ function run(command: string, opts: { agentId?: string; cwd?: string; toolUseId?
     stderr: res.stderr,
     status: res.status,
   }
+}
+
+function runAsync(command: string, toolUseId: string) {
+  const payload = {
+    hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command }, cwd: sandboxHome, tool_use_id: toolUseId,
+  }
+  const child = spawn(process.execPath, [HOOK], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: undefined,
+      CLAUDE_PLUGIN_DATA: undefined,
+      HOME: sandboxHome,
+      XDG_STATE_HOME: join(sandboxHome, '.local', 'state'),
+      NODE_ENV: 'test',
+      WT_MAIN_GUARD_TEST_AFTER_READ_MS: '200',
+    },
+  })
+  let stdout = ''; let stderr = ''
+  child.stdout.on('data', (chunk) => { stdout += String(chunk) })
+  child.stderr.on('data', (chunk) => { stderr += String(chunk) })
+  child.stdin.end(JSON.stringify(payload))
+  return new Promise<{ denied: boolean; stdout: string; stderr: string; status: number | null }>((resolve) => {
+    child.once('exit', (status) => resolve({ denied: stdout.includes('"deny"'), stdout, stderr, status }))
+  })
 }
 
 function journalLines(): Array<Record<string, unknown>> {
@@ -290,6 +315,32 @@ describe('wt-main-guard-hook — scope', () => {
 })
 
 describe('wt-main-guard-hook — escape hatch', () => {
+  it('atomically lets exactly one of two different concurrent tool calls claim one allowance', async () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const command = 'git push origin --delete stale-branch'
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify({ command, reason: 'branch owner approved this exact deletion' }))
+
+    const results = await Promise.all([runAsync(command, 'call-a'), runAsync(command, 'call-b')])
+
+    expect(results.filter((result) => !result.denied), JSON.stringify(results)).toHaveLength(1)
+    expect(results.filter((result) => result.denied), JSON.stringify(results)).toHaveLength(1)
+  })
+
+  it('lets duplicate concurrent registrations of the same tool call agree', async () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const command = 'git push origin --delete stale-branch'
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify({ command, reason: 'branch owner approved this exact deletion' }))
+
+    const results = await Promise.all([runAsync(command, 'same-call'), runAsync(command, 'same-call')])
+
+    expect(results, JSON.stringify(results)).toEqual([
+      expect.objectContaining({ denied: false, status: 0 }),
+      expect.objectContaining({ denied: false, status: 0 }),
+    ])
+  })
+
   it('a byte-exact allow-once override records its consuming tool call and lets the exact command through', () => {
     const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
     mkdirSync(stateDir, { recursive: true })
@@ -307,6 +358,16 @@ describe('wt-main-guard-hook — escape hatch', () => {
     })
     const lines = journalLines()
     expect(lines.some((l) => l.decision === 'override-allow')).toBe(true)
+  })
+
+  it('a claim directory left by a crashed hook does not refuse an authorized command for ever', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(join(stateDir, 'allow-once.json.claim'), { recursive: true })
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(join(stateDir, 'allow-once.json.claim'), old, old)
+    const command = 'rm -rf /'
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify({ command, reason: 'deliberate wipe of a disposable VM, verified by hand' }))
+    expect(run(command).denied).toBe(false)
   })
 
   it('two registrations allow the same tool call, then a different call is refused and spends the entry', () => {

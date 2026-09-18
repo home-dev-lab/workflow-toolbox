@@ -192,7 +192,9 @@ unenforceable, silently ignored — agent grinding a wrong hypothesis feels busy
 only a counting rule fires regardless.
 
 Green report = EVIDENCE, not proof: rerun gates by exit code, read diff yourself before
-committing. Release agent (shutdown request) only when arc complete. Terminated/quota-killed
+committing. Arc complete → LEAVE the agent idle; do not send it a shutdown request. ⚠ Observed twice out of twice on one
+harness version: a shutdown request accepted by an in-process sub-agent was followed within seconds by the
+end of the SPAWNING session itself (unproven as a cause — no counter-example sought); an idle agent costs nothing. Terminated/quota-killed
 agent resumes from transcript on next message — try resuming before respawning; never spawn a
 successor into same worktree before predecessor's death confirmed (two writers corrupt one
 tree). Before assuming agent stuck, check observable state (git status, file mtimes, HEAD)
