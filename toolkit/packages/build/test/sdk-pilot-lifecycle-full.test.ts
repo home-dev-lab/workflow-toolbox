@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -11,6 +11,7 @@ import { MAX_CRITIC_ROUNDS, MAX_REVIEW_ROUNDS } from '../../../../plugin/bin/lib
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
 const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
+const FIXTURE_LANE_TIMEOUT_SECONDS = 10
 const roots: string[] = []
 
 afterEach(() => {
@@ -314,7 +315,7 @@ function handlers(server: { instance: { _registeredTools: Record<string, { handl
   return {
     transition: (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args).then((result) => result.content[0]!.text),
     artifact: (args: Record<string, unknown>) => tools.write_artifact!.handler(args).then((result) => result.content[0]!.text),
-    run: (args: Record<string, unknown>) => tools.run!.handler(args).then((result) => result.content[0]!.text),
+    run: (args: Record<string, unknown>) => tools.run!.handler(args.timeout === 1 ? { ...args, timeout: FIXTURE_LANE_TIMEOUT_SECONDS } : args).then((result) => result.content[0]!.text),
   }
 }
 function laneLauncher() {
@@ -336,18 +337,30 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
-  const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 1_000, now: () => Date.now() - 1_000, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); const next = (Date.now() + 1_000) / 1_000; utimesSync(log, next, next); return 0 }, rules: [], ...options })
+  const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, rules: [], ...options })
   return { ...handlers(server), calls, base, root: worktree, state: server.state }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')
   const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
-  const server = createLifecycleServer({ worktree, archiveRoot, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: 1_000, now: () => Date.now() - 1_000, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); const next = (Date.now() + 1_000) / 1_000; utimesSync(log, next, next); return 0 }, rules: [] })
+  const server = createLifecycleServer({ worktree, archiveRoot, route: 'LITE', models: { lane: 'lane', review: 'review' }, cardId: 'edge', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, rules: [] })
   return { ...handlers(server), root: worktree }
 }
 async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }) {
   for (const name of ['typecheck', 'lint', 'test']) expect(await lifecycle.run({ kind: 'gate', name })).toBe(`gate ${name} EXIT=0`)
+}
+async function writePassingGate({ log, root }: { log: string, root: string }) {
+  const laneDir = join(root, '.lane')
+  const laneMtime = Math.max(...readdirSync(laneDir)
+    .filter((name) => /-run(?:\..+)?\.log$/.test(name))
+    .map((name) => statSync(join(laneDir, name)).mtimeMs))
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    writeFileSync(log, 'gate\n')
+    if (statSync(log).mtimeMs - laneMtime >= 20) return 0
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  throw new Error(`fixture gate mtime did not advance 20ms past lane receipt ${laneMtime}`)
 }
 function edgeConfig(lifecycle: { root: string }, config: Record<string, unknown>) { writeFileSync(join(lifecycle.root, '.lane', 'edge-config.json'), JSON.stringify(config)) }
 async function reachReview(lifecycle: ReturnType<typeof fullLifecycle>) {
