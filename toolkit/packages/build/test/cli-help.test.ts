@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BIN_DIR = join(REPO_ROOT, 'plugin/bin')
@@ -53,9 +54,10 @@ function allOperatorCliFiles(): string[] {
 }
 
 function runCli(file: string, args: string[]) {
+  const root = tempRoot('env')
   const r = spawnSync(process.execPath, [join(BIN_DIR, file), ...args], {
     encoding: 'utf8',
-    env: { ...process.env, WT_GUARD_JOURNAL_DIR: tempRoot('journal') },
+    env: sealedPluginCliEnv(root, { WT_GUARD_JOURNAL_DIR: tempRoot('journal') }),
   })
   return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' }
 }
