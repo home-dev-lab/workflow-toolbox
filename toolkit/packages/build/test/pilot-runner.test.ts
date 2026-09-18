@@ -12,6 +12,8 @@ import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunn
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
 const CONTEXT_MODE_TOOLS = {
   batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`, doctor: `${CONTEXT_PREFIX}ctx_doctor`, execute: `${CONTEXT_PREFIX}ctx_execute`,
@@ -555,6 +557,33 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(f.dir, '.lane', 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
     expect(readFileSync(join(result.summary.archive.path, 'cost.json'), 'utf8')).toBe(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8'))
     expect(readFileSync(join(result.summary.archive.path, 'pilot-report.md'), 'utf8')).toContain('<!-- run-cost -->')
+  })
+
+  it('refuses and withdraws an archive whose pre-reconciliation cost block is stale at final cost publication', async () => {
+    const f = fixture(); let heads = 0
+    const launcher = join(f.root, 'launcher.mjs')
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'report\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    const staleCost = { route: 'LITE', outcome: { status: 'complete' }, unknown: [], totals: { wall_time_ms: 1 }, phases: [{ phase: 'tdd', round: null, wall_time_ms: 1, unknown: [], models: { stale: { family: 'anthropic', input: 99, cache_write: 0, cache_read: 0, output: 1, reasoning: 'not measured', first_pass_input: 99, fresh_tokens: 100 } } }], reconciled: [], cross_checks: {} }
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const tools = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools
+      const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
+      yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
+      await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
+      await artifact({ kind: 'pilot-report', content: `# report\n\n## E2E\nProcedure: stale ordering fixture\nVerbatim output: exercised\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n\n${costReportSection(staleCost)}` })
+      writeFileSync(join(f.dir, '.lane', 'cost.json'), `${JSON.stringify(staleCost, null, 2)}\n`)
+      const receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'complete', name: lifecycleToolName('transition'), input: {} }] } }
+      yield { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'complete', content: receipt }] } }
+      yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
+    })()
+    await expect(runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
+      query, resolvePilotModels: models, resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }), costSessions: [], lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, gateRunner: ({ log }: { log: string }) => { writeFileSync(log, 'gate\n'); return 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
+    })).rejects.toThrow(/cost report consistency refused: first divergent row/)
+    const summary = JSON.parse(readFileSync(join(f.dir, '.lane', 'summary.json'), 'utf8'))
+    expect(existsSync(summary.archive.path)).toBe(false)
   })
 
   it.each([

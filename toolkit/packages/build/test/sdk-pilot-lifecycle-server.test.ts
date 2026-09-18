@@ -14,6 +14,8 @@ import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-life
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { archiveLifecycle, removeLifecycleWorktree } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
@@ -453,6 +455,51 @@ printf 'report\n' > "$report"
       .resolves.toMatch(/missing archive \(archive dirtied the tree\)/)
     expect(readdirSync(join(lifecycle.archiveRoot, '.claude', 'reports'))).toEqual([])
     expect(fs.existsSync(join(lifecycle.root, '.lane', 'summary.json'))).toBe(false)
+  })
+
+  it('publishes matching cost receipts and refuses a stale report with its first divergent phase row', () => {
+    const fixture = (stale: boolean) => {
+      const container = mkdtempSync(join(tmpdir(), 'wt-cost-publish-')); roots.push(container)
+      const root = join(container, 'worktree'); const laneDir = join(root, '.lane'); const archiveRoot = join(container, 'project')
+      mkdirSync(laneDir, { recursive: true }); mkdirSync(archiveRoot)
+      const cost = {
+        route: 'FULL', outcome: { status: 'complete' }, unknown: [], totals: { wall_time_ms: 10 }, reconciled: [], cross_checks: {},
+        phases: [{ phase: 'critic', round: 1, wall_time_ms: 10, unknown: [], models: { 'openai/gpt': { family: 'openai', input: 7, cache_write: 'not measured', cache_read: 3, output: 2, reasoning: 1, first_pass_input: 7, fresh_tokens: 10 } } }],
+      }
+      const report = `# report\n\n${costReportSection(cost)}`
+      writeFileSync(join(laneDir, 'cost.json'), `${JSON.stringify(cost, null, 2)}\n`)
+      writeFileSync(join(laneDir, 'pilot-report.md'), stale ? report.replace('| 7 | not measured |', '| 8 | not measured |') : report)
+      return { root, laneDir, archiveRoot }
+    }
+    const publish = (f: ReturnType<typeof fixture>) => archiveLifecycle({
+      ...f, cardId: 'cost-check', route: 'FULL', head: 'abc', phases: [], evidence: 'digest', partial: null, implementation: {},
+      assertDirectories: () => {}, copy: cpSync, git: () => '', sha256: () => 'digest', writeRegularFile: writeFileSync,
+    })
+
+    const matching = fixture(false)
+    const summary = publish(matching)
+    expect(existsSync(join(summary.archive.path, 'pilot-report.md'))).toBe(true)
+
+    const stale = fixture(true)
+    expect(() => publish(stale)).toThrow(/first divergent row phase "critic 1", Input expected "7" but report has "8"; report .*pilot-report\.md; cost .*cost\.json/)
+    expect(readdirSync(join(stale.archiveRoot, '.claude', 'reports'))).toEqual([])
+  })
+
+  it('allows no cost block only before cost.json exists and refuses an unreadable or unpaired receipt', () => {
+    const publish = (kind: 'absent' | 'cost-only' | 'report-only' | 'unreadable') => {
+      const container = mkdtempSync(join(tmpdir(), 'wt-cost-missing-')); roots.push(container)
+      const root = join(container, 'worktree'); const laneDir = join(root, '.lane'); const archiveRoot = join(container, 'project')
+      mkdirSync(laneDir, { recursive: true }); mkdirSync(archiveRoot); writeFileSync(join(laneDir, 'pilot-report.md'), '# report\n')
+      if (kind === 'cost-only') writeFileSync(join(laneDir, 'cost.json'), '{}\n')
+      if (kind === 'report-only') writeFileSync(join(laneDir, 'pilot-report.md'), '# report\n\n<!-- run-cost -->\nstale\n<!-- /run-cost -->\n')
+      if (kind === 'unreadable') symlinkSync(join(container, 'missing-cost.json'), join(laneDir, 'cost.json'))
+      return () => archiveLifecycle({ root, archiveRoot, laneDir, cardId: kind, route: 'LITE', head: 'abc', phases: [], evidence: 'digest', partial: null, implementation: {}, assertDirectories: () => {}, copy: cpSync, git: () => '', sha256: () => 'digest', writeRegularFile: writeFileSync })
+    }
+
+    expect(publish('absent')()).toHaveProperty('archive.path')
+    expect(publish('cost-only')).toThrow(/missing Measured Run Cost block/)
+    expect(publish('report-only')).toThrow(/cost\.json is missing/)
+    expect(publish('unreadable')).toThrow(/cost\.json: not a regular file/)
   })
 
   it('retries an archive failure without making a second commit', async () => {

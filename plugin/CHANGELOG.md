@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Lifecycle archive publication now verifies that a report's measured-cost block exactly matches its adjacent `cost.json`, refusing stale, unpaired, or unreadable receipts before the destination is published.
 - The What is running pane now shows each running SDK lifecycle phase's measured input, output, cache-read, and cache-write tokens, names whether archived cost or live usage supplied them, and drops compact totals before stage words at narrow widths.
 - Added `wt-lane.mjs integrate`, which commits a delivered lane from an explicit message file, merges it in a named same-repository worktree, verifies its `.lane/` archive before optional removal, and can authorize, push, dispatch, and inspect an explicitly requested CI branch.
 
