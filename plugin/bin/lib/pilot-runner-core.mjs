@@ -1,5 +1,5 @@
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -13,7 +13,7 @@ import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './sdk-role-profile.mjs'
-import { writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
+import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -203,6 +203,23 @@ function assertPilotInitReceipt(message, sdkRole) {
     throw new Error(RECEIPT_ERROR + (error instanceof Error ? error.message : String(error)), { cause: error })
   }
   if (missing.length > 0) throw new Error(RECEIPT_ERROR + JSON.stringify({ missingTools: missing, tools: initTools }))
+}
+
+function reconciledCostReport({ reportContent, cost, archive, report, dir }) {
+  if (reportContent.includes('<!-- run-cost -->')) {
+    assertCostReportMatches({ report: reportContent, cost, reportPath: archive ? join(archive, 'pilot-report.md') : report, costPath: archive ? join(archive, 'cost.json') : join(dir, '.lane', 'cost.json') })
+  }
+  return appendCostReport(reportContent, cost)
+}
+
+function costPublicationFailure(error, archive, priorError, log) {
+  if (!archive) {
+    log(`cost receipt unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    return priorError
+  }
+  rmSync(archive, { recursive: true, force: true })
+  log(`archive publication refused: ${error instanceof Error ? error.message : String(error)}`)
+  return priorError ?? error
 }
 
 export async function runPilot(options, dependencies) {
@@ -439,7 +456,8 @@ export async function runPilot(options, dependencies) {
     writeFile(join(options.dir, '.lane', 'cost.json'), costContent)
     let costReport = null
     if (exists(report)) {
-      costReport = appendCostReport(readFile(report, 'utf8'), cost)
+      const reportContent = readFile(report, 'utf8')
+      costReport = reconciledCostReport({ reportContent, cost, archive: lifecycleSummary.archive?.path, report, dir: options.dir })
       writeFile(report, costReport)
     }
     const archive = lifecycleSummary.archive?.path
@@ -451,7 +469,7 @@ export async function runPilot(options, dependencies) {
       if (costReport !== null) writeFile(join(archive, 'pilot-report.md'), costReport)
     }
   } catch (error) {
-    log(`cost receipt unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    finalizationError = costPublicationFailure(error, lifecycleSummary.archive?.path, finalizationError, log)
   }
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   if (finalizationError) throw finalizationError
