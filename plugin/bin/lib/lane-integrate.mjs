@@ -4,14 +4,15 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { assertArchiveOutsideWorktree, readWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
+import { readSuiteLock } from './suite-lock.mjs'
 
 const STEP_NAMES = ['preflight', 'commit', 'merge', 'archive', 'pre-remove-check', 'remove', 'ci-branch', 'push', 'dispatch']
 const COMMAND_ENV = process.env
 
 export function parseIntegrateArgs(argv) {
-  const options = { dir: null, into: null, message: null, archiveRoot: null, preRemoveCheck: null, ciBranch: null, remote: 'public', authorizeFile: null, dispatch: null, wait: false, dryRun: false, keepWorktree: false }
+  const options = { dir: null, into: null, message: null, mergeSubject: null, archiveRoot: null, preRemoveCheck: null, ciBranch: null, remote: 'public', authorizeFile: null, dispatch: null, wait: false, dryRun: false, keepWorktree: false, force: false }
   const values = new Map([
-    ['--dir', 'dir'], ['--into', 'into'], ['--message', 'message'], ['--archive-root', 'archiveRoot'],
+    ['--dir', 'dir'], ['--into', 'into'], ['--message', 'message'], ['--merge-subject', 'mergeSubject'], ['--archive-root', 'archiveRoot'],
     ['--ci-branch', 'ciBranch'], ['--remote', 'remote'], ['--authorize-file', 'authorizeFile'], ['--dispatch', 'dispatch'],
   ])
   for (let index = 0; index < argv.length; index += 1) {
@@ -28,6 +29,7 @@ export function parseIntegrateArgs(argv) {
     } else if (argument === '--wait') options.wait = true
     else if (argument === '--dry-run') options.dryRun = true
     else if (argument === '--keep-worktree') options.keepWorktree = true
+    else if (argument === '--force') options.force = true
     else if (argument === '--help' || argument === '-h') return { help: true }
     else return { error: `unknown integrate argument: ${argument}` }
   }
@@ -92,6 +94,8 @@ function preflight(options, runner) {
   if (!options.message || !fs.existsSync(options.message) || !fs.statSync(options.message).isFile()) throw new Error(`commit message file is missing: ${options.message ?? '(not provided)'}`)
   const message = fs.readFileSync(options.message, 'utf8')
   if (!message.trim()) throw new Error(`commit message file is empty: ${options.message}`)
+  const commitSubject = message.split(/\r?\n/, 1)[0].trim()
+  if (!commitSubject) throw new Error(`commit message first line is empty: ${options.message}`)
   options.dir = canonical(options.dir)
   options.into = canonical(options.into)
   assertRegisteredWorktree(runner, options.dir)
@@ -114,7 +118,13 @@ function preflight(options, runner) {
   if (saysClean && status) throw new Error('report claims a clean tree, but git status reports changes')
   options.reportPath = reportPath
   options.messageText = message
+  options.commitSubject = commitSubject
+  options.mergeSubject = options.mergeSubject ?? `merge: ${commitSubject}`
   options.laneBranch = git(runner, options.dir, ['symbolic-ref', '--quiet', '--short', 'HEAD']).trim()
+  options.laneTip = git(runner, options.dir, ['rev-parse', 'HEAD']).trim()
+  options.integrationHead = git(runner, options.into, ['rev-parse', 'HEAD']).trim()
+  options.hasChanges = Boolean(status)
+  options.ahead = ahead
   options.repoRoot = canonical(git(runner, options.into, ['rev-parse', '--show-toplevel']).trim())
   options.gitDir = commonGitDir(runner, options.into)
   options.archiveRoot = path.resolve(options.archiveRoot ?? path.join(options.repoRoot, '.claude', 'reports'))
@@ -143,8 +153,7 @@ function resolveConflictMarkers(content) {
 }
 
 function mergeLane(options, runner) {
-  const subject = options.messageText.split(/\r?\n/).find((line) => line.trim())?.trim()
-  const args = ['-C', options.into, 'merge', '--no-ff', '-m', subject, options.laneBranch]
+  const args = ['-C', options.into, 'merge', '--no-ff', '-m', options.mergeSubject, options.laneBranch]
   const result = runner('git', args, { encoding: 'utf8', env: COMMAND_ENV })
   if (resultCode(result) === 0) return
   const conflicts = git(runner, options.into, ['diff', '--name-only', '--diff-filter=U']).split(/\r?\n/).filter(Boolean)
@@ -157,6 +166,65 @@ function mergeLane(options, runner) {
   }
   try { git(runner, options.into, ['merge', '--abort']) } catch { /* preserve the original conflict refusal */ }
   throw new Error(`merge conflicts outside plugin/CHANGELOG.md: ${conflicts.length ? conflicts.join(', ') : commandFailure('git', args, result)}`)
+}
+
+function commitLane(options, runner) {
+  if (!options.hasChanges && options.ahead > 0) return
+  git(runner, options.dir, ['add', '-A'])
+  git(runner, options.dir, ['reset', '--', '.lane'])
+  git(runner, options.dir, ['commit', '-F', options.message])
+}
+
+function heldDuration(lock) {
+  const startedAt = Date.parse(lock.holder?.startedAt)
+  const milliseconds = Number.isFinite(startedAt) ? Date.now() - startedAt : lock.ageMs
+  if (!Number.isFinite(milliseconds)) return 'unknown duration'
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000))
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m${seconds % 60}s`
+}
+
+function assertIntegrationTreeNotGated(options) {
+  if (options.force) return
+  const lock = (options.readSuiteLock ?? readSuiteLock)()
+  if (!lock.held) return
+  const pid = Number.isSafeInteger(lock.holder?.pid) ? lock.holder.pid : 'unknown'
+  let holderCwd
+  try {
+    if (typeof lock.holder?.cwd !== 'string' || !lock.holder.cwd) throw new Error('missing cwd')
+    holderCwd = canonical(lock.holder.cwd)
+  } catch {
+    throw new Error(`suite lock holder pid ${pid} has held for ${heldDuration(lock)}, but its cwd is unreadable; refusing to merge while the target tree may be gated (pass --force to override)`)
+  }
+  const relative = path.relative(options.into, holderCwd)
+  if (relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+    throw new Error(`suite lock holder pid ${pid} has held for ${heldDuration(lock)} from ${holderCwd}, inside integration tree ${options.into}; refusing to merge while it is being gated (pass --force to override)`)
+  }
+}
+
+function authorizationCommitCount(options, runner) {
+  const remoteBranch = `${options.remote}/${options.ciBranch}`
+  const exists = runner('git', ['-C', options.into, 'rev-parse', '--verify', '--quiet', remoteBranch], { encoding: 'utf8', env: COMMAND_ENV })
+  const base = resultCode(exists) === 0 ? remoteBranch : `${options.remote}/main`
+  const existing = Number(git(runner, options.into, ['rev-list', '--count', options.integrationHead, options.laneTip, `^${base}`]).trim())
+  return existing + (options.hasChanges ? 1 : 0) + 1
+}
+
+function renderDryRunPlan(options, runner, stdout, enabledSteps) {
+  const plans = [
+    `lane branch=${options.laneBranch} tip=${options.laneTip}; integration tree=${options.into} HEAD=${options.integrationHead}`,
+    `commit subject=${options.commitSubject}`,
+    `merge subject=${options.mergeSubject}`,
+    `archive destination=${options.archiveDestination}`,
+    `command=${options.preRemoveCheck?.join(' ') ?? '(none)'}`,
+    `remove worktree=${options.keepWorktree ? 'no' : 'yes'}`,
+  ]
+  if (options.ciBranch) {
+    plans.push(`branch=${options.ciBranch} remote=${options.remote} authorization file=${options.authorizeFile} commits=${authorizationCommitCount(options, runner)}`)
+    plans.push(`remote=${options.remote} branch=${options.ciBranch}`)
+    if (options.dispatch) plans.push(`workflow=${options.dispatch} wait=${options.wait ? 'yes' : 'no'}`)
+  }
+  for (let index = 0; index < enabledSteps.length; index += 1) stdout(`step ${index + 1} ${enabledSteps[index]}: ${plans[index]} (dry-run)`)
 }
 
 function entries(root, relative = '') {
@@ -276,7 +344,7 @@ function dispatchWorkflow(options, runner, stdout, wait) {
 }
 
 export async function integrateLane(input) {
-  const options = { remote: 'public', wait: false, dryRun: false, keepWorktree: false, ...input }
+  const options = { remote: 'public', wait: false, dryRun: false, keepWorktree: false, force: false, ...input }
   const runner = options.runner ?? defaultRunner
   const copy = options.copy ?? ((source, destination) => fs.cpSync(source, destination, { recursive: true, dereference: false, errorOnExist: true, force: false, preserveTimestamps: true }))
   const stdout = options.stdout ?? ((line) => process.stdout.write(`${line}\n`))
@@ -286,13 +354,20 @@ export async function integrateLane(input) {
   if (options.ciBranch) stepCount = options.dispatch ? 9 : 8
   const enabledSteps = STEP_NAMES.slice(0, stepCount)
   if (options.dryRun) {
-    for (let index = 0; index < enabledSteps.length; index += 1) stdout(`step ${index + 1} ${enabledSteps[index]}: EXIT=0 (dry-run)`)
-    return 0
+    try {
+      preflight(options, runner)
+      renderDryRunPlan(options, runner, stdout, enabledSteps)
+      return 0
+    } catch (error) {
+      stderr(error instanceof Error ? error.message : String(error))
+      stdout('step 1 preflight: EXIT=1 (dry-run)')
+      return 1
+    }
   }
   const actions = [
     () => preflight(options, runner),
-    () => { git(runner, options.dir, ['add', '-A']); git(runner, options.dir, ['reset', '--', '.lane']); git(runner, options.dir, ['commit', '-F', options.message]) },
-    () => mergeLane(options, runner),
+    () => commitLane(options, runner),
+    () => { assertIntegrationTreeNotGated(options); mergeLane(options, runner) },
     () => archiveLane(options, copy),
     () => { if (options.preRemoveCheck) run(runner, options.preRemoveCheck[0], [...options.preRemoveCheck.slice(1), options.dir], { cwd: options.into }) },
     () => removeLane(options, runner),
