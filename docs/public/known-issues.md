@@ -272,7 +272,7 @@ Refuses a named `Agent` spawn without `isolation` where the spawning session is 
 
 ### `wt-actionable-gate-hook.mjs` — tracker-agnostic actionability Stop gate
 
-Three env knobs tune its stop behavior directly: `WT_ACTIONABLE_STALE_AFTER_MS` (default `7200000`) is how old a snapshot may be before the gate treats it as stale/unknown; `WT_ACTIONABLE_BLOCK_MAX` (default `3`) is the consecutive block count after which the hook stops re-blocking and only records the held state; `WT_ACTIONABLE_INFLIGHT_CAP_MS` (default `600000`) caps any declared `inFlightUntil` window from the snapshot's own `at` timestamp, so a stale claim cannot silence the gate indefinitely.
+Four env knobs tune its stop behavior directly: `WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS` (default `900000`) is how old a snapshot may be before the gate stops naming its proposed card while retaining the same block decision; `WT_ACTIONABLE_STALE_AFTER_MS` (default `7200000`) is how old a snapshot may be before the gate treats it as stale/unknown; `WT_ACTIONABLE_BLOCK_MAX` (default `3`) is the consecutive block count after which the hook stops re-blocking and only records the held state; `WT_ACTIONABLE_INFLIGHT_CAP_MS` (default `600000`) caps any declared `inFlightUntil` window from the snapshot's own `at` timestamp, so a stale claim cannot silence the gate indefinitely.
 
 The shipped Planka producer writes a separate opt-in heartbeat. An undeclared project remains silent;
 a declared producer with no heartbeat says to wire it; a stale heartbeat after no recent board read is
