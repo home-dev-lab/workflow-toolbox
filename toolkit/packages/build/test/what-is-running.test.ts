@@ -87,7 +87,7 @@ async function paneHarness(initialSnapshot: unknown, options: Record<string, unk
   const hooks: Array<{ event: string; matcher?: Record<string, string>; hook: Hook }> = []
   const timers: Array<() => Promise<void>> = []
   const journal: Array<Record<string, unknown>> = []
-  const runInits: Array<{ argc: number; init?: Record<string, unknown> }> = []
+  const runInits: Array<{ argc: number; init: Record<string, unknown> | undefined }> = []
   let snapshot = initialSnapshot
   let opens = 0
   let closes = 0
