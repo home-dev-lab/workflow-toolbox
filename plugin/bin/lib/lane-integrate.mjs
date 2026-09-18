@@ -101,6 +101,8 @@ function preflight(options, runner) {
   assertRegisteredWorktree(runner, options.dir)
   assertRegisteredWorktree(runner, options.into)
   if (commonGitDir(runner, options.dir) !== commonGitDir(runner, options.into)) throw new Error('--dir and --into must be worktrees of the same repository')
+  const integrationStatus = git(runner, options.into, ['status', '--porcelain']).trim()
+  if (integrationStatus) throw new Error(`integration worktree is dirty: ${integrationStatus.split(/\r?\n/).join(', ')}`)
   const reportPath = path.join(options.dir, '.lane', 'report.md')
   if (!fs.existsSync(reportPath) || !fs.statSync(reportPath).isFile() || !fs.readFileSync(reportPath, 'utf8').trim()) throw new Error(`lane report is missing or empty: ${reportPath}`)
   const report = fs.readFileSync(reportPath, 'utf8')
@@ -158,11 +160,16 @@ function mergeLane(options, runner) {
   if (resultCode(result) === 0) return
   const conflicts = git(runner, options.into, ['diff', '--name-only', '--diff-filter=U']).split(/\r?\n/).filter(Boolean)
   if (conflicts.length === 1 && conflicts[0].split(path.sep).join('/') === 'plugin/CHANGELOG.md') {
-    const changelog = path.join(options.into, ...conflicts[0].split('/'))
-    fs.writeFileSync(changelog, resolveConflictMarkers(fs.readFileSync(changelog, 'utf8')))
-    git(runner, options.into, ['add', '--', conflicts[0]])
-    git(runner, options.into, ['commit', '--no-edit'])
-    return
+    try {
+      const changelog = path.join(options.into, ...conflicts[0].split('/'))
+      fs.writeFileSync(changelog, resolveConflictMarkers(fs.readFileSync(changelog, 'utf8')))
+      git(runner, options.into, ['add', '--', conflicts[0]])
+      git(runner, options.into, ['commit', '--no-edit'])
+      return
+    } catch (error) {
+      try { git(runner, options.into, ['merge', '--abort']) } catch { /* retain the resolution failure */ }
+      throw error
+    }
   }
   try { git(runner, options.into, ['merge', '--abort']) } catch { /* preserve the original conflict refusal */ }
   throw new Error(`merge conflicts outside plugin/CHANGELOG.md: ${conflicts.length ? conflicts.join(', ') : commandFailure('git', args, result)}`)
@@ -241,6 +248,13 @@ function fileDigest(file) {
 
 function verifyArchive(source, destination) {
   const sourceEntries = entries(source)
+  const destinationEntries = entries(destination)
+  const missing = sourceEntries.filter((relative) => !destinationEntries.includes(relative))
+  const unexpected = destinationEntries.filter((relative) => !sourceEntries.includes(relative))
+  if (missing.length || unexpected.length) {
+    const differences = [...missing.map((relative) => `missing ${relative}`), ...unexpected.map((relative) => `unexpected ${relative}`)]
+    throw new Error(`archive verification failed: ${differences.join(', ')}`)
+  }
   for (const relative of sourceEntries) {
     const from = path.join(source, relative); const to = path.join(destination, relative)
     if (!fs.existsSync(to)) throw new Error(`archive verification failed: missing ${relative}`)
@@ -263,6 +277,7 @@ function removeLane(options, runner) {
   const marker = readWorktreeRetentionMarker(options.dir)
   if (marker) throw new Error(`worktree removal refused by retention marker for card ${marker.cardId}; use the sanctioned command wt-worktree-remove.mjs`)
   if (options.keepWorktree) return
+  verifyArchive(path.join(options.dir, '.lane'), options.archiveDestination)
   git(runner, options.into, ['worktree', 'remove', options.dir])
   const contained = runner('git', ['-C', options.into, 'merge-base', '--is-ancestor', options.laneBranch, 'HEAD'], { encoding: 'utf8', env: COMMAND_ENV })
   if (resultCode(contained) === 0) git(runner, options.into, ['branch', '-d', options.laneBranch])
@@ -289,10 +304,14 @@ function jsonResult(result, description) {
   try { return JSON.parse(String(result.stdout ?? '')) } catch { throw new Error(`${description}: invalid JSON`) }
 }
 
-function listRun(options, runner) {
-  const args = ['run', 'list', '--workflow', options.dispatch, '--branch', options.ciBranch, '--limit', '1', '--json', 'databaseId,status,conclusion']
+function listRuns(options, runner) {
+  const args = ['run', 'list', '--workflow', options.dispatch, '--branch', options.ciBranch, '--limit', '20', '--json', 'databaseId,status,conclusion,event,createdAt']
   const runs = jsonResult(runner('gh', args, { encoding: 'utf8', env: COMMAND_ENV, cwd: options.into }), 'gh run list failed')
-  return Array.isArray(runs) ? runs[0] : null
+  return Array.isArray(runs) ? runs : []
+}
+
+function viewRun(options, runner, runId) {
+  return jsonResult(runner('gh', ['run', 'view', String(runId), '--json', 'databaseId,status,conclusion'], { encoding: 'utf8', env: COMMAND_ENV, cwd: options.into }), 'gh run view failed')
 }
 
 function artifactNames(runId, runner, cwd) {
@@ -328,15 +347,21 @@ function readCiRunEvidence({ runId, runner = defaultRunner, stdout = (line) => p
 }
 
 function dispatchWorkflow(options, runner, stdout, wait) {
+  const existing = new Set(listRuns(options, runner).map((run) => run.databaseId))
   run(runner, 'gh', ['workflow', 'run', options.dispatch, '--ref', options.ciBranch], { cwd: options.into })
   let current = null
-  for (let attempt = 0; attempt < 60 && !current; attempt += 1) { current = listRun(options, runner); if (!current) wait(1_000) }
-  if (!current?.databaseId) throw new Error('dispatched workflow run did not appear')
+  for (let attempt = 0; attempt < 60 && !current; attempt += 1) {
+    const candidates = listRuns(options, runner).filter((candidate) => !existing.has(candidate.databaseId) && candidate.event === 'workflow_dispatch')
+    if (candidates.length > 1) throw new Error(`could not identify the dispatched workflow run: multiple new runs appeared (${candidates.map((candidate) => candidate.databaseId).join(', ')})`)
+    current = candidates[0] ?? null
+    if (!current) wait(1_000)
+  }
+  if (!current?.databaseId) throw new Error('could not identify the dispatched workflow run: no new workflow_dispatch run appeared')
   const urlResult = runner('gh', ['run', 'view', String(current.databaseId), '--json', 'url', '--jq', '.url'], { encoding: 'utf8', env: COMMAND_ENV, cwd: options.into })
   const url = resultCode(urlResult) === 0 ? String(urlResult.stdout).trim() : '(URL unavailable)'
   stdout(`run id=${current.databaseId} url=${url}`)
   if (!options.wait) return
-  for (let attempt = 0; attempt < 360 && current.status !== 'completed'; attempt += 1) { wait(10_000); current = listRun(options, runner) ?? current }
+  for (let attempt = 0; attempt < 360 && current.status !== 'completed'; attempt += 1) { wait(10_000); current = viewRun(options, runner, current.databaseId) }
   if (current.status !== 'completed') throw new Error(`workflow run ${current.databaseId} did not complete within the polling bound`)
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-lane-ci-'))
   try { readCiRunEvidence({ runId: current.databaseId, runner, stdout, artifactDir: temporary, cwd: options.into }) } finally { fs.rmSync(temporary, { recursive: true, force: true }) }

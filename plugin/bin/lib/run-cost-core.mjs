@@ -74,12 +74,15 @@ function defaultOpenCodeDb(options) {
 }
 
 function laneFamily(lane) {
-  if (lane.executor === 'claude-sdk') return 'anthropic'
-  if (lane.executor === 'gpt-lane' || lane.executor === 'opencode') return 'openai'
+  const executorFamily = lane.executor === 'claude-sdk' ? 'anthropic' : lane.executor === 'gpt-lane' || lane.executor === 'opencode' ? 'openai' : null
   const model = String(lane.model ?? '').toLowerCase()
-  if (model.startsWith('openai/') || model.startsWith('gpt-')) return 'openai'
-  if (model.startsWith('anthropic/') || model.startsWith('claude-') || /^(?:opus|sonnet|haiku)$/.test(model)) return 'anthropic'
-  return null
+  const modelFamily = model.startsWith('openai/') || model.startsWith('gpt-')
+    ? 'openai'
+    : model.startsWith('anthropic/') || model.startsWith('claude-') || /^(?:opus|sonnet|haiku)$/.test(model)
+      ? 'anthropic'
+      : null
+  if (executorFamily && modelFamily && executorFamily !== modelFamily) return null
+  return executorFamily ?? modelFamily
 }
 
 function laneLabel(lane) {
@@ -277,7 +280,13 @@ export function computeRunCost(options) {
   for (const lane of lanes) {
     const family = laneFamily(lane)
     if (family === null) {
-      const reason = `lane usage family unavailable for ${laneLabel(lane)}: executor and model do not identify Anthropic or OpenAI`
+      const executor = String(lane.executor ?? '').toLowerCase()
+      const model = String(lane.model ?? '').toLowerCase()
+      const contradictory = ((executor === 'claude-sdk') && (model.startsWith('openai/') || model.startsWith('gpt-')))
+        || ((executor === 'gpt-lane' || executor === 'opencode') && (model.startsWith('anthropic/') || model.startsWith('claude-') || /^(?:opus|sonnet|haiku)$/.test(model)))
+      const reason = contradictory
+        ? `lane usage family unavailable for ${laneLabel(lane)}: contradictory executor/model family evidence`
+        : `lane usage family unavailable for ${laneLabel(lane)}: executor and model do not identify Anthropic or OpenAI`
       entries.push({ phase: lane.phase, round: lane.round ?? null, status: 'unknown', reason, wall_time_ms: lane.ended_at - lane.started_at })
       unknown.push(reason)
       continue

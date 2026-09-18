@@ -94,6 +94,8 @@
     { "name": "WT_LANE_WATCH_TEST_SWEEP_LOG", "where": "plugin/bin/wt-lane-orphan-watch.mjs (test-only sweep receipt)" },
     { "name": "WT_LANE_SATURATION_TEST_MODE", "where": "plugin/bin/lib/wt-lane-saturation-core.mjs (master owned-process test gate)" },
     { "name": "WT_LANE_SATURATION_TEST_PIDS", "where": "plugin/bin/lib/wt-lane-saturation-core.mjs (test-only owned-process filter)" },
+    { "name": "WT_MAIN_GUARD_TEST_AFTER_READ_MS", "where": "plugin/bin/lib/main-guard-allow-once.mjs (test-only cross-process race barrier)" },
+    { "name": "WT_PILOT_TEST_SDK_MANIFEST", "where": "plugin/bin/wt-pilot-runner.mjs (NODE_ENV=test-only SDK fixture manifest)" },
     { "name": "WT_AUTONOMY_WATCH_TEST_NOW_MS", "where": "plugin/bin/wt-autonomy-watch.mjs (test-only clock)" },
     { "name": "WT_ENVELOPE_INTERCEPT_TEST_STDOUT", "where": "plugin/bin/wt-envelope-intercept-hook.mjs (test-only executor output)" },
     { "name": "WT_ENVELOPE_INTERCEPT_TEST_MODEL", "where": "plugin/bin/wt-envelope-intercept-hook.mjs (test-only model identity)" },

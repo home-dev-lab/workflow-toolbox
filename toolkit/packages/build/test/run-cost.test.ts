@@ -215,6 +215,18 @@ describe('run cost', () => {
     expect(cost.unknown).toEqual([])
   })
 
+  it('reports contradictory executor and model evidence on one lane as unknown', () => {
+    const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
+    const contradictory = { ...fixture.gpt.lane, executor: 'opencode', model: 'anthropic/claude-sonnet-5' }
+    const { lane, sessions } = archiveDerivedLaneCost(fixture.gpt.route, [contradictory], [fixture.gpt.session])
+
+    const cost = computeRunCost({ laneDir: lane, worktree: fixture.gpt.worktree, sessions })
+
+    expect(cost.phases[0].models).toEqual({})
+    expect(cost.phases[0].unknown[0]).toContain('contradictory executor/model family evidence')
+    expect(cost.families).toEqual({ anthropic: null, openai: null })
+  })
+
   it('names an OpenAI lane lookup miss instead of recording zero or the run family', () => {
     const fixture = JSON.parse(readFileSync(LANE_FAMILIES_FIXTURE, 'utf8'))
     const { lane } = archiveDerivedLaneCost(fixture.gpt.route, [fixture.gpt.lane])
