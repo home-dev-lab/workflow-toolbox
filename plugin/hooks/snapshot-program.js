@@ -508,6 +508,42 @@ function processAge(pid) {
   const seconds = procUptime - startTicks / clockTicks;
   return Number.isFinite(startTicks) && startTicks >= 0 && seconds >= 0 ? { seconds, text: formatAge(seconds) } : { seconds: null, text: UNKNOWN };
 }
+function readSuiteLockSnapshot() {
+  const root = config.suiteLockRoot;
+  if (typeof root !== 'string' || !path.isAbsolute(root)) return { status: UNKNOWN };
+  const lockDir = path.join(root, 'lock.d');
+  try {
+    if (!fs.statSync(lockDir).isDirectory()) return { status: UNKNOWN };
+  } catch (error) {
+    return error?.code === 'ENOENT' ? { status: 'free' } : { status: UNKNOWN };
+  }
+  let holder;
+  let handle;
+  try {
+    handle = fs.openSync(path.join(lockDir, 'holder.json'), 'r');
+    const size = fs.fstatSync(handle).size;
+    if (size > JSON_BYTES) return { status: UNKNOWN };
+    const buffer = Buffer.alloc(size);
+    const read = fs.readSync(handle, buffer, 0, size, 0);
+    holder = JSON.parse(buffer.subarray(0, read).toString('utf8'));
+  } catch { return { status: UNKNOWN }; }
+  finally { if (handle !== undefined) try { fs.closeSync(handle); } catch {} }
+  if (!Number.isSafeInteger(holder?.pid) || holder.pid <= 0 || !Array.isArray(holder.argv)
+    || typeof holder.cwd !== 'string' || !Number.isFinite(Date.parse(holder.startedAt))) return { status: UNKNOWN };
+  let live;
+  try { process.kill(holder.pid, 0); live = true; }
+  catch (error) { live = error?.code === 'EPERM' ? true : error?.code === 'ESRCH' ? false : null; }
+  if (live === null) return { status: UNKNOWN };
+  const recorded = stripAnsiAndControl(holder.argv.map(value => String(value)).join(' '));
+  const command = recorded.length > 72 ? recorded.slice(0, 69) + '...' : recorded || UNKNOWN;
+  // An elapsed age, never a clock time: the pane has no reliable time zone, and a UTC clock reads wrong locally.
+  return {
+    status: live ? 'running' : 'stale', pid: holder.pid, command,
+    startedAt: new Date(holder.startedAt).toISOString(),
+    age: formatAge((Date.now() - Date.parse(holder.startedAt)) / 1000),
+    worktree: stripAnsiAndControl(holder.cwd) || UNKNOWN,
+  };
+}
 function actorElapsed(worktree, pid) {
   const live = processAge(pid).text;
   if (live !== UNKNOWN) return live;
@@ -1372,6 +1408,7 @@ const oldestHelper = helperItems.filter(item => item.ageSeconds !== null).sort((
 for (const item of [...helperItems, ...serviceItems]) delete item.ageSeconds;
 const services = { count: serviceItems.length, items: serviceItems };
 const helpers = { count: helperItems.length, oldest: helperItems.length ? oldestHelper?.age || UNKNOWN : 'none', items: helperItems };
+const suiteLock = readSuiteLockSnapshot();
 const discovery = ![lifecycleFiles, livenessFiles, registryListing, worktreeListing].every(source => source.readable) ? UNKNOWN : cappedScans.length || scanLimits.length || pathRefusals.length || unreadableScans.length ? 'partial' : 'available';
 const allListedVanished = listedPids.length > 0 && processVanished === listedPids.length;
 const processPartialReason = processScanAvailable && !processListing.readable ? 'unreadable' : processListing.capped ? 'capped' : allListedVanished ? 'unreadable' : processReadFailures.length ? 'unreadable process records' : executableLookupFailures.length ? 'executable lookup unavailable' : null;
@@ -1382,8 +1419,9 @@ const discoveryReason = discovery === UNKNOWN ? 'unavailable: ' + requiredDiscov
 const collectors = {
   work: { value: { rows, sessions }, availability: { status: discovery, ...(discoveryReason ? { reason: discoveryReason } : {}) } },
   processes: { value: { services, helpers }, availability: { status: processDiscovery, ...(processReason ? { reason: processReason } : {}) } },
+  suiteLock: { value: suiteLock, availability: { status: suiteLock.status === UNKNOWN ? UNKNOWN : 'available' } },
   clockTicks: { value: clockTicks, availability: clockTicksAvailability },
 };
 timingsMs.total = Date.now() - timingStartedAt;
-process.stdout.write(JSON.stringify({ collectors, discovery, rows, sessions, services, helpers, processDiscovery, processPartialReason: processReason, processVanished, cappedScans: [...new Set(cappedScans)], scanLimits, unreadableScans: [...new Set(unreadableScans)], pathRefusals, timingsMs, collectedAt: new Date(now).toISOString() }));
+process.stdout.write(JSON.stringify({ collectors, discovery, rows, sessions, services, helpers, suiteLock, processDiscovery, processPartialReason: processReason, processVanished, cappedScans: [...new Set(cappedScans)], scanLimits, unreadableScans: [...new Set(unreadableScans)], pathRefusals, timingsMs, collectedAt: new Date(now).toISOString() }));
 `;
