@@ -264,7 +264,11 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       fixedText(style, state.words),
     );
   };
-  const formatUsd = (value) => Number.isFinite(value) ? `$${value.toFixed(2)}` : 'price unknown';
+  const formatUsd = (value, label) => {
+    if (Number.isFinite(value)) return `$${value.toFixed(2)}` + (label ? ` (${label})` : '');
+    if (typeof value === 'string') return value;
+    return 'price unknown';
+  };
   const phaseCostDetail = (row, phase) => {
     const cost = row.phaseCosts?.[phase];
     if (!cost) return [];
@@ -274,7 +278,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       return [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, {}, `cost so far: unknown${elapsed}`))];
     }
     return [
-      node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, { wrap: 'wrap' }, `cost so far | input: ${formatCount(cost.input)} | output: ${formatCount(cost.output)} | cache read: ${formatCount(cost.cacheRead)} | cache write: ${formatCount(cost.cacheWrite)} | ${formatUsd(cost.usd)}`)),
+      node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, { wrap: 'wrap' }, `cost so far | input: ${formatCount(cost.input)} | output: ${formatCount(cost.output)} | cache read: ${formatCount(cost.cacheRead)} | cache write: ${formatCount(cost.cacheWrite)} | ${formatUsd(cost.usd, cost.priceLabel)}`)),
       node(Box, { key: `phase-cost-source:${row.id}:${phase}` }, node(Text, { dimColor: true }, `cost source: ${row.phaseCostSourceKind || 'unknown'}`)),
     ];
   };
@@ -282,11 +286,11 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ? node(Box, { key: `running-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `cost so far: unknown · elapsed ${row.phaseElapsed[row.phase]} · lane usage arrives at lane end`))
     : null;
   const runCostStatus = (row) => row.runCost
-    ? node(Box, { key: `run-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `run total so far: ${formatUsd(row.runCost.usd)}`))
+    ? node(Box, { key: `run-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `run total so far: ${formatUsd(row.runCost.usd, row.runCost.priceLabel)}`))
     : null;
   const compactPhaseCost = (cost, phase, key) => {
     if (!(Number(actions.bodyColumns) >= 120) || cost === undefined) return null;
-    return node(Box, { key: `phase-cost:${key}:${phase}`, flexShrink: 0 }, node(Text, { dimColor: true }, cost === 'unknown' ? '· unknown' : `· ${formatUsd(cost.usd)}`));
+    return node(Box, { key: `phase-cost:${key}:${phase}`, flexShrink: 0 }, node(Text, { dimColor: true }, cost === 'unknown' ? '· unknown' : `· ${formatUsd(cost.usd, cost.priceLabel)}`));
   };
   const renderCardId = (row) => {
     const id = row.cardId || (/^\d{19}$/.test(String(row.id || '')) ? row.id : null);

@@ -3,7 +3,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { priceRunCost } from './model-prices.mjs'
-export { priceRunCost } from './model-prices.mjs'
 
 const NOT_MEASURED = 'not measured'
 const TOKEN_FIELDS = ['input', 'cache_write', 'cache_read', 'output', 'reasoning', 'first_pass_input', 'fresh_tokens']
@@ -347,13 +346,16 @@ export function unknownRunCost({ route = 'unknown', reason, worktree = null, car
 }
 
 export function costReportSection(cost) {
-  const usd = (value) => typeof value === 'number' ? `$${value.toFixed(6)}` : 'price unknown'
+  const usd = (value, label) => {
+    if (typeof value !== 'number') return value ?? 'price unknown'
+    return `$${value.toFixed(6)}` + (label ? ` (${label})` : '')
+  }
   const lines = ['<!-- run-cost -->', '## Measured Run Cost', '', `Route: ${cost.route} | Outcome: ${cost.outcome.status}${cost.outcome.reason ? ` (${cost.outcome.reason})` : ''} | Unknown: ${cost.unknown.length}`]
   if (cost.totals === 'unknown') return `${lines.join('\n')}\n\nCost: unknown (${cost.unknown.join('; ')})\n<!-- /run-cost -->\n`
-  lines.push('', `Run total: ${usd(cost.totals.usd)}`, '', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | USD | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+  lines.push('', `Run total: ${usd(cost.totals.usd, cost.price_labels?.join('; '))}`, '', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | USD | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
   for (const phase of cost.phases) {
     const label = `${phase.phase}${phase.round ? ` ${phase.round}` : ''}`
-    for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${value.family} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${usd(value.usd)} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)
+    for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${value.family} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${usd(value.usd, value.price_label)} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)
     for (const reason of phase.unknown) lines.push(`| ${label} | unknown | unknown (${reason}) | unknown | unknown | unknown | unknown | unknown | price unknown | unknown | unknown | ${phase.wall_time_ms} |`)
   }
   lines.push('', 'The terminal SDK result is the only source for whole-run output; no independent instrument exists today, so undercount cannot be discriminated and only overcount can.')

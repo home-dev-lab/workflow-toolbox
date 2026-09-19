@@ -59,6 +59,7 @@ export function markdownToHtml(markdown) {
 // the literal and the module stops loading (measured 2026-09-16 on a comment quoting a JSON value).
 export const SNAPSHOT_PROGRAM = String.raw`
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const config = JSON.parse(process.argv.at(-1));
@@ -85,6 +86,24 @@ const MIN_SERVICE_AGE_SECONDS = 30;
 const runtimePlatform = typeof config.platform === 'string' ? config.platform : process.platform;
 const executablePlatform = typeof config.executablePlatform === 'string' ? config.executablePlatform : runtimePlatform;
 const processEnv = config.processEnv && typeof config.processEnv === 'object' ? config.processEnv : process.env;
+const cacheBase = processEnv.XDG_CACHE_HOME || (runtimePlatform === 'darwin' ? path.join(os.homedir(), 'Library', 'Caches') : runtimePlatform === 'win32' ? processEnv.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local') : path.join(os.homedir(), '.cache'));
+const catalogueFile = config.catalogueFile || path.join(cacheBase, 'opencode', 'models.json');
+try {
+  const catalogue = JSON.parse(fs.readFileSync(catalogueFile, 'utf8'));
+  const verifiedAt = fs.statSync(catalogueFile).mtime.toISOString();
+  for (const [provider, providerValue] of Object.entries(catalogue || {})) for (const [modelKey, modelValue] of Object.entries(providerValue?.models || {})) {
+    if (modelValue?.cost) {
+      const modelId = modelValue.id || modelKey;
+      if (priceTable.models[modelId]?.family === provider) delete priceTable.models[modelId];
+      priceTable.models[provider + '/' + modelId] = { ...modelValue.cost, family: provider, verified_at: verifiedAt };
+    }
+  }
+} catch {}
+const overrideFile = config.overrideFile || (processEnv.CLAUDE_PLUGIN_DATA ? path.join(processEnv.CLAUDE_PLUGIN_DATA, 'model-prices.override.json') : null);
+try {
+  const override = JSON.parse(fs.readFileSync(overrideFile, 'utf8'));
+  for (const [model, price] of Object.entries(override.models || {})) priceTable.models[model] = { ...price, verified_at: price.verified_at || override.as_of || fs.statSync(overrideFile).mtime.toISOString() };
+} catch {}
 const layout = config.layout && typeof config.layout === 'object' ? config.layout : {};
 const laneDirName = typeof layout.laneDirName === 'string' && layout.laneDirName ? layout.laneDirName : null;
 const worktreesDirName = typeof layout.worktreesDirName === 'string' && layout.worktreesDirName ? layout.worktreesDirName : null;
@@ -628,20 +647,33 @@ function tokenValue(value, ...names) {
   return null;
 }
 function normalizedPriceModel(model) {
-  const value = String(model || '').toLowerCase().replace(/^(?:anthropic|openai)\//, '');
+  const value = String(model || '').toLowerCase().replace(/-\d{8}$/, '');
+  const inferredProvider = value.startsWith('claude-') ? 'anthropic/' : value.startsWith('gpt-') ? 'openai/' : null;
   const matches = Object.keys(priceTable.models || {}).filter(canonical => {
-    const bare = canonical.replace(/^(?:anthropic|openai)\//, '');
-    const escaped = bare.replace(/[.*+?^\${}()|[\]\\]/g, '\\$&');
-    return value === bare || new RegExp('^' + escaped + '-\\d{8}$').test(value);
+    const canonicalValue = canonical.toLowerCase().replace(/-\d{8}$/, '');
+    if (value === canonicalValue) return true;
+    const family = priceTable.models[canonical]?.family;
+    if (family && value === String(family).toLowerCase() + '/' + canonicalValue) return true;
+    return !value.includes('/') && (!inferredProvider || canonicalValue.startsWith(inferredProvider)) && canonicalValue.split('/').at(-1) === value;
   });
   return matches.length === 1 ? matches[0] : null;
 }
-function pricedUsage(model, values) {
+function priceInfo(model, values) {
   const canonical = normalizedPriceModel(model);
-  if (!canonical) return PRICE_UNKNOWN;
-  const price = priceTable.models[canonical];
-  return (values.input * price.input + values.cacheWrite * (price.cache_write || 0) + values.cacheRead * price.cache_read + values.output * price.output) / 1000000;
+  if (!canonical) return { usd: PRICE_UNKNOWN, label: PRICE_UNKNOWN };
+  const base = priceTable.models[canonical];
+  const context = values.input + values.cacheRead + values.cacheWrite;
+  const tier = (Array.isArray(base.tiers) ? base.tiers : []).filter(item => item?.tier?.type === 'context' && context > Number(item.tier.size)).sort((a, b) => Number(b.tier.size) - Number(a.tier.size))[0];
+  const price = tier ? { ...base, ...tier } : base;
+  const rates = [price.input, price.cache_write || 0, price.cache_read || 0, price.output];
+  if (!Number.isFinite(Number(rates[0])) || !Number.isFinite(Number(rates[3]))) return { usd: PRICE_UNKNOWN, label: PRICE_UNKNOWN };
+  if (rates.every(rate => Number(rate) === 0)) return { usd: 'subscription', label: 'subscription' };
+  const verified = Date.parse(base.verified_at || base.retrieved || priceTable.as_of || '');
+  const label = Number.isFinite(verified) && now - verified > 60 * 24 * 60 * 60 * 1000 ? 'price not verified since ' + new Date(verified).toISOString().slice(0, 10) : canonical.startsWith('openai/') ? 'API price equivalent' : 'API price';
+  return { usd: (values.input * rates[0] + values.cacheWrite * rates[1] + values.cacheRead * rates[2] + values.output * rates[3]) / 1000000, label };
 }
+const pricedUsage = (model, values) => priceInfo(model, values).usd;
+const addUsd = (left, right) => left === PRICE_UNKNOWN || right === PRICE_UNKNOWN ? PRICE_UNKNOWN : left === 'subscription' ? (Number(right) ? right : 'subscription') : right === 'subscription' ? (Number(left) ? left : 'subscription') : left + right;
 function phaseCostRows(phases) {
   const result = {};
   for (const phase of Array.isArray(phases) ? phases : []) {
@@ -652,7 +684,7 @@ function phaseCostRows(phases) {
       continue;
     }
     const previous = result[id];
-    const totals = previous ? { input: previous.input, output: previous.output, cacheRead: previous.cacheRead, cacheWrite: previous.cacheWrite, usd: previous.usd, models: { ...previous.models } } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, models: {} };
+    const totals = previous ? { input: previous.input, output: previous.output, cacheRead: previous.cacheRead, cacheWrite: previous.cacheWrite, usd: previous.usd, priceLabel: previous.priceLabel, models: { ...previous.models } } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, models: {} };
     let measured = false; let incomplete = false;
     for (const [modelName, model] of Object.entries(phase.models)) {
       const values = {
@@ -665,11 +697,13 @@ function phaseCostRows(phases) {
       measured = true;
       for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) totals[key] += values[key];
       const usd = model.usd ?? pricedUsage(modelName, values);
+      const priceLabel = model.price_label || priceInfo(modelName, values).label;
       const priorModel = totals.models[modelName] || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0 };
       for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) priorModel[key] += values[key];
-      priorModel.usd = priorModel.usd === PRICE_UNKNOWN || usd === PRICE_UNKNOWN ? PRICE_UNKNOWN : priorModel.usd + usd;
+      priorModel.usd = addUsd(priorModel.usd, usd);
       totals.models[modelName] = priorModel;
-      totals.usd = totals.usd === PRICE_UNKNOWN || usd === PRICE_UNKNOWN ? PRICE_UNKNOWN : totals.usd + usd;
+      totals.usd = addUsd(totals.usd, usd);
+      if (priceLabel) totals.priceLabel = totals.priceLabel && totals.priceLabel !== priceLabel ? totals.priceLabel + '; ' + priceLabel : priceLabel;
     }
     result[id] = measured && !incomplete ? totals : UNKNOWN;
   }
@@ -682,7 +716,8 @@ function summedCost(values) {
     if (!value || value === UNKNOWN) continue;
     measured = true;
     for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) total[key] += Number(value[key]) || 0;
-    total.usd = total.usd === PRICE_UNKNOWN || value.usd === PRICE_UNKNOWN ? PRICE_UNKNOWN : total.usd + (Number(value.usd) || 0);
+    total.usd = addUsd(total.usd, value.usd);
+    if (value.priceLabel) total.priceLabel = total.priceLabel && total.priceLabel !== value.priceLabel ? total.priceLabel + '; ' + value.priceLabel : value.priceLabel;
   }
   return measured ? total : null;
 }
@@ -703,21 +738,21 @@ function livePhaseCosts(worktree, timeline) {
     // Live SDK receipts omit zero-valued cache fields on some versions; only absent cache fields are measured zero.
     for (const key of ['cacheRead', 'cacheWrite']) if (values[key] === null) values[key] = 0;
     for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) run[key] += values[key];
-    const usd = pricedUsage(model, values);
-    run.usd = run.usd === PRICE_UNKNOWN || usd === PRICE_UNKNOWN ? PRICE_UNKNOWN : run.usd + usd;
+    const info = priceInfo(model, values); const usd = info.usd;
+    run.usd = addUsd(run.usd, usd); run.priceLabel = info.label;
     runMeasured = true;
     const modelName = model || UNKNOWN;
     const runModel = run.models[modelName] || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0 };
     for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) runModel[key] += values[key];
-    runModel.usd = runModel.usd === PRICE_UNKNOWN || usd === PRICE_UNKNOWN ? PRICE_UNKNOWN : runModel.usd + usd;
+    runModel.usd = addUsd(runModel.usd, usd);
     run.models[modelName] = runModel;
     if (id === UNKNOWN) return;
     const target = buckets.get(id) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, models: {} };
     for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) target[key] += values[key];
-    target.usd = target.usd === PRICE_UNKNOWN || usd === PRICE_UNKNOWN ? PRICE_UNKNOWN : target.usd + usd;
+    target.usd = addUsd(target.usd, usd); target.priceLabel = info.label;
     const targetModel = target.models[modelName] || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0 };
     for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) targetModel[key] += values[key];
-    targetModel.usd = targetModel.usd === PRICE_UNKNOWN || usd === PRICE_UNKNOWN ? PRICE_UNKNOWN : targetModel.usd + usd;
+    targetModel.usd = addUsd(targetModel.usd, usd);
     target.models[modelName] = targetModel;
     buckets.set(id, target);
   };
@@ -750,7 +785,7 @@ function phaseCosts(worktree, timeline) {
   if (typeof archivePath === 'string' && path.isAbsolute(archivePath) && under(reportsRoot, archivePath)) {
     const archiveCost = path.join(archivePath, 'cost.json');
     const cost = json(archiveCost);
-    if (cost) return { costs: phaseCostRows(cost.phases), total: cost.totals?.usd !== undefined ? { usd: cost.totals.usd } : summedCost(Object.values(phaseCostRows(cost.phases))), source: archiveCost, kind: 'archive cost.json' };
+    if (cost) return { costs: phaseCostRows(cost.phases), total: cost.totals?.usd !== undefined ? { usd: cost.totals.usd, priceLabel: Array.isArray(cost.price_labels) ? cost.price_labels.join('; ') : undefined } : summedCost(Object.values(phaseCostRows(cost.phases))), source: archiveCost, kind: 'archive cost.json' };
     if (slice(archiveCost, JSON_BYTES, false, true) !== null) return { costs: Object.fromEntries(PHASES.map(phase => [phase, UNKNOWN])), source: archiveCost, kind: 'malformed archive cost.json' };
   }
   const live = livePhaseCosts(worktree, timeline);

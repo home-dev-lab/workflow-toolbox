@@ -27,6 +27,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 - Add source-backed per-model USD run costs to receipts, the cost index, and the live pane
+- Resolve run prices by exact provider and model from OpenCode's fresh models.dev cache, with context tiers, read-only plugin-data overrides, dated fallback reasons, subscription and API-equivalent labels, and stale-source warnings
 
 ## [0.183.1] - 2026-09-18
 
