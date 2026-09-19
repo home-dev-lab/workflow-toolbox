@@ -134,6 +134,22 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     ])
   })
 
+  it('records a created routed card and names its label failures', async () => {
+    const boardContract = {
+      boardId: 'board', listId: 'backlog',
+      labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 'small', M: 'medium', L: 'large' }, category: 'project' },
+    }
+    const lifecycle = testLifecycle('LITE', [], null, null, {
+      boardContract,
+      routeFinding: async () => ({ id: '987654321', title: 'Memory store migration', labelFailures: [{ labelId: 'medium', error: 'board unavailable: Request failed with status code 500' }] }),
+    })
+    expect(await text(lifecycle.routeFinding({ title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore' })))
+      .toBe('routed card 987654321 — Memory store migration (label failure: add_label_to_card medium: board unavailable: Request failed with status code 500)')
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([{
+      id: '987654321', title: 'Memory store migration', l4Reason: 'different subsystem: memory store', failure: 'add_label_to_card medium: board unavailable: Request failed with status code 500',
+    }])
+  })
+
   it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'harden-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
     const lifecycle = testLifecycle('LITE')
     expect(await text(lifecycle.artifact({ kind, content: 'content' }))).toMatch(/^edge refused: discovery->next; missing .*: /)
@@ -378,14 +394,9 @@ printf 'report\n' > "$report"
   })
 
   it('refuses verify when every gate mtime equals the lane receipt mtime', async () => {
-    const lifecycle = await lifecycleAtVerify()
+    const lifecycle = await lifecycleAtVerify(equalMtimeLauncher())
     const nonceLog = readdirSync(join(lifecycle.root, '.lane')).find((name) => /^tdd-run\..+\.log$/.test(name))!
-    // Pin the receipt to a whole second first: utimes takes SECONDS, and a sub-millisecond mtimeMs does not
-    // round-trip through the division (measured: 1789547251756.7688 came back as .768 and the lock went red).
-    const wholeSecond = Math.floor(Date.now() / 1000)
-    utimesSync(join(lifecycle.root, '.lane', nonceLog), wholeSecond, wholeSecond)
     const laneMtime = fs.statSync(join(lifecycle.root, '.lane', nonceLog)).mtimeMs
-    lifecycle.state.lastLaneMtime = laneMtime
     const append = fs.appendFileSync.bind(fs)
     const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
       append(file, data, options)
@@ -546,8 +557,9 @@ printf 'report\n' > "$report"
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
     expect(summary).toMatchObject({ commit: 'next', partial: null, lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
     expect(summary.archive).toMatchObject({ path: expect.stringMatching(/[\\/]\.claude[\\/]reports[\\/]1-/), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
-    expect(summary.archive.path.startsWith(lifecycle.archiveRoot)).toBe(true)
-    expect(summary.archive.path.startsWith(lifecycle.root)).toBe(false)
+    expect(summary.archive.path.startsWith(realpathSync.native(lifecycle.archiveRoot))).toBe(true)
+    // Compare canonical spellings on both sides: with an 8.3 root the negative check would pass vacuously.
+    expect(summary.archive.path.startsWith(realpathSync.native(lifecycle.root))).toBe(false)
     expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: null, routed_cards: [{ id: '42', title: 'Late route', l4Reason: 'different subsystem' }] })
   })
 
@@ -977,6 +989,28 @@ printf 'report\n' > "$report"
       phase: 'report',
       partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: [unmet] },
     })
+  })
+
+  it.each([
+    'e2e not run: the change is only in a background watcher warning filter and has no UI',
+    'e2e not run: no UI',
+    'e2e not run: there is no screen to exercise',
+    'e2e not run: headless change, no user interface',
+  ])('refuses a UI-only e2e not run reason at the report edge: %s', async (e2e) => {
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n' })
+    const report = `# report\n\n## E2E\n${e2e}\n\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'ui-only-e2e' }))).toContain('absence of a UI')
+    expect(lifecycle.state().partial).toBeNull()
+  })
+
+  it('accepts a UI-absence reason that names what was tried before partial classification', async () => {
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n' })
+    const e2e = 'e2e not run: no UI; tried running the watcher against a staging lane but no staging lane exists on this machine'
+    const report = `# report\n\n## E2E\n${e2e}\n\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'tried-e2e' })))
+      .toContain('Partial: delivered partially: 1 unmet criteria')
   })
 
   it('refuses bare and unknown-card deferrals and mechanically appends routed cards', async () => {
@@ -1572,6 +1606,7 @@ function delayedLauncher() {
 function emptyLauncher() { return launcher('process.exit(0)') }
 function logOnlyLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, ''); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function successLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'report\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
+function equalMtimeLauncher() { return launcher("import { readFileSync, renameSync, utimesSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1],tmp=log+'.tmp',brief=process.argv[process.argv.indexOf('--brief')+1],report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1],wholeSecond=Math.ceil(Date.now()/1000); writeFileSync(report,'report\\n'); writeFileSync(tmp,readFileSync(log,'utf8')+'done\\nEXIT=0\\n'); utimesSync(tmp,wholeSecond,wholeSecond); renameSync(tmp,log)") }
 function verdictLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- blocker\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function criticFindingsLauncher(findings: string[], exit = 0) {
   const report = `VERDICT: changes-requested\nFINDINGS:\n${findings.map((finding) => `- ${finding}`).join('\n')}\n`
@@ -1597,8 +1632,8 @@ async function lifecycleAtCritic(worker: string) {
   return lifecycle
 }
 function foreignThenGenuineLauncher() { return launcher("import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; const nonce = readFileSync(log, 'utf8'); rmSync(log); writeFileSync(log, 'foreign\\nEXIT=0\\n'); setTimeout(() => { writeFileSync(log, nonce); appendFileSync(log, 'genuine\\nEXIT=0\\n'); writeFileSync(report, 'report\\n') }, 40)") }
-async function lifecycleAtVerify() {
-  const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
+async function lifecycleAtVerify(worker = successLauncher()) {
+  const lifecycle = testLifecycle('LITE', [], worker, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
   expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))).toBe('accepted phase=tdd')
   expect(await text(lifecycle.artifact({ kind: 'brief', content: 'brief\n' }))).toBe('wrote brief')
   expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')

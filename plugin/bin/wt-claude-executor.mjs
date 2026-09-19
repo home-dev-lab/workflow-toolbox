@@ -32,6 +32,7 @@ async function worker(options) {
     setTimeout(() => { finish(options.log, 124); process.exit(124) }, 250).unref()
   }, options.timeout * 1000)
   const stop = (code) => { clearTimeout(timer); abortController.abort(); finish(options.log, code); process.exitCode = code }
+  // Windows has no POSIX SIGTERM/SIGINT exit-status contract; forced termination cannot promise 143/130 markers.
   process.once('SIGTERM', () => stop(143)); process.once('SIGINT', () => stop(130))
   let failed = false
   let initReceiptSeen = false

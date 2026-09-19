@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, terminateLane } from './lib/lane-supervisor-core.mjs'
-import { registeredWorktrees, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
+import { posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
 import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
@@ -32,10 +32,10 @@ function parse(argv) {
   return out
 }
 
-function records(project) {
+function records(project, staging = stagingLaneDirs(project)) {
   const git = registeredWorktrees(project)
   const umbrella = suiteUmbrellaWorktrees(project)
-  const worktrees = new Set([project, ...(git.status === 'known' ? git.worktrees : []), ...(umbrella.status === 'known' ? umbrella.worktrees : [])])
+  const worktrees = new Set([project, ...(git.status === 'known' ? git.worktrees : []), ...(umbrella.status === 'known' ? umbrella.worktrees : []), ...staging])
   const out = []
   for (const worktree of worktrees) {
     const dir = supervisionPaths(worktree).dir
@@ -53,6 +53,33 @@ function records(project) {
     }
   }
   return out
+}
+
+const canonicalPath = (value) => {
+  let probe = path.resolve(value)
+  const suffix = []
+  while (true) {
+    try { return path.resolve(realpathSync(probe), ...suffix) } catch {
+      const parent = path.dirname(probe)
+      if (parent === probe) return path.resolve(value)
+      suffix.unshift(path.basename(probe))
+      probe = parent
+    }
+  }
+}
+
+const containsPath = (root, candidate) => {
+  const canonicalRoot = canonicalPath(root)
+  const canonicalCandidate = canonicalPath(candidate)
+  return canonicalCandidate === canonicalRoot || canonicalCandidate.startsWith(`${canonicalRoot}${path.sep}`)
+}
+
+const processDir = (argv, cwd) => {
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--dir' && argv[index + 1]) return path.resolve(cwd, argv[index + 1])
+    if (argv[index].startsWith('--dir=') && argv[index].slice('--dir='.length)) return path.resolve(cwd, argv[index].slice('--dir='.length))
+  }
+  return null
 }
 
 async function main() {
@@ -116,7 +143,8 @@ async function main() {
         if (!notified.has(key)) notice(key, `WARNING: wt-lane-orphan-watch pid=${item.pid} requires review: ${item.reason}`)
       }
     }
-    const known = records(options.project)
+    const staging = stagingLaneDirs(options.project)
+    const known = records(options.project, staging)
     for (const record of known) {
       const verdict = classifyLane(record)
       const processRecord = verdict.child === 'running' ? inspectProcess(record.childPid) : null
@@ -177,9 +205,14 @@ async function main() {
     const table = listProcessTable()
     const attributed = new Set(known.map((record) => record.childPid))
     if (table.supported) for (const item of table.processes) {
-      if (!/(?:^|[\\/\s])opencode(?:\s|$)/i.test(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
+      if (!/(?:^|[\\/\s])opencode(?:\.exe|\.cmd)?(?:\s|$)/i.test(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
       const unknown = inspectProcess(item.pid)
       if (!unknown?.cwd || (unknown.cwd !== options.project && !unknown.cwd.startsWith(`${options.project}${path.sep}`))) continue
+      const argv = Array.isArray(unknown.argv) && unknown.argv.length > 0 ? unknown.argv : posixCommandArgs(item.command)
+      if (!reportableOpencodeArgv(argv)) continue
+      if (String(argv[1] ?? '').replaceAll('\\', '/').includes('/test/fixtures/')) continue
+      const dir = processDir(argv, unknown.cwd)
+      if (staging.some((lane) => containsPath(lane, unknown.cwd) || (dir && containsPath(lane, dir)))) continue
       journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
       notice(`unknown:${item.pid}`, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
     }

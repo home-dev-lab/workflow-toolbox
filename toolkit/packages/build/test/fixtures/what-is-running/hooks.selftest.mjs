@@ -1521,7 +1521,7 @@ await test('[changed Round 3 exact host close][changed Round 2 Close] /wir answe
   const opened = await forwarded(command, { command: 'wir' });
   assert.equal(opened.count, 0, 'a plugin command has nothing downstream: calling next yields the engine\'s "no hook answered"');
   assert.equal(typeof opened.result?.text, 'string');
-  assert(calls.some(([kind, pane]) => kind === 'open' && pane.id === 'wt-what-is-running'));
+  assert(calls.some(([kind, pane]) => kind === 'open' && /^wt-what-is-running-/.test(pane.id)));
   const pane = hookFor('ui.render', (hook) => hook.matcher?.component === 'Pane');
   const rendered = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns: 120 } });
   assert.equal(rendered.count, 1);
@@ -1530,7 +1530,7 @@ await test('[changed Round 3 exact host close][changed Round 2 Close] /wir answe
   const closing = findButton(rendered.result, 'Close').props.onPress();
   assert(closing instanceof Promise, 'Button returns the exact asynchronous host close path');
   await closing;
-  assert(calls.some(([kind, pane]) => kind === 'close' && pane.id === 'wt-what-is-running'));
+  assert(calls.some(([kind, pane]) => kind === 'close' && /^wt-what-is-running-/.test(pane.id)));
   assert(timers.at(-1).cancelled);
 });
 await test('[Step 7 round 5 finding 1] failure and reasonless partial panes never render unknown', async () => {
@@ -1973,6 +1973,37 @@ await test('[per-session pane state] one registration never adopts another regis
   await new Promise((resolve) => setImmediate(resolve));
   assert(first.localCalls.some(([kind]) => kind === 'close'));
   assert.equal(sharedStore.has('pane-open'), false);
+});
+await test('[hooks reload] a replacement registration redraws this session\'s tagged open pane without reopening it', async () => {
+  const makeHost = () => {
+    const localHooks = []; const localCalls = []; const localTimers = [];
+    const local$ = {
+      ...$,
+      store: { get: async () => { throw new Error('shared store must not identify pane ownership'); }, set: async () => { throw new Error('shared store must not identify pane ownership'); } },
+      clock: { every: (ms, fn) => { const timer = { ms, fn, cancelled: false, cancel: () => { timer.cancelled = true; } }; localTimers.push(timer); return timer; } },
+      ui: { ...$.ui, open: async (pane) => localCalls.push(['open', pane]), close: async (pane) => localCalls.push(['close', pane]), invalidate: (event) => localCalls.push(['invalidate', event]) },
+    };
+    register((event, matcher, hook) => localHooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }), paths);
+    const find = (event, predicate = () => true) => localHooks.find((hook) => hook.event === event && predicate(hook));
+    return { local$, localCalls, localTimers, find };
+  };
+  const original = makeHost();
+  await original.find('session.start').hook(original.local$, { cwd: worktree }, async () => ({}));
+  await original.find('command.run').hook(original.local$, { command: 'wir' }, async () => ({}));
+  const openedId = original.localCalls.find(([kind]) => kind === 'open')?.[1].id;
+  assert.match(openedId, /^wt-what-is-running-/);
+
+  const replacement = makeHost();
+  const pane = replacement.find('ui.render', (hook) => hook.matcher?.component === 'Pane');
+  const early = await pane.hook(replacement.local$, { component: 'Pane', requestId: openedId, surface: 'terminal', props: { bodyColumns: 120 } }, async () => ({ downstream: true }));
+  assert.deepEqual(early, { downstream: true });
+  await replacement.find('session.start').hook(replacement.local$, { cwd: worktree }, async () => ({}));
+  assert(!replacement.localCalls.some(([kind]) => kind === 'open'), 'reload must reuse the host pane, not reopen it');
+  assert(replacement.localCalls.some(([kind, event]) => kind === 'invalidate' && event === 'ui.render'));
+  const tree = await pane.hook(replacement.local$, { component: 'Pane', requestId: openedId, surface: 'terminal', props: { bodyColumns: 120 } }, async () => ({ downstream: true }));
+  assert.notDeepEqual(tree, { downstream: true });
+  assert(findButton(tree, 'Close'));
+  assert.equal(replacement.localTimers.length, 1);
 });
 await test('[per-session pane state] open, Close, and session start never access plugin-wide storage', async () => {
   const localHooks = []; const localCalls = [];

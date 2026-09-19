@@ -1,5 +1,6 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import path, { basename, join } from 'node:path'
 
 export const ACTIVITY_MAX_ENTRIES = 4000
@@ -7,6 +8,34 @@ export const ACTIVITY_WINDOW_MIN = 12
 export const LANE_LOG_TAIL_BYTES = 4096
 export const PROCESS_SCAN_MAX_ENTRIES = 5000
 export const ACTIVITY_SKIP_DIRS = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
+
+export function reportableOpencodeArgv(argv, { tmpRoot = tmpdir(), realpath = realpathSync } = {}) {
+  if (!Array.isArray(argv)) return false
+  const opencodeIndex = argv.findIndex((arg, index) => /^(?:opencode|opencode\.exe|opencode\.cmd)$/i.test(String(arg).split(/[\\/]/).at(-1)) && argv[index + 1] === 'run')
+  if (opencodeIndex < 0) return false
+
+  const canonicalPath = (value) => {
+    let probe = path.resolve(value)
+    const suffix = []
+    while (true) {
+      try { return path.resolve(realpath(probe), ...suffix) } catch {
+        const parent = path.dirname(probe)
+        if (parent === probe) return path.resolve(value)
+        suffix.unshift(path.basename(probe))
+        probe = parent
+      }
+    }
+  }
+  const canonicalTmp = canonicalPath(tmpRoot)
+  const insideTmp = (value) => {
+    const relative = path.relative(canonicalTmp, canonicalPath(value))
+    return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
+  }
+  const pathShaped = (value) => /[\\/]/.test(String(value)) || path.isAbsolute(String(value))
+
+  // Only an installed OpenCode `run` invocation is a lane candidate; temp-hosted executables are test fakes.
+  return ![argv[0], argv[opencodeIndex]].some((arg) => pathShaped(arg) && insideTmp(arg))
+}
 
 function launcherOwnsLog(name) {
   return name === 'run.log'
@@ -145,6 +174,19 @@ export function suiteUmbrellaWorktrees(root) {
   }
 }
 
+export function stagingLaneDirs(root) {
+  if (!root) return []
+  const worktreesDir = join(root, '.claude', 'worktrees')
+  try {
+    return readdirSync(worktreesDir, { withFileTypes: true })
+      .slice(0, 200)
+      .filter((entry) => entry.isDirectory() && /^.+-\d{10}$/.test(entry.name) && existsSync(join(worktreesDir, entry.name, '.lane', 'brief.md')))
+      .map((entry) => join(worktreesDir, entry.name))
+  } catch {
+    return []
+  }
+}
+
 function laneDirFromArgs(args, pathApi = path) {
   const executable = pathApi.basename(args[0] || '')
   const subcommand = args[1]
@@ -170,7 +212,7 @@ function windowsCommandArgs(commandLine) {
   return args
 }
 
-function posixCommandArgs(commandLine) {
+export function posixCommandArgs(commandLine) {
   const args = []
   const pattern = /"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|((?:\\.|[^\s])+)/g
   for (const match of String(commandLine).matchAll(pattern)) args.push((match[1] ?? match[2] ?? match[3]).replace(/\\([\\"' ])/g, '$1'))

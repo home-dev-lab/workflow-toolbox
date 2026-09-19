@@ -5,6 +5,27 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- The elapsed-time wake floor now stays silent while an identity-verified lane owned by the current session is running, launching, or awaiting a decision. Complete evidence with no owned live lane keeps the existing FLOOR line unchanged; unreadable, malformed, capped, or otherwise inconclusive lane evidence fires with an explicit fail-safe annotation. Session-armed background tasks remain outside this signal because the host exposes no attested running/completed distinction; an attested host signal is tracked as follow-up work.
+- The pilot contract now requires E2E whenever real processes, files, or a host can exercise a change; absence of a UI alone is rejected unless the report names what was tried
+- The EXPERIMENTAL SDK runner now atomically publishes assistant usage while a run is live, and What is running shows per-phase usage, a live run total, and elapsed time while delegated-lane usage is pending. Normal and abnormal runs append one durable cost-index record beside the external archives; final receipts reuse the live messages without double counting.
+- Restart the artifact server when it stops while sessions remain registered
+- Orphan scans now report only real OpenCode run invocations and ignore executables hosted in the OS temp directory
+- Handle plain-text board mutations without orphaning routed cards
+- Recognise staging lane directories and test fixtures during orphan scans while preserving warnings for genuinely unattributed OpenCode processes
+- The actionability gate can now be refreshed with `wt-actionable-snapshot-refresh.mjs` (the stale message prints its absolute path, runnable as-is) without placing a six-figure Planka result in session context. The command reads strict 10-card pages directly from the local MCP endpoint, refuses changing/incomplete/duplicate pagination, and passes only a proved-complete set to the existing dependency parser and snapshot writer; stale messages now distinguish "not measured recently" from zero actionable cards and print that exact command with an absolute path.
+- Windows: the lifecycle archive-containment check compares both paths in their canonical long form, so an archive destination inside the lane can no longer pass because one side was spelled with 8.3 short names; and an artifact-server monitor no longer drops its registration when a busy server answers its health probe late.
+- The main guard's refusal now names the override file it actually reads. A marketplace install reads it from the plugin's data directory, while the message used to point at `~/.local/state/wt-main-guard/allow-once.json`, so writing the override where the refusal said had no effect.
+- The What is running pane now redraws after its hooks module reloads. Each opened pane carries a registration tag in its host request id, so the replacement module can resume that already-open pane without shared plugin storage or a cross-session `ui.open` call.
+- Windows: lane integration now recognises a worktree whose path is spelled with 8.3 short names (`C:\Users\RUNNER~1\…`), and the artifact server no longer narrows the Windows process start-time tolerance below the shared precision, which could declare a live monitor dead and drop its mount.
+- The EXPERIMENTAL What is running pane now shows the live serialized test-suite holder from its lock record, including its shortened command, start time, and worktree; dead holders are marked stale and unreadable lock data is marked unknown.
+- The delegated-arc watcher now recognizes a transcript's terminal assistant `end_turn` record as a clean finish, keeping completed agents silent while malformed, interrupted, frozen, and vanished agents still fail toward an alert.
+- The lesson-harvest Stop hook no longer re-surfaces unchanged lessons when a reader appends a delimited `## Lesson harvest record` section to the report. The hook excludes only that section from its persisted content fingerprint, so lessons added after a harvest still fire.
+- Adoption notices now assign stale-copy refresh and edited-copy arbitration to the session instead of asking the owner to decide. The hook remains read-only, supports a `notice-only` single-writer opt-out, and supplies exact directory-scoped install/check or three-way-diff commands; installer writes journal their adopted snapshot and version transition for later read-only comparison.
+- Windows now runs the what-is-running collector without placing its large program on the command line, and lane integration compares canonical Git worktree paths with Windows case semantics.
+- Adoption staleness notices now quote the exact directory they inspected in their `install.mjs --dir` remedy. A bare `--install` also reuses a sole discovered project or config-profile adoption and refuses to guess when several copies exist, preventing a stale user-level copy from being left behind while a duplicate project copy is created.
+- The orchestrator CLI now refuses value-taking flags that are empty, truncated, or followed by another flag instead of silently accepting a missing value.
+
 ## [0.183.1] - 2026-09-18
 
 ### Fixed

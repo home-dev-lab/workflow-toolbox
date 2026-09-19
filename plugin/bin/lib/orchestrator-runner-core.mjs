@@ -24,6 +24,7 @@ const labels = (card) => (card?.labels ?? []).map((item) => typeof item === 'str
 const canonicalPath = (file) => (fs.realpathSync.native ?? fs.realpathSync)(file)
 const under = (parent, child) => { const relative = path.relative(parent, child); return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative)) }
 const CARD_ID = /^\d{1,32}$/
+const VALUE_FLAGS = new Set(['--cards', '--mission-list', '--mission-label', '--max-cards', '--max-minutes', '--concurrency', '--hard', '--base', '--worktrees-dir', '--report', '--profile-env', '--board-contract', '--knowledge-base-index', '--plugin-dir', '--pilot-timeout', '--board-url', '--board-id'])
 const errorText = (error) => error instanceof Error ? error.message : String(error)
 const cardText = (card) => card.markdown ?? card.text ?? card.description ?? JSON.stringify(card, null, 2)
 const receiptExit = (file, fallback = 1) => {
@@ -34,6 +35,7 @@ export function parseOrchestratorArgs(argv) {
   const options = { ...DEFAULTS, boardUrl: resolveWorkflowToolboxOption('planka_mcp_url').value, cards: null, missionList: null, missionLabels: [], hard: [], worktreesDir: null, report: null, profileEnv: null, boardContract: null, knowledgeBaseIndex: null, pluginDirs: [] }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
+    if (VALUE_FLAGS.has(arg) && (!argv[i + 1] || argv[i + 1].startsWith('--'))) return { error: `${arg} requires a value` }
     const next = () => argv[++i]
     if (arg === '--cards') options.cards = next()?.split(',').filter(Boolean) ?? []
     else if (arg === '--mission-list') options.missionList = next()

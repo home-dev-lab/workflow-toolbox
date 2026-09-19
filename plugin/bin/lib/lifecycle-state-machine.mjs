@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
+import { acceptanceSection, containsPlanShape, PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
@@ -22,6 +23,7 @@ export const MAX_REVIEW_ROUNDS = 3
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
 
 export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
+export { PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation', 'harden'])
 const GATES = new Set(['typecheck', 'lint', 'test'])
 const ARTIFACTS = {
@@ -36,52 +38,6 @@ const ARTIFACTS = {
 const INDEPENDENT_ROLES = new Set(['critic', 'review', 'refutation'])
 const MAX_REPORT_FINDINGS = 50
 const MAX_FINDING_CHARACTERS = 2000
-const PLAN_SHAPE = Object.freeze({
-  adrHeading: 'ADR',
-  adrTerms: Object.freeze(['Decision', 'Rejected']),
-  tasksHeading: 'Tasks',
-  taskDodLabels: Object.freeze(['DoD', 'Definition of done']),
-  gatesHeading: 'Gates',
-  acceptanceHeading: 'Acceptance',
-})
-export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, and a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every folded card Definition-of-done criterion exactly with a following \`Proof:\` line naming a task, test, e2e, test file, or gate`
-
-function planSection(content, heading) {
-  return new RegExp(`(?:^|\\n)## ${heading}\\b[\\s\\S]*?(?=\\n## |$)`, 'i').exec(content)?.[0] ?? ''
-}
-function acceptanceSection(content) {
-  return /(?:^|\n)## Acceptance[ \t]*\r?\n[\s\S]*?(?=\r?\n#{1,6}(?:[ \t]+|$)|$)/i.exec(content)?.[0] ?? ''
-}
-
-function containsPlanShape(content, requireAcceptance) {
-  const adr = planSection(content, PLAN_SHAPE.adrHeading)
-  const tasks = planSection(content, PLAN_SHAPE.tasksHeading)
-  const lines = tasks.split(/\r?\n/)
-  // A column-0 `- ` / `1. ` line is a task. A `### ` heading is a task only when no such line sits under
-  // it before the next heading; otherwise it groups the list tasks beneath it.
-  const isListItem = (line) => /^(?:- |\d+\. )/.test(line)
-  const taskIndexes = lines
-    .map((line, index) => {
-      if (isListItem(line)) return index
-      if (!/^### /.test(line)) return -1
-      const next = lines.findIndex((other, j) => j > index && /^#{1,3} /.test(other))
-      return lines.slice(index + 1, next === -1 ? lines.length : next).some(isListItem) ? -1 : index
-    })
-    .filter((index) => index >= 0)
-  return (
-    PLAN_SHAPE.adrTerms.every((term) => new RegExp(term, 'i').test(adr)) &&
-    taskIndexes.length > 0 &&
-    taskIndexes.every(
-      (start, i) =>
-        new RegExp(`\\b(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(lines[start]) ||
-        lines
-          .slice(start + 1, taskIndexes[i + 1] ?? lines.length)
-          .some((line) => new RegExp(`^\\s*(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(line)),
-    ) &&
-    Boolean(planSection(content, PLAN_SHAPE.gatesHeading)) &&
-    (!requireAcceptance || Boolean(acceptanceSection(content)))
-  )
-}
 function acceptanceEntries(content) {
   const section = acceptanceSection(content)
   const lines = section.split(/\r?\n/)
@@ -159,6 +115,12 @@ function reportDeliveryUnmet(content, dodBullets) {
   const e2e = /(?:^|\n)## E2E\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)?.[1].trim() ?? ''
   if (/^e2e not run: \S[^\r\n]*$/i.test(e2e)) unmet.push(`E2E: ${e2e}`)
   return unmet
+}
+function uiOnlyE2eReason(reason) {
+  if (/\b(?:tried|attempted)\b/i.test(reason)) return false
+  const ui = '(?:(?:user-facing|graphical|visible|web|front-end)\\s+)?(?:uis?|guis?|user interfaces?|screens?|frontends?|front-ends?|pages?|browsers?|displays?)'
+  const absent = `\\b(?:no|without(?:\\s+(?:a|an))?|lacks?(?:\\s+(?:a|an))?|has\\s+no|there\\s+is\\s+no|not\\s+(?:a|an)|absence\\s+of(?:\\s+(?:a|an))?)\\s+${ui}\\b`
+  return new RegExp(absent, 'i').test(reason) || /\b(?:headless|not user-facing|nothing visual)\b/i.test(reason)
 }
 function deferredOutcomeProblem(content, routedCards) {
   for (const line of content.split(/\r?\n/)) {
@@ -888,6 +850,9 @@ export function createLifecycleStateMachine({
     const e2e = reportSection(content, 'E2E')
     if (!e2e) return 'pilot-report: missing or empty ## E2E section'
     const e2eNotRun = /^e2e not run: \S[^\r\n]*$/i.test(e2e)
+    if (e2eNotRun && uiOnlyE2eReason(e2e.replace(/^e2e not run:\s*/i, ''))) {
+      return 'pilot-report: ## E2E "e2e not run" cannot rest on the absence of a UI/screen; an E2E is owed whenever real processes, files or a host (CLI, hook, watcher, server, script) can exercise the change: run it, or name what was tried and why nothing on this machine can exercise it'
+    }
     const hasProcedure = /^(?:command|procedure):\s+\S.+$/im.test(e2e)
     const hasOutput = /^(?:verbatim )?output:\s+\S.*$/im.test(e2e)
     const hasEvidenceLine = /^e2e evidence:\s+\S.+\s(?:=>|output:)\s\S.*$/im.test(e2e)
@@ -927,6 +892,10 @@ export function createLifecycleStateMachine({
       const id = String(created?.id ?? '')
       if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('board returned no valid card id')
       const record = { id, title: String(created.title ?? args.title), l4Reason: args.l4Reason }
+      const failure = Array.isArray(created.labelFailures) && created.labelFailures.length > 0
+        ? created.labelFailures.map((item) => `add_label_to_card ${item.labelId}: ${item.error}`).join('; ')
+        : null
+      if (failure) record.failure = failure
       timeline.routed_cards.push(record)
       if (state.phase === 'report' && state.pilotReportDigest) {
         const reportPath = path.join(laneDir, 'pilot-report.md')
@@ -938,7 +907,8 @@ export function createLifecycleStateMachine({
         }
       }
       persistTimeline()
-      return `routed card ${id} — ${record.title}`
+      const failureSuffix = failure ? ` (label failure: ${failure})` : ''
+      return `routed card ${id} — ${record.title}${failureSuffix}`
     } catch (error) {
       return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
     }

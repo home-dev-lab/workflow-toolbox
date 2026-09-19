@@ -17,6 +17,7 @@ const DEFINITIONS = Object.freeze({
   lane_orphan_cleanup: { envKey: 'WT_LANE_ORPHAN_CLEANUP', type: 'string', defaultValue: 'observe' },
   lane_stall_minutes: { envKey: 'WT_LANE_STALL_MINUTES', type: 'number', defaultValue: 10 },
   release_branch: { envKey: 'WT_RELEASE_BRANCH', type: 'string', defaultValue: '' },
+  adopt_refresh: { envKey: 'WT_ADOPT_REFRESH', type: 'string', defaultValue: 'session' },
 })
 
 function configDir(env) {

@@ -6,7 +6,7 @@ import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl, probeArtifactServer, registrationPidStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, atomicWriteJson, deriveArtifactPort, parseTailscaleServeUrl, probeArtifactServer, registrationPidStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
@@ -233,6 +233,23 @@ async function closeServer(server: Server) {
   await new Promise<void>((resolve) => server.close(() => resolve()))
 }
 
+async function listenWhenReleased(server: Server, port: number, timeoutMs = 3_000) {
+  await waitFor(async () => {
+    const listening = await new Promise<boolean>((resolve, reject) => {
+      const onError = (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EADDRINUSE') resolve(false)
+        else reject(error)
+      }
+      server.once('error', onError)
+      server.listen(port, '127.0.0.1', () => {
+        server.removeListener('error', onError)
+        resolve(true)
+      })
+    })
+    return listening ? true : null
+  }, timeoutMs)
+}
+
 async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM', includeWindowsTree = true) {
   if (!child.pid || !pidAlive(child.pid)) return
   const pid = child.pid
@@ -457,6 +474,14 @@ describe('review test infrastructure', () => {
       inspect: () => ({ ...identity, startTime: 500 }), processExists: () => true,
     })).toBe('gone')
   })
+
+  it('allows the shared Windows process-read precision for approximate registration starts', () => {
+    const identity = { pid: 123, argv: ['node', 'monitor'], startTime: 100, startTimeApproximate: true }
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: identity,
+      inspect: () => ({ ...identity, startTime: 1_600 }), processExists: () => true,
+    })).toBe('running')
+  })
 })
 
 function projectWithRoots(tag: string) {
@@ -538,9 +563,31 @@ describe('owner decision 2: discovery and one instance', () => {
     for (let index = 0; index < 6; index += 1) spawnEnsure(project, env)
 
     const state = await waitForState(stateHome)
-    await waitFor(async () => (await health(state)).registeredSessions === 6 ? true : null, 10_000)
+    // Six PowerShell-backed process identity checks can exceed the Linux-sized bound on Windows CI.
+    await waitFor(async () => (await health(state)).registeredSessions === 6 ? true : null, 60_000)
     expect(spawnReceipts(spawnLog)).toHaveLength(1)
     expect(spawnReceipts(contentionLog).length).toBeGreaterThan(0)
+  }, 90_000)
+
+  it('retains its registration when an occupied candidate is temporarily unresponsive', async () => {
+    const { project } = projectWithRoots('unresponsive-candidate')
+    const stateHome = temporaryDir('unresponsive-candidate-state')
+    const occupied = createServer(() => {})
+    await new Promise<void>((resolve, reject) => {
+      occupied.once('error', reject)
+      occupied.listen(0, '127.0.0.1', resolve)
+    })
+    const address = occupied.address()
+    if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
+    try {
+      const monitor = spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
+      const output = childOutput(monitor)
+      await waitFor(() => output.stdout().includes('ARTIFACT SERVER STARTUP PENDING') ? true : null, 5_000)
+      expect(monitor.exitCode).toBeNull()
+      expect(readdirSync(registrationsPath(stateHome))).toHaveLength(1)
+    } finally {
+      await closeServer(occupied)
+    }
   })
 
   it('ignores all test controls unless master test mode is enabled', async () => {
@@ -1040,6 +1087,12 @@ describe('owner decision 2: discovery and one instance', () => {
     else holder.kill('SIGTERM')
     await waitFor(() => /startup stopped during shutdown/i.test(output.stdout()) ? true : null)
     expect(output.stdout()).not.toMatch(/no available port/i)
+    await new Promise<void>((resolve) => {
+      if (holder.exitCode !== null || holder.signalCode !== null) resolve()
+      else holder.once('close', () => resolve())
+    })
+    children.delete(holder)
+    expect(holder.exitCode).toBe(0)
   })
 
   it('reports a spawned server that was not ready without claiming port exhaustion', async () => {
@@ -1073,16 +1126,22 @@ describe('owner decision 2: discovery and one instance', () => {
   it('still reports no available port when candidate ports are occupied', async () => {
     const { project } = projectWithRoots('startup-no-port')
     const stateHome = temporaryDir('startup-no-port-state')
-    const foreign = await reservePort()
+    const foreign = createServer((_request, response) => response.end('foreign'))
+    await new Promise<void>((resolve, reject) => {
+      foreign.once('error', reject)
+      foreign.listen(0, '127.0.0.1', resolve)
+    })
+    const address = foreign.address()
+    if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
     try {
       const monitor = spawnEnsure(project, baseEnv(stateHome, {
-        WT_ARTIFACT_SERVER_PORT: String(foreign.port), WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1',
+        WT_ARTIFACT_SERVER_PORT: String(address.port), WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1',
       }))
       const output = childOutput(monitor)
       await waitFor(() => /no available port/i.test(output.stdout()) ? true : null, 3_000)
       expect(output.stdout()).not.toMatch(/startup claim holder did not finish/i)
     } finally {
-      await closeServer(foreign.server)
+      await closeServer(foreign)
     }
   })
 
@@ -1307,6 +1366,76 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     expect(readdirSync(registrationsPath(stateHome)), `sweep diagnostic=${sweepDiagnostic(stateHome)}`).toHaveLength(0)
   })
 
+  it('restarts a lost server while its session registration remains live', async () => {
+    const { project } = projectWithRoots('lost-server-restart')
+    const stateHome = temporaryDir('lost-server-restart-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_WATCH_MS: '50',
+      WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '10000',
+    }))
+    const output = childOutput(monitor)
+    const first = await waitForState(stateHome)
+    trackDetached(first.pid, first)
+    await waitFor(async () => (await health(first)).registeredSessions === 1 ? true : null)
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    process.kill(first.pid, 'SIGKILL')
+    await waitFor(() => pidAlive(first.pid) ? null : true)
+    const second = await waitFor(async () => {
+      const state = readState(stateHome)
+      if (!state || state.pid === first.pid) return null
+      try { return (await health(state)).pid === state.pid ? state : null } catch { return null }
+    }, 12_000)
+    trackDetached(second.pid, second)
+    await waitFor(() => /artifact server lost/i.test(output.stdout()) && /artifact server attached/i.test(output.stdout()) ? true : null)
+
+    expect(second.pid).not.toBe(first.pid)
+    expect(second.port).toBe(port)
+    expect(output.stdout()).toContain(`ARTIFACT SERVER LOST: server on port ${port} is no longer answering; restarting; registration retained.`)
+    expect(readdirSync(registrationsPath(stateHome)).some((file) => {
+      const registration = JSON.parse(readFileSync(join(registrationsPath(stateHome), file), 'utf8')) as { pid: number }
+      return registration.pid === monitor.pid
+    })).toBe(true)
+  }, 15_000)
+
+  it('reports one bounded retry stop when a lost server cannot restart', async () => {
+    const { project } = projectWithRoots('lost-server-bounded')
+    const stateHome = temporaryDir('lost-server-bounded-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_WATCH_MS: '4000',
+      WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS: '2', WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '30000',
+    }))
+    const output = childOutput(monitor)
+    const first = await waitForState(stateHome)
+    trackDetached(first.pid, first)
+    await waitFor(async () => (await health(first)).registeredSessions === 1 ? true : null)
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    process.kill(first.pid, 'SIGKILL')
+    await waitFor(() => pidAlive(first.pid) ? null : true)
+    const foreign = createServer((_request, response) => response.end('foreign'))
+    await listenWhenReleased(foreign, port)
+    try {
+      await waitFor(() => /artifact server retry stopped.*2\/2 attempts/i.test(output.stdout()) ? true : null, 12_000)
+      await new Promise((resolve) => setTimeout(resolve, 2_500))
+      expect(output.stdout().match(/artifact server lost/gi) ?? []).toHaveLength(1)
+      expect(output.stdout().match(/artifact server retry stopped/gi) ?? []).toHaveLength(1)
+      expect(monitor.exitCode).toBeNull()
+      expect(readdirSync(registrationsPath(stateHome)).some((file) => {
+        const registration = JSON.parse(readFileSync(join(registrationsPath(stateHome), file), 'utf8')) as { pid: number }
+        return registration.pid === monitor.pid
+      })).toBe(true)
+    } finally {
+      await closeServer(foreign)
+    }
+  }, 18_000)
+
   it('[V3-stop-refused][V3-force] refuses stop/restart with registrations and allows both with --force', async () => {
     const { project } = projectWithRoots('controls')
     const stateHome = temporaryDir('controls-state')
@@ -1438,9 +1567,9 @@ describe('review decisions: filesystem roots and URLs', () => {
 
     const env = baseEnv(stateHome)
     expect(artifactUrl(artifact, { env })).toBe(`${state.baseUrl}/${prefix}-reports/nested/report%20file.md`)
-    writeFileSync(statePath(stateHome), JSON.stringify({
+    atomicWriteJson(statePath(stateHome), {
       ...state, roots: [{ name: 'gone', path: join(project, 'removed-root') }, ...state.roots],
-    }))
+    })
     expect(artifactUrl(artifact, { env })).toBe(`${state.baseUrl}/${prefix}-reports/nested/report%20file.md`)
     const outside = join(project, 'outside.txt')
     writeFileSync(outside, 'outside')
@@ -1931,6 +2060,14 @@ describe('review decisions: serving security matrix', () => {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `b=${rootB}`, WT_ARTIFACT_SERVER_DENY: 'blocked-b',
     }))
     await waitForState(stateHome, (state) => state.roots.length === 2)
+    // Discovery is written before the HTTP handler necessarily observes the same registration sweep.
+    await waitFor(async () => {
+      const statuses = await Promise.all([
+        rawRequest(port, '/a/blocked-a', `localhost:${port}`), rawRequest(port, '/a/blocked-b', `localhost:${port}`),
+        rawRequest(port, '/b/blocked-a', `localhost:${port}`), rawRequest(port, '/b/blocked-b', `localhost:${port}`),
+      ])
+      return statuses.map((response) => response.status).join(',') === '403,200,200,403' ? true : null
+    }, 30_000)
     expect((await rawRequest(port, '/a/blocked-a', `localhost:${port}`)).status).toBe(403)
     expect((await rawRequest(port, '/a/blocked-b', `localhost:${port}`)).status).toBe(200)
     expect((await rawRequest(port, '/b/blocked-a', `localhost:${port}`)).status).toBe(200)

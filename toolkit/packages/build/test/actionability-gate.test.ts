@@ -521,6 +521,12 @@ describe('wt-actionable-gate-hook', () => {
     const second = runHook(payload, env)
     expect(first.code).toBe(0)
     expect(blockText(first)).toContain('refresh the board snapshot')
+    expect(blockText(first)).toContain('the board has not been measured recently')
+    // The printed command must run as-is in a shell where CLAUDE_PLUGIN_ROOT is empty (the main session's): an
+    // absolute path to a file that exists, never an unexpanded variable.
+    const refresh = join(REPO_ROOT, 'plugin', 'bin', 'wt-actionable-snapshot-refresh.mjs')
+    expect(blockText(first)).toContain(`Run exactly: node "${refresh}"`)
+    expect(blockText(first)).not.toContain('${CLAUDE_PLUGIN_ROOT}')
     expect(blockText(first)).toContain('Block 1 of 1')
     expect(second.code).toBe(0)
     expect(blockText(second)).toBe('')

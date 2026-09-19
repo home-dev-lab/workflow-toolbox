@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-adopt-check-hook.mjs')
@@ -38,12 +39,13 @@ function fixture(tag: string) {
   const cfg = join(root, 'cfg')
   mkdirSync(home, { recursive: true })
   mkdirSync(cfg, { recursive: true })
-  return { root, proj, cfg, env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: cfg } }
+  return { root, proj, cfg, env: sealedPluginCliEnv(root, { HOME: home, CLAUDE_CONFIG_DIR: cfg }) }
 }
 
 function installInto(dir: string, script = INSTALL_RULES): void {
   const res = spawnSync(process.execPath, [script, '--install', '--set', 'rules', '--dir', dir], {
     encoding: 'utf8',
+    env: sealedPluginCliEnv(dir),
   })
   if (res.status !== 0) throw new Error(`fixture install failed: ${res.stdout}${res.stderr}`)
 }
@@ -95,6 +97,11 @@ function writeManagedRule(file: string, body: string, version: string, fp?: stri
   )
 }
 
+function ageManagedRule(file: string): void {
+  const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
+  writeManagedRule(file, body, '0.0.1')
+}
+
 function runPostToolUsePushHook(
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -136,6 +143,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context).toContain('workflow-toolbox:adopt')
     // names at least the anchor rule file, so the reader knows WHICH are missing
     expect(r.context).toContain(RULE)
+    expect(r.context).toContain(`--set rules --install --dir '${join(f.proj, '.claude', 'rules', 'wt')}'`)
   })
 
   it('is SILENT when every rule is installed and current in the project dir', () => {
@@ -313,6 +321,52 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context).toContain('adopt')
   })
 
+  it('quotes the stale copy directory in the printed install command', () => {
+    const f = fixture('stale-remedy-dir')
+    const dir = join(f.cfg, 'rules', 'wt')
+    installInto(dir)
+    ageManagedRule(join(dir, RULE))
+
+    const r = runHook(f.proj, f.env)
+    expect(r.context).toContain(`--set rules --install --dir '${dir}'`)
+  })
+
+  it('orders the session to refresh an unedited stale copy, re-check it, and report one line', () => {
+    const f = fixture('stale-session-action')
+    const dir = join(f.cfg, 'rules', 'wt')
+    installInto(dir)
+    ageManagedRule(join(dir, RULE))
+
+    const r = runHook(f.proj, f.env)
+    expect(r.context).toContain('SESSION ACTION: run')
+    expect(r.context).toContain(`--set rules --install --dir '${dir}'`)
+    expect(r.context).toContain(`--set rules --check --dir '${dir}'`)
+    expect(r.context).toContain('report one line')
+    expect(r.context).not.toContain('TELL THE USER')
+
+    const refreshed = spawnSync(
+      process.execPath,
+      [INSTALL_RULES, '--set', 'rules', '--install', '--dir', dir],
+      { encoding: 'utf8', env: f.env },
+    )
+    expect(refreshed.status).toBe(0)
+    expect(refreshed.stdout).toContain(`${RULE}: REFRESHED`)
+    expect(readFileSync(join(dir, RULE), 'utf8')).not.toContain('A PARAGRAPH SINCE REWRITTEN UPSTREAM')
+  })
+
+  it('notice-only mode names the stale directory and hands the exact command to its owning session', () => {
+    const f = fixture('stale-notice-only')
+    const dir = join(f.cfg, 'rules', 'wt')
+    installInto(dir)
+    ageManagedRule(join(dir, RULE))
+    const env = { ...f.env, WT_ADOPT_REFRESH: 'notice-only' }
+
+    const r = runHook(f.proj, env)
+    expect(r.context).toContain('NOTICE ONLY: hand this to the session that owns this directory')
+    expect(r.context).toContain(`--set rules --install --dir '${dir}'`)
+    expect(r.context).not.toContain('SESSION ACTION: run')
+  })
+
   it('PostToolUse push wording stays neutral while still naming stale files', () => {
     const f = fixture('posttooluse-stale')
     const dir = join(f.proj, '.claude', 'rules')
@@ -370,6 +424,19 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context.toLowerCase()).toContain('supported')
     expect(r.context).not.toContain('behind v')
     expect(r.context).not.toContain('NOT installed')
+  })
+
+  it('orders the session to arbitrate an edited copy with the read-only three-way view', () => {
+    const f = fixture('edited-session-action')
+    const dir = join(f.proj, '.claude', 'rules')
+    installInto(dir)
+    writeFileSync(join(dir, RULE), readFileSync(join(dir, RULE), 'utf8') + '\nMY LOCAL EDIT\n')
+
+    const r = runHook(f.proj, f.env)
+    expect(r.context).toContain('SESSION ACTION: arbitrate the local edit')
+    expect(r.context).toContain(`--set rules --diff '${RULE}' --dir '${dir}'`)
+    expect(r.context).toContain('keep the edit and open a card against the shipped rule')
+    expect(r.context).not.toContain('let them decide')
   })
 
   it('a file EDITED in the project but CLEAN/current globally counts as adopted (silent contributor)', () => {

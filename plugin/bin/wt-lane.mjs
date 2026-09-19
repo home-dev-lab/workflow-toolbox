@@ -107,9 +107,9 @@ function parseBriefReceipt(encoded) {
   }
 }
 
-function windowsImage(command) {
+export function windowsImage(command) {
   const executable = String(command || '').replace(/^"([^\"]+)".*$/, '$1')
-  return { name: path.basename(executable).toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, ''), path: path.isAbsolute(executable) ? executable : null }
+  return { name: path.win32.basename(executable).toLowerCase().replace(/\.(?:exe|cmd|bat)$/i, ''), path: path.win32.isAbsolute(executable) ? executable : null }
 }
 
 export function inspectStartedProcess(inspect, pid, { platform = process.platform, timeoutMs = platform === 'linux' ? 1_000 : 5_000, expectedCommand = null, expectedArgv = null, spawnedAt = Date.now() } = {}) {
@@ -164,7 +164,7 @@ function terminateWindowsTree(pid) {
   spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { timeout: 5_000, windowsHide: true, stdio: 'ignore' })
 }
 
-function briefEvidenceLines(receipt, upper = false) {
+export function briefEvidenceLines(receipt, upper = false) {
   if (!upper) return [`brief=${receipt.path}`, `brief_age=${receipt.age}`, `brief_heading=${receipt.heading}`, `brief_sha256=${receipt.sha256}`]
   return [
     `BRIEF_PATH=${receipt.path}`,
@@ -174,7 +174,7 @@ function briefEvidenceLines(receipt, upper = false) {
   ]
 }
 
-function checkGitWorktree(dir) {
+export function checkGitWorktree(dir) {
   const result = spawnSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
     encoding: 'utf8',
     env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
@@ -212,7 +212,7 @@ function writeEnvLog(dir) {
   try { writeFileSync(path.join(dir, '.lane', 'env.log'), `${lines.join('\n')}\n`) } catch { /* best effort diagnostic */ }
 }
 
-function writeLaneStage(file, stage, { reset = false, runId = null, header = [] } = {}) {
+export function writeLaneStage(file, stage, { reset = false, runId = null, header = [] } = {}) {
   try {
     mkdirSync(path.dirname(file), { recursive: true })
     const line = `${new Date().toISOString()} stage=${stage}\n`
@@ -231,7 +231,7 @@ function writeLaneStage(file, stage, { reset = false, runId = null, header = [] 
 
 // The launcher's own identity when the provider cannot read it: on win32 the spawn-time estimate
 // is flagged approximate (sameIdentity allows a bounded skew); elsewhere the start time is unknown.
-function fallbackLauncherIdentity() {
+export function fallbackLauncherIdentity() {
   return process.platform === 'win32'
     ? { argv: process.argv, startTime: PROCESS_STARTED_AT, startTimeApproximate: true, image: windowsImage(process.execPath) }
     : { argv: process.argv, startTime: null }

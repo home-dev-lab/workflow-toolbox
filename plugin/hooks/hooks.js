@@ -1,8 +1,13 @@
-import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { PHASES } from './lifecycle-phases.js';
+import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { stripAnsiAndControl } from './text-sanitize.js';
 
 const PANE_ID = 'wt-what-is-running';
+let paneSequence = 0;
+function nextPaneId() {
+  paneSequence += 1;
+  return `${PANE_ID}-${Date.now().toString(36)}-${paneSequence.toString(36)}`;
+}
 export const COLLECTOR_TIMEOUT_MS = 8000;
 export const SLOW_RENDER_THRESHOLD_MS = 50;
 export const MISSED_RENDERS_BEFORE_STOP = 3;
@@ -82,11 +87,15 @@ async function pathsOf($, options, sessionCwd) {
   }
   let stateHome;
   try { stateHome = await $.env.get('XDG_STATE_HOME'); } catch {}
+  let suiteLockRoot;
+  try { suiteLockRoot = await $.env.get('WT_SUITE_LOCK_DIR'); } catch {}
   if (!home) try { home = await $.env.get('HOME'); } catch {}
   if (!home) try { home = await $.env.get('USERPROFILE'); } catch {}
+  const stateRoot = stateHome || pathJoin(home || sessionCwd, '.local/state');
   return {
     configDir,
-    livenessDir: configured('livenessDir') || pathJoin(stateHome || pathJoin(home || sessionCwd, '.local/state'), 'wt-liveness'),
+    livenessDir: configured('livenessDir') || pathJoin(stateRoot, 'wt-liveness'),
+    suiteLockRoot: suiteLockRoot || pathJoin(stateRoot, 'wt-suite-lock'),
     suiteRoot: configured('suiteRoot') || pathJoin(sessionCwd, '.claude'),
     extraRoots: (Array.isArray(options?.extraRoots) ? options.extraRoots : String(options?.extraRoots ?? '').split(/[,\n]/)).map((root) => (typeof root === 'string' ? root.trim() : '')).filter(Boolean),
     linkBase: typeof options?.linkBase === 'string' ? options.linkBase : '',
@@ -103,10 +112,13 @@ export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT) {
     // Test-only real-host seam: the control-character probe needs the host to render a fixed reproducing snapshot.
     let snapshotFile;
     try { snapshotFile = await $.env?.get?.('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch {}
+    const collectorBootstrap = SNAPSHOT_PROGRAM.length > 0
+      ? "import(process.argv[1]).then(({ SNAPSHOT_PROGRAM }) => Function('require', SNAPSHOT_PROGRAM)(require))"
+      : '';
     const result = await $.process.run(
       snapshotFile
         ? ['node', '-e', "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", snapshotFile]
-        : ['node', '-e', SNAPSHOT_PROGRAM, JSON.stringify({ ...paths, layout: paths.layout || layout })],
+        : ['node', '-e', collectorBootstrap, new URL('./snapshot-program.js', import.meta.url).href, JSON.stringify({ ...paths, layout: paths.layout || layout })],
       { timeoutMs: COLLECTOR_TIMEOUT_MS },
     );
     if (result?.exitCode !== 0) {
@@ -255,12 +267,22 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const phaseCostDetail = (row, phase) => {
     const cost = row.phaseCosts?.[phase];
     if (!cost) return [];
-    if (cost === 'unknown') return [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, {}, 'cost so far: unknown'))];
+    if (cost === 'unknown') {
+      const running = stateOf(row, phase).words === 'running';
+      const elapsed = running && row.phaseElapsed?.[phase] ? ` · elapsed ${row.phaseElapsed[phase]} · lane usage arrives at lane end` : '';
+      return [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, {}, `cost so far: unknown${elapsed}`))];
+    }
     return [
       node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, { wrap: 'wrap' }, `cost so far | input: ${formatCount(cost.input)} | output: ${formatCount(cost.output)} | cache read: ${formatCount(cost.cacheRead)} | cache write: ${formatCount(cost.cacheWrite)}`)),
       node(Box, { key: `phase-cost-source:${row.id}:${phase}` }, node(Text, { dimColor: true }, `cost source: ${row.phaseCostSourceKind || 'unknown'}`)),
     ];
   };
+  const runningCostStatus = (row) => row.phaseCosts?.[row.phase] === 'unknown' && row.phaseElapsed?.[row.phase]
+    ? node(Box, { key: `running-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `cost so far: unknown · elapsed ${row.phaseElapsed[row.phase]} · lane usage arrives at lane end`))
+    : null;
+  const runCostStatus = (row) => row.runCost
+    ? node(Box, { key: `run-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `run total so far: ${formatCount(row.runCost.total)} tokens`))
+    : null;
   const compactPhaseCost = (row, phase, key) => {
     if (!(Number(actions.bodyColumns) >= 120) || !Object.hasOwn(row.phaseCosts || {}, phase)) return null;
     const cost = row.phaseCosts[phase];
@@ -347,6 +369,8 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       ),
       showCard ? renderCardLink(row) : null,
       showStages && phaseKnown ? node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1, paddingLeft: 1 }, fixedText({ bold: true }, stageHeading), ...phaseButtons.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])) : null,
+      runCostStatus(row),
+      runningCostStatus(row),
       rounds ? node(Box, { paddingLeft: 1 }, node(Text, { dimColor: true }, rounds)) : null,
       ...(showStages ? inspectorNodes : []),
       isExpanded ? renderOpenDetail(`detail-toggle:row:${row.id}`, `${row.label || 'Pilot'} details`, () => actions.toggle(row.id), ...expandedLines) : null,
@@ -390,6 +414,8 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const openButtonKey = openStage ? `detail-toggle:stage:${sessionId}:${card.id}:${openStage.id}` : null;
     return node(Box, { key, flexDirection: 'column', paddingLeft: 1 },
       node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 }, fixedText({ bold: true }, 'Work stages:'), ...segments.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])),
+      pilot ? runCostStatus(pilot) : null,
+      pilot ? runningCostStatus(pilot) : null,
       !pilot && (card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0)
         ? node(Text, { dimColor: true }, `review rounds: ${card.devCycle?.rounds || 0} · fix rounds: ${card.devCycle?.fixRounds || 0}`)
         : null,
@@ -431,6 +457,16 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ));
     grouped.push(...snapshot.rows.filter((row) => !row.waveId).map((row) => row.kind === 'external' ? renderExternal(row) : renderPilot(row, 0)));
   }
+  const suiteLock = snapshot.suiteLock;
+  // The pane is read narrow: show the worktree's own name (what follows `/worktrees/`), not the full path.
+  const suiteWhere = (cwd) => {
+    const text = String(cwd ?? '').replaceAll('\\', '/');
+    const marker = text.lastIndexOf('/worktrees/');
+    return marker >= 0 ? text.slice(marker + '/worktrees/'.length) : text.split('/').filter(Boolean).slice(-2).join('/');
+  };
+  if (suiteLock?.status === 'running') grouped.unshift(node(Text, { bold: true, wrap: 'wrap' }, `Test suite · ${suiteLock.command} · running ${suiteLock.age} · ${suiteWhere(suiteLock.worktree)}`));
+  else if (suiteLock?.status === 'stale') grouped.unshift(node(Text, { dimColor: true, wrap: 'wrap' }, `Test suite lock stale · ${suiteLock.command} · started ${suiteLock.age} ago · ${suiteWhere(suiteLock.worktree)}`));
+  else if (suiteLock?.status === 'unknown') grouped.unshift(node(Text, { dimColor: true }, 'Test suite lock · unknown'));
   const renderCollapsedProcesses = (key, label, items) => {
     const buttonKey = `detail-toggle:row:${key}`;
     const isExpanded = expanded.has(key);
@@ -506,6 +542,8 @@ export const registerWithLayout = (on, options, layout) => {
   let missedRenders = 0;
   let closedOnPurpose = false;
   let openedHere = false;
+  let paneId = null;
+  let pendingPaneId = null;
   let refreshing = false;
   let processRefusalStreaks = new Map();
   let currentProject = null;
@@ -562,7 +600,7 @@ export const registerWithLayout = (on, options, layout) => {
     if (!host) return;
     closedOnPurpose = true;
     stopPolling();
-    const closing = host.close({ id: PANE_ID });
+    const closing = host.close({ id: paneId || PANE_ID });
     await closing;
   };
   const startPolling = (request) => {
@@ -604,7 +642,8 @@ export const registerWithLayout = (on, options, layout) => {
     const request = generation;
     open = true;
     allProjects = false;
-    await host.open({ id: PANE_ID, title: 'What is running', ...(focus ? { focus: true } : {}) });
+    paneId = nextPaneId();
+    await host.open({ id: paneId, title: 'What is running', ...(focus ? { focus: true } : {}) });
     await refresh(request);
     startPolling(request);
   };
@@ -624,6 +663,14 @@ export const registerWithLayout = (on, options, layout) => {
     };
     try { await $.command.register({ name: 'wir', description: 'Open the What is running view' }); }
     catch { await $.ui.log('wt-what-is-running: /wir unavailable'); }
+    if (pendingPaneId) {
+      paneId = pendingPaneId;
+      pendingPaneId = null;
+      openedHere = true;
+      recordRenderEvent('restored-after-reload', "the host rendered this registration's tagged pane before session.start", null);
+      rearm();
+      host.invalidate();
+    }
     return next(event);
   });
 
@@ -636,11 +683,22 @@ export const registerWithLayout = (on, options, layout) => {
 
   on('ui.render', { component: 'Pane' }, async ($, event, next) => {
     const result = await next(event);
-    if (event.requestId !== PANE_ID) return result;
+    const taggedPane = typeof event.requestId === 'string' && event.requestId.startsWith(`${PANE_ID}-`);
+    // The fixed id remains an in-process alias for host/test compatibility. Only a tagged id proves to a fresh
+    // registration that this session already had our pane; no shared store or ui.open call is involved.
+    if (event.requestId !== paneId && !(openedHere && event.requestId === PANE_ID) && !(taggedPane && !openedHere)) return result;
     if (!open) {
+      if (!host && taggedPane) {
+        pendingPaneId = event.requestId;
+        return result;
+      }
       // Only the registration that opened this pane may bring it back: another session never adopts it.
-      if (!host || !openedHere || closedOnPurpose) return result;
-      recordRenderEvent('rearmed', 'the host rendered the pane after the no-render detector had stopped it', event.props);
+      if (!host || closedOnPurpose) return result;
+      if (!openedHere) {
+        paneId = event.requestId;
+        openedHere = true;
+        recordRenderEvent('restored-after-reload', "the host rendered this registration's tagged pane", event.props);
+      } else recordRenderEvent('rearmed', 'the host rendered the pane after the no-render detector had stopped it', event.props);
       rearm();
     }
     paneObserved = true;

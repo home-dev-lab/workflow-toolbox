@@ -26,11 +26,15 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, it, expect } from 'vitest'
+import { afterAll, afterEach, describe, it, expect } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
-const INSTALLER_ENV: NodeJS.ProcessEnv = { ...process.env, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') }
+const ENV_ROOT = join(tmpdir(), `wt-adopt-installer-env-${process.pid}`)
+const INSTALLER_ENV: NodeJS.ProcessEnv = sealedPluginCliEnv(ENV_ROOT, {
+  CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin'),
+})
 const RULE = 'wt-delegation-ladder.md'
 const AUTONOMY = 'AUTONOMY.md'
 
@@ -38,6 +42,7 @@ const roots: string[] = []
 afterEach(() => {
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
 })
+afterAll(() => rmSync(ENV_ROOT, { recursive: true, force: true }))
 function mkDir(): string {
   const r = realpathSync(mkdtempSync(join(tmpdir(), 'wt-adopt-')))
   roots.push(r)
@@ -57,6 +62,10 @@ function runResult(args: string[], dir: string) {
 function runInCwd(args: string[], cwd: string): string {
   const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8', env: INSTALLER_ENV })
   return (res.stdout ?? '') + (res.stderr ?? '')
+}
+function runInCwdResult(args: string[], cwd: string, env: NodeJS.ProcessEnv = INSTALLER_ENV) {
+  const res = spawnSync(process.execPath, [SCRIPT, ...args], { cwd, encoding: 'utf8', env })
+  return { status: res.status, out: (res.stdout ?? '') + (res.stderr ?? '') }
 }
 const rulePath = (dir: string) => join(dir, RULE)
 const autonomyPath = (dir: string) => join(dir, '.claude', AUTONOMY)
@@ -112,6 +121,39 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(readFileSync(p, 'utf8'), 'edit must survive a plain --install').toContain('MY LOCAL EDIT LINE')
     expect(run(['--install', '--force'], d)).toMatch(/OVERWROTE/)
     expect(readFileSync(p, 'utf8'), 'edit must be gone after --force').not.toContain('MY LOCAL EDIT LINE')
+  })
+
+  it('--diff prints adopted, local, and shipped texts for an edited file without writing', () => {
+    const d = mkDir()
+    run(['--install'], d)
+    const p = rulePath(d)
+    writeFileSync(p, readFileSync(p, 'utf8') + '\nMY LOCAL EDIT LINE\n')
+    const before = readFileSync(p, 'utf8')
+
+    const result = runResult(['--set', 'rules', '--diff', RULE], d)
+    expect(result.status).toBe(0)
+    expect(result.out).toContain('=== ADOPTED v')
+    expect(result.out.split('=== LOCAL')[0]).not.toContain('MY LOCAL EDIT LINE')
+    expect(result.out).toContain('=== LOCAL')
+    expect(result.out).toContain('MY LOCAL EDIT LINE')
+    expect(result.out).toContain('=== SHIPPED v')
+    expect(result.out).toContain(readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8'))
+    expect(readFileSync(p, 'utf8')).toBe(before)
+  })
+
+  it('--install --force --file overwrites only the arbitrated edited file', () => {
+    const d = mkDir()
+    run(['--install'], d)
+    const chosen = rulePath(d)
+    const other = join(d, 'wt-memory-hygiene.md')
+    writeFileSync(chosen, readFileSync(chosen, 'utf8') + '\nCHOSEN LOCAL EDIT\n')
+    writeFileSync(other, readFileSync(other, 'utf8') + '\nOTHER LOCAL EDIT\n')
+
+    const result = runResult(['--set', 'rules', '--install', '--force', '--file', RULE], d)
+    expect(result.status).toBe(0)
+    expect(result.out).toContain(`${RULE}: OVERWROTE (--force)`)
+    expect(readFileSync(chosen, 'utf8')).not.toContain('CHOSEN LOCAL EDIT')
+    expect(readFileSync(other, 'utf8')).toContain('OTHER LOCAL EDIT')
   })
 
   it('old-format banner (version but NO fingerprint): conservative skip, --force overwrites', () => {
@@ -173,6 +215,64 @@ describe('adopt installer — explicit rules roots cannot create flat duplicates
     const res = runResult(['--set', 'rules', '--check'], root)
     expect(res.status).not.toBe(0)
     expect(res.out).toContain(`${RULE}: DUPLICATE`)
+  })
+})
+
+describe('adopt installer — omitted --dir resolves existing adoption level', () => {
+  it('refreshes the one existing config-dir copy instead of creating a project duplicate', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const home = join(root, 'home')
+    const config = join(home, '.claude-work')
+    const target = join(config, 'rules', 'wt')
+    mkdirSync(project, { recursive: true })
+    const env = sealedPluginCliEnv(root, { HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+    expect(runResult(['--set', 'rules', '--install'], target).status).toBe(0)
+    ageRuleCopy(join(target, RULE))
+
+    const res = runInCwdResult(['--set', 'rules', '--install'], project, env)
+    expect(res.status).toBe(0)
+    expect(res.out).toContain(`[rules] target=${target}`)
+    expect(res.out).toContain(`${RULE}: REFRESHED`)
+    expect(existsSync(join(project, '.claude', 'rules', 'wt', RULE))).toBe(false)
+  })
+
+  it('refuses to guess between project and config-dir copies and names both levels', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const home = join(root, 'home')
+    const config = join(home, '.claude-work')
+    const projectTarget = join(project, '.claude', 'rules', 'wt')
+    const configTarget = join(config, 'rules', 'wt')
+    mkdirSync(project, { recursive: true })
+    const env = sealedPluginCliEnv(root, { HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+    expect(runResult(['--set', 'rules', '--install'], projectTarget).status).toBe(0)
+    expect(runResult(['--set', 'rules', '--install'], configTarget).status).toBe(0)
+
+    const res = runInCwdResult(['--set', 'rules', '--install'], project, env)
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain(`project real directory: ${projectTarget}`)
+    expect(res.out).toContain(`config real directory: ${configTarget}`)
+    expect(res.out).toContain('refusing to guess; pass --dir')
+  })
+
+  it('lists default and active config paths separately, including a symlinked profile', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const home = join(root, 'home')
+    const defaultConfig = join(home, '.claude')
+    const linkedConfig = join(home, '.claude-work')
+    const realTarget = join(defaultConfig, 'rules', 'wt')
+    const linkedTarget = join(linkedConfig, 'rules', 'wt')
+    mkdirSync(project, { recursive: true })
+    expect(runResult(['--set', 'rules', '--install'], realTarget).status).toBe(0)
+    symlinkSync(defaultConfig, linkedConfig, 'dir')
+    const env = sealedPluginCliEnv(root, { HOME: home, CLAUDE_CONFIG_DIR: linkedConfig, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const res = runInCwdResult(['--set', 'rules', '--install'], project, env)
+    expect(res.status).not.toBe(0)
+    expect(res.out).toContain(`config real directory: ${realTarget}`)
+    expect(res.out).toContain(`config symlinked directory -> ${realTarget}: ${linkedTarget}`)
   })
 })
 

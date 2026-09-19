@@ -158,7 +158,7 @@ Because the mandate marker is project-keyed, the session that wakes is not alway
 
 ### `wt-wake-floor.mjs` — unconditional elapsed-time wake floor (monitor)
 
-Runs beneath `wt-autonomy-watch.mjs`: after 15 elapsed minutes by default, and again on that cadence, it emits exactly one line asking the session to check the queue itself. Its only gate is the same live, project-keyed mandate classification used by the autonomy arm/watch pair; without a mandate, or with an absent, malformed or expired marker, it emits nothing. It reads no transcript, queue snapshot, card, delegate, process or Git state, so missing or stale work-state data cannot silence it. The message explicitly says the wake proves nothing about whether work remains because elapsed time is the only thing it measured. `WT_WAKE_FLOOR_IDLE_MINUTES` changes the default cadence, while `--poll <seconds>`, `--project <dir>`, `--once`, and `--help` follow the sibling monitor conventions.
+Runs beneath `wt-autonomy-watch.mjs`: after 15 elapsed minutes by default, and again on that cadence, it asks the session to check the queue itself unless an identity-verified live lane is already going to wake this session. Its first gate is the same live, project-keyed mandate classification used by the autonomy arm/watch pair; without a mandate, or with an absent, malformed or expired marker, it emits nothing. For a live mandate it discovers Git and umbrella worktrees with explicit bounds, reads lane supervision records, and stays silent only for a `session`-owned record whose `ownerSessionId` matches this session and whose PID, argv, and start-time identities prove it is running, launching, or awaiting a decision. A complete scan with no such lane preserves the original FLOOR line byte-for-byte. Unreadable, malformed, capped, or otherwise unmeasurable evidence instead fires with an `In-flight check inconclusive` suffix, because uncertainty must never silence the floor; pilot-owned and foreign-session lanes do not suppress it. It does not infer liveness from fresh task output, transcripts, or worktree writes because those remain after completion. Session-armed background tasks still lack an attested running/completed signal and remain separate follow-up work. `WT_WAKE_FLOOR_IDLE_MINUTES` changes the default cadence, while `--poll <seconds>`, `--project <dir>`, `--once`, and `--help` follow the sibling monitor conventions.
 
 ### `wt-cache-keepalive.mjs` — opt-in prompt-cache refresh monitor
 
@@ -275,9 +275,13 @@ Refuses a named `Agent` spawn without `isolation` where the spawning session is 
 Four env knobs tune its stop behavior directly: `WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS` (default `900000`) is how old a snapshot may be before the gate stops naming its proposed card while retaining the same block decision; `WT_ACTIONABLE_STALE_AFTER_MS` (default `7200000`) is how old a snapshot may be before the gate treats it as stale/unknown; `WT_ACTIONABLE_BLOCK_MAX` (default `3`) is the consecutive block count after which the hook stops re-blocking and only records the held state; `WT_ACTIONABLE_INFLIGHT_CAP_MS` (default `600000`) caps any declared `inFlightUntil` window from the snapshot's own `at` timestamp, so a stale claim cannot silence the gate indefinitely.
 
 The shipped Planka producer writes a separate opt-in heartbeat. An undeclared project remains silent;
-a declared producer with no heartbeat says to wire it; a stale heartbeat after no recent board read is
-normal during a conversation and calls for nothing; a fresh failed heartbeat says it could not read the
-board and calls for checking the tracker. All paths remain advisory with exit `0`.
+a declared producer with no heartbeat says to wire it; a stale heartbeat means the board has not been
+measured recently, not that zero actionable cards remain; a fresh failed heartbeat says it could not read
+the board and calls for checking the tracker. A stale snapshot blocks once and names the exact refresh:
+`node "${CLAUDE_PLUGIN_ROOT}/bin/wt-actionable-snapshot-refresh.mjs"`. That CLI reads strict 10-card
+`find_cards` pages directly from the local MCP endpoint, requires stable totals, contiguous offsets, and
+unique card IDs, then passes the complete set to the same dependency parser and snapshot writer as the
+PostToolUse producer. Its result is one bounded summary line rather than a board dump in session context.
 
 ### `wt-stale-date-guard-hook.mjs` — written-deadline advisory (PostToolUse)
 

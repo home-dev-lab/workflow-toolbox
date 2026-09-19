@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -65,6 +65,16 @@ function options(f: ReturnType<typeof fixture>, extra: Record<string, unknown> =
 }
 
 describe('lane integration', () => {
+  it.skipIf(process.platform === 'win32')('accepts a symlink alias of the registered lane worktree; Windows covers 8.3 aliases through native realpath canonicalization', async () => {
+    const f = fixture()
+    const alias = join(f.root, 'lane-alias')
+    symlinkSync(f.lane, alias, 'dir')
+    writeFileSync(join(f.lane, 'aliased.txt'), 'aliased\n')
+
+    expect(await integrateLane(options(f, { dir: alias })), f.stderr.join('\n')).toBe(0)
+    expect(git(f.into, 'show', 'HEAD:aliased.txt')).toBe('aliased')
+  })
+
   it('commits outside .lane, merges in the named integration worktree, and verifies the archive', async () => {
     const f = fixture(); writeFileSync(join(f.lane, 'delivered.txt'), 'delivered\n')
     const calls: string[][] = []
@@ -142,7 +152,7 @@ describe('lane integration', () => {
 
     expect(await integrateLane(options(f)), f.stderr.join('\n')).toBe(0)
     const merged = readFileSync(join(f.into, 'plugin', 'CHANGELOG.md'), 'utf8')
-    expect(merged).toContain('- ours\n- theirs\n')
+    expect(merged.replaceAll('\r\n', '\n')).toContain('- ours\n- theirs\n')
     expect(merged).not.toContain('<<<<<<<')
   })
 
@@ -243,7 +253,8 @@ describe('lane integration', () => {
     expect(code, f.stderr.join('\n')).toBe(0)
     const plan = f.stdout.join('\n')
     expect(plan).toContain(`lane branch=card/test-lane tip=${laneHead}`)
-    expect(plan).toContain(`integration tree=${f.into} HEAD=${intoHead}`)
+    const canonicalInto = (realpathSync.native ?? realpathSync)(f.into)
+    expect(plan).toContain(`integration tree=${canonicalInto} HEAD=${intoHead}`)
     expect(plan).toContain('commit subject=Integrate fixture lane')
     expect(plan).toContain('merge subject=custom merge subject')
     expect(plan).toContain(`archive destination=${join(f.archiveRoot, 'lane', 'lane')}`)

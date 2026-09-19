@@ -27,15 +27,17 @@ function fixture(script: string) {
   const lane = join(root, '.lane')
   mkdirSync(lane)
   writeFileSync(join(lane, 'run.log'), '')
-  const worker = spawn('sh', ['-c', script], { cwd: root, detached: true, stdio: 'ignore' })
+  const worker = spawn(process.execPath, ['-e', script], { cwd: root, detached: true, stdio: 'ignore' })
   workers.push(worker)
   worker.unref()
   writeFileSync(join(lane, 'pid'), String(worker.pid))
   const runId = `${worker.pid}-1`
-  const identity = inspectProcess(worker.pid!) ?? { argv: ['sh', '-c', script], startTime: 0 }
+  const identity = inspectProcess(worker.pid!) ?? {
+    pid: worker.pid!, argv: [process.execPath, '-e', script], startTime: Date.now(), startTimeApproximate: true,
+  }
   const supervision = join(lane, 'supervision')
   mkdirSync(supervision)
-  writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: worker.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: worker.pid, childArgv: identity.argv, childStartTime: identity.startTime, worktree: root }))
+  writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: worker.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, workerStartTimeApproximate: identity.startTimeApproximate, childPid: worker.pid, childArgv: identity.argv, childStartTime: identity.startTime, childStartTimeApproximate: identity.startTimeApproximate, worktree: root }))
   writeFileSync(join(supervision, 'current.json'), JSON.stringify({ runId }))
   return { root, lane, pid: worker.pid! }
 }
@@ -48,7 +50,7 @@ function run(root: string, ...args: string[]) {
 
 describe('wt-lane-wait', () => {
   it('waits for the pid and accepts EXIT only on the last log line', () => {
-    const f = fixture("printf '%s\\n' 'echo EXIT=$? >> .lane/test.log' >> .lane/run.log; sleep 0.12; printf 'EXIT=7\\n' >> .lane/run.log; sleep 0.08")
+    const f = fixture("const fs = require('node:fs'); fs.appendFileSync('.lane/run.log', 'echo EXIT=$? >> .lane/test.log\\n'); setTimeout(() => { fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'); setTimeout(() => {}, 80) }, 120)")
     const result = run(f.root)
     expect(result.status).toBe(7)
     expect(result.stdout.trim()).toMatch(/^LANE DONE exit=7 report=none log=.*run\.log$/)
@@ -56,13 +58,13 @@ describe('wt-lane-wait', () => {
   })
 
   it.each([0, 9])('propagates lane exit %i', (exit) => {
-    const f = fixture(`sleep 0.08; printf 'EXIT=${exit}\\n' >> .lane/run.log; sleep 0.08`)
+    const f = fixture(`const fs = require('node:fs'); setTimeout(() => { fs.appendFileSync('.lane/run.log', 'EXIT=${exit}\\n'); setTimeout(() => {}, 80) }, 80)`)
     const result = run(f.root)
     expect(result.status).toBe(exit)
   })
 
   it('returns 124 when the lane does not finish before timeout', () => {
-    const f = fixture('sleep 30')
+    const f = fixture('setTimeout(() => {}, 30_000)')
     const result = run(f.root, '--timeout', '0.08')
     expect(result.status).toBe(124)
     try {
@@ -72,7 +74,7 @@ describe('wt-lane-wait', () => {
   })
 
   it('reports a dead lane without inventing an exit code', () => {
-    const f = fixture('true')
+    const f = fixture('')
     rmSync(join(f.lane, 'run.log'))
     const result = run(f.root)
     expect(result.status).toBe(1)
@@ -80,7 +82,7 @@ describe('wt-lane-wait', () => {
   })
 
   it('reports report byte size without reading or printing the log body', () => {
-    const f = fixture("sleep 0.08; printf 'EXIT=0\\n' >> .lane/run.log; sleep 0.08")
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { fs.appendFileSync('.lane/run.log', 'EXIT=0\\n'); setTimeout(() => {}, 80) }, 80)")
     writeFileSync(join(f.lane, 'report.md'), 'report')
     const result = run(f.root)
     expect(result.status).toBe(0)

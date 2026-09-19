@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -150,6 +150,93 @@ function textChildren(tree: unknown): string[] {
 }
 
 describe('What is running collector seam', () => {
+  it('reports a live suite-lock holder from the fixture lock directory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-live-'))
+    try {
+      const suiteLockRoot = join(root, 'suite-lock')
+      const paths = collector(root, { suiteLockRoot })
+      const lockDir = join(suiteLockRoot, 'lock.d')
+      mkdirSync(lockDir, { recursive: true })
+      writeFileSync(join(lockDir, 'holder.json'), JSON.stringify({
+        pid: process.pid,
+        argv: ['pnpm', 'test', '--', 'a-very-long-argument-that-makes-the-recorded-command-need-shortening-for-the-pane'],
+        cwd: '/workspace/wt-suite/.claude/worktrees/card-one',
+        startedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+      }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.suiteLock).toMatchObject({
+        status: 'running',
+        pid: process.pid,
+        command: 'pnpm test -- a-very-long-argument-that-makes-the-recorded-command-nee...',
+        worktree: '/workspace/wt-suite/.claude/worktrees/card-one',
+      })
+      // An elapsed age, never a clock time: a UTC "12:00Z" reads an hour off to a reader in London.
+      expect(snapshot.suiteLock.age).toMatch(/^1[23] min$/)
+      expect(snapshot.suiteLock).not.toHaveProperty('since')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('reports a dead suite-lock holder as stale, never running', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-stale-'))
+    try {
+      const suiteLockRoot = join(root, 'suite-lock')
+      const paths = collector(root, { suiteLockRoot })
+      const lockDir = join(suiteLockRoot, 'lock.d')
+      mkdirSync(lockDir, { recursive: true })
+      writeFileSync(join(lockDir, 'holder.json'), JSON.stringify({
+        pid: 2_147_483_647, argv: ['pnpm', 'test'], cwd: '/workspace/stale', startedAt: '2026-09-12T12:00:00.000Z',
+      }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.suiteLock).toMatchObject({ status: 'stale', pid: 2_147_483_647, command: 'pnpm test', worktree: '/workspace/stale' })
+      expect(snapshot.suiteLock.status).not.toBe('running')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('reports unreadable suite-lock data as unknown instead of omitting it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-unknown-'))
+    const suiteLockRoot = join(root, 'suite-lock')
+    const paths = collector(root, { suiteLockRoot })
+    const lockDir = join(suiteLockRoot, 'lock.d')
+    try {
+      mkdirSync(lockDir, { recursive: true })
+      writeFileSync(join(lockDir, 'holder.json'), '{not-json')
+      chmodSync(lockDir, 0o000)
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.suiteLock).toEqual({ status: 'unknown' })
+    } finally {
+      chmodSync(lockDir, 0o700)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('renders one suite row with command, elapsed age, and the worktree name', async () => {
+    const text = await renderedText({
+      discovery: 'available', rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
+      suiteLock: { status: 'running', pid: 42, command: 'pnpm test', age: '12 min', worktree: '/workspace/wt-suite/.claude/worktrees/card-one/toolkit' },
+    })
+    // The pane is read narrow: the worktree NAME, not the full path, so the row fits one line.
+    expect(text).toContain('Test suite · pnpm test · running 12 min · card-one/toolkit')
+    expect(text).not.toContain('/workspace/wt-suite/.claude/worktrees/')
+    expect(text.match(/Test suite · pnpm test/g)).toHaveLength(1)
+  })
+
+  it('keeps the collector program out of the Windows-limited command line', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-command-line-'))
+    try {
+      const paths = collector(root)
+      let argv: string[] = []
+      await readSnapshot({ process: { run: async (command: string[]) => {
+        argv = command
+        return processCapability().run(command)
+      } } }, paths)
+      expect(argv.find((argument) => /snapshot-program\.js$/.test(argument))).toBeTruthy()
+      expect(argv.join(' ').length).toBeLessThan(8_000)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('reads archived per-phase costs, preserves unknown, and records visible provenance', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-phase-cost-'))
     try {
@@ -185,12 +272,17 @@ describe('What is running collector seam', () => {
       writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'LITE' }))
       writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Live cost\n`)
       writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=discovery\n')
-      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [{ phase: 'discovery', round: null, entered_at: 1000, exited_at: null }], lanes: [] }))
-      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [{ arrived_at: '1970-01-01T00:00:02.000Z', input: 10, output: 2, cache_read: 30, cache_creation: 4 }] }))
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [{ phase: 'discovery', round: null, entered_at: Date.parse('2026-09-12T12:01:00Z'), exited_at: null }], lanes: [] }))
+      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [
+        { arrived_at: '2026-09-12T12:02:00.000Z', input: 10, output: 2, cache_read: 30, cache_creation: 4 },
+        { arrived_at: '2026-09-12T12:00:00.000Z', input: 1, output: 1, cache_read: 1, cache_creation: 1 },
+      ] }))
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
       expect(row.phaseCosts.discovery).toEqual({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 })
+      expect(row.runCost).toEqual({ input: 11, output: 3, cacheRead: 31, cacheWrite: 5, total: 50 })
+      expect(row.phaseElapsed.discovery).toBe('29 min')
       expect(row.phaseCostSourceKind).toBe('live usage file')
       expect(row.phaseCostSource).toBe(join(lane, 'usage.json'))
     } finally { rmSync(root, { recursive: true, force: true }) }
@@ -214,6 +306,19 @@ describe('What is running collector seam', () => {
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
       expect(row.phaseCosts.discovery).toBe('unknown')
     } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('shows live run total and elapsed time while a running lane cost is pending', async () => {
+    const pilot = {
+      id: 'pilot-live', kind: 'pilot', label: 'SDK pilot', project: 'wt-suite', sdkLifecycle: true, phase: 'tdd',
+      phaseStates: { discovery: 'done', tdd: 'running' }, phaseCosts: { discovery: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 }, tdd: 'unknown' },
+      phaseElapsed: { tdd: '29 min' }, runCost: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 },
+    }
+    const text = await renderedText({
+      discovery: 'available', rows: [pilot], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
+    })
+    expect(text).toContain('run total so far: 46 tokens')
+    expect(text).toContain('cost so far: unknown · elapsed 29 min · lane usage arrives at lane end')
   })
 
   it('accumulates repeated archived lifecycle rounds for one normalized phase', async () => {
@@ -441,6 +546,12 @@ describe('What is running collector seam', () => {
 
   it('keeps pane-open state local to one session registration', () => {
     const result = runSelftest('[per-session pane state] one registration')
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('tests: 1/1')
+  })
+
+  it('redraws this session pane after the hooks module reloads without reopening it', () => {
+    const result = runSelftest('[hooks reload]')
     expect(result.status, result.stderr || result.stdout).toBe(0)
     expect(result.stdout).toContain('tests: 1/1')
   })

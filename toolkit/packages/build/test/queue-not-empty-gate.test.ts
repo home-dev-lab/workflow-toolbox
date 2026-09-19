@@ -629,7 +629,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect.soft(messages['no-root']).toContain('Worktree activity is unknown — no git root resolved')
     expect.soft(messages.bounded).toContain('Worktree activity is unknown — scan bounded out')
     expect.soft(new Set(Object.values(messages)).size).toBe(3)
-  })
+  }, 60_000)
 
   it('does not treat recent node_modules writes as in-flight worktree activity', () => {
     const { env, payload, stateDir, cwd } = scaffold('skip-node-modules')
@@ -800,10 +800,10 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     const malformedB = byLabel['malformed (wrong field types)']
     expect(malformedA).toBe(malformedB) // same STATUS ⇒ same text, regardless of producer
     expect(stale).not.toBe(malformedA) // different STATUS ⇒ different text — the fix itself
-    expect(stale).toContain('stale')
-    expect(malformedA).toContain('unreadable/malformed')
-    expect(stale).not.toContain('unreadable/malformed')
-    expect(malformedA).not.toContain('stale')
+    expect(stale).toContain('Queue size is unknown — snapshot is stale')
+    expect(malformedA).toContain('Queue size is unknown — snapshot is unreadable/malformed')
+    expect(stale).not.toContain('Queue size is unknown — snapshot is unreadable/malformed')
+    expect(malformedA).not.toContain('Queue size is unknown — snapshot is stale')
   })
 
   it('names the companion help file, and that file exists on disk', () => {

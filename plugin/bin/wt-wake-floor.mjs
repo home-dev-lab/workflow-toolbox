@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unconditional elapsed-time floor for sessions with a declared autonomous mandate.
+// Elapsed-time floor for mandated sessions without an identity-verified owned lane in flight.
 
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -7,9 +7,11 @@ import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { expireMarker } from './lib/queue-gate-marker-expiry.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
+import { sessionLaneInFlight } from './lib/wake-floor-in-flight.mjs'
 
 const HELP = `wt-wake-floor — hands a turn back to a session with a declared autonomous mandate
-after a fixed elapsed-time period, then repeats on the same cadence. It does not inspect work.
+ after a fixed elapsed-time period, then repeats on the same cadence. A live lane owned by
+ this session suppresses the wake; inconclusive lane evidence fires with an annotation.
 
 Options:
   --project <dir>   project whose mandate to read (default: cwd)
@@ -118,12 +120,27 @@ const sessionId = process.env.CLAUDE_CODE_SESSION_ID || ''
 // carries no evidence that anything is pending, and without saying so it gets taken for one.
 const message = `FLOOR: ${formatMinutes(pollSeconds)} minutes elapsed on my interval. I measure only that — not whether you are idle, and not whether work remains. Check the queue yourself.`
 
+function inconclusiveReason(reason) {
+  return String(reason).replace(/[\r\n]+/g, ' ').slice(0, 200)
+}
+
 for (;;) {
   await wait(pollSeconds * 1000)
   try {
     expireMarker('mandate', mandatePath, Date.now(), { mandateFreshnessMs })
     const mandate = classifyMandate(mandatePath, mandateFreshnessMs, Date.now(), sessionId)
-    if (mandate.kind === 'live') write(message)
+    if (mandate.kind === 'live') {
+      let verdict
+      try {
+        verdict = sessionLaneInFlight({ projectDir, sessionId })
+      } catch (error) {
+        verdict = { status: 'unknown', reason: `in-flight check threw: ${error?.message ?? error}` }
+      }
+      if (verdict.status === 'none') write(message)
+      if (verdict.status === 'unknown') {
+        write(`${message} In-flight check inconclusive (${inconclusiveReason(verdict.reason)}); firing because I cannot tell whether a lane of this session is running.`)
+      }
+    }
   } catch {
     // An unreadable declaration must leave the floor silent without killing its process.
   }

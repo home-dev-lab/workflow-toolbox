@@ -65,7 +65,16 @@ function git(runner, cwd, args) {
 }
 
 function canonical(value) {
-  return fs.realpathSync(path.resolve(value))
+  return (fs.realpathSync.native ?? fs.realpathSync)(path.resolve(value))
+}
+
+function sameWorktreePath(left, right, platform = process.platform) {
+  const pathApi = platform === 'win32' ? path.win32 : path
+  const normalizedLeft = pathApi.normalize(left)
+  const normalizedRight = pathApi.normalize(right)
+  return platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight
 }
 
 function commonGitDir(runner, worktree) {
@@ -78,7 +87,7 @@ function assertRegisteredWorktree(runner, worktree) {
   const listed = git(runner, worktree, ['worktree', 'list', '--porcelain'])
     .split(/\r?\n/).filter((line) => line.startsWith('worktree ')).map((line) => line.slice('worktree '.length))
   if (!listed.some((candidate) => {
-    try { return canonical(candidate) === worktree } catch { return false }
+    try { return sameWorktreePath(canonical(candidate), worktree) } catch { return false }
   })) throw new Error(`not a registered git worktree: ${worktree}`)
 }
 
@@ -100,7 +109,7 @@ function preflight(options, runner) {
   options.into = canonical(options.into)
   assertRegisteredWorktree(runner, options.dir)
   assertRegisteredWorktree(runner, options.into)
-  if (commonGitDir(runner, options.dir) !== commonGitDir(runner, options.into)) throw new Error('--dir and --into must be worktrees of the same repository')
+  if (!sameWorktreePath(commonGitDir(runner, options.dir), commonGitDir(runner, options.into))) throw new Error('--dir and --into must be worktrees of the same repository')
   const integrationStatus = git(runner, options.into, ['status', '--porcelain']).trim()
   if (integrationStatus) throw new Error(`integration worktree is dirty: ${integrationStatus.split(/\r?\n/).join(', ')}`)
   const reportPath = path.join(options.dir, '.lane', 'report.md')

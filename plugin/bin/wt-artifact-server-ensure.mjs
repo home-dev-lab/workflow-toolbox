@@ -47,6 +47,7 @@ const SERVER_READINESS_MS = 5_000
 const RETRY_ATTEMPTS = 3
 const RETRY_WINDOW_MS = 60_000
 const RETRY_OVERALL_CAP_MS = 5 * 60_000
+const WATCH_INTERVAL_MS = 10_000
 const TEST_MODE = process.env.WT_ARTIFACT_SERVER_TEST_MODE === '1'
 const TEST_CONTROL_NAMES = [
   'WT_ARTIFACT_SERVER_TEST_MODE',
@@ -57,6 +58,7 @@ const TEST_CONTROL_NAMES = [
   'WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS',
   'WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS',
   'WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS',
+  'WT_ARTIFACT_SERVER_TEST_WATCH_MS',
   'WT_ARTIFACT_SERVER_TEST_SPAWN_LOG',
   'WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG',
   'WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG',
@@ -109,6 +111,11 @@ function retryWindowMs() {
 function retryOverallCapMs() {
   const override = TEST_MODE ? Number(process.env.WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS) : NaN
   return Number.isFinite(override) && override > 0 ? override : RETRY_OVERALL_CAP_MS
+}
+
+function watchIntervalMs() {
+  const override = TEST_MODE ? Number(process.env.WT_ARTIFACT_SERVER_TEST_WATCH_MS) : NaN
+  return Number.isFinite(override) && override > 0 ? override : WATCH_INTERVAL_MS
 }
 
 async function spawnServer(port, claim) {
@@ -230,6 +237,7 @@ function acquireStartupClaim() {
 
 async function probeCandidates(firstPort, timeout, claim = null, deadline = null) {
   let firstFree = null
+  let uncertain = false
   const attempts = portAttempts()
   for (let offset = 0; offset < attempts && firstPort + offset <= 65535; offset += 1) {
     if (deadline !== null && Date.now() >= deadline) return { firstFree, found: null, claimLost: false, timedOut: true }
@@ -239,8 +247,9 @@ async function probeCandidates(firstPort, timeout, claim = null, deadline = null
     const probe = await probeArtifactServer(port, probeTimeout)
     if (probe.kind === 'ours') return { firstFree, found: { port, health: probe.health }, claimLost: false, timedOut: false }
     if (probe.kind === 'free' && firstFree === null) firstFree = port
+    if (probe.kind === 'unknown') uncertain = true
   }
-  return { firstFree, found: null, claimLost: false, timedOut: false }
+  return { firstFree, found: null, claimLost: false, timedOut: false, uncertain }
 }
 
 async function holdClaimForTest(claim) {
@@ -275,7 +284,10 @@ async function discoverOrStart(firstPort) {
     if (stopping) return { kind: 'shutdown' }
     if (scan.timedOut) return { kind: 'contended' }
     if (scan.found) return { kind: 'found', ...scan.found }
-    if (scan.firstFree === null) return { kind: 'exhausted' }
+    if (scan.firstFree === null) {
+      if (scan.uncertain) return { kind: 'contended' }
+      return { kind: 'exhausted' }
+    }
 
     const claim = acquireStartupClaim()
     if (!claim) {
@@ -340,7 +352,7 @@ async function main() {
       pid: process.pid, roots, deny: configuredDenyPatterns(), startedAt: new Date().toISOString(),
       ...(process.platform === 'win32' ? { identity: {
         pid: process.pid, argv: process.argv,
-        startTime: Date.now() - process.uptime() * 1_000, startTimeApproximate: true, startTimeToleranceMs: 250,
+        startTime: Date.now() - process.uptime() * 1_000, startTimeApproximate: true,
       } } : {}),
     })
   } catch (error) {
@@ -352,6 +364,9 @@ async function main() {
     const result = await discoverOrStart(firstPort)
     let pendingRetry = null
     let retryInFlight = false
+    let watchInFlight = false
+    let attachedPort = result.kind === 'found' ? result.port : null
+    let lastWatchAt = Date.now()
     const startRetry = (kind) => {
       const startedAt = Date.now()
       return {
@@ -386,7 +401,7 @@ async function main() {
     }
 
     const retryTick = async () => {
-      if (stopping || !pendingRetry || retryInFlight) return
+      if (stopping || !pendingRetry || retryInFlight || watchInFlight) return
       retryInFlight = true
       try {
         let now = Date.now()
@@ -401,6 +416,8 @@ async function main() {
         if (stopping || !pendingRetry) return
         if (scan.found) {
           process.stdout.write(`ARTIFACT SERVER ATTACHED: discovered server on port ${scan.found.port} during startup retry.\n`)
+          attachedPort = scan.found.port
+          lastWatchAt = Date.now()
           pendingRetry = null
           return
         }
@@ -434,6 +451,8 @@ async function main() {
         if (stopping || !pendingRetry) return
         if (retried.kind === 'found') {
           process.stdout.write(`ARTIFACT SERVER ATTACHED: discovered server on port ${retried.port} during startup retry.\n`)
+          attachedPort = retried.port
+          lastWatchAt = Date.now()
           pendingRetry = null
         } else {
           pendingRetry.kind = retried.kind
@@ -450,10 +469,33 @@ async function main() {
         retryInFlight = false
       }
     }
+    const watchTick = async () => {
+      if (stopping || pendingRetry || retryInFlight || watchInFlight || attachedPort === null) return
+      if (Date.now() - lastWatchAt < watchIntervalMs()) return
+      watchInFlight = true
+      const watchedPort = attachedPort
+      lastWatchAt = Date.now()
+      try {
+        const direct = await probeArtifactServer(watchedPort, 750)
+        if (stopping || pendingRetry || direct.kind === 'ours') return
+        const scan = await probeCandidates(firstPort, 750)
+        if (stopping || pendingRetry) return
+        if (scan.found) {
+          attachedPort = scan.found.port
+          return
+        }
+        process.stdout.write(`ARTIFACT SERVER LOST: server on port ${watchedPort} is no longer answering; restarting; registration retained.\n`)
+        attachedPort = null
+        pendingRetry = startRetry('lost')
+      } finally {
+        watchInFlight = false
+      }
+    }
     const keepAlive = setInterval(() => {
       const shutdownFile = TEST_MODE ? process.env.WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE : null
       if (shutdownFile && existsSync(shutdownFile)) cleanExit()
       if (process.ppid !== parentPid) cleanExit()
+      void watchTick()
       void retryTick()
     }, 2_000)
     try { await finished } finally { clearInterval(keepAlive) }

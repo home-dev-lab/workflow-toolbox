@@ -161,6 +161,25 @@ function harvest(file) {
   }
 }
 
+function reportFingerprint(file) {
+  try {
+    const lines = readFileSync(file, 'utf8').split(/\r?\n/)
+    const fingerprinted = []
+    let inHarvestRecord = false
+    for (const line of lines) {
+      if (/^##\s+Lesson harvest record\s*$/i.test(line)) {
+        inHarvestRecord = true
+        continue
+      }
+      if (inHarvestRecord && /^##\s+\S/.test(line)) inHarvestRecord = false
+      if (!inHarvestRecord) fingerprinted.push(line)
+    }
+    return createHash('sha256').update(fingerprinted.join('\n')).digest('hex')
+  } catch {
+    return null
+  }
+}
+
 const seen = loadSeen()
 const fresh = []
 
@@ -172,11 +191,17 @@ for (const dir of searchDirs) {
     } catch {
       continue
     }
-    if (seen[file] === mtime) continue
+    const previous = seen[file]
+    if (previous === mtime || previous?.mtime === mtime) continue
+    const fingerprint = reportFingerprint(file)
+    if (fingerprint && previous?.fingerprint === fingerprint) {
+      seen[file] = { mtime, fingerprint }
+      continue
+    }
     const result = harvest(file)
     // Record every file examined, not only the ones that yielded lessons — otherwise a report
     // without lessons is re-harvested at every single turn end, forever.
-    seen[file] = mtime
+    seen[file] = fingerprint ? { mtime, fingerprint } : mtime
     if (result?.hasLessons && Array.isArray(result.items) && result.items.length) {
       fresh.push({ file, count: result.items.length })
     }
