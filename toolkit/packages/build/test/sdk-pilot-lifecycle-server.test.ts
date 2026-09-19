@@ -541,8 +541,9 @@ printf 'report\n' > "$report"
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
     expect(summary).toMatchObject({ commit: 'next', partial: null, lifecycle_implementation: { name: 'sdk-pilot-lifecycle', version: '1.0.0' } })
     expect(summary.archive).toMatchObject({ path: expect.stringMatching(/[\\/]\.claude[\\/]reports[\\/]1-/), manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/) })
-    expect(summary.archive.path.startsWith(lifecycle.archiveRoot)).toBe(true)
-    expect(summary.archive.path.startsWith(lifecycle.root)).toBe(false)
+    expect(summary.archive.path.startsWith(realpathSync.native(lifecycle.archiveRoot))).toBe(true)
+    // Compare canonical spellings on both sides: with an 8.3 root the negative check would pass vacuously.
+    expect(summary.archive.path.startsWith(realpathSync.native(lifecycle.root))).toBe(false)
     expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))).toMatchObject({ partial: null, routed_cards: [{ id: '42', title: 'Late route', l4Reason: 'different subsystem' }] })
   })
 

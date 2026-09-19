@@ -331,7 +331,8 @@ describe('wt-main-guard-hook — escape hatch', () => {
       'allow-once.json',
     )
     const first = run(command, { pluginData: configuredPluginData })
-    const printedPath = first.stdout.match(/to (.+\/allow-once\.json) and retry/)?.[1]
+    const refusal = JSON.parse(first.stdout).hookSpecificOutput.permissionDecisionReason as string
+    const printedPath = refusal.match(/to (.+[\\/]allow-once\.json) and retry/)?.[1]
 
     expect(first.denied).toBe(true)
     expect(printedPath).toBe(expectedPath)
