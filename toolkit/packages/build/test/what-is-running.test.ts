@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, st
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
 import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error Function-hook modules ship as host-loaded JavaScript.
@@ -153,6 +154,22 @@ function textChildren(tree: unknown): string[] {
 describe('What is running collector seam', () => {
   it('resolves the shipped price table URL to a native Windows drive path', () => {
     expect(fileUrlPath(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json'), 'win32'))
+      .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
+  })
+
+  it('resolves the price table URL inside a hooks sandbox that has no process global', async () => {
+    // The hooks module runs in an environment without Node globals: a `process` reference at module
+    // scope makes every collection fail with "process is not defined" on the real host.
+    const source = readFileSync(new URL('../../../../plugin/hooks/hooks.js', import.meta.url), 'utf8')
+    const sandbox = { URL, decodeURIComponent, console, exports: {} as Record<string, unknown> }
+    const body = source
+      .replace(/^export (function|const|class)/gm, '$1')
+      .match(/function fileUrlPath[\s\S]*?\n}/)?.[0]
+    expect(body).toBeTruthy()
+    const fn = vm.runInNewContext(`${body}; fileUrlPath`, sandbox) as typeof fileUrlPath
+    expect(fn(new URL('file:///home/doublefx/plugin/pricing/model-prices.json')))
+      .toBe('/home/doublefx/plugin/pricing/model-prices.json')
+    expect(fn(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json')))
       .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
   })
 
