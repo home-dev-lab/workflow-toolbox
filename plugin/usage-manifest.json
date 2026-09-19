@@ -27,7 +27,7 @@
     ]
   },
   "hooks": {
-    "events": { "PreToolUse": 24, "PostToolUse": 9, "SessionStart": 8, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
+    "events": { "PreToolUse": 24, "PostToolUse": 9, "SessionStart": 11, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
     "types": ["command"],
     "matchers": ["Bash", "SendMessage", "Edit|Write|MultiEdit", "StructuredOutput", "Agent", "Workflow", "*", "SendMessage|Agent|Task", "mcp__planka__get_board|mcp__planka__find_cards"],
     "payloadFields": ["hook_event_name", "session_id", "tool_name", "tool_input", "transcript_path", "cwd", "agent_id", "agent_type", "stop_hook_active"],
@@ -71,6 +71,16 @@
     { "name": "WT_LANE_ORPHAN_CLEANUP", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; observe|enforce, default observe)" },
     { "name": "WT_LANE_STALL_MINUTES", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; default 10)" },
     { "name": "WT_ADOPT_REFRESH", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; session|notice-only, default session)" },
+    { "name": "WT_PILOT_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_PILOT_HARD_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_ORCHESTRATOR_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_SDK_PILOT_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_SDK_PILOT_HARD_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_SDK_ORCHESTRATOR_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_EXECUTOR_CRITIC_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_EXECUTOR_CODE_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_EXECUTOR_REVIEW_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_EXECUTOR_REFUTATION_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
     { "name": "WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS", "where": "plugin/bin/wt-artifact-server.mjs (test-only env knob)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_MODE", "where": "plugin/bin/wt-artifact-server-ensure.mjs (master test-mode gate)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only startup-claim age)" },
@@ -111,6 +121,7 @@
     { "name": "WT_FINDINGS_DISPOSITION_NOW", "where": "plugin/bin/wt-report-findings-check.mjs (deterministic clock override)" }
   ],
   "cli": [
+    { "name": "node plugin/bin/wt-config.mjs [--json]", "where": "README.md" },
     { "name": "node plugin/bin/wt-artifact-server.mjs url|status|stop|restart", "where": "plugin/skills/artifact-server/SKILL.md" },
     { "name": "node <configDir>/scripts/wt-lane.mjs", "where": "README.md and plugin/skills/external-lane/SKILL.md" },
     { "name": "node plugin/bin/wt-lane-control.mjs", "where": "docs/public/known-issues.md" },

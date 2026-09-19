@@ -1,4 +1,5 @@
 import { resolveConsent } from './lane-consent-check-core.mjs'
+import { readWorkflowToolboxPluginOption } from './plugin-options.mjs'
 
 // Owner decisions 2026-09-14: the harness pilot and orchestrator (agents spawned by a session, no
 // enforced lifecycle) run on Opus, Fable for hard cards; the SDK runner's pilot and orchestrator run on
@@ -12,12 +13,12 @@ const DEFAULT_MODELS = {
   sdkOrchestrator: 'opus',
 }
 const MODEL_KEYS = {
-  pilot: 'WT_PILOT_MODEL',
-  pilotHard: 'WT_PILOT_HARD_MODEL',
-  orchestrator: 'WT_ORCHESTRATOR_MODEL',
-  sdkPilot: 'WT_SDK_PILOT_MODEL',
-  sdkPilotHard: 'WT_SDK_PILOT_HARD_MODEL',
-  sdkOrchestrator: 'WT_SDK_ORCHESTRATOR_MODEL',
+  pilot: ['pilot_model', 'WT_PILOT_MODEL'],
+  pilotHard: ['pilot_hard_model', 'WT_PILOT_HARD_MODEL'],
+  orchestrator: ['orchestrator_model', 'WT_ORCHESTRATOR_MODEL'],
+  sdkPilot: ['sdk_pilot_model', 'WT_SDK_PILOT_MODEL'],
+  sdkPilotHard: ['sdk_pilot_hard_model', 'WT_SDK_PILOT_HARD_MODEL'],
+  sdkOrchestrator: ['sdk_orchestrator_model', 'WT_SDK_ORCHESTRATOR_MODEL'],
 }
 
 // A pilot's model is always a HARNESS alias (or a full claude-* id). A GPT pilot is not a
@@ -62,15 +63,19 @@ export function assertHarnessAlias(value) {
   return value
 }
 
-export function resolvePilotModels({ env = {}, settingsEnv = {} } = {}) {
+export function resolvePilotModels({ env = {}, settingsEnv = {}, readPluginOption = readWorkflowToolboxPluginOption } = {}) {
   return Object.fromEntries(
-    Object.entries(MODEL_KEYS).map(([role, key]) => {
-      const source = Object.prototype.hasOwnProperty.call(env, key)
+    Object.entries(MODEL_KEYS).map(([role, [option, key]]) => {
+      const plugin = readPluginOption(option, { env })
+      const hasPlugin = plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== ''
+      const source = hasPlugin
+        ? 'plugin option'
+        : Object.prototype.hasOwnProperty.call(env, key)
         ? 'env'
         : Object.prototype.hasOwnProperty.call(settingsEnv, key)
           ? 'settings'
           : 'default'
-      const value = source === 'env' ? env[key] : source === 'settings' ? settingsEnv[key] : DEFAULT_MODELS[role]
+      const value = source === 'plugin option' ? plugin.value : source === 'env' ? env[key] : source === 'settings' ? settingsEnv[key] : DEFAULT_MODELS[role]
       assertHarnessModel(value)
       return [role, { value, source, ...effectiveModel(value, { env, settingsEnv }) }]
     }),
@@ -78,10 +83,10 @@ export function resolvePilotModels({ env = {}, settingsEnv = {} } = {}) {
 }
 
 const EXECUTOR_KEYS = {
-  critic: 'WT_EXECUTOR_CRITIC_MODEL',
-  code: 'WT_EXECUTOR_CODE_MODEL',
-  review: 'WT_EXECUTOR_REVIEW_MODEL',
-  refutation: 'WT_EXECUTOR_REFUTATION_MODEL',
+  critic: ['executor_critic_model', 'WT_EXECUTOR_CRITIC_MODEL'],
+  code: ['executor_code_model', 'WT_EXECUTOR_CODE_MODEL'],
+  review: ['executor_review_model', 'WT_EXECUTOR_REVIEW_MODEL'],
+  refutation: ['executor_refutation_model', 'WT_EXECUTOR_REFUTATION_MODEL'],
 }
 const EXECUTOR_DEFAULTS = {
   'gpt-lane': {
@@ -101,17 +106,26 @@ function assertProviderModel(value) {
   return value
 }
 
-export function resolveExecutorProfile({ worktree, route, hard = false, env = {}, settingsEnv = {}, resolveConsentImpl = resolveConsent }) {
+export function resolveExecutorProfile({ worktree, route, hard = false, env = {}, settingsEnv = {}, resolveConsentImpl = resolveConsent, readPluginOption = readWorkflowToolboxPluginOption }) {
   if (!['LITE', 'FULL'].includes(route)) throw new Error(`unknown executor route: ${String(route)}`)
   const executor = resolveConsentImpl(worktree, env).outcome === 'true' ? 'gpt-lane' : 'claude-sdk'
   const defaults = EXECUTOR_DEFAULTS[executor][hard ? 'hard' : 'standard']
-  const models = Object.fromEntries(Object.entries(EXECUTOR_KEYS).map(([role, key]) => {
-    const value = Object.prototype.hasOwnProperty.call(env, key)
+  const resolved = Object.fromEntries(Object.entries(EXECUTOR_KEYS).map(([role, [option, key]]) => {
+    const plugin = readPluginOption(option, { env })
+    const hasPlugin = plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== ''
+    const source = hasPlugin ? 'plugin option' : Object.prototype.hasOwnProperty.call(env, key) ? 'env' : Object.prototype.hasOwnProperty.call(settingsEnv, key) ? 'settings' : 'default'
+    const value = hasPlugin
+      ? plugin.value
+      : Object.prototype.hasOwnProperty.call(env, key)
       ? env[key]
       : Object.prototype.hasOwnProperty.call(settingsEnv, key)
         ? settingsEnv[key]
         : defaults[role]
-    return [role, executor === 'gpt-lane' ? assertProviderModel(value) : assertHarnessAlias(value)]
+    return [role, { value: executor === 'gpt-lane' ? assertProviderModel(value) : assertHarnessAlias(value), source }]
   }))
-  return { executor, models }
+  return {
+    executor,
+    models: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.value])),
+    modelSources: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.source])),
+  }
 }
