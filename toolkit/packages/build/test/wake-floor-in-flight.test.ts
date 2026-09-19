@@ -1,3 +1,4 @@
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { classifyLane } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
@@ -6,11 +7,11 @@ import { sessionLaneInFlight } from '../../../../plugin/bin/lib/wake-floor-in-fl
 
 type RecordValue = Record<string, unknown>
 
-const projectDir = '/project'
-const worktree = '/project/lane\nwith-newline'
+const projectDir = path.resolve('/project')
+const worktree = path.join(projectDir, 'lane\nwith-newline')
 const runId = '123-456'
-const supervisionDir = `${worktree}/.lane/supervision`
-const recordPath = `${supervisionDir}/${runId}.json`
+const supervisionDir = path.join(worktree, '.lane', 'supervision')
+const recordPath = path.join(supervisionDir, `${runId}.json`)
 
 function dirent(name: string, directory = true) {
   return { name, isDirectory: () => directory, isSymbolicLink: () => false }
@@ -46,24 +47,24 @@ function fixture(options: {
 } = {}) {
   const value = Object.hasOwn(options, 'value') ? options.value : record()
   const reads = options.reads ?? new Map([[recordPath, JSON.stringify(value)]])
-  const readdirImpl = vi.fn((path: string) => {
-    if (path === `${projectDir}/.claude/worktrees`) {
+  const readdirImpl = vi.fn((dirPath: string) => {
+    if (dirPath === path.join(projectDir, '.claude', 'worktrees')) {
       if (options.umbrella instanceof Error) throw options.umbrella
       return options.umbrella ?? []
     }
-    if (path === `${projectDir}/.lane/supervision`) {
+    if (dirPath === path.join(projectDir, '.lane', 'supervision')) {
       const error = Object.assign(new Error('missing'), { code: 'ENOENT' })
       throw error
     }
-    if (path === supervisionDir) {
+    if (dirPath === supervisionDir) {
       if (options.supervision instanceof Error) throw options.supervision
       return options.supervision ?? [dirent(`${runId}.json`, false)]
     }
     const error = Object.assign(new Error('missing'), { code: 'ENOENT' })
     throw error
   })
-  const readFileImpl = vi.fn((path: string) => {
-    const value = reads.get(path)
+  const readFileImpl = vi.fn((filePath: string) => {
+    const value = reads.get(filePath)
     if (value instanceof Error) throw value
     if (value === undefined) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
     return value
@@ -85,7 +86,7 @@ function fixture(options: {
     maxUmbrellaEntries: options.maxUmbrellaEntries,
     maxRecords: options.maxRecords,
   })
-  return { classify, result, spawnSyncImpl }
+  return { classify, readdirImpl, result, spawnSyncImpl }
 }
 
 describe('sessionLaneInFlight', () => {
@@ -149,6 +150,12 @@ describe('sessionLaneInFlight', () => {
   it('uses C locale and NUL-delimited git porcelain', () => {
     const { spawnSyncImpl } = fixture()
     expect(spawnSyncImpl).toHaveBeenCalledWith('git', ['-C', projectDir, 'worktree', 'list', '--porcelain', '-z'], expect.objectContaining({ env: expect.objectContaining({ LC_ALL: 'C' }) }))
+  })
+
+  it('discovers supervision records through host-native paths', () => {
+    const { readdirImpl, result } = fixture()
+    expect(result.status).toBe('in-flight')
+    expect(readdirImpl).toHaveBeenCalledWith(supervisionDir, { withFileTypes: true })
   })
 
   it('accepts a non-git umbrella project as known empty', () => {
