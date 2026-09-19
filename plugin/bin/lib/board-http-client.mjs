@@ -1,14 +1,30 @@
 export class BoardUnavailable extends Error {
-  constructor(detail) {
+  constructor(detail, status) {
     super(`board unavailable: ${detail}`)
     this.name = 'BoardUnavailable'
+    if (status !== undefined) this.status = status
   }
 }
 
-function resultText(result) {
+const TEXT_TOLERANT_TOOLS = new Set(['add_label_to_card', 'remove_label_from_card', 'add_comment', 'move_card'])
+
+// Live Planka MCP shapes measured 2026-09-19: get_card, create_card, get_board, find_cards,
+// move_card, and add_comment returned JSON; add_label_to_card returned plain text (including a
+// plain-text isError on 409). remove_label_from_card was unmeasured and is assumed to behave like
+// add_label_to_card. Mutations known or assumed to return text accept either their text or JSON shape.
+function toolResult(name, result) {
   const text = result?.content?.[0]?.text
   if (typeof text !== 'string') throw new Error('missing MCP result content[0].text')
-  try { return JSON.parse(text) } catch { throw new Error('malformed MCP result JSON') }
+  const statusMatch = /status code (\d+)/i.exec(text)
+  const status = statusMatch ? Number(statusMatch[1]) : undefined
+  if (result.isError === true) {
+    if (name === 'add_label_to_card' && status === 409) return { text }
+    throw new BoardUnavailable(text, status)
+  }
+  try { return JSON.parse(text) } catch {
+    if (TEXT_TOLERANT_TOOLS.has(name)) return { text }
+    throw new Error('malformed MCP result JSON')
+  }
 }
 
 function rpcBody(body) {
@@ -70,7 +86,7 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
       await send({ jsonrpc: '2.0', method: 'notifications/initialized' })
       initialized = true
     }
-    try { return resultText(await rpc('tools/call', { name, arguments: arguments_ })) }
+    try { return toolResult(name, await rpc('tools/call', { name, arguments: arguments_ })) }
     catch (error) { throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error.message) }
   }
   return {
@@ -80,6 +96,7 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
       return result
     },
     async getCard(id) { return call('get_card', { cardId: String(id) }) },
+    async addLabelToCard(id, labelId) { return call('add_label_to_card', { cardId: String(id), labelId: String(labelId) }) },
     async moveCard(id, listName) {
       const target = (await lists()).find((item) => item.name === listName)
       if (!target) throw new BoardUnavailable(`no list named ${listName} on board ${boardId}`)
@@ -98,10 +115,15 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
       })
       const cardId = String(created?.id ?? created?.card?.id ?? '')
       if (!cardId) throw new BoardUnavailable('create_card returned no card id')
+      const labelFailures = []
       for (const labelId of [boardContract.labels.priority[risk], boardContract.labels.type[type], boardContract.labels.effort[effort], boardContract.labels.category]) {
-        await call('add_label_to_card', { cardId, labelId: String(labelId) })
+        try {
+          await call('add_label_to_card', { cardId, labelId: String(labelId) })
+        } catch (error) {
+          labelFailures.push({ labelId: String(labelId), error: error instanceof Error ? error.message : String(error) })
+        }
       }
-      return created
+      return { ...created, id: cardId, labelFailures }
     },
     async resolveRoutedCard(card) {
       await call('add_comment', { cardId: String(card.id), text: 'Closed by the originating pilot run: the contested item was completed in scope.' })

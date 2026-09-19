@@ -892,6 +892,10 @@ export function createLifecycleStateMachine({
       const id = String(created?.id ?? '')
       if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('board returned no valid card id')
       const record = { id, title: String(created.title ?? args.title), l4Reason: args.l4Reason }
+      const failure = Array.isArray(created.labelFailures) && created.labelFailures.length > 0
+        ? created.labelFailures.map((item) => `add_label_to_card ${item.labelId}: ${item.error}`).join('; ')
+        : null
+      if (failure) record.failure = failure
       timeline.routed_cards.push(record)
       if (state.phase === 'report' && state.pilotReportDigest) {
         const reportPath = path.join(laneDir, 'pilot-report.md')
@@ -903,7 +907,8 @@ export function createLifecycleStateMachine({
         }
       }
       persistTimeline()
-      return `routed card ${id} — ${record.title}`
+      const failureSuffix = failure ? ` (label failure: ${failure})` : ''
+      return `routed card ${id} — ${record.title}${failureSuffix}`
     } catch (error) {
       return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
     }
