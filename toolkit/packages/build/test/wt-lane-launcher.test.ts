@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -842,7 +842,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   })
   it.skipIf(process.platform !== 'linux')('prints an unattributed warning even when the journal is unavailable [requires Linux /proc orphan enumeration]', async () => {
     const f = fixture('true')
-    const child = spawnChild('bash', ['-c', 'exec -a opencode sleep 30'], { cwd: f.dir, stdio: 'ignore' })
+    const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run'], { cwd: f.dir, stdio: 'ignore' })
     try {
       spawnSync('sleep', ['0.1'])
       const blocked = join(f.root, 'blocked-state'); writeFileSync(blocked, 'not a directory')
@@ -857,7 +857,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const f = fixture('true')
     const staging = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890')
     mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), '# brief\n')
-    const child = spawnChild('bash', ['-c', 'exec -a opencode sleep 30'], { cwd: staging, stdio: 'ignore' })
+    const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run'], { cwd: staging, stdio: 'ignore' })
     spawnSync('sleep', ['0.1'])
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
     expect(watcher.status, watcher.stderr).toBe(0)
@@ -867,7 +867,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const f = fixture('true')
     const supervision = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890', '.lane', 'supervision')
     mkdirSync(supervision, { recursive: true }); writeFileSync(join(supervision, '..', 'brief.md'), '# brief\n')
-    const child = spawnChild('bash', ['-c', 'exec -a opencode sleep 30'], { cwd: f.dir, stdio: 'ignore' })
+    const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run'], { cwd: f.dir, stdio: 'ignore' })
     writeFileSync(join(supervision, '1-1.json'), JSON.stringify({ runId: '1-1', state: 'launch-failed', childPid: child.pid }))
     spawnSync('sleep', ['0.1'])
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
@@ -901,11 +901,52 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const f = fixture('true')
     const unrelated = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890')
     mkdirSync(unrelated, { recursive: true })
-    const child = spawnChild('bash', ['-c', 'exec -a opencode sleep 30'], { cwd: unrelated, stdio: 'ignore' })
+    const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run'], { cwd: unrelated, stdio: 'ignore' })
     spawnSync('sleep', ['0.1'])
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
     expect(watcher.status, watcher.stderr).toBe(0)
     expect(watcher.stdout).toContain(`WARNING: unattributed opencode pid=${child.pid}`)
+  })
+  it.skipIf(process.platform !== 'linux')('does not report an executable named opencode from the OS temp directory [requires Linux /proc orphan enumeration]', () => {
+    const f = fixture('true')
+    const fakeDir = realpathSync(mkdtempSync(join(tmpdir(), 'wt-fake-opencode-'))); roots.push(fakeDir)
+    const fake = join(fakeDir, 'opencode'); copyFileSync('/bin/sleep', fake)
+    const child = spawnChild(fake, ['30'], { cwd: f.dir, stdio: 'ignore' })
+    try {
+      spawnSync('sleep', ['0.1'])
+      const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
+      expect(watcher.status, watcher.stderr).toBe(0)
+      expect(watcher.stdout).not.toContain(`unattributed opencode pid=${child.pid}`)
+    } finally {
+      try { process.kill(child.pid!, 'SIGKILL') } catch {}
+    }
+  })
+  it.skipIf(process.platform !== 'linux')('does not report an opencode shell script from the OS temp directory [requires Linux /proc orphan enumeration]', () => {
+    const f = fixture('true')
+    const fakeDir = realpathSync(mkdtempSync(join(tmpdir(), 'wt-fake-opencode-'))); roots.push(fakeDir)
+    const fake = join(fakeDir, 'opencode'); writeFileSync(fake, '#!/bin/sh\nexec sleep 30\n'); chmodSync(fake, 0o755)
+    const child = spawnChild('/bin/sh', [fake, 'run', 'x'], { cwd: f.dir, stdio: 'ignore' })
+    try {
+      spawnSync('sleep', ['0.1'])
+      const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
+      expect(watcher.status, watcher.stderr).toBe(0)
+      expect(watcher.stdout).not.toContain(`unattributed opencode pid=${child.pid}`)
+    } finally {
+      try { process.kill(child.pid!, 'SIGKILL') } catch {}
+    }
+  })
+  it.skipIf(process.platform !== 'linux')('reports an unattributed real-shape opencode process [requires Linux /proc orphan enumeration]', () => {
+    const f = fixture('true')
+    const unknown = join(f.dir, 'unknown'); mkdirSync(unknown)
+    const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run', '--dir', unknown], { cwd: f.dir, stdio: 'ignore' })
+    try {
+      spawnSync('sleep', ['0.1'])
+      const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
+      expect(watcher.status, watcher.stderr).toBe(0)
+      expect(watcher.stdout).toContain(`WARNING: unattributed opencode pid=${child.pid}`)
+    } finally {
+      try { process.kill(child.pid!, 'SIGKILL') } catch {}
+    }
   })
   it.skipIf(process.platform !== 'linux')('still warns when an opencode --dir escapes a staging lane through a symlink [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('true')

@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync } f
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, terminateLane } from './lib/lane-supervisor-core.mjs'
-import { posixCommandArgs, registeredWorktrees, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
+import { posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
 import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
@@ -205,10 +205,11 @@ async function main() {
     const table = listProcessTable()
     const attributed = new Set(known.map((record) => record.childPid))
     if (table.supported) for (const item of table.processes) {
-      if (!/(?:^|[\\/\s])opencode(?:\s|$)/i.test(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
+      if (!/(?:^|[\\/\s])opencode(?:\.exe|\.cmd)?(?:\s|$)/i.test(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
       const unknown = inspectProcess(item.pid)
       if (!unknown?.cwd || (unknown.cwd !== options.project && !unknown.cwd.startsWith(`${options.project}${path.sep}`))) continue
       const argv = Array.isArray(unknown.argv) && unknown.argv.length > 0 ? unknown.argv : posixCommandArgs(item.command)
+      if (!reportableOpencodeArgv(argv)) continue
       if (String(argv[1] ?? '').replaceAll('\\', '/').includes('/test/fixtures/')) continue
       const dir = processDir(argv, unknown.cwd)
       if (staging.some((lane) => containsPath(lane, unknown.cwd) || (dir && containsPath(lane, dir)))) continue
