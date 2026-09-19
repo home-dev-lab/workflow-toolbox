@@ -21,10 +21,13 @@ not alter `pilot-wave`, adoption, or its behavior.
 
 Create a dedicated Git worktree for the card. Write the complete tracker card to a regular card file;
 the runner derives its LITE/FULL route from those exact bytes. Ensure `.lane/` is ignored in the
-worktree. The run's archive lands OUTSIDE the worktree, under `<archive root>/.claude/reports/`, so it
+worktree. The run's durable archive lands OUTSIDE the worktree, only under
+`<archive root>/.claude/reports/<card>-<timestamp>/`, so it
 survives `git worktree remove`: pass `--archive-root <project root>` (its `.claude/reports/` must be
 ignored there), or let the runner default to the main checkout that owns the worktree. Resolve the optional knowledge-base index explicitly when known;
 otherwise the runner checks `WT_KNOWLEDGE_BASE_INDEX`, then the project-derived Claude memory path.
+Every normal or abnormal run also appends one summary line to the single durable
+`<archive root>/.claude/reports/cost-index.jsonl` index.
 
 ## Launch detached
 
@@ -58,6 +61,9 @@ Inspect the .lane/summary.json, .lane/usage.json, .lane/cost.json, .lane/sdk-tra
 .lane/pilot-report.md files. Exit 0 is a completed full run, exit 2 is a completed partial run, and exit 1
 is incomplete or failed. Do not infer completion from model prose: the runner requires its correlated
 `accepted phase=awaiting_fidelity` lifecycle receipt and a pilot report.
+While the run is active, the lane's usage.json receipt is atomically refreshed for each SDK assistant usage
+receipt. What is running uses those receipts for live phase and run totals; delegated lane usage is
+added when that lane ends because its CLI does not expose partial usage.
 
 To total archived costs mechanically, run `node "${CLAUDE_PLUGIN_ROOT}/bin/wt-run-cost.mjs"
 <reports-directory>`. It totals complete runs by LITE/FULL/HARD route and provider family, lists every

@@ -1,5 +1,5 @@
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -225,6 +225,53 @@ function costPublicationFailure(error, archive, priorError, log) {
   return priorError ?? error
 }
 
+let atomicWriteSerial = 0
+function atomicWrite(file, content, writeFile = writeFileSync) {
+  atomicWriteSerial += 1
+  const temporary = `${file}.${process.pid}.${atomicWriteSerial}.tmp`
+  try {
+    writeFile(temporary, content, { flag: 'wx' })
+    renameSync(temporary, file)
+  } finally {
+    rmSync(temporary, { force: true })
+  }
+}
+
+// One total per BILLED class, never a grand sum: classes are priced differently and OpenAI output already
+// includes reasoning, so adding them double-counts (owner, wt-suite #2913).
+function indexedCostTotals(cost) {
+  if (!Array.isArray(cost?.phases)) return { phase_totals: {}, run_total: 'unknown' }
+  const fields = ['input', 'cache_write', 'cache_read', 'output', 'reasoning']
+  const phaseTotals = {}
+  const runTotal = Object.fromEntries(fields.map((field) => [field, 0]))
+  for (const phase of cost.phases) {
+    const target = phaseTotals[phase.phase] ?? Object.fromEntries(fields.map((field) => [field, 0]))
+    for (const model of Object.values(phase.models ?? {})) for (const field of fields) {
+      if (typeof model[field] === 'number') { target[field] += model[field]; runTotal[field] += model[field] }
+    }
+    phaseTotals[phase.phase] = target
+  }
+  return { phase_totals: phaseTotals, run_total: runTotal }
+}
+
+function appendCostIndex({ archiveRoot, runId, card, route, cost, started, ended, archive, log }) {
+  try {
+    appendFileSync(join(archiveRoot, '.claude', 'reports', 'cost-index.jsonl'), `${JSON.stringify({
+      run_id: runId,
+      card: String(card),
+      route,
+      ...indexedCostTotals(cost),
+      started_at: new Date(started).toISOString(),
+      ended_at: new Date(ended).toISOString(),
+      archive_path: archive ?? null,
+    })}\n`)
+    return null
+  } catch (error) {
+    log(`cost index unavailable: ${error instanceof Error ? error.message : String(error)}`)
+    return error
+  }
+}
+
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
@@ -262,6 +309,7 @@ export async function runPilot(options, dependencies) {
   const summaryPath = join(options.dir, '.lane', 'summary.json')
   const transcriptPath = join(options.dir, '.lane', 'sdk-transcript.json')
   const started = now()
+  const runId = `${options.card}-${started}`
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   const turns = []
   const messages = []
@@ -311,7 +359,10 @@ export async function runPilot(options, dependencies) {
   const resolveRoutedFinding = boardContract && board && typeof board.resolveRoutedCard === 'function' ? (card) => board.resolveRoutedCard(card) : null
   const abortController = new AbortController()
   let timeoutGraceTimer = null
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot: options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot }), route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: `${options.card}-${started}`, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
+  const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
+  const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: totals.input + totals.cache_creation + totals.output, tool_names: [...new Set(tools)] })
+  const persistUsage = () => atomicWrite(usagePath, `${JSON.stringify(currentUsage(), null, 2)}\n`, writeFile)
   const timeoutTimer = setTimer(() => {
     if (lifecycleServer.requestStop('timeout')) {
       incompleteReason = 'timeout'
@@ -398,8 +449,9 @@ export async function runPilot(options, dependencies) {
       const record = { ...usageOf(message.message), model: message.message.model ?? servedModelFirstTurn ?? servedModel ?? model.value, arrived_at: new Date(now()).toISOString() }
       const messageId = message.message.id
       const previous = messageId ? messages.findIndex((entry) => entry.message_id === messageId) : -1
-      if (previous >= 0) messages[previous] = { ...record, message_id: messageId, arrived_at: messages[previous].arrived_at }
-      else messages.push(messageId ? { ...record, message_id: messageId } : record)
+       if (previous >= 0) messages[previous] = { ...record, message_id: messageId, arrived_at: messages[previous].arrived_at }
+       else messages.push(messageId ? { ...record, message_id: messageId } : record)
+       persistUsage()
     }
     const content = message.message?.content
     if (Array.isArray(content)) for (const item of content) {
@@ -443,9 +495,8 @@ export async function runPilot(options, dependencies) {
   }
   // B4: returning normally here made the runner fail-open — a stream that ended before the pilot
   // reached awaiting_fidelity produced a summary that read like an ordinary finished run.
-  if (!initReceiptSeen) throw streamError
   const freshTokens = totals.input + totals.cache_creation + totals.output
-  const usage = { messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: freshTokens, tool_names: [...new Set(tools)] }
+  const usage = currentUsage()
   const completedNormally = awaitingFidelityReceipt && exists(report)
   let finalizationError = null
   if (!completedNormally) {
@@ -457,7 +508,7 @@ export async function runPilot(options, dependencies) {
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
   const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
-  writeFile(usagePath, `${JSON.stringify(usage, null, 2)}\n`)
+  atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
   writeWorktreeRetentionMarker({ root: options.dir, cardId: options.card, partial, boardId: boardContract?.boardId ?? null, retainedAt: new Date(ended).toISOString() })
@@ -487,6 +538,8 @@ export async function runPilot(options, dependencies) {
   } catch (error) {
     finalizationError = costPublicationFailure(error, lifecycleSummary.archive?.path, finalizationError, log)
   }
+  const costIndexError = appendCostIndex({ archiveRoot, runId, card: options.card, route: options.hard ? 'HARD' : routing.route, cost, started, ended, archive: lifecycleSummary.archive?.path, log })
+  finalizationError ||= costIndexError
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   if (finalizationError) throw finalizationError
   if (streamError) throw streamError

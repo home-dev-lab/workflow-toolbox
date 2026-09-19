@@ -272,12 +272,17 @@ describe('What is running collector seam', () => {
       writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'LITE' }))
       writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Live cost\n`)
       writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=discovery\n')
-      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [{ phase: 'discovery', round: null, entered_at: 1000, exited_at: null }], lanes: [] }))
-      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [{ arrived_at: '1970-01-01T00:00:02.000Z', input: 10, output: 2, cache_read: 30, cache_creation: 4 }] }))
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [{ phase: 'discovery', round: null, entered_at: Date.parse('2026-09-12T12:01:00Z'), exited_at: null }], lanes: [] }))
+      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [
+        { arrived_at: '2026-09-12T12:02:00.000Z', input: 10, output: 2, cache_read: 30, cache_creation: 4 },
+        { arrived_at: '2026-09-12T12:00:00.000Z', input: 1, output: 1, cache_read: 1, cache_creation: 1 },
+      ] }))
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
       expect(row.phaseCosts.discovery).toEqual({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 })
+      expect(row.runCost).toEqual({ input: 11, output: 3, cacheRead: 31, cacheWrite: 5, total: 50 })
+      expect(row.phaseElapsed.discovery).toBe('29 min')
       expect(row.phaseCostSourceKind).toBe('live usage file')
       expect(row.phaseCostSource).toBe(join(lane, 'usage.json'))
     } finally { rmSync(root, { recursive: true, force: true }) }
@@ -301,6 +306,19 @@ describe('What is running collector seam', () => {
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
       expect(row.phaseCosts.discovery).toBe('unknown')
     } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('shows live run total and elapsed time while a running lane cost is pending', async () => {
+    const pilot = {
+      id: 'pilot-live', kind: 'pilot', label: 'SDK pilot', project: 'wt-suite', sdkLifecycle: true, phase: 'tdd',
+      phaseStates: { discovery: 'done', tdd: 'running' }, phaseCosts: { discovery: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 }, tdd: 'unknown' },
+      phaseElapsed: { tdd: '29 min' }, runCost: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 },
+    }
+    const text = await renderedText({
+      discovery: 'available', rows: [pilot], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
+    })
+    expect(text).toContain('run total so far: 46 tokens')
+    expect(text).toContain('cost so far: unknown · elapsed 29 min · lane usage arrives at lane end')
   })
 
   it('accumulates repeated archived lifecycle rounds for one normalized phase', async () => {
