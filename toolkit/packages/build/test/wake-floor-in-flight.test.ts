@@ -18,6 +18,11 @@ const supervisionDir = path.join(worktree, '.lane', 'supervision')
 const recordPath = path.join(supervisionDir, `${runId}.json`)
 const realProcessRoots: string[] = []
 const realProcessChildren: ChildProcess[] = []
+const fixturePlatform = (process.env.WT_WAKE_FLOOR_FIXTURE_PLATFORM ?? 'linux') as NodeJS.Platform
+
+if (!['linux', 'darwin', 'win32'].includes(fixturePlatform)) {
+  throw new Error(`unsupported WT_WAKE_FLOOR_FIXTURE_PLATFORM: ${fixturePlatform}`)
+}
 
 afterEach(() => {
   for (const child of realProcessChildren.splice(0)) child.kill('SIGKILL')
@@ -101,7 +106,8 @@ function fixture(options: {
     classify,
     backgroundTaskProbe: options.backgroundTaskProbe ?? ((probeOptions) => sessionBackgroundTaskInFlight({
       ...probeOptions,
-      platform: options.platform ?? 'linux',
+      platform: options.platform ?? fixturePlatform,
+      getuidImpl: () => 1000,
     })),
     maxWorktrees: options.maxWorktrees,
     maxUmbrellaEntries: options.maxUmbrellaEntries,
@@ -144,7 +150,7 @@ describe('sessionLaneInFlight', () => {
     record({ ownerSessionId: ['session-under-test'] }),
     record({ ownerSessionId: true }),
   ])('treats live malformed ownership as unknown', (value) => {
-    expect(fixture({ value }).result).toMatchObject({ status: 'unknown', reason: 'lane ownership unattributable' })
+    expect(fixture({ value, platform: 'linux' }).result).toMatchObject({ status: 'unknown', reason: 'lane ownership unattributable' })
   })
 
   it('ignores malformed ownership only when the lane is provably terminal', () => {
@@ -165,7 +171,7 @@ describe('sessionLaneInFlight', () => {
     [{ status: 1, stdout: '', stderr: 'fatal: other error' }, 'git worktree list unavailable'],
     [{ status: 0, stdout: '', stderr: '' }, 'git worktree list unavailable'],
   ])('fires unknown when git discovery is unavailable', (git, reason) => {
-    expect(fixture({ git }).result).toMatchObject({ status: 'unknown', reason })
+    expect(fixture({ git, platform: 'linux' }).result).toMatchObject({ status: 'unknown', reason })
   })
 
   it('uses C locale and NUL-delimited git porcelain', () => {
@@ -256,13 +262,13 @@ describe('sessionLaneInFlight', () => {
   })
 
   it('converts a classifier throw to unknown', () => {
-    expect(fixture({ classify: () => { throw new Error('boom') } }).result).toMatchObject({ status: 'unknown', reason: 'lane classification threw' })
+    expect(fixture({ platform: 'linux', classify: () => { throw new Error('boom') } }).result).toMatchObject({ status: 'unknown', reason: 'lane classification threw' })
   })
 })
 
 describe('sessionBackgroundTaskInFlight', () => {
   const sessionId = 'session-under-test'
-  const tasksDir = path.join('/tmp', 'claude-1000', '-project', sessionId, 'tasks')
+  const tasksDir = path.join('/tmp', 'claude-1000', projectSlug(projectDir), sessionId, 'tasks')
   const output = path.join(tasksDir, 'abc123.output')
   const procDir = path.join('/proc', '42')
   const procStat = `42 (zsh) S ${Array.from({ length: 19 }, (_, index) => index === 18 ? '98765' : '0').join(' ')}`
@@ -415,6 +421,7 @@ describe('sessionBackgroundTaskInFlight', () => {
     const probe = (candidateSessionId = realSessionId) => sessionBackgroundTaskInFlight({
       projectDir: realProjectDir,
       sessionId: candidateSessionId,
+      platform: 'linux',
       tmpdirImpl: () => root,
     })
 
