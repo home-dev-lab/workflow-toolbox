@@ -1,0 +1,64 @@
+{
+  "version": 2,
+  "card_id": "1867439797660812353",
+  "route": "LITE",
+  "outcome": { "status": "partial", "reason": "delivered partially: 1 unmet criteria" },
+  "worktree": "/home/doublefx/projects/wt-suite/.claude/worktrees/sdklite-1867439797",
+  "window": { "started_at": "2026-09-19T08:51:27.436Z", "ended_at": "2026-09-19T09:30:55.172Z", "inferred": false, "basis": "explicit CLI window" },
+  "phases": [
+    { "phase": "discovery", "round": null, "wall_time_ms": 32497, "models": {
+      "claude-opus-5": { "family": "anthropic", "input": 12, "cache_write": 57558, "cache_read": 206064, "output": 46, "reasoning": "not measured", "first_pass_input": 57570, "fresh_tokens": 57616 }
+    }, "unknown": [] },
+    { "phase": "tdd", "round": null, "wall_time_ms": 1752707, "models": {
+      "claude-opus-5": { "family": "anthropic", "input": 12, "cache_write": 10823, "cache_read": 362391, "output": 115, "reasoning": "not measured", "first_pass_input": 10835, "fresh_tokens": 10950 },
+      "openai/gpt-5.6-sol": { "family": "openai", "input": 184228, "cache_write": "not measured", "cache_read": 3339648, "output": 14744, "reasoning": 6575, "first_pass_input": 184228, "fresh_tokens": 205547 }
+    }, "unknown": [] },
+    { "phase": "verify", "round": null, "wall_time_ms": 511652, "models": {
+      "claude-opus-5": { "family": "anthropic", "input": 12, "cache_write": 9652, "cache_read": 424653, "output": 102, "reasoning": "not measured", "first_pass_input": 9664, "fresh_tokens": 9766 }
+    }, "unknown": [] },
+    { "phase": "report", "round": null, "wall_time_ms": 61093, "models": {
+      "claude-opus-5": { "family": "anthropic", "input": 12, "cache_write": 8369, "cache_read": 488754, "output": 149, "reasoning": "not measured", "first_pass_input": 8381, "fresh_tokens": 8530 }
+    }, "unknown": [] },
+    { "phase": "unknown", "round": null, "wall_time_ms": 0, "models": {
+      "claude-opus-5": { "family": "anthropic", "input": 2, "cache_write": 145, "cache_read": 86402, "output": 741, "reasoning": "not measured", "first_pass_input": 147, "fresh_tokens": 888 }
+    }, "unknown": ["no lifecycle phase contains pilot message timestamp 2026-09-19T09:30:54.669Z"] },
+    { "phase": "reconciled", "round": null, "wall_time_ms": 0, "models": {
+      "claude-opus-5": { "family": "anthropic", "input": 0, "cache_write": 0, "cache_read": 0, "output": 13908, "reasoning": "not measured", "first_pass_input": 0, "fresh_tokens": 13908 }
+    }, "unknown": [] },
+    { "phase": "unattributed", "round": null, "wall_time_ms": 0, "models": {
+      "claude-haiku-4-5-20251001": { "family": "anthropic", "input": 1449, "cache_write": 0, "cache_read": 0, "output": 17, "reasoning": "not measured", "first_pass_input": 1449, "fresh_tokens": 1466 }
+    }, "unknown": [] }
+  ],
+  "families": {
+    "anthropic": { "input": 1499, "cache_write": 86547, "cache_read": 1568264, "output": 15078, "reasoning": "not measured", "first_pass_input": 88046, "fresh_tokens": 103124 },
+    "openai": { "input": 184228, "cache_write": "not measured", "cache_read": 3339648, "output": 14744, "reasoning": 6575, "first_pass_input": 184228, "fresh_tokens": 205547 }
+  },
+  "totals": { "wall_time_ms": 2367736 },
+  "unknown": ["no lifecycle phase contains pilot message timestamp 2026-09-19T09:30:54.669Z"],
+  "reconciled": [{
+    "kind": "terminal_result_output",
+    "tokens": 13908,
+    "reason": "The terminal SDK result is the only source for whole-run output; no independent instrument exists today, so undercount cannot be discriminated and only overcount can."
+  }],
+  "cross_checks": {
+    "pilot_result": {
+      "agrees": true,
+      "message_sum": { "input": 50, "cache_write": 86547, "cache_read": 1568264, "output": 1153, "reasoning": "not measured", "first_pass_input": 86597, "fresh_tokens": 87750 },
+      "attributed_sum": { "input": 50, "cache_write": 86547, "cache_read": 1568264, "output": 15061, "reasoning": "not measured", "first_pass_input": 86597, "fresh_tokens": 101658 },
+      "result_total": { "family": "anthropic", "input": 50, "cache_write": 86547, "cache_read": 1568264, "output": 15061, "reasoning": "not measured", "first_pass_input": 86597, "fresh_tokens": 101658 },
+      "difference": { "input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "first_pass_input": 0, "fresh_tokens": 0 }
+    },
+    "model_usage": {
+      "agrees": true,
+      "primary_model": "claude-opus-5",
+      "model_total": { "family": "anthropic", "input": 50, "cache_write": 86547, "cache_read": 1568264, "output": 15061, "reasoning": "not measured", "first_pass_input": 86597, "fresh_tokens": 101658 },
+      "result_total": { "family": "anthropic", "input": 50, "cache_write": 86547, "cache_read": 1568264, "output": 15061, "reasoning": "not measured", "first_pass_input": 86597, "fresh_tokens": 101658 },
+      "difference": { "input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "first_pass_input": 0, "fresh_tokens": 0 }
+    }
+  },
+  "sources": {
+    "pilot": "Claude Agent SDK assistant message usage",
+    "lanes": "OpenCode session rows via sqlite3",
+    "timeline": "lifecycle transition receipts"
+  }
+}

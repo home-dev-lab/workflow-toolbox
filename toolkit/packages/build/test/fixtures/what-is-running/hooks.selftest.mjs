@@ -3227,7 +3227,7 @@ await test('[increment UI invariant] all rendered clickables are coloured and ev
 await test('[increment stage row] stages are visibly separated and no stage node carries a state colour', async () => {
   const { snapshot } = step8Fixture();
   snapshot.sessions[0].cards[0].actors[0].phaseCosts = {
-    discovery: { input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, total: 2353491 },
+    discovery: { input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, usd: 1.23 },
     plan: 'unknown',
   };
   snapshot.sessions[0].cards[0].actors[0].phaseCostSource = '/fixture/archive/cost.json';
@@ -3255,17 +3255,18 @@ await test('[phase cost pane] wide rows show compact totals, narrow rows retain 
   const narrow = await renderSnapshot(snapshot, null, false, 80);
   let text = descendants(narrow.tree, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
   for (const word of ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Report']) assert(text.includes(word), word);
-  assert(!text.includes('2 353 491 tokens'));
+  assert(!text.includes('price unknown'));
 
   const wide = await renderSnapshot(snapshot, null, false, 160);
   text = descendants(wide.tree, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
-  assert(text.includes('2 353 491 tokens'));
+  assert(text.includes('price unknown'), text);
   assert(text.includes('unknown'));
   findButton(wide.tree, 'Discovery').props.onPress();
   const open = await wide.pane.hook(wide.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns: 160 } }, async () => ({}));
   const detail = descendants(open, (item) => item.name === 'Box' && item.props.key === 'open-detail-toggle:stage:session:step8:1862698281071544008:discovery')[0];
   const detailText = descendants(detail, (item) => item.name === 'Text').flatMap((item) => item.props.children).join(' ');
   assert(detailText.includes('cost so far | input: 1 234 | output: 901 | cache read: 2 345 678 | cache write: 5 678'));
+  assert(detailText.includes('price unknown'));
   assert(detailText.includes('cost source: archive cost.json'));
 });
 

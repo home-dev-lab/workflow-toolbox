@@ -454,7 +454,7 @@ describe('SDK pilot runner', () => {
     expect(cost.cross_checks.model_usage).toMatchObject({ agrees: true, primary_model: 'claude-test', difference: { input: 0, output: 0, fresh_tokens: 0 } })
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed').models['claude-haiku-test']).toMatchObject({ input: 2, output: 1, fresh_tokens: 3 })
     const index = readFileSync(join(f.root, '.claude', 'reports', 'cost-index.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
-    expect(index).toEqual([expect.objectContaining({ run_id: expect.stringMatching(/^1-\d+$/), card: '1', route: 'LITE' })])
+    expect(index).toEqual([expect.objectContaining({ run_id: expect.stringMatching(/^1-\d+$/), card: '1', route: 'LITE', usd_total: 'price unknown' })])
     // One total per BILLED class (owner, wt-suite #2913): classes are priced differently, and OpenAI output already
     // contains reasoning, so a single summed "total" is both meaningless and a double count.
     for (const totals of [index[0].run_total, index[0].phase_totals.discovery]) {

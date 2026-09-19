@@ -255,7 +255,7 @@ describe('What is running collector seam', () => {
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
-      expect(row.phaseCosts.discovery).toEqual({ input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, total: 2353491 })
+      expect(row.phaseCosts.discovery).toMatchObject({ input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, usd: 1.23 })
       expect(row.phaseCosts.plan).toBe('unknown')
       expect(row.phaseCostSource).toBe(join(archive, 'cost.json'))
     } finally { rmSync(root, { recursive: true, force: true }) }
@@ -274,14 +274,15 @@ describe('What is running collector seam', () => {
       writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=discovery\n')
       writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [{ phase: 'discovery', round: null, entered_at: Date.parse('2026-09-12T12:01:00Z'), exited_at: null }], lanes: [] }))
       writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [
-        { arrived_at: '2026-09-12T12:02:00.000Z', input: 10, output: 2, cache_read: 30, cache_creation: 4 },
-        { arrived_at: '2026-09-12T12:00:00.000Z', input: 1, output: 1, cache_read: 1, cache_creation: 1 },
+        { arrived_at: '2026-09-12T12:02:00.000Z', model: 'claude-opus-5', input: 10, output: 2, cache_read: 30, cache_creation: 4 },
+        { arrived_at: '2026-09-12T12:00:00.000Z', model: 'claude-opus-5', input: 1, output: 1, cache_read: 1, cache_creation: 1 },
       ] }))
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
-      expect(row.phaseCosts.discovery).toEqual({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 })
-      expect(row.runCost).toEqual({ input: 11, output: 3, cacheRead: 31, cacheWrite: 5, total: 50 })
+      expect(row.phaseCosts.discovery).toMatchObject({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, usd: 0.00014 })
+      expect(row.phaseCosts.discovery.models['claude-opus-5']).toMatchObject({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, usd: 0.00014 })
+      expect(row.runCost).toMatchObject({ input: 11, output: 3, cacheRead: 31, cacheWrite: 5, usd: 0.00017675 })
       expect(row.phaseElapsed.discovery).toBe('29 min')
       expect(row.phaseCostSourceKind).toBe('live usage file')
       expect(row.phaseCostSource).toBe(join(lane, 'usage.json'))
@@ -311,14 +312,19 @@ describe('What is running collector seam', () => {
   it('shows live run total and elapsed time while a running lane cost is pending', async () => {
     const pilot = {
       id: 'pilot-live', kind: 'pilot', label: 'SDK pilot', project: 'wt-suite', sdkLifecycle: true, phase: 'tdd',
-      phaseStates: { discovery: 'done', tdd: 'running' }, phaseCosts: { discovery: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 }, tdd: 'unknown' },
-      phaseElapsed: { tdd: '29 min' }, runCost: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 },
+      phaseStates: { discovery: 'done', tdd: 'running' }, phaseCosts: { discovery: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, usd: 1.23 }, tdd: 'unknown' },
+      phaseElapsed: { tdd: '29 min' }, runCost: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, usd: 1.23 },
     }
     const text = await renderedText({
       discovery: 'available', rows: [pilot], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
     })
-    expect(text).toContain('run total so far: 46 tokens')
+    expect(text).toContain('run total so far: $1.23')
     expect(text).toContain('cost so far: unknown · elapsed 29 min · lane usage arrives at lane end')
+    const unknownPriceText = await renderedText({
+      discovery: 'available', rows: [{ ...pilot, phaseCosts: { discovery: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, usd: 'price unknown' } }, runCost: { usd: 'price unknown' } }],
+      services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
+    })
+    expect(unknownPriceText).toContain('run total so far: price unknown')
   })
 
   it('accumulates repeated archived lifecycle rounds for one normalized phase', async () => {
@@ -341,7 +347,7 @@ describe('What is running collector seam', () => {
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
-      expect(row.phaseCosts.critic).toEqual({ input: 120, output: 5, cacheRead: 7, cacheWrite: 9, total: 141 })
+      expect(row.phaseCosts.critic).toMatchObject({ input: 120, output: 5, cacheRead: 7, cacheWrite: 9, usd: 'price unknown' })
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 

@@ -10,6 +10,8 @@ import { aggregateRunCosts, appendCostReport, attributePilotTurns, computeRunCos
 const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-run-cost.mjs', import.meta.url))
 const OUTPUT_UNDERCOUNT_FIXTURE = new URL('./fixtures/run-cost/sdk-output-undercount.json', import.meta.url)
 const LANE_FAMILIES_FIXTURE = new URL('./fixtures/run-cost/lane-families.json', import.meta.url)
+const KNOWN_RUN_FIXTURE = new URL('./fixtures/run-cost/sdk-lite-run-20260919.cost.json', import.meta.url)
+const PRICE_TABLE = new URL('../../../../plugin/pricing/model-prices.json', import.meta.url)
 type LaneFixture = { phase: string, round: number | null, started_at: number, ended_at: number, [key: string]: unknown }
 
 const roots: string[] = []
@@ -18,6 +20,150 @@ const root = () => { const value = mkdtempSync(join(tmpdir(), 'wt-run-cost-')); 
 afterEach(() => { for (const value of roots.splice(0)) rmSync(value, { recursive: true, force: true }) })
 
 describe('run cost', () => {
+  function catalogue(models: Record<string, unknown>) {
+    return { openai: { models }, 'zai-coding-plan': { models } }
+  }
+
+  function pricedModel(model: string, tokens: Record<string, unknown>, priceTable?: object) {
+    const lane = root()
+    const family = String(tokens.family ?? 'anthropic')
+    writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'LITE' }))
+    writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, served_model: model }))
+    const openAi = family !== 'anthropic'
+    writeFileSync(join(lane, 'usage.json'), JSON.stringify(openAi
+      ? { messages: [], result_totals: {} }
+      : { messages: [{ model, arrived_at: 1500, ...tokens }], result_totals: tokens }))
+    writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({
+      started_at: 1000,
+      ended_at: 2000,
+      phases: [{ phase: 'test', round: null, entered_at: 1000, exited_at: 2000 }],
+      lanes: openAi ? [{ phase: 'test', round: null, executor: 'opencode', model, started_at: 1100, ended_at: 1900 }] : [],
+    }))
+    const slash = model.indexOf('/')
+    const sessions = openAi ? [{
+      id: 'priced-model', directory: '/work/priced-model',
+      model: { providerID: slash < 0 ? family : model.slice(0, slash), id: slash < 0 ? model : model.slice(slash + 1) },
+      tokens_input: tokens.input, tokens_output: tokens.output, tokens_reasoning: tokens.reasoning,
+      tokens_cache_read: tokens.cache_read, tokens_cache_write: tokens.cache_write,
+      time_created: 1200, time_updated: 1800,
+    }] : undefined
+    const cost = computeRunCost({ laneDir: lane, worktree: '/work/priced-model', sessions, priceTable })
+    const row = Object.values(cost.phases.flatMap((phase: { models: Record<string, unknown> }) => Object.values(phase.models)))[0] as Record<string, unknown>
+    return { cost, row }
+  }
+
+  function withPriceEnvironment(directory: string, action: () => unknown) {
+    const keys = ['CLAUDE_CONFIG_DIR', 'CLAUDE_PLUGIN_DATA', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'] as const
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
+    process.env.CLAUDE_CONFIG_DIR = join(directory, 'config')
+    delete process.env.CLAUDE_PLUGIN_DATA
+    process.env.XDG_CACHE_HOME = join(directory, 'cache')
+    process.env.XDG_STATE_HOME = join(directory, 'state')
+    try { return action() } finally {
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key]
+        else process.env[key] = previous[key]
+      }
+    }
+  }
+
+  it('loads the fresh OpenCode catalogue as primary and records its file and mtime', () => {
+    const directory = root()
+    const catalogueFile = join(directory, 'cache', 'opencode', 'models.json')
+    mkdirSync(join(directory, 'cache', 'opencode'), { recursive: true })
+    writeFileSync(catalogueFile, JSON.stringify(catalogue({ model: { id: 'model', cost: { input: 2, output: 3, cache_read: 1, cache_write: 4 } } })))
+
+    const priced = withPriceEnvironment(directory, () => pricedModel('openai/model', { family: 'openai', input: 1_000_000 }).cost) as ReturnType<typeof pricedModel>['cost']
+
+    expect(priced.price_table).toMatchObject({ catalogue_file: catalogueFile, catalogue_mtime: expect.stringMatching(/^\d{4}-\d\d-\d\dT/), catalogue_status: 'loaded' })
+    expect(priced.phases[0].models['openai/model']).toMatchObject({ usd: 2, price_label: 'API price equivalent', input_context_tokens: 1_000_000 })
+  })
+
+  it('lets the user override win over the catalogue and fallback without changing either file', () => {
+    const directory = root()
+    const catalogueFile = join(directory, 'cache', 'opencode', 'models.json')
+    const overrideFile = join(directory, 'state', 'workflow-toolbox', 'model-prices.override.json')
+    mkdirSync(join(directory, 'cache', 'opencode'), { recursive: true })
+    mkdirSync(join(directory, 'state', 'workflow-toolbox'), { recursive: true })
+    writeFileSync(catalogueFile, JSON.stringify(catalogue({ model: { id: 'model', cost: { input: 2, output: 3 } } })))
+    writeFileSync(overrideFile, JSON.stringify({ models: { 'openai/model': { input: 7, output: 8, cache_read: 0, cache_write: 0 } } }))
+    const before = readFileSync(overrideFile, 'utf8')
+
+    const { row } = withPriceEnvironment(directory, () => pricedModel('openai/model', { family: 'openai', input: 1_000_000 })) as ReturnType<typeof pricedModel>
+
+    expect(row).toMatchObject({ usd: 7, price_source: 'user override' })
+    expect(readFileSync(overrideFile, 'utf8')).toBe(before)
+  })
+
+  it('switches catalogue tiers when reported input context exceeds the threshold', () => {
+    const table = {
+      models: {
+        'openai/model': {
+          input: 4, output: 20, cache_read: 0.4, cache_write: 5,
+          tiers: [{ input: 8, output: 30, cache_read: 0.8, cache_write: 10, tier: { type: 'context', size: 272_000 } }],
+        },
+      },
+    }
+
+    expect(pricedModel('openai/model', { family: 'openai', input: 272_000, output: 1_000_000 }, table).row.usd).toBe(21.088)
+    expect(pricedModel('openai/model', { family: 'openai', input: 272_001, output: 1_000_000 }, table).row.usd).toBe(32.176008)
+  })
+
+  it('labels a zero-priced catalogue route as subscription', () => {
+    const directory = root()
+    const catalogueFile = join(directory, 'cache', 'opencode', 'models.json')
+    mkdirSync(join(directory, 'cache', 'opencode'), { recursive: true })
+    writeFileSync(catalogueFile, JSON.stringify(catalogue({ model: { id: 'model', cost: { input: 0, output: 0, cache_read: 0, cache_write: 0 } } })))
+
+    const { row } = withPriceEnvironment(directory, () => pricedModel('zai-coding-plan/model', { family: 'zai-coding-plan', input: 1_000_000 })) as ReturnType<typeof pricedModel>
+    expect(row.usd).toBe('subscription')
+  })
+
+  it('uses a stated fallback reason and still returns price unknown when no source has the provider model', () => {
+    const directory = root()
+    const missingCatalogue = join(directory, 'cache', 'opencode', 'models.json')
+    const { cost, row } = withPriceEnvironment(directory, () => pricedModel('other/missing', { family: 'other', input: 1 })) as ReturnType<typeof pricedModel>
+
+    expect(cost.price_table).toMatchObject({ catalogue_file: missingCatalogue, catalogue_status: 'fallback', catalogue_reason: expect.stringContaining('not found') })
+    expect(row.usd).toBe('price unknown')
+  })
+
+  it('ships complete, dated prices for every required model', () => {
+    const table = JSON.parse(readFileSync(PRICE_TABLE, 'utf8'))
+    expect(table).toMatchObject({ version: expect.any(String), as_of: expect.stringMatching(/^\d{4}-\d\d-\d\d$/) })
+    for (const model of ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'openai/gpt-5.6-sol', 'openai/gpt-5.6-terra', 'openai/gpt-5.6-luna', 'openai/gpt-6-astra']) {
+      expect(table.models[model]).toMatchObject({
+        family: expect.stringMatching(/^(anthropic|openai)$/), input: expect.any(Number), cache_read: expect.any(Number), output: expect.any(Number),
+        source_url: expect.stringMatching(/^https:\/\//), retrieved: expect.stringMatching(/^\d{4}-\d\d-\d\d$/),
+      })
+      expect(Object.hasOwn(table.models[model], 'cache_write')).toBe(true)
+    }
+  })
+
+  it('prices Anthropic and OpenAI tokens without billing reasoning twice', () => {
+    const table = JSON.parse(readFileSync(PRICE_TABLE, 'utf8'))
+    expect(pricedModel('anthropic/claude-opus-5-20260901', { family: 'anthropic', input: 1_000_000, cache_write: 2_000_000, cache_read: 3_000_000, output: 4_000_000 }, table).row.usd).toBe(119)
+    expect(pricedModel('openai/gpt-5.6-sol-20260901', { family: 'openai', input: 1_000_000, cache_write: 'not measured', cache_read: 2_000_000, output: 3_000_000, reasoning: 9_000_000 }, table).row.usd).toBe(64.8)
+    expect(pricedModel('unlisted-model', { family: 'anthropic', input: 1 }, table).row.usd).toBe('price unknown')
+    expect(pricedModel('claude-haiku-4-5-20251001', { family: 'anthropic', input: 1_000_000 }, table).row.usd).toBe(1)
+    expect(pricedModel('claude-opus-50', { family: 'anthropic', input: 1 }, table).row.usd).toBe('price unknown')
+  })
+
+  it('prices the archived sdk-lite run exactly as hand-computed from reported classes', () => {
+    const table = JSON.parse(readFileSync(PRICE_TABLE, 'utf8'))
+    const fixture = JSON.parse(readFileSync(KNOWN_RUN_FIXTURE, 'utf8'))
+    const opus = pricedModel('claude-opus-5', { family: 'anthropic', input: 50, cache_write: 86547, cache_read: 1568264, output: 15061 }, table).row
+    const haiku = pricedModel('claude-haiku-4-5-20251001', { family: 'anthropic', input: 1449, cache_write: 0, cache_read: 0, output: 17 }, table).row
+    const openai = pricedModel('openai/gpt-5.6-sol', fixture.phases[1].models['openai/gpt-5.6-sol'], table).row
+    const handComputed = (
+      (50 * 5) + (86547 * 6.25) + (1568264 * 0.5) + (15061 * 25)
+      + (1449 * 1) + (17 * 5)
+      + (184228 * 4) + (3339648 * 0.4) + (14744 * 20)
+    ) / 1_000_000
+    expect(Number(opus.usd) + Number(haiku.usd) + Number(openai.usd)).toBeCloseTo(handComputed, 12)
+    expect(openai).toMatchObject({ reasoning: 6575, usd: (184228 * 4 + 3339648 * 0.4 + 14744 * 20) / 1_000_000 })
+  })
+
   function archiveDerivedLaneCost(route: object, lanes: LaneFixture[], sessions: object[] = []) {
     const lane = root()
     writeFileSync(join(lane, 'route.json'), JSON.stringify(route))
@@ -191,7 +337,7 @@ describe('run cost', () => {
     writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: { input: 0, cache_creation: 0, cache_read: 0, output: 0 } }))
     writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ started_at: 1000, ended_at: 3000, phases: [], lanes: [{ phase: 'critic', round: 1, executor: 'gpt-lane', model: 'openai/gpt', started_at: 1000, ended_at: 3000 }] }))
     const cost = computeRunCost({ laneDir: lane, worktree: '/work/a', sessions: [{ id: 's', directory: '/work/a', model: { providerID: 'openai', id: 'gpt' }, tokens_input: 100, tokens_output: 20, tokens_reasoning: 30, tokens_cache_read: 40, time_created: 1200, time_updated: 2800 }] })
-    expect(cost.phases[0].models['openai/gpt']).toEqual({ family: 'openai', input: 100, cache_write: 'not measured', cache_read: 40, output: 20, reasoning: 30, first_pass_input: 100, fresh_tokens: 150 })
+    expect(cost.phases[0].models['openai/gpt']).toMatchObject({ family: 'openai', input: 100, cache_write: 'not measured', cache_read: 40, output: 20, reasoning: 30, first_pass_input: 100, fresh_tokens: 150, usd: 'price unknown' })
   })
 
   it('attributes each lane by its own model family when a run mixes Claude and GPT lanes', () => {
