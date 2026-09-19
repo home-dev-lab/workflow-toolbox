@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Elapsed-time floor for mandated sessions without an identity-verified owned lane in flight.
+// Elapsed-time floor for mandated sessions without identity-verified work in flight.
 
 import { homedir } from 'node:os'
 import path from 'node:path'
@@ -7,11 +7,12 @@ import { classifyMandate } from './lib/autonomy-mandate.mjs'
 import { expireMarker } from './lib/queue-gate-marker-expiry.mjs'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { relaySkipLine } from './lib/session-role.mjs'
-import { sessionLaneInFlight } from './lib/wake-floor-in-flight.mjs'
+import { sessionBackgroundTaskInFlight, sessionLaneInFlight } from './lib/wake-floor-in-flight.mjs'
 
 const HELP = `wt-wake-floor — hands a turn back to a session with a declared autonomous mandate
  after a fixed elapsed-time period, then repeats on the same cadence. A live lane owned by
- this session suppresses the wake; inconclusive lane evidence fires with an annotation.
+ this session or an attested session background task suppresses the wake; inconclusive
+ evidence fires with an annotation.
 
 Options:
   --project <dir>   project whose mandate to read (default: cwd)
@@ -132,13 +133,13 @@ for (;;) {
     if (mandate.kind === 'live') {
       let verdict
       try {
-        verdict = sessionLaneInFlight({ projectDir, sessionId })
+        verdict = sessionLaneInFlight({ projectDir, sessionId, backgroundTaskProbe: sessionBackgroundTaskInFlight })
       } catch (error) {
         verdict = { status: 'unknown', reason: `in-flight check threw: ${error?.message ?? error}` }
       }
       if (verdict.status === 'none') write(message)
       if (verdict.status === 'unknown') {
-        write(`${message} In-flight check inconclusive (${inconclusiveReason(verdict.reason)}); firing because I cannot tell whether a lane of this session is running.`)
+        write(`${message} In-flight check inconclusive (${inconclusiveReason(verdict.reason)}); firing because I cannot tell whether work armed by this session is running.`)
       }
     }
   } catch {
