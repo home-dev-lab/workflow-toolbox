@@ -5,6 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const HOOK = resolve(HERE, '../../../../plugin/bin/wt-lesson-harvest-hook.mjs')
@@ -40,7 +41,7 @@ function runFrom(cwd: string, env: Record<string, string>) {
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ cwd }),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: join(cwd, '.claude-test'), CLAUDE_PLUGIN_DATA: undefined, ...env },
+    env: sealedPluginCliEnv(cwd, env),
     timeout: 20_000,
   })
   const stdout = res.stdout.trim()
@@ -85,6 +86,20 @@ describe('wt-lesson-harvest-hook surfaces what a rule and a skill both failed to
 
     expect(first.context).toContain('2 lesson(s)')
     expect(second.stdout).toBe('')
+  })
+
+  it('stays silent when the only report change is an appended lesson harvest record', () => {
+    const s = scaffold()
+    const file = report(s.reports, 'card-1-report.md', WITH_LESSONS)
+    run(s)
+
+    writeFileSync(
+      file,
+      `${WITH_LESSONS}\n## Lesson harvest record\n\n- Harvested both lessons into memory/lessons.md.\n`,
+    )
+    const after = run(s)
+
+    expect(after.stdout).toBe('')
   })
 
   it('shares the default registry across different cwd values in one project', () => {
@@ -160,7 +175,10 @@ describe('wt-lesson-harvest-hook surfaces what a rule and a skill both failed to
     const res = spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify({ cwd: s.project }),
       encoding: 'utf8',
-      env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, WT_LESSON_HARVEST_STATE: s.statePath, WT_LESSON_HARVEST_OFF: '1' },
+      env: sealedPluginCliEnv(s.root, {
+        WT_LESSON_HARVEST_STATE: s.statePath,
+        WT_LESSON_HARVEST_OFF: '1',
+      }),
       timeout: 20_000,
     })
 
