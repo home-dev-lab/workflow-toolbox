@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.184.0] - 2026-09-19
+
 ### Fixed
 - The elapsed-time wake floor now stays silent while an identity-verified lane owned by the current session is running, launching, or awaiting a decision. Complete evidence with no owned live lane keeps the existing FLOOR line unchanged; unreadable, malformed, capped, or otherwise inconclusive lane evidence fires with an explicit fail-safe annotation. Session-armed background tasks remain outside this signal because the host exposes no attested running/completed distinction; an attested host signal is tracked as follow-up work.
 - The pilot contract now requires E2E whenever real processes, files, or a host can exercise a change; absence of a UI alone is rejected unless the report names what was tried
@@ -25,6 +27,29 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Windows now runs the what-is-running collector without placing its large program on the command line, and lane integration compares canonical Git worktree paths with Windows case semantics.
 - Adoption staleness notices now quote the exact directory they inspected in their `install.mjs --dir` remedy. A bare `--install` also reuses a sole discovered project or config-profile adoption and refuses to guess when several copies exist, preventing a stale user-level copy from being left behind while a duplicate project copy is created.
 - The orchestrator CLI now refuses value-taking flags that are empty, truncated, or followed by another flag instead of silently accepting a missing value.
+
+### Quality
+
+Measured on the release tree against the 0.181.0 baseline (kept on purpose, not refreshed).
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 127 | 0 | 112 -> 127 | plugin/bin/wt-actionable-snapshot-producer-hook.mjs |
+| Cognitive complexity | 261 -> 273 | +12 | 261 -> 273 | - |
+| Biggest file (lines) | 2729 -> 2729 | 0 | 1747 -> 1894 | - |
+| Longest function (lines) | 708 -> 702 | -6 | 708 -> 702 | plugin/bin/lib/lifecycle-state-machine.mjs |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 687 -> 687 | 0 | 41 -> 38 | plugin/bin/lib/lifecycle-state-machine.mjs |
+| Duplication % | 2.885613003631333 -> 2.7986340994768226 | -0.09 | 150 -> 150 | - |
+| Knip issues | 221 -> 221 | 0 | 8 -> 7 | plugin/bin/lib/artifact-server.mjs |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 77.16 | +35.16 | - -> 11.52 | - |
+| Coverage branches % | 40.12 -> 68.47 | +28.35 | - -> 5.57 | - |
+| Coverage functions % | 44.48 -> 78.35 | +33.87 | - -> 9.09 | - |
+| Coverage statements % | 40.62 -> 74.52 | +33.9 | - -> 10.02 | - |
+
+Read plainly: one judge went the wrong way — cognitive complexity +12 (261 -> 273), from the new wake-floor collector, the secret-guard in-place scrub and the live-cost attribution; no ratchet was loosened. The coverage jump reflects the spawned-process coverage counted since 0.183.0 against the older baseline, not a sudden test surge. The SDK pilot runner and What is running remain EXPERIMENTAL.
 
 ## [0.183.1] - 2026-09-18
 
