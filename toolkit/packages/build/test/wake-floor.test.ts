@@ -3,14 +3,18 @@ import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { inspectProcess } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const FLOOR = join(REPO_ROOT, 'plugin/bin/wt-wake-floor.mjs')
 const MONITORS_JSON = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 const roots: string[] = []
 const children: ChildProcessWithoutNullStreams[] = []
+const FLOOR_LINE = 'FLOOR: 0.001 minutes elapsed on my interval. I measure only that — not whether you are idle, and not whether work remains. Check the queue yourself.'
 
 afterEach(() => {
   for (const child of children.splice(0)) child.kill()
@@ -30,7 +34,10 @@ function scaffold(tag: string) {
   const mandatePath = join(stateDir, `engine-${projectSlug(projectDir)}.json`)
   mkdirSync(projectDir, { recursive: true })
   mkdirSync(stateDir, { recursive: true })
-  return { mandatePath, projectDir, stateDir, stateHome }
+  const gitEnv = sealedPluginCliEnv(root, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' })
+  expect(spawnSync('git', ['init', projectDir], { env: gitEnv }).status).toBe(0)
+  expect(spawnSync('git', ['-C', projectDir, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'root'], { env: gitEnv }).status).toBe(0)
+  return { gitEnv, mandatePath, projectDir, root, stateDir, stateHome }
 }
 
 function liveMandate(mandatePath: string): void {
@@ -38,13 +45,53 @@ function liveMandate(mandatePath: string): void {
   writeFileSync(mandatePath, `${JSON.stringify({ declaredAtMs, sessionId: 'session-under-test' })}\n`)
 }
 
-function envFor(stateHome: string): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
+function envFor(stateHome: string, overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return sealedPluginCliEnv(resolve(stateHome, '..'), {
     CLAUDE_CODE_SESSION_ID: 'session-under-test',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
     WT_WAKE_FLOOR_IDLE_MINUTES: '0.001',
     XDG_STATE_HOME: stateHome,
+    ...overrides,
+  })
+}
+
+function sleeper() {
+  const childRoot = mkdtempSync(join(tmpdir(), 'wt-wake-floor-child-'))
+  roots.push(childRoot)
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { env: sealedPluginCliEnv(childRoot) })
+  children.push(child)
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const identity = inspectProcess(child.pid)
+    if (identity) return identity
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
   }
+  throw new Error('sleeper identity unavailable')
+}
+
+function writeLaneRecord(worktree: string, overrides: Record<string, unknown> = {}) {
+  const worker = sleeper()
+  const child = sleeper()
+  const runId = `${Date.now()}-${process.pid}`
+  const dir = join(worktree, '.lane', 'supervision')
+  mkdirSync(dir, { recursive: true })
+  const value = {
+    version: 1,
+    runId,
+    state: 'running',
+    owner: 'session',
+    ownerSessionId: 'session-under-test',
+    workerPid: worker.pid,
+    workerArgv: worker.argv,
+    workerStartTime: worker.startTime,
+    childPid: child.pid,
+    childArgv: child.argv,
+    childStartTime: child.startTime,
+    ...overrides,
+  }
+  writeFileSync(join(dir, `${runId}.json`), `${JSON.stringify(value)}\n`)
+  writeFileSync(join(dir, 'current.json'), `${JSON.stringify({ version: 1, runId })}\n`)
+  return { child, value, worker }
 }
 
 function runOnce(projectDir: string, env: NodeJS.ProcessEnv) {
@@ -124,8 +171,8 @@ describe('wt-wake-floor', () => {
     const lines = await collectEmissions(state.projectDir, envFor(state.stateHome), 2)
 
     expect(lines).toEqual([
-      'FLOOR: 0.001 minutes elapsed on my interval. I measure only that — not whether you are idle, and not whether work remains. Check the queue yourself.',
-      'FLOOR: 0.001 minutes elapsed on my interval. I measure only that — not whether you are idle, and not whether work remains. Check the queue yourself.',
+      FLOOR_LINE,
+      FLOOR_LINE,
     ])
   })
 
@@ -167,6 +214,95 @@ describe('wt-wake-floor', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toBe('')
     expect(result.stderr).toBe('')
+  })
+
+  it.runIf(process.platform === 'linux')('stays silent for an identity-verified live lane owned by this session', () => {
+    const state = scaffold('owned-live')
+    liveMandate(state.mandatePath)
+    writeLaneRecord(state.projectDir)
+
+    const result = runOnce(state.projectDir, envFor(state.stateHome))
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('')
+  })
+
+  it.runIf(process.platform === 'linux')('losslessly discovers an owned lane in a worktree path containing a newline', () => {
+    const state = scaffold('newline-worktree')
+    liveMandate(state.mandatePath)
+    const lane = join(state.root, 'lane\nsecond-line')
+    expect(spawnSync('git', ['-C', state.projectDir, 'worktree', 'add', '--detach', lane], { env: state.gitEnv }).status).toBe(0)
+    writeLaneRecord(lane)
+
+    const result = runOnce(state.projectDir, envFor(state.stateHome))
+
+    expect(result.stdout).toBe('')
+  })
+
+  it.runIf(process.platform === 'linux').each([
+    ['another session', { ownerSessionId: 'other-session' }],
+    ['a pilot', { owner: 'pilot' }],
+  ])('still fires for a live lane owned by %s', (_label, overrides) => {
+    const state = scaffold('not-owned')
+    liveMandate(state.mandatePath)
+    writeLaneRecord(state.projectDir, overrides)
+
+    const result = runOnce(state.projectDir, envFor(state.stateHome))
+
+    expect(result.stdout).toBe(`${FLOOR_LINE}\n`)
+  })
+
+  it.runIf(process.platform === 'linux')('fires inconclusively for a live lane with unavailable identity', () => {
+    const state = scaffold('identity-unknown')
+    liveMandate(state.mandatePath)
+    writeLaneRecord(state.projectDir, { workerArgv: null, workerStartTime: null, workerIdentity: 'unavailable (proc)' })
+
+    const result = runOnce(state.projectDir, envFor(state.stateHome))
+
+    expect(result.stdout).toMatch(/^FLOOR: .* In-flight check inconclusive \(/)
+  })
+
+  it('fires inconclusively when git cannot be inspected', () => {
+    const state = scaffold('git-unavailable')
+    liveMandate(state.mandatePath)
+    const emptyPath = join(state.root, 'empty-path')
+    mkdirSync(emptyPath)
+
+    const result = runOnce(state.projectDir, envFor(state.stateHome, { PATH: emptyPath }))
+
+    expect(result.stdout).toContain('In-flight check inconclusive (git worktree list unavailable)')
+  })
+
+  it('does not mistake recently completed task and transcript files for in-flight work', () => {
+    const state = scaffold('completed-files')
+    liveMandate(state.mandatePath)
+    mkdirSync(join(state.projectDir, 'tasks'), { recursive: true })
+    mkdirSync(join(state.projectDir, 'subagents'), { recursive: true })
+    writeFileSync(join(state.projectDir, 'tasks', 'completed.output'), 'done\n')
+    writeFileSync(join(state.projectDir, 'subagents', 'completed.jsonl'), '{"status":"completed"}\n')
+
+    const result = runOnce(state.projectDir, envFor(state.stateHome))
+
+    expect(result.stdout).toBe(`${FLOOR_LINE}\n`)
+  })
+
+  it('keeps thrown-check detail to one line and 200 characters', () => {
+    const state = scaffold('throwing-check')
+    liveMandate(state.mandatePath)
+    const stub = join(state.root, 'stub.mjs')
+    const hooks = join(state.root, 'hooks.mjs')
+    const preload = join(state.root, 'preload.mjs')
+    const detail = `first\r\n${'x'.repeat(250)}`
+    writeFileSync(stub, `export function sessionLaneInFlight() { throw new Error(${JSON.stringify(detail)}) }\n`)
+    writeFileSync(hooks, `import { pathToFileURL } from 'node:url'\nexport async function resolve(specifier, context, nextResolve) {\n  if (specifier.endsWith('/wake-floor-in-flight.mjs')) return { url: pathToFileURL(${JSON.stringify(stub)}).href, shortCircuit: true }\n  return nextResolve(specifier, context)\n}\n`)
+    writeFileSync(preload, `import { register } from 'node:module'\nregister(${JSON.stringify(pathToFileURL(hooks).href)})\n`)
+
+    const result = runOnce(state.projectDir, envFor(state.stateHome, { NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` }))
+    const normalized = `in-flight check threw: ${detail}`.replace(/[\r\n]+/g, ' ').slice(0, 200)
+
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe(`${FLOOR_LINE} In-flight check inconclusive (${normalized}); firing because I cannot tell whether a lane of this session is running.\n`)
+    expect(result.stdout.trim().split('\n')).toHaveLength(1)
   })
 
   it('supports the sibling --help convention', () => {
