@@ -233,6 +233,23 @@ async function closeServer(server: Server) {
   await new Promise<void>((resolve) => server.close(() => resolve()))
 }
 
+async function listenWhenReleased(server: Server, port: number, timeoutMs = 3_000) {
+  await waitFor(async () => {
+    const listening = await new Promise<boolean>((resolve, reject) => {
+      const onError = (error: NodeJS.ErrnoException) => {
+        if (error.code === 'EADDRINUSE') resolve(false)
+        else reject(error)
+      }
+      server.once('error', onError)
+      server.listen(port, '127.0.0.1', () => {
+        server.removeListener('error', onError)
+        resolve(true)
+      })
+    })
+    return listening ? true : null
+  }, timeoutMs)
+}
+
 async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM', includeWindowsTree = true) {
   if (!child.pid || !pidAlive(child.pid)) return
   const pid = child.pid
@@ -1391,7 +1408,7 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     const port = reservation.port
     await closeServer(reservation.server)
     const monitor = spawnEnsure(project, baseEnv(stateHome, {
-      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_WATCH_MS: '50',
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_WATCH_MS: '4000',
       WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS: '2', WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '30000',
     }))
     const output = childOutput(monitor)
@@ -1403,10 +1420,7 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     process.kill(first.pid, 'SIGKILL')
     await waitFor(() => pidAlive(first.pid) ? null : true)
     const foreign = createServer((_request, response) => response.end('foreign'))
-    await new Promise<void>((resolve, reject) => {
-      foreign.once('error', reject)
-      foreign.listen(port, '127.0.0.1', resolve)
-    })
+    await listenWhenReleased(foreign, port)
     try {
       await waitFor(() => /artifact server retry stopped.*2\/2 attempts/i.test(output.stdout()) ? true : null, 12_000)
       await new Promise((resolve) => setTimeout(resolve, 2_500))
