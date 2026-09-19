@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-main-guard-hook.mjs')
@@ -19,7 +20,7 @@ afterEach(() => {
   rmSync(sandboxHome, { recursive: true, force: true })
 })
 
-function run(command: string, opts: { agentId?: string; cwd?: string; toolUseId?: string } = {}) {
+function run(command: string, opts: { agentId?: string; cwd?: string; pluginData?: string | undefined; toolUseId?: string } = {}) {
   const payload: Record<string, unknown> = {
     hook_event_name: 'PreToolUse',
     tool_name: 'Bash',
@@ -31,7 +32,12 @@ function run(command: string, opts: { agentId?: string; cwd?: string; toolUseId?
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: sandboxHome, XDG_STATE_HOME: join(sandboxHome, '.local', 'state') },
+    env: sealedPluginCliEnv(sandboxHome, {
+      CLAUDE_CONFIG_DIR: undefined,
+      CLAUDE_PLUGIN_DATA: opts.pluginData,
+      HOME: sandboxHome,
+      XDG_STATE_HOME: join(sandboxHome, '.local', 'state'),
+    }),
   })
   return {
     denied: res.stdout.includes('"deny"'),
@@ -47,15 +53,14 @@ function runAsync(command: string, toolUseId: string) {
   }
   const child = spawn(process.execPath, [HOOK], {
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
+    env: sealedPluginCliEnv(sandboxHome, {
       CLAUDE_CONFIG_DIR: undefined,
       CLAUDE_PLUGIN_DATA: undefined,
       HOME: sandboxHome,
       XDG_STATE_HOME: join(sandboxHome, '.local', 'state'),
       NODE_ENV: 'test',
       WT_MAIN_GUARD_TEST_AFTER_READ_MS: '200',
-    },
+    }),
   })
   let stdout = ''; let stderr = ''
   child.stdout.on('data', (chunk) => { stdout += String(chunk) })
@@ -301,7 +306,7 @@ describe('wt-main-guard-hook — scope', () => {
     const res = spawnSync(process.execPath, [HOOK], {
       input: JSON.stringify(payload),
       encoding: 'utf8',
-      env: { ...process.env, CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: sandboxHome },
+      env: sealedPluginCliEnv(sandboxHome, { CLAUDE_CONFIG_DIR: undefined, CLAUDE_PLUGIN_DATA: undefined, HOME: sandboxHome }),
     })
     expect(res.stdout).toBe('')
   })
@@ -315,6 +320,27 @@ describe('wt-main-guard-hook — scope', () => {
 })
 
 describe('wt-main-guard-hook — escape hatch', () => {
+  it.each([
+    ['CLAUDE_PLUGIN_DATA set', () => join(sandboxHome, 'plugin-data', 'workflow-toolbox-test')],
+    ['CLAUDE_PLUGIN_DATA unset', () => undefined],
+  ])('prints the same allow-once path it consumes when %s', (_label, pluginData) => {
+    const command = 'git push origin --delete stale-branch'
+    const configuredPluginData = pluginData()
+    const expectedPath = join(
+      configuredPluginData ?? join(sandboxHome, '.local', 'state', 'wt-main-guard'),
+      'allow-once.json',
+    )
+    const first = run(command, { pluginData: configuredPluginData })
+    const printedPath = first.stdout.match(/to (.+\/allow-once\.json) and retry/)?.[1]
+
+    expect(first.denied).toBe(true)
+    expect(printedPath).toBe(expectedPath)
+    mkdirSync(dirname(expectedPath), { recursive: true })
+    writeFileSync(expectedPath, JSON.stringify({ command, reason: 'branch owner approved this exact deletion' }))
+
+    expect(run(command, { pluginData: configuredPluginData })).toMatchObject({ denied: false, stdout: '', status: 0 })
+  })
+
   it('atomically lets exactly one of two different concurrent tool calls claim one allowance', async () => {
     const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
     mkdirSync(stateDir, { recursive: true })

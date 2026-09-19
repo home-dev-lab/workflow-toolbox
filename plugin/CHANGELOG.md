@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- The main guard's refusal now names the override file it actually reads. A marketplace install reads it from the plugin's data directory, while the message used to point at `~/.local/state/wt-main-guard/allow-once.json`, so writing the override where the refusal said had no effect.
 - The delegated-arc watcher now recognizes a transcript's terminal assistant `end_turn` record as a clean finish, keeping completed agents silent while malformed, interrupted, frozen, and vanished agents still fail toward an alert.
 - Adoption notices now assign stale-copy refresh and edited-copy arbitration to the session instead of asking the owner to decide. The hook remains read-only, supports a `notice-only` single-writer opt-out, and supplies exact directory-scoped install/check or three-way-diff commands; installer writes journal their adopted snapshot and version transition for later read-only comparison.
 - Windows now runs the what-is-running collector without placing its large program on the command line, and lane integration compares canonical Git worktree paths with Windows case semantics.
