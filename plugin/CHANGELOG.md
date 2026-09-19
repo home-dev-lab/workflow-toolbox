@@ -10,10 +10,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Resolve run prices by exact provider and model from OpenCode's fresh models.dev cache, with context tiers, read-only plugin-data overrides, dated fallback reasons, subscription and API-equivalent labels, and stale-source warnings
 - Show effective plugin configuration, configurable phase models, and orphaned settings
 
+### Fixed
+- The wake floor now stays silent for a Linux background task only while a stable same-user process from the current session holds its task output open for writing. Completed outputs, readers, plugin monitors, foreign sessions, PID reuse, and inaccessible unrelated descriptors cannot suppress the floor.
+
 ## [0.184.0] - 2026-09-19
 
 ### Fixed
-- The wake floor now stays silent for a Linux background task only while a stable same-user process from the current session holds its task output open for writing. Completed outputs, readers, plugin monitors, foreign sessions, PID reuse, and inaccessible unrelated descriptors cannot suppress the floor.
 - The elapsed-time wake floor now stays silent while an identity-verified lane owned by the current session is running, launching, or awaiting a decision. Complete evidence with no owned live lane keeps the existing FLOOR line unchanged; unreadable, malformed, capped, or otherwise inconclusive lane evidence fires with an explicit fail-safe annotation.
 - The pilot contract now requires E2E whenever real processes, files, or a host can exercise a change; absence of a UI alone is rejected unless the report names what was tried
 - The EXPERIMENTAL SDK runner now atomically publishes assistant usage while a run is live, and What is running shows per-phase usage, a live run total, and elapsed time while delegated-lane usage is pending. Normal and abnormal runs append one durable cost-index record beside the external archives; final receipts reuse the live messages without double counting.
