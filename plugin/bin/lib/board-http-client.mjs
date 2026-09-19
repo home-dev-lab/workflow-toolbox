@@ -74,8 +74,8 @@ export function createBoardClient({ url, boardId, fetch: request = globalThis.fe
     catch (error) { throw error instanceof BoardUnavailable ? error : new BoardUnavailable(error.message) }
   }
   return {
-    async findCards({ listName, limit, offset }) {
-      const result = await call('find_cards', { boardId, list: listName, limit, offset, includeDescription: true })
+    async findCards({ listName, limit, offset, includeDescription = true }) {
+      const result = await call('find_cards', { boardId, list: listName, limit, offset, includeDescription })
       if (!Array.isArray(result) && !Array.isArray(result?.cards) && !Array.isArray(result?.items)) throw new BoardUnavailable('malformed find_cards result')
       return result
     },

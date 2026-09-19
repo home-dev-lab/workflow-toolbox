@@ -11,6 +11,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PRODUCER_HOOK = join(REPO_ROOT, 'plugin/bin/wt-actionable-snapshot-producer-hook.mjs')
 const GATE_HOOK = join(REPO_ROOT, 'plugin/bin/wt-actionable-gate-hook.mjs')
 const CORE = join(REPO_ROOT, 'plugin/bin/lib/actionability-planka-producer-core.mjs')
+const REFRESH_CLI = join(REPO_ROOT, 'plugin/bin/wt-actionable-snapshot-refresh.mjs')
 const PLUGIN_MANIFEST = join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json')
 
 const roots: string[] = []
@@ -265,6 +266,54 @@ describe('actionability-planka-producer-core', () => {
     expect(parsed.cards).toHaveLength(1)
   })
 
+  it('extractCards: a complete paginated find_cards response is accepted', () => {
+    const response = {
+      total: 1,
+      offset: 0,
+      limit: 10,
+      cards: [{ id: '1', name: 'A', description: 'Depends-on: none', listName: 'Next' }],
+    }
+    const script = [
+      `import { extractCards } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
+      `const r = extractCards({ toolName: 'mcp__planka__find_cards', toolInput: { limit: 10, offset: 0, includeDescription: true }, toolResponse: { content: [{ type: 'text', text: ${JSON.stringify(JSON.stringify(response))} }] } })`,
+      'process.stdout.write(JSON.stringify(r))',
+    ].join('\n')
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
+    expect(JSON.parse(res.stdout)).toMatchObject({ ok: true, cards: [{ id: '1', description: 'Depends-on: none' }] })
+  })
+
+  it('extractCards: a partial paginated find_cards response is refused with its measured extent', () => {
+    const response = {
+      total: 1162,
+      offset: 0,
+      limit: 10,
+      cards: Array.from({ length: 10 }, (_, index) => ({ id: String(index + 1), name: `Card ${index + 1}`, description: 'x'.repeat(100), listName: 'Done' })),
+    }
+    const script = [
+      `import { extractCards } from ${JSON.stringify(pathToFileURL(CORE).href)}`,
+      `const r = extractCards({ toolName: 'mcp__planka__find_cards', toolInput: { limit: 10, offset: 0, includeDescription: true }, toolResponse: { content: [{ type: 'text', text: ${JSON.stringify(JSON.stringify(response))} }] } })`,
+      'process.stdout.write(JSON.stringify(r))',
+    ].join('\n')
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
+    expect(JSON.parse(res.stdout)).toEqual({
+      ok: false,
+      reason: 'find_cards page contains 10 of 1162 cards at offset 0 — result is a subset, not the whole board',
+    })
+  })
+
+  it('collectCompleteCards: consumes an oversized board in bounded complete pages', () => {
+    const script = [
+      `import { collectCompleteCards } from ${JSON.stringify(pathToFileURL(REFRESH_CLI).href)}`,
+      `const source = Array.from({ length: 12 }, (_, index) => ({ id: String(index + 1), description: 'x'.repeat(20_000) }))`,
+      'const offsets = []',
+      'const cards = await collectCompleteCards(async (offset, limit) => { offsets.push(offset); return { total: source.length, offset, limit, cards: source.slice(offset, offset + limit) } })',
+      'process.stdout.write(JSON.stringify({ count: cards.length, offsets }))',
+    ].join('\n')
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8' })
+    expect(res.status).toBe(0)
+    expect(JSON.parse(res.stdout)).toEqual({ count: 12, offsets: [0, 10] })
+  })
+
   it('computeSnapshot: counts a card actionable only when every dependency resolves to Done, and names its scope', () => {
     const cards = [
       { id: '10', name: 'Done dep', description: '', listName: 'Done', position: 0 },
@@ -315,6 +364,32 @@ describe('wt-actionable-snapshot-producer-hook (integration)', () => {
       lastOutcome: 'unreachable',
     })
     expect(readProjectState(project.stateDir, project.cwd)?.heartbeatAt).toEqual(expect.any(Number))
+  })
+
+  it('an oversized tool response records the bounded refresh command instead of requiring another board dump', () => {
+    const project = scaffoldProject('oversized-remedy', { withParser: true })
+    const result = runProducerHook({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'mcp__planka__get_board',
+      tool_input: { boardId: 'b1' },
+      tool_response: {
+        content: [{
+          type: 'text',
+          text: 'Error: result (1,791,632 characters across 50,527 lines) exceeds maximum allowed tokens.',
+        }],
+      },
+      cwd: project.cwd,
+    }, project.env)
+
+    expect(result.status).toBe(0)
+    expect(readSnapshot(project.stateDir, project.cwd)).toBeNull()
+    expect(readFailureRecords(project.stateDir)).toEqual([
+      expect.objectContaining({
+        ok: false,
+        reason: 'payload-diverted-or-too-large',
+        detail: `Run exactly: node "${REFRESH_CLI}"`,
+      }),
+    ])
   })
 
   it('records distinct failure reasons and records success too', () => {

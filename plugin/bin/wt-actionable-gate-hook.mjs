@@ -19,6 +19,7 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { positiveMilliseconds, proposalAge } from './lib/proposal-age.mjs'
 import {
+  ACTIONABLE_REFRESH_COMMAND,
   stateRoot,
   projectStatePath,
   sessionStatePath as sharedSessionStatePath,
@@ -355,10 +356,10 @@ function renderBlock(decision, blockMax, ctxPct, snapshot, now, externalLane, ma
   } else if (!finiteNumber(snapshot?.producer?.heartbeatAt)) {
     actionableLine = 'Actionability state cannot be distinguished from legacy snapshot evidence — check the tracker.'
   } else {
-    actionableLine = 'Producer heartbeat is stale; refresh the board snapshot.'
+    actionableLine = `Producer heartbeat is stale; the board has not been measured recently. To refresh the board snapshot: Run exactly: ${ACTIONABLE_REFRESH_COMMAND}`
   }
-  if (decision.reason === 'snapshot-stale' && !actionableLine.includes('refresh the board snapshot')) {
-    actionableLine += ' Refresh the board snapshot.'
+  if (decision.reason === 'snapshot-stale' && !actionableLine.includes(ACTIONABLE_REFRESH_COMMAND)) {
+    actionableLine += ` The board has not been measured recently. To refresh the board snapshot: Run exactly: ${ACTIONABLE_REFRESH_COMMAND}`
   }
   if (decision.reason === 'snapshot-stale' && finiteNumber(snapshot?.actionable)) {
     actionableLine = `${snapshot.actionable} actionable item(s) remain. ${actionableLine}`

@@ -166,6 +166,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents the shipped Planka producer and what it deliberately stays silent on.',
   },
   {
+    script: 'plugin/bin/wt-actionable-snapshot-refresh.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the bounded direct refresh command, its completeness checks, and its output shape.',
+  },
+  {
     script: 'plugin/bin/wt-label-intent-producer-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents the shipped label-intent-lens producer, its trigger, and what it deliberately stays silent on.',
@@ -950,6 +955,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     sources: [
       'plugin/bin/wt-actionable-gate-hook.mjs',
       'plugin/bin/wt-actionable-snapshot-producer-hook.mjs',
+      'plugin/bin/wt-actionable-snapshot-refresh.mjs',
       'plugin/bin/wt-registry-heartbeat-hook.mjs',
       'plugin/bin/wt-session-start-registry-hook.mjs',
       'plugin/bin/wt-spawn-registry-scan.mjs',

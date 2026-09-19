@@ -7,15 +7,13 @@
 // 2026-08-04, and gone stale two days later. This hook is the producer that
 // EXECUTES instead of relying on someone remembering to run a skill.
 //
-// WHY THIS SHAPE (a PostToolUse hook, not a SessionStart timer): a hook is a
-// plain node process with no MCP connection and no model — it cannot itself
-// call the Planka MCP server to read the board. What it CAN do is react to a
-// call the session already made, reading the same tool_response the model
-// already received. Wiring on mcp__planka__get_board and an UNFILTERED
-// mcp__planka__find_cards means the snapshot refreshes automatically every
-// time a session reads the whole board — no separate gesture, no new habit to
-// forget. A project that never uses Planka never triggers this hook at all:
-// it is safe to ship broadly.
+// WHY THIS SHAPE: the PostToolUse path reuses a complete Planka response the
+// session already received. When that response would be too large for session
+// context, wt-actionable-snapshot-refresh.mjs connects to the same local MCP
+// endpoint and paginates internally, then calls produceSnapshot() with the one
+// complete set. Both routes therefore share extraction, dependency parsing,
+// validation, state, and journaling instead of growing two counting rules.
+// A project that never uses Planka never triggers either route.
 //
 // WHAT IT DELIBERATELY DOES NOT DO: write a count on a PARTIAL read. A filtered
 // find_cards call (list="Next" alone, say) returns real data but not the whole
@@ -50,7 +48,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { projectStatePath, stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
+import { ACTIONABLE_REFRESH_COMMAND, projectStatePath, stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
 import { extractCards, computeSnapshot, resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
 import { stateRoot as priorArtStateRoot, cardIndexPath } from './lib/prior-art-state-paths.mjs'
 import { buildCardIndex } from './lib/prior-art-index-core.mjs'
@@ -207,14 +205,7 @@ function writeProducerState(cwd, lastOutcome) {
   writeFileSync(path, JSON.stringify({ optedIn: true, heartbeatAt: Date.now(), lastOutcome }), 'utf8')
 }
 
-function main() {
-  let input
-  try {
-    input = JSON.parse(readFileSync(0, 'utf8') || '{}')
-  } catch {
-    return
-  }
-
+export function produceSnapshot(input) {
   if (input.hook_event_name && input.hook_event_name !== 'PostToolUse') return
   const toolName = input.tool_name
   if (toolName !== 'mcp__planka__get_board' && toolName !== 'mcp__planka__find_cards') return
@@ -253,7 +244,7 @@ function main() {
   })
   if (!extraction.ok) {
     if (extraction.reason === 'no readable tool_response text') {
-      recordAttempt(journalDir, false, 'payload-diverted-or-too-large', extraction.reason)
+      recordAttempt(journalDir, false, 'payload-diverted-or-too-large', `Run exactly: ${ACTIONABLE_REFRESH_COMMAND}`)
     } else if (extraction.reason.includes('result is a subset')) {
       recordAttempt(journalDir, false, 'partial-payload', extraction.reason)
     } else {
@@ -361,6 +352,16 @@ function main() {
     // Writing must never turn this hook into a blocker — the consumer's own
     // fail-closed missing/stale path is the safety net if this write fails.
   }
+}
+
+function main() {
+  let input
+  try {
+    input = JSON.parse(readFileSync(0, 'utf8') || '{}')
+  } catch {
+    return
+  }
+  produceSnapshot(input)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

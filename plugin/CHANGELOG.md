@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- The actionability gate can now be refreshed with `wt-actionable-snapshot-refresh.mjs` (the stale message prints its absolute path, runnable as-is) without placing a six-figure Planka result in session context. The command reads strict 10-card pages directly from the local MCP endpoint, refuses changing/incomplete/duplicate pagination, and passes only a proved-complete set to the existing dependency parser and snapshot writer; stale messages now distinguish "not measured recently" from zero actionable cards and print that exact command with an absolute path.
 - The main guard's refusal now names the override file it actually reads. A marketplace install reads it from the plugin's data directory, while the message used to point at `~/.local/state/wt-main-guard/allow-once.json`, so writing the override where the refusal said had no effect.
 - The What is running pane now redraws after its hooks module reloads. Each opened pane carries a registration tag in its host request id, so the replacement module can resume that already-open pane without shared plugin storage or a cross-session `ui.open` call.
 - Windows: lane integration now recognises a worktree whose path is spelled with 8.3 short names (`C:\Users\RUNNER~1\…`), and the artifact server no longer narrows the Windows process start-time tolerance below the shared precision, which could declare a live monitor dead and drop its mount.
