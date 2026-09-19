@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error Function-hook modules ship as host-loaded JavaScript.
-import { COLLECTOR_TIMEOUT_MS, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
+import { COLLECTOR_TIMEOUT_MS, fileUrlPath, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
@@ -151,6 +151,11 @@ function textChildren(tree: unknown): string[] {
 }
 
 describe('What is running collector seam', () => {
+  it('resolves the shipped price table URL to a native Windows drive path', () => {
+    expect(fileUrlPath(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json'), 'win32'))
+      .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
+  })
+
   it('reports a live suite-lock holder from the fixture lock directory', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-live-'))
     try {

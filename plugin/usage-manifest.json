@@ -91,6 +91,7 @@
     { "name": "WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only retry window)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only retry cap)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_WATCH_MS", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only health watch interval)" },
+    { "name": "WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only attachment receipt)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_SPAWN_LOG", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only spawn receipt)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only detached server process receipt)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only claim receipt)" },

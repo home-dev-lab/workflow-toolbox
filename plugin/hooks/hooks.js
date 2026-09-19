@@ -13,6 +13,12 @@ export const PLUGIN_VERSION = '0.184.0';
 export const SLOW_RENDER_THRESHOLD_MS = 50;
 export const MISSED_RENDERS_BEFORE_STOP = 3;
 export const RENDER_JOURNAL_MAX_BYTES = 64 * 1024;
+export function fileUrlPath(url, platform = process.platform) {
+  const pathname = decodeURIComponent(url.pathname);
+  if (platform !== 'win32') return pathname;
+  const windowsPath = pathname.replaceAll('/', '\\');
+  return url.hostname ? `\\\\${url.hostname}${windowsPath}` : windowsPath.replace(/^\\(?=[A-Za-z]:)/, '');
+}
 const RENDER_JOURNAL_PROGRAM = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');
@@ -120,7 +126,7 @@ export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT, t
     const result = await $.process.run(
       snapshotFile
         ? ['node', '-e', "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", snapshotFile]
-        : ['node', '-e', collectorBootstrap, new URL('./snapshot-program.js', import.meta.url).href, JSON.stringify({ ...paths, priceTableFile: new URL('../pricing/model-prices.json', import.meta.url).pathname, layout: paths.layout || layout })],
+        : ['node', '-e', collectorBootstrap, new URL('./snapshot-program.js', import.meta.url).href, JSON.stringify({ ...paths, priceTableFile: fileUrlPath(new URL('../pricing/model-prices.json', import.meta.url)), layout: paths.layout || layout })],
       { timeoutMs },
     );
     if (result?.exitCode !== 0) {
