@@ -20,8 +20,13 @@ describe('reportableOpencodeArgv', () => {
     expect(reportableOpencodeArgv(['/tmp/bin/node', '-e', '…', 'opencode', 'run'], { tmpRoot: '/tmp' })).toBe(false)
   })
 
-  it('canonicalises executable paths before checking temp containment', () => {
-    const realpath = (value: string) => value.replace('/tmp-alias', '/private/tmp')
-    expect(reportableOpencodeArgv(['/bin/sh', '/tmp-alias/bin/opencode.cmd', 'run'], { tmpRoot: '/private/tmp', realpath })).toBe(false)
+  it.each([
+    (aliasRoot: string) => [process.execPath, join(aliasRoot, 'bin', 'opencode.cmd'), 'run'],
+    (aliasRoot: string) => [join(aliasRoot, 'bin', 'node'), '-e', '…', 'opencode', 'run'],
+  ])('canonicalises executable paths before checking temp containment', (argv) => {
+    const aliasRoot = join(tmpdir(), 'tmp-alias')
+    const canonicalRoot = join(tmpdir(), 'private', 'tmp')
+    const realpath = (value: string) => value.replace(aliasRoot, canonicalRoot)
+    expect(reportableOpencodeArgv(argv(aliasRoot), { tmpRoot: canonicalRoot, realpath })).toBe(false)
   })
 })
