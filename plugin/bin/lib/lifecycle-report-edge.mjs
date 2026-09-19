@@ -177,7 +177,7 @@ function resolveThroughExisting(requested) {
   let probe = path.resolve(requested)
   const suffix = []
   while (!fs.existsSync(probe)) { suffix.unshift(path.basename(probe)); probe = path.dirname(probe) }
-  return path.resolve(fs.realpathSync(probe), ...suffix)
+  return path.resolve((fs.realpathSync.native ?? fs.realpathSync)(probe), ...suffix)
 }
 
 // The archive must never land inside the tree it archives: `git worktree remove` would destroy the run
@@ -185,7 +185,7 @@ function resolveThroughExisting(requested) {
 export function assertArchiveOutsideWorktree({ root, archiveRoot, target = path.join(archiveRoot ?? '', '.claude', 'reports') }) {
   if (typeof archiveRoot !== 'string' || !path.isAbsolute(archiveRoot)) throw new Error('lifecycle archiveRoot must be an absolute path')
   const resolved = resolveThroughExisting(target)
-  const relativeTarget = path.relative(fs.realpathSync(root), resolved)
+  const relativeTarget = path.relative((fs.realpathSync.native ?? fs.realpathSync)(root), resolved)
   if (relativeTarget === '' || (relativeTarget !== '..' && !relativeTarget.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeTarget))) {
     throw new Error(`archive destination must be outside the lifecycle worktree: ${resolved} (pass --archive-root <project root>)`)
   }

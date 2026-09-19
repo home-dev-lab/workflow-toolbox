@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Windows: the lifecycle archive-containment check compares both paths in their canonical long form, so an archive destination inside the lane can no longer pass because one side was spelled with 8.3 short names; and an artifact-server monitor no longer drops its registration when a busy server answers its health probe late.
 - The main guard's refusal now names the override file it actually reads. A marketplace install reads it from the plugin's data directory, while the message used to point at `~/.local/state/wt-main-guard/allow-once.json`, so writing the override where the refusal said had no effect.
 - The What is running pane now redraws after its hooks module reloads. Each opened pane carries a registration tag in its host request id, so the replacement module can resume that already-open pane without shared plugin storage or a cross-session `ui.open` call.
 - Windows: lane integration now recognises a worktree whose path is spelled with 8.3 short names (`C:\Users\RUNNER~1\…`), and the artifact server no longer narrows the Windows process start-time tolerance below the shared precision, which could declare a live monitor dead and drop its mount.

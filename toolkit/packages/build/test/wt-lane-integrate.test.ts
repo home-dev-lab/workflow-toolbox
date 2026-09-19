@@ -152,7 +152,7 @@ describe('lane integration', () => {
 
     expect(await integrateLane(options(f)), f.stderr.join('\n')).toBe(0)
     const merged = readFileSync(join(f.into, 'plugin', 'CHANGELOG.md'), 'utf8')
-    expect(merged).toContain('- ours\n- theirs\n')
+    expect(merged.replaceAll('\r\n', '\n')).toContain('- ours\n- theirs\n')
     expect(merged).not.toContain('<<<<<<<')
   })
 
@@ -253,7 +253,8 @@ describe('lane integration', () => {
     expect(code, f.stderr.join('\n')).toBe(0)
     const plan = f.stdout.join('\n')
     expect(plan).toContain(`lane branch=card/test-lane tip=${laneHead}`)
-    expect(plan).toContain(`integration tree=${f.into} HEAD=${intoHead}`)
+    const canonicalInto = (realpathSync.native ?? realpathSync)(f.into)
+    expect(plan).toContain(`integration tree=${canonicalInto} HEAD=${intoHead}`)
     expect(plan).toContain('commit subject=Integrate fixture lane')
     expect(plan).toContain('merge subject=custom merge subject')
     expect(plan).toContain(`archive destination=${join(f.archiveRoot, 'lane', 'lane')}`)
