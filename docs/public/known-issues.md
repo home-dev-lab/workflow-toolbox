@@ -275,9 +275,13 @@ Refuses a named `Agent` spawn without `isolation` where the spawning session is 
 Four env knobs tune its stop behavior directly: `WT_ACTIONABLE_PROPOSAL_MAX_AGE_MS` (default `900000`) is how old a snapshot may be before the gate stops naming its proposed card while retaining the same block decision; `WT_ACTIONABLE_STALE_AFTER_MS` (default `7200000`) is how old a snapshot may be before the gate treats it as stale/unknown; `WT_ACTIONABLE_BLOCK_MAX` (default `3`) is the consecutive block count after which the hook stops re-blocking and only records the held state; `WT_ACTIONABLE_INFLIGHT_CAP_MS` (default `600000`) caps any declared `inFlightUntil` window from the snapshot's own `at` timestamp, so a stale claim cannot silence the gate indefinitely.
 
 The shipped Planka producer writes a separate opt-in heartbeat. An undeclared project remains silent;
-a declared producer with no heartbeat says to wire it; a stale heartbeat after no recent board read is
-normal during a conversation and calls for nothing; a fresh failed heartbeat says it could not read the
-board and calls for checking the tracker. All paths remain advisory with exit `0`.
+a declared producer with no heartbeat says to wire it; a stale heartbeat means the board has not been
+measured recently, not that zero actionable cards remain; a fresh failed heartbeat says it could not read
+the board and calls for checking the tracker. A stale snapshot blocks once and names the exact refresh:
+`node "${CLAUDE_PLUGIN_ROOT}/bin/wt-actionable-snapshot-refresh.mjs"`. That CLI reads strict 10-card
+`find_cards` pages directly from the local MCP endpoint, requires stable totals, contiguous offsets, and
+unique card IDs, then passes the complete set to the same dependency parser and snapshot writer as the
+PostToolUse producer. Its result is one bounded summary line rather than a board dump in session context.
 
 ### `wt-stale-date-guard-hook.mjs` — written-deadline advisory (PostToolUse)
 

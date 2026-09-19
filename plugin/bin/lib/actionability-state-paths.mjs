@@ -11,9 +11,14 @@
 // drift from the consumer's"), so the seam is created before it is needed
 // twice, not after.
 
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { pluginName, resolvePluginDataDir } from './plugin-data-dir.mjs'
+
+// An ABSOLUTE path resolved from this module, never `${CLAUDE_PLUGIN_ROOT}`: that variable is empty in the
+// main session's shell, so a command printed with it fails exactly where a session is told to run it.
+export const ACTIONABLE_REFRESH_COMMAND = `node "${join(dirname(fileURLToPath(import.meta.url)), '..', 'wt-actionable-snapshot-refresh.mjs')}"`
 
 // XDG_STATE_HOME with the documented ~/.local/state fallback — matches every
 // other wt-* state directory on this machine (see machine-calibrations.md).

@@ -81,9 +81,9 @@ function normalizeCard(raw) {
  * @returns {{ ok: true, cards: Array<{id:string,name:string,description:string,listName:string,position:number}> } | { ok: false, reason: string }}
  */
 export function extractCards({ toolName, toolInput, toolResponse, readSpilledFile }) {
+  const ti = toolInput && typeof toolInput === 'object' ? toolInput : {}
   if (toolName === 'mcp__planka__find_cards') {
-    const ti = toolInput && typeof toolInput === 'object' ? toolInput : {}
-    const filtered = Boolean(ti.list || ti.label || ti.text)
+    const filtered = Boolean(ti.listId || ti.list || ti.label || ti.text)
     if (filtered) return { ok: false, reason: 'find_cards called with a filter — result is a subset, not the whole board' }
   }
 
@@ -96,6 +96,9 @@ export function extractCards({ toolName, toolInput, toolResponse, readSpilledFil
   } catch {
     const spilledPath = spilledResponsePath(text)
     if (!spilledPath || typeof readSpilledFile !== 'function') {
+      if (text.includes('exceeds maximum allowed tokens') && !text.includes('Output has been saved to ')) {
+        return { ok: false, reason: 'no readable tool_response text' }
+      }
       return { ok: false, reason: 'tool_response text is not valid JSON' }
     }
     try {
@@ -140,13 +143,34 @@ export function extractCards({ toolName, toolInput, toolResponse, readSpilledFil
     // plausible-but-wrong number this producer must never write. Skip,
     // silently, rather than guess.
     //
-    // ⚠ Scoped to the CURRENT find_cards schema (boardId, list, label, text — no pagination
-    // as of this writing). If the tool ever grows another filtering/paging argument, this
-    // check does not know about it and would need to be extended — named here rather than
-    // silently assumed complete.
-    if (!Array.isArray(parsed)) return { ok: false, reason: 'find_cards response is not an array' }
+    // The current schema is paginated. A page is complete only when it starts at zero and
+    // contains every card named by `total`; otherwise the producer records a refusal rather
+    // than turning a plausible subset into a board-wide count. Legacy array responses remain
+    // accepted only when the call itself did not request pagination.
+    let rawCards
+    if (Array.isArray(parsed)) {
+      if (ti.limit !== undefined || ti.offset !== undefined) {
+        return { ok: false, reason: 'find_cards paginated response has no total — result is a subset, not the whole board' }
+      }
+      rawCards = parsed
+    } else if (parsed && typeof parsed === 'object' && Array.isArray(parsed.cards)) {
+      const total = parsed.total
+      const offset = parsed.offset
+      if (!Number.isInteger(total) || total < 0 || !Number.isInteger(offset) || offset < 0) {
+        return { ok: false, reason: 'find_cards response has invalid pagination metadata' }
+      }
+      if (offset !== 0 || parsed.cards.length !== total) {
+        return { ok: false, reason: `find_cards page contains ${parsed.cards.length} of ${total} cards at offset ${offset} — result is a subset, not the whole board` }
+      }
+      rawCards = parsed.cards
+    } else {
+      return { ok: false, reason: 'find_cards response has no cards[] array' }
+    }
+    if (ti.includeDescription === false) {
+      return { ok: false, reason: 'find_cards omitted descriptions — dependency completeness cannot be proved' }
+    }
     const cards = []
-    for (const raw of parsed) {
+    for (const raw of rawCards) {
       const card = normalizeCard(raw)
       if (!card) return { ok: false, reason: 'unreadable card in find_cards response — missing/invalid id' }
       cards.push(card)
