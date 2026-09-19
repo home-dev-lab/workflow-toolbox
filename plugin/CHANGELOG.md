@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Queue SDK pilot launches in machine-wide FIFO order until both the configurable active-run cap and host load gate allow admission, with durable queue receipts in What is running and explicit cap-only fallbacks when load is unavailable
 - Redesign the EXPERIMENTAL What is running pane around a compact card spine, owner-attributed errors, expandable billed token classes per model, and width-aware summaries
 - Add a configurable 30-second running-work collector ceiling with adaptive single-flight polling and a bounded per-user failure journal
 - Add source-backed per-model USD run costs to receipts, the cost index, and the live pane
@@ -13,6 +14,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Show effective plugin configuration, configurable phase models, and orphaned settings
 
 ### Fixed
+- Name external lanes from their card file, or the first useful brief heading, instead of the shared standing preamble
 - Keep the last good What is running snapshot visible through collector failures, show its age and a plain-language retry notice, and clear the notice after recovery
 - Ignore coverage temporary directories during running-work scans and keep walk-budget uncertainty on the affected row instead of marking all discovery partial
 - The wake floor now stays silent for a Linux background task only while a stable same-user process from the current session holds its task output open for writing. Completed outputs, readers, plugin monitors, foreign sessions, PID reuse, and inaccessible unrelated descriptors cannot suppress the floor.

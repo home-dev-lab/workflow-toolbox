@@ -343,6 +343,58 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
+  it('uses the card file title when the lane brief starts with the standard preamble', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-preamble-title-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1867758992768370051'
+      const lane = join(paths.suiteRoot, 'worktrees', 'preamble-title', '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'brief.md'), [
+        '# Standing preamble for every external-lane brief (paste at the top of `.lane/brief.md`)',
+        '',
+        '# Implementation brief',
+        '',
+        `Deliver card ${cardId}.`,
+      ].join('\n'))
+      writeFileSync(join(lane, `card-${cardId}.md`), '# What is running: show the card title\n')
+      writeFileSync(join(lane, 'run.log'), 'working\n')
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { cardId?: string }) => item.cardId === cardId)
+      expect(row?.title).toBe('What is running: show the card title')
+      expect(row?.title).not.toContain('Standing preamble')
+
+      rmSync(join(lane, `card-${cardId}.md`))
+      writeFileSync(join(lane, 'brief.md'), [
+        '# Standing preamble for every external-lane brief (paste at the top of `.lane/brief.md`)',
+        '',
+        `# Brief: card ${cardId}: First useful heading`,
+      ].join('\n'))
+      const fallback = await readSnapshot({ process: processCapability() }, paths)
+      expect(fallback.rows.find((item: { cardId?: string }) => item.cardId === cardId)?.title).toBe('First useful heading')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('renders the SDK admission receipt as a queued position and wait reason', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-admission-queue-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1867509524609369334'
+      const lane = join(paths.suiteRoot, 'worktrees', 'queued-pilot', '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, `card-${cardId}.md`), '# Queued SDK pilot\n')
+      writeFileSync(join(lane, 'admission.json'), JSON.stringify({
+        state: 'queued', cardId, position: 2, waiting: { kind: 'load', load: 14.5, cores: 12 },
+      }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.rows.find((row: { id: string }) => row.id === cardId)?.queue).toMatchObject({ position: 2, waiting: { kind: 'load' } })
+      const scoped = { ...snapshot, sessions: undefined, rows: snapshot.rows.map((row: Record<string, unknown>) => ({ ...row, project: 'wt-suite' })) }
+      expect(await renderedText(scoped)).toContain('queued · position 2 · waiting for load 14.5 / 12')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('shows live run total and elapsed time while a running lane cost is pending', async () => {
     const pilot = {
       id: 'pilot-live', kind: 'pilot', label: 'SDK pilot', project: 'wt-suite', sdkLifecycle: true, phase: 'tdd',

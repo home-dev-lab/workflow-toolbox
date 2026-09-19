@@ -54,6 +54,13 @@ expiry stops at the next completed lifecycle phase boundary rather than killing 
 
 On Windows, launch the same Node command with `Start-Process` rather than `setsid nohup`.
 
+Every launch first writes an `admission.json` receipt under the worktree's `.lane` directory and joins a machine-wide FIFO. It starts only when
+fewer than `sdk_pilot_max_active` runs are active (default 3, environment fallback
+`WT_SDK_PILOT_MAX_ACTIVE`) and the one-minute load is below the available core count. Linux reads
+`/proc/loadavg`; macOS reads `os.loadavg()`. Windows `os.loadavg()` reports zeros, so Windows uses
+the cap alone and records that named fallback in the run log. An unreadable Linux or macOS load
+probe likewise logs once and falls back to the cap; it never silently removes the cap.
+
 ## Watch
 
 Poll the worktree's .lane/sdk-pilot.log until its final `EXIT=<code>` marker appears, and read the whole log.
