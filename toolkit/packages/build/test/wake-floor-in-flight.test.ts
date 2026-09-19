@@ -59,7 +59,8 @@ function fixture(options: {
   maxUmbrellaEntries?: number
   maxRecords?: number
   sessionId?: unknown
-  backgroundTaskProbe?: () => { status: string; reason?: string }
+  platform?: NodeJS.Platform
+  backgroundTaskProbe?: (options: { projectDir: string; sessionId: unknown }) => { status: string; reason?: string }
 } = {}) {
   const value = Object.hasOwn(options, 'value') ? options.value : record()
   const reads = options.reads ?? new Map([[recordPath, JSON.stringify(value)]])
@@ -98,7 +99,10 @@ function fixture(options: {
     readFileImpl,
     spawnSyncImpl,
     classify,
-    backgroundTaskProbe: options.backgroundTaskProbe,
+    backgroundTaskProbe: options.backgroundTaskProbe ?? ((probeOptions) => sessionBackgroundTaskInFlight({
+      ...probeOptions,
+      platform: options.platform ?? 'linux',
+    })),
     maxWorktrees: options.maxWorktrees,
     maxUmbrellaEntries: options.maxUmbrellaEntries,
     maxRecords: options.maxRecords,
@@ -233,18 +237,16 @@ describe('sessionLaneInFlight', () => {
     })
   })
 
-  it.each(['darwin', 'win32'])('preserves a conclusive lane verdict when background-task inspection is unsupported on %s', (platform) => {
-    const backgroundTaskProbe = () => sessionBackgroundTaskInFlight({ projectDir, sessionId: 'session-under-test', platform })
-    expect(fixture({ backgroundTaskProbe, value: record({ owner: 'pilot' }) }).result).toEqual({
+  it.each<NodeJS.Platform>(['darwin', 'win32'])('preserves a conclusive lane verdict when background-task inspection is unsupported on %s', (platform) => {
+    expect(fixture({ platform, value: record({ owner: 'pilot' }) }).result).toEqual({
       status: 'none',
       reason: 'no live owned lane',
     })
   })
 
-  it.each(['darwin', 'win32'])('names unsupported background-task inspection when lane evidence is inconclusive on %s', (platform) => {
-    const backgroundTaskProbe = () => sessionBackgroundTaskInFlight({ projectDir, sessionId: 'session-under-test', platform })
+  it.each<NodeJS.Platform>(['darwin', 'win32'])('names unsupported background-task inspection when lane evidence is inconclusive on %s', (platform) => {
     expect(fixture({
-      backgroundTaskProbe,
+      platform,
       git: { status: 1, stdout: '', stderr: 'fatal: other error' },
       supervision: [],
     }).result).toEqual({
@@ -262,7 +264,7 @@ describe('sessionBackgroundTaskInFlight', () => {
   const sessionId = 'session-under-test'
   const tasksDir = path.join('/tmp', 'claude-1000', '-project', sessionId, 'tasks')
   const output = path.join(tasksDir, 'abc123.output')
-  const procDir = '/proc/42'
+  const procDir = path.join('/proc', '42')
   const procStat = `42 (zsh) S ${Array.from({ length: 19 }, (_, index) => index === 18 ? '98765' : '0').join(' ')}`
 
   function taskFixture(options: {
