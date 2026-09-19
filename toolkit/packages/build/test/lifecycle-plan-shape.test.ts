@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acceptanceSection, containsPlanShape, planSection } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+import { acceptanceSection, containsPlanShape } from '../../../../plugin/bin/lib/lifecycle-plan-shape.mjs'
 
 const validPlan = `# Parser plan
 
@@ -23,24 +23,21 @@ Rejected: exercising the parser only through lifecycle transitions.
 `
 
 describe('lifecycle plan shape parser', () => {
-  it('extracts a well-formed ADR block and stops at the next level-two heading', () => {
-    const section = planSection(validPlan, 'ADR')
+  it('stops the ADR block at the next level-two heading', () => {
+    const content = validPlan
+      .replace('Rejected: exercising the parser only through lifecycle transitions.\n', '')
+      .replace('## Tasks', '## Tasks\nRejected: this belongs to the Tasks section.')
 
-    expect(section).toContain('Decision: expose the existing parser seams.')
-    expect(section).toContain('Rejected: exercising the parser only through lifecycle transitions.')
-    expect(section).not.toContain('## Tasks')
+    expect(containsPlanShape(content, true)).toBe(false)
   })
 
-  it('extracts an ADR section through the end of the document', () => {
-    const content = `# Parser plan
+  it('accepts an ADR section through the end of the document', () => {
+    const adr = `## ADR
+Decision: expose the existing parser seams.
+Rejected: exercising the parser only through lifecycle transitions.`
+    const content = `${validPlan.replace(`${adr}\n\n`, '')}\n${adr}`
 
-## ADR
-Decision: keep the parser small.
-Rejected: adding a markdown dependency.`
-
-    expect(planSection(content, 'ADR')).toBe(`\n## ADR
-Decision: keep the parser small.
-Rejected: adding a markdown dependency.`)
+    expect(containsPlanShape(content, true)).toBe(true)
   })
 
   it('accepts column-zero bullet tasks with either DoD label', () => {
@@ -122,7 +119,6 @@ This is not acceptance evidence.`
       .replace('## Gates', '## gates')
       .replace('## Acceptance', '## acceptance')
 
-    expect(planSection(content, 'ADR')).toContain('## adr')
     expect(containsPlanShape(content, true)).toBe(true)
   })
 })
