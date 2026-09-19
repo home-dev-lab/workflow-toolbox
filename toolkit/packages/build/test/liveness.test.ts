@@ -139,6 +139,7 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
   const now = Date.now()
 
   const prepareTranscript = () => {
+    if (metaName !== null) writeFileSync(metaPath, JSON.stringify(metaName ? { name: metaName } : {}))
     if (transcriptRecords) {
       writeFileSync(transcriptPath, `${transcriptRecords.map((record) => JSON.stringify(record)).join('\n')}\n`)
       const t = (now - transcriptAgeMs) / 1000
@@ -146,7 +147,6 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
     } else {
       touchFile(transcriptPath, now - transcriptAgeMs)
     }
-    if (metaName !== null) writeFileSync(metaPath, JSON.stringify(metaName ? { name: metaName } : {}))
   }
 
   if (!manualTranscript && !transcriptAfterArm) prepareTranscript()
