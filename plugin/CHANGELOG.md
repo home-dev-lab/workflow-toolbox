@@ -12,6 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - The wake floor now stays silent for a Linux background task only while a stable same-user process from the current session holds its task output open for writing. Completed outputs, readers, plugin monitors, foreign sessions, PID reuse, and inaccessible unrelated descriptors cannot suppress the floor.
+- Windows: the What is running collector resolves its shipped model-price table as a native file path, preserving fallback USD prices when no machine-local price catalogue is available.
 
 ## [0.184.0] - 2026-09-19
 
