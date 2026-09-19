@@ -150,6 +150,7 @@ const WORKTREE_DETAIL_CAP = Number.isSafeInteger(config.worktreeDetailCap) && co
 const cappedScans = [];
 const scanLimits = [];
 const unreadableScans = [];
+const approximateWalkRoots = new Set();
 const processReadFailures = [];
 // A process that exits between the /proc listing and its record reads leaves no directory behind.
 // That is the ordinary race of scanning a live machine, not a read failure: the listing was complete
@@ -216,7 +217,7 @@ function resolveActorFile(candidate) {
 function infoUnrestricted(file) { try { return fs.statSync(file); } catch { return null; } }
 procUptime = processScanAvailable ? Number((head(path.join(procRoot, 'uptime'), 128) || '').trim().split(/\s+/)[0]) : null;
 
-function listed(dir, maxEntries = DIR_SCAN_CAP) {
+function listed(dir, maxEntries = DIR_SCAN_CAP, reportCap = true) {
   let handle;
   try {
     const safeDir = safePath(dir);
@@ -229,7 +230,7 @@ function listed(dir, maxEntries = DIR_SCAN_CAP) {
       entries.push(entry.name);
     }
     if (!handle.readSync()) return { entries, readable: true, capped: false };
-    cappedScans.push(dir);
+    if (reportCap) cappedScans.push(dir);
     return { entries, readable: true, capped: true };
   } catch { return { entries: [], readable: false, capped: false }; }
   finally { try { handle?.closeSync(); } catch {} }
@@ -465,7 +466,9 @@ function walk(root, accept, maxDepth = 5, maxEntries = 5000) {
   const found = []; const stack = [{ dir: root, depth: 0 }]; let seen = 0;
   while (stack.length && seen < maxEntries) {
     const current = stack.pop();
-    for (const name of listed(current.dir, Math.min(DIR_SCAN_CAP, maxEntries - seen)).entries) {
+    const listing = listed(current.dir, Math.min(DIR_SCAN_CAP, maxEntries - seen), false);
+    if (listing.capped) approximateWalkRoots.add(root);
+    for (const name of listing.entries) {
       if (seen >= maxEntries) break;
       seen += 1;
       const file = path.join(current.dir, name); const link = linkInfo(file);
@@ -473,9 +476,10 @@ function walk(root, accept, maxDepth = 5, maxEntries = 5000) {
       const stat = info(file);
       if (!stat) continue;
       if (stat.isFile() && accept(file, name)) found.push(file);
-      if (stat.isDirectory() && current.depth < maxDepth && !['.git', 'node_modules', 'dist', 'build', 'coverage'].includes(name)) stack.push({ dir: file, depth: current.depth + 1 });
+      if (stat.isDirectory() && current.depth < maxDepth && !['.git', 'node_modules', 'dist', 'build'].includes(name) && !/^(?:child-)?coverage(?:[-_.].*)?$/i.test(name)) stack.push({ dir: file, depth: current.depth + 1 });
     }
   }
+  if (stack.length) approximateWalkRoots.add(root);
   return found;
 }
 function freshestWrite(root) {
@@ -493,7 +497,7 @@ function toolActivity(value) {
 }
 function laneActivity(worktree, lastWrite = null) {
   const current = toolActivity(tail(lanePath(worktree, 'run.log')));
-  return current !== UNKNOWN ? current : lastWrite === null ? UNKNOWN : 'last write ' + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago';
+  return current !== UNKNOWN ? current : lastWrite === null ? UNKNOWN : 'last write ' + (approximateWalkRoots.has(worktree) ? 'at least ' : '') + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago';
 }
 function laneSessionId(worktree) {
   const value = worktree ? envField(lanePath(worktree, 'env.log'), 'CLAUDE_CODE_SESSION_ID') : null;
@@ -1119,7 +1123,7 @@ for (const id of ids) {
   const lastWrite = worktree ? freshestWrite(worktree) : null;
   const processState = worktree ? pidState(worktree) : UNKNOWN;
   if (processState !== 'alive' && !freshTime(lastWrite) && !live && !record) continue;
-  const activity = waiting || (lastWrite === null ? live ? 'updated ' + age + ' min ago' : record ? 'lifecycle updated recently' : UNKNOWN : 'last write ' + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago');
+  const activity = waiting || (lastWrite === null ? live ? 'updated ' + age + ' min ago' : record ? 'lifecycle updated recently' : UNKNOWN : 'last write ' + (approximateWalkRoots.has(worktree) ? 'at least ' : '') + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago');
   const watchdog = !live || age === null ? UNKNOWN : age > ACTIVE_WINDOW_MIN ? 'alert' : 'silent';
   const wave = waveFor(lane, id);
   const title = cleanCardTitle(lane?.title || (wave ? markdownTitle(head(wave.cardFile)) : null), id) || id;
@@ -1167,6 +1171,7 @@ for (const id of ids) {
     runCost: phaseCostResult.total,
     phaseCostSource: phaseCostResult.source || UNKNOWN,
     phaseCostSourceKind: phaseCostResult.kind || UNKNOWN,
+    costApproximate: approximateWalkRoots.has(worktree),
     watchdog,
     inspectors: inspectors(worktree, lane ? frozenRoute : null, lane ? tail(sdkLogFile(worktree)) : null),
     lanes: [nestedLane(lane, id)].filter(Boolean),

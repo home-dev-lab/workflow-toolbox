@@ -217,6 +217,13 @@
       "required": false,
       "description": "Milliseconds between snapshots while the What is running pane is open."
     },
+    "collectorTimeoutMs": {
+      "type": "number",
+      "title": "Running-view collection timeout",
+      "default": 30000,
+      "required": false,
+      "description": "Maximum milliseconds for one What is running collection. The pane keeps its last snapshot and retries after a timeout."
+    },
     "activeWindowMin": {
       "type": "number",
       "title": "Running-work activity window",
