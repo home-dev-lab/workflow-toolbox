@@ -37,8 +37,8 @@
 // posture and its reason.
 //
 // Escape hatch: a denial the operator cannot clear turns into a bypass. A ONE-TIME, file-based
-// override at ~/.local/state/wt-main-guard/allow-once.json — not an env var, because an env
-// var can be set once and forgotten, silently disarming the guard for every future command.
+// override in the plugin's resolved data directory — not an env var, because an env var can be
+// set once and forgotten, silently disarming the guard for every future command.
 // The file must contain the EXACT command string being run. Consumption records the payload's
 // `tool_use_id`, so duplicate registrations agree on one tool call; a later call spends and
 // removes the record. The override itself is journalled with its stated reason.
@@ -66,6 +66,7 @@ import { consumeMainGuardAllowOnce, mainGuardStateDir } from './lib/main-guard-a
 
 const STATE_DIR = mainGuardStateDir()
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
+const ALLOW_ONCE_PATH = path.join(STATE_DIR, 'allow-once.json')
 
 // Per-class blocking posture, decided by measurement (see the report this port shipped with,
 // and docs/public/known-issues.md).
@@ -459,7 +460,7 @@ function main() {
           `[workflow-toolbox main guard] Refused: ${result.reason}. This Bash-text action has ` +
           'no undo; API deletions and gh calls are outside this guard. If it is genuinely ' +
           'intended, write {"command": "<exact ' +
-          'command>", "reason": "<why>"} to ~/.local/state/wt-main-guard/allow-once.json and ' +
+          `command>", "reason": "<why>"} to ${ALLOW_ONCE_PATH} and ` +
           'retry (single use).',
       },
     }),
