@@ -538,7 +538,8 @@ describe('owner decision 2: discovery and one instance', () => {
     for (let index = 0; index < 6; index += 1) spawnEnsure(project, env)
 
     const state = await waitForState(stateHome)
-    await waitFor(async () => (await health(state)).registeredSessions === 6 ? true : null, 10_000)
+    // Six PowerShell-backed process identity checks can exceed the Linux-sized bound on Windows CI.
+    await waitFor(async () => (await health(state)).registeredSessions === 6 ? true : null, 30_000)
     expect(spawnReceipts(spawnLog)).toHaveLength(1)
     expect(spawnReceipts(contentionLog).length).toBeGreaterThan(0)
   })
@@ -1931,6 +1932,14 @@ describe('review decisions: serving security matrix', () => {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_ROOTS: `b=${rootB}`, WT_ARTIFACT_SERVER_DENY: 'blocked-b',
     }))
     await waitForState(stateHome, (state) => state.roots.length === 2)
+    // Discovery is written before the HTTP handler necessarily observes the same registration sweep.
+    await waitFor(async () => {
+      const statuses = await Promise.all([
+        rawRequest(port, '/a/blocked-a', `localhost:${port}`), rawRequest(port, '/a/blocked-b', `localhost:${port}`),
+        rawRequest(port, '/b/blocked-a', `localhost:${port}`), rawRequest(port, '/b/blocked-b', `localhost:${port}`),
+      ])
+      return statuses.map((response) => response.status).join(',') === '403,200,200,403' ? true : null
+    }, 30_000)
     expect((await rawRequest(port, '/a/blocked-a', `localhost:${port}`)).status).toBe(403)
     expect((await rawRequest(port, '/a/blocked-b', `localhost:${port}`)).status).toBe(200)
     expect((await rawRequest(port, '/b/blocked-a', `localhost:${port}`)).status).toBe(200)

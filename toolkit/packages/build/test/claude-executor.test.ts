@@ -191,7 +191,8 @@ describe('Claude SDK executor', () => {
     expect(readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1)).toMatch(/^EXIT=\d+$/)
   })
 
-  it('item 8: SIGTERM and SIGINT sent to the pid the launcher prints write exit markers 143 and 130', () => {
+  // wt-claude-executor states that Windows forced termination has no POSIX 143/130 marker contract.
+  it.skipIf(process.platform === 'win32')('item 8: SIGTERM and SIGINT sent to the pid the launcher prints write exit markers 143 and 130', () => {
     for (const [signal, exit] of [['SIGTERM', 143], ['SIGINT', 130]] as const) {
       const f = fixture(); const report = join(f.worktree, '.lane', `review-report.${signal.toLowerCase()}.md`); const brief = join(f.root, `${signal}.md`); const log = join(f.worktree, '.lane', `${signal}.log`); const receipt = join(f.root, `${signal}.json`)
       writeFileSync(brief, `Write the report to \`${report}\`.\n`)
