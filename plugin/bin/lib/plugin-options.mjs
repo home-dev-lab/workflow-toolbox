@@ -35,6 +35,7 @@ const DEFINITIONS = Object.freeze({
   suiteRoot: { envKey: null, type: 'string', defaultValue: '' },
   extraRoots: { envKey: null, type: 'string', defaultValue: '' },
   pollMs: { envKey: null, type: 'number', defaultValue: 2000 },
+  collectorTimeoutMs: { envKey: null, type: 'number', defaultValue: 30000 },
   activeWindowMin: { envKey: null, type: 'number', defaultValue: 10 },
   linkBase: { envKey: null, type: 'string', defaultValue: '' },
   plankaBaseUrl: { envKey: null, type: 'string', defaultValue: '' },

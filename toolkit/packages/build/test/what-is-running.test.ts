@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error Function-hook modules ship as host-loaded JavaScript.
-import { COLLECTOR_TIMEOUT_MS, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
+import { COLLECTOR_TIMEOUT_MS, fileUrlPath, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
@@ -82,7 +82,7 @@ async function renderedText(snapshot: unknown) {
   return JSON.stringify(await renderedTree(snapshot), (_key, value) => typeof value === 'function' ? '[function]' : value)
 }
 
-async function paneHarness(initialSnapshot: unknown, options: Record<string, unknown> = {}, slowComponents = false, executeJournal = false) {
+async function paneHarness(initialSnapshot: unknown, options: Record<string, unknown> = {}, slowComponents = false, executeJournal = false, collectorRun?: (init?: Record<string, unknown>) => Promise<{ exitCode: number; stdout: string; stderr: string }>) {
   type Hook = (...args: unknown[]) => unknown
   const hooks: Array<{ event: string; matcher?: Record<string, string>; hook: Hook }> = []
   const timers: Array<() => Promise<void>> = []
@@ -108,6 +108,7 @@ async function paneHarness(initialSnapshot: unknown, options: Record<string, unk
         if (executeJournal) execFileSync(argv[0] === 'node' ? process.execPath : argv[0]!, argv.slice(1))
         return { exitCode: 0, stdout: '', stderr: '' }
       }
+      if (collectorRun) return collectorRun(init)
       return { exitCode: 0, stdout: JSON.stringify(snapshot), stderr: '' }
     } },
     command: { register: async () => undefined },
@@ -150,6 +151,11 @@ function textChildren(tree: unknown): string[] {
 }
 
 describe('What is running collector seam', () => {
+  it('resolves the shipped price table URL to a native Windows drive path', () => {
+    expect(fileUrlPath(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json'), 'win32'))
+      .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
+  })
+
   it('reports a live suite-lock holder from the fixture lock directory', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-live-'))
     try {
@@ -309,6 +315,34 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
+  it('ignores a 5000-file child coverage directory and keeps ordinary walk exhaustion row-local', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-child-coverage-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1867480027738670232'
+      const lane = join(paths.suiteRoot, 'worktrees', 'coverage-load', '.lane')
+      const coverage = join(lane, 'child-coverage-fixture')
+      mkdirSync(coverage, { recursive: true })
+      writeFileSync(join(lane, 'brief.md'), `# Brief: card ${cardId}: Coverage load\n`)
+      writeFileSync(join(lane, 'run.log'), 'working\n')
+      for (let index = 0; index < 5000; index += 1) writeFileSync(join(coverage, `${index}.json`), '{}')
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.discovery).toBe('available')
+      expect(snapshot.cappedScans).toEqual([])
+      expect(snapshot.rows.find((row: { cardId?: string }) => row.cardId === cardId)).toBeTruthy()
+
+      const ordinary = join(paths.suiteRoot, 'worktrees', 'coverage-load', 'ordinary-volume')
+      mkdirSync(ordinary)
+      for (let index = 0; index < 1001; index += 1) writeFileSync(join(ordinary, `${index}.txt`), 'evidence')
+      const approximate = await readSnapshot({ process: processCapability() }, paths)
+      const row = approximate.rows.find((item: { cardId?: string }) => item.cardId === cardId)
+      expect(approximate.discovery).toBe('available')
+      expect(approximate.cappedScans).toEqual([])
+      expect(row.activity).toMatch(/^last write at least /)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('shows live run total and elapsed time while a running lane cost is pending', async () => {
     const pilot = {
       id: 'pilot-live', kind: 'pilot', label: 'SDK pilot', project: 'wt-suite', sdkLifecycle: true, phase: 'tdd',
@@ -319,12 +353,40 @@ describe('What is running collector seam', () => {
       discovery: 'available', rows: [pilot], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
     })
     expect(text).toContain('run total so far: $1.23')
-    expect(text).toContain('cost so far: unknown · elapsed 29 min · lane usage arrives at lane end')
+    expect(text).toContain('cost: waiting for the lane to finish · elapsed 29 min')
     const unknownPriceText = await renderedText({
       discovery: 'available', rows: [{ ...pilot, phaseCosts: { discovery: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, usd: 'price unknown' } }, runCost: { usd: 'price unknown' } }],
       services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
     })
     expect(unknownPriceText).toContain('run total so far: price unknown')
+  })
+
+  it('renders layout A with one card title, a stage spine, billed classes per model, and owner-attributed errors', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const pilot = {
+      id: 'pilot-layout', kind: 'pilot', label: 'SDK pilot', sdkLifecycle: true, phase: 'tdd', outcome: 'error: typecheck gate failed', route: 'LITE', elapsed: '18 min',
+      phaseStates: { discovery: 'done', plan: 'skipped', critic: 'skipped', tdd: 'running', verify: 'not started', review: 'skipped', refutation: 'skipped', harden: 'skipped', report: 'not started' },
+      phaseCosts: { discovery: { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23, models: { 'anthropic/claude-opus-5': { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23 } } }, tdd: 'unknown' },
+      runCost: { usd: 1.23, models: { 'anthropic/claude-opus-5': { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23 } } },
+      phaseElapsed: { tdd: '17 min' }, inspectors: { discovery: { summary: 'Route selected.' } }, gates: { test: 'pass', typecheck: 'fail (1)' }, review: {}, lanes: [],
+    }
+    const snapshot = { discovery: 'available', collectedAt: new Date().toISOString(), rows: [], sessions: [{ id: 'session-layout', project: 'wt-suite', sessionId: 'd25e8b32-full', cards: [{ id: '1867464091673560164', title: 'Orphan watch: recognise staging lanes and test fixtures before warning', actors: [pilot] }], actors: [] }], services: { count: 0, items: [] }, helpers: { count: 0, items: [] } }
+    const render = (bodyColumns: number, expanded = new Set<string>()) => renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') }, snapshot, expanded, new Map(), 'wt-suite', false,
+      { close: () => undefined, switchScope: () => undefined, toggle: () => undefined, select: () => undefined, closeView: () => undefined, bodyColumns },
+    )
+    for (const width of [40, 70, 80, 160]) {
+      const collapsed = allTreeStrings(render(width)).map(({ value }) => value).join(' ')
+      expect(collapsed.match(/Orphan watch:/g)).toHaveLength(1)
+      expect(collapsed).toMatch(/SDK pilot.*drives the stages below/)
+      expect(collapsed).toMatch(/TDD ✗.*ERROR/)
+      expect(collapsed).toContain('next: Verify, Report · skipped: 5')
+      expect(collapsed).toContain('for the pilot runner')
+      expect(collapsed).not.toMatch(/(?:^|[ ·])unknown(?:$|[ ·])/i)
+    }
+    const expanded = allTreeStrings(render(80, new Set(['pilot-layout']))).map(({ value }) => value).join(' ')
+    expect(expanded).toContain('anthropic/claude-opus-5 · input 12 · cache write 57 558 · cache read 206 064 · output 46 · $1.23')
+    expect(expanded).toContain('owner: pilot runner')
   })
 
   it('accumulates repeated archived lifecycle rounds for one normalized phase', async () => {
@@ -480,11 +542,75 @@ describe('What is running collector seam', () => {
   }
 
   it('bounds the real collector call with its timeout through the session wiring', async () => {
-    const harness = await paneHarness(idleSnapshot)
+    const harness = await paneHarness(idleSnapshot, { collectorTimeoutMs: 30_000 })
     await harness.render()
 
     expect(harness.collectorInits().length).toBeGreaterThan(0)
-    expect(harness.collectorInits().every((init) => init?.timeoutMs === COLLECTOR_TIMEOUT_MS)).toBe(true)
+    expect(COLLECTOR_TIMEOUT_MS).toBe(30_000)
+    expect(harness.collectorInits().every((init) => init?.timeoutMs === 30_000)).toBe(true)
+  })
+
+  it('keeps the last snapshot through a timeout, journals the exact cause, and clears the notice after recovery', async () => {
+    const good = { discovery: 'available', collectedAt: new Date(Date.now() - 40_000).toISOString(), rows: [{ id: 'still-visible', kind: 'external', project: 'wt-suite', label: 'Lane', title: 'Visible work', outcome: 'running' }], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] } }
+    const recovered = { ...good, collectedAt: new Date().toISOString(), rows: [{ ...good.rows[0], title: 'Recovered work' }] }
+    let call = 0
+    const harness = await paneHarness(good, { collectorTimeoutMs: 30_000 }, false, false, async () => {
+      call += 1
+      if (call === 1) return { exitCode: 0, stdout: JSON.stringify(good), stderr: '' }
+      if (call === 2) throw Object.assign(new Error('$.process.run(node) aborted: still running after 30000ms'), { code: 'ETIMEDOUT' })
+      return { exitCode: 0, stdout: JSON.stringify(recovered), stderr: '' }
+    })
+
+    await harness.tick()
+    let text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain('Visible work')
+    expect(text).toContain('updated 40 s ago · last refresh failed, retrying')
+    expect(text).toContain('workflow-toolbox plugin')
+    expect(text).not.toContain('$.process.run(node)')
+    expect(harness.journal.at(-1)).toMatchObject({ kind: 'collector-failure', pluginVersion: '0.184.0' })
+    expect(harness.journal.at(-1)?.detail).toContain('$.process.run(node) aborted: still running after 30000ms')
+
+    const details = findByKey(await harness.render(), 'detail-toggle:row:collector-failure')
+    ;(details!.onPress as () => void)()
+    text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain('$.process.run(node) aborted: still running after 30000ms')
+    expect(text).toContain('journal: ')
+    expect(text).toContain('what-is-running-errors.jsonl')
+
+    await harness.tick()
+    text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain('Recovered work')
+    expect(text).not.toContain('last refresh failed')
+  })
+
+  it('names the plugin on a first-load failure and hides technical detail until expanded', async () => {
+    const technical = 'collector failed (exit code 17; exact fixture failure)'
+    const harness = await paneHarness(idleSnapshot, {}, false, false, async () => ({ exitCode: 17, stdout: '', stderr: 'exact fixture failure' }))
+    let text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain('The workflow-toolbox plugin could not read the running work; it will retry.')
+    expect(text).not.toContain(technical)
+
+    const details = findByKey(await harness.render(), 'detail-toggle:row:collector-failure')
+    ;(details!.onPress as () => void)()
+    text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain(technical)
+    expect(text).toContain('what-is-running-errors.jsonl')
+  })
+
+  it('never starts overlapping slow collections', async () => {
+    let calls = 0
+    let finishSlow: ((value: { exitCode: number; stdout: string; stderr: string }) => void) | undefined
+    const harness = await paneHarness(idleSnapshot, {}, false, false, async () => {
+      calls += 1
+      if (calls === 1) return { exitCode: 0, stdout: JSON.stringify(idleSnapshot), stderr: '' }
+      return new Promise((resolve) => { finishSlow = resolve })
+    })
+    const slow = harness.tick()
+    while (!finishSlow) await Promise.resolve()
+    await harness.tick()
+    expect(calls).toBe(2)
+    finishSlow({ exitCode: 0, stdout: JSON.stringify(idleSnapshot), stderr: '' })
+    await slow
   })
 
   it('[grey pane latch] one tick without a render does not shut an open pane', async () => {

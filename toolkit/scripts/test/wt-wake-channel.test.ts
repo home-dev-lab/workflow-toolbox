@@ -140,6 +140,20 @@ async function sync(child: ChildProcessWithoutNullStreams, messages: JsonRpcMess
   messages.splice(messages.indexOf(response), 1)
 }
 
+async function waitForPostInitDelivery(
+  child: ChildProcessWithoutNullStreams,
+  messages: JsonRpcMessage[],
+  patienceMs = 45_000,
+): Promise<JsonRpcMessage> {
+  // A wall-clock delivery bound is meaningful only after the child has run since the deposit.
+  await sync(child, messages)
+  return waitForMessage(
+    messages,
+    (message) => message.method === 'notifications/claude/channel',
+    patienceMs,
+  )
+}
+
 async function initialize(child: ChildProcessWithoutNullStreams, messages: JsonRpcMessage[]): Promise<void> {
   send(child, {
     jsonrpc: '2.0',
@@ -242,7 +256,7 @@ describe('wt-wake-channel MCP server', () => {
     expect(stderr()).toBe(`[wt-wake-channel] watching ${watchTarget}\n`)
     writeFileSync(join(spool, 'aliased.txt'), 'alias wake', 'utf8')
 
-    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel')
+    await waitForPostInitDelivery(child, messages)
       .catch((error: unknown) => {
         throw new Error(`${error instanceof Error ? error.message : String(error)}; child exit=${child.exitCode ?? child.signalCode ?? 'running'}; stderr=${stderr() || '<empty>'}`)
       })
@@ -262,7 +276,7 @@ describe('wt-wake-channel MCP server', () => {
 
     writeFileSync(join(spool, 'post-init.txt'), 'the observer speaks', 'utf8')
 
-    await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel', POST_INITIALIZATION_DELIVERY_BOUND_MS)
+    await waitForPostInitDelivery(child, messages, POST_INITIALIZATION_DELIVERY_BOUND_MS)
       .catch((error: unknown) => {
         throw new Error(`${error instanceof Error ? error.message : String(error)}; child exit=${child.exitCode ?? child.signalCode ?? 'running'}; stderr=${stderr() || '<empty>'}`)
       })
@@ -272,4 +286,23 @@ describe('wt-wake-channel MCP server', () => {
     expect(existsSync(join(spool, 'post-init.txt'))).toBe(false)
     expect(stderr()).toBe('')
   }, POST_INITIALIZATION_DELIVERY_BOUND_MS + 2_000)
+
+  it.skipIf(process.platform === 'win32')('does not charge child scheduler starvation against post-init delivery', async () => {
+    const { child, spool, messages } = startServer()
+    await initialize(child, messages)
+
+    child.kill('SIGSTOP')
+    writeFileSync(join(spool, 'starved.txt'), 'delayed by scheduler starvation', 'utf8')
+    const resume = setTimeout(() => child.kill('SIGCONT'), 250)
+    try {
+      await waitForPostInitDelivery(child, messages, 100)
+    } finally {
+      clearTimeout(resume)
+      child.kill('SIGCONT')
+    }
+
+    expect(channelMessages(messages).map((message) => message.params?.content)).toEqual([
+      '<observer source="wt-wake-channel">delayed by scheduler starvation</observer>',
+    ])
+  })
 })
