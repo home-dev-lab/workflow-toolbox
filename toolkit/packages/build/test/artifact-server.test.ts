@@ -1070,6 +1070,12 @@ describe('owner decision 2: discovery and one instance', () => {
     else holder.kill('SIGTERM')
     await waitFor(() => /startup stopped during shutdown/i.test(output.stdout()) ? true : null)
     expect(output.stdout()).not.toMatch(/no available port/i)
+    await new Promise<void>((resolve) => {
+      if (holder.exitCode !== null || holder.signalCode !== null) resolve()
+      else holder.once('close', () => resolve())
+    })
+    children.delete(holder)
+    expect(holder.exitCode).toBe(0)
   })
 
   it('reports a spawned server that was not ready without claiming port exhaustion', async () => {
