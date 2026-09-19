@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
+import type { SpawnSyncReturns } from 'node:child_process'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,13 +20,31 @@ function* files(dir: string): Generator<string> {
 
 describe('shipped private plugins', () => {
   for (const plugin of PLUGINS) {
-    it(`${plugin} selftest exits successfully`, () => {
-      const result = spawnSync(process.execPath, [join(REPO_ROOT, 'plugins', plugin, 'hooks', 'hooks.selftest.mjs')], {
+    let selftest: SpawnSyncReturns<string>
+
+    beforeAll(() => {
+      selftest = spawnSync(process.execPath, [join(REPO_ROOT, 'plugins', plugin, 'hooks', 'hooks.selftest.mjs')], {
         cwd: REPO_ROOT,
         encoding: 'utf8',
       })
-      expect(result.status, result.stderr || result.stdout).toBe(0)
     })
+
+    it(`${plugin} selftest exits successfully`, () => {
+      expect(selftest.status, selftest.stderr || selftest.stdout).toBe(0)
+    })
+
+    for (const lock of [
+      'prompt storage rewrites history display and nested pasted contents without changing unrelated lines or mode',
+      'concurrent history appends survive every in-place overwrite byte-identical',
+      'prompt storage locates the JSON-escaped secret and leaves valid same-length JSON',
+      'not-found prompt storage warns exactly once without revealing the secret',
+      'malformed prompt history is left untouched and does not repeat the storage notice',
+      'compare-then-write mismatch writes nothing and keeps one secret-free notice',
+      'history rewrite retries inside a bounded clock window when the record is initially absent',
+      'prompt storage falls back from CLAUDE_CONFIG_DIR to HOME dot-claude',
+      'sdk prompt storage rewrites an enqueue record written after prompt forwarding',
+      'queue-operation targeting is independent of prompt origin and retries a late enqueue',
+    ]) it(`${plugin}: ${lock}`, () => expect(selftest.stdout).toContain(`PASS ${lock}`))
   }
 
   it('contains no machine-specific home path or private 19-digit identifier', () => {
