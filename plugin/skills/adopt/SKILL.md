@@ -7,14 +7,16 @@ description: >-
   fingerprinted path, or when the user explicitly asks to "adopt the delegation rules",
   "install the workflow-toolbox rules as editable files", "install project copies of the pilot
   agents", "adopt the pilot watchdog into this project", or "check my adopted
-  workflow-toolbox rules/agents for updates". Write ONLY on request; never run automatically.
+  workflow-toolbox rules/agents for updates". Write only on a direct request or when the
+  read-only adoption hook explicitly orders this session to refresh a named unedited stale copy.
   Not for authoring workflows or composing a pilot wave.
 ---
 
 # adopt — install editable copies of workflow-toolbox's guardrails and pilot agents
 
 This skill writes **editable, versioned copies** of workflow-toolbox material into the
-user's project, on explicit request only. It manages four sets — `rules`, `agents`,
+user's project, on explicit request or an exact stale-copy action from the read-only adoption
+hook. It manages four sets — `rules`, `agents`,
 `autonomy`, and `docs` (below); `--set all` covers all four in one pass:
 
 - **rules** — the cross-cutting guardrail rule files, SOURCED from the plugin's `rules/`
@@ -91,9 +93,13 @@ Safety contract for settings writes:
 
 ## The contract (do not violate)
 
-- **Opt-in, explicit only.** Write files ONLY when the user asked. A first-run suggestion
-  (from the plugin's `SessionStart` hook) or the `pilot-wave` skill may POINT at this skill;
-  it must never write on its own.
+- **No hook writes.** The `SessionStart`/`PostToolUse` hook stays read-only. For an unedited
+  stale copy it orders the session to run an exact `--install --dir <found-directory>` command,
+  re-run `--check` there, and report one line. This is the only non-user-prompted refresh path;
+  first-time adoption still requires a direct user request.
+- **Single-writer opt-out.** Set `WT_ADOPT_REFRESH=notice-only` or plugin option
+  `adopt_refresh: "notice-only"` in a non-writer session. The notice still names the directory
+  and exact command, but hands it to the session that owns that directory.
 - **Every written file is stamped, fingerprinted, and editable.** The banner carries the
   plugin version AND a content fingerprint
   (`installed from workflow-toolbox v<version> · content sha256:<hex> …`). For a rule it is
@@ -130,8 +136,12 @@ When adopting into a project that already has rules, reconcile first — see the
 "Reconciling your existing project rules" section in `../../rules/README.md`.
 
 - **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|autonomy|docs|all> --check`
+- **Inspect an edited copy (read-only):** `node scripts/install.mjs --set <set> --diff <file> --dir <found-directory>`
+  prints the journalled text as adopted, the local text, and the currently shipped text.
 - **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|docs|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
+- **Overwrite one arbitrated copy only:** add `--force --file <file>` to `--install`; do not
+  use set-wide `--force` when the three-way decision covered only one file.
 - **Replace a symlinked target (deliberate):** add `--replace-symlinks` to `--install` — a
   symlinked target is otherwise reported and SKIPPED (never written through); this unlinks
   the symlink and writes a managed copy in its place, leaving the former target untouched.
@@ -310,8 +320,13 @@ the project and active config profile. It stays silent when every adopted copy m
 differing managed copy it names `behind vX` or `ahead of vX` from the banner-version ordering;
 equal-version drift is classified from the stripped copy body when one side only adds content.
 If content changed in both directions, it says that direction is unknown rather than guessing.
-The hook never refreshes anything: the owner or single writer must run
-`node scripts/install.mjs --set <set> --install` after reviewing the finding.
+The hook never refreshes anything itself. For an unedited stale copy, the session runs the exact
+`--install --dir` command from the notice, re-checks that directory, and reports one line. For an
+edited copy, the session runs `--diff`, then either takes shipped text deliberately with
+`--install --force --file <file>` or keeps the
+edit and opens a card against the shipped rule. Successful installer writes are journalled with
+file, directory, before/after versions, and the adopted shipped snapshot. A directory symlink and
+its real target are one target; a second real config directory is checked and refreshed separately.
 
 - **ABSENT** — not installed; `--install` writes it.
 - **SYMLINK** — the target is a symlink; `--install` reports it and leaves it (and its real

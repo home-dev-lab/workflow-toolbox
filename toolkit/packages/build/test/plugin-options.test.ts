@@ -19,6 +19,7 @@ const cases = [
   { option: 'planka_mcp_url', envKey: 'WT_PLANKA_MCP_URL', optionValue: 'http://option:1/mcp', envValue: 'http://env:2/mcp', defaultValue: '' },
   { option: 'second_opinion_fable_max_pct', envKey: 'WT_SECOND_OPINION_FABLE_MAX_PCT', optionValue: 72, envValue: '73', defaultValue: 90 },
   { option: 'release_branch', envKey: 'WT_RELEASE_BRANCH', optionValue: 'stable', envValue: 'release', defaultValue: '' },
+  { option: 'adopt_refresh', envKey: 'WT_ADOPT_REFRESH', optionValue: 'notice-only', envValue: 'session', defaultValue: 'session' },
 ] as const
 
 function fixture(settings?: unknown) {

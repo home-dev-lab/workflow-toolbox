@@ -35,14 +35,16 @@
 //            pre-migration location this set never had.
 //
 // It is safe BY CONSTRUCTION: `--install` never overwrites a locally-edited (or
-// hand-authored) file — that needs an explicit `--force`. `--check` is always
-// read-only. The skill (and any first-run suggestion) may only SUGGEST adoption —
-// never write silently.
+// hand-authored) file — that needs an explicit `--force`. `--check` and `--diff`
+// are always read-only. Successful writes journal their shipped snapshot so a later
+// edited-copy arbitration can show adopted, local, and currently shipped text.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
 //   node install.mjs [--set rules|agents|autonomy|docs|scripts|all] --check   [--dir <dir>]   # report, write nothing
 //   node install.mjs [--set rules|agents|autonomy|docs|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
 //   node install.mjs [--set rules|agents|autonomy|docs|all] --install --force [--dir <dir>]  # also overwrite edited copies
+//   node install.mjs --set <set> --install --force --file <file> --dir <dir>  # overwrite one arbitrated copy
+//   node install.mjs --set <set> --diff <file> --dir <dir>                   # read-only adopted/local/shipped view
 //   node install.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
 //   node install.mjs [--set …] --check|--install --global                      # target the CONFIG dir instead of the project
 //
@@ -82,6 +84,7 @@ const SETTINGS_FILE = 'settings.json'
 const SETTINGS_TRACE_DIR = 'workflow-toolbox'
 const SETTINGS_TRACE_FILE = 'adopt-settings-trace.json'
 const SETTINGS_BACKUP_PREFIX = 'settings.json.workflow-toolbox.bak.'
+const ADOPT_JOURNAL_FILE = '.workflow-toolbox-adopt-journal.jsonl'
 
 // ⚠ THIS LIST HAS A TWIN: plugin/bin/lib/env-prerequisites.mjs, which the SessionStart
 // drift check reads. This installer REPAIRS a missing prerequisite; that hook DETECTS
@@ -1113,6 +1116,52 @@ function classify(target, set) {
   return { state: clean ? 'clean' : 'edited', installedVer, contentFp, body }
 }
 
+function journalPath(dir) {
+  return path.join(dir, ADOPT_JOURNAL_FILE)
+}
+
+function appendAdoptionJournal(dir, entry) {
+  fs.appendFileSync(journalPath(dir), `${JSON.stringify(entry)}\n`)
+}
+
+function adoptedSnapshot(dir, file, version) {
+  let lines
+  try {
+    lines = fs.readFileSync(journalPath(dir), 'utf8').trim().split('\n').reverse()
+  } catch {
+    return null
+  }
+  for (const line of lines) {
+    try {
+      const entry = JSON.parse(line)
+      if (entry.file === file && entry.afterVersion === version && typeof entry.adoptedText === 'string') {
+        return entry.adoptedText
+      }
+    } catch {
+      // A damaged older line must not hide a later usable snapshot.
+    }
+  }
+  return null
+}
+
+function printThreeWayDiff(set, dir, file, version, root) {
+  if (!file || path.basename(file) !== file) fail('--diff requires one managed file basename')
+  const item = set.resolveItems(root).find((candidate) => candidate.file === file)
+  if (!item) fail(`--diff file is not managed by --set ${set.kind}: ${file}`)
+  const target = path.join(dir, file)
+  const classified = classify(target, set)
+  if (!['clean', 'edited', 'edited-unknown'].includes(classified.state)) {
+    fail(`--diff requires a managed copy at ${target} (found ${classified.state})`)
+  }
+  const local = fs.readFileSync(target, 'utf8')
+  const adopted = adoptedSnapshot(dir, file, classified.installedVer)
+  const adoptedText = adopted ?? '[unavailable: this copy predates the adoption journal]'
+  process.stdout.write(`adopt: read-only three-way view for ${target}\n`)
+  process.stdout.write(`=== ADOPTED v${classified.installedVer} ===\n${adoptedText}\n`)
+  process.stdout.write(`=== LOCAL ${target} ===\n${stripBannerFor(set, local)}\n`)
+  process.stdout.write(`=== SHIPPED v${version} ===\n${itemContent(set, item, root)}\n`)
+}
+
 function cmp(a, b) {
   const pa = a.split('.').map(Number)
   const pb = b.split('.').map(Number)
@@ -1357,6 +1406,8 @@ function parseArgs(argv) {
     secondaryDir: null,
     ignoreSecondary: false,
     execute: false,
+    diffFile: null,
+    file: null,
   }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--install') args.mode = 'install'
@@ -1375,6 +1426,11 @@ function parseArgs(argv) {
     else if (argv[i] === '--secondary-dir') args.secondaryDir = argv[++i]
     else if (argv[i] === '--ignore-secondary') args.ignoreSecondary = true
     else if (argv[i] === '--execute') args.execute = true
+    else if (argv[i] === '--diff') {
+      args.mode = 'diff'
+      args.diffFile = argv[++i]
+    }
+    else if (argv[i] === '--file') args.file = argv[++i]
   }
   return args
 }
@@ -1400,14 +1456,16 @@ const FLAG_EFFECTIVE_MODES = {
   userDir: { cli: '--user-dir', modes: ['audit-overlap'] },
   pairsFile: { cli: '--pairs-file', modes: ['audit-overlap'] },
   declarationsFile: { cli: '--declarations-file', modes: ['audit-overlap'], sets: ['rules'] },
-  dir: { cli: '--dir', modes: ['check', 'install', 'migrate'] },
-  global: { cli: '--global', modes: ['check', 'install', 'migrate'] },
+  dir: { cli: '--dir', modes: ['check', 'install', 'migrate', 'diff'] },
+  global: { cli: '--global', modes: ['check', 'install', 'migrate', 'diff'] },
   force: { cli: '--force', modes: ['install'] },
   replaceSymlinks: { cli: '--replace-symlinks', modes: ['check', 'install'] },
   dryRun: { cli: '--dry-run', modes: ['migrate'] },
   secondaryDir: { cli: '--secondary-dir', modes: ['migrate'] },
   ignoreSecondary: { cli: '--ignore-secondary', modes: ['migrate'] },
   execute: { cli: '--execute', modes: ['migrate'] },
+  diffFile: { cli: '--diff', modes: ['diff'] },
+  file: { cli: '--file', modes: ['install'] },
 }
 
 /** Refuse any flag that was passed but has no effect in the resolved mode (or set). */
@@ -1829,7 +1887,11 @@ function processSet(set, dir, args, version, root) {
   let anyMigrationPending = false
   let anyDuplicate = false
   const nestedDir = explicitNestedTarget(set, dir, args)
-  for (const item of set.resolveItems(root)) {
+  const items = set.resolveItems(root)
+  if (args.file && !items.some((item) => item.file === args.file)) {
+    fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
+  }
+  for (const item of items.filter((candidate) => !args.file || candidate.file === args.file)) {
     const target = path.join(dir, item.file)
     const c = classify(target, set)
     const shippedFp = shippedFingerprint(set, item, root)
@@ -1913,7 +1975,17 @@ function processSet(set, dir, args, version, root) {
               : args.force && c.state !== 'clean'
                 ? 'OVERWROTE (--force)'
                 : 'REFRESHED'
-        process.stdout.write(`  ${item.file}: ${verb} v${version} → ${target}\n`)
+        appendAdoptionJournal(dir, {
+          timestamp: new Date().toISOString(),
+          file: item.file,
+          directory: dir,
+          action: verb,
+          beforeVersion: c.installedVer ?? null,
+          afterVersion: version,
+          adoptedText: stripBannerFor(set, finalText),
+        })
+        const versions = c.installedVer ? `v${c.installedVer} -> v${version}` : `none -> v${version}`
+        process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})\n`)
       } else {
         process.stdout.write(`  ${item.file}: SKIPPED — ${p.status}\n`)
       }
@@ -2480,6 +2552,15 @@ function main() {
   // a standalone script that must each run alone. They are locked in step by tests, not by
   // a shared module they cannot both reach.
   const globalRoot = resolvedConfigRoot()
+  if (args.mode === 'diff') {
+    if (chosen.length !== 1) fail('--diff requires a single --set')
+    const set = SETS[chosen[0]]
+    const dir = path.resolve(
+      args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
+    )
+    printThreeWayDiff(set, dir, args.diffFile, version, root)
+    return
+  }
   const implicitInstallDirs = resolveImplicitInstallDirs(chosen, args, root)
 
   preflightAdoptedLauncherRuntime(chosen, root)

@@ -70,6 +70,7 @@
     { "name": "WT_ARTIFACT_SERVER_DENY", "where": "plugin/bin/lib/plugin-options.mjs (env fallback)" },
     { "name": "WT_LANE_ORPHAN_CLEANUP", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; observe|enforce, default observe)" },
     { "name": "WT_LANE_STALL_MINUTES", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; default 10)" },
+    { "name": "WT_ADOPT_REFRESH", "where": "plugin/bin/lib/plugin-options.mjs (env fallback; session|notice-only, default session)" },
     { "name": "WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS", "where": "plugin/bin/wt-artifact-server.mjs (test-only env knob)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_MODE", "where": "plugin/bin/wt-artifact-server-ensure.mjs (master test-mode gate)" },
     { "name": "WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS", "where": "plugin/bin/wt-artifact-server-ensure.mjs (test-only startup-claim age)" },
