@@ -4,22 +4,61 @@ import { sha256 } from './sha256.js';
 import { resolveReference } from './hooks.js';
 
 const hooks = []; const logs = []; const calls = [];
+const configDir = '/tmp/wt-secret-guard-config';
+const projectDir = '/tmp/wt-secret-guard-project';
+const sessionId = 'session-fixture';
+const historyPath = `${configDir}/history.jsonl`;
+const transcriptPath = `${configDir}/projects/-tmp-wt-secret-guard-project/${sessionId}.jsonl`;
+let nextInode = 1;
 const files = new Map([
-  ['/tmp/wt-secret-guard-file', "file-secret value with ' quote\nsecond-file-secret"],
+  ['/tmp/wt-secret-guard-file', { text: "file-secret value with ' quote\nsecond-file-secret", mode: 0o600, inode: nextInode++ }],
 ]);
+const setFile = (path, text, mode = 0o600) => files.set(path, { text, mode, inode: nextInode++ });
+const getFile = (path) => files.get(path);
+let onSleep;
+let onBeforeCompare;
+let onBeforeWrite;
+const readFile = async (path) => {
+  if (typeof path !== 'string') throw new Error('fs.read takes a path string (positional)');
+  if (!files.has(path)) throw new Error('ENOENT');
+  return files.get(path).text;
+};
 const $ = {
   ui: { log: async (line) => logs.push(line) },
   fs: {
-    readFile: async (path) => {
-      if (typeof path !== 'string') throw new Error('fs.readFile takes a path string (positional)');
-      if (!files.has(path)) throw new Error('ENOENT');
-      return files.get(path);
-    },
-    writeFile: async (path, text) => calls.push({ capability: 'fs.writeFile', path, text }),
-    stat: async () => ({ mode: 0o600 }),
+    read: readFile,
+    readFile,
+    stat: async (path) => ({ kind: 'file', size: Buffer.byteLength(files.get(path).text), mtimeMs: 0 }),
   },
   store: { get: async () => ({}), set: async (key, value) => calls.push({ capability: 'store.set', key, value }) },
-  process: { run: async (argv) => { calls.push({ capability: 'process.run', argv }); return { stdout: argv[0] === 'op' ? 'op-fake-value\n' : '' }; } },
+  process: { run: async (argv, init) => {
+    calls.push({ capability: 'process.run', argv });
+    if (argv[0] === 'dd') {
+      const option = (name) => argv.find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
+      const inputPath = option('if');
+      const outputPath = option('of');
+      const offset = Number(option(inputPath ? 'skip' : 'seek'));
+      const length = Number(option('count'));
+      if (inputPath) {
+        if (onBeforeCompare) await onBeforeCompare(inputPath, offset, length);
+        return { exitCode: 0, stdout: Buffer.from(getFile(inputPath).text).subarray(offset, offset + length).toString() };
+      }
+      if (onBeforeWrite) await onBeforeWrite(outputPath, offset, init.stdin);
+      const file = getFile(outputPath);
+      const before = Buffer.from(file.text);
+      const replacement = Buffer.from(init.stdin);
+      const afterLength = argv.includes('conv=notrunc') ? Math.max(before.length, offset + replacement.length) : offset + replacement.length;
+      const after = Buffer.alloc(afterLength);
+      before.copy(after, 0, 0, Math.min(before.length, afterLength));
+      replacement.copy(after, offset);
+      file.text = after.toString();
+      return { exitCode: 0, stdout: '' };
+    }
+    return { exitCode: 0, stdout: argv[0] === 'op' ? 'op-fake-value\n' : '' };
+  } },
+  env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: configDir, HOME: '/tmp/home' })[name] },
+  session: { cwd: async () => projectDir, id: async () => sessionId },
+  clock: { sleep: async () => { if (onSleep) await onSleep(); }, now: () => 0 },
 };
 register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }));
 const bash = hooks.find((hook) => hook.event === 'tool.call').hook;
@@ -46,7 +85,7 @@ await test('Read result scrub publishes tokens without treating its path as a se
 await test('MCP result scrub tokenises inbound sensitive text without rewriting its input', async () => { const value = 'mcp-result-secret'; const event = { tool: 'mcp__atrium__read_message', text: `token = ${value}` }; const result = await mcp($, event, async (received) => ({ ...received, text: received.text })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.tool, event.tool); assert.match(result.text, /secret:assignment#/); });
 await test('allow-list', async () => { const input = '0123456789abcdef0123456789abcdef01234567 123e4567-e89b-12d3-a456-426614174000 secret:github#abcdef'; const result = await call('cat fixture.txt', input); assert.equal(result.text, input); });
 await test('logs contain no secret value', async () => { for (const value of [github, aws, "file-secret value with ' quote", 'second-file-secret', 'read-result-secret', 'mcp-result-secret']) assert(logs.every((line) => !line.includes(value))); });
-await test('detection table in the store carries tokens, kinds and salted hashes, never values', async () => { assert.equal(calls.filter((call) => call.capability === 'fs.writeFile').length, 0); const publication = calls.filter((call) => call.capability === 'store.set' && call.key === 'detections').at(-1); assert(publication); const table = publication.value; const text = JSON.stringify(table); assert.equal(table.version, 1); assert(table.entries.length >= 2); assert(table.entries.every((entry) => entry.kind && /^secret:/.test(entry.token) && /^[a-f0-9]{64}$/.test(entry.sha256))); assert(!text.includes(github) && !text.includes(aws)); const saltWrite = calls.find((call) => call.capability === 'store.set' && call.key === 'salt'); assert(saltWrite); assert.equal(sha256(`${saltWrite.value}:${github}`), table.entries.find((entry) => entry.kind === 'github-classic').sha256); assert.notEqual(sha256(github), table.entries.find((entry) => entry.kind === 'github-classic').sha256); });
+await test('detection table in the store carries tokens, kinds and salted hashes, never values', async () => { const publication = calls.filter((call) => call.capability === 'store.set' && call.key === 'detections').at(-1); assert(publication); const table = publication.value; const text = JSON.stringify(table); assert.equal(table.version, 1); assert(table.entries.length >= 2); assert(table.entries.every((entry) => entry.kind && /^secret:/.test(entry.token) && /^[a-f0-9]{64}$/.test(entry.sha256))); assert(!text.includes(github) && !text.includes(aws)); const saltWrite = calls.find((call) => call.capability === 'store.set' && call.key === 'salt'); assert(saltWrite); assert.equal(sha256(`${saltWrite.value}:${github}`), table.entries.find((entry) => entry.kind === 'github-classic').sha256); assert.notEqual(sha256(github), table.entries.find((entry) => entry.kind === 'github-classic').sha256); });
 await test('persistent store never carries a value; tokens only under the detections key', async () => { const writes = calls.filter((call) => call.capability === 'store.set'); assert(writes.length >= 3); for (const value of [github, aws, "file-secret value with ' quote", 'second-file-secret', 'read-result-secret', 'mcp-result-secret']) assert(writes.every((call) => !JSON.stringify(call.value).includes(value))); assert(writes.filter((call) => call.key !== 'detections').every((call) => !JSON.stringify(call.value).includes('secret:'))); });
 await test('op resolver runs the configured binary and logs a counts-only line when it fails', async () => { const { configure } = await import('./hooks.js'); configure({ opBinary: 'op.exe' }); const before = calls.length; await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw2' }, async () => ({ text: 'x' })); const run = calls.slice(before).find((call) => call.capability === 'process.run'); assert(run && run.argv[0] === 'op.exe'); const failing = { ...$, process: { run: async () => { const e = new Error('spawn op ENOENT'); e.code = 'ENOENT'; throw e; } } }; const r = await resolveReference(failing, 'op://v/i/f'); assert.equal(r.token, null); assert(logs.some((line) => line.includes('op resolve failed to start (ENOENT)'))); assert(logs.every((line) => !line.includes('op-fake-value'))); configure({}); });
 await test('op resolver returns a token, never its value', async () => { const result = await resolveReference($, 'op://vault/item/field'); assert.match(result.token, /^secret:onepassword#/); assert(!JSON.stringify(result).includes('op-fake-value')); assert.equal(testState().get(result.token).value, 'op-fake-value'); });
@@ -84,6 +123,135 @@ await test('prompt secrets are scrubbed before forwarding and downstream drops s
   assert.equal(received[0].source, 'user');
   assert.equal(input.text, `paste ${github}`);
   assert.equal(result, outcome);
+});
+await test('prompt storage rewrites history display and nested pasted contents without changing unrelated lines or mode', async () => {
+  const raw = `ghp_${'h'.repeat(36)}`;
+  const unrelated = '{"display":"leave this byte-for-byte","pastedContents":{},"timestamp":1}';
+  setFile(historyPath, `${unrelated}\n${JSON.stringify({ display: `paste ${raw}`, pastedContents: { one: raw, nested: [raw] }, timestamp: 2 })}\n`);
+  const original = { ...getFile(historyPath) };
+  let received;
+  await prompt($, { text: `paste ${raw}`, origin: { kind: 'composer' }, wait: false }, async (event) => { received = event; return {}; });
+  const stored = getFile(historyPath);
+  const lines = stored.text.trimEnd().split('\n');
+  assert.equal(lines[0], unrelated);
+  assert.equal(stored.text.includes(raw), false);
+  assert.equal(stored.mode, 0o600);
+  assert.equal(stored.inode, original.inode);
+  assert.equal(Buffer.byteLength(stored.text), Buffer.byteLength(original.text));
+  const token = received.text.match(/secret:github-classic#[a-f0-9]+/)[0];
+  assert.equal((stored.text.match(new RegExp(token, 'g')) ?? []).length, 3);
+  const masked = original.text.split(raw).join(token.padEnd(raw.length, '*'));
+  assert.equal(stored.text, masked);
+});
+await test('concurrent history appends survive every in-place overwrite byte-identical', async () => {
+  const raw = `ghp_${'c'.repeat(36)}`;
+  const original = `${JSON.stringify({ display: raw, pastedContents: { again: raw } })}\n`;
+  const appended = '{"display":"concurrent one","timestamp":11}\n{"display":"concurrent two","timestamp":12}\n';
+  setFile(historyPath, original);
+  onBeforeWrite = async (path) => { getFile(path).text += appended; onBeforeWrite = undefined; };
+  await prompt($, { text: raw, origin: { kind: 'composer' }, wait: false }, async () => ({}));
+  const stored = getFile(historyPath).text;
+  assert.equal(stored.endsWith(appended), true);
+  assert.equal(stored.includes(raw), false);
+  assert.equal(Buffer.byteLength(stored), Buffer.byteLength(original) + Buffer.byteLength(appended));
+});
+await test('prompt storage locates the JSON-escaped secret and leaves valid same-length JSON', async () => {
+  const raw = '-----BEGIN PRIVATE KEY-----\nline-one\nline-two\n-----END PRIVATE KEY-----';
+  const original = `${JSON.stringify({ display: raw, pastedContents: {} })}\n`;
+  setFile(historyPath, original);
+  await prompt($, { text: raw, origin: { kind: 'composer' }, wait: false }, async () => ({}));
+  const stored = getFile(historyPath).text;
+  assert.equal(Buffer.byteLength(stored), Buffer.byteLength(original));
+  assert.equal(stored.includes(JSON.stringify(raw).slice(1, -1)), false);
+  assert.doesNotThrow(() => JSON.parse(stored.trimEnd()));
+});
+await test('not-found prompt storage warns exactly once without revealing the secret', async () => {
+  const raw = `ghp_${'n'.repeat(36)}`;
+  files.delete(historyPath);
+  files.delete(transcriptPath);
+  const beforeLogs = logs.length;
+  await prompt($, { text: raw, origin: { kind: 'sdk' }, wait: false }, async () => ({}));
+  await prompt($, { text: raw, origin: { kind: 'sdk' }, wait: false }, async () => ({}));
+  const notices = logs.slice(beforeLogs).filter((line) => line.includes('prompt storage'));
+  assert.equal(notices.length, 1);
+  assert.equal(notices.some((line) => line.includes(raw)), false);
+});
+await test('malformed prompt history is left untouched and does not repeat the storage notice', async () => {
+  const raw = `ghp_${'m'.repeat(36)}`;
+  const original = `${JSON.stringify({ display: raw, pastedContents: {} })}\nnot-json\n`;
+  setFile(historyPath, original);
+  const beforeLogs = logs.length;
+  await prompt($, { text: raw, origin: { kind: 'composer' }, wait: false }, async () => ({}));
+  assert.equal(getFile(historyPath).text, original);
+  const notices = logs.slice(beforeLogs).filter((line) => line.includes('prompt storage'));
+  assert.equal(notices.length, 0);
+});
+await test('compare-then-write mismatch writes nothing and keeps one secret-free notice', async () => {
+  const raw = `ghp_${'x'.repeat(36)}`;
+  const changed = `ghp_${'y'.repeat(36)}`;
+  setFile(historyPath, `${JSON.stringify({ display: raw, pastedContents: {} })}\n`);
+  const writesBefore = calls.filter((call) => call.capability === 'process.run' && call.argv.some((part) => String(part).startsWith('of='))).length;
+  onBeforeCompare = async (path) => { getFile(path).text = getFile(path).text.replace(raw, changed); onBeforeCompare = undefined; };
+  await prompt($, { text: raw, origin: { kind: 'composer' }, wait: false }, async () => ({}));
+  const writesAfter = calls.filter((call) => call.capability === 'process.run' && call.argv.some((part) => String(part).startsWith('of='))).length;
+  assert.equal(writesAfter, writesBefore);
+  assert.equal(getFile(historyPath).text.includes(changed), true);
+  const notices = logs.filter((line) => line.includes('prompt storage'));
+  assert.equal(notices.length, 1);
+  assert.equal(notices.some((line) => line.includes(raw) || line.includes(changed)), false);
+});
+await test('history rewrite retries inside a bounded clock window when the record is initially absent', async () => {
+  const raw = `ghp_${'r'.repeat(36)}`;
+  files.delete(historyPath);
+  let sleeps = 0;
+  onSleep = async () => { sleeps += 1; setFile(historyPath, `${JSON.stringify({ display: raw, pastedContents: {} })}\n`); onSleep = undefined; };
+  await prompt($, { text: raw, origin: { kind: 'composer' }, wait: false }, async () => ({}));
+  assert.equal(sleeps, 1);
+  assert.equal(getFile(historyPath).text.includes(raw), false);
+});
+await test('prompt storage falls back from CLAUDE_CONFIG_DIR to HOME dot-claude', async () => {
+  const raw = `ghp_${'d'.repeat(36)}`;
+  const defaultHistory = '/tmp/home/.claude/history.jsonl';
+  setFile(defaultHistory, `${JSON.stringify({ display: raw, pastedContents: {} })}\n`);
+  const homeOnly = { ...$, env: { get: async (name) => name === 'HOME' ? '/tmp/home' : undefined } };
+  await prompt(homeOnly, { text: raw, origin: { kind: 'composer' }, wait: false }, async () => ({}));
+  assert.equal(getFile(defaultHistory).text.includes(raw), false);
+});
+await test('sdk prompt storage rewrites an enqueue record written after prompt forwarding', async () => {
+  const raw = `ghp_${'q'.repeat(36)}`;
+  const unrelated = '{"type":"system","content":"unchanged","uuid":"one"}';
+  files.delete(historyPath);
+  files.delete(transcriptPath);
+  let original;
+  await prompt($, { text: `use ${raw}`, origin: { kind: 'sdk' }, wait: false }, async () => {
+    setFile(transcriptPath, `${unrelated}\n${JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: `use ${raw}`, uuid: 'two' })}\n`);
+    original = { ...getFile(transcriptPath) };
+    return {};
+  });
+  const stored = getFile(transcriptPath);
+  assert.equal(stored.text.trimEnd().split('\n')[0], unrelated);
+  assert.equal(stored.text.includes(raw), false);
+  assert.equal(stored.mode, 0o600);
+  assert.equal(stored.inode, original.inode);
+  assert.equal(Buffer.byteLength(stored.text), Buffer.byteLength(original.text));
+  assert.match(stored.text, /secret:github-classic#/);
+});
+await test('queue-operation targeting is independent of prompt origin and retries a late enqueue', async () => {
+  const raw = `ghp_${'z'.repeat(36)}`;
+  files.delete(historyPath);
+  setFile(transcriptPath, `${JSON.stringify({ type: 'queue-operation', operation: 'dequeue', content: '' })}\n`);
+  let sleeps = 0;
+  onSleep = async () => {
+    sleeps += 1;
+    if (sleeps === 2) {
+      getFile(transcriptPath).text += `${JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: `use ${raw}` })}\n`;
+      onSleep = undefined;
+    }
+  };
+  await prompt($, { text: `use ${raw}`, origin: { kind: 'bridge' }, wait: false }, async () => ({}));
+  assert.equal(sleeps, 2);
+  assert.equal(getFile(transcriptPath).text.includes(raw), false);
+  assert.match(getFile(transcriptPath).text, /secret:github-classic#/);
 });
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);
