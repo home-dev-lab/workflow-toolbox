@@ -800,10 +800,10 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     const malformedB = byLabel['malformed (wrong field types)']
     expect(malformedA).toBe(malformedB) // same STATUS ⇒ same text, regardless of producer
     expect(stale).not.toBe(malformedA) // different STATUS ⇒ different text — the fix itself
-    expect(stale).toContain('stale')
-    expect(malformedA).toContain('unreadable/malformed')
-    expect(stale).not.toContain('unreadable/malformed')
-    expect(malformedA).not.toContain('stale')
+    expect(stale).toContain('Queue size is unknown — snapshot is stale')
+    expect(malformedA).toContain('Queue size is unknown — snapshot is unreadable/malformed')
+    expect(stale).not.toContain('Queue size is unknown — snapshot is unreadable/malformed')
+    expect(malformedA).not.toContain('Queue size is unknown — snapshot is stale')
   })
 
   it('names the companion help file, and that file exists on disk', () => {
