@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helpers have no declaration surface.
-import { DEFINITIONS, describeWorkflowToolboxOptions, findOrphanedPluginConfigs, resolveWorkflowToolboxOption } from '../../../../plugin/bin/lib/plugin-options.mjs'
+import { describeWorkflowToolboxOptions, findOrphanedPluginConfigs, resolveWorkflowToolboxOption } from '../../../../plugin/bin/lib/plugin-options.mjs'
 import manifest from '../../../../plugin/.claude-plugin/plugin.json'
 
 const roots: string[] = []
@@ -69,11 +69,11 @@ describe('workflow-toolbox plugin option resolver', () => {
     expect(resolveWorkflowToolboxOption('lane_models', { env: unreadable.env })).toEqual({ value: 'env/model', source: 'env' })
   })
 
-  it('keeps option definitions and manifest defaults in lockstep', () => {
-    expect(Object.keys(DEFINITIONS)).toEqual(Object.keys(manifest.userConfig))
-    for (const [key, definition] of Object.entries(DEFINITIONS) as Array<[string, { defaultValue: unknown }]>) {
-      const schema = manifest.userConfig[key as keyof typeof manifest.userConfig]
-      expect(definition.defaultValue, key).toEqual('default' in schema ? schema.default : null)
+  it('keeps every manifest option and its resolver default in lockstep', () => {
+    const f = fixture({})
+    for (const [key, schema] of Object.entries(manifest.userConfig)) {
+      const expected = 'default' in schema ? schema.default : null
+      expect(resolveWorkflowToolboxOption(key, { env: f.env }), key).toEqual({ value: expected, source: 'default' })
     }
   })
 

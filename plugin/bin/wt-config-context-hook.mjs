@@ -34,7 +34,8 @@ function main() {
   if (changed.length === 0 && orphans.length === 0) return
   const lines = []
   if (changed.length > 0) {
-    lines.push(`workflow-toolbox config: ${changed.map((row) => `${row.option}=${String(row.effective)} (${row.source})`).join(', ')} - full table: node ${JSON.stringify(path.join(PLUGIN_ROOT, 'bin', 'wt-config.mjs'))}`)
+    const changedOptions = changed.map((row) => `${row.option}=${String(row.effective)} (${row.source})`).join(', ')
+    lines.push(`workflow-toolbox config: ${changedOptions} - full table: node ${JSON.stringify(path.join(PLUGIN_ROOT, 'bin', 'wt-config.mjs'))}`)
   }
   for (const orphan of orphans) {
     const targets = orphan.moves.map((move) => `${move.option} -> ${move.target}`).join(', ') || 'no options'

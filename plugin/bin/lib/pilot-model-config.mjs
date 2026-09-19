@@ -63,19 +63,20 @@ export function assertHarnessAlias(value) {
   return value
 }
 
+function resolveModelInput(plugin, key, env, settingsEnv, fallback) {
+  if (plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== '') {
+    return { value: plugin.value, source: 'plugin option' }
+  }
+  if (Object.prototype.hasOwnProperty.call(env, key)) return { value: env[key], source: 'env' }
+  if (Object.prototype.hasOwnProperty.call(settingsEnv, key)) return { value: settingsEnv[key], source: 'settings' }
+  return { value: fallback, source: 'default' }
+}
+
 export function resolvePilotModels({ env = {}, settingsEnv = {}, readPluginOption = readWorkflowToolboxPluginOption } = {}) {
   return Object.fromEntries(
     Object.entries(MODEL_KEYS).map(([role, [option, key]]) => {
       const plugin = readPluginOption(option, { env })
-      const hasPlugin = plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== ''
-      const source = hasPlugin
-        ? 'plugin option'
-        : Object.prototype.hasOwnProperty.call(env, key)
-        ? 'env'
-        : Object.prototype.hasOwnProperty.call(settingsEnv, key)
-          ? 'settings'
-          : 'default'
-      const value = source === 'plugin option' ? plugin.value : source === 'env' ? env[key] : source === 'settings' ? settingsEnv[key] : DEFAULT_MODELS[role]
+      const { value, source } = resolveModelInput(plugin, key, env, settingsEnv, DEFAULT_MODELS[role])
       assertHarnessModel(value)
       return [role, { value, source, ...effectiveModel(value, { env, settingsEnv }) }]
     }),
@@ -112,16 +113,11 @@ export function resolveExecutorProfile({ worktree, route, hard = false, env = {}
   const defaults = EXECUTOR_DEFAULTS[executor][hard ? 'hard' : 'standard']
   const resolved = Object.fromEntries(Object.entries(EXECUTOR_KEYS).map(([role, [option, key]]) => {
     const plugin = readPluginOption(option, { env })
-    const hasPlugin = plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== ''
-    const source = hasPlugin ? 'plugin option' : Object.prototype.hasOwnProperty.call(env, key) ? 'env' : Object.prototype.hasOwnProperty.call(settingsEnv, key) ? 'settings' : 'default'
-    const value = hasPlugin
-      ? plugin.value
-      : Object.prototype.hasOwnProperty.call(env, key)
-      ? env[key]
-      : Object.prototype.hasOwnProperty.call(settingsEnv, key)
-        ? settingsEnv[key]
-        : defaults[role]
-    return [role, { value: executor === 'gpt-lane' ? assertProviderModel(value) : assertHarnessAlias(value), source }]
+    const selected = resolveModelInput(plugin, key, env, settingsEnv, defaults[role])
+    const value = executor === 'gpt-lane'
+      ? assertProviderModel(selected.value)
+      : assertHarnessAlias(selected.value)
+    return [role, { value, source: selected.source }]
   }))
   return {
     executor,

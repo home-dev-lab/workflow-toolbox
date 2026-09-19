@@ -5,7 +5,7 @@ import { resolveConsent } from './lane-consent-check-core.mjs'
 
 const PLUGIN_CONFIG_PREFIX = 'workflow-toolbox@'
 
-export const DEFINITIONS = Object.freeze({
+const DEFINITIONS = Object.freeze({
   executor_lane_consent: { envKey: 'WT_EXECUTOR_LANE_CONSENT', type: 'boolean', defaultValue: false },
   adopt_refresh: { envKey: 'WT_ADOPT_REFRESH', type: 'string', defaultValue: 'session' },
   lane_skills: { envKey: 'WT_LANE_SKILLS', type: 'string', defaultValue: '' },
@@ -94,11 +94,11 @@ function redactValue(value, option, envKey) {
   if (!/model/i.test(option) && /token|secret|password|key/i.test(`${option} ${envKey ?? ''}`)) return '[redacted]'
   try {
     const relative = value.startsWith('//')
-    const url = relative ? new URL(value, 'http://redaction.invalid') : new URL(value)
+    const url = relative ? new URL(value, 'https://redaction.invalid') : new URL(value)
     url.username = ''
     url.password = ''
     url.search = ''
-    return relative ? url.toString().replace(/^http:/, '') : url.toString()
+    return relative ? url.toString().replace(/^https:/, '') : url.toString()
   } catch {
     return value
   }
