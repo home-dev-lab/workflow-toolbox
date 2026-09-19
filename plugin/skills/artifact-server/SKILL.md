@@ -10,9 +10,10 @@ argument-hint: "[absolute-file-path]"
 # Artifact server
 
 The artifact server turns registered local files into clickable links. A persistent monitor for
-each Claude session starts or attaches to one per-user server and keeps that session registered even
-while idle. It is enabled by default; disable the `artifact_server` plugin option in Claude Code
-settings, or use the `WT_ARTIFACT_SERVER=0` environment fallback when that option is absent.
+each Claude session starts or attaches to one per-user server, keeps that session registered even
+while idle, and restarts a server that stops while the registration is live. It is enabled by
+default; disable the `artifact_server` plugin option in Claude Code settings, or use the
+`WT_ARTIFACT_SERVER=0` environment fallback when that option is absent.
 A one-line SessionStart notice gives the link command only after probing a live server; otherwise it
 reports status unknown without suggesting a link that may be dead.
 

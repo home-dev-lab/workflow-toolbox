@@ -1349,6 +1349,79 @@ describe('owner decision 3: session lifetime and operator controls', () => {
     expect(readdirSync(registrationsPath(stateHome)), `sweep diagnostic=${sweepDiagnostic(stateHome)}`).toHaveLength(0)
   })
 
+  it('restarts a lost server while its session registration remains live', async () => {
+    const { project } = projectWithRoots('lost-server-restart')
+    const stateHome = temporaryDir('lost-server-restart-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_WATCH_MS: '50',
+      WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '10000',
+    }))
+    const output = childOutput(monitor)
+    const first = await waitForState(stateHome)
+    trackDetached(first.pid, first)
+    await waitFor(async () => (await health(first)).registeredSessions === 1 ? true : null)
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    process.kill(first.pid, 'SIGKILL')
+    await waitFor(() => pidAlive(first.pid) ? null : true)
+    const second = await waitFor(async () => {
+      const state = readState(stateHome)
+      if (!state || state.pid === first.pid) return null
+      try { return (await health(state)).pid === state.pid ? state : null } catch { return null }
+    }, 12_000)
+    trackDetached(second.pid, second)
+    await waitFor(() => /artifact server lost/i.test(output.stdout()) && /artifact server attached/i.test(output.stdout()) ? true : null)
+
+    expect(second.pid).not.toBe(first.pid)
+    expect(second.port).toBe(port)
+    expect(output.stdout()).toContain(`ARTIFACT SERVER LOST: server on port ${port} is no longer answering; restarting; registration retained.`)
+    expect(readdirSync(registrationsPath(stateHome)).some((file) => {
+      const registration = JSON.parse(readFileSync(join(registrationsPath(stateHome), file), 'utf8')) as { pid: number }
+      return registration.pid === monitor.pid
+    })).toBe(true)
+  }, 15_000)
+
+  it('reports one bounded retry stop when a lost server cannot restart', async () => {
+    const { project } = projectWithRoots('lost-server-bounded')
+    const stateHome = temporaryDir('lost-server-bounded-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_WATCH_MS: '50',
+      WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS: '2', WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '30000',
+    }))
+    const output = childOutput(monitor)
+    const first = await waitForState(stateHome)
+    trackDetached(first.pid, first)
+    await waitFor(async () => (await health(first)).registeredSessions === 1 ? true : null)
+    await new Promise((resolve) => setTimeout(resolve, 250))
+
+    process.kill(first.pid, 'SIGKILL')
+    await waitFor(() => pidAlive(first.pid) ? null : true)
+    const foreign = createServer((_request, response) => response.end('foreign'))
+    await new Promise<void>((resolve, reject) => {
+      foreign.once('error', reject)
+      foreign.listen(port, '127.0.0.1', resolve)
+    })
+    try {
+      await waitFor(() => /artifact server retry stopped.*2\/2 attempts/i.test(output.stdout()) ? true : null, 12_000)
+      await new Promise((resolve) => setTimeout(resolve, 2_500))
+      expect(output.stdout().match(/artifact server lost/gi) ?? []).toHaveLength(1)
+      expect(output.stdout().match(/artifact server retry stopped/gi) ?? []).toHaveLength(1)
+      expect(monitor.exitCode).toBeNull()
+      expect(readdirSync(registrationsPath(stateHome)).some((file) => {
+        const registration = JSON.parse(readFileSync(join(registrationsPath(stateHome), file), 'utf8')) as { pid: number }
+        return registration.pid === monitor.pid
+      })).toBe(true)
+    } finally {
+      await closeServer(foreign)
+    }
+  }, 18_000)
+
   it('[V3-stop-refused][V3-force] refuses stop/restart with registrations and allows both with --force', async () => {
     const { project } = projectWithRoots('controls')
     const stateHome = temporaryDir('controls-state')
