@@ -6,7 +6,7 @@ import { basename, delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
-import { artifactUrl, assignArtifactMounts, deriveArtifactPort, parseTailscaleServeUrl, probeArtifactServer, registrationPidStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
+import { artifactUrl, assignArtifactMounts, atomicWriteJson, deriveArtifactPort, parseTailscaleServeUrl, probeArtifactServer, registrationPidStatus } from '../../../../plugin/bin/lib/artifact-server.mjs'
 // @ts-expect-error runtime .mjs helper shipped by the plugin has no TypeScript declaration
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
@@ -552,6 +552,27 @@ describe('owner decision 2: discovery and one instance', () => {
     expect(spawnReceipts(contentionLog).length).toBeGreaterThan(0)
   }, 90_000)
 
+  it('retains its registration when an occupied candidate is temporarily unresponsive', async () => {
+    const { project } = projectWithRoots('unresponsive-candidate')
+    const stateHome = temporaryDir('unresponsive-candidate-state')
+    const occupied = createServer(() => {})
+    await new Promise<void>((resolve, reject) => {
+      occupied.once('error', reject)
+      occupied.listen(0, '127.0.0.1', resolve)
+    })
+    const address = occupied.address()
+    if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
+    try {
+      const monitor = spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(address.port) }))
+      const output = childOutput(monitor)
+      await waitFor(() => output.stdout().includes('ARTIFACT SERVER STARTUP PENDING') ? true : null, 5_000)
+      expect(monitor.exitCode).toBeNull()
+      expect(readdirSync(registrationsPath(stateHome))).toHaveLength(1)
+    } finally {
+      await closeServer(occupied)
+    }
+  })
+
   it('ignores all test controls unless master test mode is enabled', async () => {
     const { project } = projectWithRoots('test-mode-gate')
     const stateHome = temporaryDir('test-mode-gate-state')
@@ -1082,16 +1103,22 @@ describe('owner decision 2: discovery and one instance', () => {
   it('still reports no available port when candidate ports are occupied', async () => {
     const { project } = projectWithRoots('startup-no-port')
     const stateHome = temporaryDir('startup-no-port-state')
-    const foreign = await reservePort()
+    const foreign = createServer((_request, response) => response.end('foreign'))
+    await new Promise<void>((resolve, reject) => {
+      foreign.once('error', reject)
+      foreign.listen(0, '127.0.0.1', resolve)
+    })
+    const address = foreign.address()
+    if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
     try {
       const monitor = spawnEnsure(project, baseEnv(stateHome, {
-        WT_ARTIFACT_SERVER_PORT: String(foreign.port), WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1',
+        WT_ARTIFACT_SERVER_PORT: String(address.port), WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1',
       }))
       const output = childOutput(monitor)
       await waitFor(() => /no available port/i.test(output.stdout()) ? true : null, 3_000)
       expect(output.stdout()).not.toMatch(/startup claim holder did not finish/i)
     } finally {
-      await closeServer(foreign.server)
+      await closeServer(foreign)
     }
   })
 
@@ -1447,9 +1474,9 @@ describe('review decisions: filesystem roots and URLs', () => {
 
     const env = baseEnv(stateHome)
     expect(artifactUrl(artifact, { env })).toBe(`${state.baseUrl}/${prefix}-reports/nested/report%20file.md`)
-    writeFileSync(statePath(stateHome), JSON.stringify({
+    atomicWriteJson(statePath(stateHome), {
       ...state, roots: [{ name: 'gone', path: join(project, 'removed-root') }, ...state.roots],
-    }))
+    })
     expect(artifactUrl(artifact, { env })).toBe(`${state.baseUrl}/${prefix}-reports/nested/report%20file.md`)
     const outside = join(project, 'outside.txt')
     writeFileSync(outside, 'outside')

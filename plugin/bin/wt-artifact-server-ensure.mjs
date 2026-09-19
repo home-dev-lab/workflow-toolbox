@@ -230,6 +230,7 @@ function acquireStartupClaim() {
 
 async function probeCandidates(firstPort, timeout, claim = null, deadline = null) {
   let firstFree = null
+  let uncertain = false
   const attempts = portAttempts()
   for (let offset = 0; offset < attempts && firstPort + offset <= 65535; offset += 1) {
     if (deadline !== null && Date.now() >= deadline) return { firstFree, found: null, claimLost: false, timedOut: true }
@@ -239,8 +240,9 @@ async function probeCandidates(firstPort, timeout, claim = null, deadline = null
     const probe = await probeArtifactServer(port, probeTimeout)
     if (probe.kind === 'ours') return { firstFree, found: { port, health: probe.health }, claimLost: false, timedOut: false }
     if (probe.kind === 'free' && firstFree === null) firstFree = port
+    if (probe.kind === 'unknown') uncertain = true
   }
-  return { firstFree, found: null, claimLost: false, timedOut: false }
+  return { firstFree, found: null, claimLost: false, timedOut: false, uncertain }
 }
 
 async function holdClaimForTest(claim) {
@@ -275,7 +277,10 @@ async function discoverOrStart(firstPort) {
     if (stopping) return { kind: 'shutdown' }
     if (scan.timedOut) return { kind: 'contended' }
     if (scan.found) return { kind: 'found', ...scan.found }
-    if (scan.firstFree === null) return { kind: 'exhausted' }
+    if (scan.firstFree === null) {
+      if (scan.uncertain) return { kind: 'contended' }
+      return { kind: 'exhausted' }
+    }
 
     const claim = acquireStartupClaim()
     if (!claim) {
