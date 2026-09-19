@@ -3,6 +3,11 @@ import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { stripAnsiAndControl } from './text-sanitize.js';
 
 const PANE_ID = 'wt-what-is-running';
+let paneSequence = 0;
+function nextPaneId() {
+  paneSequence += 1;
+  return `${PANE_ID}-${Date.now().toString(36)}-${paneSequence.toString(36)}`;
+}
 export const COLLECTOR_TIMEOUT_MS = 8000;
 export const SLOW_RENDER_THRESHOLD_MS = 50;
 export const MISSED_RENDERS_BEFORE_STOP = 3;
@@ -509,6 +514,8 @@ export const registerWithLayout = (on, options, layout) => {
   let missedRenders = 0;
   let closedOnPurpose = false;
   let openedHere = false;
+  let paneId = null;
+  let pendingPaneId = null;
   let refreshing = false;
   let processRefusalStreaks = new Map();
   let currentProject = null;
@@ -565,7 +572,7 @@ export const registerWithLayout = (on, options, layout) => {
     if (!host) return;
     closedOnPurpose = true;
     stopPolling();
-    const closing = host.close({ id: PANE_ID });
+    const closing = host.close({ id: paneId || PANE_ID });
     await closing;
   };
   const startPolling = (request) => {
@@ -607,7 +614,8 @@ export const registerWithLayout = (on, options, layout) => {
     const request = generation;
     open = true;
     allProjects = false;
-    await host.open({ id: PANE_ID, title: 'What is running', ...(focus ? { focus: true } : {}) });
+    paneId = nextPaneId();
+    await host.open({ id: paneId, title: 'What is running', ...(focus ? { focus: true } : {}) });
     await refresh(request);
     startPolling(request);
   };
@@ -627,6 +635,14 @@ export const registerWithLayout = (on, options, layout) => {
     };
     try { await $.command.register({ name: 'wir', description: 'Open the What is running view' }); }
     catch { await $.ui.log('wt-what-is-running: /wir unavailable'); }
+    if (pendingPaneId) {
+      paneId = pendingPaneId;
+      pendingPaneId = null;
+      openedHere = true;
+      recordRenderEvent('restored-after-reload', "the host rendered this registration's tagged pane before session.start", null);
+      rearm();
+      host.invalidate();
+    }
     return next(event);
   });
 
@@ -639,11 +655,22 @@ export const registerWithLayout = (on, options, layout) => {
 
   on('ui.render', { component: 'Pane' }, async ($, event, next) => {
     const result = await next(event);
-    if (event.requestId !== PANE_ID) return result;
+    const taggedPane = typeof event.requestId === 'string' && event.requestId.startsWith(`${PANE_ID}-`);
+    // The fixed id remains an in-process alias for host/test compatibility. Only a tagged id proves to a fresh
+    // registration that this session already had our pane; no shared store or ui.open call is involved.
+    if (event.requestId !== paneId && !(openedHere && event.requestId === PANE_ID) && !(taggedPane && !openedHere)) return result;
     if (!open) {
+      if (!host && taggedPane) {
+        pendingPaneId = event.requestId;
+        return result;
+      }
       // Only the registration that opened this pane may bring it back: another session never adopts it.
-      if (!host || !openedHere || closedOnPurpose) return result;
-      recordRenderEvent('rearmed', 'the host rendered the pane after the no-render detector had stopped it', event.props);
+      if (!host || closedOnPurpose) return result;
+      if (!openedHere) {
+        paneId = event.requestId;
+        openedHere = true;
+        recordRenderEvent('restored-after-reload', "the host rendered this registration's tagged pane", event.props);
+      } else recordRenderEvent('rearmed', 'the host rendered the pane after the no-render detector had stopped it', event.props);
       rearm();
     }
     paneObserved = true;
