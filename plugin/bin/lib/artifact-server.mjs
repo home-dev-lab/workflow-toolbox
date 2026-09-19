@@ -384,7 +384,7 @@ export function detectTailscale(port) {
   }
 }
 
-export async function probeArtifactServer(port, timeout = 750, expectedUid = artifactUid()) {
+export async function probeArtifactServer(port, timeout = process.platform === 'win32' ? 10_000 : 750, expectedUid = artifactUid()) {
   const { request } = await import('node:http')
   return new Promise((resolve) => {
     const req = request({ host: '127.0.0.1', port, path: '/__wt-artifact-server/health', method: 'GET', headers: { Host: `localhost:${port}` }, timeout }, (response) => {
@@ -398,8 +398,8 @@ export async function probeArtifactServer(port, timeout = 750, expectedUid = art
         } catch { resolve({ kind: 'foreign' }) }
       })
     })
-    req.once('timeout', () => { req.destroy(); resolve({ kind: 'foreign' }) })
-    req.once('error', (error) => resolve(error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH' ? { kind: 'free' } : { kind: 'foreign' }))
+    req.once('timeout', () => { req.destroy(); resolve({ kind: 'unknown' }) })
+    req.once('error', (error) => resolve(error.code === 'ECONNREFUSED' || error.code === 'EHOSTUNREACH' ? { kind: 'free' } : { kind: 'unknown' }))
     req.end()
   })
 }
