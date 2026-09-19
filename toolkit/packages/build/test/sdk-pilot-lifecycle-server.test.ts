@@ -975,6 +975,28 @@ printf 'report\n' > "$report"
     })
   })
 
+  it.each([
+    'e2e not run: the change is only in a background watcher warning filter and has no UI',
+    'e2e not run: no UI',
+    'e2e not run: there is no screen to exercise',
+    'e2e not run: headless change, no user interface',
+  ])('refuses a UI-only e2e not run reason at the report edge: %s', async (e2e) => {
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n' })
+    const report = `# report\n\n## E2E\n${e2e}\n\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'ui-only-e2e' }))).toContain('absence of a UI')
+    expect(lifecycle.state().partial).toBeNull()
+  })
+
+  it('accepts a UI-absence reason that names what was tried before partial classification', async () => {
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n' })
+    const e2e = 'e2e not run: no UI; tried running the watcher against a staging lane but no staging lane exists on this machine'
+    const report = `# report\n\n## E2E\n${e2e}\n\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'tried-e2e' })))
+      .toContain('Partial: delivered partially: 1 unmet criteria')
+  })
+
   it('refuses bare and unknown-card deferrals and mechanically appends routed cards', async () => {
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
     const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification' }) })
