@@ -46,14 +46,14 @@ const PLAN_SHAPE = Object.freeze({
 })
 export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, and a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every folded card Definition-of-done criterion exactly with a following \`Proof:\` line naming a task, test, e2e, test file, or gate`
 
-function planSection(content, heading) {
+export function planSection(content, heading) {
   return new RegExp(`(?:^|\\n)## ${heading}\\b[\\s\\S]*?(?=\\n## |$)`, 'i').exec(content)?.[0] ?? ''
 }
-function acceptanceSection(content) {
+export function acceptanceSection(content) {
   return /(?:^|\n)## Acceptance[ \t]*\r?\n[\s\S]*?(?=\r?\n#{1,6}(?:[ \t]+|$)|$)/i.exec(content)?.[0] ?? ''
 }
 
-function containsPlanShape(content, requireAcceptance) {
+export function containsPlanShape(content, requireAcceptance) {
   const adr = planSection(content, PLAN_SHAPE.adrHeading)
   const tasks = planSection(content, PLAN_SHAPE.tasksHeading)
   const lines = tasks.split(/\r?\n/)
