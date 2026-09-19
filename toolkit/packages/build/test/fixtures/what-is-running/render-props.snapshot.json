@@ -1,7 +1,7 @@
 {
   "Box": {
-    "props": ["alignItems", "alignSelf", "backgroundColor", "borderColor", "borderDimColor", "borderStyle", "columnGap", "display", "flexDirection", "flexGrow", "flexShrink", "flexWrap", "gap", "height", "hover", "justifyContent", "key", "margin", "marginBottom", "marginLeft", "marginRight", "marginTop", "marginX", "marginY", "minHeight", "minWidth", "overflow", "padding", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop", "paddingX", "paddingY", "rowGap", "width"],
-    "hover": ["backgroundColor", "borderColor", "borderDimColor", "borderStyle", "display", "scope"]
+    "props": ["alignItems", "alignSelf", "backgroundColor", "borderColor", "borderDimColor", "borderStyle", "bottom", "columnGap", "display", "flexDirection", "flexGrow", "flexShrink", "flexWrap", "gap", "height", "hover", "justifyContent", "key", "left", "margin", "marginBottom", "marginLeft", "marginRight", "marginTop", "marginX", "marginY", "minHeight", "minWidth", "overflow", "padding", "paddingBottom", "paddingLeft", "paddingRight", "paddingTop", "paddingX", "paddingY", "position", "right", "rowGap", "top", "width"],
+    "hover": ["backgroundColor", "borderColor", "borderDimColor", "borderStyle", "bottom", "display", "left", "right", "scope", "top"]
   },
   "Text": {
     "props": ["backgroundColor", "bold", "color", "dimColor", "hover", "inverse", "italic", "strikethrough", "underline", "wrap"],
