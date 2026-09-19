@@ -145,6 +145,19 @@ export function suiteUmbrellaWorktrees(root) {
   }
 }
 
+export function stagingLaneDirs(root) {
+  if (!root) return []
+  const worktreesDir = join(root, '.claude', 'worktrees')
+  try {
+    return readdirSync(worktreesDir, { withFileTypes: true })
+      .slice(0, 200)
+      .filter((entry) => entry.isDirectory() && /^.+-\d{10}$/.test(entry.name) && existsSync(join(worktreesDir, entry.name, '.lane', 'brief.md')))
+      .map((entry) => join(worktreesDir, entry.name))
+  } catch {
+    return []
+  }
+}
+
 function laneDirFromArgs(args, pathApi = path) {
   const executable = pathApi.basename(args[0] || '')
   const subcommand = args[1]
@@ -170,7 +183,7 @@ function windowsCommandArgs(commandLine) {
   return args
 }
 
-function posixCommandArgs(commandLine) {
+export function posixCommandArgs(commandLine) {
   const args = []
   const pattern = /"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'|((?:\\.|[^\s])+)/g
   for (const match of String(commandLine).matchAll(pattern)) args.push((match[1] ?? match[2] ?? match[3]).replace(/\\([\\"' ])/g, '$1'))
