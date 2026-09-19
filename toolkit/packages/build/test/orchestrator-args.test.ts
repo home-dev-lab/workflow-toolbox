@@ -42,11 +42,14 @@ describe('parseOrchestratorArgs', () => {
     expect(parseOrchestratorArgs(['--cards', '1', '--hard', '1,,3,', ...required])).toMatchObject({ hard: ['1', '3'] })
   })
 
-  it('documents that a value-taking flag at the end leaves its option undefined', () => {
-    expect(parseOrchestratorArgs(['--cards', '1', ...required, '--base'])).toMatchObject({ base: undefined })
+  it.each([
+    ['at the end', ['--base']],
+    ['before another flag', ['--base', '--report']],
+  ])('refuses a value-taking flag %s', (_shape, args) => {
+    expect(parseOrchestratorArgs(['--cards', '1', ...required, ...args])).toEqual({ error: '--base requires a value' })
   })
 
-  it('documents that an empty cards value parses as an empty explicit-card list', () => {
-    expect(parseOrchestratorArgs(['--cards', '', ...required])).toMatchObject({ cards: [] })
+  it('refuses an empty cards value', () => {
+    expect(parseOrchestratorArgs(['--cards', '', ...required])).toEqual({ error: '--cards requires a value' })
   })
 })

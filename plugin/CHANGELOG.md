@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- The orchestrator CLI now refuses value-taking flags that are empty, truncated, or followed by another flag instead of silently accepting a missing value.
+
 ## [0.183.1] - 2026-09-18
 
 ### Fixed
