@@ -16,7 +16,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [0.184.0] - 2026-09-19
 
 ### Fixed
-- The elapsed-time wake floor now stays silent while an identity-verified lane owned by the current session is running, launching, or awaiting a decision. Complete evidence with no owned live lane keeps the existing FLOOR line unchanged; unreadable, malformed, capped, or otherwise inconclusive lane evidence fires with an explicit fail-safe annotation.
+- The elapsed-time wake floor now stays silent while an identity-verified lane owned by the current session is running, launching, or awaiting a decision. Complete evidence with no owned live lane keeps the existing FLOOR line unchanged; unreadable, malformed, capped, or otherwise inconclusive lane evidence fires with an explicit fail-safe annotation. Session-armed background tasks remain outside this signal because the host exposes no attested running/completed distinction; an attested host signal is tracked as follow-up work.
 - The pilot contract now requires E2E whenever real processes, files, or a host can exercise a change; absence of a UI alone is rejected unless the report names what was tried
 - The EXPERIMENTAL SDK runner now atomically publishes assistant usage while a run is live, and What is running shows per-phase usage, a live run total, and elapsed time while delegated-lane usage is pending. Normal and abnormal runs append one durable cost-index record beside the external archives; final receipts reuse the live messages without double counting.
 - Restart the artifact server when it stops while sessions remain registered
