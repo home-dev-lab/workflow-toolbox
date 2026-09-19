@@ -978,6 +978,79 @@ function hasAdoptionBanner(set, file) {
   }
 }
 
+function discoveredConfigRoots() {
+  const home = os.homedir()
+  const roots = new Set([resolvedConfigRoot(), path.join(home, '.claude')])
+  try {
+    for (const entry of fs.readdirSync(home, { withFileTypes: true })) {
+      if ((entry.isDirectory() || entry.isSymbolicLink()) && /^\.claude(?:-|$)/.test(entry.name)) {
+        roots.add(path.join(home, entry.name))
+      }
+    }
+  } catch {
+    // The active and default config roots above remain sufficient when HOME is unreadable.
+  }
+  return [...roots].map((dir) => path.resolve(dir))
+}
+
+function adoptionDirectoryKind(dir) {
+  try {
+    const real = fs.realpathSync(dir)
+    return real === path.resolve(dir) ? 'real directory' : `symlinked directory -> ${real}`
+  } catch {
+    return 'unresolved directory'
+  }
+}
+
+function hasAdoptedSet(set, dir, root) {
+  return set.resolveItems(root).some((item) => hasAdoptionBanner(set, path.join(dir, item.file)))
+}
+
+function existingAdoptionCandidates(name, set, root) {
+  const candidates = new Map()
+  const add = (level, dir) => {
+    const resolved = path.resolve(dir)
+    if (!hasAdoptedSet(set, resolved, root)) return
+    const existing = candidates.get(resolved)
+    if (existing) existing.levels.add(level)
+    else candidates.set(resolved, { dir: resolved, levels: new Set([level]), kind: adoptionDirectoryKind(resolved) })
+  }
+  const addWithLegacyRules = (level, dir) => {
+    add(level, dir)
+    if (name === 'rules') {
+      const legacy = legacyRulesDir(dir)
+      if (legacy) add(level, legacy)
+    }
+  }
+
+  addWithLegacyRules('project', path.join(process.cwd(), set.defaultDir))
+  for (const configRoot of discoveredConfigRoots()) {
+    addWithLegacyRules('config', path.join(configRoot, set.globalSubdir))
+  }
+  return [...candidates.values()]
+}
+
+function resolveImplicitInstallDirs(chosen, args, root) {
+  if (args.mode !== 'install' || args.dir || args.global) return new Map()
+  const bySet = new Map()
+  const ambiguous = []
+  for (const name of chosen) {
+    const candidates = existingAdoptionCandidates(name, SETS[name], root)
+    if (candidates.length > 1) ambiguous.push({ name, candidates })
+    else if (candidates.length === 1) bySet.set(name, candidates[0].dir)
+  }
+  if (ambiguous.length > 0) {
+    const lines = ambiguous.flatMap(({ name, candidates }) =>
+      candidates.map(({ dir, levels, kind }) => `  [${name}] ${[...levels].join('/')} ${kind}: ${dir}`),
+    )
+    fail(
+      `--install found more than one adopted target:\n${lines.join('\n')}\n` +
+        `refusing to guess; pass --dir '<directory>' with one --set, or --global for the active config profile.`,
+    )
+  }
+  return bySet
+}
+
 function refuseExplicitRootInstall(set, dir, args, root) {
   const nestedDir = explicitNestedTarget(set, dir, args)
   if (args.mode !== 'install' || !nestedDir) return
@@ -2407,6 +2480,7 @@ function main() {
   // a standalone script that must each run alone. They are locked in step by tests, not by
   // a shared module they cannot both reach.
   const globalRoot = resolvedConfigRoot()
+  const implicitInstallDirs = resolveImplicitInstallDirs(chosen, args, root)
 
   preflightAdoptedLauncherRuntime(chosen, root)
 
@@ -2429,6 +2503,7 @@ function main() {
     // appended instead.
     const dir = path.resolve(
       args.dir ||
+        implicitInstallDirs.get(name) ||
         (args.global
           ? path.join(globalRoot, set.globalSubdir)
           : path.join(process.cwd(), set.defaultDir)),
