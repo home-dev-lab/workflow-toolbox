@@ -91,7 +91,9 @@ describe('orchestrator board HTTP client', () => {
     const calls: Array<Record<string, unknown>> = []
     const fetch = async (_url: string, options: { body: string }) => {
       const body = JSON.parse(options.body); calls.push(body)
-      const result = body.method === 'tools/call' ? { content: [{ type: 'text', text: JSON.stringify({ id: '42' }) }] } : {}
+      const result = body.method === 'tools/call'
+        ? { content: [{ type: 'text', text: body.params.name === 'add_label_to_card' ? `Label ${body.params.arguments.labelId} added to card 42` : JSON.stringify({ id: '42' }) }] }
+        : {}
       return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
     }
     const client = createBoardClient({ url: 'http://board', boardId: 'board', fetch })
@@ -110,6 +112,71 @@ describe('orchestrator board HTTP client', () => {
       { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'm' } },
       { name: 'add_label_to_card', arguments: { cardId: '42', labelId: 'project' } },
     ])
+  })
+
+  it('surfaces an MCP error result own text and status', async () => {
+    const fetch = async (_url: string, options: { body: string }) => {
+      const body = JSON.parse(options.body)
+      const result = body.method === 'tools/call' ? { isError: true, content: [{ type: 'text', text: 'Request failed with status code 503' }] } : {}
+      return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
+    }
+    const promise = createBoardClient({ url: 'http://board', boardId: 'board', fetch }).getCard('1')
+    await expect(promise).rejects.toMatchObject({ message: 'board unavailable: Request failed with status code 503', status: 503 })
+  })
+
+  it('treats only add_label_to_card status 409 as success', async () => {
+    const calls: string[] = []
+    const fetch = async (_url: string, options: { body: string }) => {
+      const body = JSON.parse(options.body)
+      if (body.method === 'tools/call') calls.push(body.params.name)
+      const result = body.method !== 'tools/call'
+        ? {}
+        : body.params.name === 'create_card'
+          ? { content: [{ type: 'text', text: JSON.stringify({ id: '42' }) }] }
+          : { isError: true, content: [{ type: 'text', text: 'Request failed with status code 409' }] }
+      return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
+    }
+    const client = createBoardClient({ url: 'http://board', boardId: 'board', fetch })
+    const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'project' } }
+    await expect(client.createRoutedCard({ boardContract, originCardId: '1', sessionTag: 'run-1', timestamp: '2026-09-16T10:00:00.000Z', title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })).resolves.toMatchObject({ id: '42', labelFailures: [] })
+    expect(calls.filter((name) => name === 'add_label_to_card')).toHaveLength(4)
+    await expect(client.addLabelToCard('42', 'p1')).resolves.toEqual({ text: 'Request failed with status code 409' })
+    await expect(client.addComment('42', 'hello')).rejects.toMatchObject({ message: 'board unavailable: Request failed with status code 409', status: 409 })
+  })
+
+  it('accepts plain text and JSON results for text-tolerant tools', async () => {
+    let comments = 0
+    const fetch = async (_url: string, options: { body: string }) => {
+      const body = JSON.parse(options.body)
+      const text = body.method === 'tools/call' && ++comments === 1 ? 'Comment added' : JSON.stringify({ id: 'comment-2' })
+      const result = body.method === 'tools/call' ? { content: [{ type: 'text', text }] } : {}
+      return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
+    }
+    const client = createBoardClient({ url: 'http://board', boardId: 'board', fetch })
+    await expect(client.addComment('42', 'first')).resolves.toEqual({ text: 'Comment added' })
+    await expect(client.addComment('42', 'second')).resolves.toEqual({ id: 'comment-2' })
+  })
+
+  it('returns a created card and continues after a label failure', async () => {
+    const attempted: string[] = []
+    const fetch = async (_url: string, options: { body: string }) => {
+      const body = JSON.parse(options.body)
+      let result = {}
+      if (body.method === 'tools/call' && body.params.name === 'create_card') result = { content: [{ type: 'text', text: JSON.stringify({ id: '42', title: 'Follow up' }) }] }
+      if (body.method === 'tools/call' && body.params.name === 'add_label_to_card') {
+        attempted.push(body.params.arguments.labelId)
+        result = body.params.arguments.labelId === 'chore'
+          ? { isError: true, content: [{ type: 'text', text: 'Request failed with status code 500' }] }
+          : { content: [{ type: 'text', text: `Label ${body.params.arguments.labelId} added to card 42` }] }
+      }
+      return { ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) }
+    }
+    const client = createBoardClient({ url: 'http://board', boardId: 'board', fetch })
+    const boardContract = { boardId: 'board', listId: 'backlog', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'project' } }
+    await expect(client.createRoutedCard({ boardContract, originCardId: '1', sessionTag: 'run-1', timestamp: '2026-09-16T10:00:00.000Z', title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'M', type: 'chore' })).resolves.toEqual({
+      id: '42', title: 'Follow up', labelFailures: [{ labelId: 'chore', error: 'board unavailable: Request failed with status code 500' }],
+    })
+    expect(attempted).toEqual(['p1', 'chore', 'm', 'project'])
   })
 
   it('O1-6 lock: sends notifications/initialized before the first tools/call', async () => {

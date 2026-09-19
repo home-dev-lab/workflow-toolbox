@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- Handle plain-text board mutations without orphaning routed cards
 - Recognise staging lane directories and test fixtures during orphan scans while preserving warnings for genuinely unattributed OpenCode processes
 - The actionability gate can now be refreshed with `wt-actionable-snapshot-refresh.mjs` (the stale message prints its absolute path, runnable as-is) without placing a six-figure Planka result in session context. The command reads strict 10-card pages directly from the local MCP endpoint, refuses changing/incomplete/duplicate pagination, and passes only a proved-complete set to the existing dependency parser and snapshot writer; stale messages now distinguish "not measured recently" from zero actionable cards and print that exact command with an absolute path.
 - Windows: the lifecycle archive-containment check compares both paths in their canonical long form, so an archive destination inside the lane can no longer pass because one side was spelled with 8.3 short names; and an artifact-server monitor no longer drops its registration when a busy server answers its health probe late.

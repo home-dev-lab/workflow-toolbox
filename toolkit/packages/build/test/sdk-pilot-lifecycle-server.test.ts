@@ -134,6 +134,22 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     ])
   })
 
+  it('records a created routed card and names its label failures', async () => {
+    const boardContract = {
+      boardId: 'board', listId: 'backlog',
+      labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 'small', M: 'medium', L: 'large' }, category: 'project' },
+    }
+    const lifecycle = testLifecycle('LITE', [], null, null, {
+      boardContract,
+      routeFinding: async () => ({ id: '987654321', title: 'Memory store migration', labelFailures: [{ labelId: 'medium', error: 'board unavailable: Request failed with status code 500' }] }),
+    })
+    expect(await text(lifecycle.routeFinding({ title: 'Memory store migration', l4Reason: 'different subsystem: memory store', risk: 'P1', effort: 'M', type: 'chore' })))
+      .toBe('routed card 987654321 — Memory store migration (label failure: add_label_to_card medium: board unavailable: Request failed with status code 500)')
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).routed_cards).toEqual([{
+      id: '987654321', title: 'Memory store migration', l4Reason: 'different subsystem: memory store', failure: 'add_label_to_card medium: board unavailable: Request failed with status code 500',
+    }])
+  })
+
   it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'harden-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
     const lifecycle = testLifecycle('LITE')
     expect(await text(lifecycle.artifact({ kind, content: 'content' }))).toMatch(/^edge refused: discovery->next; missing .*: /)
