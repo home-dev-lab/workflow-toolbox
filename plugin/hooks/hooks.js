@@ -1,5 +1,5 @@
-import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { PHASES } from './lifecycle-phases.js';
+import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { stripAnsiAndControl } from './text-sanitize.js';
 
 const PANE_ID = 'wt-what-is-running';
@@ -103,10 +103,13 @@ export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT) {
     // Test-only real-host seam: the control-character probe needs the host to render a fixed reproducing snapshot.
     let snapshotFile;
     try { snapshotFile = await $.env?.get?.('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch {}
+    const collectorBootstrap = SNAPSHOT_PROGRAM.length > 0
+      ? "import(process.argv[1]).then(({ SNAPSHOT_PROGRAM }) => Function('require', SNAPSHOT_PROGRAM)(require))"
+      : '';
     const result = await $.process.run(
       snapshotFile
         ? ['node', '-e', "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", snapshotFile]
-        : ['node', '-e', SNAPSHOT_PROGRAM, JSON.stringify({ ...paths, layout: paths.layout || layout })],
+        : ['node', '-e', collectorBootstrap, new URL('./snapshot-program.js', import.meta.url).href, JSON.stringify({ ...paths, layout: paths.layout || layout })],
       { timeoutMs: COLLECTOR_TIMEOUT_MS },
     );
     if (result?.exitCode !== 0) {

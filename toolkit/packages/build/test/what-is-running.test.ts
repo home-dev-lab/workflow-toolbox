@@ -150,6 +150,20 @@ function textChildren(tree: unknown): string[] {
 }
 
 describe('What is running collector seam', () => {
+  it('keeps the collector program out of the Windows-limited command line', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-command-line-'))
+    try {
+      const paths = collector(root)
+      let argv: string[] = []
+      await readSnapshot({ process: { run: async (command: string[]) => {
+        argv = command
+        return processCapability().run(command)
+      } } }, paths)
+      expect(argv.find((argument) => /snapshot-program\.js$/.test(argument))).toBeTruthy()
+      expect(argv.join(' ').length).toBeLessThan(8_000)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('reads archived per-phase costs, preserves unknown, and records visible provenance', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-phase-cost-'))
     try {

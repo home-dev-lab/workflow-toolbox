@@ -163,7 +163,7 @@ describe('spawn shell decision (Windows shims only)', () => {
       env: { PATH: ['/a', '/b'].join(delimiter), PATHEXT: '.EXE;.CMD' },
       exists: (candidate: string) => {
         seen.push(candidate)
-        return candidate.includes('/b') && candidate.endsWith('.CMD')
+        return candidate === join('/b', 'tool.CMD')
       },
     })
     expect(needsShell).toBe(true)
