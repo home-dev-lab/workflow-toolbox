@@ -23,6 +23,13 @@
       "required": false,
       "description": "Account consent is the ceiling and project settings may only narrow it."
     },
+    "adopt_refresh": {
+      "type": "string",
+      "title": "Adopt refresh owner",
+      "default": "session",
+      "required": false,
+      "description": "Use notice-only on a non-writer session to hand stale-copy action to the session that owns the directory."
+    },
     "lane_skills": {
       "type": "string",
       "title": "Executor lane skills",

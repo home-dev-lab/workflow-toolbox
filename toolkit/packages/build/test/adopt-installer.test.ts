@@ -123,6 +123,39 @@ describe('adopt installer — edit-safety contract (committed drift lock)', () =
     expect(readFileSync(p, 'utf8'), 'edit must be gone after --force').not.toContain('MY LOCAL EDIT LINE')
   })
 
+  it('--diff prints adopted, local, and shipped texts for an edited file without writing', () => {
+    const d = mkDir()
+    run(['--install'], d)
+    const p = rulePath(d)
+    writeFileSync(p, readFileSync(p, 'utf8') + '\nMY LOCAL EDIT LINE\n')
+    const before = readFileSync(p, 'utf8')
+
+    const result = runResult(['--set', 'rules', '--diff', RULE], d)
+    expect(result.status).toBe(0)
+    expect(result.out).toContain('=== ADOPTED v')
+    expect(result.out.split('=== LOCAL')[0]).not.toContain('MY LOCAL EDIT LINE')
+    expect(result.out).toContain('=== LOCAL')
+    expect(result.out).toContain('MY LOCAL EDIT LINE')
+    expect(result.out).toContain('=== SHIPPED v')
+    expect(result.out).toContain(readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8'))
+    expect(readFileSync(p, 'utf8')).toBe(before)
+  })
+
+  it('--install --force --file overwrites only the arbitrated edited file', () => {
+    const d = mkDir()
+    run(['--install'], d)
+    const chosen = rulePath(d)
+    const other = join(d, 'wt-memory-hygiene.md')
+    writeFileSync(chosen, readFileSync(chosen, 'utf8') + '\nCHOSEN LOCAL EDIT\n')
+    writeFileSync(other, readFileSync(other, 'utf8') + '\nOTHER LOCAL EDIT\n')
+
+    const result = runResult(['--set', 'rules', '--install', '--force', '--file', RULE], d)
+    expect(result.status).toBe(0)
+    expect(result.out).toContain(`${RULE}: OVERWROTE (--force)`)
+    expect(readFileSync(chosen, 'utf8')).not.toContain('CHOSEN LOCAL EDIT')
+    expect(readFileSync(other, 'utf8')).toContain('OTHER LOCAL EDIT')
+  })
+
   it('old-format banner (version but NO fingerprint): conservative skip, --force overwrites', () => {
     const d = mkDir()
     writeFileSync(

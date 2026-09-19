@@ -7,10 +7,10 @@
 // session that never adopted gets none of the shipped methodology and no signal that
 // anything is missing. This hook is the signal.
 //
-// It does NOT install anything, ever. It is read-only, by design (the owner's decision):
-// a hook cannot ask for consent — it only emits text one-way — so writing into someone's
-// project on plugin enable would install without consent, which the adopt skill's
-// own contract forbids. This hook only ever SUGGESTS the skill/command; it never runs it.
+// It does NOT install anything, ever. It is read-only by design: for an unedited stale copy
+// it gives the session the exact install + re-check commands; for an edited copy it gives the
+// exact three-way-view command. WT_ADOPT_REFRESH=notice-only (or the matching plugin option)
+// hands either action to the session that owns that directory on single-writer machines.
 //
 // It REUSES install.mjs's own classification (absent / clean / stale / edited /
 // symlink / hand-authored) by spawning the real script in --check mode and parsing its
@@ -27,10 +27,10 @@
 //   - everything adopted & current everywhere it's checked → SILENT (no output at all).
 //   - some rule file absent everywhere → say so, name the file(s), name the consequence
 //     (the methodology's directives are not in force), give the exact fix.
-//   - some rule file behind the shipped content everywhere it's found → say which location, and
-//     that installing won't touch a locally-edited file.
-//   - some rule file locally edited (and not clean/current elsewhere) → say which, and
-//     that this is a SUPPORTED state, never framed as a problem.
+//   - some rule file behind the shipped content everywhere it's found → say which location and
+//     order the session to refresh + re-check that exact directory (unless notice-only).
+//   - some rule file locally edited (and not clean/current elsewhere) → say which, provide
+//     the journal-backed three-way command, and assign arbitration to a session.
 //   - ANY internal error → exit 0 silently. A session-start hook that can break session
 //     start is not worth its output.
 //
@@ -43,6 +43,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { invokes } from './lib/command-invocation.mjs'
+import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -192,7 +193,19 @@ function installRemedy(installCmd, set, dir) {
   return `node ${shellQuote(installCmd)} --set ${set} --install --dir ${shellQuote(dir)}`
 }
 
-function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart') {
+function checkRemedy(installCmd, set, dir) {
+  return `node ${shellQuote(installCmd)} --set ${set} --check --dir ${shellQuote(dir)}`
+}
+
+function diffRemedy(installCmd, set, file, dir) {
+  return `node ${shellQuote(installCmd)} --set ${set} --diff ${shellQuote(file)} --dir ${shellQuote(dir)}`
+}
+
+function forceRemedy(installCmd, set, file, dir) {
+  return `node ${shellQuote(installCmd)} --set ${set} --install --force --file ${shellQuote(file)} --dir ${shellQuote(dir)}`
+}
+
+function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false) {
   const buckets = { absent: [], stale: [], ahead: [], edited: [] }
   for (const [file, finding] of perFile) {
     if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
@@ -219,39 +232,42 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
         `(or \`${installRemedy(installCmd, set, remedyDir)}\`).`,
     )
   }
-  for (const finding of [...buckets.stale, ...buckets.ahead].sort((a, b) => a.file.localeCompare(b.file))) {
-    const target = `${finding.file}${finding.location ? ` (${finding.location})` : ''}`
-    lines.push(
-      `${target}: ${contentDirection(finding.file, finding, set)}. Owner / single writer: run ` +
-        `\`${installRemedy(installCmd, set, finding.location)}\`; this read-only hook will not run it.`,
-    )
+  for (const finding of buckets.stale.sort((a, b) => a.file.localeCompare(b.file))) {
+    const target = finding.location ? finding.file + ' (' + finding.location + ')' : finding.file
+    const install = installRemedy(installCmd, set, finding.location)
+    const check = checkRemedy(installCmd, set, finding.location)
+    const action = noticeOnly
+      ? `NOTICE ONLY: hand this to the session that owns this directory: run \`${install}\`, then ` +
+        `\`${check}\`, and report one line. This read-only hook will not run it.`
+      : `SESSION ACTION: run \`${install}\` now, then re-check the same directory with ` +
+        `\`${check}\`, and report one line. This read-only hook will not run it.`
+    lines.push(`${target}: ${contentDirection(finding.file, finding, set)}. ${action}`)
   }
   // "Locally modified" is a SUPPORTED steady state, not an event. Reporting it at session
   // start is informative; reporting it after every push would fire forever on the same
   // unchanged files — and a guard that is always red is a guard that gets ignored, which
   // manufactures the blind spot it exists to close.
   if (buckets.edited.length && event !== 'PostToolUse') {
-    lines.push(
-      `Locally modified (supported, left untouched by any refresh): ${named(buckets.edited)}.`,
-    )
+    lines.push(`Locally modified (supported, left untouched by any refresh): ${named(buckets.edited)}.`)
+    for (const finding of buckets.edited.sort((a, b) => a.file.localeCompare(b.file))) {
+      const diff = diffRemedy(installCmd, set, finding.file, finding.location)
+      const force = forceRemedy(installCmd, set, finding.file, finding.location)
+      lines.push(
+        noticeOnly
+          ? `NOTICE ONLY: hand this arbitration to the session that owns this directory; it must run \`${diff}\`, ` +
+            `then either take the shipped text with \`${force}\` or keep the edit and open a card against the shipped rule.`
+          : `SESSION ACTION: arbitrate the local edit with \`${diff}\`; then either take the shipped text ` +
+            `with \`${force}\` or keep the edit and open a card against the shipped rule.`,
+      )
+    }
   }
-  // ⚠ NAME THE ACTION, AND NAME WHOSE IT IS. Everything above is a measurement, and a
-  // measurement nobody acts on is worse than none — it costs attention and buys nothing.
-  //
-  // But the action is NOT the model's to take alone. This hook refuses to install precisely
-  // because it cannot ask for consent; a model that reads "Fix: run the adopt skill" and
-  // silently runs it launders that same missing consent one layer down — the install still
-  // happens without anyone being asked, only now it looks deliberate.
-  //
-  // So the instruction is to SURFACE it. The reader here is the model; the decider is the
-  // human. Without this line the message had numbers, a command, and no addressee for the
-  // decision — which is how a correct finding ends as a line nobody ever acted on.
-  if (lines.length) {
-    lines.push(
-      `TELL THE USER about this in your next reply — name the files and what is not in force, ` +
-        `and let them decide. Do NOT run the install on your own: this hook stays read-only ` +
-        `because adopting writes into their config, and that is their call, not yours.`,
-    )
+  for (const finding of buckets.ahead.sort((a, b) => a.file.localeCompare(b.file))) {
+    const target = finding.location ? finding.file + ' (' + finding.location + ')' : finding.file
+    const diff = diffRemedy(installCmd, set, finding.file, finding.location)
+    lines.push(`${target}: ${contentDirection(finding.file, finding, set)}. ` +
+      (noticeOnly
+        ? `NOTICE ONLY: hand this arbitration to the session that owns this directory; start with \`${diff}\`.`
+        : `SESSION ACTION: arbitrate this fork; start with \`${diff}\`.`))
   }
   return lines.join('\n')
 }
@@ -290,6 +306,7 @@ export function main() {
   if (!root) return // no cwd in payload → can't locate the project; stay silent
 
   const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
+  const noticeOnly = resolveWorkflowToolboxOption('adopt_refresh').value === 'notice-only'
 
   // BOTH managed sets, not just rules. An agent definition goes stale exactly the same way a
   // rule does — a shipped fix lands, the adopted copy keeps the old text — and the project
@@ -322,7 +339,7 @@ export function main() {
     for (const file of files) perFile.set(file, mergeAll(maps, file))
 
     const remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
-    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event)
+    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly)
     if (built) sections.push(built)
   }
 
