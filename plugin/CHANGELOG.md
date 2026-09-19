@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Adoption staleness notices now quote the exact directory they inspected in their `install.mjs --dir` remedy. A bare `--install` also reuses a sole discovered project or config-profile adoption and refuses to guess when several copies exist, preventing a stale user-level copy from being left behind while a duplicate project copy is created.
+
 ## [0.183.1] - 2026-09-18
 
 ### Fixed

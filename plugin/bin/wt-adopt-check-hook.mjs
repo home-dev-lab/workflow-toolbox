@@ -184,7 +184,15 @@ function contentDirection(file, finding, set) {
   return `differs from v${currentVersion} (direction unknown: content-only comparison)`
 }
 
-function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart') {
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'\\''`)}'`
+}
+
+function installRemedy(installCmd, set, dir) {
+  return `node ${shellQuote(installCmd)} --set ${set} --install --dir ${shellQuote(dir)}`
+}
+
+function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart') {
   const buckets = { absent: [], stale: [], ahead: [], edited: [] }
   for (const [file, finding] of perFile) {
     if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
@@ -208,14 +216,14 @@ function buildMessage(perFile, installCmd, set = 'rules', event = 'SessionStart'
       `workflow-toolbox rules NOT installed here: ${named(buckets.absent)}. ` +
         `Plugin ${set} never load into a session on their own, so what they carry is ` +
         `NOT in force for these. Fix: run the ${SKILL_NAME} skill ` +
-        `(or \`node ${installCmd} --set ${set} --install\`).`,
+        `(or \`${installRemedy(installCmd, set, remedyDir)}\`).`,
     )
   }
   for (const finding of [...buckets.stale, ...buckets.ahead].sort((a, b) => a.file.localeCompare(b.file))) {
     const target = `${finding.file}${finding.location ? ` (${finding.location})` : ''}`
     lines.push(
       `${target}: ${contentDirection(finding.file, finding, set)}. Owner / single writer: run ` +
-        `\`node ${installCmd} --set ${set} --install\`; this read-only hook will not run it.`,
+        `\`${installRemedy(installCmd, set, finding.location)}\`; this read-only hook will not run it.`,
     )
   }
   // "Locally modified" is a SUPPORTED steady state, not an event. Reporting it at session
@@ -313,7 +321,8 @@ export function main() {
     const perFile = new Map()
     for (const file of files) perFile.set(file, mergeAll(maps, file))
 
-    const built = buildMessage(perFile, INSTALL_RULES, set, event)
+    const remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
+    const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event)
     if (built) sections.push(built)
   }
 
