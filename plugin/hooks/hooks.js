@@ -8,7 +8,8 @@ function nextPaneId() {
   paneSequence += 1;
   return `${PANE_ID}-${Date.now().toString(36)}-${paneSequence.toString(36)}`;
 }
-export const COLLECTOR_TIMEOUT_MS = 8000;
+export const COLLECTOR_TIMEOUT_MS = 30_000;
+export const PLUGIN_VERSION = '0.184.0';
 export const SLOW_RENDER_THRESHOLD_MS = 50;
 export const MISSED_RENDERS_BEFORE_STOP = 3;
 export const RENDER_JOURNAL_MAX_BYTES = 64 * 1024;
@@ -100,6 +101,7 @@ async function pathsOf($, options, sessionCwd) {
   const stateRoot = stateHome || pathJoin(home || sessionCwd, '.local/state');
   return {
     configDir,
+    stateRoot,
     livenessDir: configured('livenessDir') || pathJoin(stateRoot, 'wt-liveness'),
     suiteLockRoot: suiteLockRoot || pathJoin(stateRoot, 'wt-suite-lock'),
     suiteRoot: configured('suiteRoot') || pathJoin(sessionCwd, '.claude'),
@@ -113,7 +115,7 @@ async function pathsOf($, options, sessionCwd) {
   };
 }
 
-export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT) {
+export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT, timeoutMs = COLLECTOR_TIMEOUT_MS) {
   try {
     // Test-only real-host seam: the control-character probe needs the host to render a fixed reproducing snapshot.
     let snapshotFile;
@@ -125,7 +127,7 @@ export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT) {
       snapshotFile
         ? ['node', '-e', "process.stdout.write(require('node:fs').readFileSync(process.argv[1], 'utf8'))", snapshotFile]
         : ['node', '-e', collectorBootstrap, new URL('./snapshot-program.js', import.meta.url).href, JSON.stringify({ ...paths, priceTableFile: fileUrlPath(new URL('../pricing/model-prices.json', import.meta.url)), layout: paths.layout || layout })],
-      { timeoutMs: COLLECTOR_TIMEOUT_MS },
+      { timeoutMs },
     );
     if (result?.exitCode !== 0) {
       const stderr = typeof result?.stderr === 'string' ? result.stderr.split(/\r?\n/).find((line) => line.trim())?.trim() : null;
@@ -140,7 +142,7 @@ export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT) {
   } catch (error) {
     const detail = [error?.name, error?.code, error?.message].filter(Boolean).join(' ');
     return /timeout|timed?\s*out|ETIMEDOUT/i.test(detail)
-      ? unavailableSnapshot(`collector timed out after ${COLLECTOR_TIMEOUT_MS / 1000} s`)
+      ? unavailableSnapshot(`collector timed out after ${timeoutMs / 1000} s: ${String(error?.message || error || 'timeout').split(/\r?\n/)[0].slice(0, 240)}`)
       : unavailableSnapshot(`collector failed (${String(error?.message || error || 'unknown error').split(/\r?\n/)[0].slice(0, 160)})`);
   }
 }
@@ -196,6 +198,7 @@ function phaseLabelFor(row, phase) {
 }
 
 function stateOf(row, phase) {
+  if (phase === row.phase && /^(?:error|failed|fail)/i.test(String(row.outcome || ''))) return { glyph: '✗', words: 'ERROR' };
   const words = row.phaseStates?.[phase] || 'not started';
   return { glyph: { running: '●', done: '✓', skipped: '–', 'waiting for arbiter review': '◷' }[words] || '·', words };
 }
@@ -243,6 +246,17 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   if (!allProjects) snapshot = Array.isArray(snapshot.sessions)
     ? { ...snapshot, sessions: snapshot.sessions.filter(sameProject) }
     : { ...snapshot, rows: (snapshot.rows || []).filter(sameProject) };
+  const ageSeconds = (timestamp) => {
+    const parsed = Date.parse(timestamp || '');
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(0, Math.floor(((Number(actions.now) || Date.now()) - parsed) / 1000));
+  };
+  const snapshotAge = ageSeconds(snapshot.collectedAt);
+  let ageText = 'update time not reported';
+  if (snapshotAge !== null) {
+    const elapsed = snapshotAge < 60 ? `${snapshotAge} s` : `${Math.floor(snapshotAge / 60)} min`;
+    ageText = `updated ${elapsed} ago`;
+  }
   const renderEvidence = (summary) => {
     const lines = String(summary || '').replace(/\r\n?/g, '\n').split('\n').map((raw) => {
       const heading = /^#{1,6}\s+(.+)$/.exec(raw.trim());
@@ -275,28 +289,42 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     if (typeof value === 'string') return value;
     return 'price unknown';
   };
+  const formatModelUsage = (model, value) => {
+    const cacheWrite = /^openai\//i.test(model) ? '' : ` · cache write ${formatCount(value.cacheWrite)}`;
+    return `${model} · input ${formatCount(value.input)}${cacheWrite} · cache read ${formatCount(value.cacheRead)} · output ${formatCount(value.output)} · ${formatUsd(value.usd, value.priceLabel)}`;
+  };
   const phaseCostDetail = (row, phase) => {
     const cost = row.phaseCosts?.[phase];
     if (!cost) return [];
     if (cost === 'unknown') {
       const running = stateOf(row, phase).words === 'running';
-      const elapsed = running && row.phaseElapsed?.[phase] ? ` · elapsed ${row.phaseElapsed[phase]} · lane usage arrives at lane end` : '';
-      return [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, {}, `cost so far: unknown${elapsed}`))];
+      const elapsed = running && row.phaseElapsed?.[phase] ? ` · elapsed ${row.phaseElapsed[phase]}` : '';
+      const status = running ? 'waiting for the lane to finish' : 'not reported by this provider';
+      return [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, {}, `cost: ${status}${elapsed}`))];
     }
+    const models = Object.entries(cost.models || {}).map(([model, value]) => node(Text, { key: `phase-model:${row.id}:${phase}:${model}`, wrap: 'wrap' }, formatModelUsage(model, value)));
     return [
-      node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, { wrap: 'wrap' }, `cost so far | input: ${formatCount(cost.input)} | output: ${formatCount(cost.output)} | cache read: ${formatCount(cost.cacheRead)} | cache write: ${formatCount(cost.cacheWrite)} | ${formatUsd(cost.usd, cost.priceLabel)}`)),
-      node(Box, { key: `phase-cost-source:${row.id}:${phase}` }, node(Text, { dimColor: true }, `cost source: ${row.phaseCostSourceKind || 'unknown'}`)),
+      ...(models.length ? models : [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, { wrap: 'wrap' }, `input ${formatCount(cost.input)} · cache write ${formatCount(cost.cacheWrite)} · cache read ${formatCount(cost.cacheRead)} · output ${formatCount(cost.output)} · ${formatUsd(cost.usd, cost.priceLabel)}`))]),
+      node(Box, { key: `phase-cost-source:${row.id}:${phase}` }, node(Text, { dimColor: true }, `cost source: ${row.phaseCostSourceKind && row.phaseCostSourceKind !== 'unknown' ? row.phaseCostSourceKind : 'not reported'}`)),
     ];
   };
   const runningCostStatus = (row) => row.phaseCosts?.[row.phase] === 'unknown' && row.phaseElapsed?.[row.phase]
-    ? node(Box, { key: `running-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `cost so far: unknown · elapsed ${row.phaseElapsed[row.phase]} · lane usage arrives at lane end`))
+    ? node(Box, { key: `running-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `cost: waiting for the lane to finish · elapsed ${row.phaseElapsed[row.phase]}`))
     : null;
-  const runCostStatus = (row) => row.runCost
-    ? node(Box, { key: `run-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `run total so far: ${formatUsd(row.runCost.usd, row.runCost.priceLabel)}`))
-    : null;
+  const runCostStatus = (row, detailed = false) => {
+    if (!row.runCost) return null;
+    const approximate = row.costApproximate ? ' · cost approximate' : '';
+    const modelLines = detailed
+      ? Object.entries(row.runCost.models || {}).map(([model, value]) => node(Text, { key: `run-model:${row.id}:${model}`, wrap: 'wrap' }, formatModelUsage(model, value)))
+      : [];
+    return node(Box, { key: `run-cost:${row.id}`, flexDirection: 'column', paddingLeft: 1 },
+      node(Text, { dimColor: true }, `run total so far: ${formatUsd(row.runCost.usd, row.runCost.priceLabel)}${approximate}`),
+      ...modelLines,
+    );
+  };
   const compactPhaseCost = (cost, phase, key) => {
     if (!(Number(actions.bodyColumns) >= 120) || cost === undefined) return null;
-    return node(Box, { key: `phase-cost:${key}:${phase}`, flexShrink: 0 }, node(Text, { dimColor: true }, cost === 'unknown' ? '· unknown' : `· ${formatUsd(cost.usd, cost.priceLabel)}`));
+    return node(Box, { key: `phase-cost:${key}:${phase}`, flexShrink: 0 }, node(Text, { dimColor: true }, cost === 'unknown' ? '· cost pending' : `· ${formatUsd(cost.usd, cost.priceLabel)}`));
   };
   const renderCardId = (row) => {
     const id = row.cardId || (/^\d{19}$/.test(String(row.id || '')) ? row.id : null);
@@ -315,7 +343,14 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   );
   const renderExternal = (row, indent = 0, showCard = true) => {
     const cardId = renderCardId(row);
-    const label = `${row.label || 'External lane'}${row.roleInferred ? ' (inferred)' : ''}`;
+    const baseLabel = row.label && row.label !== 'Lane' ? row.label : pathBase(row.worktree) || 'External lane';
+    const label = `${baseLabel}${row.roleInferred ? ' (inferred)' : ''}`;
+    const isExpanded = expanded.has(row.id);
+    const buttonKey = `detail-toggle:row:${row.id}`;
+    let outcomeLabel = '● running';
+    if (/^(?:error|failed|fail)/i.test(String(row.outcome || ''))) outcomeLabel = '✗ ERROR';
+    else if (row.outcome === 'done') outcomeLabel = '✓ done';
+    const owner = row.launcherSessionId ? `session ${String(row.launcherSessionId).slice(0, 8)}` : 'session';
     const details = [
       `phases: n/a (${row.phaseAvailability || 'plain lane'})`,
       row.model && row.model !== 'unknown' ? `model ${row.model}` : null,
@@ -324,13 +359,16 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ].filter(Boolean).join(' · ');
     return node(Box, { key: row.id, flexDirection: 'column', paddingLeft: indent },
       node(Box, { flexDirection: 'row', columnGap: 1 },
-        fixedText({ color: COLORS.external }, label),
+        control({ key: buttonKey, plain: true, onPress: () => actions.toggle(row.id) }, `${isExpanded ? '▼' : '▶'} ${label}`, isExpanded ? COLORS.actionOpen : COLORS.action),
         showCard && cardId ? fixedText({ color: COLORS.external }, '·') : null,
         showCard ? cardId : null,
-        row.title ? fixedText({ color: COLORS.external }, '·') : null,
-        row.title ? node(Text, { color: COLORS.external, wrap: 'wrap' }, row.title) : null,
+        fixedText({ color: COLORS.external, bold: row.outcome === 'running' }, `· ${outcomeLabel}`),
+        row.elapsed && row.elapsed !== 'unknown' ? fixedText({ dimColor: true }, `· ${row.elapsed}`) : null,
       ),
-      details || (showCard && isValidLinkHref(row.cardUrl)) ? node(Box, { flexDirection: 'column', paddingLeft: 1 },
+      row.title && row.title !== label ? node(Text, { color: COLORS.external, wrap: 'wrap' }, row.title) : null,
+      isExpanded && (details || row.title || (showCard && isValidLinkHref(row.cardUrl))) ? renderOpenDetail(buttonKey, `${label} details`, () => actions.toggle(row.id),
+        row.title ? node(Text, { wrap: 'wrap' }, row.title) : null,
+        node(Text, { dimColor: true }, `owner: ${owner}`),
         details ? node(Text, { dimColor: true, wrap: 'wrap' }, details) : null,
         showCard ? renderCardLink(row) : null,
       ) : null,
@@ -394,6 +432,64 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const pilot = deepActors(card.actors).find((actor) => actor.sdkLifecycle === true && actor.phase && actor.phase !== 'unknown');
     const key = `timeline:${sessionId}:${card.id}`;
     const selection = selected.get(key);
+    if (pilot) {
+      const isExpanded = expanded.has(pilot.id);
+      const stages = PANE_PHASES.map(([id]) => ({ id, label: phaseLabelFor(pilot, id), state: stateOf(pilot, id), cost: pilot.phaseCosts?.[id], inspector: pilot.inspectors?.[id] }));
+      if (pilot.phaseStates?.awaiting_fidelity && pilot.phaseStates.awaiting_fidelity !== 'not started') stages.push({ id: 'awaiting_fidelity', label: 'Fidelity', state: stateOf(pilot, 'awaiting_fidelity'), cost: pilot.phaseCosts?.awaiting_fidelity, inspector: pilot.inspectors?.awaiting_fidelity });
+      const shown = isExpanded ? stages : stages.filter((stage) => !['skipped', 'not started'].includes(stage.state.words));
+      const skipped = stages.filter((stage) => stage.state.words === 'skipped');
+      const next = stages.filter((stage) => stage.state.words === 'not started');
+      const failed = /^(?:error|failed|fail)/i.test(String(pilot.outcome || ''));
+      const stageRows = shown.map((stage, index) => {
+        const buttonKey = `detail-toggle:stage:${sessionId}:${card.id}:${stage.id}`;
+        const hasEvidence = (Boolean(stage.inspector?.summary || stage.inspector?.href) || stage.cost !== undefined) && !['not started', 'skipped'].includes(stage.state.words);
+        const isLast = index === shown.length - 1 && !next.length && !skipped.length;
+        const reportFallback = stage.inspector?.href ? 'A report was recorded.' : '';
+        const report = stage.inspector?.summary || reportFallback;
+        const openDetail = selection === stage.id
+          ? renderOpenDetail(buttonKey, stage.label, () => actions.closeView(key), ...phaseCostDetail(pilot, stage.id), ...renderEvidence(report), Link && isValidLinkHref(stage.inspector?.href) ? linked({ href: stage.inspector.href, label: '[Open report]' }) : null)
+          : null;
+        return node(Box, { key: `spine-stage:${key}:${stage.id}`, flexDirection: 'column', paddingLeft: 1 },
+          node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
+            fixedText({ dimColor: true }, isLast ? '└' : '├'),
+            renderStateSegment({ key: `stage-state:${sessionId}:${card.id}:${stage.id}`, buttonKey, label: stage.label, state: stage.state, open: selection === stage.id, onPress: hasEvidence ? () => actions.select(key, stage.id) : null }),
+            pilot.phaseElapsed?.[stage.id] ? fixedText({ dimColor: true }, `· ${pilot.phaseElapsed[stage.id]}`) : null,
+            stage.cost && stage.cost !== 'unknown' ? fixedText({ dimColor: true }, `· ${formatUsd(stage.cost.usd, stage.cost.priceLabel)}`) : null,
+          ),
+          openDetail,
+          failed && stage.id === pilot.phase ? node(Text, { color: COLORS.error, bold: true }, `owner: pilot runner · ${pilot.outcome}`) : null,
+        );
+      });
+      const nextNames = next.map((stage) => stage.label).join(', ') || 'none';
+      const skippedSummary = skipped.length ? ` · skipped: ${skipped.length}` : '';
+      const collapsedSummary = !isExpanded && (next.length || skipped.length)
+        ? node(Text, { dimColor: true }, ` ├ next: ${nextNames}${skippedSummary}`)
+        : null;
+      let roundSummary = null;
+      if (isExpanded && pilot.criticRounds > 0) {
+        const lowerBound = pilot.runnerLogTruncated ? 'at least ' : '';
+        const unit = pilot.criticRounds === 1 ? 'round' : 'rounds';
+        roundSummary = node(Text, { dimColor: true }, `Plan ↔ Critic: ${lowerBound}${pilot.criticRounds} ${unit}`);
+      }
+      const pilotLabel = pilot.label || 'SDK pilot';
+      return node(Box, { key, flexDirection: 'column' },
+        node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
+          control({ key: `detail-toggle:row:${pilot.id}`, plain: true, onPress: () => actions.toggle(pilot.id) }, `${isExpanded ? '▼' : '▶'} ${pilotLabel}`, isExpanded ? COLORS.actionOpen : COLORS.action),
+          fixedText({ bold: true }, 'drives the stages below'),
+          isExpanded && pilot.route ? fixedText({ dimColor: true }, `· route ${pilot.route}`) : null,
+        ),
+        ...stageRows,
+        collapsedSummary,
+        runCostStatus(pilot, isExpanded),
+        runningCostStatus(pilot),
+        roundSummary,
+        isExpanded ? renderOpenDetail(`detail-toggle:row:${pilot.id}`, `${pilotLabel} details`, () => actions.toggle(pilot.id),
+          ...knownDetails(pilot).map((line) => node(Text, { dimColor: true }, line)),
+          renderCardLink(card),
+        ) : null,
+        ...(pilot.lanes || []).map((lane) => renderExternal(lane, 1, false)),
+      );
+    }
     const stages = [];
     if (pilot) for (const [id] of PANE_PHASES) {
       const state = stateOf(pilot, id);
@@ -439,14 +535,10 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   if (Array.isArray(snapshot.sessions)) for (const session of snapshot.sessions) {
     const cards = (session.cards || []).flatMap((card, index) => [index ? node(Box, { key: `card-separator:${session.id}:${card.id}`, flexDirection: 'column' }, node(Text, {}, ''), node(Text, { dimColor: true }, '────────────────────────────────────────')) : null, node(Box, { key: `card:${session.id}:${card.id}`, flexDirection: 'column', paddingLeft: 1 },
       card.waveId ? node(Text, { bold: true }, `Wave ${card.waveId}`) : null,
-      node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
-        fixedText({ bold: true }, 'Card'),
-        fixed(node(Text, { bold: true }, card.id)),
-        card.title && card.title !== card.id ? node(Text, { wrap: 'wrap' }, card.title) : null,
-      ),
-      renderCardLink(card),
+      card.title && card.title !== card.id ? node(Text, { bold: true, wrap: 'wrap' }, card.title) : node(Text, { bold: true }, `Card ${card.id}`),
+      !(card.actors || []).some((actor) => actor.sdkLifecycle === true) ? renderCardLink(card) : null,
       renderCardStages(card, session.id),
-      ...(card.actors || []).map((actor) => renderHierarchyActor(actor, 1)),
+      ...(card.actors || []).filter((actor) => actor.sdkLifecycle !== true).map((actor) => renderHierarchyActor(actor, 1)),
     )]).filter(Boolean);
     const project = session.project && session.project !== 'unknown' ? session.project.trim() : null;
     const name = typeof session.name === 'string' ? session.name.trim() : null;
@@ -467,6 +559,18 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ));
     grouped.push(...snapshot.rows.filter((row) => !row.waveId).map((row) => row.kind === 'external' ? renderExternal(row) : renderPilot(row, 0)));
   }
+  const allActors = Array.isArray(snapshot.sessions)
+    ? snapshot.sessions.flatMap((session) => [...(session.actors || []), ...(session.cards || []).flatMap((card) => deepActors(card.actors))])
+    : snapshot.rows || [];
+  const pilotErrors = allActors.filter((actor) => actor.kind === 'pilot' && /^(?:error|failed|fail)/i.test(String(actor.outcome || ''))).length;
+  const laneErrors = allActors.filter((actor) => actor.kind === 'external' && /^(?:error|failed|fail)/i.test(String(actor.outcome || ''))).length;
+  if (pilotErrors || laneErrors) {
+    const errorCount = pilotErrors + laneErrors;
+    const owners = [];
+    if (pilotErrors) owners.push(`${pilotErrors} for the pilot runner`);
+    if (laneErrors) owners.push(`${laneErrors} for the session`);
+    grouped.unshift(node(Text, { color: COLORS.error, bold: true }, `⚠ ${errorCount} error${errorCount === 1 ? '' : 's'} · ${owners.join(' · ')}`));
+  }
   const suiteLock = snapshot.suiteLock;
   // The pane is read narrow: show the worktree's own name (what follows `/worktrees/`), not the full path.
   const suiteWhere = (cwd) => {
@@ -476,7 +580,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   };
   if (suiteLock?.status === 'running') grouped.unshift(node(Text, { bold: true, wrap: 'wrap' }, `Test suite · ${suiteLock.command} · running ${suiteLock.age} · ${suiteWhere(suiteLock.worktree)}`));
   else if (suiteLock?.status === 'stale') grouped.unshift(node(Text, { dimColor: true, wrap: 'wrap' }, `Test suite lock stale · ${suiteLock.command} · started ${suiteLock.age} ago · ${suiteWhere(suiteLock.worktree)}`));
-  else if (suiteLock?.status === 'unknown') grouped.unshift(node(Text, { dimColor: true }, 'Test suite lock · unknown'));
+  else if (suiteLock?.status === 'unknown') grouped.unshift(node(Text, { dimColor: true }, 'Test suite lock · status could not be determined'));
   const renderCollapsedProcesses = (key, label, items) => {
     const buttonKey = `detail-toggle:row:${key}`;
     const isExpanded = expanded.has(key);
@@ -494,36 +598,73 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ));
   };
   if (grouped.length || snapshot.services?.count || snapshot.helpers?.count) {
-    renderCollapsedProcesses('services', `Services (${snapshot.services?.count || 0})`, snapshot.services?.items || []);
+    if (snapshot.services?.count) renderCollapsedProcesses('services', `Services (${snapshot.services.count})`, snapshot.services?.items || []);
     const oldest = snapshot.helpers?.oldest;
-    renderCollapsedProcesses('idle-helpers', `Idle helpers (${snapshot.helpers?.count || 0}${oldest && oldest !== 'unknown' ? `; oldest ${oldest}` : ''})`, snapshot.helpers?.items || []);
+    if (snapshot.helpers?.count) renderCollapsedProcesses('idle-helpers', `Idle helpers (${snapshot.helpers.count}${oldest && oldest !== 'unknown' ? `; oldest ${oldest}` : ''})`, snapshot.helpers?.items || []);
   }
   const processAvailability = snapshot.collectors?.processes?.availability
     || { status: snapshot.processDiscovery, reason: snapshot.processPartialReason };
-  if (processAvailability?.status === 'unknown') grouped.push(node(Text, { dimColor: true }, `process discovery unavailable (${processAvailability.reason || 'unavailable on this platform'})`));
+  if (processAvailability?.status === 'unknown') grouped.push(node(Text, { dimColor: true }, `The plugin could not list background processes (${processAvailability.reason || 'unavailable on this platform'})`));
   if (processAvailability?.status === 'partial') grouped.push(node(Text, { dimColor: true }, `process list partial (${processAvailability.reason || 'reason unavailable'})`));
   if (snapshot.discovery === 'partial') {
     const reasons = [];
     if (snapshot.cappedScans?.length) reasons.push(`scan cap reached: ${snapshot.cappedScans.join(', ')}`);
     if (snapshot.scanLimits?.length) reasons.push(snapshot.scanLimits.join('; '));
     if (snapshot.pathRefusals?.length) reasons.push(snapshot.pathRefusals.join('; '));
-    grouped.push(node(Text, { dimColor: true }, reasons.length ? `discovery partial (${reasons.join('; ')})` : 'Discovery is partial.'));
+    const key = 'discovery-detail';
+    const isExpanded = expanded.has(key);
+    grouped.push(node(Box, { key, flexDirection: 'column' },
+      control({ key: `detail-toggle:row:${key}`, plain: true, onPress: () => actions.toggle(key) }, `${isExpanded ? '▼' : '▶'} why`, isExpanded ? COLORS.actionOpen : COLORS.action),
+      node(Text, { dimColor: true }, 'Some running work could not be listed'),
+      isExpanded ? renderOpenDetail(`detail-toggle:row:${key}`, 'Why some work is missing', () => actions.toggle(key), ...reasons.map((reason) => node(Text, { dimColor: true, wrap: 'wrap' }, reason))) : null,
+    ));
+  }
+  if (snapshot.refreshFailure) {
+    const key = 'collector-failure';
+    const isExpanded = expanded.has(key);
+    grouped.unshift(node(Box, { key, flexDirection: 'column' },
+      node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
+        control({ key: `detail-toggle:row:${key}`, plain: true, onPress: () => actions.toggle(key) }, `${isExpanded ? '▼' : '▶'} details`, isExpanded ? COLORS.actionOpen : COLORS.action),
+        node(Text, { dimColor: true }, `${ageText} · last refresh failed, retrying · workflow-toolbox plugin owns the retry`),
+      ),
+      isExpanded ? renderOpenDetail(`detail-toggle:row:${key}`, 'Collector failure', () => actions.toggle(key), node(Text, { wrap: 'wrap' }, snapshot.refreshFailure.detail), node(Text, { dimColor: true, wrap: 'wrap' }, `journal: ${snapshot.refreshFailure.journalPath}`)) : null,
+    ));
   }
   if (hiddenCount) grouped.push(node(Text, { dimColor: true }, `${hiddenCount} ${hiddenCount === 1 ? 'item' : 'items'} hidden${unattributedCount ? ` · ${unattributedCount} unattributed` : ''}`));
   const workAvailability = snapshot.collectors?.work?.availability;
-  let unavailableText = `Could not read the running work (${workAvailability?.reason || 'collector failed'}).`;
+  let unavailableText = 'The workflow-toolbox plugin could not read the running work; it will retry.';
   if (workAvailability?.reason === 'reading…') unavailableText = 'Reading the running work…';
   let lines = grouped;
-  if (snapshot.discovery === 'unknown') lines = [node(Text, { dimColor: true }, unavailableText)];
+  if (snapshot.discovery === 'unknown') {
+    const detail = workAvailability?.reason || 'collector failed';
+    const key = 'collector-failure';
+    const isExpanded = expanded.has(key);
+    const journal = snapshot.refreshFailure?.journalPath;
+    const journalLine = journal ? node(Text, { dimColor: true }, `journal: ${journal}`) : null;
+    const details = isExpanded
+      ? renderOpenDetail(`detail-toggle:row:${key}`, 'Collector failure', () => actions.toggle(key), node(Text, { wrap: 'wrap' }, detail), journalLine)
+      : null;
+    lines = [node(Box, { key, flexDirection: 'column' },
+      node(Box, { flexDirection: 'row', columnGap: 1 },
+        node(Text, { dimColor: true }, unavailableText),
+        control({ key: `detail-toggle:row:${key}`, plain: true, onPress: () => actions.toggle(key) }, `${isExpanded ? '▼' : '▶'} details`, isExpanded ? COLORS.actionOpen : COLORS.action),
+      ),
+      details,
+    )];
+  }
   else if (!grouped.length) lines = [node(Text, { dimColor: true }, 'Nothing running in the background.')];
+  const narrow = Number(actions.bodyColumns) < 72;
+  let scope = allProjects ? 'Scope: all projects' : `Scope: this project · ${currentProject}`;
+  if (narrow) scope = allProjects ? '· all' : `· ${currentProject}`;
   const tree = node(Box, { flexDirection: 'column' },
-    node(Box, { flexDirection: 'row', columnGap: 2 },
+    node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: narrow ? 1 : 2 },
       fixedText({ bold: true }, 'What is running'),
-      fixedText({ dimColor: true }, allProjects ? 'Scope: all projects' : `Scope: this project · ${currentProject}`),
+      fixedText({ dimColor: true }, scope),
       node(Box, { flexGrow: 1 }),
       control({ key: 'project-scope', plain: true, onPress: actions.switchScope }, allProjects ? 'Show this project' : 'Show all projects', allProjects ? COLORS.actionOpen : COLORS.action),
       control({ key: 'close', plain: true, onPress: actions.close }, 'Close', COLORS.close),
     ),
+    snapshot.discovery !== 'unknown' ? node(Text, { dimColor: true }, ageText) : null,
     ...lines,
   );
   const sanitized = sanitizePaneTree(tree, '$', repairs);
@@ -555,12 +696,15 @@ export const registerWithLayout = (on, options, layout) => {
   let paneId = null;
   let pendingPaneId = null;
   let refreshing = false;
+  let lastGoodSnapshot = null;
+  let ticksToSkip = 0;
   let processRefusalStreaks = new Map();
   let currentProject = null;
   let allProjects = false;
   const expanded = new Set();
   const selected = new Map();
   const pollMs = Number(options?.pollMs) > 0 ? Number(options.pollMs) : 2000;
+  const collectorTimeoutMs = Number(options?.collectorTimeoutMs) >= 1000 ? Number(options.collectorTimeoutMs) : COLLECTOR_TIMEOUT_MS;
   const slowRenderMs = Number(options?.slowRenderMs) >= 0 ? Number(options.slowRenderMs) : SLOW_RENDER_THRESHOLD_MS;
 
   const recordRenderEvent = (kind, detail, viewport) => {
@@ -583,9 +727,19 @@ export const registerWithLayout = (on, options, layout) => {
   const refresh = async (request = generation) => {
     if (!host || !open || request !== generation || refreshing) return;
     refreshing = true;
+    const startedAt = Date.now();
     try {
       let nextSnapshot = await host.readSnapshot(host.paths);
       if (!open || request !== generation) return;
+      if (nextSnapshot.discovery === 'unknown') {
+        const detail = nextSnapshot.collectors?.work?.availability?.reason || 'collector failed';
+        const refreshFailure = { detail, journalPath: host.collectorJournalPath, failedAt: new Date().toISOString() };
+        const event = JSON.stringify({ timestamp: refreshFailure.failedAt, kind: 'collector-failure', detail, pluginVersion: PLUGIN_VERSION });
+        void host.appendCollectorJournal(event).catch(() => {});
+        snapshot = lastGoodSnapshot ? { ...lastGoodSnapshot, refreshFailure } : { ...nextSnapshot, refreshFailure };
+        host.invalidate();
+        return;
+      }
       const refusals = Array.isArray(nextSnapshot.pathRefusals) ? nextSnapshot.pathRefusals : [];
       const nextStreaks = new Map();
       const visibleRefusals = refusals.filter((reason) => {
@@ -601,8 +755,11 @@ export const registerWithLayout = (on, options, layout) => {
         nextSnapshot = { ...nextSnapshot, pathRefusals: visibleRefusals, ...(onlyDebouncedRefusalsMadePartial ? { discovery: 'available' } : {}) };
       }
       snapshot = nextSnapshot;
+      lastGoodSnapshot = nextSnapshot;
       host.invalidate();
     } finally {
+      const duration = Date.now() - startedAt;
+      ticksToSkip = Math.max(ticksToSkip, Math.ceil(duration / pollMs) - 1);
       refreshing = false;
     }
   };
@@ -620,6 +777,7 @@ export const registerWithLayout = (on, options, layout) => {
         return;
       }
       if (refreshing) return;
+      if (ticksToSkip > 0) { ticksToSkip -= 1; return; }
       // No render since the last tick is how a pane closed by the host's own cross is noticed. One miss is not
       // that: a tick can land between the end of a collection and the render it asked for.
       if (!paneObserved) {
@@ -664,12 +822,14 @@ export const registerWithLayout = (on, options, layout) => {
     const paths = await pathsOf($, options, event.cwd);
     host = {
       paths,
-      readSnapshot: (paths) => readSnapshot({ env: { get: async () => snapshotFile }, process: { run: (argv, init) => $.process.run(argv, init) } }, paths, layout),
+      readSnapshot: (paths) => readSnapshot({ env: { get: async () => snapshotFile }, process: { run: (argv, init) => $.process.run(argv, init) } }, paths, layout, collectorTimeoutMs),
       invalidate: () => $.ui.invalidate('ui.render'),
       open: (pane) => $.ui.open(pane),
       close: (pane) => $.ui.close(pane),
       every: (ms, fn) => $.clock.every(ms, fn),
       appendJournal: (line) => $.process.run(['node', '-e', RENDER_JOURNAL_PROGRAM, pathJoin(pathJoin(paths.configDir, 'plugins/data'), 'wt-what-is-running-render.jsonl'), line, String(RENDER_JOURNAL_MAX_BYTES)]),
+      collectorJournalPath: pathJoin(pathJoin(paths.stateRoot, 'workflow-toolbox'), 'what-is-running-errors.jsonl'),
+      appendCollectorJournal: (line) => $.process.run(['node', '-e', RENDER_JOURNAL_PROGRAM, pathJoin(pathJoin(paths.stateRoot, 'workflow-toolbox'), 'what-is-running-errors.jsonl'), line, String(RENDER_JOURNAL_MAX_BYTES)]),
     };
     try { await $.command.register({ name: 'wir', description: 'Open the What is running view' }); }
     catch { await $.ui.log('wt-what-is-running: /wir unavailable'); }

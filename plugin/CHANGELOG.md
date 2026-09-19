@@ -6,11 +6,15 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Redesign the EXPERIMENTAL What is running pane around a compact card spine, owner-attributed errors, expandable billed token classes per model, and width-aware summaries
+- Add a configurable 30-second running-work collector ceiling with adaptive single-flight polling and a bounded per-user failure journal
 - Add source-backed per-model USD run costs to receipts, the cost index, and the live pane
 - Resolve run prices by exact provider and model from OpenCode's fresh models.dev cache, with context tiers, read-only plugin-data overrides, dated fallback reasons, subscription and API-equivalent labels, and stale-source warnings
 - Show effective plugin configuration, configurable phase models, and orphaned settings
 
 ### Fixed
+- Keep the last good What is running snapshot visible through collector failures, show its age and a plain-language retry notice, and clear the notice after recovery
+- Ignore coverage temporary directories during running-work scans and keep walk-budget uncertainty on the affected row instead of marking all discovery partial
 - The wake floor now stays silent for a Linux background task only while a stable same-user process from the current session holds its task output open for writing. Completed outputs, readers, plugin monitors, foreign sessions, PID reuse, and inaccessible unrelated descriptors cannot suppress the floor.
 - Windows: the What is running collector resolves its shipped model-price table as a native file path, preserving fallback USD prices when no machine-local price catalogue is available.
 
