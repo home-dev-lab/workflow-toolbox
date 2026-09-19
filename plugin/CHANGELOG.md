@@ -25,6 +25,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Adoption staleness notices now quote the exact directory they inspected in their `install.mjs --dir` remedy. A bare `--install` also reuses a sole discovered project or config-profile adoption and refuses to guess when several copies exist, preventing a stale user-level copy from being left behind while a duplicate project copy is created.
 - The orchestrator CLI now refuses value-taking flags that are empty, truncated, or followed by another flag instead of silently accepting a missing value.
 
+### Added
+- Add source-backed per-model USD run costs to receipts, the cost index, and the live pane
+
 ## [0.183.1] - 2026-09-18
 
 ### Fixed

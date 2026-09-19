@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { priceRunCost } from './model-prices.mjs'
+export { priceRunCost } from './model-prices.mjs'
 
 const NOT_MEASURED = 'not measured'
 const TOKEN_FIELDS = ['input', 'cache_write', 'cache_read', 'output', 'reasoning', 'first_pass_input', 'fresh_tokens']
@@ -320,7 +322,7 @@ export function computeRunCost(options) {
     : summary.partial?.reason || !summary.completed
       ? { status: 'partial', reason: summary.partial?.reason ?? summary.reason ?? 'run incomplete' }
       : { status: 'complete' }
-  return {
+  return priceRunCost({
     version: 2,
     card_id: routeReceipt.cardId ?? routeReceipt.card_id ?? null,
     route: options.route ?? routeReceipt.route,
@@ -337,7 +339,7 @@ export function computeRunCost(options) {
       model_usage: modelUsageDifference(usage.model_usage, primaryModel, resultTotals),
     },
     sources: { pilot: usage.messages ? 'Claude Agent SDK assistant message usage' : 'legacy Claude Agent SDK result usage', lanes: [...laneSources].map((family) => family === 'anthropic' ? 'Claude Agent SDK result usage' : 'OpenCode session rows via sqlite3').join(' and ') || 'unavailable', timeline: timeline.inferred ? 'inferred from each lane log' : 'lifecycle transition receipts' },
-  }
+  }, options.priceTable)
 }
 
 export function unknownRunCost({ route = 'unknown', reason, worktree = null, cardId = null, startedAt = null }) {
@@ -345,13 +347,14 @@ export function unknownRunCost({ route = 'unknown', reason, worktree = null, car
 }
 
 export function costReportSection(cost) {
+  const usd = (value) => typeof value === 'number' ? `$${value.toFixed(6)}` : 'price unknown'
   const lines = ['<!-- run-cost -->', '## Measured Run Cost', '', `Route: ${cost.route} | Outcome: ${cost.outcome.status}${cost.outcome.reason ? ` (${cost.outcome.reason})` : ''} | Unknown: ${cost.unknown.length}`]
   if (cost.totals === 'unknown') return `${lines.join('\n')}\n\nCost: unknown (${cost.unknown.join('; ')})\n<!-- /run-cost -->\n`
-  lines.push('', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+  lines.push('', `Run total: ${usd(cost.totals.usd)}`, '', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | USD | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
   for (const phase of cost.phases) {
     const label = `${phase.phase}${phase.round ? ` ${phase.round}` : ''}`
-    for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${value.family} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)
-    for (const reason of phase.unknown) lines.push(`| ${label} | unknown | unknown (${reason}) | unknown | unknown | unknown | unknown | unknown | unknown | unknown | ${phase.wall_time_ms} |`)
+    for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${value.family} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${usd(value.usd)} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)
+    for (const reason of phase.unknown) lines.push(`| ${label} | unknown | unknown (${reason}) | unknown | unknown | unknown | unknown | unknown | price unknown | unknown | unknown | ${phase.wall_time_ms} |`)
   }
   lines.push('', 'The terminal SDK result is the only source for whole-run output; no independent instrument exists today, so undercount cannot be discriminated and only overcount can.')
   const reconciledOutput = (cost.reconciled ?? []).filter((item) => item.kind === 'terminal_result_output').reduce((sum, item) => sum + (Number(item.tokens) || 0), 0)

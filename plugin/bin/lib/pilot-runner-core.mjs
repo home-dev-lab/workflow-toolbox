@@ -245,13 +245,14 @@ function indexedCostTotals(cost) {
   const phaseTotals = {}
   const runTotal = Object.fromEntries(fields.map((field) => [field, 0]))
   for (const phase of cost.phases) {
-    const target = phaseTotals[phase.phase] ?? Object.fromEntries(fields.map((field) => [field, 0]))
+    const target = phaseTotals[phase.phase] ?? { ...Object.fromEntries(fields.map((field) => [field, 0])), usd: 0 }
     for (const model of Object.values(phase.models ?? {})) for (const field of fields) {
       if (typeof model[field] === 'number') { target[field] += model[field]; runTotal[field] += model[field] }
     }
+    target.usd = target.usd === 'price unknown' || phase.usd === 'price unknown' ? 'price unknown' : target.usd + (Number(phase.usd) || 0)
     phaseTotals[phase.phase] = target
   }
-  return { phase_totals: phaseTotals, run_total: runTotal }
+  return { phase_totals: phaseTotals, run_total: runTotal, usd_total: cost.totals?.usd ?? 'price unknown' }
 }
 
 function appendCostIndex({ archiveRoot, runId, card, route, cost, started, ended, archive, log }) {

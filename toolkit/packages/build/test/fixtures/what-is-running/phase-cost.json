@@ -11,7 +11,8 @@
           "input": 1234,
           "cache_write": 5678,
           "cache_read": 2345678,
-          "output": 901
+          "output": 901,
+          "usd": 1.23
         }
       },
       "unknown": []
