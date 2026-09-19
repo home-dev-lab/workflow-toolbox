@@ -532,6 +532,12 @@ describe('What is running collector seam', () => {
     expect(result.stdout).toContain('tests: 1/1')
   })
 
+  it('redraws this session pane after the hooks module reloads without reopening it', () => {
+    const result = runSelftest('[hooks reload]')
+    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.stdout).toContain('tests: 1/1')
+  })
+
   it('keeps a detail toggle open while a slow snapshot poll overlaps it', () => {
     const result = runSelftest('[toggle race]')
     expect(result.status, result.stderr || result.stdout).toBe(0)
