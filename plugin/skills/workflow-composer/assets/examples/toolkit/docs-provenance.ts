@@ -51,6 +51,16 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-config.mjs',
+    status: 'mapped',
+    reason: 'The README documents the effective-value table, JSON output, and orphaned pluginConfigs report.',
+  },
+  {
+    script: 'plugin/bin/wt-config-context-hook.mjs',
+    status: 'mapped',
+    reason: 'The README documents the main-session non-default and orphan configuration summary.',
+  },
+  {
     script: 'plugin/bin/wt-artifact-server.mjs',
     status: 'mapped',
     reason: 'The artifact-server skill documents serving, URLs, roots, lifecycle controls, Tailscale access, and the security boundary.',
@@ -668,6 +678,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/lib/suite-lock.mjs'],
     docs: ['docs/public/known-issues.md'],
+  },
+  {
+    sources: ['plugin/bin/wt-config.mjs', 'plugin/bin/wt-config-context-hook.mjs', 'plugin/bin/lib/plugin-options.mjs'],
+    docs: ['README.md'],
   },
   {
     sources: [

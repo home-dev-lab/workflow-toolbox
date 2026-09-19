@@ -5,7 +5,11 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { assertHarnessModel, resolveExecutorProfile, resolvePilotModels } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
+import { assertHarnessModel, resolveExecutorProfile as resolveExecutorProfileImpl, resolvePilotModels as resolvePilotModelsImpl } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
+
+const noPluginOption = () => ({ present: false })
+const resolvePilotModels = (options: Record<string, unknown>) => resolvePilotModelsImpl({ ...options, readPluginOption: noPluginOption })
+const resolveExecutorProfile = (options: Record<string, unknown>) => resolveExecutorProfileImpl({ ...options, readPluginOption: noPluginOption })
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(REPO_ROOT, 'plugin/bin/wt-pilot-models.mjs')
@@ -68,7 +72,7 @@ describe('pilot model configuration', () => {
     expect(resolveExecutorProfile({
       worktree: '/worktree', route, hard, env: {}, settingsEnv: {},
       resolveConsentImpl: () => ({ outcome: consent }),
-    })).toEqual({ executor, models })
+    })).toMatchObject({ executor, models })
   })
 
   it('treats unresolved consent as Claude and validates family-specific role overrides', () => {
@@ -77,7 +81,7 @@ describe('pilot model configuration', () => {
       env: { WT_EXECUTOR_CODE_MODEL: 'opus', WT_EXECUTOR_REFUTATION_MODEL: 'fable' },
       settingsEnv: { WT_EXECUTOR_CODE_MODEL: 'opus', WT_EXECUTOR_REVIEW_MODEL: 'sonnet' },
       resolveConsentImpl: () => ({ outcome: 'unknown' }),
-    })).toEqual({ executor: 'claude-sdk', models: { critic: 'opus', code: 'opus', review: 'sonnet', refutation: 'fable' } })
+    })).toMatchObject({ executor: 'claude-sdk', models: { critic: 'opus', code: 'opus', review: 'sonnet', refutation: 'fable' } })
     expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'sonnet' }, resolveConsentImpl: () => ({ outcome: 'true' }) })).toThrow('provider model')
     expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'openai/gpt-5.6-sol' }, resolveConsentImpl: () => ({ outcome: 'not_true' }) })).toThrow('harness model')
     expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'claude-sonnet-5' }, resolveConsentImpl: () => ({ outcome: 'not_true' }) })).toThrow('harness model alias')
@@ -98,6 +102,29 @@ describe('pilot model configuration', () => {
     for (const value of ['haiku', 'sonnet', 'opus', 'fable', 'claude-3-7-sonnet-latest']) {
       expect(assertHarnessModel(value)).toBe(value)
     }
+  })
+
+  it('resolves a pilot plugin option before process env, settings env, and the default', () => {
+    const option = (value: string) => () => ({ present: true, value })
+    expect(resolvePilotModelsImpl({
+      env: { WT_PILOT_MODEL: 'haiku' },
+      settingsEnv: { WT_PILOT_MODEL: 'fable' },
+      readPluginOption: option('opus'),
+    }).pilot).toMatchObject({ value: 'opus', source: 'plugin option' })
+    expect(resolvePilotModels({ env: { WT_PILOT_MODEL: 'haiku' }, settingsEnv: { WT_PILOT_MODEL: 'fable' } }).pilot.source).toBe('env')
+    expect(resolvePilotModels({ env: {}, settingsEnv: { WT_PILOT_MODEL: 'fable' } }).pilot.source).toBe('settings')
+    expect(resolvePilotModels({ env: {}, settingsEnv: {} }).pilot.source).toBe('default')
+  })
+
+  it('resolves executor plugin options first, reports every source, and refuses invalid option values', () => {
+    const profile = resolveExecutorProfileImpl({
+      worktree: '/w', route: 'FULL', env: { WT_EXECUTOR_CODE_MODEL: 'haiku' }, settingsEnv: { WT_EXECUTOR_CODE_MODEL: 'fable' },
+      resolveConsentImpl: () => ({ outcome: 'not_true' }),
+      readPluginOption: (key: string) => key === 'executor_code_model' ? { present: true, value: 'opus' } : { present: false },
+    })
+    expect(profile.models.code).toBe('opus')
+    expect(profile.modelSources).toEqual({ critic: 'default', code: 'plugin option', review: 'default', refutation: 'default' })
+    expect(() => resolvePilotModelsImpl({ env: {}, settingsEnv: {}, readPluginOption: () => ({ present: true, value: 'openai/gpt-5.6-sol' }) })).toThrow('raw provider model')
   })
 
   it('refuses GPT and other non-harness values with the alias-remap remedy (Frederic, wt-suite #1536)', () => {
