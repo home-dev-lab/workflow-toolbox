@@ -65,7 +65,7 @@ function git(runner, cwd, args) {
 }
 
 function canonical(value) {
-  return fs.realpathSync(path.resolve(value))
+  return (fs.realpathSync.native ?? fs.realpathSync)(path.resolve(value))
 }
 
 function sameWorktreePath(left, right, platform = process.platform) {

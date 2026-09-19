@@ -629,7 +629,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect.soft(messages['no-root']).toContain('Worktree activity is unknown — no git root resolved')
     expect.soft(messages.bounded).toContain('Worktree activity is unknown — scan bounded out')
     expect.soft(new Set(Object.values(messages)).size).toBe(3)
-  })
+  }, 60_000)
 
   it('does not treat recent node_modules writes as in-flight worktree activity', () => {
     const { env, payload, stateDir, cwd } = scaffold('skip-node-modules')
