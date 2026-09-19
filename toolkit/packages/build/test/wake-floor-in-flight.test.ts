@@ -233,6 +233,26 @@ describe('sessionLaneInFlight', () => {
     })
   })
 
+  it.each(['darwin', 'win32'])('preserves a conclusive lane verdict when background-task inspection is unsupported on %s', (platform) => {
+    const backgroundTaskProbe = () => sessionBackgroundTaskInFlight({ projectDir, sessionId: 'session-under-test', platform })
+    expect(fixture({ backgroundTaskProbe, value: record({ owner: 'pilot' }) }).result).toEqual({
+      status: 'none',
+      reason: 'no live owned lane',
+    })
+  })
+
+  it.each(['darwin', 'win32'])('names unsupported background-task inspection when lane evidence is inconclusive on %s', (platform) => {
+    const backgroundTaskProbe = () => sessionBackgroundTaskInFlight({ projectDir, sessionId: 'session-under-test', platform })
+    expect(fixture({
+      backgroundTaskProbe,
+      git: { status: 1, stdout: '', stderr: 'fatal: other error' },
+      supervision: [],
+    }).result).toEqual({
+      status: 'unknown',
+      reason: 'git worktree list unavailable; background task inspection requires Linux procfs',
+    })
+  })
+
   it('converts a classifier throw to unknown', () => {
     expect(fixture({ classify: () => { throw new Error('boom') } }).result).toMatchObject({ status: 'unknown', reason: 'lane classification threw' })
   })

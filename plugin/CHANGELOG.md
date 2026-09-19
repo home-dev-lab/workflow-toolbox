@@ -12,6 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - The wake floor now stays silent for a Linux background task only while a stable same-user process from the current session holds its task output open for writing. Completed outputs, readers, plugin monitors, foreign sessions, PID reuse, and inaccessible unrelated descriptors cannot suppress the floor.
+- On macOS and Windows, unsupported Linux background-task inspection no longer degrades a conclusive wake-floor lane verdict to unknown; it is reported only when lane evidence is itself inconclusive.
 
 ## [0.184.0] - 2026-09-19
 

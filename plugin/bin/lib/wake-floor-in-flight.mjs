@@ -8,6 +8,7 @@ const RECORD_NAME = /^\d+-\d+\.json$/
 const LIVE_STATUSES = new Set(['running', 'decision-needed', 'launching'])
 const INACTIVE_STATUSES = new Set(['gone', 'terminal', 'worker-gone-child-alive'])
 const TASK_OUTPUT_NAME = /^[A-Za-z0-9_-]+\.output$/
+const BACKGROUND_TASK_UNSUPPORTED = 'background task inspection requires Linux procfs'
 const MONITOR_SCRIPTS = [
   'wt-arc-watch.mjs',
   'wt-service-watch.mjs',
@@ -63,7 +64,7 @@ export function sessionBackgroundTaskInFlight({
   maxFds = 1_024,
   maxTaskOutputs = 1_000,
 }) {
-  if (platform !== 'linux') return { status: 'unknown', reason: 'background task inspection requires Linux procfs' }
+  if (platform !== 'linux') return { status: 'unknown', reason: BACKGROUND_TASK_UNSUPPORTED }
   if (typeof sessionId !== 'string' || sessionId === '') return { status: 'unknown', reason: 'session id unavailable' }
   if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return { status: 'unknown', reason: 'session id invalid' }
   const uid = getuidImpl?.()
@@ -274,7 +275,8 @@ export function sessionLaneInFlight({
     backgroundTask = { status: 'unknown', reason: 'background task inspection threw' }
   }
   if (backgroundTask?.status === 'in-flight') return backgroundTask
-  if (backgroundTask?.status === 'unknown') unknowns.push(backgroundTask.reason ?? 'background task inspection unknown')
+  const backgroundTaskUnsupported = backgroundTask?.status === 'unknown' && backgroundTask.reason === BACKGROUND_TASK_UNSUPPORTED
+  if (backgroundTask?.status === 'unknown' && !backgroundTaskUnsupported) unknowns.push(backgroundTask.reason ?? 'background task inspection unknown')
   const git = gitWorktrees(projectDir, spawnSyncImpl)
   const umbrella = umbrellaWorktrees(projectDir, readdirImpl, maxUmbrellaEntries)
   if (git.reason) unknowns.push(git.reason)
@@ -315,5 +317,7 @@ export function sessionLaneInFlight({
       if (verdict.status === 'unknown') unknowns.push(verdict.reason)
     }
   }
-  return unknowns.length ? { status: 'unknown', reason: unknowns[0] } : { status: 'none', reason: 'no live owned lane' }
+  return unknowns.length
+    ? { status: 'unknown', reason: backgroundTaskUnsupported ? `${unknowns[0]}; ${BACKGROUND_TASK_UNSUPPORTED}` : unknowns[0] }
+    : { status: 'none', reason: 'no live owned lane' }
 }
