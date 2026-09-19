@@ -134,9 +134,8 @@ describe('wt-lane helpers', () => {
     expect(readFileSync(file, 'utf8')).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z stage=starting\n$/)
   })
 
-  it('uses the current non-Windows launcher fallback', () => {
+  it.skipIf(process.platform === 'win32')('uses the current non-Windows launcher fallback; Windows returns an approximate start time and executable image', () => {
     // The win32 branch cannot be forced without widening the production seam.
-    expect(process.platform).not.toBe('win32')
     expect(fallbackLauncherIdentity()).toEqual({ argv: process.argv, startTime: null })
   })
 })

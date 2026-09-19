@@ -457,6 +457,14 @@ describe('review test infrastructure', () => {
       inspect: () => ({ ...identity, startTime: 500 }), processExists: () => true,
     })).toBe('gone')
   })
+
+  it('allows the shared Windows process-read precision for approximate registration starts', () => {
+    const identity = { pid: 123, argv: ['node', 'monitor'], startTime: 100, startTimeApproximate: true }
+    expect(registrationPidStatus(123, {
+      platform: 'win32', signal: () => {}, expectedIdentity: identity,
+      inspect: () => ({ ...identity, startTime: 1_600 }), processExists: () => true,
+    })).toBe('running')
+  })
 })
 
 function projectWithRoots(tag: string) {
@@ -539,10 +547,10 @@ describe('owner decision 2: discovery and one instance', () => {
 
     const state = await waitForState(stateHome)
     // Six PowerShell-backed process identity checks can exceed the Linux-sized bound on Windows CI.
-    await waitFor(async () => (await health(state)).registeredSessions === 6 ? true : null, 30_000)
+    await waitFor(async () => (await health(state)).registeredSessions === 6 ? true : null, 60_000)
     expect(spawnReceipts(spawnLog)).toHaveLength(1)
     expect(spawnReceipts(contentionLog).length).toBeGreaterThan(0)
-  })
+  }, 90_000)
 
   it('ignores all test controls unless master test mode is enabled', async () => {
     const { project } = projectWithRoots('test-mode-gate')

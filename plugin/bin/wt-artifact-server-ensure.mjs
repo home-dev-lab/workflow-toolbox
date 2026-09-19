@@ -340,7 +340,7 @@ async function main() {
       pid: process.pid, roots, deny: configuredDenyPatterns(), startedAt: new Date().toISOString(),
       ...(process.platform === 'win32' ? { identity: {
         pid: process.pid, argv: process.argv,
-        startTime: Date.now() - process.uptime() * 1_000, startTimeApproximate: true, startTimeToleranceMs: 250,
+        startTime: Date.now() - process.uptime() * 1_000, startTimeApproximate: true,
       } } : {}),
     })
   } catch (error) {
