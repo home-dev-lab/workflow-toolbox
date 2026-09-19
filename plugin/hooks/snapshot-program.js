@@ -651,31 +651,55 @@ function phaseCostRows(phases) {
   }
   return result;
 }
+function summedCost(values) {
+  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let measured = false;
+  for (const value of values) {
+    if (!value || value === UNKNOWN) continue;
+    measured = true;
+    for (const key of Object.keys(total)) total[key] += Number(value[key]) || 0;
+  }
+  return measured ? { ...total, total: Object.values(total).reduce((sum, value) => sum + value, 0) } : null;
+}
+function familyCost(families) {
+  if (!families || typeof families !== 'object') return null;
+  return summedCost(Object.values(families).map(value => value && ({
+    input: value.input, output: value.output, cacheRead: value.cache_read, cacheWrite: value.cache_write,
+  })));
+}
 function livePhaseCosts(worktree, timeline) {
   const buckets = new Map();
   const unknown = new Set();
+  const run = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  let runMeasured = false;
   const add = (phase, usageValue) => {
-    const id = phaseOf(phase); if (id === UNKNOWN) return;
+    const id = phaseOf(phase);
     const values = {
       input: tokenValue(usageValue, 'input', 'input_tokens', 'tokens_input'),
       output: tokenValue(usageValue, 'output', 'output_tokens', 'tokens_output'),
       cacheRead: tokenValue(usageValue, 'cache_read', 'cache_read_input_tokens', 'cacheRead', 'tokens_cache_read'),
       cacheWrite: tokenValue(usageValue, 'cache_write', 'cache_creation', 'cache_creation_input_tokens', 'cacheWrite', 'tokens_cache_write'),
     };
-    if (values.input === null || values.output === null) { unknown.add(id); return; }
+    if (values.input === null || values.output === null) { if (id !== UNKNOWN) unknown.add(id); return; }
     // Live SDK receipts omit zero-valued cache fields on some versions; only absent cache fields are measured zero.
     for (const key of ['cacheRead', 'cacheWrite']) if (values[key] === null) values[key] = 0;
+    for (const key of Object.keys(run)) run[key] += values[key];
+    runMeasured = true;
+    if (id === UNKNOWN) return;
     const target = buckets.get(id) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
     for (const key of Object.keys(target)) target[key] += values[key];
     buckets.set(id, target);
   };
   const usageFile = lanePath(worktree, 'usage.json');
   const liveUsage = json(usageFile);
-  if (Array.isArray(liveUsage?.phases)) return { costs: phaseCostRows(liveUsage.phases), source: usageFile };
+  if (Array.isArray(liveUsage?.phases)) {
+    const costs = phaseCostRows(liveUsage.phases);
+    return { costs, total: summedCost(Object.values(costs)), source: usageFile };
+  }
   for (const message of liveUsage?.messages || liveUsage?.turns || []) {
     const timestamp = Date.parse(message.arrived_at || message.ended_at || message.timestamp || '');
     const phase = timeline?.phases?.find(item => timestamp >= item.entered_at && timestamp <= (item.exited_at ?? Infinity));
-    if (phase) add(phase.phase, message);
+    add(phase?.phase, message);
   }
   for (const lane of timeline?.lanes || []) {
     const file = typeof lane?.usage_file === 'string' ? lanePath(worktree, lane.usage_file) : null;
@@ -686,7 +710,7 @@ function livePhaseCosts(worktree, timeline) {
   const costs = {};
   for (const [phase, totals] of buckets) costs[phase] = unknown.has(phase) ? UNKNOWN : { ...totals, total: Object.values(totals).reduce((sum, value) => sum + value, 0) };
   for (const phase of unknown) if (phase !== UNKNOWN && !Object.hasOwn(costs, phase)) costs[phase] = UNKNOWN;
-  return { costs, source: liveUsage || timeline?.lanes?.length ? usageFile : null };
+  return { costs, total: runMeasured ? { ...run, total: Object.values(run).reduce((sum, value) => sum + value, 0) } : null, source: liveUsage || timeline?.lanes?.length ? usageFile : null };
 }
 function phaseCosts(worktree, timeline) {
   const summary = json(lanePath(worktree, 'summary.json'));
@@ -695,11 +719,16 @@ function phaseCosts(worktree, timeline) {
   if (typeof archivePath === 'string' && path.isAbsolute(archivePath) && under(reportsRoot, archivePath)) {
     const archiveCost = path.join(archivePath, 'cost.json');
     const cost = json(archiveCost);
-    if (cost) return { costs: phaseCostRows(cost.phases), source: archiveCost, kind: 'archive cost.json' };
+    if (cost) return { costs: phaseCostRows(cost.phases), total: familyCost(cost.families), source: archiveCost, kind: 'archive cost.json' };
     if (slice(archiveCost, JSON_BYTES, false, true) !== null) return { costs: Object.fromEntries(PHASES.map(phase => [phase, UNKNOWN])), source: archiveCost, kind: 'malformed archive cost.json' };
   }
   const live = livePhaseCosts(worktree, timeline);
   return { ...live, kind: live.source ? 'live usage file' : null };
+}
+function phaseElapsed(timeline) {
+  const result = {};
+  for (const phase of timeline?.phases ?? []) if (phase.exited_at === null) result[phase.phase] = formatAge((now - phase.entered_at) / 1000);
+  return result;
 }
 
 const lifecycleStartedAt = Date.now();
@@ -1034,7 +1063,8 @@ for (const id of ids) {
   const gateResults = worktree ? { test: gate(worktree, 'test'), typecheck: gate(worktree, 'typecheck'), lint: gate(worktree, 'lint') } : null;
   const reviewResult = worktree ? reviews(worktree, id) : { lenses: UNKNOWN, findings: UNKNOWN, decision: UNKNOWN, source: null };
   const usageResult = worktree ? usage(worktree, lane?.model || workers[0]?.model) : { value: UNKNOWN, totals: null, source: null };
-  const phaseCostResult = worktree ? phaseCosts(worktree, lane ? lifecycleTimeline(worktree) : null) : { costs: {}, source: null, kind: null };
+  const timeline = worktree && lane ? lifecycleTimeline(worktree) : null;
+  const phaseCostResult = worktree ? phaseCosts(worktree, timeline) : { costs: {}, total: null, source: null, kind: null };
   const failedOutcome = [record?.outcome, record?.status, record?.state].find(value => /^(?:error|failed|fail)/i.test(String(value || '')));
   const waitingForArbiter = lane?.phase === 'awaiting_fidelity';
   const sdkRunner = worktree ? sdkRunnerByWorktree.get(worktree) : null;
@@ -1067,6 +1097,8 @@ for (const id of ids) {
     tokens: usageResult.value,
     usage: usageResult.totals,
     phaseCosts: phaseCostResult.costs,
+    phaseElapsed: phaseElapsed(timeline),
+    runCost: phaseCostResult.total,
     phaseCostSource: phaseCostResult.source || UNKNOWN,
     phaseCostSourceKind: phaseCostResult.kind || UNKNOWN,
     watchdog,

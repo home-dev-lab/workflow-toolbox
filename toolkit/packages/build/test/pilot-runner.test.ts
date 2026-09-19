@@ -453,6 +453,36 @@ describe('SDK pilot runner', () => {
     expect(cost.cross_checks.pilot_result).toMatchObject({ agrees: true, message_sum: { output: 34 }, attributed_sum: { output: 35 }, difference: { input: 0, cache_write: 0, cache_read: 0, output: 0, first_pass_input: 0, fresh_tokens: 0 } })
     expect(cost.cross_checks.model_usage).toMatchObject({ agrees: true, primary_model: 'claude-test', difference: { input: 0, output: 0, fresh_tokens: 0 } })
     expect(cost.phases.find((phase: { phase: string }) => phase.phase === 'unattributed').models['claude-haiku-test']).toMatchObject({ input: 2, output: 1, fresh_tokens: 3 })
+    const index = readFileSync(join(f.root, '.claude', 'reports', 'cost-index.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(index).toEqual([expect.objectContaining({ run_id: expect.stringMatching(/^1-\d+$/), card: '1', route: 'LITE' })])
+    // One total per BILLED class (owner, wt-suite #2913): classes are priced differently, and OpenAI output already
+    // contains reasoning, so a single summed "total" is both meaningless and a double count.
+    for (const totals of [index[0].run_total, index[0].phase_totals.discovery]) {
+      expect(totals).not.toHaveProperty('total')
+      for (const field of ['input', 'cache_write', 'cache_read', 'output', 'reasoning']) expect(typeof totals[field]).toBe('number')
+    }
+  })
+
+  it('publishes each assistant usage receipt atomically while the SDK stream is still live', async () => {
+    const f = fixture(); let release: (() => void) | undefined
+    const paused = new Promise<void>((resolve) => { release = resolve })
+    const query = () => (async function* () {
+      yield initMessage('claude-test')
+      yield { type: 'assistant', message: { id: 'live-message', model: 'claude-test', usage: { input_tokens: 3, cache_creation_input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 11 }, content: [] } }
+      await paused
+    })()
+    const running = runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
+    const usagePath = join(f.dir, '.lane', 'usage.json')
+    while (!existsSync(usagePath)) await new Promise((resolve) => setImmediate(resolve))
+
+    expect(JSON.parse(readFileSync(usagePath, 'utf8')).messages).toEqual([
+      expect.objectContaining({ message_id: 'live-message', input: 3, cache_creation: 5, cache_read: 7, output: 11 }),
+    ])
+    expect(readdirSync(join(f.dir, '.lane')).filter((name) => name.startsWith('usage.json.') && name.endsWith('.tmp'))).toEqual([])
+    release!()
+    const result = await running
+    expect(result.usage.messages).toHaveLength(1)
+    expect(JSON.parse(readFileSync(usagePath, 'utf8')).messages).toHaveLength(1)
   })
 
   it('defaults the contract and mailbox paths when called programmatically without them (the orchestrator driver)', async () => {
@@ -795,6 +825,12 @@ describe('SDK pilot runner', () => {
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'sdk-transcript.json'), 'utf8'))).toHaveLength(2)
     expect(readFileSync(join(f.dir, '.lane', 'cost.json'), 'utf8')).toBeTruthy()
     for (const name of ['summary.json', 'usage.json', 'sdk-transcript.json', 'cost.json']) expect(readFileSync(join(summary.archive.path, name), 'utf8')).toBeTruthy()
+    const index = readFileSync(join(f.root, '.claude', 'reports', 'cost-index.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(index).toEqual([expect.objectContaining({
+      run_id: expect.stringMatching(/^1-\d+$/), card: '1', route: 'LITE', archive_path: summary.archive.path,
+      phase_totals: expect.any(Object), run_total: expect.objectContaining({ input: expect.any(Number), output: expect.any(Number) }),
+      started_at: expect.stringMatching(/^\d{4}-/), ended_at: expect.stringMatching(/^\d{4}-/),
+    })])
   })
 
   it('does not accept lifecycle-looking assistant prose or an uncorrelated forged tool result', async () => {

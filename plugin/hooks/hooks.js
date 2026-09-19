@@ -267,12 +267,22 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const phaseCostDetail = (row, phase) => {
     const cost = row.phaseCosts?.[phase];
     if (!cost) return [];
-    if (cost === 'unknown') return [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, {}, 'cost so far: unknown'))];
+    if (cost === 'unknown') {
+      const running = stateOf(row, phase).words === 'running';
+      const elapsed = running && row.phaseElapsed?.[phase] ? ` · elapsed ${row.phaseElapsed[phase]} · lane usage arrives at lane end` : '';
+      return [node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, {}, `cost so far: unknown${elapsed}`))];
+    }
     return [
       node(Box, { key: `phase-cost-detail:${row.id}:${phase}` }, node(Text, { wrap: 'wrap' }, `cost so far | input: ${formatCount(cost.input)} | output: ${formatCount(cost.output)} | cache read: ${formatCount(cost.cacheRead)} | cache write: ${formatCount(cost.cacheWrite)}`)),
       node(Box, { key: `phase-cost-source:${row.id}:${phase}` }, node(Text, { dimColor: true }, `cost source: ${row.phaseCostSourceKind || 'unknown'}`)),
     ];
   };
+  const runningCostStatus = (row) => row.phaseCosts?.[row.phase] === 'unknown' && row.phaseElapsed?.[row.phase]
+    ? node(Box, { key: `running-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `cost so far: unknown · elapsed ${row.phaseElapsed[row.phase]} · lane usage arrives at lane end`))
+    : null;
+  const runCostStatus = (row) => row.runCost
+    ? node(Box, { key: `run-cost:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, `run total so far: ${formatCount(row.runCost.total)} tokens`))
+    : null;
   const compactPhaseCost = (row, phase, key) => {
     if (!(Number(actions.bodyColumns) >= 120) || !Object.hasOwn(row.phaseCosts || {}, phase)) return null;
     const cost = row.phaseCosts[phase];
@@ -359,6 +369,8 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       ),
       showCard ? renderCardLink(row) : null,
       showStages && phaseKnown ? node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1, paddingLeft: 1 }, fixedText({ bold: true }, stageHeading), ...phaseButtons.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])) : null,
+      runCostStatus(row),
+      runningCostStatus(row),
       rounds ? node(Box, { paddingLeft: 1 }, node(Text, { dimColor: true }, rounds)) : null,
       ...(showStages ? inspectorNodes : []),
       isExpanded ? renderOpenDetail(`detail-toggle:row:${row.id}`, `${row.label || 'Pilot'} details`, () => actions.toggle(row.id), ...expandedLines) : null,
@@ -402,6 +414,8 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     const openButtonKey = openStage ? `detail-toggle:stage:${sessionId}:${card.id}:${openStage.id}` : null;
     return node(Box, { key, flexDirection: 'column', paddingLeft: 1 },
       node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 }, fixedText({ bold: true }, 'Work stages:'), ...segments.flatMap((segment, index) => index ? [fixedText({ dimColor: true }, '│'), segment] : [segment])),
+      pilot ? runCostStatus(pilot) : null,
+      pilot ? runningCostStatus(pilot) : null,
       !pilot && (card.devCycle?.rounds > 0 || card.devCycle?.fixRounds > 0)
         ? node(Text, { dimColor: true }, `review rounds: ${card.devCycle?.rounds || 0} · fix rounds: ${card.devCycle?.fixRounds || 0}`)
         : null,
