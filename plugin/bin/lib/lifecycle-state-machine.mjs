@@ -898,7 +898,8 @@ export function createLifecycleStateMachine({
         }
       }
       persistTimeline()
-      return `routed card ${id} — ${record.title}${failure ? ` (label failure: ${failure})` : ''}`
+      const failureSuffix = failure ? ` (label failure: ${failure})` : ''
+      return `routed card ${id} — ${record.title}${failureSuffix}`
     } catch (error) {
       return `route_finding refused: ${error instanceof Error ? error.message : String(error)}`
     }
