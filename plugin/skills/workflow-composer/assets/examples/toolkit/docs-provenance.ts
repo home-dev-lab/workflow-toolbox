@@ -221,7 +221,7 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
     script: 'plugin/bin/wt-wake-floor.mjs',
     status: 'mapped',
-    reason: 'Known-issues documents this elapsed-time-only floor, its mandate gate, and its unconditional cadence under Shipped Hooks, Guards & Monitors.',
+    reason: 'Known-issues documents this elapsed-time floor, its mandate and session-owned lane gates, and its fail-safe inconclusive firing under Shipped Hooks, Guards & Monitors.',
   },
   {
     script: 'plugin/bin/wt-cache-keepalive.mjs',
