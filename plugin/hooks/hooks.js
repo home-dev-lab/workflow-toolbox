@@ -87,11 +87,15 @@ async function pathsOf($, options, sessionCwd) {
   }
   let stateHome;
   try { stateHome = await $.env.get('XDG_STATE_HOME'); } catch {}
+  let suiteLockRoot;
+  try { suiteLockRoot = await $.env.get('WT_SUITE_LOCK_DIR'); } catch {}
   if (!home) try { home = await $.env.get('HOME'); } catch {}
   if (!home) try { home = await $.env.get('USERPROFILE'); } catch {}
+  const stateRoot = stateHome || pathJoin(home || sessionCwd, '.local/state');
   return {
     configDir,
-    livenessDir: configured('livenessDir') || pathJoin(stateHome || pathJoin(home || sessionCwd, '.local/state'), 'wt-liveness'),
+    livenessDir: configured('livenessDir') || pathJoin(stateRoot, 'wt-liveness'),
+    suiteLockRoot: suiteLockRoot || pathJoin(stateRoot, 'wt-suite-lock'),
     suiteRoot: configured('suiteRoot') || pathJoin(sessionCwd, '.claude'),
     extraRoots: (Array.isArray(options?.extraRoots) ? options.extraRoots : String(options?.extraRoots ?? '').split(/[,\n]/)).map((root) => (typeof root === 'string' ? root.trim() : '')).filter(Boolean),
     linkBase: typeof options?.linkBase === 'string' ? options.linkBase : '',
@@ -439,6 +443,16 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ));
     grouped.push(...snapshot.rows.filter((row) => !row.waveId).map((row) => row.kind === 'external' ? renderExternal(row) : renderPilot(row, 0)));
   }
+  const suiteLock = snapshot.suiteLock;
+  // The pane is read narrow: show the worktree's own name (what follows `/worktrees/`), not the full path.
+  const suiteWhere = (cwd) => {
+    const text = String(cwd ?? '').replaceAll('\\', '/');
+    const marker = text.lastIndexOf('/worktrees/');
+    return marker >= 0 ? text.slice(marker + '/worktrees/'.length) : text.split('/').filter(Boolean).slice(-2).join('/');
+  };
+  if (suiteLock?.status === 'running') grouped.unshift(node(Text, { bold: true, wrap: 'wrap' }, `Test suite · ${suiteLock.command} · running ${suiteLock.age} · ${suiteWhere(suiteLock.worktree)}`));
+  else if (suiteLock?.status === 'stale') grouped.unshift(node(Text, { dimColor: true, wrap: 'wrap' }, `Test suite lock stale · ${suiteLock.command} · started ${suiteLock.age} ago · ${suiteWhere(suiteLock.worktree)}`));
+  else if (suiteLock?.status === 'unknown') grouped.unshift(node(Text, { dimColor: true }, 'Test suite lock · unknown'));
   const renderCollapsedProcesses = (key, label, items) => {
     const buttonKey = `detail-toggle:row:${key}`;
     const isExpanded = expanded.has(key);

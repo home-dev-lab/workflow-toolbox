@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -150,6 +150,79 @@ function textChildren(tree: unknown): string[] {
 }
 
 describe('What is running collector seam', () => {
+  it('reports a live suite-lock holder from the fixture lock directory', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-live-'))
+    try {
+      const suiteLockRoot = join(root, 'suite-lock')
+      const paths = collector(root, { suiteLockRoot })
+      const lockDir = join(suiteLockRoot, 'lock.d')
+      mkdirSync(lockDir, { recursive: true })
+      writeFileSync(join(lockDir, 'holder.json'), JSON.stringify({
+        pid: process.pid,
+        argv: ['pnpm', 'test', '--', 'a-very-long-argument-that-makes-the-recorded-command-need-shortening-for-the-pane'],
+        cwd: '/workspace/wt-suite/.claude/worktrees/card-one',
+        startedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+      }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.suiteLock).toMatchObject({
+        status: 'running',
+        pid: process.pid,
+        command: 'pnpm test -- a-very-long-argument-that-makes-the-recorded-command-nee...',
+        worktree: '/workspace/wt-suite/.claude/worktrees/card-one',
+      })
+      // An elapsed age, never a clock time: a UTC "12:00Z" reads an hour off to a reader in London.
+      expect(snapshot.suiteLock.age).toMatch(/^1[23] min$/)
+      expect(snapshot.suiteLock).not.toHaveProperty('since')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('reports a dead suite-lock holder as stale, never running', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-stale-'))
+    try {
+      const suiteLockRoot = join(root, 'suite-lock')
+      const paths = collector(root, { suiteLockRoot })
+      const lockDir = join(suiteLockRoot, 'lock.d')
+      mkdirSync(lockDir, { recursive: true })
+      writeFileSync(join(lockDir, 'holder.json'), JSON.stringify({
+        pid: 2_147_483_647, argv: ['pnpm', 'test'], cwd: '/workspace/stale', startedAt: '2026-09-12T12:00:00.000Z',
+      }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.suiteLock).toMatchObject({ status: 'stale', pid: 2_147_483_647, command: 'pnpm test', worktree: '/workspace/stale' })
+      expect(snapshot.suiteLock.status).not.toBe('running')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('reports unreadable suite-lock data as unknown instead of omitting it', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-unknown-'))
+    const suiteLockRoot = join(root, 'suite-lock')
+    const paths = collector(root, { suiteLockRoot })
+    const lockDir = join(suiteLockRoot, 'lock.d')
+    try {
+      mkdirSync(lockDir, { recursive: true })
+      writeFileSync(join(lockDir, 'holder.json'), '{not-json')
+      chmodSync(lockDir, 0o000)
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.suiteLock).toEqual({ status: 'unknown' })
+    } finally {
+      chmodSync(lockDir, 0o700)
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('renders one suite row with command, elapsed age, and the worktree name', async () => {
+    const text = await renderedText({
+      discovery: 'available', rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
+      suiteLock: { status: 'running', pid: 42, command: 'pnpm test', age: '12 min', worktree: '/workspace/wt-suite/.claude/worktrees/card-one/toolkit' },
+    })
+    // The pane is read narrow: the worktree NAME, not the full path, so the row fits one line.
+    expect(text).toContain('Test suite · pnpm test · running 12 min · card-one/toolkit')
+    expect(text).not.toContain('/workspace/wt-suite/.claude/worktrees/')
+    expect(text.match(/Test suite · pnpm test/g)).toHaveLength(1)
+  })
+
   it('keeps the collector program out of the Windows-limited command line', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-command-line-'))
     try {
