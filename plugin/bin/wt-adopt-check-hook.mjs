@@ -185,7 +185,7 @@ function contentDirection(file, finding, set) {
 }
 
 function shellQuote(value) {
-  return `'${value.replaceAll("'", `'\\''`)}'`
+  return "'" + value.replaceAll("'", "'\\''") + "'"
 }
 
 function installRemedy(installCmd, set, dir) {
