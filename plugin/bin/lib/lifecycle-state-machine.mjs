@@ -116,6 +116,12 @@ function reportDeliveryUnmet(content, dodBullets) {
   if (/^e2e not run: \S[^\r\n]*$/i.test(e2e)) unmet.push(`E2E: ${e2e}`)
   return unmet
 }
+function uiOnlyE2eReason(reason) {
+  if (/\b(?:tried|attempted)\b/i.test(reason)) return false
+  const ui = '(?:(?:user-facing|graphical|visible|web|front-end)\\s+)?(?:uis?|guis?|user interfaces?|screens?|frontends?|front-ends?|pages?|browsers?|displays?)'
+  const absent = `\\b(?:no|without(?:\\s+(?:a|an))?|lacks?(?:\\s+(?:a|an))?|has\\s+no|there\\s+is\\s+no|not\\s+(?:a|an)|absence\\s+of(?:\\s+(?:a|an))?)\\s+${ui}\\b`
+  return new RegExp(absent, 'i').test(reason) || /\b(?:headless|not user-facing|nothing visual)\b/i.test(reason)
+}
 function deferredOutcomeProblem(content, routedCards) {
   for (const line of content.split(/\r?\n/)) {
     if (!/^\s*(?:[-*+]\s+)?(?:Outcome|Status):\s*deferred:/i.test(line)) continue
@@ -844,6 +850,9 @@ export function createLifecycleStateMachine({
     const e2e = reportSection(content, 'E2E')
     if (!e2e) return 'pilot-report: missing or empty ## E2E section'
     const e2eNotRun = /^e2e not run: \S[^\r\n]*$/i.test(e2e)
+    if (e2eNotRun && uiOnlyE2eReason(e2e.replace(/^e2e not run:\s*/i, ''))) {
+      return 'pilot-report: ## E2E "e2e not run" cannot rest on the absence of a UI/screen; an E2E is owed whenever real processes, files or a host (CLI, hook, watcher, server, script) can exercise the change: run it, or name what was tried and why nothing on this machine can exercise it'
+    }
     const hasProcedure = /^(?:command|procedure):\s+\S.+$/im.test(e2e)
     const hasOutput = /^(?:verbatim )?output:\s+\S.*$/im.test(e2e)
     const hasEvidenceLine = /^e2e evidence:\s+\S.+\s(?:=>|output:)\s\S.*$/im.test(e2e)
