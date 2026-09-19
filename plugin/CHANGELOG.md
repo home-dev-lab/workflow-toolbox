@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- The delegated-arc watcher now recognizes a transcript's terminal assistant `end_turn` record as a clean finish, keeping completed agents silent while malformed, interrupted, frozen, and vanished agents still fail toward an alert.
 - Adoption notices now assign stale-copy refresh and edited-copy arbitration to the session instead of asking the owner to decide. The hook remains read-only, supports a `notice-only` single-writer opt-out, and supplies exact directory-scoped install/check or three-way-diff commands; installer writes journal their adopted snapshot and version transition for later read-only comparison.
 - Adoption staleness notices now quote the exact directory they inspected in their `install.mjs --dir` remedy. A bare `--install` also reuses a sole discovered project or config-profile adoption and refuses to guess when several copies exist, preventing a stale user-level copy from being left behind while a duplicate project copy is created.
 - The orchestrator CLI now refuses value-taking flags that are empty, truncated, or followed by another flag instead of silently accepting a missing value.

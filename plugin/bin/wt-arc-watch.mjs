@@ -5,8 +5,8 @@
 // corroborated by the outbound-guard stop journal and, when a delegate chooses
 // to leave one, its own liveness declaration file. It emits only on TERMINAL
 // states — a transcript that stopped growing, or one that disappeared. It stays
-// silent while agents are writing, so its silence means "everyone is still
-// working", which is a checkable claim. A liveness file with no usable transcript
+// silent while agents are writing and after a transcript records a clean end_turn,
+// so silence means no agent needs attention. A liveness file with no usable transcript
 // correlation key is surfaced separately as UNCORRELATABLE rather than read as silence.
 //
 // WHY A MONITOR AND NOT A REMINDER: a delegated agent that dies to a quota wall,
@@ -304,6 +304,32 @@ function lastRecordTimestampMs(sessionName, transcriptFile) {
   } catch {
     return null
   }
+}
+
+// Real normally-finished subagent transcripts end with an assistant `end_turn` record. A frozen
+// agent instead ends mid-turn (commonly `tool_use`), and killed/waiting agents have no terminal
+// assistant record. Trailing observer heartbeats are out-of-band and do not change that verdict.
+// Any unreadable or malformed candidate fails toward the existing STALE alert.
+function transcriptEndedCleanly(name) {
+  const slash = name.indexOf('/')
+  if (slash < 0) return false
+  const sessionName = name.slice(0, slash)
+  const transcriptFile = name.slice(slash + 1)
+  try {
+    const lines = readFileSync(path.join(sessionsRoot, sessionName, 'subagents', transcriptFile), 'utf8')
+      .split('\n').filter(Boolean)
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      let record
+      try { record = JSON.parse(lines[i]) } catch { return false }
+      if (record?.type === 'observer-ref') continue
+      return record?.type === 'assistant'
+        && record?.message?.role === 'assistant'
+        && record?.message?.stop_reason === 'end_turn'
+    }
+  } catch {
+    return false
+  }
+  return false
 }
 
 // Transcript filenames are `agent-<rawId>.jsonl` — the SAME raw id the outbound-guard journal
@@ -717,11 +743,8 @@ while (true) {
       // independent of, this condition would let a live agent's old stop satisfy it and misreport
       // a working agent as accounted-for-and-silenced instead of correctly never being asked about.
       if (now - modifiedAt >= staleMs && !announcedStale.has(name)) {
-        // Corroborate before alerting: a recorded SubagentStop (by name or by agentType) means
-        // this agent's last turn ended cleanly — idle-between-turns or a benign shutdown, not a
-        // silent death. See the DISCRIMINATOR block above for the evidence and the fail-toward-
-        // emitting guarantee. `announcedStale` is still marked either way, so a suppressed entry
-        // is not re-checked every poll — only a fresh write (which clears it above) re-arms it.
+        // Corroborate against SubagentStop before alerting; it fails toward emitting.
+        // `announcedStale` is marked either way, so only a fresh write re-arms this agent.
         if (!isAccountedForByStop(name, modifiedAt)) {
           const liveness = await readLivenessForTranscript(name)
           if (liveness?.complete === true) {
@@ -730,8 +753,11 @@ while (true) {
               && (await worktreeRecentlyActive(liveness.worktree, now - staleMs)) === true) {
             // legitimate executor-lane wait, worktree shows real activity — silence.
           } else if (liveness) {
+            // The agent's own "not complete" outranks a clean end_turn: an agent that ended its
+            // turn waiting on a background task that never wakes it ends cleanly too.
             budget.emit(`IDLE-MID-MISSION: ${safeName(name)} — declared not complete, no write for ${staleMinutes}+ min`)
-          } else {
+          } else if (!transcriptEndedCleanly(name)) {
+            // A terminal end_turn with no declaration is a clean finish; anything else stays loud.
             budget.emit(`STALE: ${safeName(name)} — no write for ${staleMinutes}+ min`)
           }
         }

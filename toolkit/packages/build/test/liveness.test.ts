@@ -96,6 +96,7 @@ type WatchScenarioOptions = {
   livenessRecord?: unknown
   livenessFileName?: string
   transcriptAgeMs?: number
+  transcriptRecords?: unknown[]
   staleMinutes?: number
   transcriptAfterArm?: boolean
   manualTranscript?: boolean
@@ -113,6 +114,7 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
     livenessRecord,
     livenessFileName,
     transcriptAgeMs = 2_000,
+    transcriptRecords,
     staleMinutes = 0,
     transcriptAfterArm = true,
     manualTranscript = false,
@@ -137,7 +139,13 @@ async function runWatchScenario(options: WatchScenarioOptions = {}): Promise<str
   const now = Date.now()
 
   const prepareTranscript = () => {
-    touchFile(transcriptPath, now - transcriptAgeMs)
+    if (transcriptRecords) {
+      writeFileSync(transcriptPath, `${transcriptRecords.map((record) => JSON.stringify(record)).join('\n')}\n`)
+      const t = (now - transcriptAgeMs) / 1000
+      utimesSync(transcriptPath, t, t)
+    } else {
+      touchFile(transcriptPath, now - transcriptAgeMs)
+    }
     if (metaName !== null) writeFileSync(metaPath, JSON.stringify(metaName ? { name: metaName } : {}))
   }
 
@@ -426,6 +434,58 @@ describe('wt-arc-watch liveness integration', () => {
     })
     expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
     expect(out).not.toContain('IDLE-MID-MISSION:')
+  }, 12_000)
+
+  it('keeps a normally finished agent silent when its transcript ends with end_turn', async () => {
+    const out = await runWatchScenario({
+      transcriptRecords: [{
+        type: 'assistant',
+        timestamp: '2026-09-18T21:47:39.867Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Report delivered.' }], stop_reason: 'end_turn' },
+      }, {
+        type: 'observer-ref',
+        timestamp: '2026-09-18T21:47:45.000Z',
+      }],
+      waitFor: null,
+    })
+    expect(out).toContain('ARC WATCH ARMED')
+    expect(out).not.toContain('STALE: watch-session/agent-under-test.jsonl')
+  }, 12_000)
+
+  it('a clean end_turn never silences an agent whose liveness file says its mission is not complete', async () => {
+    // An agent that ends its turn waiting on a background task that never wakes it ends cleanly too;
+    // its own declaration outranks the transcript's end_turn.
+    const dir = tmpRoot('wt-liveness-endturn-idle')
+    const out = await runWatchScenario({
+      metaName: 'pilot/endturn-idle',
+      livenessDir: dir,
+      livenessRecord: {
+        agentId: 'pilot/endturn-idle',
+        agentIdSource: 'name',
+        scope: 'card:123',
+        complete: false,
+        waitingOn: 'none',
+        worktree: null,
+        updatedAt: '2026-08-05T00:00:00.000Z',
+      },
+      transcriptRecords: [{
+        type: 'assistant',
+        timestamp: '2026-09-18T21:47:39.867Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Waiting for my background job.' }], stop_reason: 'end_turn' },
+      }],
+    })
+    expect(out).toContain('IDLE-MID-MISSION: watch-session/agent-under-test.jsonl — declared not complete, no write for 0+ min')
+  }, 12_000)
+
+  it('still emits for a frozen agent whose last assistant record requests a tool', async () => {
+    const out = await runWatchScenario({
+      transcriptRecords: [{
+        type: 'assistant',
+        timestamp: '2026-09-18T21:47:39.867Z',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: {} }], stop_reason: 'tool_use' },
+      }],
+    })
+    expect(out).toContain('STALE: watch-session/agent-under-test.jsonl — no write for 0+ min')
   }, 12_000)
 
   it('Invariant 2: declared not complete emits IDLE-MID-MISSION, never STALE', async () => {
