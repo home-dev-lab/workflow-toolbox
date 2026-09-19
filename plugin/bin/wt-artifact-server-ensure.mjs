@@ -59,6 +59,7 @@ const TEST_CONTROL_NAMES = [
   'WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS',
   'WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS',
   'WT_ARTIFACT_SERVER_TEST_WATCH_MS',
+  'WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG',
   'WT_ARTIFACT_SERVER_TEST_SPAWN_LOG',
   'WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG',
   'WT_ARTIFACT_SERVER_TEST_ACQUISITION_LOG',
@@ -367,6 +368,7 @@ async function main() {
     let watchInFlight = false
     let attachedPort = result.kind === 'found' ? result.port : null
     let lastWatchAt = Date.now()
+    if (attachedPort !== null) testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${attachedPort}`)
     const startRetry = (kind) => {
       const startedAt = Date.now()
       return {
@@ -417,6 +419,7 @@ async function main() {
         if (scan.found) {
           process.stdout.write(`ARTIFACT SERVER ATTACHED: discovered server on port ${scan.found.port} during startup retry.\n`)
           attachedPort = scan.found.port
+          testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${attachedPort}`)
           lastWatchAt = Date.now()
           pendingRetry = null
           return
@@ -452,6 +455,7 @@ async function main() {
         if (retried.kind === 'found') {
           process.stdout.write(`ARTIFACT SERVER ATTACHED: discovered server on port ${retried.port} during startup retry.\n`)
           attachedPort = retried.port
+          testLog('WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG', `${process.pid} ${attachedPort}`)
           lastWatchAt = Date.now()
           pendingRetry = null
         } else {

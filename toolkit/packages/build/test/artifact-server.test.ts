@@ -27,6 +27,12 @@ const FALLBACK_CANDIDATES = 2
 const FALLBACK_READINESS_MS = 5_000
 const FALLBACK_DISCOVERY_MARGIN_MS = 2_000
 const FALLBACK_DISCOVERY_BOUND_MS = CANDIDATE_PROBE_MS * FALLBACK_CANDIDATES + FALLBACK_READINESS_MS + FALLBACK_DISCOVERY_MARGIN_MS
+const PAUSED_CLAIM_HOLD_MS = 7_000
+const OLD_CLAIM_STALE_BOUND_MS = 3_000
+const CLAIM_OBSERVATION_MARGIN_MS = 1_000
+const CONTENDER_OBSERVATION_MS = 500
+const PAUSED_HOLDER_COMPLETION_BOUND_MS = PAUSED_CLAIM_HOLD_MS + FALLBACK_DISCOVERY_BOUND_MS
+const PAUSED_HOLDER_TEST_BOUND_MS = OLD_CLAIM_STALE_BOUND_MS + CLAIM_OBSERVATION_MARGIN_MS + CONTENDER_OBSERVATION_MS + PAUSED_HOLDER_COMPLETION_BOUND_MS + FALLBACK_DISCOVERY_MARGIN_MS
 
 function temporaryDir(tag: string) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`)))
@@ -696,25 +702,28 @@ describe('owner decision 2: discovery and one instance', () => {
       WT_ARTIFACT_SERVER_TEST_CLAIM_STALE_MS: '60000',
     }
     const holder = spawnEnsure(project, baseEnv(stateHome, {
-      ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '7000',
+      ...common, WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: String(PAUSED_CLAIM_HOLD_MS),
     }))
     if (!holder.pid) throw new Error('startup claim holder has no pid')
     await waitFor(() => spawnReceipts(acquisitionLog).length === 1 ? true : null)
     process.kill(holder.pid, 'SIGSTOP')
     try {
-      await new Promise((resolve) => setTimeout(resolve, 4_000))
+      await new Promise((resolve) => setTimeout(resolve, OLD_CLAIM_STALE_BOUND_MS + CLAIM_OBSERVATION_MARGIN_MS))
       spawnEnsure(project, baseEnv(stateHome, common))
-      await new Promise((resolve) => setTimeout(resolve, 500))
+      await new Promise((resolve) => setTimeout(resolve, CONTENDER_OBSERVATION_MS))
       expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
     } finally {
       if (pidAlive(holder.pid)) process.kill(holder.pid, 'SIGCONT')
     }
 
-    const state = await waitForState(stateHome, () => true, 10_000)
-    await waitFor(async () => (await health(state)).registeredSessions === 2 ? true : null, 10_000)
+    await waitFor(async () => {
+      const state = readState(stateHome)
+      if (!state) return null
+      try { return (await health(state)).registeredSessions === 2 ? true : null } catch { return null }
+    }, PAUSED_HOLDER_COMPLETION_BOUND_MS)
     expect(spawnReceipts(acquisitionLog)).toHaveLength(1)
     expect(spawnReceipts(spawnLog)).toHaveLength(1)
-  }, 20_000)
+  }, PAUSED_HOLDER_TEST_BOUND_MS)
 
   it('keeps a live, heartbeating claim whose creation is over 30 seconds old', async () => {
     const { project } = projectWithRoots('long-startup-claim')
@@ -1369,18 +1378,20 @@ describe('owner decision 3: session lifetime and operator controls', () => {
   it('restarts a lost server while its session registration remains live', async () => {
     const { project } = projectWithRoots('lost-server-restart')
     const stateHome = temporaryDir('lost-server-restart-state')
+    const attachmentLog = join(temporaryDir('lost-server-restart-attachments'), 'attachments.log')
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
     const monitor = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_WATCH_MS: '50',
       WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '10000',
+      WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG: attachmentLog,
     }))
     const output = childOutput(monitor)
     const first = await waitForState(stateHome)
     trackDetached(first.pid, first)
     await waitFor(async () => (await health(first)).registeredSessions === 1 ? true : null)
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    await waitFor(() => spawnReceipts(attachmentLog).includes(`${monitor.pid} ${port}`) ? true : null, FALLBACK_DISCOVERY_BOUND_MS)
 
     process.kill(first.pid, 'SIGKILL')
     await waitFor(() => pidAlive(first.pid) ? null : true)
@@ -1404,18 +1415,20 @@ describe('owner decision 3: session lifetime and operator controls', () => {
   it('reports one bounded retry stop when a lost server cannot restart', async () => {
     const { project } = projectWithRoots('lost-server-bounded')
     const stateHome = temporaryDir('lost-server-bounded-state')
+    const attachmentLog = join(temporaryDir('lost-server-bounded-attachments'), 'attachments.log')
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
     const monitor = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_WATCH_MS: '4000',
       WT_ARTIFACT_SERVER_TEST_RETRY_ATTEMPTS: '2', WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '30000',
+      WT_ARTIFACT_SERVER_TEST_ATTACHMENT_LOG: attachmentLog,
     }))
     const output = childOutput(monitor)
     const first = await waitForState(stateHome)
     trackDetached(first.pid, first)
     await waitFor(async () => (await health(first)).registeredSessions === 1 ? true : null)
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    await waitFor(() => spawnReceipts(attachmentLog).includes(`${monitor.pid} ${port}`) ? true : null, FALLBACK_DISCOVERY_BOUND_MS)
 
     process.kill(first.pid, 'SIGKILL')
     await waitFor(() => pidAlive(first.pid) ? null : true)
