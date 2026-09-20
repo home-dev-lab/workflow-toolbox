@@ -24,12 +24,14 @@ const CONTEXT_MODE_TOOLS = {
   executeFile: `${CONTEXT_PREFIX}ctx_execute_file`, fetchAndIndex: `${CONTEXT_PREFIX}ctx_fetch_and_index`, index: `${CONTEXT_PREFIX}ctx_index`,
   insight: `${CONTEXT_PREFIX}ctx_insight`, purge: `${CONTEXT_PREFIX}ctx_purge`, search: `${CONTEXT_PREFIX}ctx_search`, stats: `${CONTEXT_PREFIX}ctx_stats`,
 }
+const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 prepareContextModeFixture()
 const resolveContextModeRoot = (env: NodeJS.ProcessEnv) => env.WT_CONTEXT_MODE_ROOT || join(env.CLAUDE_CONFIG_DIR || join(env.HOME ?? '', '.claude'), 'plugins', 'cache', 'context-mode', 'context-mode', '1.0.177')
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
 const PLUGIN_ROOT = join(ROOT, 'plugin')
+const SHIPPED_PILOT = readFileSync(join(PLUGIN_ROOT, 'launch-agents/agents/pilot.md'), 'utf8')
 const SDK_RESOLVER = join(PLUGIN_ROOT, 'bin/lib/sdk-resolution.mjs')
 const ZOD_ROOT = dirname(createRequire(import.meta.url).resolve('zod/package.json'))
 // The runner now REQUIRES a valid first `system:init` receipt: a fake stream without one used to
@@ -237,6 +239,15 @@ describe('SDK pilot runner', () => {
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
     expect(prompts[0]).toContain('KNOWLEDGE_BASE_INDEX: none (no index exists at ')
+    for (const contract of [SHIPPED_PILOT, prompts[0]]) {
+      expect(contract).toMatch(/Grounding|ground external sources/i)
+      expect(contract).toContain('refused-by-classifier')
+      expect(contract).toContain('unreachable-source')
+      expect(contract).toContain('CANCEL')
+      expect(contract).toContain('REFRAME')
+      expect(contract).toMatch(/\bproceed\b/i)
+    }
+    expect(prompts[0]).toContain('For a URL source, call `ctx_fetch_and_index`')
 
   })
 
@@ -392,7 +403,7 @@ describe('SDK pilot runner', () => {
       const transition = server.instance._registeredTools.transition!.handler
       const artifact = server.instance._registeredTools.write_artifact!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' })
+      await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       continuation = (await prompt.next()).value.message.content
       await artifact({ kind: 'plan', content: '## Tasks\n- incomplete\n' })
@@ -441,7 +452,7 @@ describe('SDK pilot runner', () => {
       const transition = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools.transition!.handler
       yield initMessage('claude-test')
       yield { type: 'assistant', message: { model: 'claude-test', usage: { input_tokens: 3, cache_creation_input_tokens: 5, cache_read_input_tokens: 7, output_tokens: 11 }, content: [] } }
-      await transition({ phase: 'discovery', record: 'discovery\n', tool_use_id: 'discovery' })
+      await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
       // The SDK repeats one assistant message per content block with the same id and usage (measured: 121 entries, 65 ids
       // on the 2026-09-14 FULL run); a repeat must replace, never add.
       yield { type: 'assistant', message: { id: 'msg_b', model: 'claude-test', usage: { input_tokens: 13, cache_creation_input_tokens: 17, cache_read_input_tokens: 19, output_tokens: 20 }, content: [] } }
@@ -584,7 +595,7 @@ describe('SDK pilot runner', () => {
       const tools = (registeredServer as RegisteredServer).instance._registeredTools
       const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
       for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
       await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }); await artifact({ kind: 'pilot-report', content: '# real lifecycle report\n\n## E2E\nProcedure: run the runner fixture\nVerbatim output: runner fixture passed\n\n## Acceptance\n- complete the real lifecycle fixture\n  Outcome: proven\n' })
       receipt = (await transition({ phase: 'report', tool_use_id: 'report' })).content[0]!.text
@@ -618,7 +629,7 @@ describe('SDK pilot runner', () => {
       const tools = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools
       const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
       for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
       await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
       await artifact({ kind: 'pilot-report', content: `# report\n\n## E2E\nProcedure: stale ordering fixture\nVerbatim output: exercised\n\n## Acceptance\n- exercise the runner\n  Outcome: proven\n\n${costReportSection(staleCost)}` })
@@ -648,7 +659,7 @@ describe('SDK pilot runner', () => {
       const tools = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools
       const transition = tools.transition!.handler; const artifact = tools.write_artifact!.handler; const run = tools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
+      await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
       for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
       await transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' })
       const report = `# report\n\n## E2E\n${e2e}\n\n## Acceptance\n- complete the delivery fixture\n  ${outcome}\n`
@@ -684,7 +695,7 @@ describe('SDK pilot runner', () => {
       const artifact = server.instance._registeredTools.write_artifact!.handler
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' })
+      await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
       for (let round = 1; round <= MAX_CRITIC_ROUNDS; round += 1) {
         await artifact({ kind: 'plan', content: plan }); await transition({ phase: 'plan', tool_use_id: `plan-${round}` })
         await artifact({ kind: 'critic-brief', content: `critic ${round}` }); await run({ kind: 'lane', phase: 'critic', timeout: 1 })
@@ -726,7 +737,7 @@ describe('SDK pilot runner', () => {
       const artifact = server.instance._registeredTools.write_artifact!.handler
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
-      await transition({ phase: 'discovery', record: 'test discovery\n', tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+      await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' }); await artifact({ kind: 'brief', content: 'brief\n' }); await run({ kind: 'lane', phase: 'tdd', timeout: 1 })
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
       const continuation = await prompt.next(); if (continuation.done) return; continuations.push(continuation.value.message.content)
       await transition({ phase: 'tdd', tool_use_id: 'tdd' }); for (const name of ['typecheck', 'lint', 'test']) await run({ kind: 'gate', name })
@@ -770,7 +781,7 @@ describe('SDK pilot runner', () => {
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
       const tools = (options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer).instance._registeredTools
       yield initMessage(); await prompt.next()
-      await tools.transition!.handler({ phase: 'discovery', record: 'discovered\n', tool_use_id: 'discovery' })
+      await tools.transition!.handler({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
       await tools.write_artifact!.handler({ kind: 'brief', content: 'finish tdd\n' })
       await tools.run!.handler({ kind: 'lane', phase: 'tdd', timeout: 1 })
       fireTimeout?.()

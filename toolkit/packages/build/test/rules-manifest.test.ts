@@ -14,6 +14,7 @@ import { independentBrief } from '../../../../plugin/bin/lib/lifecycle-brief.mjs
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGIN_ROOT = join(ROOT, 'plugin')
 const roots: string[] = []
+const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const section = (source: string, heading: string, recipients: string[], triggers: string[], level = 'test') => ({ source, heading, recipients, triggers, level, section: `${heading}\n\nExact rule bytes.\n` })
 
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -69,7 +70,7 @@ describe('SDK role rules manifest', () => {
 
   it('returns pilot phase rules on the new phase transition', async () => {
     const lifecycle = lifecycleWithRules([section('project/rule.md', '## Plan authority', ['pilot'], ['phase:plan'])])
-    const result = await lifecycle.transition({ phase: 'discovery', record: 'read it', tool_use_id: 'phase' })
+    const result = await lifecycle.transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'phase' })
     expect(result).toContain('accepted phase=plan')
     expect(result).toContain('## Rules for phase plan (authoritative)')
     expect(result).toContain('## Plan authority\n\nExact rule bytes.\n')
@@ -78,7 +79,7 @@ describe('SDK role rules manifest', () => {
   it('places authoritative lane rules before pilot context in the brief both executor families read', async () => {
     const rules = [section('project/rule.md', '## TDD authority', ['tdd'], ['lane:tdd'])]
     const lifecycle = lifecycleWithRules(rules, 'LITE')
-    await lifecycle.transition({ phase: 'discovery', record: 'read it', tool_use_id: 'phase' })
+    await lifecycle.transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'phase' })
     await lifecycle.artifact({ kind: 'brief', content: '## Tasks\n- pilot context\n' })
     const brief = readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')
     expect(brief.indexOf('## Rules that apply to this role (authoritative)')).toBeLessThan(brief.indexOf('## Pilot instructions'))
@@ -90,7 +91,7 @@ describe('SDK role rules manifest', () => {
     const skillRoot = manifestRoot('---\nname: fixture\ndescription: fixture\n---\n\n# Fixture changelog instructions\n\nRun the deterministic writer.\n')
     const skill = join(skillRoot, 'rule.md')
     const lifecycle = lifecycleWithRules([], 'LITE', { changelogSkillPath: skill })
-    await lifecycle.transition({ phase: 'discovery', record: 'read it', tool_use_id: 'phase' })
+    await lifecycle.transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'phase' })
     await lifecycle.artifact({ kind: 'brief', content: 'pilot context\n' })
     const brief = readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')
     expect(brief).toContain('## Changelog instructions (authoritative)\n\n# Fixture changelog instructions\n\nRun the deterministic writer.')
@@ -98,7 +99,7 @@ describe('SDK role rules manifest', () => {
     expect(brief.indexOf('## Changelog instructions (authoritative)')).toBeLessThan(brief.indexOf('## Pilot instructions'))
 
     const missing = lifecycleWithRules([], 'LITE', { changelogSkillPath: join(skillRoot, 'absent.md') })
-    await missing.transition({ phase: 'discovery', record: 'read it', tool_use_id: 'phase' })
+    await missing.transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'phase' })
     expect(await missing.artifact({ kind: 'brief', content: 'pilot context\n' })).toContain('changelog skill unavailable')
     expect(() => readFileSync(join(missing.root, '.lane', 'tdd-brief.md'))).toThrow()
   })
