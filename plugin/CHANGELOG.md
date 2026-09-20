@@ -13,6 +13,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Show effective plugin configuration, configurable phase models, and orphaned settings
 
 ### Fixed
+- Capture lifecycle launcher output through private regular files so an immediately exiting launcher cannot lose its `pid=` receipt to platform-specific pipe flushing
 - macOS: refresh process-table evidence when lane supervision switches PIDs, preventing a just-finished phase cached during launcher inspection from blocking the next phase
 - Keep the last good What is running snapshot visible through collector failures, show its age and a plain-language retry notice, and clear the notice after recovery
 - Ignore coverage temporary directories during running-work scans and keep walk-budget uncertainty on the affected row instead of marking all discovery partial
