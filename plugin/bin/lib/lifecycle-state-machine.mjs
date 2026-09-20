@@ -212,6 +212,46 @@ function tasksBlock(content) {
 function refusal(edge, missing, file) {
   return `edge refused: ${edge}; missing ${missing}: ${file}`
 }
+function discoveryField(block, field) {
+  const prefix = `${field}:`
+  const line = block.split('\n').map((candidate) => candidate.trim()).find((candidate) => candidate.startsWith(prefix))
+  return line?.slice(prefix.length).trim()
+}
+const DISCOVERY_GROUNDING_FORMAT = `required format:
+## External-source ledger
+- Claim: <claim>
+  Source: <source>
+  Fetched content: <stored content, not a URL>
+  Verdict: confirmed|refuted|undecidable
+or use \`Fetched SHA-256: <64 hex characters>\`; when no claim can be recorded use \`- Outcome: refused-by-classifier: <why>\` or \`- Outcome: unreachable-source: <why>\`
+Grounding route: CANCEL|REFRAME|proceed`
+function discoveryGroundingProblem(content) {
+  const lines = content.split(/\r?\n/)
+  const heading = lines.findIndex((line) => /^## External-source ledger\s*$/.test(line))
+  if (heading < 0) return 'external-source ledger headed `## External-source ledger`'
+  const end = lines.findIndex((line, index) => index > heading && /^##\s+/.test(line))
+  const ledger = lines.slice(heading + 1, end < 0 ? lines.length : end)
+  const route = /^Grounding route:\s*(CANCEL|REFRAME|proceed)\s*$/im.exec(content)?.[1]
+  if (!route) return 'grounding route `Grounding route: CANCEL|REFRAME|proceed`'
+
+  const claimStarts = ledger.flatMap((line, index) => (/^- Claim:\s*\S/.test(line) ? [index] : []))
+  const namedOutcome = ledger.some((line) => /^- Outcome:\s*(?:refused-by-classifier|unreachable-source):\s*\S/i.test(line))
+  if (claimStarts.length === 0 && !namedOutcome) return 'external claim or named outcome `refused-by-classifier` or `unreachable-source`'
+  for (let index = 0; index < claimStarts.length; index += 1) {
+    const start = claimStarts[index]
+    const nextClaim = claimStarts[index + 1] ?? ledger.length
+    const nextOutcome = ledger.findIndex((line, lineIndex) => lineIndex > start && /^- Outcome:/.test(line))
+    const block = ledger.slice(start, nextOutcome >= 0 && nextOutcome < nextClaim ? nextOutcome : nextClaim).join('\n')
+    if (!discoveryField(block, 'Source')) return 'source beside each external claim'
+    const fetchedContent = discoveryField(block, 'Fetched content')
+    const fetchedDigest = /^[a-f0-9]{64}$/i.test(discoveryField(block, 'Fetched SHA-256') ?? '')
+    if (!fetchedContent && !fetchedDigest) return 'fetched content or SHA-256 beside each external claim'
+    if (fetchedContent && /^https?:\/\/\S+$/i.test(fetchedContent)) return 'fetched content cannot be only a URL'
+    if (!new Set(['confirmed', 'refuted', 'undecidable']).has(discoveryField(block, 'Verdict')?.toLowerCase())) return 'verdict confirmed, refuted, or undecidable beside each external claim'
+  }
+  if (route !== 'proceed') return `grounding route ${route} does not proceed to planning`
+  return null
+}
 function verdictFromReport(phase, content) {
   const expected = phase === 'critic' ? ['approved', 'changes-requested'] : ['clear', 'changes-requested']
   const match = new RegExp(`^VERDICT:\\s*(${expected.join('|')})\\s*$`, 'mi').exec(content)
@@ -565,6 +605,8 @@ export function createLifecycleStateMachine({
       if (typeof event.record !== 'string' || !event.record.trim()) {
         return refusal('discovery->next', 'non-empty discovery record', path.join(laneDir, 'discovery.md'))
       }
+      const groundingProblem = discoveryGroundingProblem(event.record)
+      if (groundingProblem) return refusal('discovery->next', `${groundingProblem}; ${DISCOVERY_GROUNDING_FORMAT}`, path.join(laneDir, 'discovery.md'))
       writeRegularFile(path.join(laneDir, 'discovery.md'), event.record)
       next = frozenRoute === 'LITE' ? 'tdd' : 'plan'
     } else if (state.phase === 'plan') {

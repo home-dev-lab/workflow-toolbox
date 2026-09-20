@@ -103,7 +103,7 @@ Operating shape:
    TDD; FULL runs the whole cycle.
 3. **Grounding** — external research (docs, the knowledge base, tickets, MCPs, web —
    multi-hop) in parallel with internal analysis of the existing code; small PoCs for what
-   sources do not settle (a classifier refusal or unreachable source is a NAMED outcome to
+   sources do not settle (`refused-by-classifier` or `unreachable-source` is a NAMED outcome to
    route, not an error). Output verdicts: confirmed / refuted / undecidable, each with
    evidence. Then route: CANCEL (short-circuit the planner), REFRAME, or proceed.
 4. **Plan ↔ critic** — iterate a dev-plan with critique feedback until it is solid, ≤ 3

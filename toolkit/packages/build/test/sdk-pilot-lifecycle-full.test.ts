@@ -12,6 +12,7 @@ const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
 const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
 const FIXTURE_LANE_TIMEOUT_SECONDS = 10
+const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const roots: string[] = []
 
 afterEach(() => {
@@ -313,7 +314,7 @@ function root() {
 function handlers(server: { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }) {
   const tools = server.instance._registeredTools
   return {
-    transition: (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args).then((result) => result.content[0]!.text),
+    transition: (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args).then((result) => result.content[0]!.text),
     artifact: (args: Record<string, unknown>) => tools.write_artifact!.handler(args).then((result) => result.content[0]!.text),
     run: (args: Record<string, unknown>) => tools.run!.handler(args.timeout === 1 ? { ...args, timeout: FIXTURE_LANE_TIMEOUT_SECONDS } : args).then((result) => result.content[0]!.text),
   }

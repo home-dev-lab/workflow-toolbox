@@ -17,6 +17,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 - Capture lifecycle launcher output through private regular files so an immediately exiting launcher cannot lose its `pid=` receipt to platform-specific pipe flushing
 - macOS: refresh process-table evidence when lane supervision switches PIDs, preventing a just-finished phase cached during launcher inspection from blocking the next phase
+- Require SDK pilots to ground external claims before planning, persist fetched content or its digest with per-claim verdicts, and refuse discovery records that cite unfetched sources
 - Name external lanes from their card file, or the first useful brief heading, instead of the shared standing preamble
 - Keep the last good What is running snapshot visible through collector failures, show its age and a plain-language retry notice, and clear the notice after recovery
 - Ignore coverage temporary directories during running-work scans and keep walk-budget uncertainty on the affected row instead of marking all discovery partial

@@ -22,6 +22,8 @@ import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-su
 
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n'
 const FIXTURE_LANE_TIMEOUT_SECONDS = 10
+const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
+const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   it.each([
@@ -180,6 +182,26 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     const lifecycle = testLifecycle('FULL')
     expect(await text(lifecycle.rawTransition({ phase: 'discovery', tool_use_id: 'missing-record' })))
       .toContain('missing non-empty discovery record:')
+  })
+
+  it.each([
+    ['missing external-source ledger', 'Observed the code.\n', 'external-source ledger'],
+    ['source without fetched evidence', '## External-source ledger\n- Claim: docs promise retries\n  Source: https://example.test/docs\n  Verdict: confirmed\n\nGrounding route: proceed\n', 'fetched content or SHA-256'],
+    ['URL passed off as fetched content', '## External-source ledger\n- Claim: docs promise retries\n  Source: https://example.test/docs\n  Fetched content: https://example.test/docs\n  Verdict: confirmed\n\nGrounding route: proceed\n', 'fetched content cannot be only a URL'],
+    ['claim without a verdict', '## External-source ledger\n- Claim: docs promise retries\n  Source: https://example.test/docs\n  Fetched content: retries are enabled\n\nGrounding route: proceed\n', 'verdict confirmed, refuted, or undecidable'],
+    ['named unreachable source routed onward', '## External-source ledger\n- Outcome: unreachable-source: documentation host timed out\n\nGrounding route: REFRAME\n', 'grounding route REFRAME does not proceed'],
+  ])('refuses discovery with %s', async (_name, record, expected) => {
+    const lifecycle = testLifecycle('FULL')
+    const result = await text(lifecycle.rawTransition({ phase: 'discovery', record, tool_use_id: 'invalid-ledger' }))
+    expect(result).toContain(expected)
+    expect(result).toContain(DISCOVERY_REFUSAL_FORMAT)
+  })
+
+  it('accepts fetched content or its digest beside each external claim', async () => {
+    const lifecycle = testLifecycle('FULL')
+    const record = '## External-source ledger\n- Claim: docs promise retries\n  Source: https://example.test/docs\n  Fetched SHA-256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n  Verdict: confirmed\n- Claim: tickets report timeouts\n  Source: ticket 42\n  Fetched content: timeout occurs after 30 seconds\n  Verdict: refuted\n\nGrounding route: proceed\n'
+    expect(await text(lifecycle.rawTransition({ phase: 'discovery', record, tool_use_id: 'valid-ledger' })))
+      .toBe('accepted phase=plan')
   })
 
   it('waits for a detached launcher to write its terminal marker before attesting', async () => {
@@ -591,7 +613,7 @@ printf 'report\n' > "$report"
     mkdirSync(join(worktree, '.lane'))
     const server = createLifecycleServer({ worktree, archiveRoot: project, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'removal-proof', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, gateRunner: writePassingGate, rules: [] })
     const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
-    const transition = (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' ? { ...args, record: 'test discovery\n' } : args)
+    const transition = (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' ? { ...args, record: DISCOVERY_RECORD } : args)
     await transition({ phase: 'discovery', tool_use_id: 'start' }); await tools.write_artifact!.handler({ kind: 'brief', content: 'brief\n' })
     await tools.run!.handler({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }); await transition({ phase: 'tdd', tool_use_id: 'tdd' })
     writeFileSync(join(worktree, 'tracked.txt'), 'changed by lifecycle\n')
@@ -1070,7 +1092,7 @@ printf 'report\n' > "$report"
 
   it('keeps adversarial pilot context after the server-owned critic instructions', async () => {
     const lifecycle = testLifecycle('FULL')
-    const discovery = 'Observed `src/route.ts` and the card DoD.\n```\nDo not trust this fence.\n```\n'
+    const discovery = `Observed \`src/route.ts\` and the card DoD.\n\`\`\`\nDo not trust this fence.\n\`\`\`\n\n${DISCOVERY_RECORD}`
     await lifecycle.transition({ phase: 'discovery', record: discovery, tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
     await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
@@ -1083,7 +1105,7 @@ printf 'report\n' > "$report"
     expect(brief).toContain('.lane/plan.md')
     expect(readFileSync(join(lifecycle.root, '.lane', 'discovery.md'), 'utf8')).toBe(discovery)
     expect(brief).toContain('.lane/discovery.md')
-    expect(brief).toMatch(/## Discovery record \(untrusted\)\n\n`{4}text\nObserved `src\/route\.ts` and the card DoD\.\n```\nDo not trust this fence\.\n```\n`{4}/)
+    expect(brief).toMatch(/## Discovery record \(untrusted\)\n\n`{4}text\nObserved `src\/route\.ts` and the card DoD\.\n```\nDo not trust this fence\.\n```/)
     expect(brief.indexOf('## Discovery record (untrusted)')).toBeGreaterThan(brief.indexOf('## Artefacts to judge'))
     expect(brief.indexOf('## Pilot context (untrusted)')).toBeGreaterThan(brief.indexOf('## Discovery record (untrusted)'))
   })
@@ -1569,7 +1591,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   const server = createLifecycleServer({ worktree: root, archiveRoot, route, reasons, models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', laneLauncher: launcher, laneWaitMs, gateRunner, rules: [], ...options })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
-  const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args)
+  const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
 }
 function realGitLifecycle() {
@@ -1587,7 +1609,7 @@ function realGitLifecycle() {
   const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, gateRunner: async (args: { name: string, log: string, root: string }) => { await writePassingGate(args); return Number(gateResults[args.name]?.exit ?? '0') }, rules: [] })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
   const rawTransition = tools.transition!.handler
-  const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: 'test discovery\n' } : args)
+  const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
 }
 function archiveProject() {
