@@ -1,0 +1,82 @@
+#!/usr/bin/env node
+const { spawnSync } = require('node:child_process')
+const { homedir } = require('node:os')
+const { join } = require('node:path')
+
+const HELP = `Usage: node plugin/hooks/snapshot-cli [options]
+
+Print the same JSON snapshot consumed by the What is running hook.
+
+Options:
+  --suite-root <path>          Suite .claude directory (default: <cwd>/.claude)
+  --config-dir <path>          Claude config directory (default: CLAUDE_CONFIG_DIR or ~/.claude)
+  --liveness-dir <path>        Liveness directory (default: <state-root>/wt-liveness)
+  --state-root <path>          State directory (default: XDG_STATE_HOME or ~/.local/state)
+  --suite-lock-root <path>     Suite lock directory (default: <state-root>/wt-suite-lock)
+  --extra-root <path>          Additional actor root; repeatable
+  --proc-root <path>           Process filesystem root (default: /proc)
+  --planka-base-url <url>      Browser base URL used to build card links
+  --planka-config-file <path>  Environment file whose BASE_URL supplies the browser URL
+  --link-base <url>            HTTP base URL used for local artifact links
+  --active-window-min <n>      Active-work window in minutes (default: 10)
+  --now <iso-time>             Fixed collection time, for diagnosis or tests
+  --help                       Show this help
+`
+
+async function main() {
+  const { readSnapshot, WORKFLOW_TOOLBOX_LAYOUT } = await import('./hooks.js')
+  const valueOptions = new Set([
+    'suite-root', 'config-dir', 'liveness-dir', 'state-root', 'suite-lock-root', 'extra-root',
+    'proc-root', 'planka-base-url', 'planka-config-file', 'link-base', 'active-window-min', 'now',
+  ])
+  const values = new Map()
+  const extraRoots = []
+  for (let index = 2; index < process.argv.length; index += 1) {
+    const option = process.argv[index]
+    if (option === '--help') { process.stdout.write(HELP); return }
+    const name = option.startsWith('--') ? option.slice(2) : ''
+    if (!valueOptions.has(name) || index + 1 >= process.argv.length) {
+      process.stderr.write(`snapshot-cli: unknown or incomplete option ${option}\n${HELP}`)
+      process.exitCode = 2
+      return
+    }
+    index += 1
+    const value = process.argv[index]
+    if (name === 'extra-root') extraRoots.push(value)
+    else values.set(name, value)
+  }
+
+  const stateRoot = values.get('state-root') || process.env.XDG_STATE_HOME || join(homedir(), '.local', 'state')
+  const config = {
+    configDir: values.get('config-dir') || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'),
+    stateRoot,
+    livenessDir: values.get('liveness-dir') || join(stateRoot, 'wt-liveness'),
+    suiteLockRoot: values.get('suite-lock-root') || join(stateRoot, 'wt-suite-lock'),
+    suiteRoot: values.get('suite-root') || join(process.cwd(), '.claude'),
+    extraRoots,
+    procRoot: values.get('proc-root') || '/proc',
+    plankaBaseUrl: values.get('planka-base-url') || '',
+    plankaConfigFile: values.get('planka-config-file') || '',
+    linkBase: values.get('link-base') || '',
+    activeWindowMin: Number(values.get('active-window-min')) || 10,
+    now: values.get('now') || undefined,
+    platform: process.platform,
+  }
+
+  const snapshot = await readSnapshot({
+    process: {
+      run: async ([command, ...args], options = {}) => {
+        const result = spawnSync(command === 'node' ? process.execPath : command, args, {
+          encoding: 'utf8', timeout: options.timeoutMs, maxBuffer: 16 * 1024 * 1024,
+        })
+        return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr }
+      },
+    },
+  }, config, WORKFLOW_TOOLBOX_LAYOUT)
+  process.stdout.write(JSON.stringify(snapshot))
+}
+
+main().catch((error) => {
+  process.stderr.write(`snapshot-cli: ${error?.message || error}\n`)
+  process.exitCode = 1
+})

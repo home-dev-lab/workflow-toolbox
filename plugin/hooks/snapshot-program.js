@@ -276,7 +276,7 @@ function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : nul
 function cardIds(value) { return [...new Set(String(value || '').match(/\b\d{19}\b/g) || [])]; }
 function briefCard(value) {
   const title = markdownHeadings(value).find(heading => !standardPreamble(heading)) || '';
-  return title.match(/^Brief[^\n]*\bcard\s+(\d{19})\b/i)?.[1] || null;
+  return title.match(/^(?:Brief[^\n]*\bcard\s+|Card\s+)(\d{19})\b/i)?.[1] || null;
 }
 function cardMarkdownId(value) { return String(value || '').match(/^Card(?: id)?:\s*(\d{19})\b/im)?.[1] || null; }
 function markdownHeadings(value) { return [...String(value || '').matchAll(/^#\s+(.+)$/gm)].map(match => match[1].trim()); }
