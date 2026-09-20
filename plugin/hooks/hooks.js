@@ -13,9 +13,12 @@ export const PLUGIN_VERSION = '0.184.0';
 export const SLOW_RENDER_THRESHOLD_MS = 50;
 export const MISSED_RENDERS_BEFORE_STOP = 3;
 export const RENDER_JOURNAL_MAX_BYTES = 64 * 1024;
-export function fileUrlPath(url, platform = process.platform) {
+// The hooks module runs without Node globals, so the platform is read from the URL itself:
+// a file URL on Windows carries a drive letter (/C:/...) or a UNC host, never on POSIX.
+export function fileUrlPath(url, platform) {
   const pathname = decodeURIComponent(url.pathname);
-  if (platform !== 'win32') return pathname;
+  const windows = platform ? platform === 'win32' : (/^\/[A-Za-z]:/.test(pathname) || Boolean(url.hostname));
+  if (!windows) return pathname;
   const windowsPath = pathname.replaceAll('/', '\\');
   return url.hostname ? `\\\\${url.hostname}${windowsPath}` : windowsPath.replace(/^\\(?=[A-Za-z]:)/, '');
 }
