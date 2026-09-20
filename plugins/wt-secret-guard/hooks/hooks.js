@@ -63,7 +63,7 @@ function replaceKnown(text, command, includeOptional) {
     ...detections(scrubbed, command),
     ...(includeOptional ? optionalDetections(scrubbed, { emails: maskEmails, ipAddresses: maskIpAddresses }) : []),
   ];
-  for (const { kind, value } of found) scrubbed = scrubbed.split(value).join(tokenFor(kind, value));
+  for (const { kind, value, secret = value } of found) scrubbed = scrubbed.split(value).join(tokenFor(kind, secret));
   return { value: scrubbed, changed: scrubbed !== text, entropy: entropyCandidates(scrubbed) };
 }
 
