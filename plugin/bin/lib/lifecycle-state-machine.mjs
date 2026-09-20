@@ -38,6 +38,25 @@ const ARTIFACTS = {
 const INDEPENDENT_ROLES = new Set(['critic', 'review', 'refutation'])
 const MAX_REPORT_FINDINGS = 50
 const MAX_FINDING_CHARACTERS = 2000
+const NO_BOARD_CONTRACT_REASON = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
+const ROUTING_IMPOSSIBLE_INSTRUCTION = (reason) =>
+  `routing is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`
+// Refuses route_finding when no board contract was supplied, and ends the run at `report` from inside
+// the tool call — no phase transition carries it there, so the timeline is advanced here.
+function partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now }) {
+  const reason = NO_BOARD_CONTRACT_REASON
+  if (state.phase !== 'report' && state.phase !== 'awaiting_fidelity') {
+    state.partial = { phase: state.phase, round: null, reason, findings: [] }
+    state.verifySnapshot = { tree: treeSignature(root), gates: {} }
+    audit()
+    const transitionedAt = now()
+    timeline.phases.at(-1).exited_at = transitionedAt
+    timeline.phases.push({ phase: 'report', round: null, entered_at: transitionedAt, exited_at: null, transition_id: null })
+    state.phase = 'report'
+    persistTimeline()
+  }
+  return `${reason}\n${ROUTING_IMPOSSIBLE_INSTRUCTION(reason)}`
+}
 function acceptanceEntries(content) {
   const section = acceptanceSection(content)
   const lines = section.split(/\r?\n/)
@@ -876,6 +895,9 @@ export function createLifecycleStateMachine({
   function pilotReportProblem(content, enforceSchema = false) {
     const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
     const lines = content.split(/\r?\n/)
+    if (partialLine?.startsWith('Partial: route_finding refused: no board contract;') && lines[0] !== partialLine) {
+      return `pilot-report: partial run, make "${partialLine}" the first line`
+    }
     if (partialLine && !lines.includes(partialLine)) {
       return `pilot-report: partial run, add the line "${partialLine}"`
     }
@@ -928,7 +950,9 @@ export function createLifecycleStateMachine({
   }
   async function routeFindingTool(args) {
     if (state.stopped) return stoppedRefusal()
-    if (!boardContract || typeof routeFinding !== 'function') return 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
+    if (!boardContract || typeof routeFinding !== 'function') {
+      return partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now })
+    }
     try {
       const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })
       const id = String(created?.id ?? '')

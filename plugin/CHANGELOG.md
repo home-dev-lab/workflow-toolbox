@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Warn at SDK pilot launch when a routing-capable run has no board contract, and end a run partial immediately if `route_finding` is nevertheless attempted
+
 ## [0.185.0] - 2026-09-20
 
 ### Added

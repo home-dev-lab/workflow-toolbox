@@ -113,9 +113,15 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('refuses route_finding without the runner board contract and names the launch remedy', async () => {
-    const lifecycle = testLifecycle('LITE')
+    const lifecycle = testLifecycle('FULL')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    const reason = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
     expect(await text(lifecycle.routeFinding({ title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'S' })))
-      .toContain('route_finding refused: no board contract; relaunch with --board-contract <json file>')
+      .toBe(`${reason}\nrouting is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`)
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'plan', round: null, reason, findings: [] } })
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `# report\nPartial: ${reason}\n` })))
+      .toBe(`pilot-report: partial run, make "Partial: ${reason}" the first line`)
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: ${reason}\n# report\n` }))).toBe('wrote pilot-report')
   })
 
   it('routes an L4 finding through the runner and persists its trusted lifecycle record', async () => {
