@@ -64,6 +64,9 @@ describe('shipped private plugins', () => {
       'email masking option covers prompts and tool results',
       'IP masking is off by default in prompts and tool results',
       'IP masking option covers prompts and tool results',
+      'UUID Exa API key in a provider client constructor is scrubbed',
+      'bare UUID in a plain log line stays untouched',
+      'Brave API key shape is scrubbed',
     ]) it(`${plugin}: ${lock}`, () => expect(selftest.stdout).toContain(`PASS ${lock}`))
   }
 

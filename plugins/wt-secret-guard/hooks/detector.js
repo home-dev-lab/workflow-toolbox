@@ -4,6 +4,7 @@ const patterns = [
   ['aws-access-key', /\bAKIA[A-Z0-9]{16}\b/g],
   ['openai-api-key', /\bsk-[A-Za-z0-9_-]{20,}\b/g],
   ['slack-token', /\bxox[abp]-[A-Za-z0-9-]{10,}\b/g],
+  ['brave-api-key', /(?<![A-Za-z0-9_-])BSA[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])/g],
   ['jwt', /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g],
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
   ['assignment', /\b(?:password|token|secret)\s*=\s*(?:"[^"]+"|'[^']+'|[^\s;]+)/gi],
@@ -18,11 +19,30 @@ const email = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.
 const ipv4 = /(?<![0-9.])(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3}(?![0-9.])/g;
 const ipv6Candidate = /(?<![0-9A-Fa-f:])[0-9A-Fa-f]*:[0-9A-Fa-f:]+(?![0-9A-Fa-f:])/g;
 
+function uuidHasCredentialContext(text, index) {
+  const prefix = text.slice(Math.max(0, index - 96), index);
+  return /new\s+Exa\s*\(\s*["']?$/i.test(prefix)
+    || /\b(?:api[\s_-]*key|access[\s_-]*key|token|secret|credential)\b\s*(?:=|:)\s*["']?$/i.test(prefix);
+}
+
+function credentialUuidDetections(text) {
+  const found = [];
+  uuid.lastIndex = 0;
+  for (let match; (match = uuid.exec(text));) {
+    if (uuidHasCredentialContext(text, match.index)) found.push({ kind: 'credential-uuid', value: match[0] });
+  }
+  return found;
+}
+
 export function allowedRanges(text, command = '') {
   const ranges = [];
-  for (const expression of [sha, uuid, secretToken]) {
+  for (const expression of [sha, secretToken]) {
     expression.lastIndex = 0;
     for (let match; (match = expression.exec(text));) ranges.push([match.index, match.index + match[0].length]);
+  }
+  uuid.lastIndex = 0;
+  for (let match; (match = uuid.exec(text));) {
+    if (!uuidHasCredentialContext(text, match.index)) ranges.push([match.index, match.index + match[0].length]);
   }
   // Base64 is only allow-listed when the command names a file, never as a blanket exemption.
   if (/\b(?:cat|base64|openssl)\s+[^\s]+/.test(command)) {
@@ -121,7 +141,7 @@ export function detections(text, command = '') {
   if (typeof text !== 'string') return [];
   const allowed = allowedRanges(text, command);
   const concealed = concealedJsonDetections(text);
-  const found = [...concealed];
+  const found = [...concealed, ...credentialUuidDetections(text)];
   for (const [kind, expression] of patterns) {
     expression.lastIndex = 0;
     for (let match; (match = expression.exec(text));) {
