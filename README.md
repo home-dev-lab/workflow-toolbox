@@ -119,6 +119,20 @@ SPLIT path rather than sending it to the lane.
 
 For a complete detached implementation or review, use the `external-lane` skill. Adopt the stable launcher with `node plugin/skills/adopt/scripts/install.mjs --set scripts --install --global`, then run `node <configDir>/scripts/wt-lane.mjs --dir <worktree> --model <provider/model> --brief <file>`. Re-adopt after this supervision upgrade; the new adopted launcher clearly refuses an older installed plugin. It returns immediately with a pid and log path; each run truncates that log and records its run id, and the log ends in `EXIT=<code>` only when the lane actually exits. Reaching the timeout reports evidence to the owner and leaves live work running for an explicit decision: `node plugin/bin/wt-lane-control.mjs --dir <worktree> --decision extend` or `node plugin/bin/wt-lane-control.mjs --dir <worktree> --decision abandon`. To relaunch from the worktree's current state, abandon the old lane, then start a fresh lane on the same worktree with `node <configDir>/scripts/wt-lane.mjs --dir <worktree> --model <provider/model> --brief <file>`; abandonment keeps worktree files intact. The plugin-cache `plugin/bin/wt-lane.mjs` works too, but its path changes with plugin upgrades.
 
+## Configuration
+
+`node plugin/bin/wt-config.mjs` prints every Workflow Toolbox option with its effective value,
+source, and manifest default; `--json` emits the same report for automation. Plugin options win
+over their documented environment fallbacks. Executor-lane consent additionally honors the
+project setting as a narrowing-only layer. Pilot, orchestrator, and per-phase executor models are
+available as plugin options while retaining their `WT_*_MODEL` fallbacks.
+
+The report also identifies `pluginConfigs` entries whose plugin id is not installed and names the
+matching `workflow-toolbox@<marketplace>.options.<name>` destination when one exists. It never
+migrates those values. The main-session `SessionStart` context summarizes non-default values and
+orphaned entries and points back to the full command; subagent starts and all-default clean setups
+remain silent.
+
 ## Where to go from here
 
 The practitioner depth below is unchanged — here is the map:

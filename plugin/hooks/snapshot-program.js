@@ -59,6 +59,7 @@ export function markdownToHtml(markdown) {
 // the literal and the module stops loading (measured 2026-09-16 on a comment quoting a JSON value).
 export const SNAPSHOT_PROGRAM = String.raw`
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const config = JSON.parse(process.argv.at(-1));
@@ -71,6 +72,9 @@ const executableName = ${executableName.toString()};
 const resolvedBinary = ${resolvedBinary.toString()};
 const now = Date.parse(config.now || new Date().toISOString());
 const UNKNOWN = 'unknown';
+const PRICE_UNKNOWN = 'price unknown';
+let priceTable = { models: {} };
+try { priceTable = JSON.parse(fs.readFileSync(config.priceTableFile, 'utf8')); } catch {}
 const LOG_TAIL_BYTES = 64 * 1024;
 const REPORT_TAIL_BYTES = 128 * 1024;
 const TRANSCRIPT_TAIL_BYTES = 256 * 1024;
@@ -82,6 +86,24 @@ const MIN_SERVICE_AGE_SECONDS = 30;
 const runtimePlatform = typeof config.platform === 'string' ? config.platform : process.platform;
 const executablePlatform = typeof config.executablePlatform === 'string' ? config.executablePlatform : runtimePlatform;
 const processEnv = config.processEnv && typeof config.processEnv === 'object' ? config.processEnv : process.env;
+const cacheBase = processEnv.XDG_CACHE_HOME || (runtimePlatform === 'darwin' ? path.join(os.homedir(), 'Library', 'Caches') : runtimePlatform === 'win32' ? processEnv.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local') : path.join(os.homedir(), '.cache'));
+const catalogueFile = config.catalogueFile || path.join(cacheBase, 'opencode', 'models.json');
+try {
+  const catalogue = JSON.parse(fs.readFileSync(catalogueFile, 'utf8'));
+  const verifiedAt = fs.statSync(catalogueFile).mtime.toISOString();
+  for (const [provider, providerValue] of Object.entries(catalogue || {})) for (const [modelKey, modelValue] of Object.entries(providerValue?.models || {})) {
+    if (modelValue?.cost) {
+      const modelId = modelValue.id || modelKey;
+      if (priceTable.models[modelId]?.family === provider) delete priceTable.models[modelId];
+      priceTable.models[provider + '/' + modelId] = { ...modelValue.cost, family: provider, verified_at: verifiedAt };
+    }
+  }
+} catch {}
+const overrideFile = config.overrideFile || (processEnv.CLAUDE_PLUGIN_DATA ? path.join(processEnv.CLAUDE_PLUGIN_DATA, 'model-prices.override.json') : null);
+try {
+  const override = JSON.parse(fs.readFileSync(overrideFile, 'utf8'));
+  for (const [model, price] of Object.entries(override.models || {})) priceTable.models[model] = { ...price, verified_at: price.verified_at || override.as_of || fs.statSync(overrideFile).mtime.toISOString() };
+} catch {}
 const layout = config.layout && typeof config.layout === 'object' ? config.layout : {};
 const laneDirName = typeof layout.laneDirName === 'string' && layout.laneDirName ? layout.laneDirName : null;
 const worktreesDirName = typeof layout.worktreesDirName === 'string' && layout.worktreesDirName ? layout.worktreesDirName : null;
@@ -128,6 +150,7 @@ const WORKTREE_DETAIL_CAP = Number.isSafeInteger(config.worktreeDetailCap) && co
 const cappedScans = [];
 const scanLimits = [];
 const unreadableScans = [];
+const approximateWalkRoots = new Set();
 const processReadFailures = [];
 // A process that exits between the /proc listing and its record reads leaves no directory behind.
 // That is the ordinary race of scanning a live machine, not a read failure: the listing was complete
@@ -194,7 +217,7 @@ function resolveActorFile(candidate) {
 function infoUnrestricted(file) { try { return fs.statSync(file); } catch { return null; } }
 procUptime = processScanAvailable ? Number((head(path.join(procRoot, 'uptime'), 128) || '').trim().split(/\s+/)[0]) : null;
 
-function listed(dir, maxEntries = DIR_SCAN_CAP) {
+function listed(dir, maxEntries = DIR_SCAN_CAP, reportCap = true) {
   let handle;
   try {
     const safeDir = safePath(dir);
@@ -207,7 +230,7 @@ function listed(dir, maxEntries = DIR_SCAN_CAP) {
       entries.push(entry.name);
     }
     if (!handle.readSync()) return { entries, readable: true, capped: false };
-    cappedScans.push(dir);
+    if (reportCap) cappedScans.push(dir);
     return { entries, readable: true, capped: true };
   } catch { return { entries: [], readable: false, capped: false }; }
   finally { try { handle?.closeSync(); } catch {} }
@@ -252,17 +275,26 @@ function info(file) { const safeFile = safePath(file); return safeFile ? infoUnr
 function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : null; } catch { return null; } }
 function cardIds(value) { return [...new Set(String(value || '').match(/\b\d{19}\b/g) || [])]; }
 function briefCard(value) {
-  const title = String(value || '').match(/^#\s+[^\n]+$/m)?.[0] || '';
-  return title.match(/^#\s+Brief[^\n]*\bcard\s+(\d{19})\b/i)?.[1] || null;
+  const title = markdownHeadings(value).find(heading => !standardPreamble(heading)) || '';
+  return title.match(/^Brief[^\n]*\bcard\s+(\d{19})\b/i)?.[1] || null;
 }
 function cardMarkdownId(value) { return String(value || '').match(/^Card(?: id)?:\s*(\d{19})\b/im)?.[1] || null; }
-function markdownTitle(value) { return String(value || '').match(/^#\s+(.+)$/m)?.[1]?.trim() || null; }
-function externalTitle(value) { return markdownTitle(value)?.replace(/^Brief\s*(?::|—)\s*/i, '') || null; }
+function markdownHeadings(value) { return [...String(value || '').matchAll(/^#\s+(.+)$/gm)].map(match => match[1].trim()); }
+function markdownTitle(value) { return markdownHeadings(value)[0] || null; }
+function standardPreamble(value) { return /^Standing preamble for every external-lane brief\b/i.test(String(value || '').trim()); }
+function externalTitle(value) { return markdownHeadings(value).find(title => !standardPreamble(title))?.replace(/^Brief\s*(?::|—)\s*/i, '') || null; }
 function cleanCardTitle(value, id) {
   let title = String(value || '').trim();
   if (id) title = title.replace(new RegExp('^card\\s+' + id + '\\s*(?:,|:|—|-)\\s*', 'i'), '');
   title = title.replace(/^step\s+\d+\s*[.:,—-]?\s*/i, '');
   return title.trim() || null;
+}
+function laneCardReceipt(worktree, requestedId = null) {
+  const names = list(lanePath(worktree)).filter(name => /^card-\d{19}\.md$/.test(name));
+  const name = (requestedId && names.find(candidate => candidate === 'card-' + requestedId + '.md')) || names.sort()[0];
+  if (!name) return null;
+  const id = name.match(/^card-(\d{19})\.md$/)?.[1] || null;
+  return id ? { id, title: cleanCardTitle(markdownTitle(head(lanePath(worktree, name))), id) } : null;
 }
 function envField(file, name) {
   const value = head(file, 32 * 1024);
@@ -443,7 +475,9 @@ function walk(root, accept, maxDepth = 5, maxEntries = 5000) {
   const found = []; const stack = [{ dir: root, depth: 0 }]; let seen = 0;
   while (stack.length && seen < maxEntries) {
     const current = stack.pop();
-    for (const name of listed(current.dir, Math.min(DIR_SCAN_CAP, maxEntries - seen)).entries) {
+    const listing = listed(current.dir, Math.min(DIR_SCAN_CAP, maxEntries - seen), false);
+    if (listing.capped) approximateWalkRoots.add(root);
+    for (const name of listing.entries) {
       if (seen >= maxEntries) break;
       seen += 1;
       const file = path.join(current.dir, name); const link = linkInfo(file);
@@ -451,9 +485,10 @@ function walk(root, accept, maxDepth = 5, maxEntries = 5000) {
       const stat = info(file);
       if (!stat) continue;
       if (stat.isFile() && accept(file, name)) found.push(file);
-      if (stat.isDirectory() && current.depth < maxDepth && !['.git', 'node_modules', 'dist', 'build', 'coverage'].includes(name)) stack.push({ dir: file, depth: current.depth + 1 });
+      if (stat.isDirectory() && current.depth < maxDepth && !['.git', 'node_modules', 'dist', 'build'].includes(name) && !/^(?:child-)?coverage(?:[-_.].*)?$/i.test(name)) stack.push({ dir: file, depth: current.depth + 1 });
     }
   }
+  if (stack.length) approximateWalkRoots.add(root);
   return found;
 }
 function freshestWrite(root) {
@@ -471,7 +506,7 @@ function toolActivity(value) {
 }
 function laneActivity(worktree, lastWrite = null) {
   const current = toolActivity(tail(lanePath(worktree, 'run.log')));
-  return current !== UNKNOWN ? current : lastWrite === null ? UNKNOWN : 'last write ' + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago';
+  return current !== UNKNOWN ? current : lastWrite === null ? UNKNOWN : 'last write ' + (approximateWalkRoots.has(worktree) ? 'at least ' : '') + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago';
 }
 function laneSessionId(worktree) {
   const value = worktree ? envField(lanePath(worktree, 'env.log'), 'CLAUDE_CODE_SESSION_ID') : null;
@@ -624,6 +659,34 @@ function tokenValue(value, ...names) {
   for (const name of names) if (Number.isFinite(value?.[name])) return Number(value[name]);
   return null;
 }
+function normalizedPriceModel(model) {
+  const value = String(model || '').toLowerCase().replace(/-\d{8}$/, '');
+  const inferredProvider = value.startsWith('claude-') ? 'anthropic/' : value.startsWith('gpt-') ? 'openai/' : null;
+  const matches = Object.keys(priceTable.models || {}).filter(canonical => {
+    const canonicalValue = canonical.toLowerCase().replace(/-\d{8}$/, '');
+    if (value === canonicalValue) return true;
+    const family = priceTable.models[canonical]?.family;
+    if (family && value === String(family).toLowerCase() + '/' + canonicalValue) return true;
+    return !value.includes('/') && (!inferredProvider || canonicalValue.startsWith(inferredProvider)) && canonicalValue.split('/').at(-1) === value;
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
+function priceInfo(model, values) {
+  const canonical = normalizedPriceModel(model);
+  if (!canonical) return { usd: PRICE_UNKNOWN, label: PRICE_UNKNOWN };
+  const base = priceTable.models[canonical];
+  const context = values.input + values.cacheRead + values.cacheWrite;
+  const tier = (Array.isArray(base.tiers) ? base.tiers : []).filter(item => item?.tier?.type === 'context' && context > Number(item.tier.size)).sort((a, b) => Number(b.tier.size) - Number(a.tier.size))[0];
+  const price = tier ? { ...base, ...tier } : base;
+  const rates = [price.input, price.cache_write || 0, price.cache_read || 0, price.output];
+  if (!Number.isFinite(Number(rates[0])) || !Number.isFinite(Number(rates[3]))) return { usd: PRICE_UNKNOWN, label: PRICE_UNKNOWN };
+  if (rates.every(rate => Number(rate) === 0)) return { usd: 'subscription', label: 'subscription' };
+  const verified = Date.parse(base.verified_at || base.retrieved || priceTable.as_of || '');
+  const label = Number.isFinite(verified) && now - verified > 60 * 24 * 60 * 60 * 1000 ? 'price not verified since ' + new Date(verified).toISOString().slice(0, 10) : canonical.startsWith('openai/') ? 'API price equivalent' : 'API price';
+  return { usd: (values.input * rates[0] + values.cacheWrite * rates[1] + values.cacheRead * rates[2] + values.output * rates[3]) / 1000000, label };
+}
+const pricedUsage = (model, values) => priceInfo(model, values).usd;
+const addUsd = (left, right) => left === PRICE_UNKNOWN || right === PRICE_UNKNOWN ? PRICE_UNKNOWN : left === 'subscription' ? (Number(right) ? right : 'subscription') : right === 'subscription' ? (Number(left) ? left : 'subscription') : left + right;
 function phaseCostRows(phases) {
   const result = {};
   for (const phase of Array.isArray(phases) ? phases : []) {
@@ -634,9 +697,9 @@ function phaseCostRows(phases) {
       continue;
     }
     const previous = result[id];
-    const totals = previous ? { input: previous.input, output: previous.output, cacheRead: previous.cacheRead, cacheWrite: previous.cacheWrite } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    const totals = previous ? { input: previous.input, output: previous.output, cacheRead: previous.cacheRead, cacheWrite: previous.cacheWrite, usd: previous.usd, priceLabel: previous.priceLabel, models: { ...previous.models } } : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, models: {} };
     let measured = false; let incomplete = false;
-    for (const model of Object.values(phase.models)) {
+    for (const [modelName, model] of Object.entries(phase.models)) {
       const values = {
         input: tokenValue(model, 'input', 'input_tokens', 'tokens_input'),
         output: tokenValue(model, 'output', 'output_tokens', 'tokens_output'),
@@ -645,34 +708,38 @@ function phaseCostRows(phases) {
       };
       if (Object.values(values).some(value => value === null)) { incomplete = true; break; }
       measured = true;
-      for (const key of Object.keys(totals)) totals[key] += values[key];
+      for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) totals[key] += values[key];
+      const usd = model.usd ?? pricedUsage(modelName, values);
+      const priceLabel = model.price_label || priceInfo(modelName, values).label;
+      const priorModel = totals.models[modelName] || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0 };
+      for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) priorModel[key] += values[key];
+      priorModel.usd = addUsd(priorModel.usd, usd);
+      totals.models[modelName] = priorModel;
+      totals.usd = addUsd(totals.usd, usd);
+      if (priceLabel) totals.priceLabel = totals.priceLabel && totals.priceLabel !== priceLabel ? totals.priceLabel + '; ' + priceLabel : priceLabel;
     }
-    result[id] = measured && !incomplete ? { input: totals.input, output: totals.output, cacheRead: totals.cacheRead, cacheWrite: totals.cacheWrite, total: totals.input + totals.output + totals.cacheRead + totals.cacheWrite } : UNKNOWN;
+    result[id] = measured && !incomplete ? totals : UNKNOWN;
   }
   return result;
 }
 function summedCost(values) {
-  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, models: {} };
   let measured = false;
   for (const value of values) {
     if (!value || value === UNKNOWN) continue;
     measured = true;
-    for (const key of Object.keys(total)) total[key] += Number(value[key]) || 0;
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) total[key] += Number(value[key]) || 0;
+    total.usd = addUsd(total.usd, value.usd);
+    if (value.priceLabel) total.priceLabel = total.priceLabel && total.priceLabel !== value.priceLabel ? total.priceLabel + '; ' + value.priceLabel : value.priceLabel;
   }
-  return measured ? { ...total, total: Object.values(total).reduce((sum, value) => sum + value, 0) } : null;
-}
-function familyCost(families) {
-  if (!families || typeof families !== 'object') return null;
-  return summedCost(Object.values(families).map(value => value && ({
-    input: value.input, output: value.output, cacheRead: value.cache_read, cacheWrite: value.cache_write,
-  })));
+  return measured ? total : null;
 }
 function livePhaseCosts(worktree, timeline) {
   const buckets = new Map();
   const unknown = new Set();
-  const run = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const run = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, models: {} };
   let runMeasured = false;
-  const add = (phase, usageValue) => {
+  const add = (phase, usageValue, model) => {
     const id = phaseOf(phase);
     const values = {
       input: tokenValue(usageValue, 'input', 'input_tokens', 'tokens_input'),
@@ -683,11 +750,23 @@ function livePhaseCosts(worktree, timeline) {
     if (values.input === null || values.output === null) { if (id !== UNKNOWN) unknown.add(id); return; }
     // Live SDK receipts omit zero-valued cache fields on some versions; only absent cache fields are measured zero.
     for (const key of ['cacheRead', 'cacheWrite']) if (values[key] === null) values[key] = 0;
-    for (const key of Object.keys(run)) run[key] += values[key];
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) run[key] += values[key];
+    const info = priceInfo(model, values); const usd = info.usd;
+    run.usd = addUsd(run.usd, usd); run.priceLabel = info.label;
     runMeasured = true;
+    const modelName = model || UNKNOWN;
+    const runModel = run.models[modelName] || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0 };
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) runModel[key] += values[key];
+    runModel.usd = addUsd(runModel.usd, usd);
+    run.models[modelName] = runModel;
     if (id === UNKNOWN) return;
-    const target = buckets.get(id) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-    for (const key of Object.keys(target)) target[key] += values[key];
+    const target = buckets.get(id) || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0, models: {} };
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) target[key] += values[key];
+    target.usd = addUsd(target.usd, usd); target.priceLabel = info.label;
+    const targetModel = target.models[modelName] || { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, usd: 0 };
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) targetModel[key] += values[key];
+    targetModel.usd = addUsd(targetModel.usd, usd);
+    target.models[modelName] = targetModel;
     buckets.set(id, target);
   };
   const usageFile = lanePath(worktree, 'usage.json');
@@ -699,18 +778,18 @@ function livePhaseCosts(worktree, timeline) {
   for (const message of liveUsage?.messages || liveUsage?.turns || []) {
     const timestamp = Date.parse(message.arrived_at || message.ended_at || message.timestamp || '');
     const phase = timeline?.phases?.find(item => timestamp >= item.entered_at && timestamp <= (item.exited_at ?? Infinity));
-    add(phase?.phase, message);
+    add(phase?.phase, message, message.model);
   }
   for (const lane of timeline?.lanes || []) {
     const file = typeof lane?.usage_file === 'string' ? lanePath(worktree, lane.usage_file) : null;
     const laneUsage = file ? json(file) : null;
     if (!laneUsage) { unknown.add(phaseOf(lane?.phase)); continue; }
-    add(lane.phase, laneUsage.totals || laneUsage);
+    add(lane.phase, laneUsage.totals || laneUsage, laneUsage.model || lane.model);
   }
   const costs = {};
-  for (const [phase, totals] of buckets) costs[phase] = unknown.has(phase) ? UNKNOWN : { ...totals, total: Object.values(totals).reduce((sum, value) => sum + value, 0) };
+  for (const [phase, totals] of buckets) costs[phase] = unknown.has(phase) ? UNKNOWN : totals;
   for (const phase of unknown) if (phase !== UNKNOWN && !Object.hasOwn(costs, phase)) costs[phase] = UNKNOWN;
-  return { costs, total: runMeasured ? { ...run, total: Object.values(run).reduce((sum, value) => sum + value, 0) } : null, source: liveUsage || timeline?.lanes?.length ? usageFile : null };
+  return { costs, total: runMeasured ? run : null, source: liveUsage || timeline?.lanes?.length ? usageFile : null };
 }
 function phaseCosts(worktree, timeline) {
   const summary = json(lanePath(worktree, 'summary.json'));
@@ -719,7 +798,7 @@ function phaseCosts(worktree, timeline) {
   if (typeof archivePath === 'string' && path.isAbsolute(archivePath) && under(reportsRoot, archivePath)) {
     const archiveCost = path.join(archivePath, 'cost.json');
     const cost = json(archiveCost);
-    if (cost) return { costs: phaseCostRows(cost.phases), total: familyCost(cost.families), source: archiveCost, kind: 'archive cost.json' };
+    if (cost) return { costs: phaseCostRows(cost.phases), total: cost.totals?.usd !== undefined ? { usd: cost.totals.usd, priceLabel: Array.isArray(cost.price_labels) ? cost.price_labels.join('; ') : undefined } : summedCost(Object.values(phaseCostRows(cost.phases))), source: archiveCost, kind: 'archive cost.json' };
     if (slice(archiveCost, JSON_BYTES, false, true) !== null) return { costs: Object.fromEntries(PHASES.map(phase => [phase, UNKNOWN])), source: archiveCost, kind: 'malformed archive cost.json' };
   }
   const live = livePhaseCosts(worktree, timeline);
@@ -951,12 +1030,13 @@ function externalRole(worktree, title, launchedBrief = null) {
 const implementationRootsByCard = new Map();
 for (const worktree of scannedWorktrees) {
   const brief = head(lanePath(worktree, 'brief.md'));
-  const id = briefCard(brief);
-  const title = cleanCardTitle(externalTitle(brief), id);
+  const cardReceipt = laneCardReceipt(worktree);
+  const id = cardReceipt?.id || briefCard(brief);
+  const title = cardReceipt?.title || cleanCardTitle(externalTitle(brief), id);
   if (!id || externalRole(worktree, title).label !== 'Lane') continue;
   const receipt = head(lanePath(worktree, 'card.md'));
   const receiptId = cardMarkdownId(receipt) || cardIds(markdownTitle(receipt))[0] || null;
-  const receiptTitle = receiptId === id ? cleanCardTitle(markdownTitle(receipt), id) : null;
+  const receiptTitle = cardReceipt?.title || (receiptId === id ? cleanCardTitle(markdownTitle(receipt), id) : null);
   const step = Number(String(markdownTitle(brief) || '').match(/\bstep\s+(\d+)\b/i)?.[1]);
   const roots = implementationRootsByCard.get(id) || [];
   roots.push({ worktree, step: Number.isSafeInteger(step) ? step : null, receiptTitle });
@@ -966,9 +1046,10 @@ for (const worktree of scannedWorktrees) {
   const runnerLogFile = sdkLogFile(worktree);
   const runnerLog = tail(runnerLogFile);
   const timeline = lifecycleTimeline(worktree);
-  if (runnerLog !== null || timeline) {
+  const admission = json(lanePath(worktree, 'admission.json'));
+  if (runnerLog !== null || timeline || ['queued', 'active'].includes(admission?.state)) {
     const route = json(lanePath(worktree, 'route.json'));
-    const routeCardId = route?.cardId;
+    const routeCardId = route?.cardId || admission?.cardId;
     const id = /^\d{19}$/.test(String(routeCardId || ''))
       ? String(routeCardId)
       : cardMarkdownId(head(lanePath(worktree, 'card.md')));
@@ -990,7 +1071,8 @@ for (const worktree of scannedWorktrees) {
         runnerLogTruncated: (info(runnerLogFile)?.size || 0) > LOG_TAIL_BYTES,
         outcome: 'running',
         route: /^(?:LITE|FULL)$/.test(String(route?.route)) ? route.route : null,
-        title: markdownTitle(head(lanePath(worktree, 'card.md'))),
+        title: laneCardReceipt(worktree, id)?.title || markdownTitle(head(lanePath(worktree, 'card.md'))),
+        queue: admission?.state === 'queued' ? { position: admission.position, waiting: admission.waiting, load: admission.load } : null,
       });
       continue;
     }
@@ -998,12 +1080,13 @@ for (const worktree of scannedWorktrees) {
   const runLog = tail(lanePath(worktree, 'run.log'));
   const brief = head(lanePath(worktree, 'brief.md'));
   if (runLog === null || brief === null) continue;
-  const strictId = briefCard(brief);
-  const provisionalTitle = cleanCardTitle(externalTitle(brief), strictId) || path.basename(worktree);
+  const cardReceipt = laneCardReceipt(worktree);
+  const strictId = cardReceipt?.id || briefCard(brief);
+  const provisionalTitle = cardReceipt?.title || cleanCardTitle(externalTitle(brief), strictId) || path.basename(worktree);
   const role = externalRole(worktree, provisionalTitle, processByWorktree.get(worktree)?.brief);
   const label = role.label;
   const id = strictId || (/^(?:Review lane|Refutation)/.test(label) ? cardIds(brief)[0] || null : null);
-  const title = cleanCardTitle(externalTitle(brief), id) || path.basename(worktree);
+  const title = cardReceipt?.title || cleanCardTitle(externalTitle(brief), id) || path.basename(worktree);
   const exited = /^EXIT=\d+$/.test(runLog.split(/\r?\n/).filter(Boolean).at(-1) || '');
   const terminalReport = /^(?:Review lane|Refutation)/.test(label)
     ? ['report.md', label.startsWith('Review lane') ? 'review-report.md' : 'refutation-report.md'].map(file => lanePath(worktree, file)).find(file => info(file)?.isFile()) || null
@@ -1053,7 +1136,7 @@ for (const id of ids) {
   const lastWrite = worktree ? freshestWrite(worktree) : null;
   const processState = worktree ? pidState(worktree) : UNKNOWN;
   if (processState !== 'alive' && !freshTime(lastWrite) && !live && !record) continue;
-  const activity = waiting || (lastWrite === null ? live ? 'updated ' + age + ' min ago' : record ? 'lifecycle updated recently' : UNKNOWN : 'last write ' + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago');
+  const activity = waiting || (lastWrite === null ? live ? 'updated ' + age + ' min ago' : record ? 'lifecycle updated recently' : UNKNOWN : 'last write ' + (approximateWalkRoots.has(worktree) ? 'at least ' : '') + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago');
   const watchdog = !live || age === null ? UNKNOWN : age > ACTIVE_WINDOW_MIN ? 'alert' : 'silent';
   const wave = waveFor(lane, id);
   const title = cleanCardTitle(lane?.title || (wave ? markdownTitle(head(wave.cardFile)) : null), id) || id;
@@ -1080,6 +1163,7 @@ for (const id of ids) {
     sdkLifecycle: true,
     label: 'SDK pilot',
     title,
+    queue: lane?.queue || null,
     waveId: wave?.waveId || null,
     route: lane?.route || null,
     phase: phaseOf(lane?.phase || record?.phase),
@@ -1101,6 +1185,7 @@ for (const id of ids) {
     runCost: phaseCostResult.total,
     phaseCostSource: phaseCostResult.source || UNKNOWN,
     phaseCostSourceKind: phaseCostResult.kind || UNKNOWN,
+    costApproximate: approximateWalkRoots.has(worktree),
     watchdog,
     inspectors: inspectors(worktree, lane ? frozenRoute : null, lane ? tail(sdkLogFile(worktree)) : null),
     lanes: [nestedLane(lane, id)].filter(Boolean),
@@ -1139,10 +1224,11 @@ for (const processRecord of processes.values()) {
     if (!worktree || !info(lanePath(worktree))?.isDirectory()) continue;
     const launchedBrief = processByWorktree.get(worktree)?.brief || null;
     const brief = head(lanePath(worktree, 'brief.md')) || (launchedBrief ? head(launchedBrief) : '') || '';
-    const id = cardIds(brief)[0] || null;
+    const cardReceipt = laneCardReceipt(worktree);
+    const id = cardReceipt?.id || cardIds(brief)[0] || null;
     const isFix = Boolean(launchedBrief && /^fix-brief[^/]*\.md$/i.test(path.basename(launchedBrief)));
     const detail = isFix ? markdownTitle(brief)?.match(/\b(?:review\s+round|round|step)\s+\d+(?:\s+round\s+\d+)?\b/i)?.[0] || null : null;
-    const heading = isFix ? detail : cleanCardTitle(externalTitle(brief), id) || path.basename(worktree);
+    const heading = isFix ? detail : cardReceipt?.title || cleanCardTitle(externalTitle(brief), id) || path.basename(worktree);
     const classified = isFix ? { label: 'Fix lane', inferred: false } : externalRole(worktree, heading, launchedBrief);
     const label = classified.label;
     const modelAt = args.findIndex(arg => arg === '--model');

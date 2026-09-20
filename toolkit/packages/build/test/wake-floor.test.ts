@@ -270,7 +270,8 @@ describe('wt-wake-floor', () => {
 
     const result = runOnce(state.projectDir, envFor(state.stateHome, { PATH: emptyPath }))
 
-    expect(result.stdout).toContain('In-flight check inconclusive (git worktree list unavailable)')
+    const unsupported = process.platform === 'linux' ? '' : '; background task inspection requires Linux procfs'
+    expect(result.stdout).toBe(`${FLOOR_LINE} In-flight check inconclusive (git worktree list unavailable${unsupported}); firing because I cannot tell whether work armed by this session is running.\n`)
   })
 
   it('does not mistake recently completed task and transcript files for in-flight work', () => {
@@ -293,7 +294,7 @@ describe('wt-wake-floor', () => {
     const hooks = join(state.root, 'hooks.mjs')
     const preload = join(state.root, 'preload.mjs')
     const detail = `first\r\n${'x'.repeat(250)}`
-    writeFileSync(stub, `export function sessionLaneInFlight() { throw new Error(${JSON.stringify(detail)}) }\n`)
+    writeFileSync(stub, `export function sessionBackgroundTaskInFlight() {}\nexport function sessionLaneInFlight() { throw new Error(${JSON.stringify(detail)}) }\n`)
     writeFileSync(hooks, `import { pathToFileURL } from 'node:url'\nexport async function resolve(specifier, context, nextResolve) {\n  if (specifier.endsWith('/wake-floor-in-flight.mjs')) return { url: pathToFileURL(${JSON.stringify(stub)}).href, shortCircuit: true }\n  return nextResolve(specifier, context)\n}\n`)
     writeFileSync(preload, `import { register } from 'node:module'\nregister(${JSON.stringify(pathToFileURL(hooks).href)})\n`)
 
@@ -301,7 +302,7 @@ describe('wt-wake-floor', () => {
     const normalized = `in-flight check threw: ${detail}`.replace(/[\r\n]+/g, ' ').slice(0, 200)
 
     expect(result.status).toBe(0)
-    expect(result.stdout).toBe(`${FLOOR_LINE} In-flight check inconclusive (${normalized}); firing because I cannot tell whether a lane of this session is running.\n`)
+    expect(result.stdout).toBe(`${FLOOR_LINE} In-flight check inconclusive (${normalized}); firing because I cannot tell whether work armed by this session is running.\n`)
     expect(result.stdout.trim().split('\n')).toHaveLength(1)
   })
 

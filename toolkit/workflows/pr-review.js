@@ -2298,6 +2298,10 @@ ${renderClaim(claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
+      sources: ["plugin/bin/wt-config.mjs", "plugin/bin/wt-config-context-hook.mjs", "plugin/bin/lib/plugin-options.mjs"],
+      docs: ["README.md"]
+    },
+    {
       sources: [
         "plugin/bin/wt-artifact-server.mjs",
         "plugin/bin/wt-artifact-server-ensure.mjs",

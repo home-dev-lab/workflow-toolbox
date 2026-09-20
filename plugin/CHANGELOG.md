@@ -5,6 +5,26 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Add default-off IP-address and email masking options to `wt-secret-guard` for prompts and tool results, and document that Claude Code bypasses user-tier plugins for first-message `prompt.context` blocks
+- Queue SDK pilot launches in machine-wide FIFO order until both the configurable active-run cap and host load gate allow admission, with durable queue receipts in What is running and explicit cap-only fallbacks when load is unavailable
+- Redesign the EXPERIMENTAL What is running pane around a compact card spine, owner-attributed errors, expandable billed token classes per model, and width-aware summaries
+- Add a configurable 30-second running-work collector ceiling with adaptive single-flight polling and a bounded per-user failure journal
+- Add source-backed per-model USD run costs to receipts, the cost index, and the live pane
+- Resolve run prices by exact provider and model from OpenCode's fresh models.dev cache, with context tiers, read-only plugin-data overrides, dated fallback reasons, subscription and API-equivalent labels, and stale-source warnings
+- Show effective plugin configuration, configurable phase models, and orphaned settings
+
+### Fixed
+- Capture lifecycle launcher output through private regular files so an immediately exiting launcher cannot lose its `pid=` receipt to platform-specific pipe flushing
+- macOS: refresh process-table evidence when lane supervision switches PIDs, preventing a just-finished phase cached during launcher inspection from blocking the next phase
+- Require SDK pilots to ground external claims before planning, persist fetched content or its digest with per-claim verdicts, and refuse discovery records that cite unfetched sources
+- Name external lanes from their card file, or the first useful brief heading, instead of the shared standing preamble
+- Keep the last good What is running snapshot visible through collector failures, show its age and a plain-language retry notice, and clear the notice after recovery
+- Ignore coverage temporary directories during running-work scans and keep walk-budget uncertainty on the affected row instead of marking all discovery partial
+- The wake floor now stays silent for a Linux background task only while a stable same-user process from the current session holds its task output open for writing. Completed outputs, readers, plugin monitors, foreign sessions, PID reuse, and inaccessible unrelated descriptors cannot suppress the floor.
+- On macOS and Windows, unsupported Linux background-task inspection no longer degrades a conclusive wake-floor lane verdict to unknown; it is reported only when lane evidence is itself inconclusive.
+- Windows: the What is running collector resolves its shipped model-price table as a native file path, preserving fallback USD prices when no machine-local price catalogue is available.
+
 ## [0.184.0] - 2026-09-19
 
 ### Fixed

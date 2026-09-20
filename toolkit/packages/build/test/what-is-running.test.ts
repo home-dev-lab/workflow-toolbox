@@ -1,12 +1,13 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
 import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error Function-hook modules ship as host-loaded JavaScript.
-import { COLLECTOR_TIMEOUT_MS, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
+import { COLLECTOR_TIMEOUT_MS, fileUrlPath, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
@@ -35,6 +36,7 @@ function collector(root: string, extra: Record<string, unknown> = {}) {
   mkdirSync(paths.livenessDir, { recursive: true })
   mkdirSync(join(paths.suiteRoot, 'worktrees'), { recursive: true })
   mkdirSync(paths.procRoot, { recursive: true })
+  paths.suiteRoot = realpathSync(paths.suiteRoot)
   return paths
 }
 
@@ -82,7 +84,7 @@ async function renderedText(snapshot: unknown) {
   return JSON.stringify(await renderedTree(snapshot), (_key, value) => typeof value === 'function' ? '[function]' : value)
 }
 
-async function paneHarness(initialSnapshot: unknown, options: Record<string, unknown> = {}, slowComponents = false, executeJournal = false) {
+async function paneHarness(initialSnapshot: unknown, options: Record<string, unknown> = {}, slowComponents = false, executeJournal = false, collectorRun?: (init?: Record<string, unknown>) => Promise<{ exitCode: number; stdout: string; stderr: string }>) {
   type Hook = (...args: unknown[]) => unknown
   const hooks: Array<{ event: string; matcher?: Record<string, string>; hook: Hook }> = []
   const timers: Array<() => Promise<void>> = []
@@ -108,6 +110,7 @@ async function paneHarness(initialSnapshot: unknown, options: Record<string, unk
         if (executeJournal) execFileSync(argv[0] === 'node' ? process.execPath : argv[0]!, argv.slice(1))
         return { exitCode: 0, stdout: '', stderr: '' }
       }
+      if (collectorRun) return collectorRun(init)
       return { exitCode: 0, stdout: JSON.stringify(snapshot), stderr: '' }
     } },
     command: { register: async () => undefined },
@@ -150,6 +153,27 @@ function textChildren(tree: unknown): string[] {
 }
 
 describe('What is running collector seam', () => {
+  it('resolves the shipped price table URL to a native Windows drive path', () => {
+    expect(fileUrlPath(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json'), 'win32'))
+      .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
+  })
+
+  it('resolves the price table URL inside a hooks sandbox that has no process global', async () => {
+    // The hooks module runs in an environment without Node globals: a `process` reference at module
+    // scope makes every collection fail with "process is not defined" on the real host.
+    const source = readFileSync(new URL('../../../../plugin/hooks/hooks.js', import.meta.url), 'utf8')
+    const sandbox = { URL, decodeURIComponent, console, exports: {} as Record<string, unknown> }
+    const body = source
+      .replace(/^export (function|const|class)/gm, '$1')
+      .match(/function fileUrlPath[\s\S]*?\n}/)?.[0]
+    expect(body).toBeTruthy()
+    const fn = vm.runInNewContext(`${body}; fileUrlPath`, sandbox) as typeof fileUrlPath
+    expect(fn(new URL('file:///home/doublefx/plugin/pricing/model-prices.json')))
+      .toBe('/home/doublefx/plugin/pricing/model-prices.json')
+    expect(fn(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json')))
+      .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
+  })
+
   it('reports a live suite-lock holder from the fixture lock directory', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-suite-lock-live-'))
     try {
@@ -255,14 +279,16 @@ describe('What is running collector seam', () => {
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
-      expect(row.phaseCosts.discovery).toEqual({ input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, total: 2353491 })
+      expect(row.phaseCosts.discovery).toMatchObject({ input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, usd: 1.23 })
       expect(row.phaseCosts.plan).toBe('unknown')
       expect(row.phaseCostSource).toBe(join(archive, 'cost.json'))
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
   it('falls back to the bounded live usage file and attributes messages by lifecycle timestamp', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-wir-live-cost-'))
+    const realRoot = mkdtempSync(join(tmpdir(), 'wt-wir-live-cost-'))
+    const root = `${realRoot}-alias`
+    symlinkSync(realRoot, root, 'dir')
     try {
       const paths = collector(root)
       const cardId = '1866347363803596066'
@@ -274,18 +300,22 @@ describe('What is running collector seam', () => {
       writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=discovery\n')
       writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [{ phase: 'discovery', round: null, entered_at: Date.parse('2026-09-12T12:01:00Z'), exited_at: null }], lanes: [] }))
       writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [
-        { arrived_at: '2026-09-12T12:02:00.000Z', input: 10, output: 2, cache_read: 30, cache_creation: 4 },
-        { arrived_at: '2026-09-12T12:00:00.000Z', input: 1, output: 1, cache_read: 1, cache_creation: 1 },
+        { arrived_at: '2026-09-12T12:02:00.000Z', model: 'claude-opus-5', input: 10, output: 2, cache_read: 30, cache_creation: 4 },
+        { arrived_at: '2026-09-12T12:00:00.000Z', model: 'claude-opus-5', input: 1, output: 1, cache_read: 1, cache_creation: 1 },
       ] }))
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
-      expect(row.phaseCosts.discovery).toEqual({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 })
-      expect(row.runCost).toEqual({ input: 11, output: 3, cacheRead: 31, cacheWrite: 5, total: 50 })
+      expect(row.phaseCosts.discovery).toMatchObject({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, usd: 0.00014 })
+      expect(row.phaseCosts.discovery.models['claude-opus-5']).toMatchObject({ input: 10, output: 2, cacheRead: 30, cacheWrite: 4, usd: 0.00014 })
+      expect(row.runCost).toMatchObject({ input: 11, output: 3, cacheRead: 31, cacheWrite: 5, usd: 0.00017675 })
       expect(row.phaseElapsed.discovery).toBe('29 min')
       expect(row.phaseCostSourceKind).toBe('live usage file')
       expect(row.phaseCostSource).toBe(join(lane, 'usage.json'))
-    } finally { rmSync(root, { recursive: true, force: true }) }
+    } finally {
+      unlinkSync(root)
+      rmSync(realRoot, { recursive: true, force: true })
+    }
   })
 
   it('keeps live phase cost unknown when required input usage is absent', async () => {
@@ -308,17 +338,130 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
+  it('ignores a 5000-file child coverage directory and keeps ordinary walk exhaustion row-local', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-child-coverage-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1867480027738670232'
+      const lane = join(paths.suiteRoot, 'worktrees', 'coverage-load', '.lane')
+      const coverage = join(lane, 'child-coverage-fixture')
+      mkdirSync(coverage, { recursive: true })
+      writeFileSync(join(lane, 'brief.md'), `# Brief: card ${cardId}: Coverage load\n`)
+      writeFileSync(join(lane, 'run.log'), 'working\n')
+      for (let index = 0; index < 5000; index += 1) writeFileSync(join(coverage, `${index}.json`), '{}')
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.discovery).toBe('available')
+      expect(snapshot.cappedScans).toEqual([])
+      expect(snapshot.rows.find((row: { cardId?: string }) => row.cardId === cardId)).toBeTruthy()
+
+      const ordinary = join(paths.suiteRoot, 'worktrees', 'coverage-load', 'ordinary-volume')
+      mkdirSync(ordinary)
+      for (let index = 0; index < 1001; index += 1) writeFileSync(join(ordinary, `${index}.txt`), 'evidence')
+      const approximate = await readSnapshot({ process: processCapability() }, paths)
+      const row = approximate.rows.find((item: { cardId?: string }) => item.cardId === cardId)
+      expect(approximate.discovery).toBe('available')
+      expect(approximate.cappedScans).toEqual([])
+      expect(row.activity).toMatch(/^last write at least /)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('uses the card file title when the lane brief starts with the standard preamble', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-preamble-title-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1867758992768370051'
+      const lane = join(paths.suiteRoot, 'worktrees', 'preamble-title', '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'brief.md'), [
+        '# Standing preamble for every external-lane brief (paste at the top of `.lane/brief.md`)',
+        '',
+        '# Implementation brief',
+        '',
+        `Deliver card ${cardId}.`,
+      ].join('\n'))
+      writeFileSync(join(lane, `card-${cardId}.md`), '# What is running: show the card title\n')
+      writeFileSync(join(lane, 'run.log'), 'working\n')
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { cardId?: string }) => item.cardId === cardId)
+      expect(row?.title).toBe('What is running: show the card title')
+      expect(row?.title).not.toContain('Standing preamble')
+
+      rmSync(join(lane, `card-${cardId}.md`))
+      writeFileSync(join(lane, 'brief.md'), [
+        '# Standing preamble for every external-lane brief (paste at the top of `.lane/brief.md`)',
+        '',
+        `# Brief: card ${cardId}: First useful heading`,
+      ].join('\n'))
+      const fallback = await readSnapshot({ process: processCapability() }, paths)
+      expect(fallback.rows.find((item: { cardId?: string }) => item.cardId === cardId)?.title).toBe('First useful heading')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('renders the SDK admission receipt as a queued position and wait reason', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-admission-queue-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1867509524609369334'
+      const lane = join(paths.suiteRoot, 'worktrees', 'queued-pilot', '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, `card-${cardId}.md`), '# Queued SDK pilot\n')
+      writeFileSync(join(lane, 'admission.json'), JSON.stringify({
+        state: 'queued', cardId, position: 2, waiting: { kind: 'load', load: 14.5, cores: 12 },
+      }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.rows.find((row: { id: string }) => row.id === cardId)?.queue).toMatchObject({ position: 2, waiting: { kind: 'load' } })
+      const scoped = { ...snapshot, sessions: undefined, rows: snapshot.rows.map((row: Record<string, unknown>) => ({ ...row, project: 'wt-suite' })) }
+      expect(await renderedText(scoped)).toContain('queued · position 2 · waiting for load 14.5 / 12')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('shows live run total and elapsed time while a running lane cost is pending', async () => {
     const pilot = {
       id: 'pilot-live', kind: 'pilot', label: 'SDK pilot', project: 'wt-suite', sdkLifecycle: true, phase: 'tdd',
-      phaseStates: { discovery: 'done', tdd: 'running' }, phaseCosts: { discovery: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 }, tdd: 'unknown' },
-      phaseElapsed: { tdd: '29 min' }, runCost: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, total: 46 },
+      phaseStates: { discovery: 'done', tdd: 'running' }, phaseCosts: { discovery: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, usd: 1.23 }, tdd: 'unknown' },
+      phaseElapsed: { tdd: '29 min' }, runCost: { input: 10, output: 2, cacheRead: 30, cacheWrite: 4, usd: 1.23 },
     }
     const text = await renderedText({
       discovery: 'available', rows: [pilot], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
     })
-    expect(text).toContain('run total so far: 46 tokens')
-    expect(text).toContain('cost so far: unknown · elapsed 29 min · lane usage arrives at lane end')
+    expect(text).toContain('run total so far: $1.23')
+    expect(text).toContain('cost: waiting for the lane to finish · elapsed 29 min')
+    const unknownPriceText = await renderedText({
+      discovery: 'available', rows: [{ ...pilot, phaseCosts: { discovery: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, usd: 'price unknown' } }, runCost: { usd: 'price unknown' } }],
+      services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] },
+    })
+    expect(unknownPriceText).toContain('run total so far: price unknown')
+  })
+
+  it('renders layout A with one card title, a stage spine, billed classes per model, and owner-attributed errors', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const pilot = {
+      id: 'pilot-layout', kind: 'pilot', label: 'SDK pilot', sdkLifecycle: true, phase: 'tdd', outcome: 'error: typecheck gate failed', route: 'LITE', elapsed: '18 min',
+      phaseStates: { discovery: 'done', plan: 'skipped', critic: 'skipped', tdd: 'running', verify: 'not started', review: 'skipped', refutation: 'skipped', harden: 'skipped', report: 'not started' },
+      phaseCosts: { discovery: { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23, models: { 'anthropic/claude-opus-5': { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23 } } }, tdd: 'unknown' },
+      runCost: { usd: 1.23, models: { 'anthropic/claude-opus-5': { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23 } } },
+      phaseElapsed: { tdd: '17 min' }, inspectors: { discovery: { summary: 'Route selected.' } }, gates: { test: 'pass', typecheck: 'fail (1)' }, review: {}, lanes: [],
+    }
+    const snapshot = { discovery: 'available', collectedAt: new Date().toISOString(), rows: [], sessions: [{ id: 'session-layout', project: 'wt-suite', sessionId: 'd25e8b32-full', cards: [{ id: '1867464091673560164', title: 'Orphan watch: recognise staging lanes and test fixtures before warning', actors: [pilot] }], actors: [] }], services: { count: 0, items: [] }, helpers: { count: 0, items: [] } }
+    const render = (bodyColumns: number, expanded = new Set<string>()) => renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') }, snapshot, expanded, new Map(), 'wt-suite', false,
+      { close: () => undefined, switchScope: () => undefined, toggle: () => undefined, select: () => undefined, closeView: () => undefined, bodyColumns },
+    )
+    for (const width of [40, 70, 80, 160]) {
+      const collapsed = allTreeStrings(render(width)).map(({ value }) => value).join(' ')
+      expect(collapsed.match(/Orphan watch:/g)).toHaveLength(1)
+      expect(collapsed).toMatch(/SDK pilot.*drives the stages below/)
+      expect(collapsed).toMatch(/TDD ✗.*ERROR/)
+      expect(collapsed).toContain('next: Verify, Report · skipped: 5')
+      expect(collapsed).toContain('for the pilot runner')
+      expect(collapsed).not.toMatch(/(?:^|[ ·])unknown(?:$|[ ·])/i)
+    }
+    const expanded = allTreeStrings(render(80, new Set(['pilot-layout']))).map(({ value }) => value).join(' ')
+    expect(expanded).toContain('anthropic/claude-opus-5 · input 12 · cache write 57 558 · cache read 206 064 · output 46 · $1.23')
+    expect(expanded).toContain('owner: pilot runner')
   })
 
   it('accumulates repeated archived lifecycle rounds for one normalized phase', async () => {
@@ -341,7 +484,7 @@ describe('What is running collector seam', () => {
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
-      expect(row.phaseCosts.critic).toEqual({ input: 120, output: 5, cacheRead: 7, cacheWrite: 9, total: 141 })
+      expect(row.phaseCosts.critic).toMatchObject({ input: 120, output: 5, cacheRead: 7, cacheWrite: 9, usd: 'price unknown' })
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
@@ -474,11 +617,75 @@ describe('What is running collector seam', () => {
   }
 
   it('bounds the real collector call with its timeout through the session wiring', async () => {
-    const harness = await paneHarness(idleSnapshot)
+    const harness = await paneHarness(idleSnapshot, { collectorTimeoutMs: 30_000 })
     await harness.render()
 
     expect(harness.collectorInits().length).toBeGreaterThan(0)
-    expect(harness.collectorInits().every((init) => init?.timeoutMs === COLLECTOR_TIMEOUT_MS)).toBe(true)
+    expect(COLLECTOR_TIMEOUT_MS).toBe(30_000)
+    expect(harness.collectorInits().every((init) => init?.timeoutMs === 30_000)).toBe(true)
+  })
+
+  it('keeps the last snapshot through a timeout, journals the exact cause, and clears the notice after recovery', async () => {
+    const good = { discovery: 'available', collectedAt: new Date(Date.now() - 40_000).toISOString(), rows: [{ id: 'still-visible', kind: 'external', project: 'wt-suite', label: 'Lane', title: 'Visible work', outcome: 'running' }], services: { count: 0, items: [] }, helpers: { count: 0, oldest: 'none', items: [] } }
+    const recovered = { ...good, collectedAt: new Date().toISOString(), rows: [{ ...good.rows[0], title: 'Recovered work' }] }
+    let call = 0
+    const harness = await paneHarness(good, { collectorTimeoutMs: 30_000 }, false, false, async () => {
+      call += 1
+      if (call === 1) return { exitCode: 0, stdout: JSON.stringify(good), stderr: '' }
+      if (call === 2) throw Object.assign(new Error('$.process.run(node) aborted: still running after 30000ms'), { code: 'ETIMEDOUT' })
+      return { exitCode: 0, stdout: JSON.stringify(recovered), stderr: '' }
+    })
+
+    await harness.tick()
+    let text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain('Visible work')
+    expect(text).toContain('updated 40 s ago · last refresh failed, retrying')
+    expect(text).toContain('workflow-toolbox plugin')
+    expect(text).not.toContain('$.process.run(node)')
+    expect(harness.journal.at(-1)).toMatchObject({ kind: 'collector-failure', pluginVersion: '0.184.0' })
+    expect(harness.journal.at(-1)?.detail).toContain('$.process.run(node) aborted: still running after 30000ms')
+
+    const details = findByKey(await harness.render(), 'detail-toggle:row:collector-failure')
+    ;(details!.onPress as () => void)()
+    text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain('$.process.run(node) aborted: still running after 30000ms')
+    expect(text).toContain('journal: ')
+    expect(text).toContain('what-is-running-errors.jsonl')
+
+    await harness.tick()
+    text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain('Recovered work')
+    expect(text).not.toContain('last refresh failed')
+  })
+
+  it('names the plugin on a first-load failure and hides technical detail until expanded', async () => {
+    const technical = 'collector failed (exit code 17; exact fixture failure)'
+    const harness = await paneHarness(idleSnapshot, {}, false, false, async () => ({ exitCode: 17, stdout: '', stderr: 'exact fixture failure' }))
+    let text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain('The workflow-toolbox plugin could not read the running work; it will retry.')
+    expect(text).not.toContain(technical)
+
+    const details = findByKey(await harness.render(), 'detail-toggle:row:collector-failure')
+    ;(details!.onPress as () => void)()
+    text = textChildren(await harness.render()).join('\n')
+    expect(text).toContain(technical)
+    expect(text).toContain('what-is-running-errors.jsonl')
+  })
+
+  it('never starts overlapping slow collections', async () => {
+    let calls = 0
+    let finishSlow: ((value: { exitCode: number; stdout: string; stderr: string }) => void) | undefined
+    const harness = await paneHarness(idleSnapshot, {}, false, false, async () => {
+      calls += 1
+      if (calls === 1) return { exitCode: 0, stdout: JSON.stringify(idleSnapshot), stderr: '' }
+      return new Promise((resolve) => { finishSlow = resolve })
+    })
+    const slow = harness.tick()
+    while (!finishSlow) await Promise.resolve()
+    await harness.tick()
+    expect(calls).toBe(2)
+    finishSlow({ exitCode: 0, stdout: JSON.stringify(idleSnapshot), stderr: '' })
+    await slow
   })
 
   it('[grey pane latch] one tick without a render does not shut an open pane', async () => {

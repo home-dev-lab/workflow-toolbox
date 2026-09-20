@@ -78,6 +78,13 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
   const file = basename(hookPath)
 
   switch (file) {
+    case 'wt-config-context-hook.mjs':
+      return {
+        hook_event_name: 'SessionStart',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+        agent_id: 'selftest-subagent',
+      }
     case 'wt-actionable-gate-hook.mjs':
       return {
         hook_event_name: 'Stop',

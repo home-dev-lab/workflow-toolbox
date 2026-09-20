@@ -730,7 +730,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     } else killIdentity(workerIdentity, 'SIGTERM')
   }, 60_000)
   it('journals a stalled episode again after it clears and recurs for the same runId', () => {
-    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 120')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); waitForFile(join(f.dir, 'opencode.pid'))
     const state = JSON.parse(readFileSync(status, 'utf8'))

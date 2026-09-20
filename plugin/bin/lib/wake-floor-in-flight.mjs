@@ -1,11 +1,24 @@
 import { spawnSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { classifyLane } from './lane-supervisor-core.mjs'
 
 const RECORD_NAME = /^\d+-\d+\.json$/
 const LIVE_STATUSES = new Set(['running', 'decision-needed', 'launching'])
 const INACTIVE_STATUSES = new Set(['gone', 'terminal', 'worker-gone-child-alive'])
+const TASK_OUTPUT_NAME = /^[A-Za-z0-9_-]+\.output$/
+const BACKGROUND_TASK_UNSUPPORTED = 'background task inspection requires Linux procfs'
+const MONITOR_SCRIPTS = [
+  'wt-arc-watch.mjs',
+  'wt-service-watch.mjs',
+  'wt-quota-watch.mjs',
+  'wt-autonomy-watch.mjs',
+  'wt-wake-floor.mjs',
+  'wt-cache-keepalive.mjs',
+  'wt-artifact-server-ensure.mjs',
+  'wt-lane-orphan-watch.mjs',
+]
 
 function missing(error) {
   return error?.code === 'ENOENT' || error?.code === 'ENOTDIR'
@@ -13,6 +26,147 @@ function missing(error) {
 
 function plainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function processStartTime(value) {
+  const close = value.lastIndexOf(')')
+  if (close < 0) return null
+  const fields = value.slice(close + 1).trim().split(/\s+/)
+  return /^\d+$/.test(fields[19] ?? '') ? fields[19] : null
+}
+
+function projectSlug(dir) {
+  return path.resolve(dir).replace(/[^A-Za-z0-9-]/g, '-')
+}
+
+function writableFd(value) {
+  const match = /^flags:\s*([0-7]+)$/m.exec(value)
+  if (!match) return null
+  const accessMode = Number.parseInt(match[1], 8) & 3
+  return accessMode === 1 || accessMode === 2
+}
+
+function pluginMonitorArgv(argv) {
+  return MONITOR_SCRIPTS.some((name) => argv.includes(`/${name}`) || argv.split('\0').some((argument) => path.basename(argument) === name))
+}
+
+export function sessionBackgroundTaskInFlight({
+  projectDir,
+  sessionId,
+  platform = process.platform,
+  tmpdirImpl = tmpdir,
+  getuidImpl = process.getuid,
+  readdirImpl = readdirSync,
+  readFileImpl = readFileSync,
+  readlinkImpl = readlinkSync,
+  statImpl = statSync,
+  maxProcesses = 10_000,
+  maxFds = 1_024,
+  maxTaskOutputs = 1_000,
+}) {
+  if (platform !== 'linux') return { status: 'unknown', reason: BACKGROUND_TASK_UNSUPPORTED }
+  if (typeof sessionId !== 'string' || sessionId === '') return { status: 'unknown', reason: 'session id unavailable' }
+  if (!/^[A-Za-z0-9._-]+$/.test(sessionId)) return { status: 'unknown', reason: 'session id invalid' }
+  const uid = getuidImpl?.()
+  if (!Number.isInteger(uid)) return { status: 'unknown', reason: 'user id unavailable' }
+  const tasksDir = path.join(tmpdirImpl(), `claude-${uid}`, projectSlug(projectDir), sessionId, 'tasks')
+  let taskEntries
+  try {
+    taskEntries = readdirImpl(tasksDir, { withFileTypes: true })
+  } catch (error) {
+    return missing(error) ? { status: 'none' } : { status: 'unknown', reason: 'task directory unreadable' }
+  }
+  const names = taskEntries.map((entry) => entry.name).filter((name) => TASK_OUTPUT_NAME.test(name))
+  if (names.length === 0) return { status: 'none' }
+  if (names.length > maxTaskOutputs) return { status: 'unknown', reason: `task output scan capped at ${maxTaskOutputs}` }
+  const outputs = new Set(names.map((name) => path.join(tasksDir, name)))
+  let processes
+  try {
+    processes = readdirImpl('/proc', { withFileTypes: true })
+      .map((entry) => entry.name)
+      .filter((name) => /^\d+$/.test(name))
+  } catch {
+    return { status: 'unknown', reason: 'process table unreadable' }
+  }
+  if (processes.length > maxProcesses) return { status: 'unknown', reason: `process scan capped at ${maxProcesses}` }
+  const unknowns = []
+  for (const pid of processes) {
+    const procDir = path.join('/proc', pid)
+    try {
+      if (statImpl(procDir).uid !== uid) continue
+    } catch (error) {
+      if (!missing(error)) unknowns.push('process identity unreadable')
+      continue
+    }
+    let before
+    let fds
+    try {
+      before = processStartTime(String(readFileImpl(path.join(procDir, 'stat'), 'utf8')))
+      fds = readdirImpl(path.join(procDir, 'fd'), { withFileTypes: true })
+    } catch {
+      continue
+    }
+    if (!before) continue
+    if (fds.length > maxFds) {
+      unknowns.push(`process fd scan capped at ${maxFds}`)
+      continue
+    }
+    let heldOutput = null
+    let heldFd = null
+    for (const fd of fds) {
+      let target
+      try {
+        target = readlinkImpl(path.join(procDir, 'fd', fd.name))
+      } catch {
+        // An unreadable unrelated descriptor is not evidence about a task output.
+        continue
+      }
+      if (outputs.has(target)) {
+        try {
+          const writable = writableFd(String(readFileImpl(path.join(procDir, 'fdinfo', fd.name), 'utf8')))
+          if (writable === null) unknowns.push('process fd mode unreadable')
+          if (writable) {
+            heldOutput = target
+            heldFd = fd.name
+            break
+          }
+        } catch (error) {
+          if (!missing(error)) unknowns.push('process fd unreadable')
+        }
+      }
+    }
+    if (!heldOutput) continue
+    try {
+      const environment = String(readFileImpl(path.join(procDir, 'environ'))).split('\0')
+      const argv = String(readFileImpl(path.join(procDir, 'cmdline')))
+      const after = processStartTime(String(readFileImpl(path.join(procDir, 'stat'), 'utf8')))
+      if (!after || after !== before) {
+        unknowns.push('background task process identity changed')
+        continue
+      }
+      if (!environment.includes(`CLAUDE_CODE_SESSION_ID=${sessionId}`)) continue
+      if (argv === '') {
+        unknowns.push('background task argv unreadable')
+        continue
+      }
+      if (pluginMonitorArgv(argv)) continue
+      const finalTarget = readlinkImpl(path.join(procDir, 'fd', heldFd))
+      const finalWritable = writableFd(String(readFileImpl(path.join(procDir, 'fdinfo', heldFd), 'utf8')))
+      if (finalTarget !== heldOutput || finalWritable !== true) {
+        unknowns.push('background task fd identity changed')
+        continue
+      }
+      const finalStart = processStartTime(String(readFileImpl(path.join(procDir, 'stat'), 'utf8')))
+      if (!finalStart || finalStart !== before) {
+        unknowns.push('background task process identity changed')
+        continue
+      }
+      return { status: 'in-flight', reason: `session background task ${path.basename(heldOutput, '.output')} held by pid ${pid}` }
+    } catch (error) {
+      if (!missing(error)) unknowns.push('background task attribution unreadable')
+    }
+  }
+  return unknowns.length ? { status: 'unknown', reason: unknowns[0] } : { status: 'none' }
 }
 
 function readRecord(file, readFileImpl) {
@@ -108,11 +262,21 @@ export function sessionLaneInFlight({
   readFileImpl = readFileSync,
   spawnSyncImpl = spawnSync,
   classify = classifyLane,
+  backgroundTaskProbe = sessionBackgroundTaskInFlight,
   maxWorktrees = 500,
   maxUmbrellaEntries = 200,
   maxRecords = 1000,
 }) {
   const unknowns = []
+  let backgroundTask
+  try {
+    backgroundTask = backgroundTaskProbe({ projectDir, sessionId })
+  } catch {
+    backgroundTask = { status: 'unknown', reason: 'background task inspection threw' }
+  }
+  if (backgroundTask?.status === 'in-flight') return backgroundTask
+  const backgroundTaskUnsupported = backgroundTask?.status === 'unknown' && backgroundTask.reason === BACKGROUND_TASK_UNSUPPORTED
+  if (backgroundTask?.status === 'unknown' && !backgroundTaskUnsupported) unknowns.push(backgroundTask.reason ?? 'background task inspection unknown')
   const git = gitWorktrees(projectDir, spawnSyncImpl)
   const umbrella = umbrellaWorktrees(projectDir, readdirImpl, maxUmbrellaEntries)
   if (git.reason) unknowns.push(git.reason)
@@ -153,5 +317,7 @@ export function sessionLaneInFlight({
       if (verdict.status === 'unknown') unknowns.push(verdict.reason)
     }
   }
-  return unknowns.length ? { status: 'unknown', reason: unknowns[0] } : { status: 'none', reason: 'no live owned lane' }
+  return unknowns.length
+    ? { status: 'unknown', reason: backgroundTaskUnsupported ? `${unknowns[0]}; ${BACKGROUND_TASK_UNSUPPORTED}` : unknowns[0] }
+    : { status: 'none', reason: 'no live owned lane' }
 }

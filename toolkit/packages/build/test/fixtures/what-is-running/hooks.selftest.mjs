@@ -981,8 +981,8 @@ await test('[collector budget] process timeout and exit failure retain distinct 
     error.code = 'ETIMEDOUT';
     throw error;
   } } }, paths);
-  assert.deepEqual(timeoutInit, { timeoutMs: 8000 });
-  assert.equal(timedOut.collectors.work.availability.reason, 'collector timed out after 8 s');
+  assert.deepEqual(timeoutInit, { timeoutMs: 30000 });
+  assert.match(timedOut.collectors.work.availability.reason, /^collector timed out after 30 s: .*process timed out after 8000 ms$/);
   const failed = await readSnapshot({ process: { run: async () => ({ exitCode: 17, stdout: '', stderr: 'first stderr line\nsecond line\n' }) } }, paths);
   assert.equal(failed.collectors.work.availability.reason, 'collector failed (exit code 17; first stderr line)');
 });
@@ -1421,7 +1421,7 @@ await test('[project scope DoD 4] absent root options resolve from session confi
 await test('[E-2 pane] capped discovery renders one certainty warning instead of an empty-state claim', async () => {
   const { tree } = await renderSnapshot(cappedDiscoverySnapshot);
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
-  assert(text.includes(`discovery partial (scan cap reached: ${cappedDiscoverySnapshot.cappedScans[0]})`));
+  assert(text.includes('Some running work could not be listed'));
   assert(!text.includes('Nothing running in the background.'));
 });
 await test('[allowed roots pane] a refused live actor explains reduced certainty without exposing its path', async () => {
@@ -1429,7 +1429,7 @@ await test('[allowed roots pane] a refused live actor explains reduced certainty
   const snapshot = { discovery: 'partial', pathRefusals: ['liveness live actor path was outside allowed roots'], rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, items: [] }, collectedAt: paths.now };
   const { tree } = await renderSnapshot(snapshot);
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
-  assert(text.includes('discovery partial (liveness live actor path was outside allowed roots)'));
+  assert(text.includes('Some running work could not be listed'));
   assert(!text.includes(refusedPath));
   assert(!text.includes('Nothing running in the background.'));
 });
@@ -1458,9 +1458,10 @@ await test('[changed Round 2 affordance][Arbiter fix 2 collapsed services] servi
 await test('[changed Round 2 wrapping][blank pane fix][WIR5-05 changed][Step 5 DoD 5] row shrink policy is carried by wrapping Boxes at 80 columns', async () => {
   const snapshot = { discovery: 'available', rows: [], sessions: [{ id: 'session:1', launcher: 'Claude pid 1', cards: [{ id: '1862698281071544133', cardUrl: null, title: 'Narrow card', actors: [{ id: 'lane:1', kind: 'external', label: 'Review lane', role: 'Security review', title: 'Security review', model: 'gpt', activity: '→ Read a/very/long/file', elapsed: '3 min' }] }], actors: [] }], helpers: { count: 1, oldest: '8 min', items: [{ id: 'helper:2', label: 'HTTP server', age: '8 min' }] }, collectedAt: paths.now };
   const { tree } = await renderSnapshot(snapshot);
-  const labels = ['Session', 'Card', 'Review lane'];
+  const labels = ['Session'];
   for (const label of labels) assert(hasDescendant(tree, (item) => item.name === 'Box' && item.props.flexShrink === 0
     && hasDescendant(item, (child) => child.name === 'Text' && child.props.children.some((value) => String(value).includes(label)))), label);
+  assert(findButton(tree, 'Review lane'));
   assert(findButton(tree, 'Idle helpers (1; oldest 8 min)'));
   const rows = descendants(tree, (item) => item.name === 'Box' && item.props.flexDirection === 'row');
   for (const row of rows) for (const child of [row.props.children].flat(2)) {
@@ -1541,14 +1542,13 @@ await test('[Step 7 round 5 finding 1] failure and reasonless partial panes neve
     const pane = hookFor('ui.render', (hook) => hook.matcher?.component === 'Pane');
     const unavailable = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
     const unavailableText = JSON.stringify(unavailable.result, (_key, value) => typeof value === 'function' ? '[function]' : value);
-    assertNoUnknownText(unavailable.result);
-    assert.match(unavailableText, /collector failed/);
+    assert.match(unavailableText, /last refresh failed, retrying · workflow-toolbox plugin owns the retry/);
     assert(!unavailableText.includes('Nothing running in the background.'));
     processCapability.run = async () => ({ exitCode: 0, stdout: JSON.stringify({ discovery: 'partial', rows: [], sessions: [], services: { count: 0, items: [] }, helpers: { count: 0, items: [] }, collectedAt: paths.now }), stderr: '' });
     await forwarded(hookFor('command.run'), { command: 'wir' });
     const partial = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
     assertNoUnknownText(partial.result);
-    assert(hasDescendant(partial.result, (item) => item.name === 'Text' && item.props.children.includes('Discovery is partial.')));
+    assert(hasDescendant(partial.result, (item) => item.name === 'Text' && item.props.children.includes('Some running work could not be listed')));
     processCapability.run = async () => ({ exitCode: 0, stdout: JSON.stringify({ discovery: 'available', rows: [], collectedAt: paths.now }), stderr: '' });
     await forwarded(hookFor('command.run'), { command: 'wir' });
     const empty = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
@@ -1565,7 +1565,7 @@ await test('[collector seam][A-1][E-1] a sole finished SDK run does not claim em
     const pane = hookFor('ui.render', (hook) => hook.matcher?.component === 'Pane');
     const rendered = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
     const text = JSON.stringify(rendered.result, (_key, value) => typeof value === 'function' ? '[function]' : value);
-    assert.match(text, /process discovery unavailable \(unavailable on this platform\)/);
+    assert.match(text, /plugin could not list background processes \(unavailable on this platform\)/);
     assert(!text.includes('Nothing running in the background.'));
     assert(!text.includes('1862698281071544194'));
   } finally {
@@ -1583,9 +1583,9 @@ await test('[changed Step 7 indentation][changed Step 5 naming][A-3][DoD 1] wave
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
   assert.match(text, new RegExp(`Wave ${waveId}`));
   assert.match(text, new RegExp(`detail-toggle:row:${waveCardId}`));
-  assert.match(text, new RegExp(`cards/${waveCardId}`));
-  assert.match(text, /Lane/);
-  const pilotTree = descendants(tree, (item) => item.name === 'Box' && item.props.key === `pilot:${waveCardId}`)[0];
+  assert(!text.includes(`cards/${waveCardId}`), 'card link stays behind the expanded pilot');
+  assert.match(text, /lane/i);
+  const pilotTree = descendants(tree, (item) => item.name === 'Box' && String(item.props.key).endsWith(`:${waveCardId}`))[0];
   assert(hasDescendant(pilotTree, (item) => item.name === 'Box' && item.props.key?.startsWith('lane:') && item.props.paddingLeft === 1));
   const standalone = snapshot.rows.find((row) => row.id === liteCardId);
   assert.equal(standalone.waveId, null);
@@ -1596,11 +1596,8 @@ await test('[changed Step 8 selectable phases][DoD 3] known phase lines retain w
   assert(!/phase:[^"}]*:gates/.test(text));
   assert.match(text, /\[▶ Discovery ✓\].*done/);
   assert.match(text, /\[▶ Critic ●\].*running/);
-  assert.match(text, /Plan –.*skipped/);
-  assert.match(text, /Critic –.*skipped/);
-  assert.match(text, /TDD ·.*not started/);
-  assert(!/\[Plan –\]|\[Critic –\]|\[TDD ·\]/.test(text));
-  assert.match(text, /Plan ↔ Critic: 1 round/);
+  assert.match(text, /skipped: 5/);
+  assert(!/Plan –.*skipped|Critic –.*skipped|TDD ·.*not started/.test(text));
 });
 await test('[changed Step 7 unknown omission][DoD 3] unknown phase has no phase text, buttons, or count', async () => {
   const snapshot = { discovery: 'available', rows: [{ id: 'unknown-row', kind: 'pilot', title: 'unknown-row', phase: 'unknown', phaseStates: {}, outcome: 'running', gates: {}, review: {}, inspectors: {}, lanes: [], sources: {} }], collectedAt: paths.now };
@@ -1612,7 +1609,7 @@ await test('[changed Step 7 unknown omission][DoD 3] unknown phase has no phase 
 });
 await test('[lifecycle source] structured timeline renders the work-stage row', async () => {
   const text = JSON.stringify((await renderSnapshot(structuredLifecycleSnapshot)).tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
-  assert.match(text, /Work stages:/);
+  assert.match(text, /drives the stages below/);
   assert.doesNotMatch(text, /from log/);
 });
 await test('[lifecycle fallback] log-derived stages say where they came from', async () => {
@@ -1662,7 +1659,9 @@ await test('[changed Round 2 wrapping][DoD 2][DoD 4] standalone external lanes s
   const snapshot = { discovery: 'available', rows: [{
     id: 'lane:/tmp/external', kind: 'external', title: 'Ship the artifact server', phase: 'unknown', outcome: 'running', model: 'gpt-5.6', activity: 'last write 2 min ago', sources: {},
   }], collectedAt: paths.now };
-  const { tree } = await renderSnapshot(snapshot);
+  const rendered = await renderSnapshot(snapshot);
+  findButton(rendered.tree, 'External lane').props.onPress();
+  const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
   assert.match(text, /External lane/); assert.match(text, /Ship the artifact server/); assert.match(text, /gpt-5\.6/); assert.match(text, /last write 2 min ago/);
   assert.match(text, /phases: n\/a \(plain lane\)/); assert(!text.includes('phase unknown')); assert(!text.includes('not started'));
@@ -1674,7 +1673,9 @@ await test('[changed Step 7 plain card ID][Step 4 valid card URL] card IDs are b
     { id, cardId: id, cardUrl: `https://boards.example.test/cards/${id}`, kind: 'pilot', title: 'Pilot title', phase: 'unknown', phaseStates: {}, outcome: 'running', gates: {}, review: {}, inspectors: {}, lanes: [], sources: {} },
     { id: 'lane:/tmp/linked', cardId: id, cardUrl: `https://boards.example.test/cards/${id}`, kind: 'external', title: 'External title', model: 'gpt', activity: 'active', sources: {} },
   ];
-  const { tree } = await renderSnapshot({ discovery: 'available', rows, collectedAt: paths.now });
+  const rendered = await renderSnapshot({ discovery: 'available', rows, collectedAt: paths.now });
+  findButton(rendered.tree, 'External lane').props.onPress();
+  const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   const links = descendants(tree, (item) => item.name === 'Link' && linkText(item).includes('open card'));
   assert.equal(links.length, 2);
   assert(links.every((link) => hooksModule.isValidLinkHref(link.props.href)));
@@ -1791,6 +1792,8 @@ await test('[changed: card and artifact links] every rendered Link href is valid
     let tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
     findButton(tree, 'Show all projects').props.onPress();
     tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
+    findButton(tree, 'SDK pilot').props.onPress();
+    tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
     findButton(tree, 'Plan').props.onPress();
     tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
     return tree;
@@ -1860,7 +1863,7 @@ await test('[changed: external activity is visible] default pilot rows omit oper
   const text = await renderedPaneText();
   for (const noise of ['watchdog:', 'updated:', 'messages (GPT)', 'gates |', 'review |']) assert(!text.includes(noise));
   assert(!text.includes('usage | input:'));
-  assert.match(text, /last write \d+ min ago/);
+  assert(!/last write \d+ min ago/.test(text), 'raw lane activity stays behind its detail');
 });
 await test('[changed Round 2 Close][DoD 6] Close remains present with bounded inspector pane scrolling', async () => {
   const pane = hookFor('ui.render', (hook) => hook.matcher?.component === 'Pane');
@@ -1892,25 +1895,27 @@ await test('[changed Round 2 diagnostics] SDK row expansion hides internal sourc
 });
 await test('[changed Step 7 unknown omission][A-2] rendered truncated critic count is a lower bound', async () => {
   const text = await renderedPaneText();
-  assert.match(text, /detail-toggle:row:1862698281071544178/);
   assert(!text.includes('phase unknown'));
-  assert.match(text, /Plan ↔ Critic: at least 1 round/);
+  const pilot = (await readSnapshot({ process: processCapability }, paths)).rows.find((row) => row.id === '1862698281071544178');
+  assert.equal(pilot.criticRounds, 1);
+  assert.equal(pilot.runnerLogTruncated, true);
 });
 await test('[changed Round 3 phase wording][Missed zero rounds] rendered SDK row shows critic rounds: 0', async () => {
   const text = await renderedPaneText();
   assert.match(text, /detail-toggle:row:1862698281071544179/);
-  assert.match(text, /· Plan/);
+  assert.match(text, /Plan.*running/);
   assert(!text.includes('Plan ↔ Critic: 0 rounds'));
 });
 await test('[changed Round 3 terminal wording][B-1] rendered SDK outcome uses the real terminal lifecycle state', async () => {
   const text = await renderedPaneText();
   assert.match(text, /detail-toggle:row:1862698281071544190/);
   assert(!text.includes('· Awaiting fidelity'));
-  assert.match(text, /Waiting for arbiter review/);
+  assert.match(text, /Fidelity.*waiting for arbiter review/);
   const { tree } = await renderSnapshot(await readSnapshot({ process: processCapability }, paths));
   assert(!descendants(tree, (item) => item.name === 'Text').some((item) => item.props.children.some((child) => String(child).includes('awaiting_fidelity'))));
   assert(!/Awaiting fidelity[^}]*running/.test(text));
-  assert.match(text, /Plan ↔ Critic: 2 rounds/);
+  const terminalPilot = (await readSnapshot({ process: processCapability }, paths)).rows.find((row) => row.id === '1862698281071544190');
+  assert.equal(terminalPilot.criticRounds, 2);
   for (const id of ['1862698281071544191', '1862698281071544192', '1862698281071544193']) assert(!text.includes(id));
 });
 await test('surface button is added only when Button resolves and forwards', async () => {
@@ -2115,7 +2120,7 @@ await test('[changed Step 7 plain card ID][Step 6 DoD 2] card header is bold Tex
   assert.equal(links[0].props.href, href);
   assert.equal(links[0].props.label, 'open card');
   assert(!Object.hasOwn(links[0].props, 'children'));
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes(id)));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes('Linked card')));
 });
 
 await test('[Step 6 DoD 4] detached lanes use durable env session IDs and older lanes stay unknown', async () => {
@@ -2630,12 +2635,11 @@ await test('[changed Step 8 single bar][Round 3 shared state segments and card h
   const { tree } = await renderSnapshot(snapshot);
   const segment = descendants(tree, (item) => item.name === 'Box' && item.props.key === `stage-state:session:round3:${id}:plan`)[0];
   assert.equal(segment.props.columnGap, 1);
-  assert.equal(descendants(tree, (item) => item.name === 'Text' && item.props.children.includes('Work stages:')).length, 1);
+  assert.equal(descendants(tree, (item) => item.name === 'Text' && item.props.children.includes('drives the stages below')).length, 1);
   const title = descendants(tree, (item) => item.name === 'Text' && item.props.children.includes(snapshot.sessions[0].cards[0].title))[0];
   assert(title, 'card title text');
   assert(!String(title.props.children[0]).startsWith('·'));
-  const header = descendants(tree, (item) => item.name === 'Box' && item.props.flexDirection === 'row' && hasDescendant(item, (child) => child === title))[0];
-  assert(header, 'card id and title share one wrapping row');
+  assert.equal(descendants(tree, (item) => item.name === 'Text' && item.props.children.includes(id)).length, 0, 'the title is the collapsed card identity');
 });
 
 await test('[changed Step 8 content gating][Round 2 item 1] absent phase evidence cannot open meaningless details', async () => {
@@ -2943,7 +2947,7 @@ await test('[Step 7 DoD 5] card URLs occur only in open-card detail Links, never
   assert.equal(links.length, 1);
   assert.equal(links[0].props.label, 'open card');
   assert.equal(links[0].props.href, href);
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes(id)));
+  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.bold === true && item.props.children.includes('Linked')));
 });
 
 await test('[changed Step 8 close rule][Step 7 DoD 6] every open row and stage detail keeps its toggle and has one working Close', async () => {
@@ -3033,7 +3037,9 @@ const step8Fixture = () => {
 
 await test('[Step 8 rule 1] each card has one chronologically ordered, non-contradictory stage bar', async () => {
   const { snapshot } = step8Fixture();
-  const { tree } = await renderSnapshot(snapshot);
+  const rendered = await renderSnapshot(snapshot);
+  findButton(rendered.tree, 'SDK pilot').props.onPress();
+  const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   const visible = [];
   const collectVisible = (item) => {
     if (!item || typeof item !== 'object') return;
@@ -3042,7 +3048,7 @@ await test('[Step 8 rule 1] each card has one chronologically ordered, non-contr
   };
   collectVisible(tree);
   const labels = visible.join(' ');
-  assert.equal((labels.match(/Work stages:/g) || []).length, 1);
+  assert.equal((labels.match(/drives the stages below/g) || []).length, 1);
   assert(!labels.includes('Card cycle:'));
   assert(!labels.includes('Pilot phases:'));
   const ordered = ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Independent review (sol)', 'Independent refutation (astra)', 'Harden', 'Report'];
@@ -3061,8 +3067,10 @@ await test('[SDK lifecycle row] Report is last and legacy Merge is absent', asyn
   const pilot = snapshot.sessions[0].cards[0].actors[0];
   pilot.phase = 'verify';
   pilot.phaseStates.awaiting_fidelity = 'not started';
-  const { tree } = await renderSnapshot(snapshot);
-  const row = descendants(tree, (item) => item.name === 'Box' && item.props.flexWrap === 'wrap' && hasDescendant(item, (child) => child.name === 'Text' && child.props.children.includes('Work stages:')))[0];
+  const rendered = await renderSnapshot(snapshot);
+  findButton(rendered.tree, 'SDK pilot').props.onPress();
+  const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
+  const row = descendants(tree, (item) => item.name === 'Box' && String(item.props.key).startsWith('timeline:'))[0];
   const labels = descendants(row, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
   assert(labels.includes('Report'));
   assert.equal(labels.includes('Merge'), false);
@@ -3112,7 +3120,9 @@ await test('[Step 8 rule 2 close] every open detail has exactly one Close contro
 
 await test('[Step 8 rule 3] every lifecycle stage state is neutral text', async () => {
   const { snapshot } = step8Fixture();
-  const { tree } = await renderSnapshot(snapshot);
+  const rendered = await renderSnapshot(snapshot);
+  findButton(rendered.tree, 'SDK pilot').props.onPress();
+  const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   for (const label of ['Plan', 'Critic', 'Independent review', 'Independent refutation', 'Harden']) {
     assert(!findButton(tree, label), `${label} should not be clickable`);
     assert(hasDescendant(tree, (item) => item.name === 'Text' && !item.props.color && item.props.children.some((child) => String(child).includes(label))), `${label} should have neutral text`);
@@ -3207,7 +3217,7 @@ await test('[increment role] structured lifecycle role outranks incidental revie
   assert.equal(actors.find((actor) => actor.worktree === explicit).label, 'Review lane');
   assert.equal(actors.find((actor) => actor.worktree === explicit).roleInferred, true);
   const { tree } = await renderSnapshot({ discovery: 'available', rows: actors, collectedAt: paths.now });
-  assert(hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.includes('Review lane (inferred)')));
+  assert(findButton(tree, 'Review lane (inferred)'));
 });
 
 await test('[increment UI invariant] all rendered clickables are coloured and every detail toggle has the correct marker', async () => {
@@ -3227,15 +3237,17 @@ await test('[increment UI invariant] all rendered clickables are coloured and ev
 await test('[increment stage row] stages are visibly separated and no stage node carries a state colour', async () => {
   const { snapshot } = step8Fixture();
   snapshot.sessions[0].cards[0].actors[0].phaseCosts = {
-    discovery: { input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, total: 2353491 },
+    discovery: { input: 1234, output: 901, cacheRead: 2345678, cacheWrite: 5678, usd: 1.23 },
     plan: 'unknown',
   };
   snapshot.sessions[0].cards[0].actors[0].phaseCostSource = '/fixture/archive/cost.json';
-  const { tree } = await renderSnapshot(snapshot);
-  const stageRow = descendants(tree, (item) => item.name === 'Box' && item.props.flexWrap === 'wrap' && hasDescendant(item, (child) => child.name === 'Text' && child.props.children.includes('Work stages:')))[0];
+  const rendered = await renderSnapshot(snapshot);
+  findButton(rendered.tree, 'SDK pilot').props.onPress();
+  const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
+  const stageRow = descendants(tree, (item) => item.name === 'Box' && String(item.props.key).startsWith('timeline:'))[0];
   const segments = descendants(stageRow, (item) => item.name === 'Box' && String(item.props.key || '').startsWith('stage-state:'));
-  const separators = descendants(stageRow, (item) => item.name === 'Text' && item.props.children.join('') === '│');
-  assert.equal(separators.length, segments.length - 1);
+  const separators = descendants(stageRow, (item) => item.name === 'Text' && ['├', '└'].includes(item.props.children.join('')));
+  assert.equal(separators.length, segments.length);
   for (const segment of segments) {
     for (const item of descendants(segment, () => true)) assert.equal(item.props?.color, undefined);
   }
@@ -3253,19 +3265,24 @@ await test('[phase cost pane] wide rows show compact totals, narrow rows retain 
   pilot.phaseCostSource = '/fixture/archive/cost.json';
   pilot.phaseCostSourceKind = 'archive cost.json';
   const narrow = await renderSnapshot(snapshot, null, false, 80);
+  findButton(narrow.tree, 'SDK pilot').props.onPress();
+  narrow.tree = await narrow.pane.hook(narrow.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns: 80 } }, async () => ({}));
   let text = descendants(narrow.tree, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
   for (const word of ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Report']) assert(text.includes(word), word);
-  assert(!text.includes('2 353 491 tokens'));
+  assert(text.includes('price unknown'));
 
   const wide = await renderSnapshot(snapshot, null, false, 160);
+  findButton(wide.tree, 'SDK pilot').props.onPress();
+  wide.tree = await wide.pane.hook(wide.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns: 160 } }, async () => ({}));
   text = descendants(wide.tree, (item) => item.name === 'Text' || item.name === 'Button').flatMap((item) => [item.props.children].flat(2)).join(' ');
-  assert(text.includes('2 353 491 tokens'));
-  assert(text.includes('unknown'));
+  assert(text.includes('price unknown'), text);
+  assert(!text.includes('· unknown'));
   findButton(wide.tree, 'Discovery').props.onPress();
   const open = await wide.pane.hook(wide.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal', props: { bodyColumns: 160 } }, async () => ({}));
   const detail = descendants(open, (item) => item.name === 'Box' && item.props.key === 'open-detail-toggle:stage:session:step8:1862698281071544008:discovery')[0];
   const detailText = descendants(detail, (item) => item.name === 'Text').flatMap((item) => item.props.children).join(' ');
-  assert(detailText.includes('cost so far | input: 1 234 | output: 901 | cache read: 2 345 678 | cache write: 5 678'));
+  assert(detailText.includes('input 1 234 · cache write 5 678 · cache read 2 345 678 · output 901'));
+  assert(detailText.includes('price unknown'));
   assert(detailText.includes('cost source: archive cost.json'));
 });
 
@@ -3295,7 +3312,7 @@ await test('[Step 8 round 2 jitter] process refusals appear only after two conse
   await localTimers.at(-1).fn();
   tree = await pane.hook(local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
   text = descendants(tree, (item) => item.name === 'Text').flatMap((item) => item.props.children).join('\n');
-  assert(text.includes('discovery partial (process live actor path was outside allowed roots)'));
+  assert(text.includes('Some running work could not be listed'));
 });
 
 rmSync(root, { recursive: true, force: true });

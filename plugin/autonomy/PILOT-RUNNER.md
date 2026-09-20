@@ -260,6 +260,18 @@ summary minutes only when those mtimes collapse to one copied instant). Every fa
 `cost.json` records card/run identity, route (`HARD` when `--hard` selected it),
 complete/partial/unknown outcome, wall time,
 and per phase/model raw `input`, `cache_write`, `cache_read`, `output`, and `reasoning` columns.
+Prices are resolved fresh for every completed run by exact provider and model. The primary source is
+OpenCode's models.dev cache: `$XDG_CACHE_HOME/opencode/models.json` (otherwise
+`~/.cache/opencode/models.json`) on Linux, `~/Library/Caches/opencode/models.json` on macOS, and
+`%LOCALAPPDATA%\opencode\models.json` on Windows. `cost.json.price_table` records that path, its mtime,
+and a reason whenever it was unavailable. Missing catalogue rows fall back to the shipped
+`pricing/model-prices.json`. A `model-prices.override.json` in the resolved plugin data directory wins
+over both and is only read, never written. Its schema is `{ "models": { "provider/model": { "input":
+..., "output": ..., "cache_read": ..., "cache_write": ... } } }` with rates per million tokens.
+Context-tier selection measures the reported input plus cache-read plus measured cache-write tokens in
+the priced model row. Zero-price catalogue routes display `subscription`; OpenAI routes display their
+catalogue amount as `API price equivalent`; missing rows display `price unknown`; sources over 60 days
+old display `price not verified since YYYY-MM-DD`.
 Unsupported provider fields say `not measured`; `first_pass_input` is input plus measured cache write.
 Anthropic `fresh_tokens` adds output, while OpenAI `fresh_tokens` adds output and reasoning because
 OpenCode records reasoning separately from output. At run end the runner replaces only its delimited

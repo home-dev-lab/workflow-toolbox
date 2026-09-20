@@ -19,6 +19,7 @@ export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
 const POLL_MS = 250
 const MAX_UNPRODUCTIVE_TURNS = 3
+const GROUNDING_INITIAL_PROMPT = 'Before planning, ground external sources against the code and use small PoCs where sources do not settle. For a URL source, call `ctx_fetch_and_index`. Record confirmed / refuted / undecidable verdicts; treat `refused-by-classifier` and `unreachable-source` as named outcomes, then route CANCEL, REFRAME, or proceed.'
 // A phase routinely runs for many minutes, so a 30-second grace would make the clean boundary stop dead code:
 // ten minutes lets a phase that is about to finish reach its boundary, and still bounds a hung one.
 export const TIMEOUT_BOUNDARY_GRACE_MS = 10 * 60_000
@@ -245,13 +246,14 @@ function indexedCostTotals(cost) {
   const phaseTotals = {}
   const runTotal = Object.fromEntries(fields.map((field) => [field, 0]))
   for (const phase of cost.phases) {
-    const target = phaseTotals[phase.phase] ?? Object.fromEntries(fields.map((field) => [field, 0]))
+    const target = phaseTotals[phase.phase] ?? { ...Object.fromEntries(fields.map((field) => [field, 0])), usd: 0 }
     for (const model of Object.values(phase.models ?? {})) for (const field of fields) {
       if (typeof model[field] === 'number') { target[field] += model[field]; runTotal[field] += model[field] }
     }
+    target.usd = target.usd === 'price unknown' || phase.usd === 'price unknown' ? 'price unknown' : target.usd + (Number(phase.usd) || 0)
     phaseTotals[phase.phase] = target
   }
-  return { phase_totals: phaseTotals, run_total: runTotal }
+  return { phase_totals: phaseTotals, run_total: runTotal, usd_total: cost.totals?.usd ?? 'price unknown' }
 }
 
 function appendCostIndex({ archiveRoot, runId, card, route, cost, started, ended, archive, log }) {
@@ -378,7 +380,7 @@ export async function runPilot(options, dependencies) {
 
   async function* prompt() {
     const lspLine = sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`
-    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
+    const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${GROUNDING_INITIAL_PROMPT} ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
     yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
     while (!completed && !timeoutBoundary) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
