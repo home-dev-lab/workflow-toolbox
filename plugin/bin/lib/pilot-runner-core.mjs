@@ -297,6 +297,9 @@ export async function runPilot(options, dependencies) {
   const boardContract = loadBoardContract(options.boardContract, readFile)
   if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
   const routing = deriveRoute(cardText)
+  if (!boardContract && (routing.route === 'FULL' || /\broute_finding\b/.test(contract))) {
+    log('warning: no board contract; findings that must be routed will end the run partial; relaunch with --board-contract <json file>')
+  }
   const timeoutExplicit = options.timeoutExplicit === true
   const timeoutSeconds = options.timeout ?? ROUTE_TIMEOUTS[routing.route]
   if (timeoutExplicit && timeoutSeconds < ROUTE_EXPECTED_SECONDS[routing.route]) {
@@ -392,7 +395,9 @@ export async function runPilot(options, dependencies) {
         const lifecycleState = lifecycleServer.state()
         const phase = lifecycleState.phase
         const content = lifecycleState.partial && phase === 'report'
-          ? `The run is partial (${lifecycleState.partial.reason}): write the pilot report with the line "Partial: ${lifecycleState.partial.reason}", then transition report.`
+          ? lifecycleState.partial.reason.startsWith('route_finding refused: no board contract;')
+            ? `The run is partial (${lifecycleState.partial.reason}): write the pilot report with "Partial: ${lifecycleState.partial.reason}" as its first line, then transition report.`
+            : `The run is partial (${lifecycleState.partial.reason}): write the pilot report with the line "Partial: ${lifecycleState.partial.reason}", then transition report.`
           : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.`
         injectedTurns += 1
         log(`injected: continuation ${content}`)

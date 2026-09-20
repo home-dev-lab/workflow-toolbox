@@ -15,6 +15,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Show effective plugin configuration, configurable phase models, and orphaned settings
 
 ### Fixed
+- Warn at SDK pilot launch when a routing-capable run has no board contract, and end a run partial immediately if `route_finding` is nevertheless attempted
 - Capture lifecycle launcher output through private regular files so an immediately exiting launcher cannot lose its `pid=` receipt to platform-specific pipe flushing
 - macOS: refresh process-table evidence when lane supervision switches PIDs, preventing a just-finished phase cached during launcher inspection from blocking the next phase
 - Require SDK pilots to ground external claims before planning, persist fetched content or its digest with per-claim verdicts, and refuse discovery records that cite unfetched sources
