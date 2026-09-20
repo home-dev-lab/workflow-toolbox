@@ -6,6 +6,12 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { aggregateRunCosts, appendCostReport, attributePilotTurns, computeRunCost, formatAggregate, matchLaneSessions } from '../../../../plugin/bin/lib/run-cost-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { priceRunCost } from '../../../../plugin/bin/lib/model-prices.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { resolveExecutorProfile } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { DEFAULT_LANE_MODELS } from '../../../../plugin/bin/lib/lane-model-allowlist.mjs'
 
 const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-run-cost.mjs', import.meta.url))
 const OUTPUT_UNDERCOUNT_FIXTURE = new URL('./fixtures/run-cost/sdk-output-undercount.json', import.meta.url)
@@ -128,15 +134,37 @@ describe('run cost', () => {
     expect(row.usd).toBe('price unknown')
   })
 
+  it('makes a mixed priced and unpriced run unknown and names the missing price beside the archive total', () => {
+    const cost = priceRunCost({
+      route: 'LITE', outcome: { status: 'complete' }, unknown: [], totals: {},
+      phases: [{ phase: 'test', wall_time_ms: 1, unknown: [], models: {
+        'claude-haiku-4-5-20251001': { family: 'anthropic', input: 1_000_000, cache_write: 0, cache_read: 0, output: 0 },
+        'unpriced-model': { family: 'anthropic', input: 1, cache_write: 0, cache_read: 0, output: 0 },
+      } }],
+    }, JSON.parse(readFileSync(PRICE_TABLE, 'utf8')))
+
+    expect(cost.totals.usd).toBe('price unknown')
+    expect(cost.price_unknown_models).toEqual(['unpriced-model'])
+    expect(appendCostReport('# Run\n', cost)).toContain('Run total: price unknown · missing price for: unpriced-model')
+  })
+
   it('ships complete, dated prices for every required model', () => {
     const table = JSON.parse(readFileSync(PRICE_TABLE, 'utf8'))
+    const fixture = JSON.parse(readFileSync(KNOWN_RUN_FIXTURE, 'utf8'))
     expect(table).toMatchObject({ version: expect.any(String), as_of: expect.stringMatching(/^\d{4}-\d\d-\d\d$/) })
-    for (const model of ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'openai/gpt-5.6-sol', 'openai/gpt-5.6-terra', 'openai/gpt-5.6-luna', 'openai/gpt-6-astra']) {
-      expect(table.models[model]).toMatchObject({
+    const executorModels = ['true', 'not_true'].flatMap((outcome) => [false, true].flatMap((hard) => Object.values(resolveExecutorProfile({
+      worktree: '/worktree', route: 'FULL', hard, env: {}, settingsEnv: {}, resolveConsentImpl: () => ({ outcome }),
+    }).models)))
+    const archivedModels = fixture.phases.flatMap((phase: { models: object }) => Object.keys(phase.models))
+    for (const servedModel of new Set([...archivedModels, ...executorModels, ...DEFAULT_LANE_MODELS])) {
+      const normalized = String(servedModel).replace(/-\d{8}$/, '')
+      const model = Object.keys(table.models).find((candidate) => candidate === normalized || candidate.startsWith(`claude-${normalized}-`))
+      expect(model, `no shipped price for served model ${servedModel}`).toBeTypeOf('string')
+      expect(table.models[model!]).toMatchObject({
         family: expect.stringMatching(/^(anthropic|openai)$/), input: expect.any(Number), cache_read: expect.any(Number), output: expect.any(Number),
         source_url: expect.stringMatching(/^https:\/\//), retrieved: expect.stringMatching(/^\d{4}-\d\d-\d\d$/),
       })
-      expect(Object.hasOwn(table.models[model], 'cache_write')).toBe(true)
+      expect(Object.hasOwn(table.models[model!], 'cache_write')).toBe(true)
     }
   })
 

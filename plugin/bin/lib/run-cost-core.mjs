@@ -354,7 +354,8 @@ export function costReportSection(cost) {
   }
   const lines = ['<!-- run-cost -->', '## Measured Run Cost', '', `Route: ${cost.route} | Outcome: ${cost.outcome.status}${cost.outcome.reason ? ` (${cost.outcome.reason})` : ''} | Unknown: ${cost.unknown.length}`]
   if (cost.totals === 'unknown') return `${lines.join('\n')}\n\nCost: unknown (${cost.unknown.join('; ')})\n<!-- /run-cost -->\n`
-  lines.push('', `Run total: ${usd(cost.totals.usd, cost.price_labels?.join('; '))}`, '', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | USD | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
+  const missingPrices = cost.price_unknown_models?.length ? ` · missing price for: ${cost.price_unknown_models.join(', ')}` : ''
+  lines.push('', `Run total: ${usd(cost.totals.usd, cost.price_labels?.join('; '))}${missingPrices}`, '', '| Phase | Family | Model | Input | Cache write | Cache read | Output | Reasoning | USD | First-pass input | Fresh | Wall ms |', '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |')
   for (const phase of cost.phases) {
     const label = `${phase.phase}${phase.round ? ` ${phase.round}` : ''}`
     for (const [model, value] of Object.entries(phase.models)) lines.push(`| ${label} | ${value.family} | ${model} | ${value.input} | ${value.cache_write} | ${value.cache_read} | ${value.output} | ${value.reasoning} | ${usd(value.usd, value.price_label)} | ${value.first_pass_input} | ${value.fresh_tokens} | ${phase.wall_time_ms} |`)

@@ -800,7 +800,7 @@ function phaseCosts(worktree, timeline) {
   if (typeof archivePath === 'string' && path.isAbsolute(archivePath) && under(reportsRoot, archivePath)) {
     const archiveCost = path.join(archivePath, 'cost.json');
     const cost = json(archiveCost);
-    if (cost) return { costs: phaseCostRows(cost.phases), total: cost.totals?.usd !== undefined ? { usd: cost.totals.usd, priceLabel: Array.isArray(cost.price_labels) ? cost.price_labels.join('; ') : undefined } : summedCost(Object.values(phaseCostRows(cost.phases))), source: archiveCost, kind: 'archive cost.json' };
+    if (cost) return { costs: phaseCostRows(cost.phases), total: cost.totals?.usd !== undefined ? { usd: cost.totals.usd, priceLabel: Array.isArray(cost.price_labels) ? cost.price_labels.join('; ') : undefined, priceUnknownModels: Array.isArray(cost.price_unknown_models) ? cost.price_unknown_models : [] } : summedCost(Object.values(phaseCostRows(cost.phases))), source: archiveCost, kind: 'archive cost.json' };
     if (slice(archiveCost, JSON_BYTES, false, true) !== null) return { costs: Object.fromEntries(PHASES.map(phase => [phase, UNKNOWN])), source: archiveCost, kind: 'malformed archive cost.json' };
   }
   const live = livePhaseCosts(worktree, timeline);

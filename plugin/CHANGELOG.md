@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Add dispatch-only Linux, Windows, and macOS host probes for process tables, process-group termination, and real path behavior, with provenance-rich byte-stable evidence artifacts
 
 ### Fixed
+- Price Claude Haiku 4.5 and all default routable models from source-backed fallback rows, and make unknown-price run totals name the unpriced models in archives and What is running
 - Run host-timing quarantines visibly but non-blockingly under `pnpm test:blocking`, the release-certification and CI entry point, while `pnpm test` remains the full developer suite
 - Treat empty and whitespace-only model plugin options as unset in runtime resolution, `wt-config`, and SessionStart configuration context
 - Warn at SDK pilot launch when a routing-capable run has no board contract, and end a run partial immediately if `route_finding` is nevertheless attempted

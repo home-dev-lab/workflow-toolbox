@@ -3286,6 +3286,23 @@ await test('[phase cost pane] wide rows show compact totals, narrow rows retain 
   assert(detailText.includes('cost source: archive cost.json'));
 });
 
+await test('[run cost pane] a mixed priced and unpriced total stays unknown and names the missing model at narrow width', async () => {
+  const { snapshot } = step8Fixture();
+  const pilot = snapshot.sessions[0].cards[0].actors[0];
+  pilot.runCost = {
+    usd: 'price unknown',
+    priceUnknownModels: ['unpriced-model'],
+    models: {
+      'claude-haiku-4-5-20251001': { input: 1000000, output: 0, cacheRead: 0, cacheWrite: 0, usd: 1, priceLabel: 'API price' },
+      'unpriced-model': { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, usd: 'price unknown', priceLabel: 'price unknown' },
+    },
+  };
+  const rendered = await renderSnapshot(snapshot, null, false, 70);
+  const text = descendants(rendered.tree, (item) => item.name === 'Text').flatMap((item) => item.props.children).join(' ');
+  assert(text.includes('run total so far: price unknown'), text);
+  assert(text.includes('missing price for: unpriced-model'), text);
+});
+
 await test('[Step 8 round 2 jitter] process refusals appear only after two consecutive pane polls', async () => {
   const localHooks = [];
   const localTimers = [];
