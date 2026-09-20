@@ -8,6 +8,8 @@ This is a Claude Code Function Hooks plugin, an early-access API. Start Claude C
 
 1Password reference resolution requires the [1Password CLI](https://developer.1password.com/docs/cli/) and a signed-in account. Configure `opBinary` when the CLI executable is not `op`; configure `opAccount` for a non-default account.
 
+The Bash hook resolves a well-formed `op://vault/item/[section/]field` reference when it is an unquoted shell word or the complete contents of a quoted shell word. It leaves references literal in larger quoted strings, heredoc bodies, `op read`/`op inject`/`op run` commands, and commands writing to a `.tpl` destination. Unsupported or ambiguous text is left unchanged rather than risking a broken command; this includes search patterns and references containing shell metacharacters.
+
 ## Options
 
 `maskIpAddresses` and `maskEmails` are boolean plugin options and both default to `false`. Enable either option to mask that value class in submitted prompts and Bash, Read, and MCP tool results. IPv4 and IPv6 addresses are covered.
