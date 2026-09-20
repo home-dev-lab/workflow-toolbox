@@ -72,9 +72,55 @@ async function test(name, fn) { try { await fn(); console.log(`PASS ${name}`); }
 
 const github = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
 const aws = 'AKIA1234567890ABCDEF';
+const opFake = 'FAKEKEYFAKEKEYFAKEKEY0123456789';
 await test('does not register an inert user-tier prompt.context guard', async () => { assert.equal(context, undefined); });
 await test('sha256 known answer', async () => { assert.equal(sha256('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'); });
 await test('output scrub and distinct tokens', async () => { const result = await call('x', `${github}\n${aws}`); assert(!JSON.stringify(result).includes(github)); assert(!JSON.stringify(result).includes(aws)); assert.equal(testState().size, 2); });
+await test('plain-line op credential output is scrubbed', async () => { const result = await call('op item get example --fields credential', `credential: ${opFake}`); assert.equal(JSON.stringify(result).includes(opFake), false); assert.match(result.text, /secret:op-output#/); });
+const concealedJson = (value) => JSON.stringify({ id: 'credential', label: 'credential', type: 'CONCEALED', value, padding: 'x'.repeat(100) }, null, 2);
+await test('complete concealed JSON output is scrubbed', async () => {
+  const concealed = concealedJson(opFake);
+  const result = await call('op item get example --fields credential --format json', concealed);
+  assert.equal(JSON.stringify(result).includes(opFake), false, 'concealed JSON value reached the tool result');
+  assert.match(result.text, /secret:op-json-concealed#/);
+});
+await test('truncated concealed JSON output is scrubbed', async () => {
+  const value = 'TRUNCATEDFAKEKEYFAKEKEY0123456789';
+  const concealed = concealedJson(value);
+  const truncated = concealed.slice(0, concealed.indexOf(value) + value.length + 1);
+  const result = await call('op.exe item get example --fields label=credential --format json 2>&1 | head -c 120', truncated);
+  assert.equal(JSON.stringify(result).includes(value), false, 'truncated concealed JSON value reached the tool result');
+});
+await test('stderr-prefixed concealed JSON output is scrubbed', async () => {
+  const value = 'PREFIXEDFAKEKEYFAKEKEY0123456789';
+  const concealed = concealedJson(value);
+  const result = await call('op.exe item get example --fields label=credential --format json 2>&1', `warning: fake diagnostic\n${concealed}`);
+  assert.equal(JSON.stringify(result).includes(value), false, 'stderr-prefixed concealed JSON value reached the tool result');
+});
+await test('trailing-line concealed JSON output is scrubbed', async () => {
+  const value = 'TRAILINGFAKEKEYFAKEKEY0123456789';
+  const concealed = concealedJson(value);
+  const result = await call('op.exe item get example --fields label=credential --format json; echo EXIT=$?', `${concealed}\nEXIT=0`);
+  assert.equal(JSON.stringify(result).includes(value), false, 'trailing-line concealed JSON value reached the tool result');
+});
+await test('concealed JSON escaped values are decoded while serialized bytes are scrubbed', async () => {
+  const escapedFake = 'ESCAPEDFAKEESCAPEDFAKE0123456789"\\suffix';
+  const escaped = await call('op item get example --format json', JSON.stringify({ type: 'CONCEALED', value: escapedFake }, null, 2));
+  assert.equal(escaped.text.includes(JSON.stringify(escapedFake).slice(1, -1)), false, 'escaped concealed JSON value reached the tool result');
+  assert([...testState().values()].some((entry) => entry.kind === 'op-json-concealed' && entry.value === escapedFake));
+});
+await test('ordinary JSON values are not scrubbed', async () => {
+  const ordinary = '{"label":"status","value":"ready"}';
+  assert.equal((await call('tool --json', ordinary)).text, ordinary);
+});
+await test('malformed concealed JSON does not throw and scrubs its value', async () => {
+  const malformed = '{"type":"CONCEALED","value":"MALFORMEDFAKEKEY0123456789"';
+  const result = await call('op item get example --format json', malformed);
+  assert.equal(result.text.includes('MALFORMEDFAKEKEY0123456789'), false, 'malformed concealed JSON value reached the tool result');
+  const imprecise = '{"type":"CONCEALED","value":IMPRECISEFAKEKEY0123456789';
+  const failSafe = await call('op item get example --format json', imprecise);
+  assert.equal(failSafe.text.includes('IMPRECISEFAKEKEY0123456789'), false, 'imprecise concealed JSON fragment reached the tool result');
+});
 await test('token round-trip', async () => { const [token, entry] = [...testState()][0]; let received; await bash($, { tool: 'Bash', command: `echo ${token}` }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, `echo ${entry.value}`); });
 await test('op reference rewrite with shell quoting', async () => { let received; const result = await bash($, { tool: 'Bash', command: "echo op://Private/O'Brien/token" }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, "echo \"$(op read 'op://Private/O'\"'\"'Brien/token')\""); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
 await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); let received; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { received = event.command; return { text: 'ok' }; }); configure({}); assert.equal(received, "echo \"$(op read --account 'my.1password.com' 'op://Private/item/field')\""); let plain; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { plain = event.command; return { text: 'ok' }; }); assert.equal(plain, "echo \"$(op read 'op://Private/item/field')\""); });

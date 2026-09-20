@@ -36,14 +36,97 @@ function overlaps(start, end, ranges) {
   return ranges.some(([from, to]) => start < to && end > from);
 }
 
+function jsonString(text, start) {
+  let cursor = start + 1;
+  while (cursor < text.length) {
+    if (text[cursor] === '\\') cursor += 2;
+    else if (text[cursor++] === '"') {
+      const serialized = text.slice(start + 1, cursor - 1);
+      let decoded = serialized;
+      try { decoded = JSON.parse(text.slice(start, cursor)); } catch { /* Malformed strings still need fail-safe scrubbing. */ }
+      return { end: cursor, serialized, decoded };
+    } else continue;
+  }
+  const serialized = text.slice(start + 1);
+  let decoded = serialized;
+  try { decoded = JSON.parse(`"${serialized}"`); } catch { /* Keep undecodable partial bytes fail-safe. */ }
+  return { end: text.length, serialized, decoded };
+}
+
+function scannedConcealedDetections(text) {
+  if (!/"type"\s*:\s*"CONCEALED"/.test(text)) return [];
+  const found = [];
+  const stack = [];
+  const finish = (frame, end) => {
+    if (frame.kind !== 'object' || !frame.concealed) return;
+    if (frame.value?.serialized) {
+      found.push({ kind: 'op-json-concealed', value: frame.value.serialized, secret: frame.value.decoded });
+      return;
+    }
+    const fragment = text.slice(frame.start, end);
+    if (fragment) found.push({ kind: 'op-json-concealed', value: fragment, secret: fragment });
+  };
+
+  for (let cursor = 0; cursor < text.length;) {
+    const character = text[cursor];
+    if (character === '{') { stack.push({ kind: 'object', start: cursor }); cursor += 1; continue; }
+    if (character === '[') { stack.push({ kind: 'array', start: cursor }); cursor += 1; continue; }
+    if (character === '}' || character === ']') {
+      const frame = stack.pop();
+      if (frame) finish(frame, cursor + 1);
+      cursor += 1;
+      continue;
+    }
+    if (character !== '"') { cursor += 1; continue; }
+
+    const key = jsonString(text, cursor);
+    const frame = stack.at(-1);
+    let next = key.end;
+    while (/\s/.test(text[next] ?? '')) next += 1;
+    if (frame?.kind !== 'object' || text[next] !== ':') { cursor = key.end; continue; }
+    next += 1;
+    while (/\s/.test(text[next] ?? '')) next += 1;
+    if (text[next] !== '"') { cursor = next; continue; }
+
+    const value = jsonString(text, next);
+    if (key.decoded === 'type' && value.decoded === 'CONCEALED') frame.concealed = true;
+    if (key.decoded === 'value') frame.value = value;
+    cursor = value.end;
+  }
+  for (const frame of stack) finish(frame, text.length);
+  return found;
+}
+
+function concealedJsonDetections(text) {
+  const candidate = text.trimStart();
+  if (!candidate.includes('"CONCEALED"')) return [];
+  let root;
+  if ('[{'.includes(candidate[0])) {
+    try { root = JSON.parse(candidate); } catch { /* Shell output may surround or truncate the JSON. */ }
+  }
+  const found = [];
+  const pending = root === undefined ? [] : [root];
+  while (pending.length) {
+    const value = pending.pop();
+    if (!value || typeof value !== 'object') continue;
+    if (!Array.isArray(value) && value.type === 'CONCEALED' && typeof value.value === 'string' && value.value) {
+      found.push({ kind: 'op-json-concealed', value: JSON.stringify(value.value).slice(1, -1), secret: value.value });
+    }
+    pending.push(...(Array.isArray(value) ? value : Object.values(value)));
+  }
+  return found.length ? found : scannedConcealedDetections(text);
+}
+
 export function detections(text, command = '') {
   if (typeof text !== 'string') return [];
   const allowed = allowedRanges(text, command);
-  const found = [];
+  const concealed = concealedJsonDetections(text);
+  const found = [...concealed];
   for (const [kind, expression] of patterns) {
     expression.lastIndex = 0;
     for (let match; (match = expression.exec(text));) {
-      if (!overlaps(match.index, match.index + match[0].length, allowed)) found.push({ kind, value: match[0] });
+      const duplicatesConcealed = concealed.some(({ value }) => value.includes(match[0]) || match[0].includes(value));
+      if (!duplicatesConcealed && !overlaps(match.index, match.index + match[0].length, allowed)) found.push({ kind, value: match[0] });
     }
   }
   return found;
