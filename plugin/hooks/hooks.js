@@ -317,11 +317,15 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const runCostStatus = (row, detailed = false) => {
     if (!row.runCost) return null;
     const approximate = row.costApproximate ? ' · cost approximate' : '';
+    const missingPrices = (row.runCost.priceUnknownModels?.length
+      ? row.runCost.priceUnknownModels
+      : Object.entries(row.runCost.models || {}).filter(([, value]) => value.usd === 'price unknown').map(([model]) => model));
+    const missingPriceText = missingPrices.length ? ` · missing price for: ${missingPrices.join(', ')}` : '';
     const modelLines = detailed
       ? Object.entries(row.runCost.models || {}).map(([model, value]) => node(Text, { key: `run-model:${row.id}:${model}`, wrap: 'wrap' }, formatModelUsage(model, value)))
       : [];
     return node(Box, { key: `run-cost:${row.id}`, flexDirection: 'column', paddingLeft: 1 },
-      node(Text, { dimColor: true }, `run total so far: ${formatUsd(row.runCost.usd, row.runCost.priceLabel)}${approximate}`),
+      node(Text, { dimColor: true, wrap: 'wrap' }, `run total so far: ${formatUsd(row.runCost.usd, row.runCost.priceLabel)}${missingPriceText}${approximate}`),
       ...modelLines,
     );
   };
