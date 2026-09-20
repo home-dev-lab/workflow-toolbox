@@ -82,6 +82,21 @@ const processDir = (argv, cwd) => {
   return null
 }
 
+const isOpencodeCommand = (command) => /(?:^|[\\/\s])opencode(?:\.exe|\.cmd)?(?:\s|$)/i.test(command)
+
+function processRecordDirs(project, table) {
+  if (!table.supported) return []
+  const dirs = []
+  for (const item of table.processes) {
+    if (!isOpencodeCommand(item.command)) continue
+    const candidate = inspectProcess(item.pid)
+    if (!candidate?.cwd || (candidate.cwd !== project && !candidate.cwd.startsWith(`${project}${path.sep}`))) continue
+    const argv = Array.isArray(candidate.argv) && candidate.argv.length > 0 ? candidate.argv : posixCommandArgs(item.command)
+    if (reportableOpencodeArgv(argv)) dirs.push(processDir(argv, candidate.cwd) ?? candidate.cwd)
+  }
+  return dirs
+}
+
 async function main() {
   const options = parse(process.argv.slice(2))
   if (options.help) { process.stdout.write('Usage: node wt-lane-orphan-watch.mjs [--project <dir>] [--poll 60] [--once]\n'); return 0 }
@@ -144,7 +159,8 @@ async function main() {
       }
     }
     const staging = stagingLaneDirs(options.project)
-    const known = records(options.project, staging)
+    const table = listProcessTable()
+    const known = records(options.project, [...staging, ...processRecordDirs(options.project, table)])
     for (const record of known) {
       const verdict = classifyLane(record)
       const processRecord = verdict.child === 'running' ? inspectProcess(record.childPid) : null
@@ -202,10 +218,9 @@ async function main() {
       const result = terminateLane(record, { journal, source: 'watcher', recordWorktree: record.__recordWorktree })
       journal({ event: result.killed ? 'cleaned' : 'cleanup-refused', runId: record.runId, pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: result.killed ? verdict.reason : result.reason, evidence }, { killed: result.killed })
     }
-    const table = listProcessTable()
     const attributed = new Set(known.map((record) => record.childPid))
     if (table.supported) for (const item of table.processes) {
-      if (!/(?:^|[\\/\s])opencode(?:\.exe|\.cmd)?(?:\s|$)/i.test(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
+      if (!isOpencodeCommand(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
       const unknown = inspectProcess(item.pid)
       if (!unknown?.cwd || (unknown.cwd !== options.project && !unknown.cwd.startsWith(`${options.project}${path.sep}`))) continue
       const argv = Array.isArray(unknown.argv) && unknown.argv.length > 0 ? unknown.argv : posixCommandArgs(item.command)
