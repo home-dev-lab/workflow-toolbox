@@ -12,6 +12,7 @@ import { COLLECTOR_TIMEOUT_MS, fileUrlPath, readSnapshot, register, RENDER_JOURN
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
 const PHASE_COST_FIXTURE = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'phase-cost.json')
+const SNAPSHOT_CLI = join(REPO_ROOT, 'plugin', 'hooks', 'snapshot-cli')
 
 function runSelftest(filter?: string) {
   return spawnSync(process.execPath, [SELFTEST], {
@@ -153,6 +154,46 @@ function textChildren(tree: unknown): string[] {
 }
 
 describe('What is running collector seam', () => {
+  it('ships a documented command-line entry point that prints the collector snapshot', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-cli-'))
+    try {
+      const paths = collector(root)
+      const help = spawnSync(process.execPath, [SNAPSHOT_CLI, '--help'], { encoding: 'utf8' })
+      expect(help.status, help.stderr).toBe(0)
+      expect(help.stdout).toContain('--suite-root <path>')
+      expect(help.stdout).toContain('--planka-base-url <url>')
+      const result = spawnSync(process.execPath, [SNAPSHOT_CLI,
+        '--suite-root', paths.suiteRoot,
+        '--config-dir', paths.configDir,
+        '--liveness-dir', paths.livenessDir,
+        '--proc-root', paths.procRoot,
+        '--now', paths.now,
+        '--planka-base-url', 'http://localhost:3000/',
+      ], { encoding: 'utf8' })
+      expect(result.status, result.stderr).toBe(0)
+      expect(JSON.parse(result.stdout)).toMatchObject({ discovery: 'available', rows: [], sessions: [] })
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('builds a card URL for the card heading shape used by external lane briefs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-card-heading-'))
+    try {
+      const paths = collector(root, { plankaBaseUrl: 'http://localhost:3000/' })
+      const worktree = join(paths.suiteRoot, 'worktrees', 'heading-lane')
+      mkdirSync(join(worktree, '.lane'), { recursive: true })
+      writeFileSync(join(worktree, '.lane', 'brief.md'), '# Card 1868168343559603765 — Pane details\n')
+      writeFileSync(join(worktree, '.lane', 'run.log'), 'working\n')
+      mkdirSync(join(paths.procRoot, '700'))
+      writeFileSync(join(paths.procRoot, '700', 'status'), 'Name:\topencode\nPPid:\t1\n')
+      writeFileSync(join(paths.procRoot, '700', 'cmdline'), ['opencode', 'run', '--dir', worktree].join('\0') + '\0')
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.rows.find((row: { worktree?: string }) => row.worktree === worktree)).toMatchObject({
+        cardId: '1868168343559603765',
+        cardUrl: 'http://localhost:3000/cards/1868168343559603765',
+      })
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('resolves the shipped price table URL to a native Windows drive path', () => {
     expect(fileUrlPath(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json'), 'win32'))
       .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
@@ -791,6 +832,57 @@ describe('What is running collector seam', () => {
     }
     const texts = textChildren(await renderedTree(snapshot))
     expect(texts.filter((value) => value.includes(cardId))).toEqual([`Card ${cardId}`, `Card ${cardId}`])
+  })
+
+  it('uses the collector-owned explanation for an unreadable-only partial snapshot', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      {
+        discovery: 'partial', rows: [], sessions: [], collectedAt: '2026-09-20T12:00:00Z',
+        collectors: { work: { availability: { status: 'partial', reason: 'unreadable: /fixture/blocked' } } },
+      },
+      new Set(['discovery-detail']), new Map(), 'wt-suite', true,
+      { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
+    )
+    expect(textChildren(tree)).toContain('unreadable: /fixture/blocked')
+  })
+
+  it('names an unavailable reason instead of opening an empty partial detail', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      { discovery: 'partial', rows: [], sessions: [], collectedAt: '2026-09-20T12:00:00Z' },
+      new Set(['discovery-detail']), new Map(), 'wt-suite', true,
+      { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
+    )
+    expect(textChildren(tree)).toContain('reason unavailable')
+  })
+
+  it('keeps an expanded lane title once and degrades a valid card link to its visible URL without Link', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const id = '1868168343559603765'
+    const title = 'Pane details'
+    const href = `http://localhost:3000/cards/${id}`
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button') },
+      { discovery: 'available', rows: [{ id: 'lane:one', cardId: id, cardUrl: href, kind: 'external', label: 'Lane', title, outcome: 'running' }], collectedAt: '2026-09-20T12:00:00Z' },
+      new Set(['lane:one']), new Map(), 'wt-suite', true,
+      { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
+    )
+    expect(textChildren(tree).filter((text) => text === title)).toHaveLength(1)
+    expect(textChildren(tree)).toContain(`open card: ${href}`)
+  })
+
+  it('explains a missing Planka browser URL in expanded lane details', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      { discovery: 'available', rows: [{ id: 'lane:one', cardId: '1868168343559603765', cardUrl: null, kind: 'external', label: 'Lane', outcome: 'running' }], collectedAt: '2026-09-20T12:00:00Z' },
+      new Set(['lane:one']), new Map(), 'wt-suite', true,
+      { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
+    )
+    expect(textChildren(tree)).toContain('open card unavailable: Planka browser URL is not configured')
   })
 
   it('offers no button on a skipped or not-started stage even when evidence is recorded for it', async () => {

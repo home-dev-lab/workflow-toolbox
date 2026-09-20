@@ -334,9 +334,15 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     if (!id) return null;
     return fixed(node(Text, { bold: true }, `Card ${id}`));
   };
-  const renderCardLink = (row) => Link && isValidLinkHref(row.cardUrl)
-    ? node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, linked({ href: row.cardUrl, label: 'open card' }))
-    : null;
+  const renderCardLink = (row) => {
+    if (isValidLinkHref(row.cardUrl)) return node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, Link
+      ? linked({ href: row.cardUrl, label: 'open card' })
+      : node(Text, { underline: true, wrap: 'wrap' }, `open card: ${row.cardUrl}`));
+    if (!row.cardUrl && (row.cardId || /^\d{19}$/.test(String(row.id || '')))) {
+      return node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true, wrap: 'wrap' }, 'open card unavailable: Planka browser URL is not configured'));
+    }
+    return row.cardUrl ? node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, 'open card unavailable: card URL is invalid')) : null;
+  };
   const renderOpenDetail = (buttonKey, label, onClose, ...content) => node(Box, { key: `open-${buttonKey}`, flexDirection: 'column', paddingLeft: 1 },
     node(Box, { key: `open-detail-header:${buttonKey}`, flexDirection: 'row', columnGap: 1 },
       fixedText({ bold: true }, label),
@@ -369,8 +375,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         row.elapsed && row.elapsed !== 'unknown' ? fixedText({ dimColor: true }, `· ${row.elapsed}`) : null,
       ),
       row.title && row.title !== label ? node(Text, { color: COLORS.external, wrap: 'wrap' }, row.title) : null,
-      isExpanded && (details || row.title || (showCard && isValidLinkHref(row.cardUrl))) ? renderOpenDetail(buttonKey, `${label} details`, () => actions.toggle(row.id),
-        row.title ? node(Text, { wrap: 'wrap' }, row.title) : null,
+      isExpanded && (details || row.title || (showCard && (cardId || row.cardUrl))) ? renderOpenDetail(buttonKey, `${label} details`, () => actions.toggle(row.id),
         node(Text, { dimColor: true }, `owner: ${owner}`),
         details ? node(Text, { dimColor: true, wrap: 'wrap' }, details) : null,
         showCard ? renderCardLink(row) : null,
@@ -619,10 +624,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   if (processAvailability?.status === 'unknown') grouped.push(node(Text, { dimColor: true }, `The plugin could not list background processes (${processAvailability.reason || 'unavailable on this platform'})`));
   if (processAvailability?.status === 'partial') grouped.push(node(Text, { dimColor: true }, `process list partial (${processAvailability.reason || 'reason unavailable'})`));
   if (snapshot.discovery === 'partial') {
-    const reasons = [];
-    if (snapshot.cappedScans?.length) reasons.push(`scan cap reached: ${snapshot.cappedScans.join(', ')}`);
-    if (snapshot.scanLimits?.length) reasons.push(snapshot.scanLimits.join('; '));
-    if (snapshot.pathRefusals?.length) reasons.push(snapshot.pathRefusals.join('; '));
+    const reasons = [snapshot.collectors?.work?.availability?.reason || 'reason unavailable'];
     const key = 'discovery-detail';
     const isExpanded = expanded.has(key);
     grouped.push(node(Box, { key, flexDirection: 'column' },
