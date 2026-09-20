@@ -324,52 +324,54 @@ describe('sessionBackgroundTaskInFlight', () => {
     return { result }
   }
 
-  it('treats a stable same-session writer on a task output as in flight', () => {
-    expect(taskFixture().result).toMatchObject({ status: 'in-flight' })
-  })
-
-  it('does not treat a fresh leftover output file without a writer as in flight', () => {
-    expect(taskFixture({ outputOpen: false }).result.status).toBe('none')
-  })
-
-  it('ignores a task output writer from another session', () => {
-    expect(taskFixture({ holderSessionId: 'foreign-session' }).result.status).toBe('none')
-  })
-
-  it('ignores a task output writer owned by another user', () => {
-    expect(taskFixture({ uid: 1001 }).result.status).toBe('none')
-  })
-
-  it('does not attest a process without argv', () => {
-    expect(taskFixture({ argv: '' }).result).toMatchObject({
-      status: 'unknown',
-      reason: 'background task argv unreadable',
+  describe.skipIf(process.platform !== 'linux')('Linux procfs descriptor attribution (requires Linux path semantics)', () => {
+    it('treats a stable same-session writer on a task output as in flight', () => {
+      expect(taskFixture().result).toMatchObject({ status: 'in-flight' })
     })
-  })
 
-  it('returns unknown when the matched fd changes during attribution', () => {
-    expect(taskFixture({ fdChanges: true }).result).toMatchObject({
-      status: 'unknown',
-      reason: 'background task fd identity changed',
+    it('does not treat a fresh leftover output file without a writer as in flight', () => {
+      expect(taskFixture({ outputOpen: false }).result.status).toBe('none')
     })
-  })
 
-  it('returns unknown when the process identity changes during final descriptor attribution', () => {
-    expect(taskFixture({ processChangesAfterAttribution: true }).result).toMatchObject({
-      status: 'unknown',
-      reason: 'background task process identity changed',
+    it('ignores a task output writer from another session', () => {
+      expect(taskFixture({ holderSessionId: 'foreign-session' }).result.status).toBe('none')
     })
-  })
 
-  it('returns unknown when proc cannot be inspected', () => {
-    const procError = Object.assign(new Error('denied'), { code: 'EACCES' })
-    expect(taskFixture({ procError }).result).toMatchObject({ status: 'unknown', reason: 'process table unreadable' })
-  })
+    it('ignores a task output writer owned by another user', () => {
+      expect(taskFixture({ uid: 1001 }).result.status).toBe('none')
+    })
 
-  it('does not count a monitor process even if an unexpected host shape gives it a task output fd', () => {
-    expect(taskFixture({
-      argv: 'node\0/plugin/bin/wt-wake-floor.mjs\0',
-    }).result.status).toBe('none')
+    it('does not attest a process without argv', () => {
+      expect(taskFixture({ argv: '' }).result).toMatchObject({
+        status: 'unknown',
+        reason: 'background task argv unreadable',
+      })
+    })
+
+    it('returns unknown when the matched fd changes during attribution', () => {
+      expect(taskFixture({ fdChanges: true }).result).toMatchObject({
+        status: 'unknown',
+        reason: 'background task fd identity changed',
+      })
+    })
+
+    it('returns unknown when the process identity changes during final descriptor attribution', () => {
+      expect(taskFixture({ processChangesAfterAttribution: true }).result).toMatchObject({
+        status: 'unknown',
+        reason: 'background task process identity changed',
+      })
+    })
+
+    it('returns unknown when proc cannot be inspected', () => {
+      const procError = Object.assign(new Error('denied'), { code: 'EACCES' })
+      expect(taskFixture({ procError }).result).toMatchObject({ status: 'unknown', reason: 'process table unreadable' })
+    })
+
+    it('does not count a monitor process even if an unexpected host shape gives it a task output fd', () => {
+      expect(taskFixture({
+        argv: 'node\0/plugin/bin/wt-wake-floor.mjs\0',
+      }).result.status).toBe('none')
+    })
   })
 
   it.each(['darwin', 'win32'])('returns legible unknown on %s without inspecting procfs', (platform) => {
