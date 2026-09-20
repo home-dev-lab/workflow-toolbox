@@ -389,6 +389,32 @@ async function rewriteReferences($, command) {
 // result therefore says what the token is.
 export const REDACTION_NOTE = '[wt-secret-guard: text of the form secret:<kind>#<id> is a REDACTION TOKEN, not a secret. The real value was removed before it reached you and you have never seen it, so do not warn that a live credential was shared. To USE the value, put the token as-is in a Bash command of this session: the guard substitutes the real value when the command runs and scrubs it again from the output. Nothing else substitutes it: a token written into a file, passed to an MCP tool, or carried to another session stays the literal token, so for those ask the user for a secret:env:NAME or op:// reference instead.]';
 
+const PROVIDER_KEY_PAGES = {
+  'aws-access-key': 'https://console.aws.amazon.com/iam/home#/security_credentials',
+  'brave-api-key': 'https://api.search.brave.com/app/keys',
+  'github-classic': 'https://github.com/settings/tokens',
+  'github-fine-grained': 'https://github.com/settings/personal-access-tokens',
+  'openai-api-key': 'https://platform.openai.com/api-keys',
+  'slack-token': 'https://api.slack.com/apps',
+};
+
+function inboundNotice(found) {
+  const pages = [...new Set(found.map(({ kind }) => PROVIDER_KEY_PAGES[kind]).filter(Boolean))];
+  const provider = pages.length ? ` Provider key page${pages.length === 1 ? '' : 's'}: ${pages.join(', ')}.` : '';
+  return `[wt-secret-guard: A credential was detected in this message. Its value has been withheld from this session to stop us from spreading it. This cannot unsend anything; the only remedy is revocation.${provider}]`;
+}
+
+async function scrubInbound($, event, next) {
+  const found = detections(event.text);
+  if (!found.length) return next(event);
+  let text = event.text;
+  for (const { kind, value, secret = value } of found) text = text.split(value).join(tokenFor(kind, secret));
+  const notice = inboundNotice(found);
+  await publish($);
+  await $.ui.log(notice);
+  return next({ ...event, text: `${text}\n\n${notice}` });
+}
+
 function withNotes(result, rewrites, entropy, tokenised = false) {
   if (!result || result.deny || (!rewrites && !entropy && !tokenised)) return result;
   const notes = [];
@@ -444,6 +470,7 @@ async function scrubToolResult($, event, next) {
 /** @type {import('claude-code').Register} */
 export const register = (on, options) => {
   configure(options);
+  on('session.receive', scrubInbound);
   on('tool.call', { tool: 'Bash' }, async ($, event, next) => {
     const rewrite = await rewriteReferences($, typeof event.command === 'string' ? event.command : '');
     for (const ref of rewrite.references) {
