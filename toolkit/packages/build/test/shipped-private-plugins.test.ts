@@ -45,6 +45,8 @@ describe('shipped private plugins', () => {
       'sdk prompt storage rewrites an enqueue record written after prompt forwarding',
       'queue-operation targeting is independent of prompt origin and retries a late enqueue',
       'does not register an inert user-tier prompt.context guard',
+      'inbound known-vendor credential is withheld with a visible revocation notice',
+      'ordinary inbound message mentioning key is unchanged and answerable',
       'plain-line op credential output is scrubbed',
       'complete concealed JSON output is scrubbed',
       'truncated concealed JSON output is scrubbed',
