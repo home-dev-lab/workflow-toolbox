@@ -154,6 +154,13 @@
       "required": false,
       "description": "Harness model alias or full claude-* model for the SDK orchestrator. Environment fallback: WT_SDK_ORCHESTRATOR_MODEL."
     },
+    "sdk_pilot_max_active": {
+      "type": "number",
+      "title": "Maximum active SDK pilots",
+      "default": 3,
+      "required": false,
+      "description": "Machine-wide active SDK pilot cap. New runs queue in FIFO order until both this cap and the host load gate permit admission. Environment fallback: WT_SDK_PILOT_MAX_ACTIVE."
+    },
     "executor_critic_model": {
       "type": "string",
       "title": "Executor critic model",

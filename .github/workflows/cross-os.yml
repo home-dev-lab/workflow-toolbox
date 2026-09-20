@@ -42,8 +42,9 @@ jobs:
         run: pnpm install
         timeout-minutes: 6
       # The default reporter ignores --outputFile (vitest writes a file only for json/junit/html), so the
-      # streaming log is captured with tee; the runner's bash has pipefail, pwsh re-raises $LASTEXITCODE.
+      # streaming log is captured with tee; an explicit `shell: bash` runs `bash -eo pipefail` (the unspecified default is `bash -e`, whose pipeline exit is tee's), pwsh re-raises $LASTEXITCODE.
       - name: Test (POSIX)
+        shell: bash
         if: ${{ runner.os == 'Linux' }}
         run: |
           mkdir -p ci-diagnostics
@@ -57,6 +58,7 @@ jobs:
         run: pnpm build:dist && node scripts/cross-repo-typecheck.mjs
         timeout-minutes: 8
       - name: Test (macOS shard 1/2)
+        shell: bash
         id: mac_shard_1
         if: ${{ runner.os == 'macOS' }}
         continue-on-error: true
@@ -67,6 +69,7 @@ jobs:
           pnpm test:shard --shard=1/2 2>&1 | tee ci-diagnostics/vitest-shard-1-of-2.log
         timeout-minutes: 12
       - name: Test (macOS shard 2/2)
+        shell: bash
         id: mac_shard_2
         if: ${{ runner.os == 'macOS' }}
         continue-on-error: true

@@ -5,6 +5,8 @@ import { parsePilotRunnerArgs, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 import { recordSessionEnvLog } from './lib/session-env-log.mjs'
+import { pilotAdmission } from './lib/pilot-admission.mjs'
+import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
 function usage() {
   return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--board-contract <json file>] [--knowledge-base-index <path>] [--archive-root <project root>] [--plugin-dir <absolute-path>]... [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--timeout <seconds>]'
@@ -18,7 +20,10 @@ async function main() {
   recordSessionEnvLog(options.dir)
   if (!existsSync(options.contract)) { process.stderr.write(`wt-pilot-runner: --contract does not exist: ${options.contract}\n`); return 2 }
   if (!existsSync(options.cardFile)) { process.stderr.write(`wt-pilot-runner: --card-file does not exist: ${options.cardFile}\n`); return 2 }
+  let admission
   try {
+    const maxActive = resolveWorkflowToolboxOption('sdk_pilot_max_active').value
+    admission = await pilotAdmission.awaitPilotAdmission({ worktree: options.dir, card: options.card, maxActive, log: (line) => process.stdout.write(`${line}\n`) })
     // Test-only manifest injection seals spawned CLI fixtures without changing real-user resolution order.
     const testManifest = process.env.NODE_ENV === 'test' ? process.env.WT_PILOT_TEST_SDK_MANIFEST : null
     const require = resolveAgentSdkRequire({ projectDir: options.dir, ...(testManifest ? { ownToolkitManifest: testManifest } : {}) })
@@ -29,6 +34,8 @@ async function main() {
   } catch (error) {
     process.stderr.write(`wt-pilot-runner: ${error instanceof Error ? error.message : String(error)}\n`)
     return 1
+  } finally {
+    await pilotAdmission.finishPilotAdmission(admission)
   }
 }
 

@@ -13,9 +13,12 @@ export const PLUGIN_VERSION = '0.184.0';
 export const SLOW_RENDER_THRESHOLD_MS = 50;
 export const MISSED_RENDERS_BEFORE_STOP = 3;
 export const RENDER_JOURNAL_MAX_BYTES = 64 * 1024;
-export function fileUrlPath(url, platform = process.platform) {
+// The hooks module runs without Node globals, so the platform is read from the URL itself:
+// a file URL on Windows carries a drive letter (/C:/...) or a UNC host, never on POSIX.
+export function fileUrlPath(url, platform) {
   const pathname = decodeURIComponent(url.pathname);
-  if (platform !== 'win32') return pathname;
+  const windows = platform ? platform === 'win32' : (/^\/[A-Za-z]:/.test(pathname) || Boolean(url.hostname));
+  if (!windows) return pathname;
   const windowsPath = pathname.replaceAll('/', '\\');
   return url.hostname ? `\\\\${url.hostname}${windowsPath}` : windowsPath.replace(/^\\(?=[A-Za-z]:)/, '');
 }
@@ -374,6 +377,12 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       ) : null,
     );
   };
+  const queueStatus = (queue) => {
+    const prefix = `queued · position ${queue.position || '?'}`;
+    if (queue.waiting?.kind === 'load') return `${prefix} · waiting for load ${queue.waiting.load} / ${queue.waiting.cores}`;
+    if (queue.waiting?.kind === 'slot') return `${prefix} · waiting for a free slot ${queue.waiting.active}/${queue.waiting.limit}`;
+    return `${prefix} · waiting for earlier runs`;
+  };
   const renderPilot = (row, indent, showCard = true, showStages = true) => {
     const isExpanded = expanded.has(row.id);
     const selection = selected.get(row.id);
@@ -392,6 +401,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       : null;
     const title = row.title && row.title !== row.id ? row.title : null;
     const current = row.phase && row.phase !== 'unknown' ? phaseLabel(row.phase) : null;
+    const queue = row.queue ? queueStatus(row.queue) : null;
     const expandedLines = isExpanded ? [
       ...knownDetails(row).map((line) => node(Text, { dimColor: true }, line)),
       row.usage ? node(Text, { dimColor: true }, `usage | ${Object.entries(row.usage).filter(([, value]) => value !== 'unknown').map(([name, value]) => `${name.replace(/[A-Z]/g, (letter) => ' ' + letter.toLowerCase())}: ${value}`).join(' | ')}`) : null,
@@ -413,6 +423,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         showCard ? renderCardId(row) : null,
         title ? node(Text, { wrap: 'wrap' }, `· ${title}`) : null,
         current ? fixedText({}, `· ${current}`) : null,
+        queue ? fixedText({ dimColor: true }, `· ${queue}`) : null,
         failed ? fixedText({ color: COLORS.error, bold: true }, ` · ${row.outcome}`) : null,
       ),
       showCard ? renderCardLink(row) : null,
@@ -429,9 +440,10 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const deepActors = (actors) => (actors || []).flatMap((actor) => [actor, ...deepActors([...(actor.lanes || []), ...(actor.children || [])])]);
   const renderCardStages = (card, sessionId) => {
     // `sdkLifecycle` is the deciding field: lifecycle phases replace, rather than extend, the legacy dev cycle.
-    const pilot = deepActors(card.actors).find((actor) => actor.sdkLifecycle === true && actor.phase && actor.phase !== 'unknown');
+    const pilot = deepActors(card.actors).find((actor) => actor.sdkLifecycle === true && ((actor.phase && actor.phase !== 'unknown') || actor.queue));
     const key = `timeline:${sessionId}:${card.id}`;
     const selection = selected.get(key);
+    if (pilot?.queue) return node(Box, { key, paddingLeft: 1 }, fixedText({ dimColor: true }, queueStatus(pilot.queue)));
     if (pilot) {
       const isExpanded = expanded.has(pilot.id);
       const stages = PANE_PHASES.map(([id]) => ({ id, label: phaseLabelFor(pilot, id), state: stateOf(pilot, id), cost: pilot.phaseCosts?.[id], inspector: pilot.inspectors?.[id] }));

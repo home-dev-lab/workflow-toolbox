@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { register, testState } from './hooks.js';
+import { configure, register, testState } from './hooks.js';
 import { sha256 } from './sha256.js';
 import { resolveReference } from './hooks.js';
 
@@ -63,6 +63,7 @@ const $ = {
 register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }));
 const bash = hooks.find((hook) => hook.event === 'tool.call').hook;
 const prompt = hooks.find((hook) => hook.event === 'prompt.submit').hook;
+const context = hooks.find((hook) => hook.event === 'prompt.context')?.hook;
 const read = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Read').hook;
 const mcp = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool instanceof RegExp).hook;
 const call = (command, output) => bash($, { tool: 'Bash', command }, async (event) => ({ result: { stdout: output ?? event.command, stderr: '' }, text: output ?? event.command }));
@@ -71,6 +72,7 @@ async function test(name, fn) { try { await fn(); console.log(`PASS ${name}`); }
 
 const github = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
 const aws = 'AKIA1234567890ABCDEF';
+await test('does not register an inert user-tier prompt.context guard', async () => { assert.equal(context, undefined); });
 await test('sha256 known answer', async () => { assert.equal(sha256('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'); });
 await test('output scrub and distinct tokens', async () => { const result = await call('x', `${github}\n${aws}`); assert(!JSON.stringify(result).includes(github)); assert(!JSON.stringify(result).includes(aws)); assert.equal(testState().size, 2); });
 await test('token round-trip', async () => { const [token, entry] = [...testState()][0]; let received; await bash($, { tool: 'Bash', command: `echo ${token}` }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, `echo ${entry.value}`); });
@@ -123,6 +125,58 @@ await test('prompt secrets are scrubbed before forwarding and downstream drops s
   assert.equal(received[0].source, 'user');
   assert.equal(input.text, `paste ${github}`);
   assert.equal(result, outcome);
+});
+await test('email masking is off by default in prompts and tool results', async () => {
+  configure({});
+  const email = 'alice@internal.test';
+  let received;
+  await prompt($, { text: `contact ${email}` }, async (event) => { received = event; return {}; });
+  const result = await read($, { tool: 'Read' }, async () => ({ text: `owner ${email}` }));
+  assert(received.text.includes(email));
+  assert(result.text.includes(email));
+});
+await test('email masking option covers prompts and tool results', async () => {
+  configure({ maskEmails: true });
+  const email = 'bob@internal.test';
+  let received;
+  await prompt($, { text: `contact ${email}` }, async (event) => { received = event; return {}; });
+  const result = await read($, { tool: 'Read' }, async () => ({ text: `owner ${email}` }));
+  assert(!received.text.includes(email));
+  assert.match(received.text, /secret:email#/);
+  assert(!result.text.includes(email));
+  assert.match(result.text, /secret:email#/);
+  configure({});
+  let unmasked;
+  await prompt($, { text: `contact ${email}` }, async (event) => { unmasked = event; return {}; });
+  assert(unmasked.text.includes(email));
+});
+await test('IP masking is off by default in prompts and tool results', async () => {
+  configure({});
+  const ip = '8.8.4.4';
+  const ipv6 = '2001:4860:4860::8888';
+  let received;
+  await prompt($, { text: `connect to ${ip}` }, async (event) => { received = event; return {}; });
+  const result = await read($, { tool: 'Read' }, async () => ({ text: `peers ${ip} and ${ipv6}` }));
+  assert(received.text.includes(ip));
+  assert(result.text.includes(ip));
+  assert(result.text.includes(ipv6));
+});
+await test('IP masking option covers prompts and tool results', async () => {
+  configure({ maskIpAddresses: true });
+  const ip = '8.8.4.4';
+  const ipv6 = '2001:4860:4860::8888';
+  let received;
+  await prompt($, { text: `connect to ${ip}` }, async (event) => { received = event; return {}; });
+  const result = await read($, { tool: 'Read' }, async () => ({ text: `peers ${ip} and ${ipv6}` }));
+  assert(!received.text.includes(ip));
+  assert.match(received.text, /secret:ip-address#/);
+  assert(!result.text.includes(ip));
+  assert(!result.text.includes(ipv6));
+  assert.match(result.text, /secret:ip-address#/);
+  configure({});
+  let unmasked;
+  await prompt($, { text: `connect to ${ip}` }, async (event) => { unmasked = event; return {}; });
+  assert(unmasked.text.includes(ip));
 });
 await test('prompt storage rewrites history display and nested pasted contents without changing unrelated lines or mode', async () => {
   const raw = `ghp_${'h'.repeat(36)}`;

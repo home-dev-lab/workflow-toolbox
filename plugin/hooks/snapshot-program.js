@@ -275,17 +275,26 @@ function info(file) { const safeFile = safePath(file); return safeFile ? infoUnr
 function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : null; } catch { return null; } }
 function cardIds(value) { return [...new Set(String(value || '').match(/\b\d{19}\b/g) || [])]; }
 function briefCard(value) {
-  const title = String(value || '').match(/^#\s+[^\n]+$/m)?.[0] || '';
-  return title.match(/^#\s+Brief[^\n]*\bcard\s+(\d{19})\b/i)?.[1] || null;
+  const title = markdownHeadings(value).find(heading => !standardPreamble(heading)) || '';
+  return title.match(/^Brief[^\n]*\bcard\s+(\d{19})\b/i)?.[1] || null;
 }
 function cardMarkdownId(value) { return String(value || '').match(/^Card(?: id)?:\s*(\d{19})\b/im)?.[1] || null; }
-function markdownTitle(value) { return String(value || '').match(/^#\s+(.+)$/m)?.[1]?.trim() || null; }
-function externalTitle(value) { return markdownTitle(value)?.replace(/^Brief\s*(?::|—)\s*/i, '') || null; }
+function markdownHeadings(value) { return [...String(value || '').matchAll(/^#\s+(.+)$/gm)].map(match => match[1].trim()); }
+function markdownTitle(value) { return markdownHeadings(value)[0] || null; }
+function standardPreamble(value) { return /^Standing preamble for every external-lane brief\b/i.test(String(value || '').trim()); }
+function externalTitle(value) { return markdownHeadings(value).find(title => !standardPreamble(title))?.replace(/^Brief\s*(?::|—)\s*/i, '') || null; }
 function cleanCardTitle(value, id) {
   let title = String(value || '').trim();
   if (id) title = title.replace(new RegExp('^card\\s+' + id + '\\s*(?:,|:|—|-)\\s*', 'i'), '');
   title = title.replace(/^step\s+\d+\s*[.:,—-]?\s*/i, '');
   return title.trim() || null;
+}
+function laneCardReceipt(worktree, requestedId = null) {
+  const names = list(lanePath(worktree)).filter(name => /^card-\d{19}\.md$/.test(name));
+  const name = (requestedId && names.find(candidate => candidate === 'card-' + requestedId + '.md')) || names.sort()[0];
+  if (!name) return null;
+  const id = name.match(/^card-(\d{19})\.md$/)?.[1] || null;
+  return id ? { id, title: cleanCardTitle(markdownTitle(head(lanePath(worktree, name))), id) } : null;
 }
 function envField(file, name) {
   const value = head(file, 32 * 1024);
@@ -1021,12 +1030,13 @@ function externalRole(worktree, title, launchedBrief = null) {
 const implementationRootsByCard = new Map();
 for (const worktree of scannedWorktrees) {
   const brief = head(lanePath(worktree, 'brief.md'));
-  const id = briefCard(brief);
-  const title = cleanCardTitle(externalTitle(brief), id);
+  const cardReceipt = laneCardReceipt(worktree);
+  const id = cardReceipt?.id || briefCard(brief);
+  const title = cardReceipt?.title || cleanCardTitle(externalTitle(brief), id);
   if (!id || externalRole(worktree, title).label !== 'Lane') continue;
   const receipt = head(lanePath(worktree, 'card.md'));
   const receiptId = cardMarkdownId(receipt) || cardIds(markdownTitle(receipt))[0] || null;
-  const receiptTitle = receiptId === id ? cleanCardTitle(markdownTitle(receipt), id) : null;
+  const receiptTitle = cardReceipt?.title || (receiptId === id ? cleanCardTitle(markdownTitle(receipt), id) : null);
   const step = Number(String(markdownTitle(brief) || '').match(/\bstep\s+(\d+)\b/i)?.[1]);
   const roots = implementationRootsByCard.get(id) || [];
   roots.push({ worktree, step: Number.isSafeInteger(step) ? step : null, receiptTitle });
@@ -1036,9 +1046,10 @@ for (const worktree of scannedWorktrees) {
   const runnerLogFile = sdkLogFile(worktree);
   const runnerLog = tail(runnerLogFile);
   const timeline = lifecycleTimeline(worktree);
-  if (runnerLog !== null || timeline) {
+  const admission = json(lanePath(worktree, 'admission.json'));
+  if (runnerLog !== null || timeline || ['queued', 'active'].includes(admission?.state)) {
     const route = json(lanePath(worktree, 'route.json'));
-    const routeCardId = route?.cardId;
+    const routeCardId = route?.cardId || admission?.cardId;
     const id = /^\d{19}$/.test(String(routeCardId || ''))
       ? String(routeCardId)
       : cardMarkdownId(head(lanePath(worktree, 'card.md')));
@@ -1060,7 +1071,8 @@ for (const worktree of scannedWorktrees) {
         runnerLogTruncated: (info(runnerLogFile)?.size || 0) > LOG_TAIL_BYTES,
         outcome: 'running',
         route: /^(?:LITE|FULL)$/.test(String(route?.route)) ? route.route : null,
-        title: markdownTitle(head(lanePath(worktree, 'card.md'))),
+        title: laneCardReceipt(worktree, id)?.title || markdownTitle(head(lanePath(worktree, 'card.md'))),
+        queue: admission?.state === 'queued' ? { position: admission.position, waiting: admission.waiting, load: admission.load } : null,
       });
       continue;
     }
@@ -1068,12 +1080,13 @@ for (const worktree of scannedWorktrees) {
   const runLog = tail(lanePath(worktree, 'run.log'));
   const brief = head(lanePath(worktree, 'brief.md'));
   if (runLog === null || brief === null) continue;
-  const strictId = briefCard(brief);
-  const provisionalTitle = cleanCardTitle(externalTitle(brief), strictId) || path.basename(worktree);
+  const cardReceipt = laneCardReceipt(worktree);
+  const strictId = cardReceipt?.id || briefCard(brief);
+  const provisionalTitle = cardReceipt?.title || cleanCardTitle(externalTitle(brief), strictId) || path.basename(worktree);
   const role = externalRole(worktree, provisionalTitle, processByWorktree.get(worktree)?.brief);
   const label = role.label;
   const id = strictId || (/^(?:Review lane|Refutation)/.test(label) ? cardIds(brief)[0] || null : null);
-  const title = cleanCardTitle(externalTitle(brief), id) || path.basename(worktree);
+  const title = cardReceipt?.title || cleanCardTitle(externalTitle(brief), id) || path.basename(worktree);
   const exited = /^EXIT=\d+$/.test(runLog.split(/\r?\n/).filter(Boolean).at(-1) || '');
   const terminalReport = /^(?:Review lane|Refutation)/.test(label)
     ? ['report.md', label.startsWith('Review lane') ? 'review-report.md' : 'refutation-report.md'].map(file => lanePath(worktree, file)).find(file => info(file)?.isFile()) || null
@@ -1150,6 +1163,7 @@ for (const id of ids) {
     sdkLifecycle: true,
     label: 'SDK pilot',
     title,
+    queue: lane?.queue || null,
     waveId: wave?.waveId || null,
     route: lane?.route || null,
     phase: phaseOf(lane?.phase || record?.phase),
@@ -1210,10 +1224,11 @@ for (const processRecord of processes.values()) {
     if (!worktree || !info(lanePath(worktree))?.isDirectory()) continue;
     const launchedBrief = processByWorktree.get(worktree)?.brief || null;
     const brief = head(lanePath(worktree, 'brief.md')) || (launchedBrief ? head(launchedBrief) : '') || '';
-    const id = cardIds(brief)[0] || null;
+    const cardReceipt = laneCardReceipt(worktree);
+    const id = cardReceipt?.id || cardIds(brief)[0] || null;
     const isFix = Boolean(launchedBrief && /^fix-brief[^/]*\.md$/i.test(path.basename(launchedBrief)));
     const detail = isFix ? markdownTitle(brief)?.match(/\b(?:review\s+round|round|step)\s+\d+(?:\s+round\s+\d+)?\b/i)?.[0] || null : null;
-    const heading = isFix ? detail : cleanCardTitle(externalTitle(brief), id) || path.basename(worktree);
+    const heading = isFix ? detail : cardReceipt?.title || cleanCardTitle(externalTitle(brief), id) || path.basename(worktree);
     const classified = isFix ? { label: 'Fix lane', inferred: false } : externalRole(worktree, heading, launchedBrief);
     const label = classified.label;
     const modelAt = args.findIndex(arg => arg === '--model');

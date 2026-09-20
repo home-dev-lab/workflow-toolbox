@@ -270,7 +270,8 @@ describe('wt-wake-floor', () => {
 
     const result = runOnce(state.projectDir, envFor(state.stateHome, { PATH: emptyPath }))
 
-    expect(result.stdout).toContain('In-flight check inconclusive (git worktree list unavailable)')
+    const unsupported = process.platform === 'linux' ? '' : '; background task inspection requires Linux procfs'
+    expect(result.stdout).toBe(`${FLOOR_LINE} In-flight check inconclusive (git worktree list unavailable${unsupported}); firing because I cannot tell whether work armed by this session is running.\n`)
   })
 
   it('does not mistake recently completed task and transcript files for in-flight work', () => {
