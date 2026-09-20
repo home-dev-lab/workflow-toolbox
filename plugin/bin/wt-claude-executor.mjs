@@ -8,7 +8,7 @@ import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './lib/sdk-role-profile.mjs'
 
-const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
+const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
 function finish(log, code) {
   try {
@@ -39,9 +39,11 @@ async function worker(options) {
   let readOnlyReport = ''
   let servedModel = options.model
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
+  if (options.variant) appendFileSync(options.log, `variant=${options.variant} origin=${options.variantOrigin ?? 'override'} forced=false\n`)
   try {
     const queryOptions = composeSdkRoleQueryOptions({
       model: options.model,
+      ...(options.variant ? { effort: options.variant } : {}),
       cwd: options.dir,
       settingSources: [],
       canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex, profile: sdkRole.profile }),
@@ -71,6 +73,7 @@ async function worker(options) {
     }
     if (!initReceiptSeen) throw new Error('SDK executor run ended without an initialization receipt')
     if (launch.readOnly && !existsSync(launch.report) && readOnlyReport) writeFileSync(launch.report, `${readOnlyReport.trim()}\n`)
+    if (existsSync(launch.report) && options.variant) appendFileSync(launch.report, `\nvariant=${options.variant} origin=${options.variantOrigin ?? 'override'} forced=false\n`)
   } catch (error) {
     if (!timedOut) { failed = true; appendFileSync(options.log, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`) }
   } finally {
@@ -92,7 +95,7 @@ async function main() {
   try { assertHarnessAlias(options.model); executorBrief(options) } catch (error) { process.stderr.write(`wt-claude-executor: ${error instanceof Error ? error.message : String(error)}\n`); return 2 }
   if (isWorker) return worker(options)
   mkdirSync(path.join(options.dir, '.lane'), { recursive: true })
-  const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', options.dir, '--model', options.model, '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role, ...(options.knowledgeBaseIndex ? ['--knowledge-base-index', options.knowledgeBaseIndex] : [])], { detached: true, stdio: 'ignore', env: process.env })
+  const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', options.dir, '--model', options.model, ...(options.variant ? ['--variant', options.variant] : []), ...(options.variantOrigin ? ['--variant-origin', options.variantOrigin] : []), '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role, ...(options.knowledgeBaseIndex ? ['--knowledge-base-index', options.knowledgeBaseIndex] : [])], { detached: true, stdio: 'ignore', env: process.env })
   child.unref()
   process.stdout.write(`pid=${child.pid}\nlog=${options.log}\n`)
   return 0

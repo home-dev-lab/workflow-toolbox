@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 - Add dispatch-only Linux, Windows, and macOS host probes for process tables, process-group termination, and real path behavior, with provenance-rich byte-stable evidence artifacts
+- Add launch-time reasoning variants for all pilot, orchestrator, and executor roles, with model caps, explicit overrides, unknown-variant refusal and auditable forced overrides
 
 ### Fixed
 - Price Claude Haiku 4.5 and all default routable models from source-backed fallback rows, and make unknown-price run totals name the unpriced models in archives and What is running

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { confinedToWorktree } from './pilot-runner-core.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './sdk-role-profile.mjs'
+import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 
 const MAX_UNPRODUCTIVE_TURNS = 3
 const WAVE_TOOLS = new Set([
@@ -96,8 +97,11 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
   }
   const start = () => {
     if (consumePromise) return
+    const model = models.sdkOrchestrator ?? models.orchestrator
+    const variant = model.variant ?? resolveRoleVariant('sdkOrchestrator', model.effective ?? model.value, { env })
     const queryOptions = composeSdkRoleQueryOptions({
-      model: (models.sdkOrchestrator ?? models.orchestrator).value,
+      model: model.value,
+      effort: variant.value,
       systemPrompt: contract,
       settingSources: [],
       permissionMode: 'default',
