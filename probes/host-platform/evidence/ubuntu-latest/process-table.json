@@ -1,0 +1,57 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "process-table",
+    "capturedAt": "2026-09-20T09:08:01.447Z",
+    "command": "ps -axo pid=,ppid=,pgid=,state=,etime=,comm=",
+    "runId": "35501457364",
+    "commitSha": "2ca53474daa3cf4368b62336ada74b15963023fd",
+    "runnerImage": {
+      "label": "ubuntu-latest",
+      "os": "ubuntu24",
+      "version": "20260907.300.1"
+    },
+    "osRelease": {
+      "platform": "linux",
+      "release": "6.17.0-1022-azure",
+      "version": "#22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "command": "ps --version",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "ps from procps-ng 4.0.4\n"
+      },
+      "powershell": {
+        "status": "not_used",
+        "reason": "PowerShell is not used by these probes on this OS"
+      }
+    }
+  },
+  "disclosurePolicy": "Executable names only. Command-line arguments are neither requested nor recorded.",
+  "columns": [
+    "pid",
+    "ppid",
+    "pgid",
+    "state",
+    "elapsed",
+    "executableName"
+  ],
+  "processTable": {
+    "command": "ps -axo pid=,ppid=,pgid=,state=,etime=,comm=",
+    "exitCode": 0,
+    "signal": null,
+    "error": null,
+    "raw": "      1       0       1 S       00:46 systemd\n      2       0       0 S       00:46 kthreadd\n      3       2       0 S       00:46 pool_workqueue_release\n      4       2       0 I       00:46 kworker/R-rcu_gp\n      5       2       0 I       00:46 kworker/R-sync_wq\n      6       2       0 I       00:46 kworker/R-kvfree_rcu_reclaim\n      7       2       0 I       00:46 kworker/R-slub_flushwq\n      8       2       0 I       00:46 kworker/R-netns\n      9       2       0 I       00:46 kworker/0:0-hv_vmbus_con\n     10       2       0 I       00:46 kworker/0:1-hv_sub_chan\n     11       2       0 I       00:46 kworker/0:0H-events_highpri\n     12       2       0 I       00:46 kworker/u16:0-ext4-rsv-conversion\n     13       2       0 I       00:46 kworker/R-mm_percpu_wq\n     14       2       0 S       00:46 ksoftirqd/0\n     15       2       0 I       00:46 rcu_sched\n     16       2       0 S       00:46 rcu_exp_par_gp_kthread_worker/0\n     17       2       0 S       00:46 rcu_exp_gp_kthread_worker\n     18       2       0 S       00:46 migration/0\n     19       2       0 S       00:46 idle_inject/0\n     20       2       0 S       00:46 cpuhp/0\n     21       2       0 S       00:46 cpuhp/2\n     22       2       0 S       00:46 idle_inject/2\n     23       2       0 S       00:46 migration/2\n     24       2       0 S       00:46 ksoftirqd/2\n     25       2       0 I       00:46 kworker/2:0-rcu_gp\n     26       2       0 I       00:46 kworker/2:0H-events_highpri\n     27       2       0 S       00:46 cpuhp/1\n     28       2       0 S       00:46 idle_inject/1\n     29       2       0 S       00:46 migration/1\n     30       2       0 S       00:46 ksoftirqd/1\n     31       2       0 I       00:46 kworker/1:0-events\n     32       2       0 I       00:46 kworker/1:0H-events_highpri\n     33       2       0 S       00:46 cpuhp/3\n     34       2       0 S       00:46 idle_inject/3\n     35       2       0 S       00:46 migration/3\n     36       2       0 S       00:46 ksoftirqd/3\n     37       2       0 I       00:46 kworker/3:0-events\n     38       2       0 I       00:46 kworker/3:0H-events_highpri\n     39       2       0 S       00:46 kdevtmpfs\n     40       2       0 I       00:46 kworker/R-inet_frag_wq\n     41       2       0 I       00:46 rcu_tasks_rude_kthread\n     42       2       0 I       00:46 rcu_tasks_trace_kthread\n     43       2       0 S       00:46 kauditd\n     44       2       0 S       00:46 khungtaskd\n     45       2       0 S       00:46 oom_reaper\n     46       2       0 I       00:46 kworker/u16:1-flush-8:0\n     47       2       0 I       00:46 kworker/u16:2-kvfree_rcu_reclaim\n     48       2       0 I       00:46 kworker/R-writeback\n     49       2       0 S       00:46 kcompactd0\n     50       2       0 S       00:46 ksmd\n     51       2       0 S       00:46 khugepaged\n     52       2       0 I       00:46 kworker/R-kblockd\n     53       2       0 I       00:46 kworker/R-blkcg_punt_bio\n     54       2       0 I       00:46 kworker/R-kintegrityd\n     55       2       0 S       00:46 irq/9-acpi\n     56       2       0 I       00:46 kworker/1:1-events\n     57       2       0 I       00:46 kworker/3:1-cgroup_free\n     58       2       0 I       00:46 kworker/2:1-events\n     59       2       0 I       00:46 kworker/R-tpm_dev_wq\n     60       2       0 I       00:46 kworker/R-ata_sff\n     61       2       0 I       00:46 kworker/R-md\n     62       2       0 I       00:46 kworker/R-md_bitmap\n     63       2       0 I       00:46 kworker/R-edac-poller\n     64       2       0 I       00:46 kworker/R-hv_vmbus_con\n     65       2       0 I       00:46 kworker/R-hv_vmbus_rescind\n     66       2       0 I       00:46 kworker/R-hv_pri_chan\n     67       2       0 I       00:46 kworker/R-hv_sub_chan\n     68       2       0 I       00:46 kworker/R-devfreq_wq\n     69       2       0 S       00:46 watchdogd\n     70       2       0 I       00:46 kworker/R-quota_events_unbound\n     71       2       0 I       00:46 kworker/0:1H-kblockd\n     72       2       0 S       00:46 kswapd0\n     73       2       0 S       00:46 ecryptfs-kthread\n     74       2       0 I       00:46 kworker/R-kthrotld\n     75       2       0 I       00:46 kworker/R-nfit\n     76       2       0 S       00:46 scsi_eh_1\n     77       2       0 S       00:46 scsi_eh_0\n     78       2       0 I       00:46 kworker/R-scsi_tmf_1\n     79       2       0 I       00:46 kworker/R-scsi_tmf_0\n     80       2       0 I       00:46 kworker/R-nvme-wq\n     81       2       0 I       00:46 kworker/R-nvme-reset-wq\n     82       2       0 I       00:46 kworker/R-nvme-delete-wq\n     83       2       0 I       00:46 kworker/R-nvme-auth-wq\n     84       2       0 I       00:46 kworker/u16:3-ext4-rsv-conversion\n     85       2       0 I       00:46 kworker/u16:4-ext4-rsv-conversion\n     86       2       0 I       00:46 kworker/u16:5-iou_exit\n     87       2       0 S       00:46 hv_balloon\n     88       2       0 I       00:46 kworker/R-mld\n     89       2       0 I       00:46 kworker/1:1H-kblockd\n     90       2       0 I       00:46 kworker/R-ipv6_addrconf\n     91       2       0 I       00:46 kworker/R-kstrp\n     93       2       0 I       00:46 kworker/u17:0\n    104       2       0 S       00:45 jbd2/sda1-8\n    105       2       0 I       00:45 kworker/R-ext4-rsv-conversion\n    106       2       0 I       00:45 kworker/3:1H-kblockd\n    107       2       0 I       00:45 kworker/3:2-cgroup_bpf_destroy\n    108       2       0 I       00:45 kworker/2:1H-kblockd\n    157       1     157 S       00:45 systemd-journal\n    171       2       0 I       00:45 kworker/0:2-events\n    179       2       0 I       00:45 kworker/R-kmpathd\n    180       2       0 I       00:45 kworker/R-kmpath_handlerd\n    181       2       0 I       00:45 kworker/2:2-events\n    212       2       0 I       00:45 kworker/1:2-cgroup_free\n    217       2       0 I       00:45 kworker/1:3-events\n    218       2       0 I       00:45 kworker/1:4\n    222       1     222 S       00:45 multipathd\n    228       1     228 S       00:45 systemd-udevd\n    239       2       0 S       00:44 psimon\n    306       2       0 I       00:44 kworker/0:3-rcu_gp\n    375       2       0 I       00:44 kworker/R-tls-strp\n    376       2       0 I       00:43 kworker/R-mlx5_cmd_c1db:00:02.0\n    377       2       0 I       00:43 kworker/R-mlx5_healthc1db:00:02.0\n    378       2       0 I       00:43 kworker/R-mlx5_page_allocator\n    379       2       0 I       00:43 kworker/R-mlx5_events\n    388       2       0 S       00:43 ptp1\n    389       2       0 I       00:43 kworker/R-mlx5_fc\n    390       2       0 I       00:43 kworker/R-mlx5_hv_vhca\n    391       2       0 I       00:43 kworker/R-mlx5e\n    392       2       0 I       00:43 kworker/R-mlx5e_arfs\n    393       2       0 I       00:43 kworker/R-ib-comp-wq\n    394       2       0 I       00:43 kworker/R-ib-comp-unb-wq\n    395       2       0 I       00:43 kworker/R-ib_mcast\n    396       2       0 I       00:43 kworker/R-ib_nl_sa_wq\n    399       2       0 I       00:43 kworker/R-mkey_cache\n    400       1     400 S       00:43 hv_kvp_daemon\n    440       2       0 S       00:42 jbd2/sda16-8\n    441       2       0 I       00:42 kworker/R-ext4-rsv-conversion\n    556       1     556 S       00:42 systemd-resolve\n    599       1     599 S       00:42 haveged\n    740       1     740 S       00:40 systemd-network\n    743       2       0 I       00:39 kworker/2:3\n    906       1     906 S       00:36 dbus-daemon\n    912       1     912 S       00:35 networkd-dispat\n    914       1     914 S       00:35 php-fpm8.3\n    918       1     918 S       00:35 polkitd\n    936       1     936 S       00:35 systemd-logind\n    938       1     938 S       00:35 udisksd\n    939       1     939 S       00:35 python3\n    964       1     964 S       00:35 cron\n    984       1     984 S       00:35 rsyslogd\n    994       1     994 S       00:35 containerd\n   1017       1    1016 S       00:35 chronyd\n   1027       1    1027 S       00:35 agetty\n   1037    1017    1016 S       00:35 chronyd\n   1090       1    1090 S       00:35 agetty\n   1093       1    1093 S       00:35 ModemManager\n   1107       1    1107 S       00:35 systemd\n   1117    1107    1107 S       00:35 (sd-pam)\n   1277       1    1277 S       00:34 dockerd\n   1281     939     939 S       00:34 python3\n   1299     914     914 S       00:34 php-fpm8.3\n   1302     914     914 S       00:34 php-fpm8.3\n   1441       2       0 I       00:34 kworker/u16:6-iou_exit\n   1967       2       0 S       00:22 psimon\n   1969       1    1969 S       00:22 hosted-compute-\n   1986    1969    1969 S       00:21 sudo\n   1988    1986    1969 S       00:21 provjobd3831654\n   2022    1969    1969 S       00:05 Runner.Listener\n   2047    2022    1969 S       00:03 Runner.Worker\n   2216    2047    1969 S       00:00 bash\n   2217    2216    1969 S       00:00 MainThread\n   2224    2217    1969 R       00:00 ps\n"
+  },
+  "cwdQuestion": {
+    "question": "Can PID map to current working directory?",
+    "status": "answerable",
+    "mechanism": "/proc/<pid>/cwd",
+    "observation": "/home/runner/work/workflow-toolbox/workflow-toolbox"
+  }
+}

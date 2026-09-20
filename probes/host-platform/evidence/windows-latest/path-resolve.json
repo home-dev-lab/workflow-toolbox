@@ -1,0 +1,80 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "path-resolve",
+    "capturedAt": "2026-09-20T09:08:19.928Z",
+    "command": "node path-resolve.mjs D:\\a\\workflow-toolbox\\workflow-toolbox\\probes\\host-platform\\evidence\\windows-latest\\path-resolve.json",
+    "runId": "35501457364",
+    "commitSha": "2ca53474daa3cf4368b62336ada74b15963023fd",
+    "runnerImage": {
+      "label": "windows-latest",
+      "os": "win25-vs2026",
+      "version": "20260907.229.1"
+    },
+    "osRelease": {
+      "platform": "win32",
+      "release": "10.0.26100",
+      "version": "Windows Server 2025 Datacenter",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "status": "not_used",
+        "reason": "procps is not the process-table provider on this OS"
+      },
+      "powershell": {
+        "command": "pwsh -NoProfile -NonInteractive -Command $PSVersionTable.PSVersion.ToString()",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "7.6.5\r\n"
+      }
+    }
+  },
+  "tempDirectory": {
+    "reportedRoot": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp",
+    "createdPath": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV",
+    "machineEvidence": {
+      "status": "measured",
+      "input": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV",
+      "realpath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV"
+    }
+  },
+  "symlinkedDirectory": {
+    "creation": "measured",
+    "status": "measured",
+    "input": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV\\directory-link",
+    "realpath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV\\target",
+    "targetRealpath": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV\\target"
+  },
+  "windows83ShortForm": {
+    "status": "measured",
+    "commandResult": {
+      "command": "cmd.exe /d /s /c for %I in (\"C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV\") do @echo %~sI",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "D:\\\"C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV\\\"\r\n"
+    },
+    "resolvedShortPath": {
+      "status": "measurement_failed",
+      "input": "D:\\\"C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV\\\"",
+      "error": "ENOENT: no such file or directory, realpath 'D:\\\"C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV\\\"'"
+    },
+    "note": "A short path identical to the long path means 8.3 naming is disabled or no component has a short alias."
+  },
+  "windowsUnc": {
+    "status": "attempted",
+    "inputConstruction": {
+      "kind": "string_arithmetic",
+      "description": "Mapped the local drive root to its localhost administrative-share spelling."
+    },
+    "machineEvidence": {
+      "status": "measured",
+      "input": "\\\\localhost\\C$\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV",
+      "realpath": "\\\\localhost\\C$\\Users\\runneradmin\\AppData\\Local\\Temp\\wt-host-path-probe-46dqIV"
+    }
+  },
+  "classification": "Only cases labelled machineEvidence or measured called the host filesystem. Labelled string_arithmetic values are inputs, not probe conclusions."
+}

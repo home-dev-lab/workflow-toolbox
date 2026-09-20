@@ -1,0 +1,95 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "process-group-terminate",
+    "capturedAt": "2026-09-20T09:08:02.115Z",
+    "command": "process.kill(-2234, SIGTERM)",
+    "runId": "35501457364",
+    "commitSha": "2ca53474daa3cf4368b62336ada74b15963023fd",
+    "runnerImage": {
+      "label": "ubuntu-latest",
+      "os": "ubuntu24",
+      "version": "20260907.300.1"
+    },
+    "osRelease": {
+      "platform": "linux",
+      "release": "6.17.0-1022-azure",
+      "version": "#22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "command": "ps --version",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "ps from procps-ng 4.0.4\n"
+      },
+      "powershell": {
+        "status": "not_used",
+        "reason": "PowerShell is not used by these probes on this OS"
+      }
+    }
+  },
+  "operation": {
+    "kind": "posix_process_group",
+    "pgid": 2234
+  },
+  "pids": {
+    "childPid": 2234,
+    "grandchildPid": 2241
+  },
+  "termination": {
+    "command": "process.kill(-2234, SIGTERM)",
+    "exitCode": 0,
+    "signal": null,
+    "error": null,
+    "raw": "",
+    "sentAt": 1789895281598
+  },
+  "outcome": {
+    "child": {
+      "status": "died",
+      "processState": null,
+      "observation": {
+        "command": "ps -o state= -p 2234",
+        "exitCode": 1,
+        "signal": null,
+        "error": null,
+        "raw": ""
+      },
+      "exitCode": 0,
+      "observerSignal": null,
+      "signalObserved": [
+        {
+          "signal": "SIGTERM",
+          "at": "2026-09-20T09:08:01.598Z"
+        }
+      ]
+    },
+    "grandchild": {
+      "status": "died",
+      "processState": null,
+      "observation": {
+        "command": "ps -o state= -p 2241",
+        "exitCode": 1,
+        "signal": null,
+        "error": null,
+        "raw": ""
+      },
+      "exitCode": {
+        "status": "unobservable",
+        "reason": "the probe parent is not the grandchild parent"
+      },
+      "observerSignal": null,
+      "signalObserved": [
+        {
+          "signal": "SIGTERM",
+          "at": "2026-09-20T09:08:01.598Z"
+        }
+      ]
+    },
+    "elapsedMilliseconds": 624
+  }
+}
