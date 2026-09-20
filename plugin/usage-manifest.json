@@ -77,6 +77,7 @@
     { "name": "WT_SDK_PILOT_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
     { "name": "WT_SDK_PILOT_HARD_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
     { "name": "WT_SDK_ORCHESTRATOR_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
+    { "name": "WT_SDK_PILOT_MAX_ACTIVE", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback; default 3)" },
     { "name": "WT_EXECUTOR_CRITIC_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
     { "name": "WT_EXECUTOR_CODE_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },
     { "name": "WT_EXECUTOR_REVIEW_MODEL", "where": "plugin/bin/lib/plugin-options.mjs (plugin-option fallback)" },

@@ -19,6 +19,7 @@ const cases = [
   { option: 'artifact_server_deny', envKey: 'WT_ARTIFACT_SERVER_DENY', optionValue: '*.option', envValue: '*.env', defaultValue: '' },
   { option: 'planka_mcp_url', envKey: 'WT_PLANKA_MCP_URL', optionValue: 'http://option:1/mcp', envValue: 'http://env:2/mcp', defaultValue: '' },
   { option: 'second_opinion_fable_max_pct', envKey: 'WT_SECOND_OPINION_FABLE_MAX_PCT', optionValue: 72, envValue: '73', defaultValue: 90 },
+  { option: 'sdk_pilot_max_active', envKey: 'WT_SDK_PILOT_MAX_ACTIVE', optionValue: 4, envValue: '5', defaultValue: 3 },
   { option: 'release_branch', envKey: 'WT_RELEASE_BRANCH', optionValue: 'stable', envValue: 'release', defaultValue: '' },
   { option: 'adopt_refresh', envKey: 'WT_ADOPT_REFRESH', optionValue: 'notice-only', envValue: 'session', defaultValue: 'session' },
 ] as const
@@ -44,7 +45,7 @@ describe('workflow-toolbox plugin option resolver', () => {
   it.each(cases)('$option: env is used without a plugin option', ({ option, envKey, envValue }) => {
     const f = fixture({})
     f.env[envKey] = envValue
-    const expected = option === 'artifact_server_port' || option === 'artifact_server_idle_grace_s' || option === 'second_opinion_fable_max_pct'
+    const expected = option === 'artifact_server_port' || option === 'artifact_server_idle_grace_s' || option === 'second_opinion_fable_max_pct' || option === 'sdk_pilot_max_active'
       ? Number(envValue)
       : option === 'artifact_server'
         ? true

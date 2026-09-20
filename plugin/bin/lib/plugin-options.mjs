@@ -26,6 +26,7 @@ const DEFINITIONS = Object.freeze({
   sdk_pilot_model: { envKey: 'WT_SDK_PILOT_MODEL', type: 'string', defaultValue: 'opus' },
   sdk_pilot_hard_model: { envKey: 'WT_SDK_PILOT_HARD_MODEL', type: 'string', defaultValue: 'opus' },
   sdk_orchestrator_model: { envKey: 'WT_SDK_ORCHESTRATOR_MODEL', type: 'string', defaultValue: 'opus' },
+  sdk_pilot_max_active: { envKey: 'WT_SDK_PILOT_MAX_ACTIVE', type: 'number', defaultValue: 3 },
   executor_critic_model: { envKey: 'WT_EXECUTOR_CRITIC_MODEL', type: 'string', defaultValue: '' },
   executor_code_model: { envKey: 'WT_EXECUTOR_CODE_MODEL', type: 'string', defaultValue: '' },
   executor_review_model: { envKey: 'WT_EXECUTOR_REVIEW_MODEL', type: 'string', defaultValue: '' },
