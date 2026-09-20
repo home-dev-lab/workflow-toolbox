@@ -153,6 +153,28 @@ describe('SDK pilot runner', () => {
     expect(logged).toContain(`warning: ${route} timeout 60s is below the route's expected duration; ${reference}`)
   })
 
+  it.each([
+    ['FULL', '# contract\n', true],
+    ['LITE', '# contract\nroute_finding is available\n', true],
+    ['LITE', '# contract\n', false],
+  ])('warns once when a %s run can need routing but has no board contract', async (route, contract, shouldWarn) => {
+    const f = fixture(); const logged: string[] = []
+    writeFileSync(f.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    writeFileSync(f.contract, contract)
+    const query = () => (async function* () { yield initMessage() })()
+    const options = { card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }
+    await runPilot(options, { query, resolvePilotModels: models, log: (line: string) => logged.push(line) })
+    const warning = 'warning: no board contract; findings that must be routed will end the run partial; relaunch with --board-contract <json file>'
+    expect(logged.filter((line) => line === warning)).toHaveLength(shouldWarn ? 1 : 0)
+
+    const boardContract = { boardId: 'board', listId: 'list', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'category' } }
+    const withContract = fixture(); const contractLogs: string[] = []
+    writeFileSync(withContract.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    writeFileSync(withContract.contract, contract)
+    await runPilot({ ...options, cardFile: withContract.cardFile, dir: withContract.dir, contract: withContract.contract, mailbox: join(withContract.root, 'none'), boardContract }, { query, resolvePilotModels: models, log: (line: string) => contractLogs.push(line) })
+    expect(contractLogs).not.toContain(warning)
+  })
+
   it('parses repeatable absolute plugin directories and refuses a relative one', () => {
     const dir = resolve('/tmp/a'); const cardFile = resolve('/tmp/card.md'); const rules = resolve('/tmp/rules'); const lsp = resolve('/tmp/lsp')
     expect(parsePilotRunnerArgs(['--card', '1', '--dir', dir, '--card-file', cardFile, '--plugin-dir', rules, '--plugin-dir', lsp]))
