@@ -27,7 +27,7 @@ function fixture() {
   writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'workflow-toolbox@market': [{}] } }))
   const env = sealedPluginCliEnv(root)
   for (const key of Object.keys(env)) if (/^WT_.*(?:MODEL|SKILLS|SERVER|PLANKA|LANE|BRANCH|REFRESH|PCT)/.test(key)) env[key] = undefined
-  return { root, project, env }
+  return { root, config, project, env }
 }
 
 describe('wt-config', () => {
@@ -41,6 +41,18 @@ describe('wt-config', () => {
     expect(output.orphanedPluginConfigs).toEqual([{ key: 'wt-what-is-running@inline', moves: [{ option: 'linkBase', target: 'workflow-toolbox@market.options.linkBase' }] }])
   })
 
+  it('prints the env value when a model plugin option contains only whitespace', () => {
+    const f = fixture()
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ pluginConfigs: {
+      'workflow-toolbox@market': { options: { pilot_model: '   ' } },
+    } }))
+    f.env.WT_PILOT_MODEL = 'haiku'
+    const result = spawnSync(process.execPath, [CLI, '--json'], { cwd: f.project, env: f.env, encoding: 'utf8' })
+    expect(result.status).toBe(0)
+    const output = JSON.parse(result.stdout)
+    expect(output.options.find((row: { option: string }) => row.option === 'pilot_model')).toMatchObject({ effective: 'haiku', source: 'env' })
+  })
+
   it('emits main-session context and stays silent for a subagent', () => {
     const f = fixture()
     const run = (payload: unknown) => spawnSync(process.execPath, [HOOK], { cwd: f.project, env: f.env, input: JSON.stringify(payload), encoding: 'utf8' })
@@ -52,5 +64,23 @@ describe('wt-config', () => {
     expect(context).toContain('wt-what-is-running@inline')
     expect(context).toContain('not auto-migrated')
     expect(run({ hook_event_name: 'SessionStart', cwd: f.project, agent_id: 'child' }).stdout).toBe('')
+  })
+
+  it('reports the fallback in SessionStart context when a model plugin option is empty', () => {
+    const f = fixture()
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ pluginConfigs: {
+      'workflow-toolbox@market': { options: { orchestrator_model: '' } },
+    } }))
+    f.env.WT_ORCHESTRATOR_MODEL = 'haiku'
+    const result = spawnSync(process.execPath, [HOOK], {
+      cwd: f.project,
+      env: f.env,
+      input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: f.project }),
+      encoding: 'utf8',
+    })
+    expect(result.status).toBe(0)
+    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext
+    expect(context).toContain('orchestrator_model=haiku (env)')
+    expect(context).not.toContain('orchestrator_model= (plugin option)')
   })
 })
