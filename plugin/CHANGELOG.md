@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Add default-off IP-address and email masking options to `wt-secret-guard` for prompts and tool results, and document that Claude Code bypasses user-tier plugins for first-message `prompt.context` blocks
 - Redesign the EXPERIMENTAL What is running pane around a compact card spine, owner-attributed errors, expandable billed token classes per model, and width-aware summaries
 - Add a configurable 30-second running-work collector ceiling with adaptive single-flight polling and a bounded per-user failure journal
 - Add source-backed per-model USD run costs to receipts, the cost index, and the live pane

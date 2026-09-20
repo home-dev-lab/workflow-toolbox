@@ -8,6 +8,16 @@ This is a Claude Code Function Hooks plugin, an early-access API. Start Claude C
 
 1Password reference resolution requires the [1Password CLI](https://developer.1password.com/docs/cli/) and a signed-in account. Configure `opBinary` when the CLI executable is not `op`; configure `opAccount` for a non-default account.
 
+## Options
+
+`maskIpAddresses` and `maskEmails` are boolean plugin options and both default to `false`. Enable either option to mask that value class in submitted prompts and Bash, Read, and MCP tool results. IPv4 and IPv6 addresses are covered.
+
+## Context limitation
+
+This marketplace plugin cannot mask secrets already present in `CLAUDE.md` or other first-message context blocks. Claude Code computes those blocks in `prompt.context`, but its prepend-tier security plugin bypasses the entire user-plugin tier for that event. Marketplace plugins are user-tier, so registering a handler appears valid but the handler does not run, including in `-p` sessions. The host still records and sends the original block.
+
+Closing that gap requires host support that lets a user-tier guard participate in `prompt.context`, or deployment of the guard as an administrator-controlled prepend/append-tier plugin. Do not put secrets in instruction files. The guard deliberately does not rewrite instruction source files on disk because doing so would alter project content.
+
 ## Install
 
 Add the Workflow Toolbox marketplace and install the guard:
@@ -25,7 +35,7 @@ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 claude
 
 ## What is stored
 
-Detected values are replaced with stable `secret:<kind>#<id>` tokens before the prompt reaches the model. After Claude Code enters the scrubbed prompt, the guard checks both `history.jsonl` and the current session transcript, regardless of prompt origin, and retries for up to 160 ms so a late `queue-operation` enqueue from `-p`/SDK mode is included. It then uses `dd` to compare and overwrite only the secret's JSON-escaped byte range in place, without truncating or replacing the file. The replacement is the token plus JSON-safe padding when it fits, or an equal-length mask. There is therefore a short interval in which a pasted raw value can exist on disk. If no matching record appears, a record cannot be parsed, the bytes changed before writing, `dd` is unavailable, or the overwrite fails, the guard says once that a raw secret may remain; it never includes the value in that notice.
+Detected values are replaced with stable `secret:<kind>#<id>` tokens before they reach the model. After Claude Code enters a scrubbed submitted prompt, the guard checks both `history.jsonl` and the current session transcript, regardless of prompt origin, and retries for up to 160 ms so a late `queue-operation` enqueue from `-p`/SDK mode is included. It then uses `dd` to compare and overwrite only the detected value's JSON-escaped byte range in place, without truncating or replacing the file. The replacement is the token plus JSON-safe padding when it fits, or an equal-length mask. There is therefore a short interval in which a pasted raw value can exist on disk. If no matching record appears, a record cannot be parsed, the bytes changed before writing, `dd` is unavailable, or the overwrite fails, the guard says once that a raw value may remain; it never includes the value in that notice.
 
 The in-place operation is supported on Linux and macOS, whose `dd` implementations support `bs=1`, `skip`, `count`, `seek`, and `conv=notrunc`. On Windows without a compatible `dd` on `PATH`, scrubbing degrades to the notice above and does not silently claim success.
 

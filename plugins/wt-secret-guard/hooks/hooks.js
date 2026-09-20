@@ -1,4 +1,4 @@
-import { detections, entropyCandidates } from './detector.js';
+import { detections, entropyCandidates, optionalDetections } from './detector.js';
 import { sha256 } from './sha256.js';
 import { opReadArgv, opReferencesIn, opValueFrom } from './op-resolve.js';
 
@@ -53,25 +53,31 @@ function hash(value) {
   return (state >>> 0).toString(16).padStart(8, '0').slice(0, 6);
 }
 
-function replaceKnown(text, command) {
+function replaceKnown(text, command, includeOptional) {
   let scrubbed = text;
-  for (const [token, entry] of tokens) scrubbed = scrubbed.split(entry.value).join(token);
-  const found = detections(scrubbed, command);
+  for (const [token, entry] of tokens) {
+    const optionalEnabled = includeOptional && ((entry.kind === 'email' && maskEmails) || (entry.kind === 'ip-address' && maskIpAddresses));
+    if ((entry.kind !== 'email' && entry.kind !== 'ip-address') || optionalEnabled) scrubbed = scrubbed.split(entry.value).join(token);
+  }
+  const found = [
+    ...detections(scrubbed, command),
+    ...(includeOptional ? optionalDetections(scrubbed, { emails: maskEmails, ipAddresses: maskIpAddresses }) : []),
+  ];
   for (const { kind, value } of found) scrubbed = scrubbed.split(value).join(tokenFor(kind, value));
   return { value: scrubbed, changed: scrubbed !== text, entropy: entropyCandidates(scrubbed) };
 }
 
-function scrub(value, command) {
-  if (typeof value === 'string') return replaceKnown(value, command);
+function scrub(value, command, includeOptional = true) {
+  if (typeof value === 'string') return replaceKnown(value, command, includeOptional);
   if (Array.isArray(value)) {
     let changed = false; let entropy = 0;
-    const result = value.map((item) => { const next = scrub(item, command); changed ||= next.changed; entropy += next.entropy; return next.value; });
+    const result = value.map((item) => { const next = scrub(item, command, includeOptional); changed ||= next.changed; entropy += next.entropy; return next.value; });
     return { value: result, changed, entropy };
   }
   if (value && typeof value === 'object') {
     let changed = false; let entropy = 0;
     const result = {};
-    for (const [key, item] of Object.entries(value)) { const next = scrub(item, command); result[key] = next.value; changed ||= next.changed; entropy += next.entropy; }
+    for (const [key, item] of Object.entries(value)) { const next = scrub(item, command, includeOptional); result[key] = next.value; changed ||= next.changed; entropy += next.entropy; }
     return { value: result, changed, entropy };
   }
   return { value, changed: false, entropy: 0 };
@@ -224,10 +230,14 @@ function quoteForSingleQuotes(value) { return value.replace(/'/g, "'\"'\"'"); }
 // against the CLI's default account and fails on the other one's vaults.
 let opAccount = '';
 let opBinary = 'op';
+let maskEmails = false;
+let maskIpAddresses = false;
 
 export function configure(options) {
   opAccount = typeof options?.opAccount === 'string' ? options.opAccount.trim() : '';
   opBinary = typeof options?.opBinary === 'string' && options.opBinary.trim() ? options.opBinary.trim() : 'op';
+  maskEmails = options?.maskEmails === true || options?.maskEmails === 'true';
+  maskIpAddresses = options?.maskIpAddresses === true || options?.maskIpAddresses === 'true';
 }
 
 function opReadCommand(path) {
