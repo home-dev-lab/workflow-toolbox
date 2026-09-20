@@ -1,4 +1,5 @@
 import { resolveConsent } from './lane-consent-check-core.mjs'
+import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { hasModelPluginValue, readWorkflowToolboxPluginOption } from './plugin-options.mjs'
 
 // Owner decisions 2026-09-14: the harness pilot and orchestrator (agents spawned by a session, no
@@ -78,7 +79,8 @@ export function resolvePilotModels({ env = {}, settingsEnv = {}, readPluginOptio
       const plugin = readPluginOption(option, { env })
       const { value, source } = resolveModelInput(plugin, key, env, settingsEnv, DEFAULT_MODELS[role])
       assertHarnessModel(value)
-      return [role, { value, source, ...effectiveModel(value, { env, settingsEnv }) }]
+      const effective = effectiveModel(value, { env, settingsEnv })
+      return [role, { value, source, ...effective, variant: resolveRoleVariant(role, effective.effective, { env, settingsEnv, readPluginOption }) }]
     }),
   )
 }
@@ -117,11 +119,13 @@ export function resolveExecutorProfile({ worktree, route, hard = false, env = {}
     const value = executor === 'gpt-lane'
       ? assertProviderModel(selected.value)
       : assertHarnessAlias(selected.value)
-    return [role, { value, source: selected.source }]
+    return [role, { value, source: selected.source, variant: resolveRoleVariant(role, value, { env, settingsEnv, readPluginOption }) }]
   }))
   return {
     executor,
     models: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.value])),
     modelSources: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.source])),
+    variants: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.variant.value])),
+    variantOrigins: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.variant.origin])),
   }
 }

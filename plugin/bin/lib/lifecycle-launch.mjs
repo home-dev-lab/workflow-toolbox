@@ -7,12 +7,24 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
 import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './lifecycle-receipts.mjs'
+import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { classifyLane, shellQuote, supervisionPaths } from './lane-supervisor-core.mjs'
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
 const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
 const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
+
+function launchVariant(phase, model, env) {
+  const role = ['tdd', 'harden'].includes(phase) ? 'code' : phase
+  return { role, ...resolveRoleVariant(role, model, { env }) }
+}
+
+function launchVariantArgs(executor, variant) {
+  return executor === 'claude-sdk'
+    ? ['--variant', variant.value, '--variant-origin', variant.origin]
+    : ['--role', variant.role]
+}
 
 function terminalExit(content) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(content)?.[1] ?? null
@@ -215,6 +227,7 @@ export function createLifecycleLaunch({
               : frozenModels.review
         let launch
         try {
+          const variant = launchVariant(phase, model, executorEnv)
           const launcher = laneLauncher ?? path.join(
             path.dirname(fileURLToPath(import.meta.url)),
             '..',
@@ -230,6 +243,7 @@ export function createLifecycleLaunch({
               '--brief', snapshotBrief,
               '--log', log,
               '--timeout', String(timeout),
+              ...launchVariantArgs(executor, variant),
               ...(executor === 'claude-sdk' ? [] : ['--owner', 'pilot', '--owner-token', nonce, '--brief-cleanup-dir', snapshot]),
               // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
               ...(executor === 'claude-sdk' ? ['--role', phase] : []),
@@ -241,7 +255,7 @@ export function createLifecycleLaunch({
               cwd: root,
               stdoutPath: path.join(snapshot, 'launcher.stdout'),
               stderrPath: path.join(snapshot, 'launcher.stderr'),
-              ...(executor === 'claude-sdk' ? { env: executorEnv } : {}),
+              env: executorEnv,
             },
           )
         } catch (error) {
