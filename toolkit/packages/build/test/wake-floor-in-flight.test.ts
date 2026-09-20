@@ -18,6 +18,11 @@ const supervisionDir = path.join(worktree, '.lane', 'supervision')
 const recordPath = path.join(supervisionDir, `${runId}.json`)
 const realProcessRoots: string[] = []
 const realProcessChildren: ChildProcess[] = []
+const fixturePlatform = (process.env.WT_WAKE_FLOOR_FIXTURE_PLATFORM ?? 'linux') as NodeJS.Platform
+
+if (!['linux', 'darwin', 'win32'].includes(fixturePlatform)) {
+  throw new Error(`unsupported WT_WAKE_FLOOR_FIXTURE_PLATFORM: ${fixturePlatform}`)
+}
 
 afterEach(() => {
   for (const child of realProcessChildren.splice(0)) child.kill('SIGKILL')
@@ -59,7 +64,8 @@ function fixture(options: {
   maxUmbrellaEntries?: number
   maxRecords?: number
   sessionId?: unknown
-  backgroundTaskProbe?: () => { status: string; reason?: string }
+  platform?: NodeJS.Platform
+  backgroundTaskProbe?: (options: { projectDir: string; sessionId: unknown }) => { status: string; reason?: string }
 } = {}) {
   const value = Object.hasOwn(options, 'value') ? options.value : record()
   const reads = options.reads ?? new Map([[recordPath, JSON.stringify(value)]])
@@ -98,7 +104,11 @@ function fixture(options: {
     readFileImpl,
     spawnSyncImpl,
     classify,
-    backgroundTaskProbe: options.backgroundTaskProbe,
+    backgroundTaskProbe: options.backgroundTaskProbe ?? ((probeOptions) => sessionBackgroundTaskInFlight({
+      ...probeOptions,
+      platform: options.platform ?? fixturePlatform,
+      getuidImpl: () => 1000,
+    })),
     maxWorktrees: options.maxWorktrees,
     maxUmbrellaEntries: options.maxUmbrellaEntries,
     maxRecords: options.maxRecords,
@@ -140,7 +150,7 @@ describe('sessionLaneInFlight', () => {
     record({ ownerSessionId: ['session-under-test'] }),
     record({ ownerSessionId: true }),
   ])('treats live malformed ownership as unknown', (value) => {
-    expect(fixture({ value }).result).toMatchObject({ status: 'unknown', reason: 'lane ownership unattributable' })
+    expect(fixture({ value, platform: 'linux' }).result).toMatchObject({ status: 'unknown', reason: 'lane ownership unattributable' })
   })
 
   it('ignores malformed ownership only when the lane is provably terminal', () => {
@@ -161,7 +171,7 @@ describe('sessionLaneInFlight', () => {
     [{ status: 1, stdout: '', stderr: 'fatal: other error' }, 'git worktree list unavailable'],
     [{ status: 0, stdout: '', stderr: '' }, 'git worktree list unavailable'],
   ])('fires unknown when git discovery is unavailable', (git, reason) => {
-    expect(fixture({ git }).result).toMatchObject({ status: 'unknown', reason })
+    expect(fixture({ git, platform: 'linux' }).result).toMatchObject({ status: 'unknown', reason })
   })
 
   it('uses C locale and NUL-delimited git porcelain', () => {
@@ -233,16 +243,34 @@ describe('sessionLaneInFlight', () => {
     })
   })
 
+  it.each<NodeJS.Platform>(['darwin', 'win32'])('preserves a conclusive lane verdict when background-task inspection is unsupported on %s', (platform) => {
+    expect(fixture({ platform, value: record({ owner: 'pilot' }) }).result).toEqual({
+      status: 'none',
+      reason: 'no live owned lane',
+    })
+  })
+
+  it.each<NodeJS.Platform>(['darwin', 'win32'])('names unsupported background-task inspection when lane evidence is inconclusive on %s', (platform) => {
+    expect(fixture({
+      platform,
+      git: { status: 1, stdout: '', stderr: 'fatal: other error' },
+      supervision: [],
+    }).result).toEqual({
+      status: 'unknown',
+      reason: 'git worktree list unavailable; background task inspection requires Linux procfs',
+    })
+  })
+
   it('converts a classifier throw to unknown', () => {
-    expect(fixture({ classify: () => { throw new Error('boom') } }).result).toMatchObject({ status: 'unknown', reason: 'lane classification threw' })
+    expect(fixture({ platform: 'linux', classify: () => { throw new Error('boom') } }).result).toMatchObject({ status: 'unknown', reason: 'lane classification threw' })
   })
 })
 
 describe('sessionBackgroundTaskInFlight', () => {
   const sessionId = 'session-under-test'
-  const tasksDir = path.join('/tmp', 'claude-1000', '-project', sessionId, 'tasks')
+  const tasksDir = path.join('/tmp', 'claude-1000', projectSlug(projectDir), sessionId, 'tasks')
   const output = path.join(tasksDir, 'abc123.output')
-  const procDir = '/proc/42'
+  const procDir = path.join('/proc', '42')
   const procStat = `42 (zsh) S ${Array.from({ length: 19 }, (_, index) => index === 18 ? '98765' : '0').join(' ')}`
 
   function taskFixture(options: {
@@ -296,52 +324,54 @@ describe('sessionBackgroundTaskInFlight', () => {
     return { result }
   }
 
-  it('treats a stable same-session writer on a task output as in flight', () => {
-    expect(taskFixture().result).toMatchObject({ status: 'in-flight' })
-  })
-
-  it('does not treat a fresh leftover output file without a writer as in flight', () => {
-    expect(taskFixture({ outputOpen: false }).result.status).toBe('none')
-  })
-
-  it('ignores a task output writer from another session', () => {
-    expect(taskFixture({ holderSessionId: 'foreign-session' }).result.status).toBe('none')
-  })
-
-  it('ignores a task output writer owned by another user', () => {
-    expect(taskFixture({ uid: 1001 }).result.status).toBe('none')
-  })
-
-  it('does not attest a process without argv', () => {
-    expect(taskFixture({ argv: '' }).result).toMatchObject({
-      status: 'unknown',
-      reason: 'background task argv unreadable',
+  describe.skipIf(process.platform !== 'linux')('Linux procfs descriptor attribution (requires Linux path semantics)', () => {
+    it('treats a stable same-session writer on a task output as in flight', () => {
+      expect(taskFixture().result).toMatchObject({ status: 'in-flight' })
     })
-  })
 
-  it('returns unknown when the matched fd changes during attribution', () => {
-    expect(taskFixture({ fdChanges: true }).result).toMatchObject({
-      status: 'unknown',
-      reason: 'background task fd identity changed',
+    it('does not treat a fresh leftover output file without a writer as in flight', () => {
+      expect(taskFixture({ outputOpen: false }).result.status).toBe('none')
     })
-  })
 
-  it('returns unknown when the process identity changes during final descriptor attribution', () => {
-    expect(taskFixture({ processChangesAfterAttribution: true }).result).toMatchObject({
-      status: 'unknown',
-      reason: 'background task process identity changed',
+    it('ignores a task output writer from another session', () => {
+      expect(taskFixture({ holderSessionId: 'foreign-session' }).result.status).toBe('none')
     })
-  })
 
-  it('returns unknown when proc cannot be inspected', () => {
-    const procError = Object.assign(new Error('denied'), { code: 'EACCES' })
-    expect(taskFixture({ procError }).result).toMatchObject({ status: 'unknown', reason: 'process table unreadable' })
-  })
+    it('ignores a task output writer owned by another user', () => {
+      expect(taskFixture({ uid: 1001 }).result.status).toBe('none')
+    })
 
-  it('does not count a monitor process even if an unexpected host shape gives it a task output fd', () => {
-    expect(taskFixture({
-      argv: 'node\0/plugin/bin/wt-wake-floor.mjs\0',
-    }).result.status).toBe('none')
+    it('does not attest a process without argv', () => {
+      expect(taskFixture({ argv: '' }).result).toMatchObject({
+        status: 'unknown',
+        reason: 'background task argv unreadable',
+      })
+    })
+
+    it('returns unknown when the matched fd changes during attribution', () => {
+      expect(taskFixture({ fdChanges: true }).result).toMatchObject({
+        status: 'unknown',
+        reason: 'background task fd identity changed',
+      })
+    })
+
+    it('returns unknown when the process identity changes during final descriptor attribution', () => {
+      expect(taskFixture({ processChangesAfterAttribution: true }).result).toMatchObject({
+        status: 'unknown',
+        reason: 'background task process identity changed',
+      })
+    })
+
+    it('returns unknown when proc cannot be inspected', () => {
+      const procError = Object.assign(new Error('denied'), { code: 'EACCES' })
+      expect(taskFixture({ procError }).result).toMatchObject({ status: 'unknown', reason: 'process table unreadable' })
+    })
+
+    it('does not count a monitor process even if an unexpected host shape gives it a task output fd', () => {
+      expect(taskFixture({
+        argv: 'node\0/plugin/bin/wt-wake-floor.mjs\0',
+      }).result.status).toBe('none')
+    })
   })
 
   it.each(['darwin', 'win32'])('returns legible unknown on %s without inspecting procfs', (platform) => {
@@ -393,6 +423,7 @@ describe('sessionBackgroundTaskInFlight', () => {
     const probe = (candidateSessionId = realSessionId) => sessionBackgroundTaskInFlight({
       projectDir: realProjectDir,
       sessionId: candidateSessionId,
+      platform: 'linux',
       tmpdirImpl: () => root,
     })
 
