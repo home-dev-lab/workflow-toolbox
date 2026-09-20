@@ -1,5 +1,5 @@
 import { resolveConsent } from './lane-consent-check-core.mjs'
-import { readWorkflowToolboxPluginOption } from './plugin-options.mjs'
+import { hasModelPluginValue, readWorkflowToolboxPluginOption } from './plugin-options.mjs'
 
 // Owner decisions 2026-09-14: the harness pilot and orchestrator (agents spawned by a session, no
 // enforced lifecycle) run on Opus, Fable for hard cards; the SDK runner's pilot and orchestrator run on
@@ -64,7 +64,7 @@ export function assertHarnessAlias(value) {
 }
 
 function resolveModelInput(plugin, key, env, settingsEnv, fallback) {
-  if (plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== '') {
+  if (hasModelPluginValue(plugin)) {
     return { value: plugin.value, source: 'plugin option' }
   }
   if (Object.prototype.hasOwnProperty.call(env, key)) return { value: env[key], source: 'env' }

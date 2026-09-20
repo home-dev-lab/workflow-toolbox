@@ -72,6 +72,10 @@ export function readWorkflowToolboxPluginOption(key, { env = process.env } = {})
   return pluginOption(readSettings(env), key, definition.type)
 }
 
+export function hasModelPluginValue(plugin) {
+  return plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== ''
+}
+
 function envValue(definition, env) {
   if (!definition.envKey) return { present: false }
   const raw = env[definition.envKey]
@@ -85,7 +89,7 @@ export function resolveWorkflowToolboxOption(key, { env = process.env } = {}) {
   const definition = DEFINITIONS[key]
   if (!definition) throw new Error(`unknown workflow-toolbox plugin option: ${key}`)
   const option = readWorkflowToolboxPluginOption(key, { env })
-  if (option.present) return { value: option.value, source: 'plugin option' }
+  if (option.present && (!key.endsWith('_model') || hasModelPluginValue(option))) return { value: option.value, source: 'plugin option' }
   const fallback = envValue(definition, env)
   if (fallback.present) return { value: fallback.value, source: 'env' }
   return { value: definition.defaultValue, source: 'default' }
@@ -135,12 +139,12 @@ const EXECUTOR_DEFAULT_DESCRIPTIONS = {
 
 function describedResolution(option, definition, env, settings) {
   const plugin = pluginOption(settings, option, definition.type)
-  const emptyExecutorOption = Object.hasOwn(EXECUTOR_DEFAULT_DESCRIPTIONS, option) && plugin.value === ''
-  if (plugin.present && !emptyExecutorOption) return { value: plugin.value, source: 'plugin option' }
+  const modelOption = option.endsWith('_model')
+  if (plugin.present && (!modelOption || hasModelPluginValue(plugin))) return { value: plugin.value, source: 'plugin option' }
   const processFallback = envValue(definition, env)
-  if (processFallback.present) return { value: processFallback.value, source: 'env var' }
+  if (processFallback.present) return { value: processFallback.value, source: modelOption ? 'env' : 'env var' }
   const settingsFallback = envValue(definition, settings?.env ?? {})
-  if (settingsFallback.present) return { value: settingsFallback.value, source: 'env var' }
+  if (settingsFallback.present) return { value: settingsFallback.value, source: modelOption ? 'settings' : 'env var' }
   return {
     value: EXECUTOR_DEFAULT_DESCRIPTIONS[option] ?? definition.defaultValue,
     source: 'default',
