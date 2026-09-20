@@ -1,6 +1,16 @@
 import { defineConfig } from 'vitest/config'
 import { resolve } from 'node:path'
 import { spawningTestFiles } from './scripts/spawning-test-files.mjs'
+import {
+  blockingTestPattern,
+  quarantinedTests,
+  quarantineTestPattern,
+  validateQuarantinedTests,
+} from './scripts/quarantined-tests.mjs'
+
+const testMode = process.env.WT_TEST_MODE ?? 'all'
+if (!['all', 'blocking', 'quarantine'].includes(testMode)) throw new Error(`unknown WT_TEST_MODE: ${testMode}`)
+validateQuarantinedTests()
 
 const configuredMaxWorkers = process.env.WT_VITEST_MAX_WORKERS
   ? Number(process.env.WT_VITEST_MAX_WORKERS)
@@ -41,30 +51,42 @@ const commonTestConfig = {
   globalSetup: ['./test-support/guard-journal-isolation.global-setup.ts'],
 }
 
+const parallelProject = {
+  test: {
+    ...commonTestConfig,
+    name: 'parallel',
+    include,
+    exclude: spawningTestFiles,
+    sequence: { groupOrder: 0 },
+  },
+}
+const processSpawningProject = {
+  test: {
+    ...commonTestConfig,
+    name: 'process-spawning',
+    include: spawningTestFiles,
+    ...(testMode === 'blocking' ? { testNamePattern: blockingTestPattern() } : {}),
+    maxWorkers: configuredMaxWorkers === undefined ? 2 : Math.min(2, configuredMaxWorkers),
+    sequence: { groupOrder: 1 },
+  },
+}
+const quarantineProject = {
+  test: {
+    ...commonTestConfig,
+    name: 'quarantine',
+    include: [...new Set(quarantinedTests.map(({ file }) => file))],
+    testNamePattern: quarantineTestPattern(),
+    maxWorkers: 1,
+  },
+}
+
 export default defineConfig({
   test: {
     // Real child processes share a small pool, so their timeout measures execution
     // rather than time queued behind the ordinary parallel population.
-    projects: [
-      {
-        test: {
-          ...commonTestConfig,
-          name: 'parallel',
-          include,
-          exclude: spawningTestFiles,
-          sequence: { groupOrder: 0 },
-        },
-      },
-      {
-        test: {
-          ...commonTestConfig,
-          name: 'process-spawning',
-          include: spawningTestFiles,
-          maxWorkers: configuredMaxWorkers === undefined ? 2 : Math.min(2, configuredMaxWorkers),
-          sequence: { groupOrder: 1 },
-        },
-      },
-    ],
+    projects: testMode === 'quarantine'
+      ? [quarantineProject]
+      : [parallelProject, processSpawningProject],
     coverage: {
       provider: 'custom',
       customProviderModule: './scripts/child-process-coverage-provider.mjs',
