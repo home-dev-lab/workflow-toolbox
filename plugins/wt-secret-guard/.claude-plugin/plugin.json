@@ -1,7 +1,7 @@
 {
   "name": "wt-secret-guard",
   "version": "0.1.1",
-  "description": "Private function-hook secret scrubber for Bash results and pasted prompts",
+  "description": "Private function-hook secret scrubber for prompts and tool results",
   "author": {
     "name": "Frederic Thomas",
     "email": "fthomas@apache.org"
@@ -20,6 +20,20 @@
       "type": "string",
       "required": false,
       "default": "op"
+    },
+    "maskIpAddresses": {
+      "title": "Mask IP addresses in prompts and tool results",
+      "description": "Replace IPv4 and IPv6 addresses with stable redaction tokens before submitted prompts and tool results reach the model. This option cannot affect first-message context blocks.",
+      "type": "boolean",
+      "required": false,
+      "default": false
+    },
+    "maskEmails": {
+      "title": "Mask email addresses in prompts and tool results",
+      "description": "Replace email addresses with stable redaction tokens before submitted prompts and tool results reach the model. This option cannot affect first-message context blocks.",
+      "type": "boolean",
+      "required": false,
+      "default": false
     }
   }
 }

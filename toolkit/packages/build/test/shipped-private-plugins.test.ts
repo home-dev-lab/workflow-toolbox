@@ -44,6 +44,11 @@ describe('shipped private plugins', () => {
       'prompt storage falls back from CLAUDE_CONFIG_DIR to HOME dot-claude',
       'sdk prompt storage rewrites an enqueue record written after prompt forwarding',
       'queue-operation targeting is independent of prompt origin and retries a late enqueue',
+      'does not register an inert user-tier prompt.context guard',
+      'email masking is off by default in prompts and tool results',
+      'email masking option covers prompts and tool results',
+      'IP masking is off by default in prompts and tool results',
+      'IP masking option covers prompts and tool results',
     ]) it(`${plugin}: ${lock}`, () => expect(selftest.stdout).toContain(`PASS ${lock}`))
   }
 
