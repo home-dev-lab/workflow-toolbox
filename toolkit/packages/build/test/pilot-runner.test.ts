@@ -11,6 +11,8 @@ import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { resolveAgentSdkRequire } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
@@ -33,7 +35,8 @@ const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
 const PLUGIN_ROOT = join(ROOT, 'plugin')
 const SHIPPED_PILOT = readFileSync(join(PLUGIN_ROOT, 'launch-agents/agents/pilot.md'), 'utf8')
 const SDK_RESOLVER = join(PLUGIN_ROOT, 'bin/lib/sdk-resolution.mjs')
-const ZOD_ROOT = dirname(createRequire(import.meta.url).resolve('zod/package.json'))
+const SDK_ENTRY = resolveAgentSdkRequire().resolve('@anthropic-ai/claude-agent-sdk')
+const ZOD_ROOT = dirname(createRequire(SDK_ENTRY).resolve('zod/package.json'))
 // The runner now REQUIRES a valid first `system:init` receipt: a fake stream without one used to
 // pass while proving nothing about whether any plugin or lifecycle tool ever loaded.
 const initMessage = (model?: string) => ({
@@ -327,6 +330,19 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
     })
     expect(reachedQuery).toBe(true)
+  })
+
+  // ⚠ This documents the invariant; it is NOT the discriminating lock. The lock is the
+  // clean-environment certification, which went RED twice on `Cannot find module
+  // 'zod/package.json'` before this change and is the only run whose layout can tell the two
+  // anchors apart. An earlier draft of this test asserted `ZOD_ROOT` against the expression
+  // ZOD_ROOT is defined by — a tautology that would pass with the fix reverted.
+  it('anchors the zod fixture at the declared SDK install, not at the test file', () => {
+    const manifest = JSON.parse(readFileSync(join(ROOT, 'toolkit/package.json'), 'utf8'))
+    expect(manifest.devDependencies).toHaveProperty('@anthropic-ai/claude-agent-sdk')
+    expect(SDK_ENTRY).toContain('claude-agent-sdk')
+    expect(() => createRequire(SDK_ENTRY).resolve('zod/package.json')).not.toThrow()
+    expect(ZOD_ROOT.startsWith(dirname(SDK_ENTRY)) || ZOD_ROOT.includes('zod@')).toBe(true)
   })
 
   it('resolves the SDK from the target project before plugin data', () => {
