@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.185.0] - 2026-09-20
+
 ### Added
 - Add default-off IP-address and email masking options to `wt-secret-guard` for prompts and tool results, and document that Claude Code bypasses user-tier plugins for first-message `prompt.context` blocks
 - Queue SDK pilot launches in machine-wide FIFO order until both the configurable active-run cap and host load gate allow admission, with durable queue receipts in What is running and explicit cap-only fallbacks when load is unavailable
@@ -25,6 +27,27 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The wake floor now stays silent for a Linux background task only while a stable same-user process from the current session holds its task output open for writing. Completed outputs, readers, plugin monitors, foreign sessions, PID reuse, and inaccessible unrelated descriptors cannot suppress the floor.
 - On macOS and Windows, unsupported Linux background-task inspection no longer degrades a conclusive wake-floor lane verdict to unknown; it is reported only when lane evidence is itself inconclusive.
 - Windows: the What is running collector resolves its shipped model-price table as a native file path, preserving fallback USD prices when no machine-local price catalogue is available.
+
+### Quality
+
+Measured on the release tree against the 0.181.0 baseline (kept on purpose, not refreshed).
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 127 | 0 | 127 -> 127 | - |
+| Cognitive complexity | 261 -> 273 | +12 | 261 -> 273 | - |
+| Biggest file (lines) | 2729 -> 2729 | 0 | 974 -> 1024 | - |
+| Longest function (lines) | 708 -> 704 | -4 | 708 -> 704 | plugin/bin/lib/lifecycle-state-machine.mjs |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 687 -> 686 | -1 | 41 -> 38 | plugin/bin/lib/lifecycle-state-machine.mjs |
+| Duplication % | 2.885613003631333 -> 2.76828046399686 | -0.12 | - -> - | - |
+| Knip issues | 221 -> 221 | 0 | 4 -> 5 | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 77.16 | +35.16 | - -> - | - |
+| Coverage branches % | 40.12 -> 68.47 | +28.35 | - -> - | - |
+| Coverage functions % | 44.48 -> 78.35 | +33.87 | - -> - | - |
+| Coverage statements % | 40.62 -> 74.52 | +33.9 | - -> - | - |
 
 ## [0.184.0] - 2026-09-19
 
