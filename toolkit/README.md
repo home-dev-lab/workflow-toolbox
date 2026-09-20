@@ -62,6 +62,7 @@ consume it natively. Node ≥ 20, pnpm workspace.
 pnpm install
 pnpm typecheck   # tsc strict, all packages (src AND test)
 pnpm test        # vitest, FakeRuntime-based
+pnpm test:blocking # release certification and CI; quarantines still run and report non-blockingly
 pnpm lint
 ```
 
