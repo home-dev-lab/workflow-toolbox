@@ -1,7 +1,15 @@
 name: host-platform-probes
 
 on:
+  # `workflow_dispatch` only fires when this file exists on the DEFAULT branch — documented four times
+  # in GitHub's own reference. Until a release carries it to `main`, the path filter below is the only
+  # way to exercise the probes: pushing a branch whose range touches this file starts the run on that
+  # branch. The same mechanism is what exercises `cross-os.yml`.
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/host-platform-probes.yml'
+      - 'probes/host-platform/**'
 
 permissions:
   contents: read
