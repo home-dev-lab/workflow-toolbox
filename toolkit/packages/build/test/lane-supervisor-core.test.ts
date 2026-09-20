@@ -54,6 +54,18 @@ describe('lane supervisor safety core', () => {
     expect(classifyLane(record, { platform: 'darwin', inspect: () => null, processExists: () => null })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-ps', worker: 'unknown', child: 'unknown' })
   })
 
+  it('refreshes the Darwin process table when inspection switches to another pid', () => {
+    const start = 'Wed Sep 16 12:34:56 2026'
+    const execFile = vi.fn((command: string) => command === 'ps'
+      ? { status: 0, stdout: execFile.mock.calls.filter(([program]) => program === 'ps').length === 1
+        ? `  100 ${start}   100 S node launcher.mjs\n  432 ${start}   432 S node worker.mjs\n`
+        : `  100 ${start}   100 S node launcher.mjs\n  432 ${start}   432 Z node worker.mjs\n` }
+      : { status: 1, stdout: '' })
+    expect(inspectProcess(100, { platform: 'darwin', spawnSync: execFile, captureCwd: false })).not.toBeNull()
+    expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile, captureCwd: false })).toBeNull()
+    expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(2)
+  })
+
   it('names the Windows evidence source when PowerShell cannot be read', () => {
     const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node'], workerStartTime: 400, childPid: 41, childArgv: ['opencode'], childStartTime: 410, worktree: 'C:\\work' }
     expect(classifyLane(record, { platform: 'win32', inspect: () => null, processExists: () => null })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-powershell', worker: 'unknown', child: 'unknown' })

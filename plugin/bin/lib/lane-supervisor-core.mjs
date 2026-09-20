@@ -54,7 +54,7 @@ function runEvidence(command, args, execFile, timeoutMs) {
 
 function darwinProcessTable(execFile, pid, now = Date.now()) {
   const cached = darwinProcessTableCache.get(execFile)
-  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
+  if (cached && cached.requestedPid === pid && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
     const missReadAt = cached.missReadAt.get(pid)
     if (cached.result.status !== 0 || cached.result.value.has(pid) || (missReadAt !== undefined && now - missReadAt <= DARWIN_PROCESS_TABLE_TTL_MS)) return cached.result
   }
@@ -76,7 +76,7 @@ function darwinProcessTable(execFile, pid, now = Date.now()) {
     for (const presentPid of result.value.keys()) missReadAt.delete(presentPid)
     if (!result.value.has(pid)) missReadAt.set(pid, now)
   }
-  darwinProcessTableCache.set(execFile, { readAt: now, result, missReadAt })
+  darwinProcessTableCache.set(execFile, { requestedPid: pid, readAt: now, result, missReadAt })
   return result
 }
 

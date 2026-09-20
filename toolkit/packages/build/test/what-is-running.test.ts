@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +36,7 @@ function collector(root: string, extra: Record<string, unknown> = {}) {
   mkdirSync(paths.livenessDir, { recursive: true })
   mkdirSync(join(paths.suiteRoot, 'worktrees'), { recursive: true })
   mkdirSync(paths.procRoot, { recursive: true })
+  paths.suiteRoot = realpathSync(paths.suiteRoot)
   return paths
 }
 
@@ -285,7 +286,9 @@ describe('What is running collector seam', () => {
   })
 
   it('falls back to the bounded live usage file and attributes messages by lifecycle timestamp', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-wir-live-cost-'))
+    const realRoot = mkdtempSync(join(tmpdir(), 'wt-wir-live-cost-'))
+    const root = `${realRoot}-alias`
+    symlinkSync(realRoot, root, 'dir')
     try {
       const paths = collector(root)
       const cardId = '1866347363803596066'
@@ -309,7 +312,10 @@ describe('What is running collector seam', () => {
       expect(row.phaseElapsed.discovery).toBe('29 min')
       expect(row.phaseCostSourceKind).toBe('live usage file')
       expect(row.phaseCostSource).toBe(join(lane, 'usage.json'))
-    } finally { rmSync(root, { recursive: true, force: true }) }
+    } finally {
+      unlinkSync(root)
+      rmSync(realRoot, { recursive: true, force: true })
+    }
   })
 
   it('keeps live phase cost unknown when required input usage is absent', async () => {

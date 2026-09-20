@@ -76,6 +76,10 @@ async function runAction() {
     write('opencode.pid', `${process.pid}\n`)
     return sleep(30_000)
   }
+  if (action.includes('echo $$ > "$PWD/opencode.pid"; sleep 120')) {
+    write('opencode.pid', `${process.pid}\n`)
+    return sleep(120_000)
+  }
   if (action.includes('IFS= read -r x')) {
     await sleep(200)
     process.stdout.write('done\n')

@@ -237,7 +237,12 @@ export function createLifecycleLaunch({
                 ? ['--knowledge-base-index', knowledgeBaseIndex]
                 : []),
             ],
-            { cwd: root, ...(executor === 'claude-sdk' ? { env: executorEnv } : {}) },
+            {
+              cwd: root,
+              stdoutPath: path.join(snapshot, 'launcher.stdout'),
+              stderrPath: path.join(snapshot, 'launcher.stderr'),
+              ...(executor === 'claude-sdk' ? { env: executorEnv } : {}),
+            },
           )
         } catch (error) {
           return refusal(`${state.phase}->next`, `lane spawn (${error instanceof Error ? error.message : String(error)})`, log)
