@@ -192,12 +192,12 @@ export function assertArchiveOutsideWorktree({ root, archiveRoot, target = path.
   return resolved
 }
 
-export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, implementation, routedCards = [], assertDirectories, copy, git, sha256, writeRegularFile }) {
+export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, deferred, implementation, routedCards = [], assertDirectories, copy, git, sha256, writeRegularFile }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const target = assertArchiveOutsideWorktree({ root, archiveRoot, target: path.join(archiveRoot ?? '', '.claude', 'reports', `${cardId}-${stamp}`) })
   const temporary = `${target}.tmp-${randomUUID()}`
-  const manifestContent = `${JSON.stringify({ cardId, route, commit: head, phases, evidence, partial: partial ?? null, routed_cards: routedCards }, null, 2)}\n`
-  const summary = { commit: head, archive: { path: target, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: implementation, partial: partial ?? null }
+  const manifestContent = `${JSON.stringify({ cardId, route, commit: head, phases, evidence, partial: partial ?? null, deferred: deferred ?? null, routed_cards: routedCards }, null, 2)}\n`
+  const summary = { commit: head, archive: { path: target, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: implementation, partial: partial ?? null, deferred: deferred ?? null }
   let wroteLaneSummary = false
   try {
     assertDirectories()
@@ -278,7 +278,7 @@ export function completeLifecycleReport({
           'git',
           [
             'commit',
-            ...(state.partial ? ['--allow-empty'] : []),
+            ...(state.partial || state.deferred ? ['--allow-empty'] : []),
             '-m',
             (report.split(/\r?\n/).find(Boolean) ?? `pilot lifecycle ${cardId}`).replace(/^#\s*/, ''),
             '-m',
@@ -318,6 +318,7 @@ export function completeLifecycleReport({
       phases,
       evidence: sha256(readRegularFile(evidencePath) ?? ''),
       partial: state.partial,
+      deferred: state.deferred,
       implementation,
       routedCards,
       assertDirectories,
