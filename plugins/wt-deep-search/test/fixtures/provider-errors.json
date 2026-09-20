@@ -1,0 +1,40 @@
+{
+  "braveRateLimit": {
+    "type": "ErrorResponse",
+    "error": {
+      "id": "8a9c4a72-8f51-4d2e-a03d-f8d101120cd2",
+      "status": 429,
+      "code": "RATE_LIMITED",
+      "detail": "Request rate limit exceeded"
+    }
+  },
+  "braveInsufficientCredit": {
+    "type": "ErrorResponse",
+    "error": {
+      "status": 402,
+      "code": "INSUFFICIENT_CREDITS",
+      "detail": "Insufficient credit to complete this request"
+    }
+  },
+  "braveOptionNotInPlan": {
+    "type": "ErrorResponse",
+    "error": {
+      "status": 422,
+      "code": "OPTION_NOT_IN_PLAN",
+      "detail": "The requested search option is not included in this plan"
+    }
+  },
+  "exaRateLimit": {
+    "error": "Rate limit exceeded",
+    "requestId": "f9170d66d89c4ca98e7d"
+  },
+  "exaInsufficientCredit": {
+    "error": "Insufficient credits. Please add credits to your account."
+  },
+  "exaOptionNotInPlan": {
+    "error": {
+      "code": "OPTION_NOT_IN_PLAN",
+      "message": "The selected contents option is unavailable on the current plan"
+    }
+  }
+}

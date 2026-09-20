@@ -1,0 +1,6 @@
+{
+  "name": "wt-deep-search",
+  "version": "0.1.0",
+  "description": "EXPERIMENTAL. Answers a WebSearch from the local Claude Code doc mirror, context7, Brave or Exa, and adds a detached deep-research rung behind a handle.",
+  "author": { "name": "Frederic Thomas" }
+}

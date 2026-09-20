@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Add `wt-deep-search` (EXPERIMENTAL): a WebSearch substitution answering from the local Claude Code documentation mirror, context7, Brave or Exa, plus a detached deep-research rung that returns a handle and is collected later; zero dependencies, no key required, cross-platform verdict included
 - Add dispatch-only Linux, Windows, and macOS host probes for process tables, process-group termination, and real path behavior, with provenance-rich byte-stable evidence artifacts
 - Add launch-time reasoning variants for all pilot, orchestrator, and executor roles, with model caps, explicit overrides, unknown-variant refusal and auditable forced overrides
 
