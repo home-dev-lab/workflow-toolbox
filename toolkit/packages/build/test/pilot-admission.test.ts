@@ -40,10 +40,14 @@ describe('SDK pilot admission queue', () => {
     const measure = admissionModule!.pilotAdmission.measurePilotLoad
     const windows = measure({ platform: 'win32', availableParallelism: () => 8 })
     expect(windows).toMatchObject({ available: false, cores: 8, reason: 'Windows os.loadavg() reports zeros; using concurrency cap only' })
+    const darwin = measure({ platform: 'darwin', availableParallelism: () => 8, loadavg: () => [8, 0, 0] })
+    expect(darwin).toMatchObject({ available: true, load: 8, cores: 8, source: 'os.loadavg()' })
     expect(measure({ platform: 'linux', availableParallelism: () => { throw new Error('unavailable') } }))
       .toMatchObject({ available: false, cores: null, reason: 'available core count is unreadable; using concurrency cap only' })
 
     const queued = { id: 'queued', state: 'queued', enqueuedAt: 20, pid: 102 }
+    expect(admissionModule!.pilotAdmission.admissionDecision([queued], 'queued', { load: darwin.load, cores: darwin.cores, maxActive: 3 }))
+      .toMatchObject({ admit: false, waiting: { kind: 'load', load: 8, cores: 8 } })
     expect(admissionModule!.pilotAdmission.admissionDecision([queued], 'queued', { load: null, cores: 8, maxActive: 3 })).toMatchObject({ admit: true })
   })
 

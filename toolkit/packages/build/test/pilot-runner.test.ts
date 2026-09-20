@@ -78,6 +78,19 @@ function resolveSdkInChild(options: Record<string, unknown>) {
   delete env.NODE_PATH
   return spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env })
 }
+function deterministicAdmissionEnv(root: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const load = 0
+  const preload = join(root, 'admission-load.cjs')
+  writeFileSync(preload, [
+    "const fs = require('node:fs')",
+    "const os = require('node:os')",
+    "const originalReadFileSync = fs.readFileSync",
+    `fs.readFileSync = (file, ...args) => file === '/proc/loadavg' ? ${JSON.stringify(`${load} 0 0 1/1 1\n`)} : originalReadFileSync(file, ...args)`,
+    `os.loadavg = () => [${load}, 0, 0]`,
+    "require('node:module').syncBuiltinESMExports()",
+  ].join('\n'))
+  return { ...env, XDG_STATE_HOME: join(root, 'state'), NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --require=${preload}`.trim() }
+}
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 describe('SDK pilot runner', () => {
@@ -351,7 +364,7 @@ describe('SDK pilot runner', () => {
       'export const tool = (name, description, schema, handler) => ({ name, description, schema, handler })',
     ].join('\n'))
     const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
-      encoding: 'utf8', timeout: 20_000, env: sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_PILOT_TEST_SDK_MANIFEST: join(f.dir, 'package.json'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') }),
+      encoding: 'utf8', timeout: 20_000, env: deterministicAdmissionEnv(f.root, sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_PILOT_TEST_SDK_MANIFEST: join(f.dir, 'package.json'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') })),
     })
     expect(result.signal).toBeNull()
     expect(result.status).toBe(1)
@@ -364,7 +377,7 @@ describe('SDK pilot runner', () => {
     const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
     const configDir = join(f.root, 'config'); mkdirSync(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
     const profile = join(f.root, 'bad-profile.json'); writeFileSync(profile, '{bad')
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-pilot-runner.mjs'), '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract, '--profile-env', profile], { encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') } })
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-pilot-runner.mjs'), '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract, '--profile-env', profile], { encoding: 'utf8', env: deterministicAdmissionEnv(f.root, { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') }) })
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('cannot read --profile-env')
     expect(result.stderr).not.toContain('@anthropic-ai/claude-agent-sdk is not installed')
