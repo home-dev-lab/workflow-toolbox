@@ -1,0 +1,35 @@
+name: host-platform-probes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      WT_RUNNER_IMAGE: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Capture process table
+        run: node probes/host-platform/process-table.mjs probes/host-platform/evidence/${{ matrix.os }}/process-table.json
+      - name: Capture process-group termination
+        run: node probes/host-platform/process-group-terminate.mjs probes/host-platform/evidence/${{ matrix.os }}/process-group-terminate.json
+      - name: Capture path resolution
+        run: node probes/host-platform/path-resolve.mjs probes/host-platform/evidence/${{ matrix.os }}/path-resolve.json
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-platform-evidence-${{ matrix.os }}
+          path: probes/host-platform/evidence/${{ matrix.os }}/
+          if-no-files-found: error
