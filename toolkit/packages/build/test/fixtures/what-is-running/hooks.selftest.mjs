@@ -2368,7 +2368,7 @@ await test('[changed Step 7 unknown omission][changed Round 3 report-first phase
     'harden-brief.md': '# Harden\nHARDEN BRIEF EVIDENCE\n',
     'harden-run.log': 'HARDEN RUN EVIDENCE\nEXIT=0\n',
     'harden-report.md': '# Harden report\nHARDEN REPORT EVIDENCE\n',
-    'pilot-report.md': '# Pilot report\n## Implemented\nREPORT EVIDENCE\n## Verification\nSHOULD NOT LEAD\n## Remaining Risks\nRISK EVIDENCE\n',
+    'pilot-report.md': 'Deferred: Host verification (card 42)\n# Pilot report\n## Implemented\nREPORT EVIDENCE\n## Verification\nSHOULD NOT LEAD\n## Remaining Risks\nRISK EVIDENCE\n',
   };
   for (const [name, content] of Object.entries(artifacts)) writeFileSync(join(lane, name), content);
   const row = (await readSnapshot({ process: processCapability }, isolatedPaths)).rows.find((item) => item.id === cardId);
@@ -2384,7 +2384,7 @@ await test('[changed Step 7 unknown omission][changed Round 3 report-first phase
   assert.match(row.inspectors.review.summary, /^verdict: clear\nfindings: 1\nREVIEW REPORT EVIDENCE\nbrief: Review/s);
   assert.match(row.inspectors.refutation.summary, /^verdict: clear\nfindings: 1\nREFUTATION REPORT EVIDENCE\nbrief: Refutation/s);
   assert.equal(row.inspectors.harden.summary, 'HARDEN REPORT EVIDENCE\nbrief: Harden');
-  assert.match(row.inspectors.report.summary, /^Implemented\nREPORT EVIDENCE\nRemaining Risks\nRISK EVIDENCE$/);
+  assert.match(row.inspectors.report.summary, /^Deferred: Host verification \(card 42\)\nImplemented\nREPORT EVIDENCE\nRemaining Risks\nRISK EVIDENCE$/);
   assert.equal(new Set(Object.values(row.inspectors).map((item) => item.summary)).size, 9);
 });
 

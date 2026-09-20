@@ -118,7 +118,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     const reason = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
     expect(await text(lifecycle.routeFinding({ title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'S' })))
       .toBe(`${reason}\nrouting is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`)
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'plan', round: null, reason, findings: [] } })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'plan', round: null, reason, findings: [] }, deferred: null })
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `# report\nPartial: ${reason}\n` })))
       .toBe(`pilot-report: partial run, make "Partial: ${reason}" the first line`)
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: ${reason}\n# report\n` }))).toBe('wrote pilot-report')
@@ -765,7 +765,7 @@ printf 'report\n' > "$report"
     const lifecycle = await lifecycleAtVerify()
     await writeGates(lifecycle)
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null, deferred: null })
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: '# report\nPartial: not partial\n' })))
       .toBe('pilot-report: this run is not partial')
   })
@@ -1002,11 +1002,13 @@ printf 'report\n' > "$report"
     const lifecycle = await lifecycleReadyForReport({ cardText })
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n` })
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing' }))).toContain('expected `- Keep tests green.` followed by `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`')
-    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })))
+    const malformed = await lifecycleReadyForReport({ cardText })
+    expect(await text(malformed.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })))
       .toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
     // A proven outcome may carry its evidence on the same line; refusing that shape would loop a pilot on wording.
-    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven — byte lock in rules-manifest.test.ts\n- Keep tests green.\n  Outcome: proven: pnpm test EXIT=0\n` })
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'proven-with-evidence' }))).toContain('missing commit')
+    const proven = await lifecycleReadyForReport({ cardText })
+    await proven.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven — byte lock in rules-manifest.test.ts\n- Keep tests green.\n  Outcome: proven: pnpm test EXIT=0\n` })
+    expect(await text(proven.transition({ phase: 'report', tool_use_id: 'proven-with-evidence' }))).toContain('missing commit')
   })
 
   it.each([
@@ -1022,6 +1024,21 @@ printf 'report\n' > "$report"
     expect(lifecycle.state()).toEqual({
       phase: 'report',
       partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: [unmet] },
+      deferred: null,
+    })
+  })
+
+  it.each([
+    ['no outcome', ''],
+    ['an unrecognised outcome', '  Outcome: maybe\n'],
+  ])('keeps %s classified as partial while refusing its report schema', async (_name, outcome) => {
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n' })
+    const report = `# report\n\n## E2E\nProcedure: run delivery fixture\nVerbatim output: fixture passed\n\n## Acceptance\n- Ship exact bytes.\n${outcome}`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'invalid-outcome' }))).toContain('pilot-report: missing expected')
+    expect(lifecycle.state()).toMatchObject({
+      partial: { reason: 'delivered partially: 1 unmet criteria', findings: ['Ship exact bytes.'] },
+      deferred: null,
     })
   })
 
@@ -1055,8 +1072,40 @@ printf 'report\n' > "$report"
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 99 — unavailable dependency\n` }))).toContain('card 99 is not in lifecycle routed_cards')
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n` }))).toBe('wrote pilot-report')
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Host verification — unavailable dependency: real host')
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'deferred-partial' }))).toContain('Partial: delivered partially: 1 unmet criteria')
-    expect(lifecycle.state().partial).toEqual({ phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: ['Ship.'] })
+  })
+
+  it('classifies a routed-card deferral distinctly from a partial delivery and names it first', async () => {
+    const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+    let revisions = 0
+    const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification' }), git })
+    expect(await text(lifecycle.routeFinding({ title: 'Host verification', l4Reason: 'unavailable dependency: real host', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Host verification')
+    const report = `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'deferred' }))).toContain('Deferred: Ship. (card 42)')
+
+    const partial = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n' })
+    expect(await text(partial.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: not done: unavailable dependency\n` }))).toBe('wrote pilot-report')
+    expect(await text(partial.transition({ phase: 'report', tool_use_id: 'partial' }))).toContain('Partial: delivered partially: 1 unmet criteria')
+
+    expect(lifecycle.state()).toEqual({
+      phase: 'report',
+      partial: null,
+      deferred: { phase: 'report', round: null, reason: 'delivery deferred: 1 criterion', findings: ['Ship. (card 42)'] },
+    })
+    expect(partial.state()).toEqual({
+      phase: 'report',
+      partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: ['Ship.'] },
+      deferred: null,
+    })
+    expect(lifecycle.state().deferred).not.toEqual(partial.state().partial)
+
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Deferred: Ship. (card 42)\n${report}` }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'archive' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))).toMatchObject({
+      partial: null,
+      deferred: { reason: 'delivery deferred: 1 criterion', findings: ['Ship. (card 42)'] },
+    })
   })
 
   it('refuses a plan task marked deferred without a routed card id', async () => {

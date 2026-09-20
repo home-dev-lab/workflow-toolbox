@@ -318,7 +318,9 @@ export function computeRunCost(options) {
   }
   const outcome = summary === null
     ? { status: 'unknown', reason: 'summary.json unavailable' }
-    : summary.partial?.reason || !summary.completed
+    : summary.deferred?.reason
+      ? { status: 'deferred', reason: summary.deferred.reason }
+      : summary.partial?.reason || !summary.completed
       ? { status: 'partial', reason: summary.partial?.reason ?? summary.reason ?? 'run incomplete' }
       : { status: 'complete' }
   return priceRunCost({

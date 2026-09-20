@@ -120,21 +120,46 @@ const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
   '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`',
   '`Outcome: proven by tests/unit.test.ts`',
 )
-function reportDeliveryUnmet(content, dodBullets) {
+function reportDeliveryClassification(content, dodBullets, routedCards) {
   const entries = acceptanceEntries(content)
   const used = new Map()
   const unmet = []
+  const deferred = []
   for (const bullet of dodBullets ?? []) {
     const index = used.get(bullet) ?? 0
     const lines = entries.get(bullet)?.[index] ?? []
     used.set(bullet, index + 1)
     const outcomes = lines.filter((line) => /^Outcome:/i.test(line))
-    if (!outcomes.every((line) => /^Outcome:\s*proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?\s*$/i.test(line))) unmet.push(bullet)
+    const deferredCards = outcomes.flatMap((line) => {
+      const match = /^Outcome:\s*deferred:\s*card\s+([^\s]+)/i.exec(line)
+      return match && routedCards.some((card) => card.id === match[1]) ? [match[1]] : []
+    })
+    const delivered = outcomes.length > 0 && outcomes.every((line) =>
+      /^Outcome:\s*proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?\s*$/i.test(line) ||
+      /^Outcome:\s*deferred:/i.test(line) && deferredCards.length > 0,
+    )
+    if (!delivered) unmet.push(bullet)
+    else for (const card of new Set(deferredCards)) deferred.push(`${bullet} (card ${card})`)
   }
   const e2e = /(?:^|\n)## E2E\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)?.[1].trim() ?? ''
   if (/^e2e not run: \S[^\r\n]*$/i.test(e2e)) unmet.push(`E2E: ${e2e}`)
-  return unmet
+  return { unmet, deferred }
 }
+function classifyReportDelivery(content, dodBullets, routedCards, state, reportProblem) {
+  if (reportProblem && !reportProblem.startsWith('pilot-report: missing expected')) return
+  const { unmet, deferred } = reportDeliveryClassification(content, dodBullets, routedCards)
+  if (unmet.length > 0 && !state.partial) {
+    state.partial = { phase: 'report', round: null, reason: `delivered partially: ${unmet.length} unmet criteria`, findings: unmet }
+  } else if (deferred.length > 0 && !state.deferred) {
+    state.deferred = { phase: 'report', round: null, reason: `delivery deferred: ${deferred.length} ${deferred.length === 1 ? 'criterion' : 'criteria'}`, findings: deferred }
+  }
+}
+function deferredHeadlineProblem(content, deferred) {
+  if (!deferred) return null
+  const headline = `Deferred: ${deferred.findings.join('; ')}`
+  return content.split(/\r?\n/)[0] === headline ? null : `pilot-report: deferred delivery, make "${headline}" the first line`
+}
+const frozenDelivery = (delivery) => delivery ? Object.freeze({ ...delivery, findings: Object.freeze([...delivery.findings]) }) : null
 function uiOnlyE2eReason(reason) {
   if (/\b(?:tried|attempted)\b/i.test(reason)) return false
   const ui = '(?:(?:user-facing|graphical|visible|web|front-end)\\s+)?(?:uis?|guis?|user interfaces?|screens?|frontends?|front-ends?|pages?|browsers?|displays?)'
@@ -461,6 +486,7 @@ export function createLifecycleStateMachine({
   let state = {
     phase: 'discovery',
     partial: null,
+    deferred: null,
     pilotReportDigest: null,
     planRound: 0,
     priorCriticRounds: [],
@@ -777,13 +803,10 @@ export function createLifecycleStateMachine({
         return refusal('report->awaiting_fidelity', 'pilot report unchanged since write_artifact', pilotReportPath)
       }
       const reportProblem = pilotReportProblem(pilotReport, true)
+      classifyReportDelivery(pilotReport, dodBullets, timeline.routed_cards, state, reportProblem)
       if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
-      const unmet = reportDeliveryUnmet(pilotReport, dodBullets)
-      if (unmet.length > 0 && !state.partial) {
-        state.partial = { phase: 'report', round: null, reason: `delivered partially: ${unmet.length} unmet criteria`, findings: unmet }
-        const partialProblem = pilotReportProblem(pilotReport, true)
-        if (partialProblem) return refusal('report->awaiting_fidelity', partialProblem, pilotReportPath)
-      }
+      const deliveryProblem = pilotReportProblem(pilotReport, true)
+      if (deliveryProblem) return refusal('report->awaiting_fidelity', deliveryProblem, pilotReportPath)
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
       const reportReceipt = completeLifecycleReport({
@@ -895,6 +918,8 @@ export function createLifecycleStateMachine({
   function pilotReportProblem(content, enforceSchema = false) {
     const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
     const lines = content.split(/\r?\n/)
+    const headlineProblem = deferredHeadlineProblem(content, state.deferred)
+    if (headlineProblem) return headlineProblem
     if (partialLine?.startsWith('Partial: route_finding refused: no board contract;') && lines[0] !== partialLine) {
       return `pilot-report: partial run, make "${partialLine}" the first line`
     }
@@ -1058,9 +1083,8 @@ export function createLifecycleStateMachine({
   Object.defineProperty(server, 'state', {
     value: () => Object.freeze({
       phase: state.phase,
-      partial: state.partial
-        ? Object.freeze({ ...state.partial, findings: Object.freeze([...state.partial.findings]) })
-        : null,
+      partial: frozenDelivery(state.partial),
+      deferred: frozenDelivery(state.deferred),
     }),
   })
   Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })

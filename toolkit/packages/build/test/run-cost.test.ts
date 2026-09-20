@@ -492,6 +492,11 @@ describe('run cost', () => {
     expect(updated).not.toContain('old generated text')
   })
 
+  it('reports a deferred summary distinctly from partial cost outcomes', () => {
+    const lane = root(); writeFileSync(join(lane, 'route.json'), JSON.stringify({ route: 'LITE', executor: 'claude-sdk' })); writeFileSync(join(lane, 'summary.json'), JSON.stringify({ completed: true, partial: null, deferred: { reason: 'delivery deferred: 1 criterion' } })); writeFileSync(join(lane, 'usage.json'), JSON.stringify({ messages: [], result_totals: {} })); writeFileSync(join(lane, 'sdk-transcript.json'), JSON.stringify([{ timestamp: '2026-01-01T00:00:00Z' }]))
+    expect(computeRunCost({ laneDir: lane, worktree: '/work/a' }).outcome).toEqual({ status: 'deferred', reason: 'delivery deferred: 1 criterion' })
+  })
+
   it('aggregates complete runs by route by default and lists partial runs separately', () => {
     const reports = root()
     for (const [name, cost] of [

@@ -352,6 +352,8 @@ function criticSummary(value) {
 }
 function reportSummary(value) {
   const lines = String(value || '').split(/\r?\n/); const result = [];
+  const deferred = lines.find(line => /^Deferred:\s*\S/i.test(line));
+  if (deferred) result.push(deferred.trim());
   const wanted = /^(?:Implemented|Remaining Risks)$/i;
   const hasWanted = lines.some(line => wanted.test(line.replace(/^##\s+/, '').trim()) && /^##\s+/.test(line));
   for (let index = 0; index < lines.length; index += 1) if (/^##\s+/.test(lines[index]) && (!hasWanted || wanted.test(lines[index].replace(/^##\s+/, '').trim()))) {

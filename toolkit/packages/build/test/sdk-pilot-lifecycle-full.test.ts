@@ -217,7 +217,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
         ? 'accepted phase=plan'
         : `accepted phase=report (round bound reached: partial run, ${reason})`)
     }
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] }, deferred: null })
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# partial report\n' }))
       .toBe(`pilot-report: partial run, add the line "Partial: ${reason}"`)
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: `${fullReport}Partial: ${reason}\n` })).toBe('wrote pilot-report')
@@ -247,7 +247,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
         expect(await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: `verify-${round}` })).toBe('accepted phase=review')
       }
     }
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: MAX_REVIEW_ROUNDS, reason, findings: ['finding'] } })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: MAX_REVIEW_ROUNDS, reason, findings: ['finding'] }, deferred: null })
   })
 
   it.each([
