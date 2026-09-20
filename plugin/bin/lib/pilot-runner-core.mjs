@@ -274,6 +274,14 @@ function appendCostIndex({ archiveRoot, runId, card, route, cost, started, ended
   }
 }
 
+// A run that can need routing must know at launch that it cannot route, or it discovers it
+// after a full critic cycle. LITE counts only when its contract exposes route_finding.
+function missingBoardContractWarning(boardContract, route, contract) {
+  if (boardContract) return null
+  if (route !== 'FULL' && !/\broute_finding\b/.test(contract)) return null
+  return 'warning: no board contract; findings that must be routed will end the run partial; relaunch with --board-contract <json file>'
+}
+
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
@@ -297,9 +305,8 @@ export async function runPilot(options, dependencies) {
   const boardContract = loadBoardContract(options.boardContract, readFile)
   if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
   const routing = deriveRoute(cardText)
-  if (!boardContract && (routing.route === 'FULL' || /\broute_finding\b/.test(contract))) {
-    log('warning: no board contract; findings that must be routed will end the run partial; relaunch with --board-contract <json file>')
-  }
+  const contractWarning = missingBoardContractWarning(boardContract, routing.route, contract)
+  if (contractWarning) log(contractWarning)
   const timeoutExplicit = options.timeoutExplicit === true
   const timeoutSeconds = options.timeout ?? ROUTE_TIMEOUTS[routing.route]
   if (timeoutExplicit && timeoutSeconds < ROUTE_EXPECTED_SECONDS[routing.route]) {

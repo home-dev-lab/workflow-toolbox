@@ -38,6 +38,15 @@ const ARTIFACTS = {
 const INDEPENDENT_ROLES = new Set(['critic', 'review', 'refutation'])
 const MAX_REPORT_FINDINGS = 50
 const MAX_FINDING_CHARACTERS = 2000
+const NO_BOARD_CONTRACT_REASON = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
+const ROUTING_IMPOSSIBLE_INSTRUCTION = (reason) =>
+  `routing is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`
+// Ends a run at `report` from inside a tool call, where no phase transition carries it there.
+function endRunAtReport(state, timeline, transitionedAt) {
+  timeline.phases.at(-1).exited_at = transitionedAt
+  timeline.phases.push({ phase: 'report', round: null, entered_at: transitionedAt, exited_at: null, transition_id: null })
+  state.phase = 'report'
+}
 function acceptanceEntries(content) {
   const section = acceptanceSection(content)
   const lines = section.split(/\r?\n/)
@@ -932,20 +941,15 @@ export function createLifecycleStateMachine({
   async function routeFindingTool(args) {
     if (state.stopped) return stoppedRefusal()
     if (!boardContract || typeof routeFinding !== 'function') {
-      const reason = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
-      const phase = state.phase
-      if (phase !== 'report' && phase !== 'awaiting_fidelity') {
-        state.partial = { phase, round: null, reason, findings: [] }
+      const reason = NO_BOARD_CONTRACT_REASON
+      if (state.phase !== 'report' && state.phase !== 'awaiting_fidelity') {
+        state.partial = { phase: state.phase, round: null, reason, findings: [] }
         state.verifySnapshot = { tree: treeSignature(root), gates: {} }
         audit()
-        const transitionedAt = now()
-        const currentPhase = timeline.phases.at(-1)
-        currentPhase.exited_at = transitionedAt
-        timeline.phases.push({ phase: 'report', round: null, entered_at: transitionedAt, exited_at: null, transition_id: null })
-        state.phase = 'report'
+        endRunAtReport(state, timeline, now())
         persistTimeline()
       }
-      return `${reason}\nrouting is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`
+      return `${reason}\n${ROUTING_IMPOSSIBLE_INSTRUCTION(reason)}`
     }
     try {
       const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })
