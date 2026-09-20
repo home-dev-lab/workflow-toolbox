@@ -2,6 +2,10 @@
 
 `wt-secret-guard` replaces detected secrets in pasted prompts and Bash, Read, and MCP tool results with stable tokens. It can rewrite `op://` 1Password references, `secret:env:NAME`, and `secret:file:/path` references before Bash runs.
 
+Its scope is the text this Claude Code session sends through submitted prompts and supported tool results. It never filters text a human types in another client.
+
+Known vendor shapes include Brave API keys (`BSA` plus 28 URL-safe characters). UUIDs remain unmasked in ordinary log text, but are masked when immediately used as a credential, including an Exa client constructor or a key, token, secret, or credential assignment. A key with no recognizable shape and no credential context word remains invisible. No entropy threshold that avoids flooding ordinary output can catch every such value, so the guard does not lower its entropy threshold as a fallback.
+
 ## Requirements
 
 This is a Claude Code Function Hooks plugin, an early-access API. Start Claude Code with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Without Function Hooks, Claude Code does not load this plugin and secret guarding is unavailable.

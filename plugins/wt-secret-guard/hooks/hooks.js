@@ -57,7 +57,8 @@ function replaceKnown(text, command, includeOptional) {
   let scrubbed = text;
   for (const [token, entry] of tokens) {
     const optionalEnabled = includeOptional && ((entry.kind === 'email' && maskEmails) || (entry.kind === 'ip-address' && maskIpAddresses));
-    if ((entry.kind !== 'email' && entry.kind !== 'ip-address') || optionalEnabled) scrubbed = scrubbed.split(entry.value).join(token);
+    const contextSensitive = entry.kind === 'credential-uuid';
+    if (!contextSensitive && ((entry.kind !== 'email' && entry.kind !== 'ip-address') || optionalEnabled)) scrubbed = scrubbed.split(entry.value).join(token);
   }
   const found = [
     ...detections(scrubbed, command),
