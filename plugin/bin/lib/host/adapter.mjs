@@ -3,16 +3,18 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import * as darwin from './darwin.mjs'
 import * as linux from './linux.mjs'
+import * as posix from './posix.mjs'
 import * as win32 from './win32.mjs'
 
-const implementations = { darwin, linux, win32 }
+const implementations = { aix: posix, darwin, freebsd: posix, linux, sunos: posix, win32 }
 const evidenceLabels = { linux: 'ubuntu-latest', darwin: 'macos-latest', win32: 'windows-latest' }
 
-export function createHostAdapter({ platform = process.platform, invoke, evidenceRoot, mutate = (value) => value } = {}) {
+export function createHostAdapter({ platform = process.platform, invoke, evidenceRoot, mutate = (value) => value, unavailableFallback = false } = {}) {
   const implementation = implementations[platform]
+  if (!implementation && unavailableFallback) return unavailableAdapter(platform, `host adapter unavailable on ${platform}`)
   if (!implementation) throw new Error(`host adapter unavailable on ${platform}`)
   const captured = evidenceRoot ? readEvidence(platform, evidenceRoot, mutate) : null
-  const invocation = captured ? evidenceInvocation(captured) : invoke ?? realInvocation()
+  const invocation = captured ? evidenceInvocation(implementation, captured) : invoke ?? realInvocation()
   const adapter = {
     platform,
     readProcessRelationships: () => implementation.readProcessRelationships(invocation),
@@ -47,7 +49,14 @@ function realInvocation() {
   }
 }
 
-export const hostAdapter = createHostAdapter()
+// A platform with no implementation degrades to a named "unavailable" adapter instead of throwing at import:
+// every consumer already turns a throwing read into a legible "unavailable on this platform".
+function unavailableAdapter(platform, reason) {
+  const unavailable = () => { throw new Error(reason) }
+  return { available: false, platform, reason, readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason }) }
+}
+
+export const hostAdapter = createHostAdapter({ unavailableFallback: true })
 
 function readEvidence(platform, evidenceRoot, mutate) {
   const directory = join(evidenceRoot, evidenceLabels[platform])
@@ -66,10 +75,18 @@ const evidenceSummary = (platform, captured) => ({
   termination: { childPid: captured.termination.pids.childPid, ...captured.termination.operation },
 })
 
-function evidenceInvocation(captured) {
+const operationKey = ({ command, args }) => JSON.stringify([command, args])
+
+function evidenceInvocation(implementation, captured) {
+  const operations = new Map([
+    [operationKey(implementation.processRelationshipOperation), captured.processTable.processTable],
+    [operationKey(implementation.processSnapshotOperation), captured.processTable.processSnapshot],
+  ].filter(([, result]) => result))
   return {
-    run() {
-      const result = captured.processTable.processTable
+    run(command, args) {
+      const key = operationKey({ command, args })
+      const result = operations.get(key)
+      if (!result) throw new Error(`captured host evidence has no invocation for ${command} ${args.join(' ')}`)
       return { status: result.exitCode, stdout: result.raw, stderr: result.exitCode === 0 ? '' : result.raw }
     },
     realpath(input) {

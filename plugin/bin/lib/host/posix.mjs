@@ -1,4 +1,7 @@
 const PROCESS_TABLE_ARGS = ['-axo', 'pid=,ppid=,pgid=,state=,etime=,comm=']
+const PROCESS_SNAPSHOT_ARGS = ['-eo', 'pid=,ppid=,etimes=,args=']
+export const processRelationshipOperation = { command: 'ps', args: PROCESS_TABLE_ARGS }
+export const processSnapshotOperation = { command: 'ps', args: PROCESS_SNAPSHOT_ARGS }
 
 function elapsedSeconds(value) {
   const parts = value.split('-')
@@ -20,11 +23,11 @@ export function parseProcessRelationships(result) {
 }
 
 export function readProcessRelationships(invoke) {
-  return parseProcessRelationships(invoke.run('ps', PROCESS_TABLE_ARGS, { env: { ...process.env, LC_ALL: 'C' } }))
+  return parseProcessRelationships(invoke.run(processRelationshipOperation.command, processRelationshipOperation.args, { env: { ...process.env, LC_ALL: 'C' } }))
 }
 
 export function readProcessSnapshot(invoke) {
-  const result = invoke.run('ps', ['-eo', 'pid=,ppid=,etimes=,args='])
+  const result = invoke.run(processSnapshotOperation.command, processSnapshotOperation.args)
   if (result.status !== 0) return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
   const processes = String(result.stdout ?? '').split(/\r?\n/).flatMap((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line)
