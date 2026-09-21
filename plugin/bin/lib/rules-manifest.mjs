@@ -8,7 +8,7 @@ export const RULE_TRIGGERS = Object.freeze([
   'standing',
   ...['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report'].map((phase) => `phase:${phase}`),
   ...['critic', 'tdd', 'review', 'refutation', 'harden'].map((role) => `lane:${role}`),
-  'critic-round>=2',
+  'critic->plan',
 ])
 
 const recipientSet = new Set(RULE_RECIPIENTS)
