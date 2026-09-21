@@ -25,6 +25,7 @@ export const spawningTestFiles = [
   'packages/build/test/adopt-audit-overlap.test.ts',
   'packages/build/test/adopt-changelog-span-cli.test.ts',
   'packages/build/test/adopt-check-hook.test.ts',
+  'packages/build/test/adopt-installer-characterization.test.ts',
   'packages/build/test/adopt-installer.test.ts',
   'packages/build/test/adopt-migrate-dry-run.test.ts',
   'packages/build/test/adopted-wt-lane-consent-parity.test.ts',
