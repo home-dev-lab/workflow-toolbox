@@ -42,7 +42,9 @@ test('the opencode child carries the marker that makes recursion refusable', () 
 
 test('an agentic run never works inside the plugin that launched it', async (t) => {
   const root = await stateRoot(t);
-  const env = { ...process.env, XDG_STATE_HOME: root };
+  // DEEP_SEARCH_NO_WORKER keeps `start` from detaching a worker. Without it this test launched a
+  // REAL opencode run on every suite run — see the note at the seam in bin/deep.mjs.
+  const env = { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1' };
   const result = spawnSync(
     process.execPath,
     [cli.pathname, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
@@ -52,6 +54,23 @@ test('an agentic run never works inside the plugin that launched it', async (t) 
   const { handle } = JSON.parse(result.stdout);
   const record = JSON.parse(spawnSync(process.execPath, ['-e', `process.stdout.write(require('fs').readFileSync(process.argv[1],'utf8'))`, join(root, 'deep-search', `${handle}.json`)], { encoding: 'utf8' }).stdout);
   assert.equal(record.dir.startsWith(join(root, 'deep-search')), true, `dir was ${record.dir}`);
+});
+
+// ⚠ This lock is NOT proven RED, deliberately, and the reason is the defect itself: making it fail
+// means letting `start` detach a worker, which launches a real `opencode run` on the subscription
+// quota. A proof that spends the thing the lock exists to stop is not worth its evidence. What IS
+// verified is the green direction, on the real CLI: no opencode process appears.
+test('start does not spawn a worker when the no-worker seam is set', async (t) => {
+  const root = await stateRoot(t);
+  const before = spawnSync('bash', ['-lc', 'ps -eo args | grep -c "[o]pencode run" || true'], { encoding: 'utf8' }).stdout.trim();
+  const result = spawnSync(
+    process.execPath,
+    [cli.pathname, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
+    { env: { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1' }, encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const after = spawnSync('bash', ['-lc', 'ps -eo args | grep -c "[o]pencode run" || true'], { encoding: 'utf8' }).stdout.trim();
+  assert.equal(after, before, 'starting a run under the no-worker seam must launch no opencode process');
 });
 
 test('the Exa failure that opened the availability door is recorded', async () => {

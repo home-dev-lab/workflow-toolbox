@@ -127,6 +127,13 @@ async function start(args) {
   const answer = await startDeepResearch(options, {
     store,
     schedule: (handle) => {
+      // ⚠ A TEST SEAM, and it exists because its absence SPENT REAL QUOTA. Measured 2026-09-21
+      // 04:45 +01:00: `test/deep-recursion.test.js` starts an agentic run to assert the working
+      // directory it records, and every suite run therefore detached a worker that launched a
+      // REAL `opencode run` on the question "anything", with a 30-minute timeout. Nine of them in
+      // one night, unattended, found only because the orphan watcher reported the processes.
+      // A test that asserts what `start` RECORDS never needs the worker to exist.
+      if (process.env.DEEP_SEARCH_NO_WORKER === '1') return;
       const child = spawn(process.execPath, [scriptPath, '__worker', handle], {
         detached: true,
         stdio: 'ignore',
