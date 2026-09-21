@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,7 +9,6 @@ import { createHostAdapter } from './host/adapter.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const QUOTA_PROBE = fileURLToPath(new URL('../wt-quota-probe.mjs', import.meta.url))
-
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
@@ -37,15 +36,33 @@ function codexCompanion(env) {
   return null
 }
 
-function runCodex({ companion, cwd, effort, request, env }) {
-  const result = spawnSync(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
+function runCodex({ companion, cwd, effort, request, env, signal }) {
+  const adapter = createHostAdapter()
+  const child = spawn(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
     cwd,
     env,
-    encoding: 'utf8',
-    input: '',
-    maxBuffer: 64 * 1024 * 1024,
+    detached: adapter.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   })
-  return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+  const chunks = { stdout: [], stderr: [] }
+  const stopOwnedFamily = () => {
+    if (child.pid) adapter.endProcessFamily(child.pid)
+  }
+  child.stdout.on('data', (chunk) => chunks.stdout.push(chunk))
+  child.stderr.on('data', (chunk) => chunks.stderr.push(chunk))
+  signal?.addEventListener('abort', stopOwnedFamily, { once: true })
+  return new Promise((resolve) => {
+    child.once('error', (error) => {
+      stopOwnedFamily()
+      resolve({ status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n` })
+    })
+    child.once('close', (code, childSignal) => {
+      stopOwnedFamily()
+      signal?.removeEventListener('abort', stopOwnedFamily)
+      resolve({ status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString() })
+    })
+  })
 }
 
 export function parseProcessLines(stdout) {
@@ -63,6 +80,12 @@ export function listProcessTable(platform = process.platform) {
     return createHostAdapter({ platform }).readProcessSnapshot()
   } catch {}
   return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
+}
+
+export function listProcessRelationships(platform = process.platform) {
+  try { return createHostAdapter({ platform }).readProcessRelationships() } catch {
+    return { status: 'unavailable', processes: [], reason: 'process relationship discovery unavailable on this platform' }
+  }
 }
 
 export function listBrokers(platform = process.platform) {
@@ -137,12 +160,13 @@ export async function runSecondOpinion(options, dependencies = defaultSecondOpin
     const before = dependencies.listBrokers()
     let result
     try {
-      result = dependencies.runCodex({
+      result = await dependencies.runCodex({
         companion,
         cwd: options.repo,
         effort: options.effort,
         request: `${TOOL_NOTE}\n\n${request}`,
         env,
+        signal: options.signal,
       })
       appendOutput(options.out, result.stdout)
       appendOutput(options.out, result.stderr)

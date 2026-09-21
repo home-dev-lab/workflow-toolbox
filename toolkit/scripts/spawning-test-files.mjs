@@ -146,6 +146,7 @@ export const spawningTestFiles = [
   'packages/build/test/wt-lane-helpers.test.ts',
   'packages/build/test/wt-lane-integrate.test.ts',
   'packages/build/test/wt-lane-launcher.test.ts',
+  'packages/build/test/wt-lane-orphan-watch.test.ts',
   'packages/build/test/wt-lane-wait.test.ts',
   'packages/build/test/wt-pilot-fidelity.test.ts',
   'packages/build/test/wt-shipped-twin-check-hook.test.ts',
