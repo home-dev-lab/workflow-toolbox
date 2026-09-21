@@ -497,7 +497,7 @@ export function createLifecycleStateMachine({
     verifySnapshot: null,
     pendingControl: null,
     resolvedRoutedCards: new Set(),
-    report: { stage: 'idle', base: null, head: null, tree: null },
+    report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
     pendingStop: null,
     stopped: false,
   }
@@ -815,6 +815,7 @@ export function createLifecycleStateMachine({
         laneDir,
         cardId,
         sessionTag,
+        startedAt: lifecycleStartedAt,
         route: frozenRoute,
         state,
         evidencePath,

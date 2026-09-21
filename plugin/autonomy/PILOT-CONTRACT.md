@@ -63,18 +63,20 @@ the order-giver, never looped.
 
 ## Completion and boundaries
 
-Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`, `## E2E`,
-`## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. Under Acceptance,
-quote every folded card Definition-of-done criterion exactly, followed by `Outcome: proven`, `Outcome: not done: <reason>`,
-or `Outcome: deferred: card <id> — <L4 reason>` where the id is in runner-owned `routed_cards`. The
-runner appends `## Routed cards`; pilot prose is not its source of truth. E2E gives command/procedure plus
-verbatim output. An E2E is owed whenever the change can be exercised against real processes, real files,
-or a real host (CLI, hook, watcher, server, script included). `e2e not run: <reason>` is legitimate only if nothing on this
-machine can exercise it; the reason must name what was tried. Absence of a UI is NOT a reason. FULL also requires `## Independent Review`
-with lenses and confirmed/refuted findings. Keep exact `Partial: <reason>` only on partial runs; the
-owner decides how to proceed from a completed partial run. The report edge refuses a report not written
-through write_artifact this run, or changed since.
-Continue through the awaiting-fidelity receipt, then write nothing and end: the runner commits and
-archives. Three unproductive turns fail. Never push, publish, merge, force, delete, retry denial,
-print secrets/environment, or message the owner outside the pilot report. `pilot-guard` enforces this;
-mailbox is owner input and Planka is card state.
+Write `pilot-report` via `write_artifact`; required headings are `## Implemented`, `## Verification`,
+`## E2E`, `## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`.
+Acceptance quotes every folded DoD criterion exactly, then `Outcome: proven`, `Outcome: not done:
+<reason>`, or `Outcome: deferred: card <id> — <L4 reason>` for an id in runner-owned `routed_cards`.
+The runner appends authoritative `## Routed cards`. E2E gives procedure/command plus verbatim output for
+any exercisable process/file/host. Otherwise use `e2e not run: <reason>` naming what was tried; no UI is
+NOT a reason. FULL also needs `## Independent Review` with lenses and confirmed/refuted findings. Use exact
+`Partial: <reason>` only on partial runs; their disposition is the owner's.
+
+Under Implemented list each `- Delivered artefact: \`relative/path\``. If git stages nothing, the edge confines
+and reads those regular files, requires mtime since start, and records path, size, and SHA-256 in summary and
+manifest. Say mtime bounds but cannot prove authorship. No declaration means nothing delivered and is
+refused. The edge also refuses a report not written through `write_artifact` this run or changed since.
+
+Continue through awaiting-fidelity, then end; the runner commits/archives. Three idle turns fail. Never
+push/publish/merge/force/delete, retry denial, print secrets/environment, or message outside the report.
+`pilot-guard` enforces this; mailbox is input and Planka is state.

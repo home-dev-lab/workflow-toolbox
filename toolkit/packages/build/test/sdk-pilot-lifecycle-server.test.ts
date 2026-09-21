@@ -470,6 +470,47 @@ printf 'report\n' > "$report"
     expect(spawnSync('git', ['status', '--porcelain'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout).toBe('')
   })
 
+  it('closes an ignored-only delivery by reading back its declared artefact and recording its digest', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport()
+    const content = 'ignored delivery\n'
+    writeFileSync(join(lifecycle.root, '.lane', 'delivery.txt'), content)
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/delivery.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'ignored-only' }))).toBe('accepted phase=awaiting_fidelity')
+    const expected = { path: '.lane/delivery.txt', size: Buffer.byteLength(content), sha256: createHash('sha256').update(content).digest('hex'), modified_after_started: true }
+    const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
+    expect(summary.delivery).toMatchObject({ mode: 'artefact-read-back', artifacts: [expected] })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8')).delivery)
+      .toMatchObject({ mode: 'artefact-read-back', artifacts: [expected] })
+    expect(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout.trim()).toBe('1')
+  })
+
+  it('refuses an ignored-only delivery whose declared artefact is missing and names its path', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport()
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/missing.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing-artefact' })))
+      .toContain('missing declared artefact .lane/missing.txt')
+  })
+
+  it('refuses a declared artefact whose mtime predates the lifecycle', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport()
+    const artefact = join(lifecycle.root, '.lane', 'pre-existing.txt')
+    writeFileSync(artefact, 'pre-existing\n')
+    utimesSync(artefact, new Date(1), new Date(1))
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/pre-existing.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'pre-existing-artefact' })))
+      .toContain('declared artefact predates this run: .lane/pre-existing.txt')
+  })
+
+  it('still refuses a real-git delivery that changes nothing and declares no artefact', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport()
+    await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'nothing-delivered' }))).toContain('missing changed HEAD')
+  })
+
   it.each([
     ['failed commit', () => (_program: string, call: string[]) => { if (call[0] === 'commit') throw new Error('commit failed'); return call[0] === 'rev-parse' ? 'base\n' : '' }, /missing changed HEAD/],
     ['unchanged HEAD', () => (_program: string, call: string[]) => call[0] === 'rev-parse' ? 'base\n' : '', /missing changed HEAD/],
@@ -1666,6 +1707,16 @@ function realGitLifecycle() {
   const rawTransition = tools.transition!.handler
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
+}
+async function realGitLifecycleReadyForReport() {
+  const lifecycle = realGitLifecycle()
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+  await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+  await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })
+  await writeGates(lifecycle)
+  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }))).toBe('accepted phase=report')
+  return lifecycle
 }
 function archiveProject() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-archive-'))); roots.push(root)
