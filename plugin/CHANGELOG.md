@@ -10,6 +10,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Add launch-time reasoning variants for all pilot, orchestrator, and executor roles, with model caps, explicit overrides, unknown-variant refusal and auditable forced overrides
 
 ### Fixed
+- `wt-secret-guard` no longer rewrites source it reads: a declaration line, a diff-prefixed declaration and an assignment bounded by parameter or destructuring punctuation pass through unchanged, while a loose credential assignment in command output is still scrubbed. Reviewed false-positive candidates over 560 repository source files fell from 32 to 5 with the true-positive corpus unchanged; the cost is that output shaped like source can now pass through, and that is stated rather than hidden
 - Price Claude Haiku 4.5 and all default routable models from source-backed fallback rows, and make unknown-price run totals name the unpriced models in archives and What is running
 - Run host-timing quarantines visibly but non-blockingly under `pnpm test:blocking`, the release-certification and CI entry point, while `pnpm test` remains the full developer suite
 - Treat empty and whitespace-only model plugin options as unset in runtime resolution, `wt-config`, and SessionStart configuration context
