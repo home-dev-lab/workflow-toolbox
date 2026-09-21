@@ -20,6 +20,7 @@ import { libraryFromQuestion, queryContext7 } from '../src/context7.js'
 
 const MIRROR_DIR = '.claude-code-docs'
 const MANIFEST = 'docs_manifest.json'
+const EXA_REFUSAL_PREFIX = 'deep-search:exa-key-refused:'
 
 // Detection uses the ENGINE's filesystem and environment, never node's: a hooks module has
 // no node. The shape handed to route() is the same one detect.js produces.
@@ -244,6 +245,24 @@ function renderResults(providerLabel, normalised) {
   return `Answered by ${providerLabel} instead of the default web search.\n\n${lines.join('\n')}`
 }
 
+function withAnswerNotice(answer, notice) {
+  const results = answer?.result?.results
+  if (!Array.isArray(results)) return answer
+  return { ...answer, result: { ...answer.result, results: [notice, ...results] } }
+}
+
+async function fallThroughWithNotice(next, event, notice) {
+  return withAnswerNotice(await next(event), notice)
+}
+
+async function exaRefusalNotice($) {
+  const sessionId = await $.session.id()
+  const key = `${EXA_REFUSAL_PREFIX}${sessionId}`
+  if (await $.store.get(key)) return null
+  await $.store.set(key, true)
+  return 'Exa refused the API key; answered by the default web search instead.'
+}
+
 export const register = (on) => {
   on('tool.call', { tool: 'WebSearch' }, async ($, event, next) => {
     const query = typeof event.query === 'string' ? event.query : ''
@@ -251,6 +270,7 @@ export const register = (on) => {
 
     const providers = await providersFor($)
     const decision = route(query, providers)
+    let context7Notice = null
 
     // Rung 1 keeps precedence. For every other route, an explicitly recognised third-party
     // product gets its own documentation before any general web provider is attempted.
@@ -258,20 +278,26 @@ export const register = (on) => {
       const library = libraryFromQuestion(query)
       if (library) {
         const started = Date.now()
-        const answer = await queryContext7({
+        const context7 = await queryContext7({
           listTools: () => $.tool.list(),
           call: (server, tool, args) => $.mcp.call(server, tool, args),
-          sleep: (ms) => $.clock.sleep(ms),
+          sleep: (ms, options) => $.clock.sleep(ms, options),
+          now: () => $.clock.now(),
+          signal: next.signal,
         }, query, library)
-        if (answer) {
+        if (context7.answer) {
           return {
             result: {
               query,
-              results: [`Answered from ${library}'s documentation through context7 — no web search was performed.\n\n${answer}`],
+              results: [`Answered from ${library}'s documentation through context7 — no web search was performed.\n\n${context7.answer}`],
               durationSeconds: (Date.now() - started) / 1000,
               searchCount: 0,
             },
           }
+        }
+        context7Notice = `Context7 did not answer: ${context7.reason}.`
+        if (decision.provider !== 'brave' && decision.provider !== 'exa') {
+          return fallThroughWithNotice(next, event, context7Notice)
         }
       }
     }
@@ -283,6 +309,8 @@ export const register = (on) => {
     if (decision.provider === 'brave' || decision.provider === 'exa') {
       const started = Date.now()
       const isBrave = decision.provider === 'brave'
+      // ⚠ Literal `$.env.get` calls only: the engine lists the variables a module reads and refuses
+      // `$.env.get(<expression>)` outright. Brave is read under both names it is documented with.
       let apiKey
       if (isBrave) {
         const brave = await $.env.get('BRAVE_API_KEY')
@@ -291,7 +319,9 @@ export const register = (on) => {
       } else {
         apiKey = await $.env.get('EXA_API_KEY')
       }
-      if (!apiKey) return next(event)
+      if (!apiKey) {
+        return context7Notice ? fallThroughWithNotice(next, event, context7Notice) : next(event)
+      }
       let rendered = null
       try {
         const search = isBrave ? searchBrave : searchExa
@@ -299,9 +329,21 @@ export const register = (on) => {
         rendered = renderResults(isBrave ? 'Brave' : 'Exa', normalised)
       } catch (error) {
         await $.ui.log(`deep-search: ${decision.provider} did not answer (${String(error?.classification ?? error?.message ?? 'unknown').slice(0, 60)}) — falling through to the web search`)
-        return next(event)
+        let answer = await next(event)
+        if (!isBrave && (error?.status === 401 || error?.status === 403)) {
+          const notice = await exaRefusalNotice($)
+          if (notice) answer = withAnswerNotice(answer, notice)
+        }
+        return context7Notice
+          ? withAnswerNotice(answer, context7Notice)
+          : answer
       }
-      if (!rendered) return next(event)
+      if (!rendered) {
+        return context7Notice
+          ? fallThroughWithNotice(next, event, context7Notice)
+          : next(event)
+      }
+      if (context7Notice) rendered = `${context7Notice}\n${rendered}`
       return {
         result: { query, results: [rendered], durationSeconds: (Date.now() - started) / 1000, searchCount: 1 },
       }

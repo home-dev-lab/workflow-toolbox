@@ -22,7 +22,7 @@ function* files(dir: string): Generator<string> {
 }
 
 describe('shipped wt-deep-search', () => {
-  // The plugin carries its own 150 locks under `test/`, run by node's test runner because the
+  // The plugin carries its own locks under `test/`, run by node's test runner because the
   // plugin has ZERO dependencies — that property is what makes installing it riskless, so the
   // gate runs them where they are rather than porting them into vitest and adding a dependency.
   it('its own test suite passes', () => {
