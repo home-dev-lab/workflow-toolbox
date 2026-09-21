@@ -287,6 +287,10 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
         ? 'accepted phase=plan'
         : `accepted phase=report (round bound reached: partial run, ${reason})`)
     }
+    const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.phases.filter((item: { phase: string }) => ['plan', 'critic'].includes(item.phase)).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
+      ['plan', 1], ['critic', 1], ['plan', 2], ['critic', 2], ['plan', 3], ['critic', 3],
+    ])
     expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] }, deferred: null })
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# partial report\n' }))
       .toBe(`pilot-report: partial run, add the line "Partial: ${reason}"`)
@@ -317,6 +321,10 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
         expect(await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: `verify-${round}` })).toBe('accepted phase=review')
       }
     }
+    const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.phases.filter((item: { phase: string }) => ['review', 'harden'].includes(item.phase)).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
+      ['review', 1], ['harden', 1], ['review', 2], ['harden', 2], ['review', 3],
+    ])
     expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: FIXED_REVIEW_ROUNDS, reason, findings: ['finding'] }, deferred: null })
   })
 
