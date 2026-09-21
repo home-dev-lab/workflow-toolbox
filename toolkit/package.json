@@ -9,6 +9,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "quality:lint": "cd .. && node toolkit/node_modules/eslint/bin/eslint.js --config toolkit/eslint.config.mjs \"toolkit/packages/*/src/**/*.ts\" \"plugin/**/*.mjs\" \"plugin/**/*.js\" --max-warnings 687",
+    "quality:host": "node scripts/host-primitive-census.mjs",
     "quality:dup": "jscpd packages/runtime/src packages/patterns/src packages/build/src packages/std/src packages/pipeline-spec/src packages/comm/src packages/debugger/src packages/scaffold/src packages/smoke/src ../plugin --config .jscpd.json",
     "quality:dead": "cd .. && node toolkit/node_modules/knip/bin/knip.js --config knip.json --max-issues 221",
     "quality:deps": "depcruise packages/runtime/src packages/patterns/src packages/build/src packages/std/src packages/pipeline-spec/src packages/comm/src packages/debugger/src packages/scaffold/src packages/smoke/src ../plugin --config .dependency-cruiser.cjs --ignore-known .dependency-cruiser-known-violations.json",
@@ -16,7 +17,7 @@
     "quality:baseline": "node scripts/quality.mjs baseline",
     "quality:delta": "node scripts/quality.mjs delta",
     "quality:debt-cards": "node scripts/quality.mjs debt-cards",
-    "quality": "pnpm run quality:lint && pnpm run quality:dup && pnpm run quality:dead && pnpm run quality:deps",
+    "quality": "pnpm run quality:lint && pnpm run quality:host && pnpm run quality:dup && pnpm run quality:dead && pnpm run quality:deps",
     "test": "pnpm build:dist && node scripts/cross-repo-typecheck.mjs && vitest run --coverage",
     "test:blocking": "pnpm build:dist && node scripts/cross-repo-typecheck.mjs && node scripts/release-blocking-tests.mjs",
     "test:shard": "vitest run",
@@ -53,6 +54,7 @@
     "// ratchet 2026-09-16: worst=687 warnings across toolkit/packages/*/src and plugin": "quality:lint --max-warnings",
     "// ratchet 2026-09-16: worst=3% duplication (2.91% measured) across toolkit/packages/*/src and plugin": "quality:dup threshold",
     "// ratchet 2026-09-16: worst=221 issues across toolkit packages and plugin": "quality:dead --max-issues",
+    "// ratchet 2026-09-21: measured=429 raw host primitives across 212 non-generated plugin source files outside the host adapter": "quality:host HOST_PRIMITIVE_CEILING",
     "// ratchet 2026-09-17: coverage percentages are pinned in vitest.config.mts and judged by pnpm test itself (one suite run; quality:coverage is an alias, never a second suite)": "coverage thresholds"
   },
   "devDependencies": {
