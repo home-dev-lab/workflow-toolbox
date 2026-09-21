@@ -307,21 +307,75 @@ test('handle records can be created, read, updated, and listed', async (t) => {
   await assert.rejects(store.read('../escape'), /Unknown deep-search handle/);
 });
 
-test('opencode launch carries stdin isolation, auto, dir, timeout, and EXIT marker', () => {
+test('opencode launch uses an argument array without a shell', () => {
   let launch;
-  const child = { pid: 44, unref() {} };
+  const child = { pid: 44, once() {}, unref() {} };
   const result = startOpencode(
     { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', timeoutMs: 90_000 },
-    { spawn: (...args) => { launch = args; return child; } },
+    {
+      closeSync() {},
+      openSync: () => 8,
+      spawn: (...args) => { launch = args; return child; },
+      setTimeout: () => ({ unref() {} }),
+    },
   );
-  assert.equal(launch[0], '/bin/sh');
-  assert.match(launch[1][1], /timeout 90/);
-  assert.match(launch[1][1], /opencode run --auto --dir/);
-  assert.match(launch[1][1], /< \/dev\/null/);
-  assert.match(launch[1][1], /EXIT=/);
+  assert.equal(launch[0], 'opencode');
+  assert.deepEqual(launch[1], ['run', '--auto', '--dir', '/work', 'full brief']);
+  assert.equal(launch[2].shell, false);
   assert.equal(launch[2].detached, true);
-  assert.equal(launch[2].stdio, 'ignore');
+  assert.deepEqual(launch[2].stdio, ['ignore', 8, 8]);
   assert.deepEqual(result, { logPath: '/state/deep-1.log', pid: 44 });
+});
+
+test('opencode timeout is owned by Node, kills the child, and records the timeout', () => {
+  let onExit;
+  let onTimeout;
+  let killed = false;
+  const writes = [];
+  const child = {
+    pid: 44,
+    kill() { killed = true; },
+    once(event, callback) { if (event === 'exit') onExit = callback; },
+    unref() {},
+  };
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', timeoutMs: 90_000 },
+    {
+      appendFileSync: (_path, value) => writes.push(value),
+      clearTimeout() {},
+      closeSync() {},
+      openSync: () => 8,
+      setTimeout: (callback) => { onTimeout = callback; return 7; },
+      spawn: () => child,
+    },
+  );
+
+  onTimeout();
+  onExit(null, 'SIGTERM');
+  assert.equal(killed, true);
+  assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
+});
+
+test('opencode accepts Windows absolute paths and refuses relative paths', () => {
+  const deps = {
+    closeSync() {},
+    openSync: () => 8,
+    setTimeout: () => 7,
+    spawn: () => ({ pid: 44, once() {}, unref() {} }),
+  };
+  assert.doesNotThrow(() => startOpencode({
+    prompt: 'full brief',
+    dir: String.raw`C:\work`,
+    logPath: String.raw`C:\state\deep-1.log`,
+  }, deps));
+  assert.throws(
+    () => startOpencode({ prompt: 'full brief', dir: 'work', logPath: '/state/deep-1.log' }, deps),
+    /absolute --dir/,
+  );
+  assert.throws(
+    () => startOpencode({ prompt: 'full brief', dir: '/work', logPath: 'deep-1.log' }, deps),
+    /absolute log path/,
+  );
 });
 
 test('opencode receives only the environment it needs, never provider or unrelated credentials', () => {
@@ -336,7 +390,13 @@ test('opencode receives only the environment it needs, never provider or unrelat
   };
   startOpencode(
     { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },
-    { env, spawn: (...args) => { launch = args; return { pid: 45, unref() {} }; } },
+    {
+      closeSync() {},
+      env,
+      openSync: () => 8,
+      setTimeout: () => 7,
+      spawn: (...args) => { launch = args; return { pid: 45, once() {}, unref() {} }; },
+    },
   );
 
   assert.deepEqual(launch[2].env, {
