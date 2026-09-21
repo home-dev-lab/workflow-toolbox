@@ -40,6 +40,7 @@ import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { hostAdapter } from './lib/host/adapter.mjs'
 
 const HELP = `wt-lane-probe — prove an executor LANE is routing to a worktree WHILE IT RUNS, not
 by asking at report time. Lists live processes matching --pattern, resolves each one's cwd, and
@@ -100,15 +101,11 @@ function safeRealpath(p) {
 // to maxDepth.
 function readPidToPpidMap(maxEntries = 20000) {
   try {
-    const out = execFileSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' })
     const map = new Map()
-    for (const line of out.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      const [pidStr, ppidStr] = trimmed.split(/\s+/)
-      const pid = Number(pidStr)
-      const ppid = Number(ppidStr)
-      if (Number.isInteger(pid) && Number.isInteger(ppid)) map.set(pid, ppid)
+    const table = hostAdapter.readProcessRelationships()
+    if (table.status !== 'known') return null
+    for (const { pid, parentPid } of table.processes) {
+      map.set(pid, parentPid)
       if (map.size >= maxEntries) break // pathological table size guard, not expected in practice
     }
     return map
