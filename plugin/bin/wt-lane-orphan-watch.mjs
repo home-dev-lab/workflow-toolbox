@@ -2,7 +2,7 @@
 import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, terminateLane } from './lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionSlots, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
 import { listBrokers, listProcessRelationships, listProcessTable } from './lib/second-opinion-core.mjs'
@@ -40,16 +40,19 @@ function records(project, staging = stagingLaneDirs(project)) {
   const worktrees = new Set([project, ...(git.status === 'known' ? git.worktrees : []), ...(umbrella.status === 'known' ? umbrella.worktrees : []), ...staging])
   const out = []
   for (const worktree of worktrees) {
-    const dir = supervisionPaths(worktree).dir
-    let currentRunId = null
-    try { currentRunId = JSON.parse(readFileSync(supervisionPaths(worktree).pointer, 'utf8')).runId } catch {}
-    let names = []
-    try { names = readdirSync(dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch {}
-    if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
-    for (const name of names) {
-      try {
-        const record = JSON.parse(readFileSync(path.join(dir, name), 'utf8'))
-        Object.defineProperty(record, '__recordWorktree', { value: worktree })
+    for (const slot of supervisionSlots(worktree)) {
+      const paths = supervisionPaths(worktree, null, slot)
+      let currentRunId = null
+      try { currentRunId = JSON.parse(readFileSync(paths.pointer, 'utf8')).runId } catch {}
+      let names = []
+      try { names = readdirSync(paths.dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch {}
+      if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
+      for (const name of names) try {
+        const record = JSON.parse(readFileSync(path.join(paths.dir, name), 'utf8'))
+        Object.defineProperties(record, {
+          __recordWorktree: { value: worktree },
+          __supervisionSlot: { value: slot },
+        })
         out.push(record)
       } catch {}
     }
@@ -181,7 +184,8 @@ async function main() {
         const e = record.evidence ?? {}
         const model = argvValue(record.workerArgv, '--model')
         const brief = argvValue(record.workerArgv, '--brief')
-        const control = `node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)}`
+        const slot = record.__supervisionSlot ? ` --slot ${shellQuote(record.__supervisionSlot)}` : ''
+        const control = `node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)}${slot}`
         const restart = model && brief && path.isAbsolute(brief) && existsSync(brief)
           ? `; to relaunch from the worktree's current state, abandon, then run node ${shellQuote(LAUNCHER)} --dir ${shellQuote(record.worktree)} --model ${shellQuote(model)} --brief ${shellQuote(brief)}`
           : ''
@@ -215,7 +219,8 @@ async function main() {
         if (verdict.status === 'worker-gone-child-alive') {
           const orphanKey = `${record.runId}:worker-gone-child-alive`
           if (!journaled.has(orphanKey) && journal({ event: 'worker-gone-child-alive', runId: record.runId, pid: record.childPid, argv: argvSummary(processRecord?.argv ?? record.childArgv ?? []), worktree: record.worktree, owner: record.owner, reason: verdict.reason })) journaled.add(orphanKey)
-          if (ownsNotice && !notified.has(orphanKey)) notice(orphanKey, `LANE worker-gone-child-alive: worktree=${record.worktree} child pid=${record.childPid}; abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)} --decision abandon`)
+          const slot = record.__supervisionSlot ? ` --slot ${shellQuote(record.__supervisionSlot)}` : ''
+          if (ownsNotice && !notified.has(orphanKey)) notice(orphanKey, `LANE worker-gone-child-alive: worktree=${record.worktree} child pid=${record.childPid}; abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)}${slot} --decision abandon`)
         }
         continue
       }

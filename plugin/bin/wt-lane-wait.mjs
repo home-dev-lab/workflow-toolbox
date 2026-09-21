@@ -3,7 +3,7 @@
 
 import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { classifyLane, readCurrentSupervision } from './lib/lane-supervisor-core.mjs'
+import { classifyLane, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'
 
 const DEFAULT_POLL = 30
 const DEFAULT_TIMEOUT = 5400
@@ -71,7 +71,7 @@ function main() {
   const opts = parse(process.argv.slice(2))
   if (opts.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (opts.error) { process.stderr.write(`wt-lane-wait: ${opts.error}\n${usage()}\n`); return 2 }
-  if (typeof classifyLane !== 'function' || typeof readCurrentSupervision !== 'function') {
+  if (typeof classifyLane !== 'function' || typeof readCurrentSupervisions !== 'function') {
     process.stderr.write('wt-lane-wait: Refused: the installed workflow-toolbox plugin is too old for this adopted waiter; update the plugin and re-adopt wt-lane-wait.mjs.\n')
     return 1
   }
@@ -82,8 +82,8 @@ function main() {
   const deadline = Date.now() + opts.timeout * 1000
   while (Date.now() <= deadline) {
     const marker = lastLine(log)
-    const record = readCurrentSupervision(opts.dir)
-    const verdict = record?.workerPid === pid ? classifyLane(record) : classifyLane(null)
+    const record = readCurrentSupervisions(opts.dir).map((item) => item.record).find((item) => item.workerPid === pid) ?? null
+    const verdict = classifyLane(record)
     if (['terminal', 'gone'].includes(verdict.status)) {
       if (/^EXIT=(-?\d+)$/.test(marker ?? '')) {
         const exit = Number(/^EXIT=(-?\d+)$/.exec(marker)[1])

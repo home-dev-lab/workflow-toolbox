@@ -275,6 +275,18 @@ function lifecycleTimeline(worktree) {
   const criticRounds = phaseRounds.critic || 0;
   return { source, phaseHistory, phaseRounds, criticRounds, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
 }
+function currentSupervisions(worktree) {
+  const records = [];
+  for (const name of list(lanePath(worktree)).filter(item => /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(item))) {
+    const dir = lanePath(worktree, name);
+    if (!info(dir)?.isDirectory()) continue;
+    const pointer = json(path.join(dir, 'current.json'));
+    if (typeof pointer?.runId !== 'string' || !/^\d+-\d+$/.test(pointer.runId)) continue;
+    const record = json(path.join(dir, pointer.runId + '.json'));
+    if (record) records.push({ slot: name === 'supervision' ? null : name.slice('supervision-'.length), record });
+  }
+  return records;
+}
 function info(file) { const safeFile = safePath(file); return safeFile ? infoUnrestricted(safeFile) : null; }
 function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : null; } catch { return null; } }
 function cardIds(value) { return [...new Set(String(value || '').match(/\b\d{19}\b/g) || [])]; }
@@ -1128,6 +1140,38 @@ function nestedLane(lane, id) {
   const phaseRole = phase === UNKNOWN ? null : (phase === 'tdd' ? 'TDD' : phase.replace(/_/g, ' ').replace(/^./, letter => letter.toUpperCase())) + ' lane';
   return { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: isFix ? 'Fix lane' : phaseRole || lane.label || 'Lane', phaseAvailability: (runner?.laneKind || 'plain') + ' lane', parentCardId: id, title: isFix ? detail : phaseRole ? null : cleanCardTitle(lane.title, id) || path.basename(lane.worktree), outcome: 'running', ...(runner?.model && runner.model !== UNKNOWN ? { model: runner.model } : {}), activity: laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) };
 }
+function lifecycleLaneRows(worktree, timeline, id) {
+  if (!worktree || !timeline) return [];
+  const supervisionBySlot = new Map(currentSupervisions(worktree).map(item => [item.slot, item.record]));
+  return (timeline?.lanes || []).filter(lane => lane?.lane_id && lane.round === 1).map(lane => {
+    const phase = phaseOf(lane.phase);
+    const slot = phase + '-' + lane.lane_id;
+    const supervision = supervisionBySlot.get(slot);
+    const state = String(lane.state || supervision?.state || '').toLowerCase();
+    const outcome = /^(?:complete|completed|done)$/.test(state) ? 'done' : /^(?:error|failed|fail)/.test(state) ? 'error' : 'running';
+    const phaseName = phase === UNKNOWN ? 'Lane' : phase.replace(/_/g, ' ').replace(/^./, letter => letter.toUpperCase());
+    return {
+      id: 'lifecycle-lane:' + worktree + ':' + slot,
+      cardId: id,
+      cardUrl: cardUrl(id),
+      kind: 'external',
+      label: phaseName + ' ' + lane.lane_id,
+      phaseAvailability: 'lifecycle lane',
+      parentCardId: id,
+      title: null,
+      outcome,
+      model: lane.model || UNKNOWN,
+      usageFile: lane.usage_file || null,
+      activity: outcome === 'running' ? 'running' : 'lifecycle recorded ' + outcome,
+      elapsed: outcome === 'running' && Number.isFinite(lane.started_at) ? formatAge((now - lane.started_at) / 1000) : UNKNOWN,
+      worktree,
+      processPid: supervision?.childPid || null,
+      sessionPid: sessionPidFor(supervision?.childPid),
+      launcherSessionId: laneSessionId(worktree),
+      showModel: true,
+    };
+  });
+}
 
 const activeLifecycleIds = [...lifecycle].filter(([, value]) => value?.phase).map(([id]) => id);
 const activeExternalLanes = externalLanes.map(lane => ({ lane, active: externalLane(lane, lane.cardId) })).filter(item => item.active);
@@ -1162,6 +1206,7 @@ for (const id of ids) {
   const frozenRoute = worktree ? json(lanePath(worktree, 'route.json')) : null;
   if (waitingForArbiter) phaseStates.awaiting_fidelity = 'waiting for arbiter review';
   const { source: reviewSource, ...review } = reviewResult;
+  const lifecycleLanes = lifecycleLaneRows(worktree, timeline, id);
   rows.push({
     id,
     cardId: id,
@@ -1196,7 +1241,7 @@ for (const id of ids) {
     costApproximate: approximateWalkRoots.has(worktree),
     watchdog,
     inspectors: inspectors(worktree, lane ? frozenRoute : null, lane ? tail(sdkLogFile(worktree)) : null),
-    lanes: [nestedLane(lane, id)].filter(Boolean),
+    lanes: lifecycleLanes.length ? lifecycleLanes : [nestedLane(lane, id)].filter(Boolean),
     worktree,
     launcherSessionId: lane?.launcherSessionId || laneSessionId(worktree),
     processPid: sdkRunner?.pid || null,
@@ -1254,12 +1299,20 @@ for (const processRecord of processes.values()) {
 for (const actor of processActors) {
   let represented = null;
   if (actor.worktree) for (const row of rows) {
-    if (row.kind === 'external' && row.worktree === actor.worktree) { represented = row; break; }
-    represented = (row.lanes || []).find(lane => lane.worktree === actor.worktree) || null;
+    if (row.kind === 'external' && row.processPid === actor.processPid) { represented = row; break; }
+    const nested = row.lanes || [];
+    represented = nested.find(lane => lane.processPid === actor.processPid) || null;
+    if (!represented) {
+      const sameWorktree = nested.filter(lane => lane.worktree === actor.worktree);
+      represented = sameWorktree.length === 1 ? sameWorktree[0] : null;
+    }
     if (represented) break;
   }
-  if (represented) Object.assign(represented, { label: actor.label, roleInferred: actor.roleInferred, role: actor.role, model: actor.model, activity: actor.activity, elapsed: actor.elapsed, processPid: actor.processPid, sessionPid: actor.sessionPid });
-  else rows.push(actor);
+  if (represented) {
+    const identity = {};
+    if (!represented.showModel) Object.assign(identity, { label: actor.label, roleInferred: actor.roleInferred, role: actor.role, model: actor.model });
+    Object.assign(represented, identity, { activity: actor.activity, elapsed: actor.elapsed, processPid: actor.processPid, sessionPid: actor.sessionPid });
+  } else rows.push(actor);
 }
 
 function branchMerged(worktree, id) {

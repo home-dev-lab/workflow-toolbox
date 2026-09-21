@@ -381,6 +381,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         showCard && cardId ? fixedText({ color: COLORS.external }, '·') : null,
         showCard ? cardId : null,
         fixedText({ color: COLORS.external, bold: row.outcome === 'running' }, `· ${outcomeLabel}`),
+        row.showModel && row.model && row.model !== 'unknown' ? fixedText({ dimColor: true }, `· ${row.model}`) : null,
         row.elapsed && row.elapsed !== 'unknown' ? fixedText({ dimColor: true }, `· ${row.elapsed}`) : null,
       ),
       row.title && row.title !== label ? node(Text, { color: COLORS.external, wrap: 'wrap' }, row.title) : null,

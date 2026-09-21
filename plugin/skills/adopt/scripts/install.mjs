@@ -614,7 +614,7 @@ function itemContent(set, item, root) {
     return body.replace(fragment, replacement)
   }
   if (item.file === 'wt-lane-wait.mjs') {
-    return replaceExactlyOnce(content, "import { classifyLane, readCurrentSupervision } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
+    return replaceExactlyOnce(content, "import { classifyLane, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
 import { pathToFileURL } from 'node:url'
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude')
 let runtimeRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.WT_PLUGIN_ROOT || null
@@ -628,7 +628,7 @@ if (!runtimeRoot) {
   } catch {}
 }
 if (!runtimeRoot) throw new Error('could not locate workflow-toolbox plugin root; update the plugin and re-adopt wt-lane-wait.mjs')
-const { classifyLane, readCurrentSupervision } = await import(pathToFileURL(path.join(runtimeRoot, 'bin', 'lib', 'lane-supervisor-core.mjs')).href)`)
+const { classifyLane, readCurrentSupervisions } = await import(pathToFileURL(path.join(runtimeRoot, 'bin', 'lib', 'lane-supervisor-core.mjs')).href)`)
   }
   if (item.file !== 'wt-lane.mjs') return content
   // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
