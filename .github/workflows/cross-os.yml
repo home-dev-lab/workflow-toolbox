@@ -8,7 +8,7 @@
 # merges are dispatched by plugin/bin/wt-crossos-dispatch.mjs on the public repo.
 # Run 1 (2026-07-08) immediately caught a real macOS-only test-fixture bug
 # (/var → /private/var symlink vs realpath'd resolveDir) — the matrix earns its keep.
-# ci-trigger: win-fixes iteration 1
+# ci-trigger: host adapter real contract, 2026-09-21
 name: cross-os
 on:
   workflow_dispatch:
@@ -71,6 +71,26 @@ jobs:
         timeout-minutes: 6
       # The default reporter ignores --outputFile (vitest writes a file only for json/junit/html), so the
       # streaming log is captured with tee; an explicit `shell: bash` runs `bash -eo pipefail` (the unspecified default is `bash -e`, whose pipeline exit is tee's), pwsh re-raises $LASTEXITCODE.
+      # The host adapter's contract suite normally runs against the REPLAY of the captured evidence.
+      # Here it runs against the REAL adapter, which is the only place the invocation seam — executable
+      # lookup, argument transport, permissions, locale, timeouts, process.kill and taskkill — is
+      # exercised at all. A divergence between the replay and the real platform shows up here or nowhere.
+      #
+      # ⚠ Windows is continue-on-error ON PURPOSE and TEMPORARILY: the captured Windows process-table
+      # command was malformed (two PowerShell statements with no separator) and exited 1, so the real
+      # Windows run is expected to fail for a reason we already know and have carded. The lift is
+      # card 1868656707639445484 — when that capture is retaken and exits 0, DELETE the
+      # continue-on-error line. Until then a Windows red here is not news; an ubuntu or macOS red is.
+      - name: Host adapter contract against the REAL platform
+        shell: bash
+        continue-on-error: ${{ runner.os == 'Windows' }}
+        env:
+          WT_HOST_CONTRACT_REAL: '1'
+        run: |
+          mkdir -p ci-diagnostics
+          pnpm vitest run packages/build/test/host-adapter.contract.test.ts 2>&1 \
+            | tee "ci-diagnostics/host-contract-${{ runner.os }}.log"
+        timeout-minutes: 8
       - name: Test (POSIX)
         shell: bash
         if: ${{ runner.os == 'Linux' }}
