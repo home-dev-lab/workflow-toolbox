@@ -60,10 +60,18 @@ describe('host adapter evidence contract', () => {
     }
   })
 
-  contract('replays process discovery from its own captured command output', platforms, (platform) => {
-    const result = contractHost(platform).readProcessSnapshot()
-    expect(result.supported).toBe(true)
-    expect(result.processes).toContainEqual(snapshotSamples[platform])
+  it.each(platforms)('parses process discovery from an injected %s invocation', (platform) => {
+    const outputs = {
+      linux: '1 0 46 /sbin/init\n',
+      darwin: '1 0 346 /sbin/launchd\n',
+      win32: '4 0 System\r\n',
+    }
+    const host = createHostAdapter({
+      platform,
+      invoke: { run: vi.fn(() => ({ status: 0, stdout: outputs[platform], stderr: '', error: null })) },
+    })
+
+    expect(host.readProcessSnapshot()).toEqual({ supported: true, processes: [snapshotSamples[platform]] })
   })
 
   it.each(['aix', 'freebsd', 'sunos'] as const)('keeps process discovery supported on %s', (platform) => {
@@ -77,17 +85,11 @@ describe('host adapter evidence contract', () => {
     expect(run).toHaveBeenCalledWith('ps', ['-eo', 'pid=,ppid=,etimes=,args='])
   })
 
-  it('fails explicitly when an invocation has no matching command and arguments', () => {
-    const host = createHostAdapter({
-      platform: 'linux',
-      evidenceRoot: EVIDENCE_ROOT,
-      mutate: (evidence: { processTable: { processSnapshot?: unknown } }) => {
-        delete evidence.processTable.processSnapshot
-        return evidence
-      },
-    })
-
-    expect(() => host.readProcessSnapshot()).toThrow('captured host evidence has no invocation for ps -eo pid=,ppid=,etimes=,args=')
+  contract('refuses process snapshot replay when public evidence has no captured operation', platforms, (platform) => {
+    const expected = platform === 'win32'
+      ? 'captured host evidence has no invocation for powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process'
+      : 'captured host evidence has no invocation for ps -eo pid=,ppid=,etimes=,args='
+    expect(() => evidenceHost(platform).readProcessSnapshot()).toThrow(expected)
   })
 
   contract('resolves the captured symlinked directory to its canonical target', platforms, (platform) => {

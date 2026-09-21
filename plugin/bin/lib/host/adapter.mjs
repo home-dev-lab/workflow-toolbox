@@ -48,7 +48,17 @@ function realInvocation() {
   }
 }
 
-export const hostAdapter = createHostAdapter()
+// A platform with no implementation degrades to a named "unavailable" adapter instead of throwing at import:
+// every consumer already turns a throwing read into a legible "unavailable on this platform".
+export function createHostAdapterOrUnavailable(options = {}) {
+  try { return { available: true, ...createHostAdapter(options) } } catch (error) {
+    const platform = options.platform ?? process.platform
+    const unavailable = () => { throw new Error(error.message) }
+    return { available: false, platform, reason: error.message, readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason: error.message }) }
+  }
+}
+
+export const hostAdapter = createHostAdapterOrUnavailable()
 
 function readEvidence(platform, evidenceRoot, mutate) {
   const directory = join(evidenceRoot, evidenceLabels[platform])

@@ -126,8 +126,11 @@ function copySkill(source, destination) {
 }
 
 export function materialiseAllowedSkills({ names, laneDir, env = process.env, homeDir = os.homedir() }) {
-  const dir = path.join(laneDir, '.lane', 'opencode-skills')
-  const configPath = path.join(laneDir, '.lane', 'opencode-skills.json')
+  const slot = env.WT_LANE_SUPERVISION_SLOT
+  if (slot && !/^[A-Za-z0-9._-]+$/.test(slot)) throw new Error(`invalid skill materialisation slot: ${slot}`)
+  const suffix = slot ? '-' + slot : ''
+  const dir = path.join(laneDir, '.lane', `opencode-skills${suffix}`)
+  const configPath = path.join(laneDir, '.lane', `opencode-skills${suffix}.json`)
   const claudeDir = env.CLAUDE_CONFIG_DIR || path.join(homeDir, '.claude')
   destinationComponent(laneDir)
   destinationComponent(path.join(laneDir, '.lane'))
@@ -225,7 +228,17 @@ function establishCacheStore(stateDir, allowExistingUnmarked = false) {
     return
   }
   if (!created && !allowExistingUnmarked) throw new Error(`refusing unowned OpenCode skill-fence cache directory: ${stateDir}`)
-  writeFileSync(marker, CACHE_STORE_MARKER_CONTENT, { flag: 'wx', mode: 0o600 })
+  try {
+    writeFileSync(marker, CACHE_STORE_MARKER_CONTENT, { flag: 'wx', mode: 0o600 })
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+    const deadline = Date.now() + 1_000
+    while (Date.now() < deadline) {
+      try { if (readFileSync(marker, 'utf8') === CACHE_STORE_MARKER_CONTENT) return } catch { /* marker publisher is still writing */ }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+    }
+    throw error
+  }
 }
 
 function cacheLock(stateDir, operation, { allowExistingUnmarked = false } = {}) {

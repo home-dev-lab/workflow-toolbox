@@ -44,32 +44,34 @@ pair. Critic reports quote the plan SHA-256. On FULL, the tdd brief carries the 
 | --- | --- |
 | discovery | Inspect intake and relevant worktree sources, then transition with `record` of that discovery and the runner's frozen route; LITE reaches tdd, FULL plan. |
 | plan | Write a plan with ADR decision/rejected, top-level task DoDs, Gates, and `## Acceptance`. Quote every folded card Definition-of-done criterion exactly and follow each with `Proof:` naming a task, test, e2e, test file, or gate; then transition. |
-| critic | Write/run the brief, then transition from its report: approved -> tdd; changes-requested -> plan. A fourth changes-requested routes to a partial report. |
+| critic | Write/run the brief; round 1 runs critics A and B together and unions exact-deduplicated findings. Then transition: approved -> tdd; changes-requested -> plan. |
 | tdd or harden | Write the brief, run the lane, then transition to verify. |
 | verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
-| review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
-| refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
+| review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. |
+| refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. |
 | report | Write/transition it; non-proven DoD or unrun E2E makes archive partial. |
 
 Outcomes/findings come from the lane report and declarations must match it. Review/refutation
-changes-requested outcomes need findings; they share three passes. At a critic/review/refutation bound,
-the server routes to a partial report. Produce evidence named by a refusal; do not retry the denied call.
+changes-requested outcomes need findings. Both loops have three fixed passes, then continue while blockers
+decrease, allowing one plateau, stopping on recurrence or at six. Recurrence is mechanically limited to
+case/whitespace-insensitive exact text; narrowed wording is not recurrence. State that limit in a partial
+report. Produce evidence named by a refusal; do not retry the denied call.
 The critic accepts routed L4, not bare deferral. One blocking `CONTEST routed card <id>:` gets one plan
 round. Do it (runner closes the card) or maintain cited L4; then report disagreement to the order-giver, never loop.
 
 ## Completion and boundaries
 
-Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`, `## E2E`,
-`## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. Under Acceptance,
-quote every folded card Definition-of-done criterion exactly, followed by `Outcome: proven`, `Outcome: not done: <reason>`,
+Via `write_artifact`, write `pilot-report` with `## Implemented`, `## Verification`, `## E2E`,
+`## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. Acceptance quotes
+each folded DoD criterion exactly, then `Outcome: proven`, `Outcome: not done: <reason>`,
 or `Outcome: deferred: card <id> — <L4 reason>` with an id in runner-owned `routed_cards`. The runner
-appends `## Routed cards`; pilot prose is not authoritative. E2E is owed for changes exercisable against
+appends authoritative `## Routed cards`. E2E is owed for changes exercisable against
 real processes, files, or hosts (including CLI, hook, watcher, server, script). Use `e2e not run: <reason>`
 only if this machine cannot exercise it; name what was tried. No UI is not a reason. FULL also requires
 `## Independent Review` with lenses and confirmed/refuted findings. Use exact `Partial: <reason>` only on
 partial runs; the owner decides what follows one. The report edge refuses a report not written through write_artifact this run, or changed since.
 Report E2E as `Command: <text>` and `Output: <text>` on those lines; a fenced block alone is refused.
-Continue through the awaiting-fidelity receipt, then write nothing and end: the runner commits and
-archives. Three unproductive turns fail. Never push, publish, merge, force, delete, retry denial,
+For gitignored delivery, follow `write_artifact`'s declaration and edge-recording rule.
+Continue through awaiting-fidelity, then end; the runner commits/archives. Three idle turns fail. Never push, publish, merge, force, delete, retry denial,
 print secrets/environment, or message the owner outside the pilot report. `pilot-guard` enforces this;
 mailbox is owner input and Planka is card state.

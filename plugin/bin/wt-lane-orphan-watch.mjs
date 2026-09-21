@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
-import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
+import { listBrokers, listProcessRelationships, listProcessTable } from './lib/second-opinion-core.mjs'
+import { idleHelperEvents } from './lib/resolved-binary.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
@@ -14,6 +15,7 @@ const CONTROL = fileURLToPath(new URL('./wt-lane-control.mjs', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./wt-lane.mjs', import.meta.url))
 const TEST_SEAMS_ACTIVE = new Set([
   ...(process.env.WT_LANE_WATCH_TEST_SWEEP_LOG ? ['WT_LANE_WATCH_TEST_SWEEP_LOG'] : []),
+  ...(process.env.WT_LANE_WATCH_TEST_HELPERS ? ['WT_LANE_WATCH_TEST_HELPERS'] : []),
 ])
 const argvValue = (argv, flag) => {
   const index = Array.isArray(argv) ? argv.indexOf(flag) : -1
@@ -161,6 +163,15 @@ async function main() {
     }
     const staging = stagingLaneDirs(options.project)
     const table = listProcessTable(hostAdapter)
+    let helperRows = table.supported ? table.processes : []
+    let helperAges = new Map()
+    if (process.env.WT_LANE_WATCH_TEST_HELPERS) {
+      try { helperRows = JSON.parse(readFileSync(process.env.WT_LANE_WATCH_TEST_HELPERS, 'utf8')) } catch { helperRows = [] }
+    } else {
+      const relationships = listProcessRelationships(hostAdapter)
+      if (relationships.status === 'known') helperAges = new Map(relationships.processes.map((item) => [item.pid, item.elapsedSeconds]))
+    }
+    for (const event of idleHelperEvents(helperRows, { ageByPid: helperAges, inspect: inspectProcess })) if (!notified.has(event.key)) notice(event.key, event.message)
     const known = records(options.project, [...staging, ...processRecordDirs(options.project, table)])
     for (const record of known) {
       const verdict = classifyLane(record)

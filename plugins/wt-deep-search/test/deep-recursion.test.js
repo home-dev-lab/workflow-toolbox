@@ -35,7 +35,12 @@ test('the opencode child carries the marker that makes recursion refusable', () 
   let seen = null;
   startOpencode(
     { prompt: 'a full brief', dir: '/tmp/work', logPath: '/tmp/work/run.log' },
-    { spawn: (_command, _args, options) => { seen = options; return { pid: 1, unref() {} }; } },
+    {
+      closeSync() {},
+      openSync: () => 8,
+      setTimeout: () => 7,
+      spawn: (_command, _args, options) => { seen = options; return { pid: 1, once() {}, unref() {} }; },
+    },
   );
   assert.equal(seen?.env?.DEEP_SEARCH_WORKER, '1');
 });

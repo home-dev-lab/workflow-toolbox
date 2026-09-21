@@ -567,6 +567,69 @@ describe('What is running collector seam', () => {
     expect(expanded).toContain('owner: pilot runner')
   })
 
+  it('renders each looping stage round and its lifecycle bound from the timeline', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-loop-rounds-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1868819337624683548'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'loop-rounds')
+      const lane = join(worktree, '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Loop rounds\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=harden\n')
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [
+        { phase: 'discovery', round: null, entered_at: 1, exited_at: 2 },
+        { phase: 'plan', round: 1, entered_at: 2, exited_at: 3 },
+        { phase: 'critic', round: 1, entered_at: 3, exited_at: 4 },
+        { phase: 'plan', round: 2, entered_at: 4, exited_at: 5 },
+        { phase: 'critic', round: 2, entered_at: 5, exited_at: 6 },
+        { phase: 'tdd', round: null, entered_at: 6, exited_at: 7 },
+        { phase: 'verify', round: null, entered_at: 7, exited_at: 8 },
+        { phase: 'review', round: 1, entered_at: 8, exited_at: 9 },
+        { phase: 'refutation', round: 1, entered_at: 9, exited_at: 10 },
+        { phase: 'harden', round: 1, entered_at: 10, exited_at: 11 },
+        { phase: 'verify', round: null, entered_at: 11, exited_at: 12 },
+        { phase: 'review', round: 2, entered_at: 12, exited_at: 13 },
+        { phase: 'refutation', round: 2, entered_at: 13, exited_at: 14 },
+        { phase: 'harden', round: 2, entered_at: 14, exited_at: null },
+      ], lanes: [] }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row.phaseRounds).toEqual({ plan: 2, critic: 2, review: 2, refutation: 2, harden: 2 })
+      const text = await renderedText({ ...snapshot, sessions: undefined, rows: [{ ...row, project: 'wt-suite' }] })
+      expect(text).toContain('Plan · round 2 (max 6)')
+      expect(text).toContain('Critic · round 2 (max 6)')
+      expect(text).toContain('Independent review · round 2 (max 6)')
+      expect(text).toContain('Independent refutation · round 2 (max 6)')
+      expect(text).toContain('Harden · round 2 (max 5)')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('renders expanded SDK pilot details directly below the pilot row and before the stage spine', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const pilot = {
+      id: 'pilot-detail-order', kind: 'pilot', label: 'SDK pilot', sdkLifecycle: true, phase: 'critic', outcome: 'running', route: 'FULL',
+      phaseStates: { discovery: 'done', plan: 'done', critic: 'running' }, phaseRounds: { plan: 2, critic: 2 }, lanes: [],
+    }
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      { discovery: 'available', sessions: [{ id: 'session-order', project: 'wt-suite', cards: [{ id: '1868819337624683548', title: 'Detail order', cardUrl: 'https://example.test/card', actors: [pilot] }], actors: [] }], services: { count: 0 }, helpers: { count: 0 } },
+      new Set(['pilot-detail-order']), new Map(), 'wt-suite', false,
+      { toggle: () => undefined, select: () => undefined, closeView: () => undefined, switchScope: () => undefined, close: () => undefined, bodyColumns: 120 },
+    )
+    const strings = allTreeStrings(tree).map(({ value }) => value)
+    const pilotRow = strings.findIndex((value) => value.includes('▼ SDK pilot'))
+    const details = strings.indexOf('SDK pilot details')
+    const cardLink = strings.indexOf('open card')
+    const firstStage = strings.findIndex((value) => value.includes('Discovery ✓'))
+    expect(pilotRow).toBeGreaterThanOrEqual(0)
+    expect(details).toBeGreaterThan(pilotRow)
+    expect(cardLink).toBeGreaterThan(details)
+    expect(firstStage).toBeGreaterThan(cardLink)
+  })
+
   it('accumulates repeated archived lifecycle rounds for one normalized phase', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-phase-rounds-'))
     try {
