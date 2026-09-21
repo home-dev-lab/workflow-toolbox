@@ -324,6 +324,29 @@ test('opencode launch carries stdin isolation, auto, dir, timeout, and EXIT mark
   assert.deepEqual(result, { logPath: '/state/deep-1.log', pid: 44 });
 });
 
+test('opencode receives only the environment it needs, never provider or unrelated credentials', () => {
+  let launch;
+  const env = {
+    PATH: '/usr/bin',
+    HOME: '/home/tester',
+    LANG: 'C.UTF-8',
+    EXA_API_KEY: 'sentinel-exa-secret',
+    BRAVE_API_KEY: 'sentinel-brave-secret',
+    UNRELATED_CREDENTIAL: 'sentinel-unrelated-secret',
+  };
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },
+    { env, spawn: (...args) => { launch = args; return { pid: 45, unref() {} }; } },
+  );
+
+  assert.deepEqual(launch[2].env, {
+    PATH: '/usr/bin',
+    HOME: '/home/tester',
+    LANG: 'C.UTF-8',
+    DEEP_SEARCH_WORKER: '1',
+  });
+});
+
 test('package metadata keeps runtime and development dependencies empty', async () => {
   const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(Object.keys(packageJson.dependencies ?? {}).length, 0);
