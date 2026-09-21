@@ -1,4 +1,4 @@
-import { PHASES } from './lifecycle-phases.js';
+import { LOOP_BOUNDS, PHASES } from './lifecycle-phases.js';
 import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { stripAnsiAndControl } from './text-sanitize.js';
 
@@ -197,7 +197,12 @@ export const PANE_PHASES = Object.freeze(PHASES.map((phase) => Object.freeze([ph
 function phaseLabelFor(row, phase) {
   const label = PHASE_LABELS[phase] || phase;
   const model = phase === 'review' ? row.models?.review : phase === 'refutation' ? row.models?.refutation : null;
-  return model && model !== 'unknown' ? `${label} (${model})` : label;
+  const withModel = model && model !== 'unknown' ? `${label} (${model})` : label;
+  const round = row.phaseRounds?.[phase];
+  if (!Number.isSafeInteger(round) || round <= 0) return withModel;
+  let suffix = ` · round ${round}`;
+  if (LOOP_BOUNDS[phase]) suffix += ` of ${LOOP_BOUNDS[phase]}`;
+  return withModel + suffix;
 }
 
 function stateOf(row, phase) {
@@ -493,21 +498,22 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         roundSummary = node(Text, { dimColor: true }, `Plan ↔ Critic: ${lowerBound}${pilot.criticRounds} ${unit}`);
       }
       const pilotLabel = pilot.label || 'SDK pilot';
+      const pilotDetails = isExpanded ? renderOpenDetail(`detail-toggle:row:${pilot.id}`, `${pilotLabel} details`, () => actions.toggle(pilot.id),
+        ...knownDetails(pilot).map((line) => node(Text, { dimColor: true }, line)),
+        roundSummary,
+        renderCardLink(card),
+      ) : null;
       return node(Box, { key, flexDirection: 'column' },
         node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
           control({ key: `detail-toggle:row:${pilot.id}`, plain: true, onPress: () => actions.toggle(pilot.id) }, `${isExpanded ? '▼' : '▶'} ${pilotLabel}`, isExpanded ? COLORS.actionOpen : COLORS.action),
           fixedText({ bold: true }, 'drives the stages below'),
           isExpanded && pilot.route ? fixedText({ dimColor: true }, `· route ${pilot.route}`) : null,
         ),
+        pilotDetails,
         ...stageRows,
         collapsedSummary,
         runCostStatus(pilot, isExpanded),
         runningCostStatus(pilot),
-        roundSummary,
-        isExpanded ? renderOpenDetail(`detail-toggle:row:${pilot.id}`, `${pilotLabel} details`, () => actions.toggle(pilot.id),
-          ...knownDetails(pilot).map((line) => node(Text, { dimColor: true }, line)),
-          renderCardLink(card),
-        ) : null,
         ...(pilot.lanes || []).map((lane) => renderExternal(lane, 1, false)),
       );
     }

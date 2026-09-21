@@ -268,8 +268,10 @@ function lifecycleTimeline(worktree) {
     && validRound(item.round) && Number.isFinite(item.entered_at) && validTime(item.exited_at))) return null;
   const phaseHistory = value.phases.map(item => item.phase);
   if (Number.isFinite(value.ended_at) && phaseHistory.at(-1) === 'report') phaseHistory.push('awaiting_fidelity');
-  const criticRounds = value.phases.filter(item => item.phase === 'critic').reduce((count, item) => Math.max(count, item.round || 0), 0);
-  return { source, phaseHistory, criticRounds, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
+  const phaseRounds = {};
+  for (const item of value.phases) if (item.round !== null) phaseRounds[item.phase] = item.round;
+  const criticRounds = phaseRounds.critic || 0;
+  return { source, phaseHistory, phaseRounds, criticRounds, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
 }
 function info(file) { const safeFile = safePath(file); return safeFile ? infoUnrestricted(safeFile) : null; }
 function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : null; } catch { return null; } }
@@ -1069,6 +1071,7 @@ for (const worktree of scannedWorktrees) {
         phaseHistory,
         phaseSource: timeline ? 'lifecycle' : 'log',
         lifecycleSource: timeline?.source || null,
+        phaseRounds: timeline?.phaseRounds || {},
         criticRounds,
         runnerLogTruncated: (info(runnerLogFile)?.size || 0) > LOG_TAIL_BYTES,
         outcome: 'running',
@@ -1174,6 +1177,7 @@ for (const id of ids) {
     outcome: waitingForArbiter ? 'waiting for arbiter review' : lane?.outcome || failedOutcome || UNKNOWN,
     model: lane?.model || workers[0]?.model || UNKNOWN,
     models: frozenRoute?.models || {},
+    phaseRounds: lane?.phaseRounds || {},
     criticRounds: lane?.criticRounds,
     runnerLogTruncated: lane?.runnerLogTruncated || false,
     who,

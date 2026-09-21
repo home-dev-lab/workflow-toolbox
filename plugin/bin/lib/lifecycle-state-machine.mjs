@@ -22,6 +22,13 @@ export const MAX_CRITIC_ROUNDS = 3
 export const MAX_REVIEW_ROUNDS = 3
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
 
+function lifecycleRound(state, phase) {
+  if (phase === 'plan' || phase === 'critic') return state.planRound + 1
+  if (phase === 'review' || phase === 'refutation') return state.reviewRound + 1
+  if (phase === 'harden') return state.reviewRound
+  return null
+}
+
 export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
 export { PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation', 'harden'])
@@ -602,7 +609,7 @@ export function createLifecycleStateMachine({
     gateRunner,
     now,
     recordLaneStart: ({ phase, model, startedAt, usageFile }) => {
-      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, executor, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
+      const record = { phase, round: lifecycleRound(state, phase), executor, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
       timeline.lanes.push(record)
       persistTimeline()
       return record
@@ -850,7 +857,7 @@ export function createLifecycleStateMachine({
     if (currentPhase?.transition_id !== event.tool_use_id) {
       currentPhase.exited_at = transitionedAt
       currentPhase.transition_id = event.tool_use_id
-      if (next !== 'awaiting_fidelity') timeline.phases.push({ phase: next, round: next === 'critic' ? state.priorCriticRounds.length + 1 : null, entered_at: transitionedAt, exited_at: null, transition_id: null })
+      if (next !== 'awaiting_fidelity') timeline.phases.push({ phase: next, round: lifecycleRound(state, next), entered_at: transitionedAt, exited_at: null, transition_id: null })
       else timeline.ended_at = transitionedAt
     }
     persistTimeline()

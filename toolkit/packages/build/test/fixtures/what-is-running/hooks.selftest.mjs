@@ -3054,7 +3054,7 @@ await test('[Step 8 rule 1] each card has one chronologically ordered, non-contr
   const ordered = ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Independent review (sol)', 'Independent refutation (astra)', 'Harden', 'Report'];
   let previous = -1;
   for (const label of ordered) {
-    const next = labels.indexOf(label);
+    const next = visible.findIndex((text, index) => index > previous && (text.startsWith(`${label} `) || text.includes(` ${label} `)));
     assert(next > previous, `${label}: ${labels}`);
     previous = next;
   }
