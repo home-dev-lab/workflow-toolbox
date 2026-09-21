@@ -153,7 +153,69 @@ function textChildren(tree: unknown): string[] {
   return [...own, ...children.flatMap(textChildren)]
 }
 
+function renderedTextColumns(tree: unknown, column = 0): Array<{ text: string; column: number }> {
+  if (!tree || typeof tree !== 'object') return []
+  const item = tree as { name?: string; props?: { children?: unknown; flexDirection?: string; columnGap?: number; paddingLeft?: number } }
+  const children = (Array.isArray(item.props?.children) ? item.props.children : [item.props?.children]).filter(Boolean)
+  const start = column + (Number(item.props?.paddingLeft) || 0)
+  if (item.name === 'Text' || item.name === 'Button') {
+    const text = children.filter((value): value is string => typeof value === 'string').join('')
+    return text ? [{ text, column: start }] : []
+  }
+  if (item.props?.flexDirection !== 'row') return children.flatMap((child) => renderedTextColumns(child, start))
+  const found: Array<{ text: string; column: number }> = []
+  let cursor = start
+  for (const child of children) {
+    const rendered = renderedTextColumns(child, cursor)
+    found.push(...rendered)
+    const width = rendered.reduce((maximum, entry) => Math.max(maximum, entry.column - cursor + entry.text.length), 0)
+    cursor += width + (Number(item.props?.columnGap) || 0)
+  }
+  return found
+}
+
 describe('What is running collector seam', () => {
+  it.each([120, 70])('indents expanded SDK stage detail beyond its stage label at %i columns', (bodyColumns) => {
+    const pilot = {
+      id: 'pilot:indent', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', phase: 'discovery', outcome: 'running',
+      phaseStates: { discovery: 'running' }, phaseCosts: { discovery: 'unknown' }, inspectors: { discovery: { summary: 'Route: FULL' } }, lanes: [],
+    }
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      { discovery: 'available', sessions: [{ id: 'session:indent', project: 'wt-suite', cards: [{ id: '1868819337624683548', title: 'Indent lock', actors: [pilot] }], actors: [] }], services: { count: 0 }, helpers: { count: 0 } },
+      new Set(['pilot:indent']), new Map([['timeline:session:indent:1868819337624683548', 'discovery']]), 'wt-suite', false,
+      { toggle: () => undefined, select: () => undefined, closeView: () => undefined, switchScope: () => undefined, close: () => undefined, bodyColumns },
+    )
+    const columns = renderedTextColumns(tree)
+    const stage = columns.find((entry) => entry.text.includes('Discovery ●'))
+    const detail = columns.find((entry) => entry.text === 'Discovery')
+    expect(stage).toBeTruthy()
+    expect(detail).toBeTruthy()
+    expect(detail!.column).toBeGreaterThan(stage!.column)
+  })
+
+  it('keeps this-project SDK work and its lane in the visible prefix after Show all', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const currentPilot = { id: 'pilot:current', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', phase: 'discovery', outcome: 'running', phaseStates: { discovery: 'running' }, lanes: [] }
+    const snapshot = { discovery: 'available', sessions: [
+      { id: 'session:000-other', project: 'other', cards: [{ id: '1868819337624683547', title: 'OTHER PROJECT', actors: [] }], actors: [] },
+      { id: 'session:999-current', project: 'wt-suite', cards: [{ id: '1868819337624683548', title: 'CURRENT SDK RUN', actors: [currentPilot, { id: 'lane:current', kind: 'external', label: 'Lane', title: 'CURRENT LANE', outcome: 'running' }] }], actors: [] },
+    ], services: { count: 0 }, helpers: { count: 0 } }
+    const render = (allProjects: boolean) => textChildren(renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') }, snapshot,
+      new Set(), new Map(), 'wt-suite', allProjects,
+      { toggle: () => undefined, select: () => undefined, closeView: () => undefined, switchScope: () => undefined, close: () => undefined, bodyColumns: 120 },
+    )).join(' ')
+    const local = render(false)
+    const all = render(true)
+    expect(local).toContain('CURRENT SDK RUN')
+    expect(local).toContain('CURRENT LANE')
+    expect(all).toContain('CURRENT SDK RUN')
+    expect(all).toContain('CURRENT LANE')
+    expect(all.indexOf('CURRENT SDK RUN')).toBeLessThan(all.indexOf('OTHER PROJECT'))
+  })
+
   it('ships a documented command-line entry point that prints the collector snapshot', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-cli-'))
     try {
