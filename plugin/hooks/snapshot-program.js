@@ -1,4 +1,4 @@
-import { executableName, resolvedBinary } from '../bin/lib/resolved-binary.mjs';
+import { classifyIdleHelper, executableName, IDLE_HELPER_SAFE_TO_STOP_SECONDS, resolvedBinary } from '../bin/lib/resolved-binary.mjs';
 import { PHASES as LIFECYCLE_PHASES } from './lifecycle-phases.js';
 import { stripAnsiAndControl } from './text-sanitize.js';
 
@@ -70,6 +70,8 @@ const markdownToHtml = ${markdownToHtml.toString()};
 const stripAnsiAndControl = ${stripAnsiAndControl.toString()};
 const executableName = ${executableName.toString()};
 const resolvedBinary = ${resolvedBinary.toString()};
+const classifyIdleHelper = ${classifyIdleHelper.toString()};
+const IDLE_HELPER_SAFE_TO_STOP_SECONDS = ${IDLE_HELPER_SAFE_TO_STOP_SECONDS};
 const now = Date.parse(config.now || new Date().toISOString());
 const UNKNOWN = 'unknown';
 const PRICE_UNKNOWN = 'price unknown';
@@ -1515,7 +1517,8 @@ for (const processRecord of processes.values()) {
   const brokerScript = String(args[1] || '').replace(/\\/g, '/');
   const brokerRoot = brokerScript.endsWith('/bin/broker.js') ? path.dirname(path.dirname(args[1])) : null;
   const atriumMarker = brokerRoot ? json(path.join(brokerRoot, 'package.json'))?.name === servicesLayout.brokerPackage : false;
-  if (executable === executables.codex && args[1] === 'app-server' && !relatedToTask(processRecord.pid)) { label = 'Codex app-server'; target = helperItems; }
+  const helper = classifyIdleHelper({ argv: [executable, ...args.slice(1)], ageSeconds: processAge(processRecord.pid).seconds, relatedToTask: relatedToTask(processRecord.pid), thresholdSeconds: IDLE_HELPER_SAFE_TO_STOP_SECONDS });
+  if (helper.helper) { label = 'Codex app-server'; target = helperItems; }
   else if (scriptIs(args[1], 'artifactServer') && args[2] === 'serve') { label = 'Artifact server'; target = serviceItems; }
   else if (typeof executables.pythonPattern === 'string' && new RegExp(executables.pythonPattern).test(executable) && args[1] === '-m' && args[2] === 'http.server') { label = 'HTTP server'; target = serviceItems; }
   else if (executable === executables.bun && brokerScript.endsWith('/broker.js') && (servicesLayout.brokerPathPattern && new RegExp(servicesLayout.brokerPathPattern, 'i').test(brokerScript) || atriumMarker)) { label = servicesLayout.brokerLabel || 'Broker'; target = serviceItems; }
@@ -1525,7 +1528,7 @@ for (const processRecord of processes.values()) {
     // between the cmdline and stat reads; without live stat evidence it is not a server row.
     if (label === 'Artifact server' && age.seconds === null) continue;
     if (target === serviceItems && age.seconds !== null && age.seconds < MIN_SERVICE_AGE_SECONDS) continue;
-    target.push({ id: (target === helperItems ? 'helper:' : 'service:') + processRecord.pid, pid: processRecord.pid, label, age: age.text, ageSeconds: age.seconds });
+    target.push({ id: (target === helperItems ? 'helper:' : 'service:') + processRecord.pid, pid: processRecord.pid, label, age: age.text, ageSeconds: age.seconds, ...(target === helperItems ? { safeToStop: helper.safeToStop } : {}) });
   }
 }
 const oldestHelper = helperItems.filter(item => item.ageSeconds !== null).sort((left, right) => right.ageSeconds - left.ageSeconds)[0];

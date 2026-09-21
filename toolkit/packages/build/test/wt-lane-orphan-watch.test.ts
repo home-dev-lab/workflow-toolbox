@@ -1,9 +1,14 @@
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { detectOrphanWatchers, terminateOrphanWatchers } from '../../../../plugin/bin/lib/lane-watcher-orphans.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { classifyIdleHelper, IDLE_HELPER_SAFE_TO_STOP_SECONDS } from '../../../../plugin/bin/lib/resolved-binary.mjs'
+
+const WATCHER = resolve(__dirname, '../../../../plugin/bin/wt-lane-orphan-watch.mjs')
 
 function withTempDir(run: (root: string) => void) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lane-orphan-watch-'))
@@ -23,6 +28,34 @@ function processFixture(procRoot: string, pid: number, { argv, cwd, ppid = 1, st
 }
 
 describe('lane orphan watcher self-detection', () => {
+  it('emits once for a helper older than five minutes and not for a live helper at the boundary', () => withTempDir((root) => {
+    const fixture = join(root, 'helpers.json')
+    writeFileSync(fixture, JSON.stringify([
+      { pid: 701, argv: ['/usr/bin/codex', 'app-server'], elapsedMs: 300_001, startTime: 11 },
+      { pid: 701, argv: ['/usr/bin/codex', 'app-server'], elapsedMs: 300_001, startTime: 11 },
+      { pid: 702, argv: ['/usr/bin/codex', 'app-server'], elapsedMs: 300_000, startTime: 12 },
+    ]))
+
+    const result = spawnSync(process.execPath, [WATCHER, '--project', root, '--once'], {
+      encoding: 'utf8',
+      env: { ...process.env, XDG_STATE_HOME: join(root, 'state'), WT_LANE_WATCH_TEST_HELPERS: fixture },
+    })
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout.match(/IDLE HELPER safe to stop/g)).toHaveLength(1)
+    expect(result.stdout).toContain('pid=701')
+    expect(result.stdout).not.toContain('pid=702')
+  }))
+
+  it('uses the same strict five-minute boundary for a Windows command line', () => {
+    const classify = (ageSeconds: number) => classifyIdleHelper({
+      argv: [], command: 'C:\\tools\\codex.exe app-server', ageSeconds, relatedToTask: false,
+      thresholdSeconds: IDLE_HELPER_SAFE_TO_STOP_SECONDS,
+    })
+    expect(classify(300)).toMatchObject({ helper: true, safeToStop: false })
+    expect(classify(300.001)).toMatchObject({ helper: true, safeToStop: true })
+  })
+
   it('names and signals only a watcher with deleted cwd and init parent', () => withTempDir((root) => {
     const procRoot = join(root, 'proc')
     mkdirSync(procRoot)
