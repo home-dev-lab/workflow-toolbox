@@ -176,6 +176,23 @@ await test('file reference line selection quotes and tokenises only that line', 
 await test('missing file reference remains unchanged and logs no path or value', async () => { let received; await bash($, { tool: 'Bash', command: 'cat secret:file:/tmp/wt-secret-guard-missing' }, async (event) => { received = event.command; return { text: 'failed' }; }); assert.equal(received, 'cat secret:file:/tmp/wt-secret-guard-missing'); assert(logs.some((line) => line === 'wt-secret-guard: file reference unavailable (1 reference)')); assert(logs.every((line) => !line.includes('/tmp/wt-secret-guard-missing'))); });
 await test('Read result scrub publishes tokens without treating its path as a secret', async () => { const value = 'read-result-secret'; const result = await read($, { tool: 'Read', file_path: '/tmp/not-a-secret' }, async (event) => ({ ...event, text: `password = ${value}` })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.file_path, '/tmp/not-a-secret'); assert.match(result.text, /secret:assignment#/); });
 await test('MCP result scrub tokenises inbound sensitive text without rewriting its input', async () => { const value = 'mcp-result-secret'; const event = { tool: 'mcp__atrium__read_message', text: `token = ${value}` }; const result = await mcp($, event, async (received) => ({ ...received, text: received.text })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.tool, event.tool); assert.match(result.text, /secret:assignment#/); });
+await test('destructuring defaults named like credentials pass through tool results', async () => {
+  const source = 'const { kind, value, secret = value } = result;';
+  assert.equal((await call('git diff', source)).text, source);
+});
+await test('object literal assignment expressions named like credentials pass through tool results', async () => {
+  const source = 'const options = { token: token = fallback };';
+  assert.equal((await call('cat options.js', source)).text, source);
+});
+await test('function parameter defaults named like credentials pass through tool results', async () => {
+  const source = 'function connect(password = fallback) { return password; }';
+  assert.equal((await call('git diff', source)).text, source);
+});
+await test('short genuine credential assignments in command output remain scrubbed', async () => {
+  const result = await call('print-config', 'password = hunter2');
+  assert.equal(result.text.includes('hunter2'), false, 'genuine short password reached the tool result');
+  assert.match(result.text, /secret:assignment#/);
+});
 await test('allow-list', async () => { const input = '0123456789abcdef0123456789abcdef01234567 123e4567-e89b-12d3-a456-426614174000 secret:github#abcdef'; const result = await call('cat fixture.txt', input); assert.equal(result.text, input); });
 await test('UUID Exa API key in a provider client constructor is scrubbed', async () => { const result = await call('node app.mjs', `const client = new Exa("${exa}");`); assert.equal(result.text.includes(exa), false, 'Exa UUID API key reached the tool result'); assert.match(result.text, /secret:credential-uuid#/); });
 await test('bare UUID in a plain log line stays untouched', async () => { const input = `run id ${exa} completed`; const result = await call('cat run.log', input); assert.equal(result.text, input); });

@@ -7,7 +7,7 @@ const patterns = [
   ['brave-api-key', /(?<![A-Za-z0-9_-])BSA[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])/g],
   ['jwt', /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g],
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
-  ['assignment', /\b(?:password|token|secret)\s*=\s*(?:"[^"]+"|'[^']+'|[^\s;]+)/gi],
+  ['assignment', /\b(?:password|token|secret)\s*=\s*(?![=])(?:"[^"]+"|'[^']+'|[^\s;,)}]+)/gi],
   ['op-output', /^\s*(?:password|token|secret|credential)\s*:\s*\S.+$/gim],
   ['environment-dump', /^\s*[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)\s*=\s*\S.+$/gm],
 ];
@@ -54,6 +54,18 @@ export function allowedRanges(text, command = '') {
 
 function overlaps(start, end, ranges) {
   return ranges.some(([from, to]) => start < to && end > from);
+}
+
+function sourceAssignment(text, match) {
+  const lineStart = text.lastIndexOf('\n', match.index - 1) + 1;
+  const lineEnd = text.indexOf('\n', match.index);
+  const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
+  const sourceLine = line.replace(/^\s*(?:[-+]\s*)?/, '');
+  if (/^(?:(?:export|default)\s+)*(?:const|let|var|type|interface|function|class|import)\b/.test(sourceLine)) return true;
+
+  const before = text.slice(lineStart, match.index);
+  const after = text.slice(match.index + match[0].length, lineEnd < 0 ? text.length : lineEnd);
+  return /[({][^({]*$/.test(before) && /^\s*[,)}]/.test(after);
 }
 
 function jsonString(text, start) {
@@ -146,7 +158,8 @@ export function detections(text, command = '') {
     expression.lastIndex = 0;
     for (let match; (match = expression.exec(text));) {
       const duplicatesConcealed = concealed.some(({ value }) => value.includes(match[0]) || match[0].includes(value));
-      if (!duplicatesConcealed && !overlaps(match.index, match.index + match[0].length, allowed)) found.push({ kind, value: match[0] });
+      const sourceSyntax = kind === 'assignment' && sourceAssignment(text, match);
+      if (!sourceSyntax && !duplicatesConcealed && !overlaps(match.index, match.index + match[0].length, allowed)) found.push({ kind, value: match[0] });
     }
   }
   return found;
