@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Add a host adapter derived from real three-OS captures (`plugin/bin/lib/host/`): question-named operations, per-OS implementations, and a fake that replays the captured bytes BELOW the parsers so the real parsers run. The pid-to-parent-pid family moves behind it with a grep-zero perimeter lock over 212 non-generated source files; a platform that cannot answer returns a named unknown instead of a plausible zero. The Windows process-table capture is preserved as an explicit unavailable rather than invented
 - Add `wt-deep-search` (EXPERIMENTAL): a WebSearch substitution answering from the local Claude Code documentation mirror, context7, Brave or Exa, plus a detached deep-research rung that returns a handle and is collected later; zero dependencies, no key required, cross-platform verdict included
 - Add dispatch-only Linux, Windows, and macOS host probes for process tables, process-group termination, and real path behavior, with provenance-rich byte-stable evidence artifacts
 - Add launch-time reasoning variants for all pilot, orchestrator, and executor roles, with model caps, explicit overrides, unknown-variant refusal and auditable forced overrides

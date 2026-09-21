@@ -1,10 +1,11 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
+import { createHostAdapter } from './host/adapter.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const QUOTA_PROBE = fileURLToPath(new URL('../wt-quota-probe.mjs', import.meta.url))
@@ -59,23 +60,7 @@ export function parseProcessLines(stdout) {
 
 export function listProcessTable(platform = process.platform) {
   try {
-    if (['aix', 'darwin', 'freebsd', 'linux', 'sunos'].includes(platform)) {
-      const stdout = execFileSync('ps', ['-eo', 'pid=,ppid=,etimes=,args='], { encoding: 'utf8' })
-      const processes = stdout.split(/\r?\n/).flatMap((line) => {
-        const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line)
-        return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: Number(match[3]) * 1000, command: match[4] }] : []
-      })
-      return { supported: true, processes }
-    }
-    if (platform === 'win32') {
-      const command = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.CommandLine }"
-      const stdout = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' })
-      const processes = stdout.split(/\r?\n/).flatMap((line) => {
-        const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line)
-        return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: null, command: match[3] }] : []
-      })
-      return { supported: true, processes }
-    }
+    return createHostAdapter({ platform }).readProcessSnapshot()
   } catch {}
   return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
 }
