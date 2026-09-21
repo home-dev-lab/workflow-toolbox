@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+// @ts-expect-error runtime .mjs helper under plugin/bin/
+import { readPidToPpidMap } from '../../../../plugin/bin/wt-lane-probe.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-lane-probe.mjs')
@@ -14,6 +16,17 @@ const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-lane-probe.mjs')
 // faking a result, so there is nothing meaningful to assert there).
 const supportsCwdProbe = process.platform === 'linux' || process.platform === 'darwin'
 const describeIfSupported = supportsCwdProbe ? describe : describe.skip
+
+it('builds the ancestor map from the adapter supplied by its caller', () => {
+  const adapter = {
+    readProcessRelationships: () => ({
+      status: 'known',
+      processes: [{ pid: 11, parentPid: 7 }, { pid: 7, parentPid: 1 }],
+    }),
+  }
+
+  expect(readPidToPpidMap(adapter)).toEqual(new Map([[11, 7], [7, 1]]))
+})
 
 type Verdict = {
   exitCode: number

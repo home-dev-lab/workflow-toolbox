@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
-import { createHostAdapter } from './host/adapter.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const QUOTA_PROBE = fileURLToPath(new URL('../wt-quota-probe.mjs', import.meta.url))
@@ -58,15 +57,15 @@ export function parseProcessLines(stdout) {
   return pids
 }
 
-export function listProcessTable(platform = process.platform) {
+export function listProcessTable(adapter) {
   try {
-    return createHostAdapter({ platform }).readProcessSnapshot()
+    return adapter.readProcessSnapshot()
   } catch {}
   return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
 }
 
-export function listBrokers(platform = process.platform) {
-  const table = listProcessTable(platform)
+export function listBrokers(adapter) {
+  const table = listProcessTable(adapter)
   if (!table.supported) return { supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' }
   return { supported: true, pids: table.processes.filter((process) => /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(process.command)).map((process) => process.pid) }
 }
@@ -96,16 +95,16 @@ function sdkRemedy(error) {
   return remedy ? `run: ${remedy}` : `install @anthropic-ai/claude-agent-sdk (${message})`
 }
 
-export const defaultSecondOpinionDependencies = {
+export const createSecondOpinionDependencies = (adapter) => ({
   resolveCodexCompanion: codexCompanion,
   runCodex,
   probeQuota,
   resolveSdkQuery,
-  listBrokers,
+  listBrokers: () => listBrokers(adapter),
   stopBroker: (pid) => process.kill(pid, 'SIGTERM'),
-}
+})
 
-export async function runSecondOpinion(options, dependencies = defaultSecondOpinionDependencies, env = process.env) {
+export async function runSecondOpinion(options, dependencies, env = process.env) {
   const request = readFileSync(options.request, 'utf8')
   const consent = resolveConsent(options.repo, env)
   const route = options.route ?? 'auto'

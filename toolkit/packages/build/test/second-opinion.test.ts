@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+import { listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
@@ -56,6 +56,14 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 }
 
 describe('second-opinion advisor', () => {
+  it('reads process discovery through the adapter supplied by its caller', () => {
+    const expected = { supported: true, processes: [{ pid: 7, ppid: 1, elapsedMs: 2000, command: 'broker' }] }
+    const adapter = { readProcessSnapshot: vi.fn(() => expected) }
+
+    expect(listProcessTable(adapter)).toBe(expected)
+    expect(adapter.readProcessSnapshot).toHaveBeenCalledOnce()
+  })
+
   it('keeps automatic routing on Astra when lane consent is active', async () => {
     const f = fixture(true)
     const deps = dependencies()

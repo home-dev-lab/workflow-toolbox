@@ -5,6 +5,7 @@ import { outputPath, provenance, runToFile, writeEvidence } from './probe-lib.mj
 
 const destination = outputPath('process-table')
 const scratch = `${destination}.native`
+const snapshotScratch = `${destination}.snapshot.native`
 
 const posixProcessTable = () => {
   const args = ['-axo', 'pid=,ppid=,pgid=,state=,etime=,comm=']
@@ -23,6 +24,13 @@ const windowsProcessTable = () => {
     '} | ConvertTo-Json -Depth 4 -Compress',
   ].join(' ')
   return runToFile('pwsh', ['-NoProfile', '-NonInteractive', '-Command', script], scratch)
+}
+
+const posixProcessSnapshot = () => runToFile('ps', ['-eo', 'pid=,ppid=,etimes=,args='], snapshotScratch)
+
+const windowsProcessSnapshot = () => {
+  const script = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.CommandLine }"
+  return runToFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], snapshotScratch)
 }
 
 const cwdQuestion = () => {
@@ -44,6 +52,7 @@ const cwdQuestion = () => {
 }
 
 const table = platform() === 'win32' ? windowsProcessTable() : posixProcessTable()
+const snapshot = platform() === 'win32' ? windowsProcessSnapshot() : posixProcessSnapshot()
 writeEvidence(destination, {
   provenance: provenance('process-table', table.command, `${scratch}.provenance`),
   disclosurePolicy: 'Executable names only. Command-line arguments are neither requested nor recorded.',
@@ -51,5 +60,6 @@ writeEvidence(destination, {
     ? ['pid', 'ppid', 'processGroup', 'state', 'elapsedSeconds', 'executableName']
     : ['pid', 'ppid', 'pgid', 'state', 'elapsed', 'executableName'],
   processTable: table,
+  processSnapshot: snapshot,
   cwdQuestion: cwdQuestion(),
 })

@@ -44,10 +44,41 @@ describe('raw host primitive quality ratchet', () => {
     expect(checkHostPrimitives(root, 0)).toMatchObject({ count: 0, perimeterFiles: 0, exceeded: false })
   })
 
+  it('counts child-process, OS and filesystem calls in every executable source extension', () => {
+    const root = fixturePlugin()
+    writeFileSync(join(root, 'direct.js'), [
+      "import { spawn as launch } from 'node:child_process'",
+      "import { readFileSync as read } from 'node:fs'",
+      "import { writeFile as write } from 'node:fs/promises'",
+      'launch("tool", [])',
+      'read("file")',
+      'write("file", "value")',
+    ].join('\n'))
+    writeFileSync(join(root, 'namespace.cjs'), [
+      "const child = require('child_process')",
+      "const os = require('node:os')",
+      'child.exec("tool")',
+      'os.tmpdir()',
+    ].join('\n'))
+    writeFileSync(join(root, 'default.mjs'), [
+      "import fs from 'node:fs'",
+      "import * as child from 'node:child_process'",
+      'fs.realpathSync("file")',
+      'child.execFile("tool", [])',
+      'child.fork("worker.js")',
+    ].join('\n'))
+
+    const result = scanHostPrimitives(root)
+    expect(result.perimeterFiles).toBe(3)
+    expect(result.findings.map(({ primitive }) => primitive)).toEqual(expect.arrayContaining([
+      'spawn', 'readFileSync', 'writeFile', 'exec', 'tmpdir', 'realpathSync', 'execFile', 'fork',
+    ]))
+  })
+
   it('pins the measured ceiling to the tree that ships', () => {
     const result = scanHostPrimitives(PLUGIN_ROOT)
 
-    expect(result.perimeterFiles).toBe(212)
+    expect(result.perimeterFiles).toBe(223)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

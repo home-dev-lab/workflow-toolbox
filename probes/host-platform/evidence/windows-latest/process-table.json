@@ -48,6 +48,13 @@
     "error": null,
     "raw": "\u001b[31;1mGet-Date: \u001b[31;1mCannot bind parameter 'Date'. Cannot convert value \"Get-CimInstance\" to type \"System.DateTime\". Error: \"The string 'Get-CimInstance' was not recognized as a valid DateTime. There is an unknown word starting at index '0'.\"\u001b[0m\r\n"
   },
+  "processSnapshot": {
+    "command": "powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process",
+    "exitCode": 0,
+    "signal": null,
+    "error": null,
+    "raw": "4 0 System\r\n"
+  },
   "cwdQuestion": {
     "question": "Can PID map to current working directory?",
     "status": "unsupported",

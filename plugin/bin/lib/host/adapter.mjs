@@ -3,16 +3,17 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import * as darwin from './darwin.mjs'
 import * as linux from './linux.mjs'
+import * as posix from './posix.mjs'
 import * as win32 from './win32.mjs'
 
-const implementations = { darwin, linux, win32 }
+const implementations = { aix: posix, darwin, freebsd: posix, linux, sunos: posix, win32 }
 const evidenceLabels = { linux: 'ubuntu-latest', darwin: 'macos-latest', win32: 'windows-latest' }
 
 export function createHostAdapter({ platform = process.platform, invoke, evidenceRoot, mutate = (value) => value } = {}) {
   const implementation = implementations[platform]
   if (!implementation) throw new Error(`host adapter unavailable on ${platform}`)
   const captured = evidenceRoot ? readEvidence(platform, evidenceRoot, mutate) : null
-  const invocation = captured ? evidenceInvocation(captured) : invoke ?? realInvocation()
+  const invocation = captured ? evidenceInvocation(implementation, captured) : invoke ?? realInvocation()
   const adapter = {
     platform,
     readProcessRelationships: () => implementation.readProcessRelationships(invocation),
@@ -66,10 +67,18 @@ const evidenceSummary = (platform, captured) => ({
   termination: { childPid: captured.termination.pids.childPid, ...captured.termination.operation },
 })
 
-function evidenceInvocation(captured) {
+const operationKey = ({ command, args }) => JSON.stringify([command, args])
+
+function evidenceInvocation(implementation, captured) {
+  const operations = new Map([
+    [operationKey(implementation.processRelationshipOperation), captured.processTable.processTable],
+    [operationKey(implementation.processSnapshotOperation), captured.processTable.processSnapshot],
+  ].filter(([, result]) => result))
   return {
-    run() {
-      const result = captured.processTable.processTable
+    run(command, args) {
+      const key = operationKey({ command, args })
+      const result = operations.get(key)
+      if (!result) throw new Error(`captured host evidence has no invocation for ${command} ${args.join(' ')}`)
       return { status: result.exitCode, stdout: result.raw, stderr: result.exitCode === 0 ? '' : result.raw }
     },
     realpath(input) {

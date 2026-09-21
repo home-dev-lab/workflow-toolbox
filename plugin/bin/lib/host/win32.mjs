@@ -8,6 +8,9 @@ const PROCESS_TABLE_SCRIPT = [
   '    executableName = $_.Name }',
   '} | ConvertTo-Json -Depth 4 -Compress',
 ].join(' ')
+const PROCESS_SNAPSHOT_SCRIPT = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.CommandLine }"
+export const processRelationshipOperation = { command: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', PROCESS_TABLE_SCRIPT] }
+export const processSnapshotOperation = { command: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', PROCESS_SNAPSHOT_SCRIPT] }
 
 export function parseProcessRelationships(result) {
   if (result.status !== 0) return { status: 'unavailable', processes: [], reason: `process table command exited ${String(result.status)}` }
@@ -26,12 +29,11 @@ export function parseProcessRelationships(result) {
 }
 
 export function readProcessRelationships(invoke) {
-  return parseProcessRelationships(invoke.run('pwsh', ['-NoProfile', '-NonInteractive', '-Command', PROCESS_TABLE_SCRIPT]))
+  return parseProcessRelationships(invoke.run(processRelationshipOperation.command, processRelationshipOperation.args))
 }
 
 export function readProcessSnapshot(invoke) {
-  const script = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.CommandLine }"
-  const result = invoke.run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script])
+  const result = invoke.run(processSnapshotOperation.command, processSnapshotOperation.args)
   if (result.status !== 0) return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
   const processes = String(result.stdout ?? '').split(/\r?\n/).flatMap((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line)

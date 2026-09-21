@@ -6,6 +6,7 @@ import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, lat
 import { posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
 import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
+import { hostAdapter } from './lib/host/adapter.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
@@ -159,7 +160,7 @@ async function main() {
       }
     }
     const staging = stagingLaneDirs(options.project)
-    const table = listProcessTable()
+    const table = listProcessTable(hostAdapter)
     const known = records(options.project, [...staging, ...processRecordDirs(options.project, table)])
     for (const record of known) {
       const verdict = classifyLane(record)
@@ -231,7 +232,7 @@ async function main() {
       journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
       notice(`unknown:${item.pid}`, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
     }
-    const brokers = listBrokers()
+    const brokers = listBrokers(hostAdapter)
     if (brokers.supported) for (const pid of brokers.pids) {
       if (notified.has(`broker:${pid}`)) continue
       const broker = inspectProcess(pid)

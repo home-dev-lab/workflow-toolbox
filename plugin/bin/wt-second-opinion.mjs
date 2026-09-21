@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { runSecondOpinion } from './lib/second-opinion-core.mjs'
+import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
+import { hostAdapter } from './lib/host/adapter.mjs'
 
 const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|fable] [--repo <dir>]'
 
@@ -41,7 +42,7 @@ async function main() {
     return 2
   }
   outputPath = options.out
-  return runSecondOpinion(options)
+  return runSecondOpinion(options, createSecondOpinionDependencies(hostAdapter))
 }
 
 main().then((code) => { process.exitCode = code }).catch((error) => {
