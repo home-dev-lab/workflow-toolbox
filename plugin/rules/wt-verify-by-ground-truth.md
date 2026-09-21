@@ -124,6 +124,24 @@ never the cause.
 Environment count as variable. Green result depend on `PATH`, config dir, pre-existing file,
 installed binary? Name that dependency. Ask if YOU created it earlier for other reason.
 
+## A HOSTED PLATFORM's behaviour is read in its documentation, never inferred from your traces
+
+**Claim about what a PLATFORM does — CI trigger fired, webhook did not, rate limit hit, permission
+refused? Deciding source is THAT PLATFORM's reference.** Your repository, your logs, your event
+metadata say what YOU did. They never say what the platform does with it. So the sentence tying the
+two together is INVENTED — and invented confidently, because every fact under it is true and
+correctly read.
+
+Read the platform's own documentation FIRST, and QUOTE the reference in the claim. Repository
+archaeology is the fallback, never the opening move.
+
+⚠ **Tell is grammatical, needs no suspicion**: a sentence of the form *"it must have fired because
+<something I changed>"* about a system whose rules you have not read this turn.
+
+⚠ **Corollary, and it is what makes this expensive**: a correction built the same way inherits the
+same defect. It READS as progress, because each version fits more evidence than the last. Two wrong
+explanations in a row is the signature — stop building the third from the same material.
+
 ## Shipping requires an explicit cross-platform verdict
 
 **Ship anything → explicit CROSS-PLATFORM verdict.** Name system dependencies. Per dependency say:
