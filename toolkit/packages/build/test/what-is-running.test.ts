@@ -607,6 +607,43 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
+  it('collects concurrent round-one critic slots as distinct pane sub-rows', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-critic-slots-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1868819337624683548'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'critic-slots')
+      const lane = join(worktree, '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Parallel critics\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=critic\n')
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [
+        { phase: 'critic', round: 1, entered_at: 1, exited_at: null },
+      ], lanes: [
+        { phase: 'critic', round: 1, lane_id: 'A', state: 'running', model: 'openai/critic-a', started_at: 2, ended_at: null, usage_file: 'critic-a.usage.json' },
+        { phase: 'critic', round: 1, lane_id: 'B', state: 'running', model: 'openai/critic-b', started_at: 3, ended_at: null, usage_file: 'critic-b.usage.json' },
+      ] }))
+      for (const [slot, runId, childPid] of [['critic-A', '10-20', 701], ['critic-B', '11-21', 702]] as const) {
+        const dir = join(lane, `supervision-${slot}`)
+        mkdirSync(dir)
+        writeFileSync(join(dir, 'current.json'), JSON.stringify({ version: 1, runId }))
+        writeFileSync(join(dir, `${runId}.json`), JSON.stringify({ runId, state: 'running', childPid, worktree }))
+        mkdirSync(join(paths.procRoot, String(childPid)))
+        writeFileSync(join(paths.procRoot, String(childPid), 'status'), `Name:\topencode\nPPid:\t1\n`)
+        writeFileSync(join(paths.procRoot, String(childPid), 'cmdline'), ['opencode', 'run', '--dir', worktree, '--model', `openai/critic-${slot.at(-1)!.toLowerCase()}`].join('\0') + '\0')
+      }
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const pilot = snapshot.rows.find((row: { id: string }) => row.id === cardId)
+      expect(pilot.lanes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ label: 'Critic A', outcome: 'running', model: 'openai/critic-a', usageFile: 'critic-a.usage.json' }),
+        expect.objectContaining({ label: 'Critic B', outcome: 'running', model: 'openai/critic-b', usageFile: 'critic-b.usage.json' }),
+      ]))
+      expect(await renderedText({ ...snapshot, sessions: undefined, rows: [{ ...pilot, project: 'wt-suite' }] })).toMatch(/Critic A.*Critic B/)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('renders expanded SDK pilot details directly below the pilot row and before the stage spine', () => {
     const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
     const pilot = {

@@ -47,6 +47,28 @@ describe('lane orphan watcher self-detection', () => {
     expect(result.stdout).not.toContain('pid=702')
   }))
 
+  it('attributes a slotted lane and emits its decision-needed event', () => withTempDir((root) => {
+    const supervision = join(root, '.lane', 'supervision-critic-Z')
+    mkdirSync(supervision, { recursive: true })
+    writeFileSync(join(supervision, 'current.json'), JSON.stringify({ version: 1, runId: '10-20' }))
+    writeFileSync(join(supervision, '10-20.json'), JSON.stringify({
+      runId: '10-20', state: 'decision-needed', owner: 'session', ownerSessionId: 'slot-owner',
+      worktree: root, workerPid: 2_147_483_646, childPid: 2_147_483_647,
+      timeoutAt: '2026-09-21T12:00:00.000Z', decisionDueAt: '2026-09-21T12:05:00.000Z',
+      defaultDecision: 'extend', workerArgv: [], evidence: {},
+    }))
+
+    const result = spawnSync(process.execPath, [WATCHER, '--project', root, '--once'], {
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_CODE_SESSION_ID: 'slot-owner', XDG_STATE_HOME: join(root, 'state') },
+    })
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain('LANE decision-needed:')
+    expect(result.stdout).not.toContain('unattributed opencode')
+    expect(result.stdout).toContain('--slot \'critic-Z\' --decision extend')
+  }))
+
   it('uses the same strict five-minute boundary for a Windows command line', () => {
     const classify = (ageSeconds: number) => classifyIdleHelper({
       argv: [], command: 'C:\\tools\\codex.exe app-server', ageSeconds, relatedToTask: false,

@@ -255,6 +255,17 @@ function currentRecord(dir, entries, readFileImpl) {
   return { name: `${pointer.value.runId}.json` }
 }
 
+function supervisionDirs(worktree, readdirImpl) {
+  const defaultDir = path.join(worktree, '.lane', 'supervision')
+  let entries
+  try { entries = readdirImpl(path.join(worktree, '.lane'), { withFileTypes: true }) } catch { entries = [] }
+  const slots = entries
+    .filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && /^supervision-[A-Za-z0-9._-]+$/.test(entry.name))
+    .map((entry) => path.join(worktree, '.lane', entry.name))
+    .sort()
+  return [defaultDir, ...slots]
+}
+
 export function sessionLaneInFlight({
   projectDir,
   sessionId,
@@ -287,34 +298,35 @@ export function sessionLaneInFlight({
   let recordsSeen = 0
 
   for (const worktree of worktrees) {
-    const dir = path.join(worktree, '.lane', 'supervision')
-    let entries
-    try {
-      entries = readdirImpl(dir, { withFileTypes: true })
-    } catch (error) {
-      if (!missing(error)) unknowns.push('supervision dir unreadable')
-      continue
-    }
-    const current = currentRecord(dir, entries, readFileImpl)
-    if (current.reason) unknowns.push(current.reason)
-    const names = entries.map((entry) => entry.name).filter((name) => RECORD_NAME.test(name)).sort()
-    if (current.name && !names.includes(current.name)) unknowns.push('record unreadable')
-    const ordered = current.name && names.includes(current.name)
-      ? [current.name, ...names.filter((name) => name !== current.name)]
-      : names
-    if (recordsSeen + names.length > maxRecords) unknowns.push(`record scan capped at ${maxRecords}`)
-    const available = Math.max(0, maxRecords - recordsSeen)
-    const selected = current.name && ordered[0] === current.name && available === 0 ? [current.name] : ordered.slice(0, available)
-    recordsSeen += names.length
-    for (const name of selected) {
-      const loaded = readRecord(path.join(dir, name), readFileImpl)
-      if (!loaded.value) {
-        unknowns.push(loaded.reason)
+    for (const dir of supervisionDirs(worktree, readdirImpl)) {
+      let entries
+      try {
+        entries = readdirImpl(dir, { withFileTypes: true })
+      } catch (error) {
+        if (!missing(error)) unknowns.push('supervision dir unreadable')
         continue
       }
-      const verdict = classifyRecord(loaded.value, sessionId, classify)
-      if (verdict.status === 'in-flight') return verdict
-      if (verdict.status === 'unknown') unknowns.push(verdict.reason)
+      const current = currentRecord(dir, entries, readFileImpl)
+      if (current.reason) unknowns.push(current.reason)
+      const names = entries.map((entry) => entry.name).filter((name) => RECORD_NAME.test(name)).sort()
+      if (current.name && !names.includes(current.name)) unknowns.push('record unreadable')
+      const ordered = current.name && names.includes(current.name)
+        ? [current.name, ...names.filter((name) => name !== current.name)]
+        : names
+      if (recordsSeen + names.length > maxRecords) unknowns.push(`record scan capped at ${maxRecords}`)
+      const available = Math.max(0, maxRecords - recordsSeen)
+      const selected = current.name && ordered[0] === current.name && available === 0 ? [current.name] : ordered.slice(0, available)
+      recordsSeen += names.length
+      for (const name of selected) {
+        const loaded = readRecord(path.join(dir, name), readFileImpl)
+        if (!loaded.value) {
+          unknowns.push(loaded.reason)
+          continue
+        }
+        const verdict = classifyRecord(loaded.value, sessionId, classify)
+        if (verdict.status === 'in-flight') return verdict
+        if (verdict.status === 'unknown') unknowns.push(verdict.reason)
+      }
     }
   }
   return unknowns.length

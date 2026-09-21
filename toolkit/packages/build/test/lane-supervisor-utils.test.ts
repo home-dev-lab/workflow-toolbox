@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { argvSummary, laneHardBoundAt, readCurrentSupervision, readLogTail, shellQuote, supervisionPaths, terminalExit, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { argvSummary, laneHardBoundAt, readCurrentSupervision, readCurrentSupervisions, readLogTail, shellQuote, supervisionPaths, supervisionSlots, terminalExit, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 const roots: string[] = []
 const tempRoot = () => { const root = mkdtempSync(join(tmpdir(), 'wt-supervisor-utils-')); roots.push(root); return root }
@@ -80,6 +80,25 @@ describe('lane supervisor utilities', () => {
     const record = { runId: '10-20', state: 'running' }
     writeJsonAtomic(paths.record, record)
     expect(readCurrentSupervision(root)).toEqual(record)
+  })
+
+  it('discovers every valid supervision slot and reads each current record', () => {
+    const root = tempRoot()
+    const records = [
+      { slot: null, runId: '10-20' },
+      { slot: 'critic-A', runId: '11-21' },
+      { slot: 'critic-B', runId: '12-22' },
+    ]
+    for (const record of records) {
+      const paths = supervisionPaths(root, record.runId, record.slot)
+      writeJsonAtomic(paths.pointer, { version: 1, runId: record.runId })
+      writeJsonAtomic(paths.record, { runId: record.runId, state: 'running' })
+    }
+    writeJsonAtomic(join(root, '.lane', 'supervision-invalid slot', 'current.json'), { runId: '13-23' })
+
+    expect(supervisionSlots(root)).toEqual([null, 'critic-A', 'critic-B'])
+    expect(readCurrentSupervisions(root)).toEqual(records.map(({ slot, runId }) => ({ slot, record: { runId, state: 'running' } })))
+    expect(readCurrentSupervision(root, 'critic-B')).toEqual({ runId: '12-22', state: 'running' })
   })
 
   it('requires finite deadline inputs and computes the full hard bound', () => {
