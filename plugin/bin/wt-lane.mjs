@@ -294,7 +294,9 @@ async function main() {
   let workerSpawnedChild = false
   if (worker && opts.runId && opts.dir) process.once('beforeExit', () => {
     if (workerSpawnedChild) return
-    const stateFile = path.join(opts.dir, '.lane', 'supervision', `${opts.runId}.json`)
+    const supervisionSlot = process.env.WT_LANE_SUPERVISION_SLOT
+    const supervisionDir = supervisionSlot && /^[A-Za-z0-9._-]+$/.test(supervisionSlot) ? `supervision-${supervisionSlot}` : 'supervision'
+    const stateFile = path.join(opts.dir, '.lane', supervisionDir, `${opts.runId}.json`)
     let current = null
     try { current = JSON.parse(readFileSync(stateFile, 'utf8')) } catch {}
     if (current && current.state !== 'launching') return

@@ -117,6 +117,28 @@ function fixture(options: {
 }
 
 describe('sessionLaneInFlight', () => {
+  it('finds an owned lane in a slot-scoped supervision directory', () => {
+    const slotDir = path.join(projectDir, '.lane', 'supervision-critic-Z')
+    const slotRecord = path.join(slotDir, `${runId}.json`)
+    const missing = () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) }
+    const result = sessionLaneInFlight({
+      projectDir,
+      sessionId: 'session-under-test',
+      spawnSyncImpl: () => ({ status: 0, stdout: `worktree ${projectDir}\0HEAD abc\0\0`, stderr: '' }),
+      readdirImpl: ((dirPath: string) => {
+        if (dirPath === path.join(projectDir, '.claude', 'worktrees')) return []
+        if (dirPath === path.join(projectDir, '.lane')) return [dirent('supervision-critic-Z')]
+        if (dirPath === slotDir) return [dirent(`${runId}.json`, false)]
+        return missing()
+      }) as unknown as typeof import('node:fs').readdirSync,
+      readFileImpl: ((filePath: string) => filePath === slotRecord ? JSON.stringify(record()) : missing()) as typeof import('node:fs').readFileSync,
+      classify: () => ({ status: 'running' }),
+      backgroundTaskProbe: () => ({ status: 'none' }),
+    })
+
+    expect(result.status).toBe('in-flight')
+  })
+
   it.each(['running', 'decision-needed', 'launching'])('treats an owned %s lane as in flight', (status) => {
     expect(fixture({ classify: () => ({ status }) }).result.status).toBe('in-flight')
   })

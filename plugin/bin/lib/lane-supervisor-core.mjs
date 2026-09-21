@@ -377,6 +377,11 @@ export function terminalExit(file) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(readLogTail(file))?.[1] ?? null
 }
 
+// One directory listing seam for this module (host primitive census counts call sites).
+function directoryEntries(dir) {
+  try { return readdirSync(dir, { withFileTypes: true }) } catch { return null }
+}
+
 export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
   if (maxEntries < 0) return { at: null, bounded: true, status: 'unknown' }
   const skipped = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
@@ -385,11 +390,11 @@ export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
   let visited = 0
   while (stack.length) {
     const dir = stack.pop()
-    let entries
-    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
+    const entries = directoryEntries(dir)
+    if (entries === null) continue
     for (const entry of entries) {
       if (++visited > maxEntries) return { at: null, bounded: true, status: 'unknown' }
-      if (skipped.has(entry.name) || (dir === path.join(root, '.lane') && entry.name === 'supervision')) continue
+      if (skipped.has(entry.name) || (dir === path.join(root, '.lane') && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))) continue
       const full = path.join(dir, entry.name)
       try {
         const stat = statSync(full)
@@ -431,8 +436,8 @@ export function claimCurrentSupervision(paths, runId, { writePointer = writeJson
   return false
 }
 
-export function supervisionPaths(root, runId = null, requestedSlot = null) {
-  const slot = requestedSlot ?? process.env.WT_LANE_SUPERVISION_SLOT ?? null
+export function supervisionPaths(root, runId = null, requestedSlot = undefined) {
+  const slot = requestedSlot === undefined ? process.env.WT_LANE_SUPERVISION_SLOT ?? null : requestedSlot
   if (slot !== null && !/^[A-Za-z0-9._-]+$/.test(slot)) throw new Error(`invalid supervision slot: ${slot}`)
   const dir = path.join(root, '.lane', slot ? 'supervision-' + slot : 'supervision')
   return {
@@ -443,13 +448,31 @@ export function supervisionPaths(root, runId = null, requestedSlot = null) {
   }
 }
 
-export function readCurrentSupervision(root) {
+export function supervisionSlots(root) {
+  let names
+  names = directoryEntries(path.join(root, '.lane'))
+  if (names === null) return []
+  return names
+    .filter((entry) => entry.isDirectory() && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))
+    .map((entry) => entry.name === 'supervision' ? null : entry.name.slice('supervision-'.length))
+    .sort((left, right) => {
+      if (left === null) return -1
+      if (right === null) return 1
+      return left.localeCompare(right)
+    })
+}
+
+export function readCurrentSupervision(root, requestedSlot = undefined) {
   try {
-    const paths = supervisionPaths(root)
+    const paths = supervisionPaths(root, null, requestedSlot)
     const pointer = JSON.parse(readFileSync(paths.pointer, 'utf8'))
     if (typeof pointer.runId !== 'string' || !/^\d+-\d+$/.test(pointer.runId)) return null
-    return JSON.parse(readFileSync(supervisionPaths(root, pointer.runId).record, 'utf8'))
+    return JSON.parse(readFileSync(supervisionPaths(root, pointer.runId, requestedSlot).record, 'utf8'))
   } catch { return null }
+}
+
+export function readCurrentSupervisions(root) {
+  return supervisionSlots(root).map((slot) => ({ slot, record: readCurrentSupervision(root, slot) })).filter(({ record }) => record !== null)
 }
 
 export function supervisionUnavailableMessage(platform = process.platform) {
