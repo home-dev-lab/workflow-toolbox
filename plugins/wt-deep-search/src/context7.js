@@ -1,4 +1,5 @@
-const CALL_TIMEOUT_MS = 1500
+const CALL_TIMEOUT_MS = 8000
+const TOTAL_TIMEOUT_MS = 18000
 
 const LIBRARIES = [
   [/\bnext\.?js\b/i, 'Next.js'], [/\bReact Native\b/, 'React Native'], [/\bReact(?:\.js)?\b/, 'React'],
@@ -53,26 +54,54 @@ async function connectedContext7(engine) {
   return prefix.slice('mcp__'.length)
 }
 
-async function callBeforeDeadline(engine, server, tool, args) {
-  const timeout = engine.sleep(CALL_TIMEOUT_MS).then(() => null)
-  return Promise.race([engine.call(server, tool, args), timeout])
+async function waitBeforeDeadline(engine, operation, timeoutMs) {
+  const timedOut = Symbol('context7 timeout')
+  const timeout = engine.sleep(timeoutMs, { signal: engine.signal }).then(() => timedOut)
+  const result = await Promise.race([operation, timeout])
+  return result === timedOut ? { timedOut: true, timeoutMs } : { result }
+}
+
+async function callBeforeDeadline(engine, server, tool, args, startedAt) {
+  // `await`: the real engine's clock answers now() asynchronously although its types say number;
+  // a Promise here made elapsed NaN and every sleep refuse (measured 2026-09-21).
+  const elapsed = (await engine.now()) - startedAt
+  const timeoutMs = Math.max(0, Math.min(CALL_TIMEOUT_MS, TOTAL_TIMEOUT_MS - elapsed))
+  return waitBeforeDeadline(engine, engine.call(server, tool, args), timeoutMs)
 }
 
 export async function queryContext7(engine, question, library) {
+  const startedAt = await engine.now()
   try {
-    const server = await connectedContext7(engine)
-    if (!server) return null
-    const resolved = await callBeforeDeadline(engine, server, 'resolve-library-id', {
+    const discovery = await waitBeforeDeadline(
+      engine, connectedContext7(engine), TOTAL_TIMEOUT_MS,
+    )
+    if (discovery.timedOut) {
+      return { answer: null, reason: `tool discovery timed out after ${discovery.timeoutMs} ms` }
+    }
+    const server = discovery.result
+    if (!server) return { answer: null, reason: 'no connected context7 server was found' }
+    const resolvedCall = await callBeforeDeadline(engine, server, 'resolve-library-id', {
       libraryName: library,
       query: question,
-    })
-    const libraryId = libraryIdOf(resolved)
-    if (!libraryId) return null
-    const docs = await callBeforeDeadline(engine, server, 'query-docs', { libraryId, query: question })
-    const answer = textOf(docs)
-    if (!answer || /^(?:documentation not found|no documentation|error fetching)/i.test(answer)) return null
-    return answer
-  } catch {
-    return null
+    }, startedAt)
+    if (resolvedCall.timedOut) {
+      return { answer: null, reason: `resolve-library-id timed out after ${resolvedCall.timeoutMs} ms` }
+    }
+    const libraryId = libraryIdOf(resolvedCall.result)
+    if (!libraryId) return { answer: null, reason: `no library id was found for ${library}` }
+    const docsCall = await callBeforeDeadline(
+      engine, server, 'query-docs', { libraryId, query: question }, startedAt,
+    )
+    if (docsCall.timedOut) {
+      return { answer: null, reason: `query-docs timed out after ${docsCall.timeoutMs} ms` }
+    }
+    const answer = textOf(docsCall.result)
+    if (!answer || /^(?:documentation not found|no documentation|error fetching)/i.test(answer)) {
+      return { answer: null, reason: 'context7 returned no documentation' }
+    }
+    return { answer, reason: null }
+  } catch (error) {
+    if (engine.signal?.aborted) throw error
+    return { answer: null, reason: `context7 failed: ${String(error?.message ?? 'unknown error').slice(0, 80)}` }
   }
 }

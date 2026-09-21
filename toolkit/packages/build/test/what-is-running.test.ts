@@ -599,11 +599,11 @@ describe('What is running collector seam', () => {
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
       expect(row.phaseRounds).toEqual({ plan: 2, critic: 2, review: 2, refutation: 2, harden: 2 })
       const text = await renderedText({ ...snapshot, sessions: undefined, rows: [{ ...row, project: 'wt-suite' }] })
-      expect(text).toContain('Plan · round 2 of 3')
-      expect(text).toContain('Critic · round 2 of 3')
-      expect(text).toContain('Independent review · round 2 of 3')
-      expect(text).toContain('Independent refutation · round 2 of 3')
-      expect(text).toContain('Harden · round 2 of 2')
+      expect(text).toContain('Plan · round 2 (max 6)')
+      expect(text).toContain('Critic · round 2 (max 6)')
+      expect(text).toContain('Independent review · round 2 (max 6)')
+      expect(text).toContain('Independent refutation · round 2 (max 6)')
+      expect(text).toContain('Harden · round 2 (max 5)')
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 

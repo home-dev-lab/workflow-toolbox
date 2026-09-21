@@ -8,6 +8,55 @@ import { costReportSection } from './run-cost-core.mjs'
 
 const WORKTREE_RETENTION_FILE = path.join('.lane', 'worktree-retention.json')
 const COST_BLOCK = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/g
+const DELIVERED_ARTEFACT = /^-\s+Delivered artefact:\s+`([^`\r\n]+)`\s*$/
+
+function declaredArtefactPaths(report) {
+  const lines = report.split(/\r?\n/)
+  const start = lines.findIndex((line) => /^## Implemented\s*$/.test(line))
+  if (start < 0) return []
+  const end = lines.findIndex((line, index) => index > start && /^##\s/.test(line))
+  return lines.slice(start + 1, end < 0 ? undefined : end)
+    .map((line) => DELIVERED_ARTEFACT.exec(line)?.[1])
+    .filter(Boolean)
+}
+
+function readBackDeclaredArtefacts({ root, report, startedAt, sha256 }) {
+  const declarations = declaredArtefactPaths(report)
+  if (new Set(declarations).size !== declarations.length) throw new Error('duplicate delivered artefact declaration')
+  const canonicalRoot = fs.realpathSync(root)
+  const startedAtMs = typeof startedAt === 'number' ? startedAt : Date.parse(startedAt)
+  return declarations.map((declaration) => {
+    if (path.isAbsolute(declaration)) throw new Error(`declared artefact path must be relative: ${declaration}`)
+    const requested = path.resolve(canonicalRoot, declaration)
+    const relative = path.relative(canonicalRoot, requested)
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new Error(`declared artefact path escapes the worktree: ${declaration}`)
+    }
+    let stat
+    let canonical
+    try {
+      stat = fs.lstatSync(requested)
+      canonical = fs.realpathSync(requested)
+    } catch (error) {
+      if (error?.code === 'ENOENT') throw new Error(`missing declared artefact ${declaration}`)
+      throw error
+    }
+    const canonicalRelative = path.relative(canonicalRoot, canonical)
+    if (canonicalRelative === '..' || canonicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(canonicalRelative)) {
+      throw new Error(`declared artefact path escapes the worktree: ${declaration}`)
+    }
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`declared artefact is not a regular file: ${declaration}`)
+    if (stat.mtimeMs < startedAtMs) throw new Error(`declared artefact predates this run: ${declaration}`)
+    const bytes = fs.readFileSync(requested)
+    return {
+      path: declaration,
+      size: bytes.length,
+      sha256: sha256(bytes),
+      mtime: stat.mtime.toISOString(),
+      modified_after_started: true,
+    }
+  })
+}
 
 function archiveFile(file) {
   let stat
@@ -192,12 +241,12 @@ export function assertArchiveOutsideWorktree({ root, archiveRoot, target = path.
   return resolved
 }
 
-export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, deferred, implementation, routedCards = [], assertDirectories, copy, git, sha256, writeRegularFile }) {
+export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, deferred, implementation, delivery = { mode: 'commit', artifacts: [] }, routedCards = [], assertDirectories, copy, git, sha256, writeRegularFile }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const target = assertArchiveOutsideWorktree({ root, archiveRoot, target: path.join(archiveRoot ?? '', '.claude', 'reports', `${cardId}-${stamp}`) })
   const temporary = `${target}.tmp-${randomUUID()}`
-  const manifestContent = `${JSON.stringify({ cardId, route, commit: head, phases, evidence, partial: partial ?? null, deferred: deferred ?? null, routed_cards: routedCards }, null, 2)}\n`
-  const summary = { commit: head, archive: { path: target, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: implementation, partial: partial ?? null, deferred: deferred ?? null }
+  const manifestContent = `${JSON.stringify({ cardId, route, commit: head, phases, evidence, partial: partial ?? null, deferred: deferred ?? null, delivery, routed_cards: routedCards }, null, 2)}\n`
+  const summary = { commit: head, archive: { path: target, manifest_sha256: sha256(manifestContent) }, lifecycle_implementation: implementation, partial: partial ?? null, deferred: deferred ?? null, delivery }
   let wroteLaneSummary = false
   try {
     assertDirectories()
@@ -225,6 +274,7 @@ export function completeLifecycleReport({
   laneDir,
   cardId,
   sessionTag,
+  startedAt,
   route,
   state,
   evidencePath,
@@ -261,6 +311,8 @@ export function completeLifecycleReport({
       }
     }
     if (state.report.stage === 'idle') {
+      const report = readRegularFile(path.join(laneDir, 'pilot-report.md'))
+      const artifacts = readBackDeclaredArtefacts({ root, report, startedAt, sha256 })
       const base = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
       state.report.base = base
       git('git', ['add', '-A'], { cwd: root })
@@ -271,9 +323,17 @@ export function completeLifecycleReport({
         return refusal('report->awaiting_fidelity', 'tree signature unchanged after staging', root)
       }
       try { state.report.tree = git('git', ['write-tree'], { cwd: root, encoding: 'utf8' }).trim() } catch { state.report.tree = null }
-      const report = readRegularFile(path.join(laneDir, 'pilot-report.md'))
+      if (artifacts.length > 0) {
+        const baseTree = git('git', ['rev-parse', 'HEAD^{tree}'], { cwd: root, encoding: 'utf8' }).trim()
+        if (state.report.tree === baseTree) {
+          git('git', ['reset'], { cwd: root })
+          state.report.stage = 'committed'
+          state.report.head = base
+          state.report.delivery = { mode: 'artefact-read-back', artifacts }
+        }
+      }
       let commitError = null
-      try {
+      if (state.report.stage === 'staged') try {
         git(
           'git',
           [
@@ -297,12 +357,17 @@ export function completeLifecycleReport({
         }
       }
       if (head === base) {
-        git('git', ['reset'], { cwd: root })
-        state.report = { stage: 'idle', base: null, head: null, tree: null }
-        return refusal('report->awaiting_fidelity', 'changed HEAD', root)
+        if (state.report.stage === 'committed' && state.report.delivery?.mode === 'artefact-read-back') {
+          head = base
+        } else {
+          git('git', ['reset'], { cwd: root })
+          state.report = { stage: 'idle', base: null, head: null, tree: null, delivery: null }
+          return refusal('report->awaiting_fidelity', 'changed HEAD; for a gitignored delivery add "- Delivered artefact: `relative/path`" under ## Implemented', root)
+        }
       }
       state.report.stage = 'committed'
       state.report.head = head
+      state.report.delivery ??= { mode: 'commit', artifacts }
       if (commitError) throw commitError
       if (git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) {
         return refusal('report->awaiting_fidelity', 'clean tree', root)
@@ -320,6 +385,7 @@ export function completeLifecycleReport({
       partial: state.partial,
       deferred: state.deferred,
       implementation,
+      delivery: state.report.delivery,
       routedCards,
       assertDirectories,
       copy,
@@ -331,7 +397,7 @@ export function completeLifecycleReport({
   } catch (error) {
     if (state.report.stage === 'staged') {
       try { git('git', ['reset'], { cwd: root }) } catch {}
-      state.report = { stage: 'idle', base: null, head: null, tree: null }
+      state.report = { stage: 'idle', base: null, head: null, tree: null, delivery: null }
     }
     return refusal(
       'report->awaiting_fidelity',

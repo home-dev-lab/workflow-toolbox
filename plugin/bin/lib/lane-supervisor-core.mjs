@@ -431,8 +431,10 @@ export function claimCurrentSupervision(paths, runId, { writePointer = writeJson
   return false
 }
 
-export function supervisionPaths(root, runId = null) {
-  const dir = path.join(root, '.lane', 'supervision')
+export function supervisionPaths(root, runId = null, requestedSlot = null) {
+  const slot = requestedSlot ?? process.env.WT_LANE_SUPERVISION_SLOT ?? null
+  if (slot !== null && !/^[A-Za-z0-9._-]+$/.test(slot)) throw new Error(`invalid supervision slot: ${slot}`)
+  const dir = path.join(root, '.lane', slot ? 'supervision-' + slot : 'supervision')
   return {
     dir,
     pointer: path.join(dir, 'current.json'),

@@ -47,9 +47,12 @@ async function reconcile(record) {
   if (!marker) return record;
   const output = log.slice(0, marker.index).trim();
   if (marker[1] !== '0') {
+    const timeout = output.match(/(?:^|\n)TIMEOUT=(\d+)\s*$/);
     return store.update(record.handle, {
       status: 'failed',
-      error: `opencode exited with status ${marker[1]}`,
+      error: timeout
+        ? `opencode timed out after ${timeout[1]}ms`
+        : `opencode exited with status ${marker[1]}`,
     });
   }
   let result = output;

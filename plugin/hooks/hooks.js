@@ -201,7 +201,7 @@ function phaseLabelFor(row, phase) {
   const round = row.phaseRounds?.[phase];
   if (!Number.isSafeInteger(round) || round <= 0) return withModel;
   let suffix = ` · round ${round}`;
-  if (LOOP_BOUNDS[phase]) suffix += ` of ${LOOP_BOUNDS[phase]}`;
+  if (LOOP_BOUNDS[phase]) suffix += ` (max ${LOOP_BOUNDS[phase]})`;
   return withModel + suffix;
 }
 

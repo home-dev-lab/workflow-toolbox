@@ -19,7 +19,7 @@ function engine(overrides = {}) {
     env: { get: async () => undefined },
     fs: { exists: async () => false },
     tool: { list: async () => context7Tools },
-    clock: { sleep: () => new Promise(() => {}) },
+    clock: { now: () => 0, sleep: () => new Promise(() => {}) },
     mcp: {
       call: async (_server, tool) => tool === 'resolve-library-id'
         ? { isError: false, content: [{ type: 'text', text: '- Context7-compatible library ID: /facebook/react' }] }
@@ -65,6 +65,34 @@ test('a third-party library question uses context7 resolve then docs before web 
   assert.equal(result.result.searchCount, 0)
 })
 
+test('a resolve slower than the old 1.5 second limit still reaches context7 docs', async () => {
+  const calls = []
+  const $ = engine({
+    clock: {
+      now: () => 0,
+      sleep: (ms) => ms <= 1500 ? Promise.resolve() : new Promise(() => {}),
+    },
+    mcp: {
+      call: async (_server, tool) => {
+        calls.push(tool)
+        if (tool === 'resolve-library-id') {
+          await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+        return tool === 'resolve-library-id'
+          ? { isError: false, content: [{ type: 'text', text: '- Context7-compatible library ID: /vitest-dev/vitest' }] }
+          : { isError: false, content: [{ type: 'text', text: 'Set testTimeout in the Vitest configuration.' }] }
+      },
+    },
+  })
+
+  const result = await hookHandler()($, { query: 'Vitest how to configure test timeout' }, () => {
+    throw new Error('web search should not run')
+  })
+
+  assert.deepEqual(calls, ['resolve-library-id', 'query-docs'])
+  assert.match(result.result.results[0], /Set testTimeout/)
+})
+
 test('a non-library question gets nowhere near context7', async () => {
   let listed = false
   let called = false
@@ -92,7 +120,7 @@ for (const query of ['How should I react to a failed build?', 'What is a node in
   })
 }
 
-test('missing context7 tools preserve ordinary web search', async () => {
+test('missing context7 tools name the reason in the ordinary web answer', async () => {
   let called = false
   const $ = engine({
     tool: { list: async () => [{ name: 'WebSearch', mcp: false }] },
@@ -100,13 +128,13 @@ test('missing context7 tools preserve ordinary web search', async () => {
   })
   const event = { query: 'How do Prisma relations work?' }
 
-  const result = await hookHandler()($, event, (forwarded) => ({ forwarded }))
+  const result = await hookHandler()($, event, () => webAnswer('web result'))
 
-  assert.deepEqual(result, { forwarded: event })
+  assert.match(result.result.results[0], /no connected context7 server was found/)
   assert.equal(called, false)
 })
 
-test('an unresolved library preserves ordinary web search', async () => {
+test('an unresolved library names the reason in the ordinary web answer', async () => {
   const calls = []
   const $ = engine({
     mcp: {
@@ -118,13 +146,13 @@ test('an unresolved library preserves ordinary web search', async () => {
   })
   const event = { query: 'How do Prisma relations work?' }
 
-  const result = await hookHandler()($, event, (forwarded) => ({ forwarded }))
+  const result = await hookHandler()($, event, () => webAnswer('web result'))
 
-  assert.deepEqual(result, { forwarded: event })
+  assert.match(result.result.results[0], /no library id was found for Prisma/)
   assert.deepEqual(calls, ['resolve-library-id'])
 })
 
-test('empty context7 documentation preserves ordinary web search', async () => {
+test('empty context7 documentation names the reason in the ordinary web answer', async () => {
   const $ = engine({
     mcp: {
       call: async (_server, tool) => tool === 'resolve-library-id'
@@ -134,30 +162,101 @@ test('empty context7 documentation preserves ordinary web search', async () => {
   })
   const event = { query: 'How do Prisma relations work?' }
 
-  const result = await hookHandler()($, event, (forwarded) => ({ forwarded }))
+  const result = await hookHandler()($, event, () => webAnswer('web result'))
 
-  assert.deepEqual(result, { forwarded: event })
+  assert.match(result.result.results[0], /context7 returned no documentation/)
 })
 
-test('a context7 error preserves ordinary web search', async () => {
+test('a context7 error names the reason in the ordinary web answer', async () => {
   const $ = engine({ mcp: { call: async () => { throw new Error('offline') } } })
   const event = { query: 'How do Prisma relations work?' }
 
-  const result = await hookHandler()($, event, (forwarded) => ({ forwarded }))
+  const result = await hookHandler()($, event, () => webAnswer('web result'))
 
-  assert.deepEqual(result, { forwarded: event })
+  assert.match(result.result.results[0], /context7 failed: offline/)
 })
 
-test('a slow context7 call reaches ordinary web search at the deadline', async () => {
+test('a slow context7 resolve names the call and deadline in the ordinary web answer', async () => {
   let sleeps = 0
   const $ = engine({
-    clock: { sleep: async () => { sleeps += 1 } },
+    clock: { now: () => 0, sleep: async () => { sleeps += 1 } },
     mcp: { call: async () => new Promise(() => {}) },
   })
   const event = { query: 'How do Prisma relations work?' }
 
-  const result = await hookHandler()($, event, (forwarded) => ({ forwarded }))
+  const result = await hookHandler()($, event, () => webAnswer('web result'))
 
-  assert.deepEqual(result, { forwarded: event })
-  assert.equal(sleeps, 1)
+  assert.match(result.result.results[0], /resolve-library-id timed out after 8000 ms/)
+  assert.equal(sleeps, 2)
+})
+
+test('a slow context7 docs call names that call in the ordinary web answer', async () => {
+  const $ = engine({
+    clock: { now: () => 0, sleep: async () => {} },
+    mcp: {
+      call: async (_server, tool) => tool === 'resolve-library-id'
+        ? { isError: false, content: [{ type: 'text', text: '- Context7-compatible library ID: /prisma/prisma' }] }
+        : new Promise(() => {}),
+    },
+  })
+
+  const result = await hookHandler()(
+    $, { query: 'How do Prisma relations work?' }, () => webAnswer('web result'),
+  )
+
+  assert.match(result.result.results[0], /query-docs timed out after 8000 ms/)
+})
+
+test('an aborted dispatch stops waiting for context7', async () => {
+  const controller = new AbortController()
+  const $ = engine({
+    clock: {
+      now: () => 0,
+      sleep: (_ms, { signal }) => new Promise((_resolve, reject) => {
+        if (signal.aborted) {
+          reject(new Error('dispatch abandoned'))
+          return
+        }
+        signal.addEventListener('abort', () => reject(new Error('dispatch abandoned')), { once: true })
+      }),
+    },
+    mcp: { call: async () => new Promise(() => {}) },
+  })
+  const next = () => webAnswer('web result')
+  next.signal = controller.signal
+
+  const pending = hookHandler()($, { query: 'How do Prisma relations work?' }, next)
+  controller.abort()
+
+  await assert.rejects(pending, /dispatch abandoned/)
+})
+
+function webAnswer(text) {
+  return { result: { query: 'q', results: [text], durationSeconds: 0, searchCount: 1 } }
+}
+
+// Measured 2026-09-21 on the real engine: the rung failed with "$.clock.sleep takes a non-negative
+// number of milliseconds" although every fake passed. The fakes' clock returned a number from now();
+// this one returns a promise and refuses a non-number sleep, which is how the real engine answered.
+test('context7 answers when the engine clock returns now() asynchronously', async () => {
+  const slept = []
+  const $ = engine({
+    clock: {
+      now: async () => 1000,
+      sleep: (ms) => {
+        if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) {
+          throw new Error('deep-search: $.clock.sleep takes a non-negative number of milliseconds')
+        }
+        slept.push(ms)
+        return new Promise(() => {})
+      },
+    },
+  })
+
+  const result = await hookHandler()($, { query: 'Vitest how to configure test timeout' }, () => {
+    throw new Error('web search should not run')
+  })
+
+  assert.match(result.result.results[0], /Answered from Vitest's documentation through context7/)
+  assert.ok(slept.length > 0 && slept.every((ms) => ms > 0))
 })
