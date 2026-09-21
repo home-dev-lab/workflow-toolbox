@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import test from 'node:test'
@@ -6,6 +7,19 @@ import test from 'node:test'
 import { bestPages, register } from '../hooks/hooks.js'
 
 const mirrorPath = `${homedir()}/.claude-code-docs`
+
+// ⚠ This file CALIBRATES the scorer against the REAL 189-page mirror on the machine running it —
+// which is why it is worth having and why it cannot be a shipped lock. Measured 2026-09-21 01:05
+// +01:00: under the clean-HOME certification, and on any adopter's machine without the mirror, it
+// failed every case for the honest reason that there was nothing to rank. It now SKIPS, loudly, and
+// the skip names the missing mirror rather than passing silently.
+//
+// Say plainly what that costs: on a clean machine this file proves nothing. The locks that hold
+// everywhere are the fixture-driven ones in the other test files.
+const mirrorInstalled = existsSync(`${mirrorPath}/docs_manifest.json`)
+const needsMirror = mirrorInstalled
+  ? {}
+  : { skip: 'the local Claude Code documentation mirror is not installed on this machine' }
 const $ = { fs: { read: (path) => readFile(path, 'utf8') } }
 
 // Each expected page and title comes from the real mirror manifest. The reason records why a
@@ -83,7 +97,7 @@ const fixtures = [
   },
 ]
 
-test('real bilingual questions rank the reader-selected page first or second', async (t) => {
+test('real bilingual questions rank the reader-selected page first or second', needsMirror, async (t) => {
   let hits = 0
   for (const fixture of fixtures) {
     await t.test(`${fixture.expected}: ${fixture.reason}`, async () => {
@@ -97,7 +111,7 @@ test('real bilingual questions rank the reader-selected page first or second', a
   assert.ok(hits > fixtures.length / 2, `${hits}/${fixtures.length} is not a majority`)
 })
 
-test('a Claude Code question with no relevant mirror page returns nothing', async () => {
+test('a Claude Code question with no relevant mirror page returns nothing', needsMirror, async () => {
   assert.deepEqual(await bestPages($, mirrorPath, 'What is Claude Code\'s favorite color?'), [])
 })
 
