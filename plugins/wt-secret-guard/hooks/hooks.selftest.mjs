@@ -193,6 +193,38 @@ await test('short genuine credential assignments in command output remain scrubb
   assert.equal(result.text.includes('hunter2'), false, 'genuine short password reached the tool result');
   assert.match(result.text, /secret:assignment#/);
 });
+const exportedCredentials = [
+  ['NAME_SECRET', 'export-secret-value'],
+  ['NAME_TOKEN', 'export-token-value'],
+  ['NAME_KEY', 'export-key-value'],
+];
+const exportedCredentialLine = ([name, value], prefix = '') => `${prefix}export ${name}=${value}`;
+await test('exported credential assignments are scrubbed from tool results', async () => {
+  const output = exportedCredentials.map((credential) => exportedCredentialLine(credential)).join('\n');
+  const result = await call('print-config', output);
+  for (const [, value] of exportedCredentials) assert.equal(result.text.includes(value), false, `${value} reached the tool result`);
+  assert.match(result.text, /secret:environment-dump#/);
+});
+await test('exported credential assignments are scrubbed from inbound messages', async () => {
+  assert(receive, 'session.receive hook was not registered');
+  const input = { origin: { kind: 'peer' }, text: exportedCredentials.map((credential) => exportedCredentialLine(credential)).join('\n') };
+  const received = [];
+  await receive($, input, async (event) => { received.push(event); return { queued: true }; });
+  for (const [, value] of exportedCredentials) assert.equal(received[0].text.includes(value), false, `${value} reached the session`);
+});
+await test('indented and diff-prefixed exported credentials are scrubbed', async () => {
+  const prefixes = ['  ', '+'];
+  const output = prefixes.flatMap((prefix) => exportedCredentials.map((credential) => exportedCredentialLine(credential, prefix))).join('\n');
+  const result = await call('git diff', output);
+  for (const [, value] of exportedCredentials) assert.equal(result.text.includes(value), false, `${value} survived an indented or diff-prefixed export`);
+});
+await test('exported source declarations pass while an exported credential is scrubbed', async () => {
+  const source = 'export const SECRET_KEY = x\nexport let API_TOKEN = y';
+  const credentialValue = 'control-secret-value';
+  const result = await call('git diff', `${source}\nexport NAME_SECRET=${credentialValue}`);
+  assert.equal(result.text.includes(credentialValue), false, 'exported credential control did not match');
+  assert.equal(result.text.includes(source), true, 'exported source declaration control matched');
+});
 await test('allow-list', async () => { const input = '0123456789abcdef0123456789abcdef01234567 123e4567-e89b-12d3-a456-426614174000 secret:github#abcdef'; const result = await call('cat fixture.txt', input); assert.equal(result.text, input); });
 await test('UUID Exa API key in a provider client constructor is scrubbed', async () => { const result = await call('node app.mjs', `const client = new Exa("${exa}");`); assert.equal(result.text.includes(exa), false, 'Exa UUID API key reached the tool result'); assert.match(result.text, /secret:credential-uuid#/); });
 await test('bare UUID in a plain log line stays untouched', async () => { const input = `run id ${exa} completed`; const result = await call('cat run.log', input); assert.equal(result.text, input); });
