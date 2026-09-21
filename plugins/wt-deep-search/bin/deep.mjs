@@ -89,7 +89,7 @@ async function worker(handle) {
       );
     },
   };
-  const opencode = { start: (runOptions) => startOpencode(runOptions, { spawn }) };
+  const opencode = { start: (runOptions) => startOpencode(runOptions, { spawn, env: process.env }) };
   await continueDeepResearch(handle, options, { store, exa, opencode });
 }
 

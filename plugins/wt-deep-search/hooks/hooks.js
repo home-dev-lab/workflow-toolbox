@@ -23,14 +23,12 @@ const MANIFEST = 'docs_manifest.json'
 
 // Detection uses the ENGINE's filesystem and environment, never node's: a hooks module has
 // no node. The shape handed to route() is the same one detect.js produces.
-// ⚠ This detection is a TWIN of src/detect.js and it drifted: detect.js learned Windows home
-// resolution while this copy still read HOME alone and joined with '/'. On a Windows machine with
-// the mirror installed, that answered "not installed" — well-formed, and indistinguishable from an
-// honest answer. The twin exists because a hooks module has no node and cannot import detect.js;
-// keep the two in step by hand, and see CROSS-PLATFORM.md.
+// ⚠ This detection is a TWIN of src/detect.js and has drifted before. The twin exists because a
+// hooks module has no node and cannot import detect.js; keep the two in step by hand, and see
+// CROSS-PLATFORM.md.
 //
 // ⚠ `$.env.get` takes a LITERAL name: `claude plugin validate` refuses a computed argument, which
-// is why the three variables are read in three separate calls rather than in a loop.
+// is why environment variables are read in separate literal calls rather than in a loop.
 async function homeFor($) {
   const home = await $.env.get('HOME')
   if (home) return home
@@ -73,9 +71,12 @@ async function providersFor($) {
 // unreachable however well they were wired. Detection and routing must name the SAME set.
 async function remoteProviders($) {
   const brave = await $.env.get('BRAVE_API_KEY')
+  const braveSearch = await $.env.get('BRAVE_SEARCH_API_KEY')
   const exa = await $.env.get('EXA_API_KEY')
   return {
-    brave: brave ? { available: true } : { available: false, reason: 'BRAVE_API_KEY is not set' },
+    brave: brave || braveSearch
+      ? { available: true }
+      : { available: false, reason: 'BRAVE_API_KEY or BRAVE_SEARCH_API_KEY is not set' },
     exa: exa ? { available: true } : { available: false, reason: 'EXA_API_KEY is not set' },
     opencode: { available: false, reason: 'the deep-research rung is not wired into this hook' },
   }
@@ -127,11 +128,24 @@ function frequencies(words) {
   return counts
 }
 
+function mirrorEntryPath(mirrorPath, name) {
+  if (typeof name !== 'string' || !name || name.includes('\0')) return null
+  if (/^(?:[\\/]|[A-Za-z]:)/.test(name)) return null
+  const segments = name.split(/[\\/]+/)
+  if (segments.some((segment) => segment === '..')) return null
+  const relative = segments.filter((segment) => segment && segment !== '.')
+  if (relative.length === 0) return null
+  const separator = separatorFor(mirrorPath)
+  return `${mirrorPath.replace(/[\\/]+$/, '')}${separator}${relative.join(separator)}`
+}
+
 async function searchablePages($, mirrorPath, files) {
   const pages = []
   for (const [name, meta] of Object.entries(files)) {
+    const path = mirrorEntryPath(mirrorPath, name)
+    if (!path) continue
     let markdown
-    try { markdown = await $.fs.read(`${mirrorPath}/${name}`) } catch { continue }
+    try { markdown = await $.fs.read(path) } catch { continue }
     const title = meta?.title ?? name
     const headings = markdown.split('\n').filter((line) => /^#{1,3}\s/.test(line)).join(' ')
     const openingWords = terms(markdown.slice(0, 12000))
@@ -190,8 +204,10 @@ async function readPages($, mirrorPath, pages, budget = 6000) {
   let spent = 0
   for (const page of pages) {
     if (spent >= budget) break
+    const path = mirrorEntryPath(mirrorPath, page.name)
+    if (!path) continue
     let text
-    try { text = await $.fs.read(`${mirrorPath}/${page.name}`) } catch { continue }
+    try { text = await $.fs.read(path) } catch { continue }
     const slice = text.slice(0, Math.max(0, budget - spent))
     spent += slice.length
     parts.push({ page, slice })
@@ -267,9 +283,14 @@ export const register = (on) => {
     if (decision.provider === 'brave' || decision.provider === 'exa') {
       const started = Date.now()
       const isBrave = decision.provider === 'brave'
-      // ⚠ Two literal calls, not one conditional: the engine lists the variables a module reads
-      // and refuses `$.env.get(<expression>)` outright.
-      const apiKey = isBrave ? await $.env.get('BRAVE_API_KEY') : await $.env.get('EXA_API_KEY')
+      let apiKey
+      if (isBrave) {
+        const brave = await $.env.get('BRAVE_API_KEY')
+        const braveSearch = await $.env.get('BRAVE_SEARCH_API_KEY')
+        apiKey = brave || braveSearch
+      } else {
+        apiKey = await $.env.get('EXA_API_KEY')
+      }
       if (!apiKey) return next(event)
       let rendered = null
       try {
