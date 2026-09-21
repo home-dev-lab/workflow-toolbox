@@ -9,7 +9,7 @@ const patterns = [
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
   ['assignment', /\b(?:password|token|secret)\s*=\s*(?![=])(?:"[^"]+"|'[^']+'|[^\s;,)}]+)/gi],
   ['op-output', /^\s*(?:password|token|secret|credential)\s*:\s*\S.+$/gim],
-  ['environment-dump', /^\s*[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)\s*=\s*\S.+$/gm],
+  ['environment-dump', /^\s*(?:\+\s*)?(?:export\s+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)\s*=\s*\S.+$/gm],
 ];
 
 const sha = /\b[a-f0-9]{40}\b/gi;
