@@ -1031,7 +1031,7 @@ export function createLifecycleStateMachine({
       ),
       tool(
         'write_artifact',
-        'Write a phase-bound lifecycle artifact.',
+        'Write a phase-bound lifecycle artifact. For a gitignored pilot-report delivery, add the exact line "- Delivered artefact: `relative/path`" under `## Implemented`; the edge confines and reads each regular file, requires an mtime since the run started, and records path, size, SHA-256, mtime, and `modified_after_started` in the summary and manifest. Mtime bounds recency, not authorship.',
         {
           kind: z.string(),
           content: z.string(),

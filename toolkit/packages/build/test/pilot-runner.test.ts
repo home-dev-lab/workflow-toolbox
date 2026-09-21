@@ -1015,6 +1015,22 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(ROOT, 'plugin/skills/adopt/scripts/install.mjs'), 'utf8')).toContain("{ file: 'PILOT-CONTRACT.md' }")
   })
 
+  it('tells pilots that lifecycle transitions name the phase being left', () => {
+    const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8')
+    expect(contract).toContain('Call `transition` with the phase being left, not the phase being entered.')
+  })
+
+  it('keeps the two escalation limits a contract compression once dropped', () => {
+    const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8')
+    expect(contract).toContain('then report disagreement to the order-giver, never loop.')
+    expect(contract).toContain('the owner decides what follows one.')
+  })
+
+  it('tells pilots the exact same-line E2E report format', () => {
+    const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8')
+    expect(contract).toContain('Report E2E as `Command: <text>` and `Output: <text>` on those lines; a fenced block alone is refused.')
+  })
+
   it('registers the runner-hosted lifecycle server and composes the pilot role profile', async () => {
     type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], mcpServers: Record<string, unknown>, permissionMode?: string, allowDangerouslySkipPermissions?: boolean }
     const f = fixture(); let options: QueryOptions | undefined

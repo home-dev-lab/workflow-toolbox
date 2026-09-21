@@ -22,7 +22,7 @@ function* files(dir: string): Generator<string> {
 }
 
 describe('shipped wt-deep-search', () => {
-  // The plugin carries its own 143 locks under `test/`, run by node's test runner because the
+  // The plugin carries its own locks under `test/`, run by node's test runner because the
   // plugin has ZERO dependencies — that property is what makes installing it riskless, so the
   // gate runs them where they are rather than porting them into vitest and adding a dependency.
   it('its own test suite passes', () => {
@@ -34,6 +34,13 @@ describe('shipped wt-deep-search', () => {
     const manifest = JSON.parse(readFileSync(join(PLUGIN, 'package.json'), 'utf8'))
     expect(Object.keys(manifest.dependencies ?? {})).toEqual([])
     expect(Object.keys(manifest.devDependencies ?? {})).toEqual([])
+  })
+
+  it('its cross-platform verdict matches the hook home resolution', () => {
+    const verdict = readFileSync(join(PLUGIN, 'CROSS-PLATFORM.md'), 'utf8')
+    expect(verdict).not.toContain('That copy still reads `HOME` alone and still joins with `/`.')
+    expect(verdict).toContain('`USERPROFILE`')
+    expect(verdict).toContain('`HOMEDRIVE` plus `HOMEPATH`')
   })
 
   it('contains no machine-specific home path or private 19-digit identifier', () => {

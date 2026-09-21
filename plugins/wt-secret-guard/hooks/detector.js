@@ -60,10 +60,16 @@ function sourceAssignment(text, match) {
   const lineStart = text.lastIndexOf('\n', match.index - 1) + 1;
   const lineEnd = text.indexOf('\n', match.index);
   const line = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd);
-  const sourceLine = line.replace(/^\s*(?:[-+]\s*)?/, '');
+  // Judge the STATEMENT that holds the match, not the whole line: text after the last ";" before it.
+  // A source-looking prefix earlier on the line must not exempt a later bare assignment
+  // ("const harmless = true; secret=…", review finding A1), and a declaration that itself follows a
+  // semicolon is still source code and stays exempt (a per-line rule rewrote such lines).
+  const lineBefore = text.slice(lineStart, match.index);
+  const statementStart = lineBefore.lastIndexOf(';') + 1;
+  const before = lineBefore.slice(statementStart);
+  const sourceLine = (statementStart > 0 ? line.slice(statementStart) : line).replace(/^\s*(?:[-+]\s*)?/, '');
   if (/^(?:(?:export|default)\s+)*(?:const|let|var|type|interface|function|class|import)\b/.test(sourceLine)) return true;
 
-  const before = text.slice(lineStart, match.index);
   const after = text.slice(match.index + match[0].length, lineEnd < 0 ? text.length : lineEnd);
   return /[({][^({]*$/.test(before) && /^\s*[,)}]/.test(after);
 }

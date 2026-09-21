@@ -362,7 +362,7 @@ export function completeLifecycleReport({
         } else {
           git('git', ['reset'], { cwd: root })
           state.report = { stage: 'idle', base: null, head: null, tree: null, delivery: null }
-          return refusal('report->awaiting_fidelity', 'changed HEAD', root)
+          return refusal('report->awaiting_fidelity', 'changed HEAD; for a gitignored delivery add "- Delivered artefact: `relative/path`" under ## Implemented', root)
         }
       }
       state.report.stage = 'committed'

@@ -20,17 +20,16 @@ import { libraryFromQuestion, queryContext7 } from '../src/context7.js'
 
 const MIRROR_DIR = '.claude-code-docs'
 const MANIFEST = 'docs_manifest.json'
+const EXA_REFUSAL_PREFIX = 'deep-search:exa-key-refused:'
 
 // Detection uses the ENGINE's filesystem and environment, never node's: a hooks module has
 // no node. The shape handed to route() is the same one detect.js produces.
-// ⚠ This detection is a TWIN of src/detect.js and it drifted: detect.js learned Windows home
-// resolution while this copy still read HOME alone and joined with '/'. On a Windows machine with
-// the mirror installed, that answered "not installed" — well-formed, and indistinguishable from an
-// honest answer. The twin exists because a hooks module has no node and cannot import detect.js;
-// keep the two in step by hand, and see CROSS-PLATFORM.md.
+// ⚠ This detection is a TWIN of src/detect.js and has drifted before. The twin exists because a
+// hooks module has no node and cannot import detect.js; keep the two in step by hand, and see
+// CROSS-PLATFORM.md.
 //
 // ⚠ `$.env.get` takes a LITERAL name: `claude plugin validate` refuses a computed argument, which
-// is why the three variables are read in three separate calls rather than in a loop.
+// is why environment variables are read in separate literal calls rather than in a loop.
 async function homeFor($) {
   const home = await $.env.get('HOME')
   if (home) return home
@@ -73,9 +72,12 @@ async function providersFor($) {
 // unreachable however well they were wired. Detection and routing must name the SAME set.
 async function remoteProviders($) {
   const brave = await $.env.get('BRAVE_API_KEY')
+  const braveSearch = await $.env.get('BRAVE_SEARCH_API_KEY')
   const exa = await $.env.get('EXA_API_KEY')
   return {
-    brave: brave ? { available: true } : { available: false, reason: 'BRAVE_API_KEY is not set' },
+    brave: brave || braveSearch
+      ? { available: true }
+      : { available: false, reason: 'BRAVE_API_KEY or BRAVE_SEARCH_API_KEY is not set' },
     exa: exa ? { available: true } : { available: false, reason: 'EXA_API_KEY is not set' },
     opencode: { available: false, reason: 'the deep-research rung is not wired into this hook' },
   }
@@ -127,11 +129,24 @@ function frequencies(words) {
   return counts
 }
 
+function mirrorEntryPath(mirrorPath, name) {
+  if (typeof name !== 'string' || !name || name.includes('\0')) return null
+  if (/^(?:[\\/]|[A-Za-z]:)/.test(name)) return null
+  const segments = name.split(/[\\/]+/)
+  if (segments.some((segment) => segment === '..')) return null
+  const relative = segments.filter((segment) => segment && segment !== '.')
+  if (relative.length === 0) return null
+  const separator = separatorFor(mirrorPath)
+  return `${mirrorPath.replace(/[\\/]+$/, '')}${separator}${relative.join(separator)}`
+}
+
 async function searchablePages($, mirrorPath, files) {
   const pages = []
   for (const [name, meta] of Object.entries(files)) {
+    const path = mirrorEntryPath(mirrorPath, name)
+    if (!path) continue
     let markdown
-    try { markdown = await $.fs.read(`${mirrorPath}/${name}`) } catch { continue }
+    try { markdown = await $.fs.read(path) } catch { continue }
     const title = meta?.title ?? name
     const headings = markdown.split('\n').filter((line) => /^#{1,3}\s/.test(line)).join(' ')
     const openingWords = terms(markdown.slice(0, 12000))
@@ -190,8 +205,10 @@ async function readPages($, mirrorPath, pages, budget = 6000) {
   let spent = 0
   for (const page of pages) {
     if (spent >= budget) break
+    const path = mirrorEntryPath(mirrorPath, page.name)
+    if (!path) continue
     let text
-    try { text = await $.fs.read(`${mirrorPath}/${page.name}`) } catch { continue }
+    try { text = await $.fs.read(path) } catch { continue }
     const slice = text.slice(0, Math.max(0, budget - spent))
     spent += slice.length
     parts.push({ page, slice })
@@ -228,6 +245,24 @@ function renderResults(providerLabel, normalised) {
   return `Answered by ${providerLabel} instead of the default web search.\n\n${lines.join('\n')}`
 }
 
+function withAnswerNotice(answer, notice) {
+  const results = answer?.result?.results
+  if (!Array.isArray(results)) return answer
+  return { ...answer, result: { ...answer.result, results: [notice, ...results] } }
+}
+
+async function fallThroughWithNotice(next, event, notice) {
+  return withAnswerNotice(await next(event), notice)
+}
+
+async function exaRefusalNotice($) {
+  const sessionId = await $.session.id()
+  const key = `${EXA_REFUSAL_PREFIX}${sessionId}`
+  if (await $.store.get(key)) return null
+  await $.store.set(key, true)
+  return 'Exa refused the API key; answered by the default web search instead.'
+}
+
 export const register = (on) => {
   on('tool.call', { tool: 'WebSearch' }, async ($, event, next) => {
     const query = typeof event.query === 'string' ? event.query : ''
@@ -235,6 +270,7 @@ export const register = (on) => {
 
     const providers = await providersFor($)
     const decision = route(query, providers)
+    let context7Notice = null
 
     // Rung 1 keeps precedence. For every other route, an explicitly recognised third-party
     // product gets its own documentation before any general web provider is attempted.
@@ -242,20 +278,26 @@ export const register = (on) => {
       const library = libraryFromQuestion(query)
       if (library) {
         const started = Date.now()
-        const answer = await queryContext7({
+        const context7 = await queryContext7({
           listTools: () => $.tool.list(),
           call: (server, tool, args) => $.mcp.call(server, tool, args),
-          sleep: (ms) => $.clock.sleep(ms),
+          sleep: (ms, options) => $.clock.sleep(ms, options),
+          now: () => $.clock.now(),
+          signal: next.signal,
         }, query, library)
-        if (answer) {
+        if (context7.answer) {
           return {
             result: {
               query,
-              results: [`Answered from ${library}'s documentation through context7 — no web search was performed.\n\n${answer}`],
+              results: [`Answered from ${library}'s documentation through context7 — no web search was performed.\n\n${context7.answer}`],
               durationSeconds: (Date.now() - started) / 1000,
               searchCount: 0,
             },
           }
+        }
+        context7Notice = `Context7 did not answer: ${context7.reason}.`
+        if (decision.provider !== 'brave' && decision.provider !== 'exa') {
+          return fallThroughWithNotice(next, event, context7Notice)
         }
       }
     }
@@ -267,10 +309,19 @@ export const register = (on) => {
     if (decision.provider === 'brave' || decision.provider === 'exa') {
       const started = Date.now()
       const isBrave = decision.provider === 'brave'
-      // ⚠ Two literal calls, not one conditional: the engine lists the variables a module reads
-      // and refuses `$.env.get(<expression>)` outright.
-      const apiKey = isBrave ? await $.env.get('BRAVE_API_KEY') : await $.env.get('EXA_API_KEY')
-      if (!apiKey) return next(event)
+      // ⚠ Literal `$.env.get` calls only: the engine lists the variables a module reads and refuses
+      // `$.env.get(<expression>)` outright. Brave is read under both names it is documented with.
+      let apiKey
+      if (isBrave) {
+        const brave = await $.env.get('BRAVE_API_KEY')
+        const braveSearch = await $.env.get('BRAVE_SEARCH_API_KEY')
+        apiKey = brave || braveSearch
+      } else {
+        apiKey = await $.env.get('EXA_API_KEY')
+      }
+      if (!apiKey) {
+        return context7Notice ? fallThroughWithNotice(next, event, context7Notice) : next(event)
+      }
       let rendered = null
       try {
         const search = isBrave ? searchBrave : searchExa
@@ -278,9 +329,21 @@ export const register = (on) => {
         rendered = renderResults(isBrave ? 'Brave' : 'Exa', normalised)
       } catch (error) {
         await $.ui.log(`deep-search: ${decision.provider} did not answer (${String(error?.classification ?? error?.message ?? 'unknown').slice(0, 60)}) — falling through to the web search`)
-        return next(event)
+        let answer = await next(event)
+        if (!isBrave && (error?.status === 401 || error?.status === 403)) {
+          const notice = await exaRefusalNotice($)
+          if (notice) answer = withAnswerNotice(answer, notice)
+        }
+        return context7Notice
+          ? withAnswerNotice(answer, context7Notice)
+          : answer
       }
-      if (!rendered) return next(event)
+      if (!rendered) {
+        return context7Notice
+          ? fallThroughWithNotice(next, event, context7Notice)
+          : next(event)
+      }
+      if (context7Notice) rendered = `${context7Notice}\n${rendered}`
       return {
         result: { query, results: [rendered], durationSeconds: (Date.now() - started) / 1000, searchCount: 1 },
       }

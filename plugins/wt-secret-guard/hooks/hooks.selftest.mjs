@@ -193,6 +193,28 @@ await test('short genuine credential assignments in command output remain scrubb
   assert.equal(result.text.includes('hunter2'), false, 'genuine short password reached the tool result');
   assert.match(result.text, /secret:assignment#/);
 });
+await test('source-looking prefixes do not exempt a later credential assignment on the same line', async () => {
+  const credentialValue = 'hunter2realcredential';
+  const mixedLines = [
+    `const harmless = true; secret=${credentialValue}`,
+    `let harmless = true; secret=${credentialValue}`,
+    `var harmless = true; secret=${credentialValue}`,
+    `type Harmless = string; secret=${credentialValue}`,
+    `interface Harmless {}; secret=${credentialValue}`,
+    `function harmless() {}; secret=${credentialValue}`,
+    `class Harmless {}; secret=${credentialValue}`,
+    `import harmless from 'harmless'; secret=${credentialValue}`,
+    `export const harmless = true; secret=${credentialValue}`,
+    `default function harmless() {}; secret=${credentialValue}`,
+    `+ const harmless = true; secret=${credentialValue}`,
+    `log(harmless); (secret=${credentialValue})`,
+    `log({ harmless: true }); { secret=${credentialValue} }`,
+  ];
+  for (const line of mixedLines) {
+    const result = await call('git diff', line);
+    assert.equal(result.text.includes(credentialValue), false, `credential survived mixed source line: ${line}`);
+  }
+});
 const exportedCredentials = [
   ['NAME_SECRET', 'export-secret-value'],
   ['NAME_TOKEN', 'export-token-value'],
@@ -449,6 +471,19 @@ await test('queue-operation targeting is independent of prompt origin and retrie
   assert.equal(sleeps, 2);
   assert.equal(getFile(transcriptPath).text.includes(raw), false);
   assert.match(getFile(transcriptPath).text, /secret:github-classic#/);
+});
+// Arbiter lock (2026-09-21): the narrowing is per STATEMENT, not per line. A declaration that follows a
+// semicolon is still source code and stays exempt — the first version of the fix detected it, which
+// makes the guard rewrite ordinary multi-statement lines (measured on the repo corpus: two such lines in
+// a test file). The value is built by concatenation so this file carries no literal credential.
+await test('a declaration after a semicolon stays exempt; a bare assignment after one is caught', async () => {
+  const value = 'hunter2' + 'realcredential9Xq';
+  const declaration = `const dir = '/tmp'; const token = '${value}'`;
+  const kept = await call('git diff', declaration);
+  assert.equal(kept.text, declaration, 'a declaration statement after a semicolon was rewritten');
+  const attack = `const harmless = true; token = '${value}'`;
+  const scrubbed = await call('git diff', attack);
+  assert.equal(scrubbed.text.includes(value), false, 'a bare assignment after a semicolon survived');
 });
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);

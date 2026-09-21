@@ -246,9 +246,9 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const unattributedCount = Array.isArray(snapshot.sessions)
     ? hidden.filter((session) => !projectOf(session)).reduce((count, session) => count + workCount(session), 0)
     : hidden.filter((row) => !projectOf(row)).length;
-  if (!allProjects) snapshot = Array.isArray(snapshot.sessions)
-    ? { ...snapshot, sessions: snapshot.sessions.filter(sameProject) }
-    : { ...snapshot, rows: (snapshot.rows || []).filter(sameProject) };
+  snapshot = Array.isArray(snapshot.sessions)
+    ? { ...snapshot, sessions: allProjects ? [...candidates].sort((left, right) => Number(sameProject(right)) - Number(sameProject(left))) : candidates.filter(sameProject) }
+    : { ...snapshot, rows: allProjects ? [...candidates].sort((left, right) => Number(sameProject(right)) - Number(sameProject(left))) : candidates.filter(sameProject) };
   const ageSeconds = (timestamp) => {
     const parsed = Date.parse(timestamp || '');
     if (!Number.isFinite(parsed)) return null;
@@ -468,7 +468,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         const reportFallback = stage.inspector?.href ? 'A report was recorded.' : '';
         const report = stage.inspector?.summary || reportFallback;
         const openDetail = selection === stage.id
-          ? renderOpenDetail(buttonKey, stage.label, () => actions.closeView(key), ...phaseCostDetail(pilot, stage.id), ...renderEvidence(report), Link && isValidLinkHref(stage.inspector?.href) ? linked({ href: stage.inspector.href, label: '[Open report]' }) : null)
+          ? node(Box, { key: `stage-detail-indent:${key}:${stage.id}`, paddingLeft: 2 }, renderOpenDetail(buttonKey, stage.label, () => actions.closeView(key), ...phaseCostDetail(pilot, stage.id), ...renderEvidence(report), Link && isValidLinkHref(stage.inspector?.href) ? linked({ href: stage.inspector.href, label: '[Open report]' }) : null))
           : null;
         return node(Box, { key: `spine-stage:${key}:${stage.id}`, flexDirection: 'column', paddingLeft: 1 },
           node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },

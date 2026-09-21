@@ -13,22 +13,17 @@ This verdict covers `src/detect.js`. Linux behavior was run in this worktree; ma
 | `BRAVE_API_KEY` / `BRAVE_SEARCH_API_KEY` | THROW: no. NAMED UNKNOWN: `brave.available: false` names both variables when absent. SILENT PLAUSIBLE VALUE: no. Linux-run. | THROW: no. NAMED UNKNOWN: `brave.available: false` names both variables when absent. SILENT PLAUSIBLE VALUE: no. Source-reviewed, not run on macOS. | THROW: no. NAMED UNKNOWN: `brave.available: false` names both variables when absent. SILENT PLAUSIBLE VALUE: no. Source-reviewed, not run on Windows. |
 | `EXA_API_KEY` | THROW: no. NAMED UNKNOWN: `exa.available: false` names the variable when absent. SILENT PLAUSIBLE VALUE: no. Linux-run. | THROW: no. NAMED UNKNOWN: `exa.available: false` names the variable when absent. SILENT PLAUSIBLE VALUE: no. Source-reviewed, not run on macOS. | THROW: no. NAMED UNKNOWN: `exa.available: false` names the variable when absent. SILENT PLAUSIBLE VALUE: no. Source-reviewed, not run on Windows. |
 
-## The twin this verdict does NOT cover — `hooks/hooks.js`
+## The hook twin — `hooks/hooks.js`
 
 A hooks module has no Node, so the hook cannot import `src/detect.js`: it carries its own detection
 against the engine's `$.fs` and `$.env` (`providersFor` and `remoteProviders`, `hooks/hooks.js`).
-That copy still reads `HOME` alone and still joins with `/`.
+That copy reads `HOME`, then `USERPROFILE`, then `HOMEDRIVE` plus `HOMEPATH`. It selects `\\` for a
+drive-letter or UNC home and `/` otherwise.
 
 | dependency, in the HOOK's own detector | Windows |
 | --- | --- |
-| the home directory | SILENTLY RETURNS A PLAUSIBLE VALUE: with `HOME` unset it reports the mirror as not installed, which reads exactly like an honest "you have not installed it" |
-| the mirror path | source-reviewed only; whether the engine's `$.fs` accepts a forward-slash path on Windows is NOT established here |
+| the home directory | THROW: no. NAMED UNKNOWN: absence names `HOME`, `USERPROFILE`, and `HOMEDRIVE` plus `HOMEPATH`. SILENT PLAUSIBLE VALUE: no. Source-reviewed and injection-tested, not run on Windows. |
+| the mirror path | A drive-letter or UNC home is joined with `\\`. The engine's `$.fs` behavior on Windows was source-reviewed and injected, never run on Windows. |
 
-⚠ **This is the dangerous third case, and it is stated rather than left to be discovered.** On a
-Windows machine with the mirror installed, the fast rung can report it absent and every question
-descends to the rung below — a degradation nobody sees, because every lower rung answers correctly.
-The two API keys and the fall-through are unaffected: no key is ever required, and a Windows
-adopter's searches still work.
-
-Carried on the card as its own item; fixing it needs the engine's behaviour on Windows read rather
-than assumed.
+The hook uses the engine's filesystem only to probe and read these paths. That filesystem behavior
+has not been executed on Windows, so this is a source-reviewed verdict rather than a runtime claim.

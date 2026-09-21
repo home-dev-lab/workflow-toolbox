@@ -2,6 +2,21 @@ function shellQuote(value) {
   return `'${String(value).replaceAll("'", `'"'"'`)}'`;
 }
 
+const OPENCODE_ENVIRONMENT = [
+  'PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME',
+  'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE',
+  'TERM', 'COLORTERM', 'SHELL', 'SystemRoot', 'COMSPEC', 'PATHEXT',
+];
+
+function childEnvironment(source) {
+  const env = {};
+  for (const name of OPENCODE_ENVIRONMENT) {
+    if (typeof source[name] === 'string') env[name] = source[name];
+  }
+  return { ...env, DEEP_SEARCH_WORKER: '1' };
+}
+
 // ⚠ The child carries DEEP_SEARCH_WORKER=1 so that a deep-search run cannot start another one.
 // Measured 2026-09-21: an agentic run pointed at the plugin's own directory read the CLI it found
 // there and re-ran it, and each child did the same — seven runs in two minutes. The marker is what
@@ -27,7 +42,7 @@ export function startOpencode(options, deps = {}) {
   const child = deps.spawn('/bin/sh', ['-c', command], {
     detached: true,
     stdio: 'ignore',
-    env: { ...(deps.env ?? process.env), DEEP_SEARCH_WORKER: '1' },
+    env: childEnvironment(deps.env ?? process.env),
   });
   child.unref?.();
   return { logPath, pid: child.pid };

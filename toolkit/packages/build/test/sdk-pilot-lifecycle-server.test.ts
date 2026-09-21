@@ -508,7 +508,8 @@ printf 'report\n' > "$report"
     const lifecycle = await realGitLifecycleReadyForReport()
     await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
 
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'nothing-delivered' }))).toContain('missing changed HEAD')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'nothing-delivered' })))
+      .toContain('for a gitignored delivery add "- Delivered artefact: `relative/path`" under ## Implemented')
   })
 
   it.each([

@@ -70,6 +70,7 @@ describe('shipped private plugins', () => {
       'object literal assignment expressions named like credentials pass through tool results',
       'function parameter defaults named like credentials pass through tool results',
       'short genuine credential assignments in command output remain scrubbed',
+      'source-looking prefixes do not exempt a later credential assignment on the same line',
       'exported credential assignments are scrubbed from tool results',
       'exported credential assignments are scrubbed from inbound messages',
       'indented and diff-prefixed exported credentials are scrubbed',

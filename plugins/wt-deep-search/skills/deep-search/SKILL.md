@@ -84,7 +84,7 @@ a run begun for prose has no claims to give you afterwards and says so rather th
 Pass `--shape structured` when an AGENT will consume the answer; leave it prose for a human.
 
 Measured 2026-09-21 on real runs: `deep-lite` answers in about 3 seconds and the run reports its own
-cost, $0.012. Read that figure; never quote one from a price list.
+cost, 0.012 USD. Read that figure; never quote one from a price list.
 
 ## The prompt changes shape with the mode — this is measured, not preferred
 
@@ -99,7 +99,7 @@ cost, $0.012. Read that figure; never quote one from a price list.
 - **There is no `effort` any more, and asking for one is refused.** It belonged to Exa's Research
   and Agent product, which is RETIRED — measured 2026-09-21, `POST https://api.exa.ai/research/v1`
   answers 410 `RESEARCH_RETIRED`. The deep rungs go through `/search` with a research `type`, in
-  ONE call. The old $5-per-run `auto` trap went with the product; `auto` as a search TYPE is
+  ONE call. The old 5-USD-per-run `auto` trap went with the product; `auto` as a search TYPE is
   ordinary and fine.
 - **Every run reports what it actually cost**, and the answer carries that figure.
 - Brave's free plan gives 1 request per second and 2000 per month, web search only — its
