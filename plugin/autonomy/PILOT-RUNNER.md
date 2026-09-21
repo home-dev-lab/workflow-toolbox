@@ -22,6 +22,11 @@ generated role plugin has a resolved language server. Context-mode 1.0.177 is lo
 profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
 other nine MCP tools do not enter their receipt.
 
+With `settingSources: []` still in force, each SDK session's initial prompt points to the root
+`CLAUDE.md` and `AGENTS.md` files that exist and tells the agent to read them before planning or
+changing code. The prompt carries absolute paths only, never guide contents, and names a shared
+symlink target once.
+
 | Role | Tools | LSP | Selected workflow-toolbox skills | Shipped command guards |
 | --- | --- | --- | --- | --- |
 | pilot | Read, Glob, Grep, LSP, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | optional, visible | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |

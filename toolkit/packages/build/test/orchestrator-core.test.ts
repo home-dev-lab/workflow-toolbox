@@ -533,7 +533,7 @@ describe('SDK orchestrator judge', () => {
       { id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship one\n' },
       { id: '2', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship two\n' },
     ]
-    const f = repoFixture(cards); const knowledgeBaseIndex = join(f.root, 'MEMORY.md'); writeFileSync(knowledgeBaseIndex, '# Memory\n'); let calls = 0; const prompts: string[] = []; let queryOptions: Record<string, unknown> = {}
+    const f = repoFixture(cards); const knowledgeBaseIndex = join(f.root, 'MEMORY.md'); writeFileSync(knowledgeBaseIndex, '# Memory\n'); writeFileSync(join(f.root, 'AGENTS.md'), '# Guide\n'); let calls = 0; const prompts: string[] = []; let queryOptions: Record<string, unknown> = {}
     type Server = { instance: { _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
     const judgment = '## Independent Review\nBoth diffs satisfy their cards.\n\n## Decisions\n1 accept; 2 reject.'
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: Record<string, unknown> }) => {
@@ -565,11 +565,12 @@ describe('SDK orchestrator judge', () => {
     expect(f.launches.every((launch) => JSON.stringify(launch).includes(JSON.stringify(plugins)))).toBe(true)
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
     expect(prompts).toEqual([
-      `KNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
+      `${join(f.root, 'AGENTS.md')} is the repository's contributor guide; read it before planning or changing code.\n\nKNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
       'Judge card 2: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
       'Every card is decided: write_judgment.',
     ])
     expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: knowledgeBaseIndex })).toEqual({ behavior: 'allow' })
+    expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: join(f.root, 'AGENTS.md') })).toEqual({ behavior: 'allow' })
     writeFileSync(join(f.root, 'a-fiche.md'), 'fiche\n')
     expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: join(f.root, 'a-fiche.md') })).toEqual({ behavior: 'allow' })
     expect(result.rows.map((row: { decision: string, reason: string }) => [row.decision, row.reason])).toEqual([['accepted', 'accept reason'], ['rejected', 'reject reason']])

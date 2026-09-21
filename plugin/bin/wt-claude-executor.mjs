@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './lib/sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
 
 const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
@@ -53,7 +53,7 @@ async function worker(options) {
       abortController,
       env: { ...process.env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
     }, sdkRole)
-    const stream = query({ prompt: launch.prompt, options: queryOptions })
+    const stream = query({ prompt: withRepositoryGuide(options.dir, launch.prompt), options: queryOptions })
     for await (const message of stream) {
       if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) throw new Error(`SDK executor initialization receipt never arrived: the first message was ${message.type}/${message.subtype ?? 'none'}`)
       if (message.type === 'system' && message.subtype === 'init') {

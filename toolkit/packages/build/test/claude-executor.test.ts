@@ -46,7 +46,7 @@ function fixture() {
   writeFileSync(join(sdk, 'index.cjs'), `
 const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
-  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE})}));
+  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE})}));
   const mode=process.env.FAKE_MODE;
   if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
   else if(mode==='first-result') yield {type:'result',subtype:'success',is_error:false,result:'too early'};
@@ -158,6 +158,7 @@ describe('Claude SDK executor', () => {
   it('prints a detached pid, loads the guard, writes only the named report, and ends its log with EXIT=0', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.nonce.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'run.log'); const receipt = join(f.root, 'receipt.json'); const outside = join(f.root, 'outside.txt')
     writeFileSync(brief, `Implement the task.\n\nWrite the report to \`${report}\`.\n`)
+    writeFileSync(join(f.worktree, 'AGENTS.md'), '# Guide\n')
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: outside } })
     expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+\nlog=.+\n$/); expect(result.stderr).toBe('')
     waitFor(report); waitFor(receipt)
@@ -166,8 +167,10 @@ describe('Claude SDK executor', () => {
     waitFor(`${log}.usage.json`)
     expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
     expect(existsSync(outside)).toBe(false)
-    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
-    expect(JSON.parse(readFileSync(receipt, 'utf8')).plugins[0].path).toContain(join('hooks-modules', 'pilot-guard'))
+    const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
+    expect(sdkReceipt).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
+    expect(sdkReceipt.prompt).toContain(`${join(f.worktree, 'AGENTS.md')} is the repository's contributor guide; read it before planning or changing code.`)
+    expect(sdkReceipt.plugins[0].path).toContain(join('hooks-modules', 'pilot-guard'))
     if (process.env.WT_EXECUTOR_E2E_OUTPUT === 'true') process.stdout.write(`CLAUDE_EXECUTOR_E2E ${result.stdout.trim()} EXIT=0 report=${readFileSync(report, 'utf8').trim()} outside=${existsSync(outside)}\n`)
   })
 
