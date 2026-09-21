@@ -15,7 +15,7 @@ import { resolveAgentSdkRequire } from '../../../../plugin/bin/lib/sdk-resolutio
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+import { PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -27,6 +27,7 @@ const CONTEXT_MODE_TOOLS = {
   insight: `${CONTEXT_PREFIX}ctx_insight`, purge: `${CONTEXT_PREFIX}ctx_purge`, search: `${CONTEXT_PREFIX}ctx_search`, stats: `${CONTEXT_PREFIX}ctx_stats`,
 }
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
+const FIXED_CRITIC_ROUNDS = 3
 prepareContextModeFixture()
 const resolveContextModeRoot = (env: NodeJS.ProcessEnv) => env.WT_CONTEXT_MODE_ROOT || join(env.CLAUDE_CONFIG_DIR || join(env.HOME ?? '', '.claude'), 'plugins', 'cache', 'context-mode', 'context-mode', '1.0.177')
 
@@ -720,7 +721,7 @@ describe('SDK pilot runner', () => {
 
   it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {
     const f = fixture(); let heads = 0
-    const reason = `plan not approved after ${MAX_CRITIC_ROUNDS} critic rounds`
+    const reason = `plan not approved after ${FIXED_CRITIC_ROUNDS} critic rounds`
     writeFileSync(f.cardFile, 'Route: FULL\n## Definition of done\n- exercise partial completion\n')
     const launcher = join(f.root, 'launcher.mjs')
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
@@ -734,7 +735,7 @@ describe('SDK pilot runner', () => {
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
       await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
-      for (let round = 1; round <= MAX_CRITIC_ROUNDS; round += 1) {
+      for (let round = 1; round <= FIXED_CRITIC_ROUNDS; round += 1) {
         await artifact({ kind: 'plan', content: plan }); await transition({ phase: 'plan', tool_use_id: `plan-${round}` })
         await artifact({ kind: 'critic-brief', content: `critic ${round}` }); await run({ kind: 'lane', phase: 'critic', timeout: 1 })
         await transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
@@ -751,7 +752,7 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
-    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } } })
+    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } } })
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toEqual({
       version: 1,
       cardId: '1',

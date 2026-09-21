@@ -30,6 +30,34 @@ function terminalExit(content) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(content)?.[1] ?? null
 }
 
+function reportFinding(line) {
+  if (!['-', '*', '+'].includes(line[0]) || line[1] !== ' ' || !line.slice(2).trim()) return null
+  return line.slice(2).trim()
+}
+
+function combinedCriticReport(reports) {
+  const parsed = reports.map((content) => {
+    const outcome = /^VERDICT:\s*(approved|changes-requested)\s*$/mi.exec(content)?.[1]
+    const findingsText = /^FINDINGS:\s*$([\s\S]*)/mi.exec(content)?.[1] ?? ''
+    const lines = findingsText.split(/\r?\n/)
+    const sectionEnd = lines.findIndex((line) => /^#/.test(line))
+    const findings = (sectionEnd < 0 ? lines : lines.slice(0, sectionEnd)).map(reportFinding).filter(Boolean)
+    return { outcome, findings }
+  })
+  if (parsed.some((report) => !report.outcome || report.outcome === 'changes-requested' && report.findings.length === 0)) return null
+  const findings = [...new Set(parsed.flatMap((report) => report.findings))]
+  const outcome = parsed.every((report) => report.outcome === 'approved') ? 'approved' : 'changes-requested'
+  const digest = reports.map((content) => /^plan sha256:\s*[a-f0-9]{64}\s*$/mi.exec(content)?.[0]).find(Boolean)
+  const findingLines = findings.map((finding) => `- ${finding}`).join('\n')
+  return `VERDICT: ${outcome}\nFINDINGS:\n${findingLines}${findings.length ? '\n' : ''}${digest ?? ''}\n`
+}
+
+function criticLaneLaunchIdentity(laneId, executorEnv) {
+  if (!laneId) return { suffix: '', noncePart: '', slot: null, env: executorEnv }
+  const slot = `critic-${laneId}`
+  return { suffix: `-${laneId}`, noncePart: `.${laneId}`, slot, env: { ...executorEnv, WT_LANE_SUPERVISION_SLOT: slot } }
+}
+
 export function regularFile(file) {
   try {
     const stat = fs.lstatSync(file)
@@ -179,7 +207,31 @@ export function createLifecycleLaunch({
     return null
   }
 
-  async function run(args) {
+  async function runParallelCritics(args) {
+    const laneIds = ['A', 'B']
+    const results = await Promise.all(laneIds.map((criticLane) => runSingle({ ...args, criticLane })))
+    const laneLogs = laneIds.map((criticLane) => path.join(laneDir, `critic-${criticLane}-run.log`))
+    const laneReports = laneIds.map((criticLane) => path.join(laneDir, `critic-${criticLane}-report.md`))
+    const receipts = laneLogs.map(readAttestation)
+    if (receipts.some((receipt) => !receipt) || laneReports.some((report) => !regularFile(report))) {
+      return results.find((result) => result !== 'lane critic EXIT=0') ?? 'lane critic EXIT=missing'
+    }
+    const failed = receipts.find((receipt) => receipt.exit !== '0')
+    const exit = failed?.exit ?? '0'
+    const canonicalLog = path.join(laneDir, 'critic-run.log')
+    const canonicalReport = path.join(laneDir, 'critic-report.md')
+    const laneLogSections = laneIds.map((laneId, index) => `LANE=${laneId}\n${readRegularFile(laneLogs[index])}`)
+    writeRegularFile(canonicalLog, `${laneLogSections.join('\n')}\nEXIT=${exit}\n`)
+    const combinedReport = combinedCriticReport(laneReports.map(readRegularFile))
+    if (!combinedReport) return refusal('critic->next', 'valid verdict blocks from both critic lanes', canonicalReport)
+    writeRegularFile(canonicalReport, combinedReport)
+    attest(canonicalReport)
+    attest(canonicalLog, { group: 'worker-owned' })
+    state.lastLaneMtime = Math.max(...receipts.map((receipt) => receipt.mtime))
+    return `lane critic EXIT=${exit}`
+  }
+
+  async function runSingle(args) {
     try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     if (!args || typeof args !== 'object') return refusal(`${state.phase}->next`, 'run arguments object', laneDir)
     if (args.kind === 'lane') {
@@ -187,17 +239,18 @@ export function createLifecycleLaunch({
         return refusal(`${state.phase}->next`, 'lane for current admitted phase', path.join(laneDir, `${args.phase ?? 'unknown'}-run.log`))
       }
       const phase = args.phase
-      const brief = path.join(laneDir, `${phase}-brief.md`)
+      const identity = criticLaneLaunchIdentity(args.criticLane, executorEnv)
+      const brief = path.join(laneDir, `${phase}${identity.suffix}-brief.md`)
       if (!laneBriefContexts.has(phase)) {
         return refusal(`${state.phase}->next`, 'brief not written through write_artifact', brief)
       }
-      const canonicalLog = path.join(laneDir, `${phase}-run.log`)
-      const canonicalReport = path.join(laneDir, `${phase}-report.md`)
+      const canonicalLog = path.join(laneDir, `${phase}${identity.suffix}-run.log`)
+      const canonicalReport = path.join(laneDir, `${phase}${identity.suffix}-report.md`)
       const timeout = Math.min(args.timeout ?? 5400, 5400)
       const launchedAt = now()
       const nonce = randomUUID()
-      const log = path.join(laneDir, `${phase}-run.${nonce}.log`)
-      const report = path.join(laneDir, `${phase}-report.${nonce}.md`)
+      const log = path.join(laneDir, `${phase}-run${identity.noncePart}.${nonce}.log`)
+      const report = path.join(laneDir, `${phase}-report${identity.noncePart}.${nonce}.md`)
       if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
         return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
       }
@@ -233,7 +286,7 @@ export function createLifecycleLaunch({
             '..',
             executor === 'claude-sdk' ? 'wt-claude-executor.mjs' : 'wt-lane.mjs',
           )
-          laneRecord = recordLaneStart({ phase, model, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json` })
+          laneRecord = recordLaneStart({ phase, model, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
           launch = await launchProcessWithOutput(
             process.execPath,
             [
@@ -255,7 +308,7 @@ export function createLifecycleLaunch({
               cwd: root,
               stdoutPath: path.join(snapshot, 'launcher.stdout'),
               stderrPath: path.join(snapshot, 'launcher.stderr'),
-              env: executorEnv,
+              env: identity.env,
             },
           )
         } catch (error) {
@@ -274,8 +327,8 @@ export function createLifecycleLaunch({
         })
         if (!logEntry) {
           const runId = /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null
-          const supervisionFile = runId ? supervisionPaths(root, runId).record : null
-          const supervisionPointer = runId ? supervisionPaths(root).pointer : null
+          const supervisionFile = runId ? supervisionPaths(root, runId, identity.slot).record : null
+          const supervisionPointer = runId ? supervisionPaths(root, null, identity.slot).pointer : null
           let status = supervisionFile ? readRegularFile(supervisionFile) : null
           if (runId) {
             let pointerRunId = null
@@ -343,12 +396,12 @@ export function createLifecycleLaunch({
           const runId = /^run=(\d+-\d+)$/m.exec(launch.stdout)?.[1] ?? null
           if (runId) {
             let record = null
-            try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId).record)) } catch {}
+            try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId, identity.slot).record)) } catch {}
             let verdict = classifyLane(record, { platform: lanePlatform })
             const settleDeadline = Date.now() + 1_000
             while (!['terminal', 'gone'].includes(verdict.status) && Date.now() < settleDeadline) {
               await new Promise((resolve) => setTimeout(resolve, lanePollMs))
-              try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId).record)) } catch {}
+              try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId, identity.slot).record)) } catch {}
               verdict = classifyLane(record, { platform: lanePlatform })
             }
             if (!['terminal', 'gone'].includes(verdict.status)) {
@@ -357,7 +410,7 @@ export function createLifecycleLaunch({
             }
           }
         }
-        recordLaneEnd(laneRecord, now())
+        recordLaneEnd(laneRecord, now(), logEntry?.exit)
         const reportStat = regularFile(report)
         if (!logEntry || !regularFile(log) || !reportStat) return `lane ${phase} EXIT=missing`
         if (reportStat.size > MAX_LANE_REPORT_BYTES) {
@@ -386,7 +439,7 @@ export function createLifecycleLaunch({
         fs.rmSync(brief, { force: true })
         return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
       } finally {
-        if (laneRecord?.ended_at === null) recordLaneEnd(laneRecord, now())
+        if (laneRecord?.ended_at === null) recordLaneEnd(laneRecord, now(), 'missing')
         if (snapshot) fs.rmSync(snapshot, { recursive: true, force: true })
       }
     }
@@ -453,6 +506,11 @@ export function createLifecycleLaunch({
       )
     }
     return refusal(`${state.phase}->next`, 'run kind lane|gate|inspect|control', laneDir)
+  }
+
+  function run(args) {
+    const parallelCritic = args?.kind === 'lane' && args.phase === 'critic' && state.priorCriticRounds.length === 0 && !args.criticLane
+    return parallelCritic ? runParallelCritics(args) : runSingle(args)
   }
 
   return { audit, evidencePath, laneEvidence, run, snapshotEvidence, verifySnapshot }
