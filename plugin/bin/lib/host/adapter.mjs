@@ -9,8 +9,9 @@ import * as win32 from './win32.mjs'
 const implementations = { aix: posix, darwin, freebsd: posix, linux, sunos: posix, win32 }
 const evidenceLabels = { linux: 'ubuntu-latest', darwin: 'macos-latest', win32: 'windows-latest' }
 
-export function createHostAdapter({ platform = process.platform, invoke, evidenceRoot, mutate = (value) => value } = {}) {
+export function createHostAdapter({ platform = process.platform, invoke, evidenceRoot, mutate = (value) => value, unavailableFallback = false } = {}) {
   const implementation = implementations[platform]
+  if (!implementation && unavailableFallback) return unavailableAdapter(platform, `host adapter unavailable on ${platform}`)
   if (!implementation) throw new Error(`host adapter unavailable on ${platform}`)
   const captured = evidenceRoot ? readEvidence(platform, evidenceRoot, mutate) : null
   const invocation = captured ? evidenceInvocation(implementation, captured) : invoke ?? realInvocation()
@@ -50,15 +51,12 @@ function realInvocation() {
 
 // A platform with no implementation degrades to a named "unavailable" adapter instead of throwing at import:
 // every consumer already turns a throwing read into a legible "unavailable on this platform".
-export function createHostAdapterOrUnavailable(options = {}) {
-  try { return { available: true, ...createHostAdapter(options) } } catch (error) {
-    const platform = options.platform ?? process.platform
-    const unavailable = () => { throw new Error(error.message) }
-    return { available: false, platform, reason: error.message, readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason: error.message }) }
-  }
+function unavailableAdapter(platform, reason) {
+  const unavailable = () => { throw new Error(reason) }
+  return { available: false, platform, reason, readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason }) }
 }
 
-export const hostAdapter = createHostAdapterOrUnavailable()
+export const hostAdapter = createHostAdapter({ unavailableFallback: true })
 
 function readEvidence(platform, evidenceRoot, mutate) {
   const directory = join(evidenceRoot, evidenceLabels[platform])
