@@ -1260,6 +1260,31 @@ printf 'report\n' > "$report"
     expect(brief).toContain('optional wording, style, or polish')
     expect(brief).toContain('Blocking example:')
     expect(brief).toContain('Non-blocking example:')
+    expect(brief).toContain('## Coverage checklist')
+    expect(brief).toContain("the plan's decisions")
+    expect(brief).toContain('each introduced file, field, and claim and its downstream consumers')
+    expect(brief).toContain("the repository's mandatory gates")
+  })
+
+  it.each([
+    ['unions exact-deduplicated findings', [['changes-requested', ['[blocking] shared', '[blocking] alpha']], ['changes-requested', ['[blocking] shared', '[blocking] beta']]], 'changes-requested', ['[blocking] shared', '[blocking] alpha', '[blocking] beta']],
+    ['requests changes when only one critic blocks', [['approved', []], ['changes-requested', ['[blocking] one lane blocks']]], 'changes-requested', ['[blocking] one lane blocks']],
+    ['approves only when both critics approve', [['approved', []], ['approved', []]], 'approved', []],
+  ] as const)('runs two round-1 critics in parallel and %s', async (_name, reports, outcome, findings) => {
+    const lifecycle = await lifecycleAtCritic(dualCriticLauncher(reports))
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }))).toBe('lane critic EXIT=0')
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome, findings, tool_use_id: 'critic' })))
+      .toBe(`accepted phase=${outcome === 'approved' ? 'tdd' : 'plan'}`)
+    const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.lanes).toMatchObject([
+      { phase: 'critic', round: 1, lane_id: 'A', state: 'completed' },
+      { phase: 'critic', round: 1, lane_id: 'B', state: 'completed' },
+    ])
+    expect(Math.max(...timeline.lanes.map((lane: { started_at: number }) => lane.started_at)))
+      .toBeLessThanOrEqual(Math.min(...timeline.lanes.map((lane: { ended_at: number }) => lane.ended_at)))
+    expect(new Set(timeline.lanes.map((lane: { usage_file: string }) => lane.usage_file)).size).toBe(2)
+    expect(existsSync(join(lifecycle.root, '.lane', 'critic-A-report.md'))).toBe(true)
+    expect(existsSync(join(lifecycle.root, '.lane', 'critic-B-report.md'))).toBe(true)
   })
 
   it.each([
@@ -1308,7 +1333,7 @@ printf 'report\n' > "$report"
     const second = ['- [non-blocking] optional rename']
     const lifecycle = await lifecycleAtCritic(criticSequenceLauncher([first, second]))
     await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
-    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: first.map((line) => line.slice(2)), tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: [...new Set(first.map((line) => line.slice(2)))], tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
     const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
     await lifecycle.artifact({ kind: 'plan', content: plan })
     await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })
@@ -1752,7 +1777,10 @@ function criticReportLauncher(lines: string[]) {
   return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; writeFileSync(report,${JSON.stringify(report)}+'plan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function criticSequenceLauncher(rounds: string[][]) {
-  return launcher(`import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const countFile=join(root,'.lane','critic-sequence-count'); const count=existsSync(countFile)?Number(readFileSync(countFile,'utf8')):0; const rounds=${JSON.stringify(rounds)}; writeFileSync(countFile,String(count+1)); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n'+rounds[count].join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
+  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const round=(brief.match(/^### Round /gm)||[]).length; const rounds=${JSON.stringify(rounds)}; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n'+rounds[round].join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
+}
+function dualCriticLauncher(reports: readonly (readonly [string, readonly string[]])[]) {
+  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const index=process.env.WT_LANE_SUPERVISION_SLOT.endsWith('-A')?0:1; const configured=${JSON.stringify(reports)}[index]; writeFileSync(report,'VERDICT: '+configured[0]+'\\nFINDINGS:\\n'+configured[1].map((finding)=>'- '+finding).join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function criticOversizeLauncher() {
   return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'x'.repeat(262145)); appendFileSync(log,'done\\nEXIT=0\\n')")

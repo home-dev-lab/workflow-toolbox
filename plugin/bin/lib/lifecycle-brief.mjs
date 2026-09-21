@@ -1,9 +1,5 @@
 // Owns lifecycle lane brief composition; it must not inspect or mutate lifecycle state.
-import { createHash } from 'node:crypto'
-
 const INDEPENDENT_ROLES = { critic: 'critic', review: 'reviewer', refutation: 'refuter' }
-
-const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 
 function fenced(content) {
   const longest = Math.max(3, ...([...content.matchAll(/`+/g)].map((match) => match[0].length + 1)))
@@ -18,6 +14,12 @@ export function independentBrief({ phase, context, artifacts, reportPath, discov
 Severity policy:
 - \`[blocking]\` covers every correctness defect, unmet DoD item, security or data-loss risk, gate or test gap, and any finding that would change what gets built. Blocking example: \`[blocking] The plan omits the required rollback test.\`
 - \`[non-blocking]\` covers only optional wording, style, or polish that changes nothing the DoD checks. Non-blocking example: \`[non-blocking] Rephrase the introduction for brevity.\`
+
+## Coverage checklist
+
+- Check the plan's decisions and rejected alternatives.
+- Check each introduced file, field, and claim and its downstream consumers.
+- Check the repository's mandatory gates and the plan's proof for each one.
 `
     : ''
   const priorRoundsSection = phase === 'critic' && priorRounds.length > 0

@@ -44,16 +44,18 @@ pair. Critic reports quote the plan SHA-256. On FULL, the tdd brief carries the 
 | --- | --- |
 | discovery | Inspect intake and relevant worktree sources, then transition with `record` of that discovery and the runner's frozen route; LITE reaches tdd, FULL plan. |
 | plan | Write a plan with ADR decision/rejected, top-level task DoDs, Gates, and `## Acceptance`. Quote every folded card Definition-of-done criterion exactly and follow each with `Proof:` naming a task, test, e2e, test file, or gate; then transition. |
-| critic | Write/run the brief, then transition from its report: approved -> tdd; changes-requested -> plan. A fourth changes-requested routes to a partial report. |
+| critic | Write/run the brief; round 1 runs critics A and B together and unions exact-deduplicated findings. Then transition: approved -> tdd; changes-requested -> plan. |
 | tdd or harden | Write the brief, run the lane, then transition to verify. |
 | verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
-| review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
-| refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. A fourth changes-requested review/refutation round routes to a partial report. |
+| review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. |
+| refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. |
 | report | Write/transition it; non-proven DoD or unrun E2E makes archive partial. |
 
 Outcomes/findings come from the lane report and declarations must match it. Review/refutation
-changes-requested outcomes need findings; they share three passes. At a critic/review/refutation bound,
-the server routes to a partial report. Produce evidence named by a refusal; do not retry the denied call.
+changes-requested outcomes need findings. Both loops have three fixed passes, then continue while blockers
+decrease, allowing one plateau, stopping on recurrence or at six. Recurrence is mechanically limited to
+case/whitespace-insensitive exact text; narrowed wording is not recurrence. State that limit in a partial
+report. Produce evidence named by a refusal; do not retry the denied call.
 The critic accepts routed L4, not bare deferral. One blocking `CONTEST routed card <id>:` gets one plan
 round. Do it (runner closes the card) or maintain cited L4; then report disagreement to the order-giver, never loop.
 

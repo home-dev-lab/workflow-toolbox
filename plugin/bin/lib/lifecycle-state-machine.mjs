@@ -16,10 +16,10 @@ import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
 export const AWAITING_FIDELITY_RESULT = 'accepted phase=awaiting_fidelity'
-// Owner rule: a loop gets three passes in all, never a fourth. The third refusal ends the run as a partial
-// report; whoever reads that report escalates. One number for both loops, so they cannot drift apart again.
-export const MAX_CRITIC_ROUNDS = 3
-export const MAX_REVIEW_ROUNDS = 3
+const FIXED_CRITIC_ROUNDS = 3
+const FIXED_REVIEW_ROUNDS = 3
+export const MAX_CRITIC_ROUNDS = 6
+export const MAX_REVIEW_ROUNDS = 6
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
 
 export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
@@ -323,6 +323,32 @@ function verdictFromReport(phase, content) {
   return { outcome: match[1], findings, severities }
 }
 
+const normalizedFinding = (finding) => finding.toLowerCase().replace(/\s+/g, ' ').trim()
+function adaptiveRoundDecision(rounds, fixedRounds, maxRounds, plateauUsed) {
+  const latest = rounds.at(-1)
+  if (rounds.length < fixedRounds) return { continue: true, plateauUsed }
+  if (rounds.length >= maxRounds) return { continue: false, plateauUsed }
+  const earlier = new Set(rounds.slice(0, -1).flatMap((round) => round.findings.map(normalizedFinding)))
+  // Only a blocking finding can recur: a restated nit changes nothing the DoD checks.
+  if (latest.blockingFindings.some((finding) => earlier.has(normalizedFinding(finding)))) return { continue: false, plateauUsed }
+  const previousCount = rounds.at(-2).blockingFindings.length
+  const latestCount = latest.blockingFindings.length
+  if (latestCount < previousCount) return { continue: true, plateauUsed }
+  if (latestCount === previousCount && !plateauUsed) return { continue: true, plateauUsed: true }
+  return { continue: false, plateauUsed }
+}
+
+function initialLifecycleState() {
+  return {
+    phase: 'discovery', partial: null, deferred: null, pilotReportDigest: null,
+    planRound: 0, priorCriticRounds: [], criticPlateauUsed: false, nonBlockingFindings: [],
+    reviewRound: 0, priorReviewRounds: [], reviewPlateauUsed: false,
+    handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null,
+    resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
+    pendingStop: null, stopped: false,
+  }
+}
+
 function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop }) {
   const stoppedRefusal = () => `edge refused: ${state.phase}->next; ${state.partial?.reason ?? 'runner'} already stopped the lifecycle: ${laneDir}`
   const stopAtBoundary = (event) => {
@@ -483,24 +509,7 @@ export function createLifecycleStateMachine({
     `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, models: frozenModels, base: constructionBase }, null, 2)}\n`,
     { flag: 'wx' },
   )
-  let state = {
-    phase: 'discovery',
-    partial: null,
-    deferred: null,
-    pilotReportDigest: null,
-    planRound: 0,
-    priorCriticRounds: [],
-    nonBlockingFindings: [],
-    reviewRound: 0,
-    handled: new Map(),
-    lastLaneMtime: 0,
-    verifySnapshot: null,
-    pendingControl: null,
-    resolvedRoutedCards: new Set(),
-    report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
-    pendingStop: null,
-    stopped: false,
-  }
+  const state = initialLifecycleState()
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
   const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
@@ -601,14 +610,16 @@ export function createLifecycleStateMachine({
     lanePlatform,
     gateRunner,
     now,
-    recordLaneStart: ({ phase, model, startedAt, usageFile }) => {
-      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, executor, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
+    recordLaneStart: ({ phase, model, startedAt, usageFile, laneId }) => {
+      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile }
       timeline.lanes.push(record)
       persistTimeline()
       return record
     },
-    recordLaneEnd: (record, endedAt) => {
+    recordLaneEnd: (record, endedAt, exitCode) => {
       record.ended_at = endedAt
+      record.exit_code = exitCode ?? 'missing'
+      record.state = record.exit_code === '0' ? 'completed' : 'failed'
       persistTimeline()
     },
   })
@@ -721,12 +732,18 @@ export function createLifecycleStateMachine({
         if (!reportContent.includes(digest)) {
           return refusal('critic->tdd', 'plan sha256', path.join(laneDir, 'critic-report.md'))
         }
-        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings] })
+        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings: [] })
         next = 'tdd'
       } else if (verdict.outcome === 'changes-requested') {
-        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings] })
+        const blockingFindings = verdict.findings.filter((finding, index) => {
+          const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(finding)?.[1]
+          return (!id || !repeatedContests.has(id)) && verdict.severities[index] !== 'non-blocking'
+        })
+        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings })
         state.planRound += 1
-        if (state.planRound < MAX_CRITIC_ROUNDS) next = 'plan'
+        const decision = adaptiveRoundDecision(state.priorCriticRounds, FIXED_CRITIC_ROUNDS, MAX_CRITIC_ROUNDS, state.criticPlateauUsed)
+        state.criticPlateauUsed = decision.plateauUsed
+        if (decision.continue) next = 'plan'
         else {
           const reason = `plan not approved after ${state.planRound} critic rounds`
           state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
@@ -775,9 +792,17 @@ export function createLifecycleStateMachine({
       if (verdict.outcome === 'changes-requested' && verdict.findings.length === 0) {
         return refusal(`${state.phase}->harden`, 'findings', path.join(laneDir, `${state.phase}-report.md`))
       }
-      if (verdict.outcome === 'changes-requested' && ++state.reviewRound >= MAX_REVIEW_ROUNDS) {
+      if (verdict.outcome === 'changes-requested') {
+        state.reviewRound += 1
+        state.priorReviewRounds.push({ round: state.reviewRound, findings: [...verdict.findings], blockingFindings: [...verdict.findings] })
+      }
+      const reviewDecision = verdict.outcome === 'changes-requested'
+        ? adaptiveRoundDecision(state.priorReviewRounds, FIXED_REVIEW_ROUNDS, MAX_REVIEW_ROUNDS, state.reviewPlateauUsed)
+        : null
+      if (reviewDecision) state.reviewPlateauUsed = reviewDecision.plateauUsed
+      if (reviewDecision && !reviewDecision.continue) {
         const phase = state.phase
-        const reason = `${phase} still requests changes after ${MAX_REVIEW_ROUNDS - 1} harden rounds`
+        const reason = `${phase} still requests changes after ${state.reviewRound - 1} harden rounds`
         state.partial = { phase, round: state.reviewRound, reason, findings: verdict.findings }
         next = 'report'
         resultDetail = ` (round bound reached: partial run, ${reason})`
