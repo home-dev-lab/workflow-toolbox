@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { createHostAdapterOrUnavailable } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
@@ -77,8 +79,7 @@ describe('second-opinion advisor', () => {
     expect(adapter.readProcessSnapshot).toHaveBeenCalledOnce()
   })
 
-  it('degrades to a named "unavailable" on a platform with no host implementation instead of throwing', async () => {
-    const { createHostAdapterOrUnavailable } = await import('../../../../plugin/bin/lib/host/adapter.mjs')
+  it('degrades to a named "unavailable" on a platform with no host implementation instead of throwing', () => {
     const adapter = createHostAdapterOrUnavailable({ platform: 'openbsd' })
     expect(adapter.available).toBe(false)
     expect(listProcessTable(adapter)).toEqual({ supported: false, processes: [], reason: 'process discovery unavailable on this platform' })
