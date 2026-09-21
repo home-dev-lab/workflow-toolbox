@@ -954,6 +954,18 @@ await test('[E-2] directory scans stop at the configured cap and record the capp
   cappedDiscoverySnapshot = snapshot;
 });
 
+await test('[partial discovery] worktrees without lane metadata are not reported as unreadable running work', async () => {
+  const isolated = join(root, 'worktree-without-lane');
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now };
+  mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true });
+  mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true });
+  mkdirSync(isolatedPaths.livenessDir, { recursive: true });
+  mkdirSync(join(isolatedPaths.suiteRoot, 'worktrees', 'historical-worktree'), { recursive: true });
+  const snapshot = await readSnapshot({ process: processCapability }, isolatedPaths);
+  assert.equal(snapshot.discovery, 'available');
+  assert.deepEqual(snapshot.unreadableScans, []);
+});
+
 await test('[collector budget] detailed worktree reads stop at their own cap and name the partial scan', async () => {
   const isolated = join(root, 'worktree-detail-cap');
   const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now, worktreeDetailCap: 3 };
@@ -1421,7 +1433,7 @@ await test('[project scope DoD 4] absent root options resolve from session confi
 await test('[E-2 pane] capped discovery renders one certainty warning instead of an empty-state claim', async () => {
   const { tree } = await renderSnapshot(cappedDiscoverySnapshot);
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
-  assert(text.includes('Some running work could not be listed'));
+  assert(text.includes(`Some running work could not be listed: scan cap reached: ${cappedDiscoverySnapshot.cappedScans[0]}`));
   assert(!text.includes('Nothing running in the background.'));
 });
 await test('[allowed roots pane] a refused live actor explains reduced certainty without exposing its path', async () => {
@@ -1432,6 +1444,39 @@ await test('[allowed roots pane] a refused live actor explains reduced certainty
   assert(text.includes('Some running work could not be listed'));
   assert(!text.includes(refusedPath));
   assert(!text.includes('Nothing running in the background.'));
+});
+
+await test('[critic lanes] two round-1 critic records render as indented stage children before next work', async () => {
+  const criticLanes = ['A', 'B'].map((laneId) => ({
+    id: `lifecycle-lane:/fixture/critic:${laneId}`,
+    cardId: '1862698281071544151',
+    kind: 'external',
+    label: `Critic ${laneId}`,
+    phase: 'critic',
+    phaseAvailability: 'lifecycle lane',
+    outcome: 'running',
+    model: 'openai/gpt-5.6-sol',
+    elapsed: '1 min',
+    showModel: true,
+  }));
+  const pilot = {
+    id: '1862698281071544151', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', phase: 'critic', phaseSource: 'lifecycle', route: 'FULL',
+    phaseStates: { discovery: 'done', plan: 'done', critic: 'running', tdd: 'not started', verify: 'not started', review: 'not started', refutation: 'not started', harden: 'not started', report: 'not started' },
+    phaseRounds: { plan: 1, critic: 1 }, phaseCosts: { critic: { usd: 0.5, priceLabel: 'API price' } }, outcome: 'running', gates: {}, review: {}, inspectors: {}, lanes: criticLanes, sources: {},
+  };
+  const snapshot = { discovery: 'available', rows: [pilot], sessions: [{ id: 'session:critic', project: 'critic', cards: [{ id: pilot.id, title: 'Parallel critics', actors: [pilot] }], actors: [] }], services: { count: 0, items: [] }, helpers: { count: 0, items: [] }, collectedAt: paths.now };
+  const { tree } = await renderSnapshot(snapshot);
+  const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
+  const criticStage = text.indexOf('[▶ Critic · round 1 (max 6) ●]');
+  const criticA = text.indexOf('[▶ Critic A]');
+  const criticB = text.indexOf('[▶ Critic B]');
+  const next = text.indexOf('next: TDD');
+  assert(criticStage >= 0 && criticStage < criticA && criticA < criticB && criticB < next, text);
+  for (const lane of criticLanes) {
+    const laneRow = descendants(tree, (item) => item.name === 'Box' && item.props.key === lane.id)[0];
+    assert.equal(laneRow?.props.paddingLeft, 2);
+    assert(hasDescendant(laneRow, (item) => item.name === 'Text' && ['├', '└'].includes(item.props.children.join(''))));
+  }
 });
 const renderProvidedSnapshot = async (snapshot, phaseLabel) => {
   const rendered = await renderSnapshot(snapshot);
@@ -1548,7 +1593,7 @@ await test('[Step 7 round 5 finding 1] failure and reasonless partial panes neve
     await forwarded(hookFor('command.run'), { command: 'wir' });
     const partial = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
     assertNoUnknownText(partial.result);
-    assert(hasDescendant(partial.result, (item) => item.name === 'Text' && item.props.children.includes('Some running work could not be listed')));
+    assert(hasDescendant(partial.result, (item) => item.name === 'Text' && item.props.children.join('').startsWith('Some running work could not be listed:')));
     processCapability.run = async () => ({ exitCode: 0, stdout: JSON.stringify({ discovery: 'available', rows: [], collectedAt: paths.now }), stderr: '' });
     await forwarded(hookFor('command.run'), { command: 'wir' });
     const empty = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
