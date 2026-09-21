@@ -306,7 +306,9 @@ function cleanCardTitle(value, id) {
   return title.trim() || null;
 }
 function laneCardReceipt(worktree, requestedId = null) {
-  const names = list(lanePath(worktree)).filter(name => /^card-\d{19}\.md$/.test(name));
+  const dir = lanePath(worktree);
+  if (!info(dir)?.isDirectory()) return null;
+  const names = list(dir).filter(name => /^card-\d{19}\.md$/.test(name));
   const name = (requestedId && names.find(candidate => candidate === 'card-' + requestedId + '.md')) || names.sort()[0];
   if (!name) return null;
   const id = name.match(/^card-(\d{19})\.md$/)?.[1] || null;
@@ -1156,6 +1158,7 @@ function lifecycleLaneRows(worktree, timeline, id) {
       cardUrl: cardUrl(id),
       kind: 'external',
       label: phaseName + ' ' + lane.lane_id,
+      phase,
       phaseAvailability: 'lifecycle lane',
       parentCardId: id,
       title: null,

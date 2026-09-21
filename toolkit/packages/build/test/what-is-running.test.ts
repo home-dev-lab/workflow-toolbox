@@ -607,6 +607,17 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
+  it('does not treat a historical worktree without lane metadata as unreadable running work', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-no-lane-'))
+    try {
+      const paths = collector(root)
+      mkdirSync(join(paths.suiteRoot, 'worktrees', 'historical-worktree'))
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.discovery).toBe('available')
+      expect(snapshot.unreadableScans).toEqual([])
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('collects concurrent round-one critic slots as distinct pane sub-rows', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-critic-slots-'))
     try {
@@ -637,10 +648,21 @@ describe('What is running collector seam', () => {
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const pilot = snapshot.rows.find((row: { id: string }) => row.id === cardId)
       expect(pilot.lanes).toEqual(expect.arrayContaining([
-        expect.objectContaining({ label: 'Critic A', outcome: 'running', model: 'openai/critic-a', usageFile: 'critic-a.usage.json' }),
-        expect.objectContaining({ label: 'Critic B', outcome: 'running', model: 'openai/critic-b', usageFile: 'critic-b.usage.json' }),
+        expect.objectContaining({ label: 'Critic A', phase: 'critic', outcome: 'running', model: 'openai/critic-a', usageFile: 'critic-a.usage.json' }),
+        expect.objectContaining({ label: 'Critic B', phase: 'critic', outcome: 'running', model: 'openai/critic-b', usageFile: 'critic-b.usage.json' }),
       ]))
-      expect(await renderedText({ ...snapshot, sessions: undefined, rows: [{ ...pilot, project: 'wt-suite' }] })).toMatch(/Critic A.*Critic B/)
+      const paneSnapshot = { ...snapshot, rows: [], sessions: [{ id: 'session:critics', project: 'wt-suite', cards: [{ id: cardId, title: 'Parallel critics', actors: [pilot] }], actors: [] }] }
+      const tree = await renderedTree(paneSnapshot)
+      const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value)
+      expect(text.indexOf('Critic · round 1 (max 6)')).toBeLessThan(text.indexOf('[▶ Critic A]'))
+      expect(text.indexOf('[▶ Critic A]')).toBeLessThan(text.indexOf('[▶ Critic B]'))
+      expect(text.indexOf('[▶ Critic B]')).toBeLessThan(text.indexOf('next: TDD'))
+      const columns = renderedTextColumns(tree)
+      expect(columns.find((entry) => entry.text === '[▶ Critic A]')!.column)
+        .toBeGreaterThan(columns.find((entry) => entry.text.includes('Critic · round 1'))!.column)
+
+      const completedPilot = { ...pilot, phase: 'tdd', phaseStates: { ...pilot.phaseStates, critic: 'done', tdd: 'running' }, lanes: pilot.lanes.map((lane: Record<string, unknown>) => ({ ...lane, outcome: 'done' })) }
+      expect(await renderedText({ ...paneSnapshot, sessions: [{ ...paneSnapshot.sessions[0], cards: [{ id: cardId, title: 'Parallel critics', actors: [completedPilot] }] }] })).not.toContain('Critic A')
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
@@ -1007,7 +1029,15 @@ describe('What is running collector seam', () => {
       new Set(['discovery-detail']), new Map(), 'wt-suite', true,
       { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
     )
-    expect(textChildren(tree)).toContain('unreadable: /fixture/blocked')
+    expect(textChildren(tree)).toContain('Some running work could not be listed: unreadable: /fixture/blocked')
+  })
+
+  it('names a scan cap in the collapsed partial footer', async () => {
+    const text = await renderedText({
+      discovery: 'partial', rows: [], sessions: [], collectedAt: '2026-09-20T12:00:00Z',
+      cappedScans: ['/fixture/capped'],
+    })
+    expect(text).toContain('Some running work could not be listed: scan cap reached: /fixture/capped')
   })
 
   it('names an unavailable reason instead of opening an empty partial detail', () => {
