@@ -32,7 +32,7 @@
                 "standing",
                 "phase:discovery", "phase:plan", "phase:critic", "phase:tdd", "phase:verify", "phase:review", "phase:refutation", "phase:harden", "phase:report",
                 "lane:critic", "lane:tdd", "lane:review", "lane:refutation", "lane:harden",
-                "critic-round>=2"
+                "critic->plan"
               ]
             }
           }

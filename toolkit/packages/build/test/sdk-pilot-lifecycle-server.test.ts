@@ -19,9 +19,12 @@ import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { loadRules } from '../../../../plugin/bin/lib/rules-manifest.mjs'
 
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n'
 const FIXTURE_LANE_TIMEOUT_SECONDS = 10
+const PLUGIN_ROOT = fileURLToPath(new URL('../../../../plugin', import.meta.url))
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
@@ -1227,6 +1230,29 @@ printf 'report\n' > "$report"
     expect(roundTwo).toContain('may not reopen a point a prior round demanded, or reverse a prior round\'s accepted position, unless you cite new evidence')
   })
 
+  it('narrows every critic-to-plan revision without sending the step-back rule to the pilot', async () => {
+    const lifecycle = testLifecycle('FULL', [], criticFindingsLauncher(['[blocking] add exact proof']), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, {
+      rules: loadRules({ shippedRoot: PLUGIN_ROOT }),
+    })
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    const revision = await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['[blocking] add exact proof'], tool_use_id: 'critic-1' }))
+    const normalizedRevision = revision.replace(/\s+/g, ' ')
+    expect(normalizedRevision).toContain('Revise only for the blocking findings.')
+    expect(normalizedRevision).toContain('Keep every previously accepted part unchanged.')
+    expect(normalizedRevision).toContain('Do not restart the plan from scratch.')
+    expect(normalizedRevision).toContain('For each blocking finding, state what changed.')
+    expect(revision).not.toContain('# Step back to the architectural root')
+
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    const secondCritic = await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' }))
+    expect(secondCritic).not.toContain('# Step back to the architectural root')
+  })
+
   it('allows exactly one plan round for a routed-card contest, then escalates the maintained disagreement', async () => {
     const finding = '[blocking] CONTEST routed card 42: this is in scope'
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
@@ -1252,12 +1278,8 @@ printf 'report\n' > "$report"
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8'))
       .toContain('- [blocking|non-blocking] <one finding per line when changes-requested>')
     const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
-    expect(brief).toContain('correctness defect')
-    expect(brief).toContain('unmet DoD item')
-    expect(brief).toContain('security or data-loss risk')
-    expect(brief).toContain('gate or test gap')
-    expect(brief).toContain('change what gets built')
-    expect(brief).toContain('optional wording, style, or polish')
+    expect(brief).toContain('the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item')
+    expect(brief).toContain('A defect that a test the plan already schedules would catch is non-blocking.')
     expect(brief).toContain('Blocking example:')
     expect(brief).toContain('Non-blocking example:')
     expect(brief).toContain('## Coverage checklist')

@@ -1,5 +1,16 @@
 // Owns lifecycle lane brief composition; it must not inspect or mutate lifecycle state.
 const INDEPENDENT_ROLES = { critic: 'critic', review: 'reviewer', refutation: 'refuter' }
+const PLAN_STAGE_SEVERITY_POLICY = `
+Severity policy:
+- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking] The plan omits the required rollback test.\`
+- A defect that a test the plan already schedules would catch is non-blocking. Use \`[non-blocking]\` for it and for optional wording, style, or polish that changes nothing the DoD checks. Non-blocking example: \`[non-blocking] Rephrase the introduction for brevity.\`
+
+## Coverage checklist
+
+- Check the plan's decisions and rejected alternatives.
+- Check each introduced file, field, and claim and its downstream consumers.
+- Check the repository's mandatory gates and the plan's proof for each one.
+`
 
 function fenced(content) {
   const longest = Math.max(3, ...([...content.matchAll(/`+/g)].map((match) => match[0].length + 1)))
@@ -9,19 +20,7 @@ function fenced(content) {
 
 export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none' }) {
   const verdict = phase === 'critic' ? 'approved|changes-requested' : 'clear|changes-requested'
-  const severityPolicy = phase === 'critic'
-    ? `
-Severity policy:
-- \`[blocking]\` covers every correctness defect, unmet DoD item, security or data-loss risk, gate or test gap, and any finding that would change what gets built. Blocking example: \`[blocking] The plan omits the required rollback test.\`
-- \`[non-blocking]\` covers only optional wording, style, or polish that changes nothing the DoD checks. Non-blocking example: \`[non-blocking] Rephrase the introduction for brevity.\`
-
-## Coverage checklist
-
-- Check the plan's decisions and rejected alternatives.
-- Check each introduced file, field, and claim and its downstream consumers.
-- Check the repository's mandatory gates and the plan's proof for each one.
-`
-    : ''
+  const severityPolicy = phase === 'critic' ? PLAN_STAGE_SEVERITY_POLICY : ''
   const priorRoundsSection = phase === 'critic' && priorRounds.length > 0
     ? `
 ## Prior rounds (runner-owned, trusted)

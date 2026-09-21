@@ -871,7 +871,7 @@ export function createLifecycleStateMachine({
       ? ''
       : composeRules(activeRules, {
           recipient: 'pilot',
-          triggers: [`phase:${next}`, ...(next === 'critic' && state.priorCriticRounds.length > 0 ? ['critic-round>=2'] : [])],
+          triggers: [`phase:${next}`, ...(state.phase === 'critic' && next === 'plan' ? ['critic->plan'] : [])],
         })
     const result = next === 'awaiting_fidelity'
       ? AWAITING_FIDELITY_RESULT

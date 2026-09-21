@@ -38,6 +38,16 @@
     },
     {
       "source": "rules/wt-sdlc.md",
+      "heading": "## Revise only blocking critic findings",
+      "recipients": [
+        "pilot"
+      ],
+      "triggers": [
+        "critic->plan"
+      ]
+    },
+    {
+      "source": "rules/wt-sdlc.md",
       "heading": "## Implement and verify",
       "recipients": [
         "pilot",
@@ -122,11 +132,9 @@
       "source": "rules/wt-step-back-architectural.md",
       "heading": "# Step back to the architectural root — and ground \"it doesn't exist\" before a workaround",
       "recipients": [
-        "pilot",
         "harden"
       ],
       "triggers": [
-        "critic-round>=2",
         "lane:harden"
       ]
     },
