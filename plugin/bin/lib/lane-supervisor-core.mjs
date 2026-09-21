@@ -377,6 +377,11 @@ export function terminalExit(file) {
   return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(readLogTail(file))?.[1] ?? null
 }
 
+// One directory listing seam for this module (host primitive census counts call sites).
+function directoryEntries(dir) {
+  try { return readdirSync(dir, { withFileTypes: true }) } catch { return null }
+}
+
 export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
   if (maxEntries < 0) return { at: null, bounded: true, status: 'unknown' }
   const skipped = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
@@ -385,8 +390,8 @@ export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
   let visited = 0
   while (stack.length) {
     const dir = stack.pop()
-    let entries
-    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { continue }
+    const entries = directoryEntries(dir)
+    if (entries === null) continue
     for (const entry of entries) {
       if (++visited > maxEntries) return { at: null, bounded: true, status: 'unknown' }
       if (skipped.has(entry.name) || (dir === path.join(root, '.lane') && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))) continue
@@ -445,7 +450,8 @@ export function supervisionPaths(root, runId = null, requestedSlot = undefined) 
 
 export function supervisionSlots(root) {
   let names
-  try { names = readdirSync(path.join(root, '.lane'), { withFileTypes: true }) } catch { return [] }
+  names = directoryEntries(path.join(root, '.lane'))
+  if (names === null) return []
   return names
     .filter((entry) => entry.isDirectory() && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))
     .map((entry) => entry.name === 'supervision' ? null : entry.name.slice('supervision-'.length))
