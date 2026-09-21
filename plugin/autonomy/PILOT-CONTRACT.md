@@ -59,17 +59,17 @@ round. Do it (runner closes the card) or maintain cited L4; then report disagree
 
 ## Completion and boundaries
 
-Write `pilot-report` through `write_artifact` with `## Implemented`, `## Verification`, `## E2E`,
-`## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. Under Acceptance,
-quote every folded card Definition-of-done criterion exactly, followed by `Outcome: proven`, `Outcome: not done: <reason>`,
+Via `write_artifact`, write `pilot-report` with `## Implemented`, `## Verification`, `## E2E`,
+`## Acceptance`, `## Decisions`, `## Remaining Risks`, and `## Lessons for the memory`. Acceptance quotes
+each folded DoD criterion exactly, then `Outcome: proven`, `Outcome: not done: <reason>`,
 or `Outcome: deferred: card <id> — <L4 reason>` with an id in runner-owned `routed_cards`. The runner
-appends `## Routed cards`; pilot prose is not authoritative. E2E is owed for changes exercisable against
+appends authoritative `## Routed cards`. E2E is owed for changes exercisable against
 real processes, files, or hosts (including CLI, hook, watcher, server, script). Use `e2e not run: <reason>`
 only if this machine cannot exercise it; name what was tried. No UI is not a reason. FULL also requires
 `## Independent Review` with lenses and confirmed/refuted findings. Use exact `Partial: <reason>` only on
 partial runs; the owner decides what follows one. The report edge refuses a report not written through write_artifact this run, or changed since.
 Report E2E as `Command: <text>` and `Output: <text>` on those lines; a fenced block alone is refused.
-Continue through the awaiting-fidelity receipt, then write nothing and end: the runner commits and
-archives. Three unproductive turns fail. Never push, publish, merge, force, delete, retry denial,
+For gitignored delivery, follow `write_artifact`'s declaration and edge-recording rule.
+Continue through awaiting-fidelity, then end; the runner commits/archives. Three idle turns fail. Never push, publish, merge, force, delete, retry denial,
 print secrets/environment, or message the owner outside the pilot report. `pilot-guard` enforces this;
 mailbox is owner input and Planka is card state.
