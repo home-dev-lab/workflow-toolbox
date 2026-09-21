@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
@@ -12,6 +12,11 @@ const labels = { linux: 'ubuntu-latest', darwin: 'macos-latest', win32: 'windows
 const seedWrongFake = process.env.WT_SEED_WRONG_HOST_FAKE === '1'
 const useRealHost = process.env.WT_HOST_CONTRACT_REAL === '1'
 const activePlatforms = useRealHost ? platforms.filter((platform) => platform === process.platform) : platforms
+const snapshotSamples = {
+  linux: { pid: 1, ppid: 0, elapsedMs: 46_000, command: '/sbin/init' },
+  darwin: { pid: 1, ppid: 0, elapsedMs: 346_000, command: '/sbin/launchd' },
+  win32: { pid: 4, ppid: 0, elapsedMs: null, command: 'System' },
+} as const
 
 function evidenceHost(platform: typeof platforms[number]) {
   return createHostAdapter({
@@ -27,7 +32,7 @@ function evidenceHost(platform: typeof platforms[number]) {
 const contractHost = (platform: typeof platforms[number]) => useRealHost ? createHostAdapter({ platform }) : evidenceHost(platform)
 
 describe('host adapter evidence contract', () => {
-  const assertions = useRealHost ? 4 : 12
+  const assertions = useRealHost ? 5 : 15
   const contract = (name: string, appliesTo: readonly string[], run: (platform: typeof platforms[number]) => void) => {
     it(`${name} [${appliesTo.join(',')}]`, () => {
       for (const platform of activePlatforms) {
@@ -53,6 +58,38 @@ describe('host adapter evidence contract', () => {
       expect(result.processes.every((row: { pid: number, parentPid: number }) => Number.isSafeInteger(row.pid) && Number.isSafeInteger(row.parentPid))).toBe(true)
       expect(result.processes.find((row: { pid: number }) => row.pid === 1)?.parentPid).toBe(0)
     }
+  })
+
+  it.each(platforms)('parses process discovery from an injected %s invocation', (platform) => {
+    const outputs = {
+      linux: '1 0 46 /sbin/init\n',
+      darwin: '1 0 346 /sbin/launchd\n',
+      win32: '4 0 System\r\n',
+    }
+    const host = createHostAdapter({
+      platform,
+      invoke: { run: vi.fn(() => ({ status: 0, stdout: outputs[platform], stderr: '', error: null })) },
+    })
+
+    expect(host.readProcessSnapshot()).toEqual({ supported: true, processes: [snapshotSamples[platform]] })
+  })
+
+  it.each(['aix', 'freebsd', 'sunos'] as const)('keeps process discovery supported on %s', (platform) => {
+    const run = vi.fn(() => ({ status: 0, stdout: '1 0 12 /sbin/init\n', stderr: '', error: null }))
+    const host = createHostAdapter({ platform, invoke: { run } })
+
+    expect(host.readProcessSnapshot()).toEqual({
+      supported: true,
+      processes: [{ pid: 1, ppid: 0, elapsedMs: 12_000, command: '/sbin/init' }],
+    })
+    expect(run).toHaveBeenCalledWith('ps', ['-eo', 'pid=,ppid=,etimes=,args='])
+  })
+
+  contract('refuses process snapshot replay when public evidence has no captured operation', platforms, (platform) => {
+    const expected = platform === 'win32'
+      ? 'captured host evidence has no invocation for powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process'
+      : 'captured host evidence has no invocation for ps -eo pid=,ppid=,etimes=,args='
+    expect(() => evidenceHost(platform).readProcessSnapshot()).toThrow(expected)
   })
 
   contract('resolves the captured symlinked directory to its canonical target', platforms, (platform) => {
@@ -86,8 +123,8 @@ describe('host adapter evidence contract', () => {
   })
 
   it('prints the declared applicability and skip count', () => {
-    const skips = useRealHost ? 8 : 0
-    expect(assertions + skips).toBe(12)
+    const skips = useRealHost ? 10 : 0
+    expect(assertions + skips).toBe(15)
     const skippedPlatforms = useRealHost ? platforms.filter((platform) => platform !== process.platform).join(',') : 'none'
     process.stdout.write(`host adapter contract: assertions=${assertions} named_skips=${skips} skipped_platforms=${skippedPlatforms}\n`)
   })

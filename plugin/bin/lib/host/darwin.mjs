@@ -1,1 +1,1 @@
-export { endProcessFamily, parseProcessRelationships, readProcessRelationships, readProcessSnapshot, resolveCanonicalPath } from './posix.mjs'
+export { endProcessFamily, parseProcessRelationships, processRelationshipOperation, processSnapshotOperation, readProcessRelationships, readProcessSnapshot, resolveCanonicalPath } from './posix.mjs'

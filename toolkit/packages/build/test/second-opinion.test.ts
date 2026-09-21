@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+import { listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
@@ -69,6 +71,22 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 }
 
 describe('second-opinion advisor', () => {
+  it('reads process discovery through the adapter supplied by its caller', () => {
+    const expected = { supported: true, processes: [{ pid: 7, ppid: 1, elapsedMs: 2000, command: 'broker' }] }
+    const adapter = { readProcessSnapshot: vi.fn(() => expected) }
+
+    expect(listProcessTable(adapter)).toBe(expected)
+    expect(adapter.readProcessSnapshot).toHaveBeenCalledOnce()
+  })
+
+  it('degrades to a named "unavailable" on a platform with no host implementation instead of throwing', () => {
+    const adapter = createHostAdapter({ platform: 'openbsd', unavailableFallback: true })
+    expect(adapter.available).toBe(false)
+    expect(listProcessTable(adapter)).toEqual({ supported: false, processes: [], reason: 'process discovery unavailable on this platform' })
+    expect(listProcessRelationships(adapter).status).toBe('unavailable')
+    expect(() => adapter.endProcessFamily(123)).not.toThrow()
+  })
+
   it('keeps automatic routing on Astra when lane consent is active', async () => {
     const f = fixture(true)
     const deps = dependencies()

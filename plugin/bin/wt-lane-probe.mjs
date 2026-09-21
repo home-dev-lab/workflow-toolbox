@@ -39,6 +39,7 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 
@@ -99,10 +100,10 @@ function safeRealpath(p) {
 // a process-churn/scheduling-jitter signature, not a logic bug in either side). One `ps -eo`
 // call plus an in-memory walk produces the identical exclusion set with 1 fork instead of up
 // to maxDepth.
-function readPidToPpidMap(maxEntries = 20000) {
+export function readPidToPpidMap(adapter, maxEntries = 20000) {
   try {
     const map = new Map()
-    const table = hostAdapter.readProcessRelationships()
+    const table = adapter.readProcessRelationships()
     if (table.status !== 'known') return null
     for (const { pid, parentPid } of table.processes) {
       map.set(pid, parentPid)
@@ -143,7 +144,7 @@ function getAncestorPids(startPid, ppidMap, maxDepth = 32) {
 // Exit code 1 means "no process matched", which is a legitimate empty result, not a probe
 // failure; anything else (missing binary, unexpected error) means this platform/environment
 // cannot answer the question, and that must be reported as such, not as an empty match list.
-function listMatchingPids(pattern) {
+function listMatchingPids(pattern, adapter) {
   if (process.platform === 'win32') {
     return { supported: false, pids: [], reason: 'no pgrep equivalent driven by this script on win32' }
   }
@@ -165,7 +166,7 @@ function listMatchingPids(pattern) {
     const selfAndAncestors =
       rawPids.length === 0
         ? new Set([process.pid])
-        : new Set([process.pid, ...getAncestorPids(process.pid, readPidToPpidMap())])
+        : new Set([process.pid, ...getAncestorPids(process.pid, readPidToPpidMap(adapter))])
     const pids = rawPids.filter((n) => !selfAndAncestors.has(n))
     return { supported: true, pids }
   } catch (error) {
@@ -214,11 +215,11 @@ function getPpidAndArgs(pid) {
   }
 }
 
-function main() {
+function main(adapter) {
   const { worktrees: rawWorktrees, pattern, archive } = parseArgs(process.argv.slice(2))
   const worktrees = rawWorktrees.map((w) => ({ input: w, real: safeRealpath(w) }))
 
-  const { supported: pidsSupported, pids, reason: pidsReason } = listMatchingPids(pattern)
+  const { supported: pidsSupported, pids, reason: pidsReason } = listMatchingPids(pattern, adapter)
 
   const cwdSupported = process.platform === 'linux' || process.platform === 'darwin'
 
@@ -303,4 +304,4 @@ function emit(result, archivePath) {
   process.exit(0)
 }
 
-main()
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main(hostAdapter)

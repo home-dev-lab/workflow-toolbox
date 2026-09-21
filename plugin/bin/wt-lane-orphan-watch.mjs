@@ -7,6 +7,7 @@ import { posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingL
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
 import { listBrokers, listProcessRelationships, listProcessTable } from './lib/second-opinion-core.mjs'
 import { idleHelperEvents } from './lib/resolved-binary.mjs'
+import { hostAdapter } from './lib/host/adapter.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
@@ -161,13 +162,13 @@ async function main() {
       }
     }
     const staging = stagingLaneDirs(options.project)
-    const table = listProcessTable()
+    const table = listProcessTable(hostAdapter)
     let helperRows = table.supported ? table.processes : []
     let helperAges = new Map()
     if (process.env.WT_LANE_WATCH_TEST_HELPERS) {
       try { helperRows = JSON.parse(readFileSync(process.env.WT_LANE_WATCH_TEST_HELPERS, 'utf8')) } catch { helperRows = [] }
     } else {
-      const relationships = listProcessRelationships()
+      const relationships = listProcessRelationships(hostAdapter)
       if (relationships.status === 'known') helperAges = new Map(relationships.processes.map((item) => [item.pid, item.elapsedSeconds]))
     }
     for (const event of idleHelperEvents(helperRows, { ageByPid: helperAges, inspect: inspectProcess })) if (!notified.has(event.key)) notice(event.key, event.message)
@@ -242,7 +243,7 @@ async function main() {
       journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
       notice(`unknown:${item.pid}`, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
     }
-    const brokers = listBrokers()
+    const brokers = listBrokers(hostAdapter)
     if (brokers.supported) for (const pid of brokers.pids) {
       if (notified.has(`broker:${pid}`)) continue
       const broker = inspectProcess(pid)
