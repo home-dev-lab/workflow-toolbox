@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
@@ -224,6 +224,7 @@ describe('second-opinion advisor', () => {
 
   it('uses one read-only Fable SDK query when lane consent is not given', async () => {
     const f = fixture(false)
+    writeFileSync(join(f.repo, 'CLAUDE.md'), '# Guide\n')
     let queryInput: unknown
     const query = vi.fn((input) => {
       queryInput = input
@@ -237,7 +238,7 @@ describe('second-opinion advisor', () => {
     expect(deps.probeQuota).toHaveBeenCalledOnce()
     expect(query).toHaveBeenCalledOnce()
     expect(queryInput).toMatchObject({
-      prompt: 'Question with facts and sources.',
+      prompt: `${join(f.repo, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
         model: 'fable',
         cwd: f.repo,
@@ -353,5 +354,28 @@ describe('second-opinion advisor', () => {
       if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
+  })
+
+  it('names output overflow and fails after terminating the owned companion family', async () => {
+    const f = fixture(true)
+    const companion = join(f.repo, 'overflow-companion.mjs')
+    writeFileSync(companion, "process.stdout.write('x'.repeat(1024))\n")
+    const endProcessFamily = vi.fn()
+    const adapter = {
+      platform: process.platform,
+      endProcessFamily,
+      readProcessSnapshot: () => ({ supported: true, processes: [] }),
+      readProcessRelationships: () => ({ status: 'known', processes: [] }),
+    }
+    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64 })
+    deps.resolveCodexCompanion = () => companion
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+    expect(lines(f.out)).toEqual([
+      'ROUTE=gpt-astra',
+      'REFUSED: Codex companion output exceeded 64 bytes.',
+      'EXIT=1',
+    ])
+    expect(endProcessFamily).toHaveBeenCalled()
   })
 })

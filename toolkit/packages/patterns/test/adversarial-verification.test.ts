@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { BEST_MODEL, FakeRuntime, parseDigest } from '@workflow-toolbox/runtime'
 import { adversarialVerification } from '../src/adversarial-verification.js'
+import { deriveProvenanceNonce } from '../src/provenance-gate.js'
 import type { AdversarialVerificationOptions, VerifierVote, Verdict, ClaimVerdict } from '../src/adversarial-verification.js'
 // Convention: new public types must also be re-exported from the package index.
 import type { ClaimVerdict as IndexClaimVerdict } from '../src/index.js'
@@ -74,6 +75,57 @@ describe('adversarialVerification — config validation', () => {
     await expect(
       adversarialVerification(rt, makeOptions({ maxVerifyClaims: 0 })),
     ).rejects.toThrow(/maxVerifyClaims.*>=.*1/)
+  })
+
+  it('validates ordinary config before claiming a stage instance', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+
+    await expect(adversarialVerification(rt, makeOptions({ votes: 0 })))
+      .rejects.toThrow(/votes.*>=.*1/)
+    expect(rt.calls).toHaveLength(0)
+    expect(rt.logs).toHaveLength(0)
+
+    await adversarialVerification(rt, makeOptions({ claims: ['valid'], votes: 1, refuteThreshold: 1 }))
+    expect(rt.calls.map((call) => call.opts?.label)).toEqual([
+      'adversarialVerification:verify:0:0',
+    ])
+  })
+
+  it('preserves fractional numeric behavior, including maxVerifyClaims failing after stage claim', async () => {
+    const rt = new FakeRuntime({ onAgent: () => refutedVote })
+
+    await expect(adversarialVerification(rt, makeOptions({ maxVerifyClaims: 1.5 })))
+      .rejects.toThrow('applyCap: cap must be a positive integer, got 1.5')
+    expect(rt.calls).toHaveLength(0)
+
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['fractional'],
+      votes: 1.5,
+      refuteThreshold: 1.5,
+      minValidVotes: 1,
+    }))
+    expect(rt.calls.map((call) => call.opts?.label)).toEqual([
+      'adversarialVerification:verify:0:0 #2',
+    ])
+    expect(result.value[0]?.verdict).toBe('partially-confirmed')
+  })
+
+  it('evaluates votesPerClaim before later verifierType and cap validation', async () => {
+    const events: string[] = []
+    const rt = new FakeRuntime()
+
+    await expect(adversarialVerification(rt, makeOptions({
+      claims: ['a', 'b'],
+      votesPerClaim: (claim) => {
+        events.push(`votesPerClaim:${claim}`)
+        return 1
+      },
+      verifierType: '   ',
+      maxVerifyClaims: 1.5,
+    }))).rejects.toThrow(/verifierType/)
+    expect(events).toEqual(['votesPerClaim:a', 'votesPerClaim:b'])
+    expect(rt.calls).toHaveLength(0)
+    expect(rt.logs).toHaveLength(0)
   })
 })
 
@@ -362,7 +414,7 @@ describe('adversarialVerification — ClaimVerdict type export', () => {
 // ---------------------------------------------------------------------------
 
 describe('adversarialVerification — lenses', () => {
-  it('includes lens in verifier prompt', async () => {
+  it('uses the exact verifier prompt for both lens branches', async () => {
     const capturedPrompts: string[] = []
     const rt = new FakeRuntime({
       onAgent: ({ prompt }) => {
@@ -377,8 +429,10 @@ describe('adversarialVerification — lenses', () => {
       lenses: ['technical', 'ethical'],
     }))
 
-    expect(capturedPrompts[0]!).toContain('technical')
-    expect(capturedPrompts[1]!).toContain('ethical')
+    expect(capturedPrompts).toEqual([
+      'Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.\nExamine it through the lens of: technical.\nClaim:\nc0',
+      'Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.\nExamine it through the lens of: ethical.\nClaim:\nc0',
+    ])
   })
 
   it('rejects when lenses length mismatches votes', async () => {
@@ -583,7 +637,7 @@ describe('adversarialVerification — labels', () => {
 // ---------------------------------------------------------------------------
 
 describe('adversarialVerification — prompt framing', () => {
-  it('includes adversarial refute-first instruction in prompt', async () => {
+  it('uses the exact lens-absent refute-first prompt', async () => {
     const capturedPrompts: string[] = []
     const rt = new FakeRuntime({
       onAgent: ({ prompt }) => {
@@ -599,8 +653,9 @@ describe('adversarialVerification — prompt framing', () => {
       renderClaim: (c) => c,
     }))
 
-    expect(capturedPrompts[0]!).toContain('REFUTE')
-    expect(capturedPrompts[0]!).toContain('my-claim')
+    expect(capturedPrompts).toEqual([
+      'Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.\nClaim:\nmy-claim',
+    ])
   })
 })
 
@@ -856,6 +911,35 @@ describe('adversarialVerification — trail: determinism', () => {
       'adversarialVerification:verify:1:0',
       'adversarialVerification:verify:1:1',
     ])
+  })
+
+  it('launches every kept claim group before a blocked group resolves', async () => {
+    const started = new Set<string>()
+    let releaseFirst!: () => void
+    let reportAllStarted!: () => void
+    const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const allStarted = new Promise<void>((resolve) => { reportAllStarted = resolve })
+    const rt = new FakeRuntime({
+      onAgent: async ({ opts }) => {
+        const label = opts?.label ?? ''
+        started.add(label)
+        if (started.size === 3) reportAllStarted()
+        if (label.endsWith(':verify:0:0')) await firstBlocked
+        return confirmedVote
+      },
+    })
+    const run = adversarialVerification(rt, makeOptions({
+      claims: ['a', 'b', 'c'], votes: 1, refuteThreshold: 1,
+    }))
+
+    await allStarted
+    expect([...started].sort()).toEqual([
+      'adversarialVerification:verify:0:0',
+      'adversarialVerification:verify:1:0',
+      'adversarialVerification:verify:2:0',
+    ])
+    releaseFirst()
+    await run
   })
 })
 
@@ -1548,6 +1632,71 @@ describe('adversarialVerification — stage salting', () => {
     expect(warmCall?.opts?.label).toBe('adversarialVerification:warm #security')
   })
 
+  it('forwards an invalid stageKey to the shared warning and auto-counter fallback', async () => {
+    const rt = new FakeRuntime({ onAgent: () => confirmedVote })
+    const result = await adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1, stageKey: 'bad key',
+    }))
+
+    expect(result.warnings).toEqual([
+      'adversarialVerification: stageKey "bad key" is invalid (must match ^(?!\\d+$)[A-Za-z0-9_.-]{1,32}$) — falling back to the auto instance counter',
+    ])
+    expect(rt.logs[0]).toBe(result.warnings[0])
+    expect(rt.calls[0]?.opts?.label).toBe('adversarialVerification:verify:0:0')
+  })
+
+  it('preserves warning logs synchronously around the agent event sequence', async () => {
+    const events: string[] = []
+    class EventRuntime extends FakeRuntime {
+      override log(message: string): void {
+        const kind = message.includes('stageKey')
+          ? 'stageKey'
+          : message.includes('downgraded')
+            ? 'model'
+            : message.includes('truncated')
+              ? 'cap'
+              : message.includes('salvage respawn')
+                ? 'salvage'
+                : message.includes('returned null')
+                  ? 'null'
+                  : message.includes('left unverifiable')
+                    ? 'unverifiable'
+                    : message.startsWith('[wt:digest]')
+                      ? 'digest'
+                      : message
+        events.push(`log:${kind}`)
+        super.log(message)
+      }
+    }
+    const rt = new EventRuntime({
+      onAgent: ({ opts }) => {
+        events.push(`agent:${opts?.label}`)
+        return null
+      },
+    })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['kept', 'cut'],
+      votes: 1,
+      refuteThreshold: 1,
+      model: 'sonnet',
+      maxVerifyClaims: 1,
+      stageKey: 'bad key',
+    }))
+
+    expect(events).toEqual([
+      'log:stageKey',
+      'log:model',
+      'log:cap',
+      'agent:adversarialVerification:verify:0:0',
+      'agent:adversarialVerification:verify:0:0:salvage',
+      'log:salvage',
+      'log:null',
+      'log:unverifiable',
+      'log:digest',
+    ])
+  })
+
   it('distinct rt instances stay isolated — both get the bare first invocation', async () => {
     const rt1 = new FakeRuntime({ onAgent: () => confirmedVote })
     const rt2 = new FakeRuntime({ onAgent: () => confirmedVote })
@@ -1630,12 +1779,130 @@ describe('adversarialVerification — provenance gate (external verifierType)', 
     expect(result.trail.filter((r) => r.stage.startsWith('adversarialVerification:verify:'))).toHaveLength(2)
   })
 
+  it('wires exact labels, rendered-claim nonce, phase, model, and effort into the checker call', async () => {
+    const label = 'adversarialVerification:verify:0:0'
+    const nonce = deriveProvenanceNonce([label], 'rendered:c0')
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        if (opts?.label === 'adversarialVerification:provenance-check') {
+          return JSON.stringify({ anchored: true, results: [{ label, cliSeen: true }] })
+        }
+        return confirmedVote
+      },
+    })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['c0'],
+      votes: 1,
+      refuteThreshold: 1,
+      verifierType: OPENCODE,
+      phase: 'Verify',
+      renderClaim: (claim) => `rendered:${claim}`,
+    }))
+
+    const checker = rt.calls.find((call) => call.opts?.label === 'adversarialVerification:provenance-check')!
+    expect(checker.opts).toEqual({
+      label: 'adversarialVerification:provenance-check',
+      phase: 'Verify',
+      model: 'haiku',
+      effort: 'low',
+    })
+    expect(checker.prompt).toContain(nonce)
+    expect(checker.prompt).toContain(JSON.stringify(label))
+  })
+
   it('DISQUALIFIES external votes WITHOUT provenance → null → unverifiable', async () => {
     const { run } = externalRun({ claims: ['c0'], votes: 2, refuteThreshold: 2 }, () => false)
     const result = await run
     expect(result.value[0]!.verdict).toBe('unverifiable')
     expect(result.value[0]!.votes).toEqual([null, null])
     expect(result.warnings.some((w) => /2 external verifier votes DISQUALIFIED/.test(w))).toBe(true)
+  })
+
+  it('logs provenance warnings synchronously around retries before toll and diagnostics', async () => {
+    const events: string[] = []
+    const retryLabels: string[] = []
+    class EventRuntime extends FakeRuntime {
+      override log(message: string): void {
+        const kind = message.includes('DISQUALIFIED')
+          ? 'disqualified'
+          : message.includes('RECOVERED')
+            ? 'recovered'
+            : message.includes('remained unrecovered')
+              ? 'unrecovered'
+              : message.includes('SELF-ANSWER TOLL')
+                ? 'toll'
+                : message.includes('structured-output salvage')
+                  ? 'salvage'
+                  : message.includes('returned null')
+                    ? 'null'
+                    : message.includes('left unverifiable')
+                      ? 'unverifiable'
+                      : message.startsWith('[wt:digest]')
+                        ? 'digest'
+                        : message
+        events.push(`log:${kind}`)
+        super.log(message)
+      }
+    }
+    const rt = new EventRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        events.push(`agent:${label}`)
+        if (label.endsWith(':provenance-check:retry')) {
+          return JSON.stringify({
+            anchored: true,
+            results: retryLabels.map((retryLabel) => ({
+              label: retryLabel,
+              cliSeen: retryLabel.endsWith(':0:retry'),
+            })),
+          })
+        }
+        if (label.endsWith(':provenance-check')) {
+          return JSON.stringify({
+            anchored: true,
+            results: [
+              { label: 'adversarialVerification:verify:0:0', cliSeen: false },
+              { label: 'adversarialVerification:verify:0:1', cliSeen: false },
+              { label: 'adversarialVerification:verify:1:0:salvage', cliSeen: false },
+            ],
+          })
+        }
+        if (label.endsWith(':retry')) {
+          retryLabels.push(label)
+          return confirmedVote
+        }
+        if (label.includes(':verify:1:0')) return null
+        return confirmedVote
+      },
+    })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['retry', 'dead'],
+      votesPerClaim: (claim) => claim === 'retry' ? 2 : 1,
+      refuteThreshold: 2,
+      minValidVotes: 1,
+      verifierType: OPENCODE,
+    }))
+
+    expect(events).toEqual([
+      'agent:adversarialVerification:verify:0:0',
+      'agent:adversarialVerification:verify:0:1',
+      'agent:adversarialVerification:verify:1:0',
+      'agent:adversarialVerification:verify:1:0:salvage',
+      'agent:adversarialVerification:provenance-check',
+      'log:disqualified',
+      'agent:adversarialVerification:verify:0:0:retry',
+      'agent:adversarialVerification:verify:0:1:retry',
+      'agent:adversarialVerification:provenance-check:retry',
+      'log:recovered',
+      'log:unrecovered',
+      'log:toll',
+      'log:salvage',
+      'log:null',
+      'log:unverifiable',
+      'log:digest',
+    ])
   })
 
   it('does NOT gate a registered NON-external verifierType (false-positive invariant)', async () => {
@@ -1897,8 +2164,36 @@ describe('adversarialVerification — retry disqualified-no-provenance votes onc
     expect(checkers.some((r) => r.stage.endsWith(':provenance-check:retry'))).toBe(true)
 
     expect(result.warnings.some((w) => /RECOVERED after one retry/.test(w))).toBe(true)
+    expect(result.trail.map((record) => record.stage)).toEqual([
+      'adversarialVerification:verify:0:0',
+      'adversarialVerification:verify:0:1',
+      'adversarialVerification:verify:0:2',
+      'adversarialVerification:provenance-check',
+      'adversarialVerification:verify:0:1:retry',
+      'adversarialVerification:provenance-check:retry',
+    ])
     // Trail invariant survives the retry path.
     expect(result.trail).toHaveLength(result.stats.agentsSpawned)
+  })
+
+  it('preserves renderClaim call order across initial prompts, checker nonce, retry, and retry nonce', async () => {
+    const rendered: string[] = []
+    const { run } = externalRetryRun({
+      overrides: {
+        claims: ['c0'],
+        votes: 2,
+        refuteThreshold: 2,
+        renderClaim: (claim) => {
+          rendered.push(claim)
+          return claim
+        },
+      },
+      firstSeen: (label) => !label.endsWith(':0'),
+      retrySeen: () => true,
+    })
+
+    await run
+    expect(rendered).toEqual(['c0', 'c0', 'c0', 'c0', 'c0'])
   })
 
   it('a recovered vote can CHANGE the verdict (partially-confirmed → refuted)', async () => {
@@ -2137,6 +2432,51 @@ describe('adversarialVerification — provenance gate: salvage-aware effective l
     expect(orig.outcome).toBe('null')
     expect(orig.decision).toBe('disqualified-no-provenance')
     expect(result.warnings.some((w) => /DISQUALIFIED/.test(w))).toBe(true)
+  })
+})
+
+describe('adversarialVerification — retry provenance: salvage-aware effective label', () => {
+  const OPENCODE = 'workflow-toolbox:opencode-verifier'
+
+  function retrySalvageRun(retrySalvageSeen: boolean): Promise<Awaited<ReturnType<typeof adversarialVerification<string>>>> {
+    const original = 'adversarialVerification:verify:0:0'
+    const retrySalvage = `${original}:retry:salvage`
+    const rt = new FakeRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        if (label.endsWith(':provenance-check:retry')) {
+          return JSON.stringify({ anchored: true, results: [{ label: retrySalvage, cliSeen: retrySalvageSeen }] })
+        }
+        if (label.endsWith(':provenance-check')) {
+          return JSON.stringify({ anchored: true, results: [{ label: original, cliSeen: false }] })
+        }
+        if (label === `${original}:retry`) return null
+        if (label === retrySalvage) return confirmedVote
+        return confirmedVote
+      },
+    })
+    return adversarialVerification(rt, makeOptions({
+      claims: ['c0'], votes: 1, refuteThreshold: 1, verifierType: OPENCODE,
+    }))
+  }
+
+  it('credits a retry value produced by salvage when retry salvage provenance is seen', async () => {
+    const result = await retrySalvageRun(true)
+
+    expect(result.value[0]?.votes).toEqual([confirmedVote])
+    expect(result.value[0]?.verdict).toBe('confirmed')
+    expect(result.trail.map((record) => record.stage)).toContain(
+      'adversarialVerification:verify:0:0:retry:salvage',
+    )
+  })
+
+  it('disqualifies a retry value produced by salvage when retry salvage provenance is absent', async () => {
+    const result = await retrySalvageRun(false)
+
+    expect(result.value[0]?.votes).toEqual([null])
+    expect(result.value[0]?.verdict).toBe('unverifiable')
+    const retry = result.trail.find((record) => record.stage.endsWith(':verify:0:0:retry'))
+    expect(retry?.decision).toBe('disqualified-no-provenance')
   })
 })
 
