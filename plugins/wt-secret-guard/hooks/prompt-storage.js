@@ -71,7 +71,10 @@ export function locateReplacements(text, replacements, target) {
         for (let index = source.indexOf(escaped); index !== -1; index = source.indexOf(escaped, index + escaped.length)) {
           const length = byteLength(escaped);
           const replacement = byteLength(token) <= length ? token.padEnd(length, '*') : '*'.repeat(length);
-          located.push({ offset: lineStart + byteLength(line.slice(0, range.start + index)), expected: escaped, replacement, length });
+          located.push({
+            offset: lineStart + byteLength(line.slice(0, range.start + index)), expected: escaped, replacement, length,
+            recordOffset: lineStart, recordLength: byteLength(line), toolUseId: target?.kind === 'tool-use' ? target.toolUseId : '',
+          });
         }
       }
     }

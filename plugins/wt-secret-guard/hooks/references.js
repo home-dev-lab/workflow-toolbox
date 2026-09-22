@@ -55,6 +55,13 @@ function invocationWords(command, start) {
     if (character === '\\' && quote !== "'") { value += command[index + 1] ?? ''; index += 1; continue; }
     if (character === quote) { quote = ''; continue; }
     if (!quote && (character === "'" || character === '"')) { quote = character; continue; }
+    if (!quote && /[<>]/.test(character)) {
+      if (value) { words.push(value); value = ''; }
+      let operator = character;
+      if (command[index + 1] === character) { operator += character; index += 1; }
+      words.push(operator);
+      continue;
+    }
     if (!quote && /[\s;|&)]/.test(character)) {
       if (value) { words.push(value); value = ''; }
       if (/\n|[;|&)]/.test(character)) break;
@@ -70,6 +77,12 @@ function parseOpRead(words) {
   const valueFlags = new Set(['--account', '-o', '--out-file', '--encoding']);
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
+    if (/^[<>]{1,2}$/.test(word)) {
+      const destination = words[index + 1];
+      if (!destination || /^[<>]{1,2}$/.test(destination)) valid = false;
+      else index += 1;
+      continue;
+    }
     if (word.startsWith('op://')) { if (ref) valid = false; ref = word; continue; }
     if (word.startsWith('--account=')) { account = word.slice('--account='.length); valid &&= Boolean(account); continue; }
     if (/^(?:--out-file|--encoding)=/.test(word)) { valid &&= word.split('=').slice(1).join('=').length > 0; continue; }
@@ -100,28 +113,28 @@ export function opInvocationsIn(command) {
 export function rewriteOpReferences(command, account = '') {
   // Measured 2026-09-08: OP_ACCOUNT does not cross WSL interop, while the explicit
   // --account positional argv does, so account identity remains part of each invocation.
-  if (hasTemplateDestination(command)) return { command, count: 0, references: [] };
+  if (hasTemplateDestination(command)) return { command, count: 0, references: [], unhandled: /secret:1p:|op:\/\//.test(command) };
   const bodies = heredocBodies(command);
   const prefix = /secret:1p:|op:\/\//g;
-  const replacements = []; const references = [];
+  const replacements = []; const references = []; let unhandled = false;
   for (let match; (match = prefix.exec(command));) {
-    if (bodies.some(([start, end]) => match.index >= start && match.index < end)) continue;
+    if (bodies.some(([start, end]) => match.index >= start && match.index < end)) { unhandled = true; continue; }
     const context = quoteContextAt(command, match.index);
     const pathStart = prefix.lastIndex;
     let path; let end; let replacementStart = match.index; let replacementEnd;
     if (context.quote && context.opener + 1 === match.index) {
       end = closingQuote(command, pathStart, context.quote);
-      if (end < 0) continue;
+      if (end < 0) { unhandled = true; continue; }
       path = command.slice(pathStart, end); replacementStart = context.opener; replacementEnd = end + 1;
     } else {
       const pathMatch = command.slice(pathStart).match(/^[\p{L}\p{N}._'-]+(?:\/[\p{L}\p{N}._'-]+){2,3}(?!\/)/u);
-      if (!pathMatch) continue;
+      if (!pathMatch) { unhandled = true; continue; }
       path = pathMatch[0]; replacementEnd = pathStart + path.length;
     }
-    if (!OP_PATH.test(path)) continue;
+    if (!OP_PATH.test(path)) { unhandled = true; continue; }
     const reference = `op://${path}`;
     if (isOpConsumer(command, match.index)) continue;
-    if (context.quote && (context.opener + 1 !== match.index || replacementEnd !== end + 1)) continue;
+    if (context.quote && (context.opener + 1 !== match.index || replacementEnd !== end + 1)) { unhandled = true; continue; }
     const accountArg = account ? ` --account '${quoteForSingleQuotes(account)}'` : '';
     replacements.push({ start: replacementStart, end: replacementEnd, value: `"$(op read${accountArg} 'op://${quoteForSingleQuotes(path)}')"` });
     references.push({ ref: reference, account }); prefix.lastIndex = replacementEnd;
@@ -130,7 +143,7 @@ export function rewriteOpReferences(command, account = '') {
   for (const replacement of replacements.reverse()) rewritten = `${rewritten.slice(0, replacement.start)}${replacement.value}${rewritten.slice(replacement.end)}`;
   const exact = opInvocationsIn(rewritten);
   const unique = new Map([...references, ...exact.invocations].map((item) => [`${item.account}:${item.ref}`, item]));
-  return { command: rewritten, count: replacements.length, references: [...unique.values()], invalidOpRead: exact.invalid };
+  return { command: rewritten, count: replacements.length, references: [...unique.values()], invalidOpRead: exact.invalid, unhandled };
 }
 
 export { quoteForSingleQuotes };

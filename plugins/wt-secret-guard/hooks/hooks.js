@@ -130,7 +130,7 @@ export const register = (on, options) => {
     if (refusal) return refusal;
     const execute = async (originalEvent) => {
       const rewrite = await rewriteReferences(references, originalCommand);
-      if (rewrite.invalidOpRead) return { deny: 'wt-secret-guard refused Bash execution because an op read invocation could not be safely prefetched.' };
+      if (rewrite.invalidReference) return { deny: 'wt-secret-guard refused Bash execution because a secret reference could not be safely expanded or prefetched.' };
       for (const reference of rewrite.references) {
         const resolved = await resolveRuntimeReference(references, reference.ref, reference.account);
         if (!resolved.token) return { deny: 'wt-secret-guard refused Bash execution because a 1Password reference could not be prefetched.' };

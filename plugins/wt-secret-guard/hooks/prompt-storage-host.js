@@ -25,14 +25,15 @@ function decodeBase64(value) {
   return { bytes, text: new TextDecoder().decode(bytes) };
 }
 
-async function byteRange($, mode, path, offset, length, replacement = '', identity, expected = '') {
+async function byteRange($, mode, path, offset, length, replacement = '', identity, expected = '', record = {}) {
   if (await $.isWindows()) {
     const root = await $.pluginRoot();
     if (!root) throw new Error('plugin root unavailable');
     // Measured 2026-09-21: PowerShell positional argv reaches $args only with -File;
     // -Command appends trailing values to source and exposes paths to command injection.
     const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-File', joinPath(root, 'hooks', 'prompt-storage-range.ps1'), path, String(offset), String(length), mode];
-    if (mode === 'write') argv.push(base64Utf8(replacement), base64Utf8(expected), String(identity.size), identity.prefix);
+    if (mode === 'write') argv.push(base64Utf8(replacement), base64Utf8(expected), String(identity.size), identity.prefix,
+      String(record.recordOffset ?? ''), String(record.recordLength ?? ''), record.toolUseId ?? '');
     const result = await $.processRun(argv);
     if (mode !== 'read' || result?.exitCode !== 0) return result;
     const decoded = decodeBase64(result.stdout);
@@ -48,12 +49,15 @@ async function byteRange($, mode, path, offset, length, replacement = '', identi
   }
   return $.processRun(
     ['node', joinPath(root, 'hooks', 'prompt-storage-range.mjs'), path, String(offset), String(length), String(identity.inode ?? ''), 'write'],
-    { stdin: JSON.stringify({ expected: base64Utf8(expected), replacement: base64Utf8(replacement), size: identity.size, prefix: identity.prefix }) },
+    { stdin: JSON.stringify({
+      expected: base64Utf8(expected), replacement: base64Utf8(replacement), size: identity.size, prefix: identity.prefix,
+      recordOffset: record.recordOffset, recordLength: record.recordLength, toolUseId: record.toolUseId,
+    }) },
   );
 }
 
 async function replaceByteRange($, path, change, identity) {
-  return byteRange($, 'write', path, change.offset, change.length, change.replacement, identity, change.expected);
+  return byteRange($, 'write', path, change.offset, change.length, change.replacement, identity, change.expected, change);
 }
 
 async function fileIdentity($, path) {
@@ -103,7 +107,9 @@ async function rewriteStoredPrompt($, path, replacements, target) {
   if (text && !text.endsWith('\n')) {
     try { JSON.parse(text.slice(text.lastIndexOf('\n') + 1)); } catch { return false; }
   }
-  const changes = locateReplacements(text, replacements, target).map((change) => ({ ...change, offset: change.offset + offset }));
+  const changes = locateReplacements(text, replacements, target).map((change) => ({
+    ...change, offset: change.offset + offset, recordOffset: change.recordOffset + offset,
+  }));
   for (const change of changes) {
     const compare = await byteRange($, 'read', path, change.offset, change.length);
     if (compare?.exitCode !== 0 || compare?.stdout !== change.expected) return false;

@@ -14,7 +14,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
 
 ### Fixed
-- Close Secret Guard bypasses around reference-wrapped vault values and alternate `op read` arguments; preserve file-reference bytes and UTF-8 transcript offsets; fail closed on storage replacement races; retain streamed known secrets through flush boundaries; and reuse the active journal rotation segment
+- Close Secret Guard bypasses around reference-wrapped vault values and alternate `op read` arguments; preserve reference value bytes across shell quoting contexts and UTF-8 transcript offsets; authenticate the target JSONL `tool_use` record before repair writes; retain every built-in and known secret across stream boundaries; and reuse the active journal rotation segment
 
 ## [0.186.0] - 2026-09-22
 
