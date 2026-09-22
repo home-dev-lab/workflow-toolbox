@@ -24,6 +24,12 @@ const END = '-----END ';
 // An unfinished quoted assignment holds until its closing quote arrives. The value may span LINES -
 // a newline does not close a quote - so the hold follows the quote, never the line.
 const OPEN_ASSIGNMENT = /(?:password|token|secret)\s*[=:]\s*(["'])(?:(?!\1)[\s\S])*$/i;
+// An unquoted value still running at the end of the text. It ends at the LINE: `password: value`
+// is detected to the end of its line, and ending `password=value` there too only over-masks the rest
+// of that line, which is the safe direction. `(?![ \t"'])` stops the space run from backtracking onto
+// the opening quote of an already-closed quoted value.
+const OPEN_UNQUOTED = /(?:password|token|secret)\s*[=:][ \t]*(?![ \t"'])[^\n]*$/i;
+const UNQUOTED_END = /\n/;
 
 function cleanText(text) { return scrub(text, '').value; }
 
@@ -128,12 +134,26 @@ function secretSpans(text, from, final) {
 // What a discarded buffer was in the MIDDLE of, and the text that will end it. Discarding the bytes
 // at the size cap must not discard this: the continuation of an unfinished value matches no detector
 // on its own, so without it the opening is masked and the rest is released.
+//
+// Three shapes, each with its own terminator:
+// - a quoted assignment ends at its closing quote (consumed with the value);
+// - an UNQUOTED assignment ends at the end of its line; the newline is ordinary text, so it is kept;
+// - a private key ends at `-----END `, which can arrive split across chunks, so `carry` keeps the
+//   last characters that could be its beginning.
 function openState(text) {
   const open = OPEN_ASSIGNMENT.exec(text);
-  if (open) return { kind: 'assignment', terminator: open[1] };
+  if (open) return { kind: 'assignment', terminator: open[1], carry: 0 };
+  if (OPEN_UNQUOTED.test(text)) return { kind: 'assignment', pattern: UNQUOTED_END, carry: 0 };
   const begin = text.lastIndexOf(BEGIN);
-  if (begin !== -1 && text.indexOf(END, begin) === -1) return { kind: 'private-key', terminator: END };
+  if (begin !== -1 && text.indexOf(END, begin) === -1) return { kind: 'private-key', terminator: END, carry: END.length - 1 };
   return null;
+}
+
+// Where the open value ends in `text`: the index the ordinary text resumes at, or -1.
+function closeOf(open, text) {
+  if (open.pattern) { const found = open.pattern.exec(text); return found ? found.index : -1; }
+  const at = text.indexOf(open.terminator);
+  return at < 0 ? -1 : at + open.terminator.length;
 }
 
 function cutPoint(raw, spans, offset) {
@@ -188,15 +208,20 @@ export async function* maskTurnStep(event, next, note, masked) {
       // follows is still inside it, and nothing in it looks confidential on its own, so it is
       // dropped until its terminator arrives rather than emitted.
       if (block.raw) { block.masked = true; await announce(); }
-      const at = block.raw.indexOf(block.open.terminator);
-      if (at < 0) {
+      // The tail kept from earlier chunks is searched WITH the new text, so a terminator split across
+      // a chunk boundary is still found whole.
+      const scanned = `${block.carry ?? ''}${block.raw}`;
+      const resume = closeOf(block.open, scanned);
+      if (resume < 0) {
+        block.carry = block.open.carry ? scanned.slice(-block.open.carry) : '';
         block.raw = '';
         if (!final) return;
         blocks.delete(key);
         if (block.masked && !noted) { noted = true; yield { ...block.chunk, text: note }; }
         return;
       }
-      block.raw = block.raw.slice(at + block.open.terminator.length);
+      block.raw = scanned.slice(resume);
+      block.carry = '';
       block.context = '';
       block.open = null;
     }
@@ -243,6 +268,7 @@ export async function* maskTurnStep(event, next, note, masked) {
       yield* emit(key, false);
       if (block.raw.length > MAX_BUFFER) {
         block.open = openState(`${block.context}${block.raw}`);
+        block.carry = '';
         block.raw = '';
         block.context = '';
         block.masked = true;

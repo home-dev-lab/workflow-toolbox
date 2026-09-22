@@ -39,7 +39,20 @@ Everything else is refused before the command runs, and the refusal names what w
 
 A `# comment` after a supported reference ends the line rather than opening unfinished syntax: `printf %s secret:env:NAME # note` is expanded normally. A reference written *inside* the comment is still refused.
 
-Command words are compared after the shell's own decoding, so a line continuation and ANSI-C quoting change a command's spelling without changing what it is. A backslash-newline split through the middle of `read`, `$'op' read "$REF"` and `$'\x6fp' read "$REF"` are all the same invocation as `op read "$REF"`, and are refused with it. ANSI-C quoting stays an unsupported *context* — a reference written inside `$'...'` is still refused.
+### A command that carries a reference is restricted to text the guard reads literally
+
+The guard does **not** decode the shell's more exotic spellings, and this is deliberate. Bash can spell `op read` in more ways than any second implementation of its lexer will keep up with — ANSI-C escapes, octal bytes, NUL truncation, control escapes, globs, brace expansion. Instead of decoding them, the guard restricts.
+
+A command is the guard's business when it carries a secret reference, an `op` invocation, or a spelling that could hide one (an `op` verb such as `read` standing after a word the guard cannot read, or a literal `op` followed by one). **Such a command is refused, with the construct named, if anywhere in it there is:**
+
+- ANSI-C quoting (`$'...'`), locale quoting (`$"..."`), a backtick substitution, or a NUL byte;
+- a command name the guard cannot read literally — a parameter (`$CMD`), a command substitution (`$(...)`), a glob (`/usr/bin/o?`), brace expansion (`{op,}`), or a leading `~`.
+
+Quoting that only changes spelling is still read: `"op" read`, `op 'read'`, `o\p`, and a backslash-newline split through a word are the same invocation as `op read`, and are validated like it.
+
+**This is a limitation, and it is the trade this component exists to make.** If you need `$'\t'`, backticks or a computed command name, write that command without a reference in it. A command that carries no reference, no `op` invocation and no hidden verb is not the guard's business and runs untouched, whatever it spells.
+
+What the guard cannot see: a command that spells *every* part through constructs it does not read — the command name, the verb and the reference all computed, such as `$'op' $'read' "$REF"` with `REF` set earlier — carries nothing it recognises. The output scrub still runs on such a command's result, but the prefetch that makes short values scrubbable does not.
 
 ### What triggers a real `op` call
 
@@ -48,7 +61,7 @@ Command words are compared after the shell's own decoding, so a line continuatio
 Two consequences worth knowing before you type one:
 
 - To handle a reference as *text*, put it somewhere the guard refuses rather than expands — a single-quoted heredoc (`<<'EOF'`), `${...}`, backticks, `$'...'`, or a larger quoted word. The command is then refused outright and no `op` call is made.
-- **A failed prefetch is remembered for 60 seconds** per account-and-reference, and re-answered from memory without spawning `op` again. This bounds a caller that re-enters the failure path; it also means that fixing the underlying cause (signing in, unlocking) and retrying the same reference inside that window is still refused. A *successful* resolution is never cached — the value may have rotated, so it is read again each time.
+- **A failed prefetch is remembered for 60 seconds** per account-and-reference, and re-answered from memory without spawning `op` again. The bound holds under concurrency — requests for a reference whose resolution is already running join it instead of spawning their own — and no number of other failures evicts a reference still inside its window. This bounds a caller that re-enters the failure path to one `op` call per reference per minute; it also means that fixing the underlying cause (signing in, unlocking) and retrying the same reference inside that window is still refused. A *successful* resolution is never cached — the value may have rotated, so it is read again each time.
 
 ## Options
 

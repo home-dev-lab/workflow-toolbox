@@ -12,9 +12,17 @@ import { knownTokens, tokenize } from './token-vault.js';
 // so whatever re-entered that call sits above it - which is why the bound lives here, where it holds
 // whatever the caller does. Only failures are remembered: a value that resolved once may have
 // rotated since, and binding a stale secret into a command is worse than spawning `op` again.
+//
+// The bound is per reference and unconditional within the window:
+// - CONCURRENCY: a request arriving while a resolution for the same key is in flight joins it rather
+//   than spawning its own - forty simultaneous requests are one `op` call;
+// - EVICTION: only EXPIRED entries are ever removed. A key inside its window is never dropped to make
+//   room, so no amount of other failures lets it spawn early. The map is swept of expired entries
+//   once it passes FAILURE_SWEEP_AT, which bounds memory by the failure RATE times the window.
 const FAILURE_MEMORY_MS = 60_000;
-const FAILURE_MEMORY_MAX = 256;
+const FAILURE_SWEEP_AT = 256;
 const failures = new Map();
+const inFlight = new Map();
 
 function rememberedFailure(key, now) {
   const at = failures.get(key);
@@ -25,15 +33,13 @@ function rememberedFailure(key, now) {
 }
 
 function rememberFailure(key, now) {
-  if (failures.size >= FAILURE_MEMORY_MAX) failures.clear();
+  if (failures.size >= FAILURE_SWEEP_AT) {
+    for (const [other, at] of failures) if (now - at >= FAILURE_MEMORY_MS) failures.delete(other);
+  }
   failures.set(key, now);
 }
 
-export async function resolveReference($, ref, account = config().opAccount) {
-  const key = `${account}:${ref}`;
-  const now = Date.now();
-  // Answering from memory stays silent: a log line per attempt would storm exactly like the spawns.
-  if (rememberedFailure(key, now)) return { token: null };
+async function resolveOnce($, key, ref, account, now) {
   let result;
   // Measured 2026-09-08 00:43: a 13-character password matched no pattern, so every
   // explicit reference is prefetched. process.run takes positional argv (run 8).
@@ -45,6 +51,18 @@ export async function resolveReference($, ref, account = config().opAccount) {
   const value = opValueFrom(result);
   if (!value) { rememberFailure(key, now); await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
   return { token: tokenize('onepassword', value) };
+}
+
+export async function resolveReference($, ref, account = config().opAccount) {
+  const key = `${account}:${ref}`;
+  const now = Date.now();
+  // Answering from memory stays silent: a log line per attempt would storm exactly like the spawns.
+  if (rememberedFailure(key, now)) return { token: null };
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+  const resolution = resolveOnce($, key, ref, account, now);
+  inFlight.set(key, resolution);
+  try { return await resolution; } finally { inFlight.delete(key); }
 }
 
 function binding(index, value) {

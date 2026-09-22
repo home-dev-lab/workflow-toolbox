@@ -1172,6 +1172,40 @@ await test('V18 an OVERSIZED unfinished assignment keeps masking its continuatio
   assert.equal(at, -1, `the continuation of an oversized unfinished assignment escaped at offset ${at}`);
   assert.match(output, /oversized secret-bearing stream block masked/);
 });
+await test('V22 an OVERSIZED unfinished UNQUOTED assignment keeps masking its continuation', async () => {
+  // Round 6 carried the open state for quoted values and private keys only. An unquoted value has a
+  // terminator too - the end of its line - and without it the continuation after the size cap reads
+  // as ordinary text to every detector. The key starts its own line: `password: value` is detected
+  // (op-output) only there, which is the shape the stream actually sees.
+  for (const separator of ['=', ': ']) {
+    const continuation = varied(1000, 21);
+    const streamed = await collectStream(turnStep, [
+      { kind: 'text', index: 0, text: `${'Ω'.repeat(600)}\n${'pass'}word${separator}${varied(66000, 22)}` },
+      { kind: 'text', index: 0, text: `${continuation}\nvisible after the value\n` },
+      { kind: 'stop' },
+    ]);
+    const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+    const at = leakedRunAt(output, continuation);
+    assert.equal(at, -1, `password${separator.trim()}: the continuation of an oversized unquoted assignment escaped at offset ${at}`);
+    assert.match(output, /visible after the value/, `password${separator.trim()}: text after the value's end was swallowed`);
+  }
+});
+await test('V24 a private-key terminator split across chunks still closes the masking', async () => {
+  // After an overflowed key block the stream drops text until `-----END `. A terminator arriving in
+  // two chunks was never seen whole, so masking never closed and every later ordinary chunk vanished.
+  const body = varied(66000, 31);
+  const streamed = await collectStream(turnStep, [
+    { kind: 'text', index: 0, text: `-----BEGIN RSA PRIVATE KEY-----\n${body}` },
+    { kind: 'text', index: 0, text: `${varied(500, 32)}\n-----EN` },
+    { kind: 'text', index: 0, text: 'D RSA PRIVATE KEY-----\nordinary text after the key\n' },
+    { kind: 'text', index: 0, text: 'and a later ordinary chunk\n' },
+    { kind: 'stop' },
+  ]);
+  const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+  assert.match(output, /ordinary text after the key/, 'text after a split terminator was swallowed');
+  assert.match(output, /a later ordinary chunk/, 'a later ordinary chunk was swallowed');
+  assert.equal(leakedRunAt(output, varied(500, 32)), -1, 'key material before the split terminator escaped');
+});
 await test('stream fragment invariant holds at every split and every seeded chunking', async () => {
   // The value is long enough to outlast several cuts; the vault-sized cases that discriminate a
   // length-only hold-back live in V10 and V11, so this property stays cheap enough to run per gate.
@@ -1323,7 +1357,6 @@ await test('V4 every supported op read argument placement is prefetched or refus
     ["op 'read' --account=team 'op://vault/item/password'", 'team'],
     ["o'p' read -n 'op://vault/item/password' --account team", 'team'],
     ["op read -n \\\n 'op://vault/item/password' --account team", 'team'],
-    ["op $'read' --account=team 'op://vault/item/password'", 'team'],
   ];
   // Each placement carries its OWN item: a failed prefetch is remembered for the session (V19), so
   // reusing one reference would let the cache answer for every case after the first and the
@@ -1378,10 +1411,33 @@ await test('V20 a SUCCESSFUL resolution is never served from memory', async () =
   await bash(counting, { tool: 'Bash', command: "printf '%s%s%s' 'op://vault/once/a' 'op://vault/once/a' 'op://vault/once/b'" }, async () => ({ text: 'ok' }));
   assert.deepEqual(perCall, ['op://vault/once/a', 'op://vault/once/b'], 'one Bash call did not resolve each distinct reference exactly once');
 });
-await test('V17 line continuations and ANSI-C quoting are decoded before the command word is read', async () => {
-  // Bash removes a backslash-newline entirely and decodes $'...' before it decides what command it
-  // is running. A planner that reads the raw spelling sees neither, so `op read "$REF"` slips past
-  // the validation its plain spelling is refused by.
+await test('V23 the failure memory is a per-reference bound under concurrency and eviction', async () => {
+  // Concurrency: forty requests arriving before the first failure is recorded each spawned a resolver.
+  const concurrent = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const slow = { ...$, process: { run: async (argv) => { if (argv[0] === 'op') { concurrent.push(argv); await gate; return { exitCode: 1, stdout: '' }; } return $.process.run(argv); } } };
+  const pending = [];
+  for (let round = 0; round < 40; round += 1) pending.push(bash(slow, { tool: 'Bash', command: "printf %s 'op://vault/concurrent/password'" }, async () => ({ text: 'leaked' })));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  release();
+  const results = await Promise.all(pending);
+  assert(results.every((result) => /refused/i.test(result.deny ?? '')), 'a concurrent request was not refused');
+  assert.equal(concurrent.length, 1, `40 concurrent requests for one reference spawned ${concurrent.length} resolvers`);
+  // Eviction: filling the memory with other failures must not reset a key still inside its window.
+  const spawned = [];
+  const failing = { ...$, process: { run: async (argv) => { if (argv[0] === 'op') { spawned.push(argv.at(-1)); return { exitCode: 1, stdout: '' }; } return $.process.run(argv); } } };
+  const target = "printf %s 'op://vault/evicted/password'";
+  await bash(failing, { tool: 'Bash', command: target }, async () => ({ text: 'leaked' }));
+  for (let other = 0; other < 300; other += 1) await bash(failing, { tool: 'Bash', command: `printf %s 'op://vault/filler-${other}/password'` }, async () => ({ text: 'leaked' }));
+  await bash(failing, { tool: 'Bash', command: target }, async () => ({ text: 'leaked' }));
+  const retries = spawned.filter((ref) => ref === 'op://vault/evicted/password').length;
+  assert.equal(retries, 1, `300 intervening failures let a reference inside its window spawn ${retries} times`);
+});
+await test('V17 line continuations and ANSI-C quoting cannot hide an op invocation', async () => {
+  // Bash removes a backslash-newline entirely - the planner decodes that, it is ordinary word
+  // reading. ANSI-C quoting it no longer decodes (V21): a command that uses it beside an op verb is
+  // refused instead. Either way `op read "$REF"` may not slip past under another spelling.
   const cases = [
     ["$'op' read \"$REF\"", 'ANSI-quoted command word'],
     ["op $'read' \"$REF\"", 'ANSI-quoted verb'],
@@ -1395,6 +1451,59 @@ await test('V17 line continuations and ANSI-C quoting are decoded before the com
     const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'short-13-pass' }; });
     assert.equal(executed, false, `${shape} executed without validating its reference: ${JSON.stringify(command)}`);
     assert.match(result.deny ?? '', /refused/i, shape);
+  }
+});
+await test('V21 a reference-bearing command may only spell its commands in text read literally', async () => {
+  // Three rounds each found another spelling that bash decodes to `op read` and the planner did not:
+  // quoted words, then ANSI-C and continuations, then octal truncation, NUL truncation and control
+  // escapes. The guard stops decoding and RESTRICTS instead: once a command is ours, any construct
+  // whose decoding we do not own refuses it. These are the reviewer's own bypasses plus the other
+  // spellings that reach a command word without literal text.
+  const refused = [
+    ["$'\\557\\560' read \"$REF\"", 'octal escapes bash truncates to bytes'],
+    ["$'op\\0tail' read \"$REF\"", 'NUL truncation (octal)'],
+    ["$'op\\x00tail' read \"$REF\"", 'NUL truncation (hex)'],
+    ["$'op\\u0000tail' read \"$REF\"", 'NUL truncation (\\u)'],
+    ["$'op\\U00000000tail' read \"$REF\"", 'NUL truncation (\\U)'],
+    ["$'op\\c@tail' read \"$REF\"", 'NUL truncation (\\c@)'],
+    ["$'op\\Uffffffff' read \"$REF\"", 'out-of-range Unicode'],
+    ["$'\\c1' read \"$REF\"", 'control escape'],
+    ["$'op\\c' read \"$REF\"", 'trailing control escape'],
+    ["$'op' $'read' 'op://vault/item/literal-ref'", 'ANSI-C words beside a literal reference'],
+    ["op $'read' --account=team 'op://vault/item/password'", 'an ANSI-C verb after a literal op'],
+    ['op "$VERB" "$REF"', 'a verb this guard cannot read after a literal op'],
+    ['$OP read "$REF"', 'a parameter as the command word before an op verb'],
+    ['sudo "$CMD" read "$REF"', 'an unreadable word before an op verb'],
+    ['$(printf op) read "$REF"', 'a command substitution as the command word'],
+    ['{op,} read "$REF"', 'brace expansion in the command word'],
+    ['/usr/bin/o? read "$REF"', 'a glob in the command word'],
+    ['$"op" read "$REF"', 'a locale-translated command word'],
+    ["printf %s $'x' secret:env:GH_TOKEN", 'an ANSI-C span elsewhere in a reference-bearing command'],
+    ['echo `date`; printf %s secret:env:GH_TOKEN', 'a backtick elsewhere in a reference-bearing command'],
+    ['printf %s secret:env:GH_TOKEN\u0000', 'a NUL byte in a reference-bearing command'],
+    ['"$EDITOR" op://vault/item/field', 'an unreadable command word in a reference-bearing command'],
+  ];
+  for (const [command, shape] of refused) {
+    let executed = false;
+    const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'short-13-pass' }; });
+    assert.equal(executed, false, `${shape} executed: ${JSON.stringify(command)}`);
+    assert.match(result.deny ?? '', /refused/i, shape);
+  }
+  // A command carrying no reference and no op invocation is not this guard's business, whatever it
+  // spells: the restriction must not leak into ordinary shell use.
+  const ordinary = [
+    "printf %s $'a\\tb'",
+    'echo `date`',
+    'while read line; do echo "$line"; done < /tmp/in',
+    '"$EDITOR" /tmp/file',
+    'ls {a,b}.txt *.md',
+    'IFS= read -r first < /tmp/in',
+  ];
+  for (const command of ordinary) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    assert.equal(result?.deny, undefined, `a command with no reference was refused: ${JSON.stringify(command)} -> ${result?.deny}`);
+    assert.equal(received, command, `a command with no reference was rewritten: ${JSON.stringify(command)}`);
   }
 });
 await test('V15 a reference preceded by a backslash escape is refused instead of rewritten into broken syntax', async () => {
