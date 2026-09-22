@@ -23,7 +23,7 @@ const BEGIN = '-----BEGIN ';
 const END = '-----END ';
 // An unfinished quoted assignment holds until its closing quote arrives. The value may span LINES -
 // a newline does not close a quote - so the hold follows the quote, never the line.
-const OPEN_ASSIGNMENT = /(?:password|token|secret)\s*[=:]\s*(["'])(?:(?!\1)[\s\S])*$/i;
+const OPEN_ASSIGNMENT = /(?:password|token|secret)["']?\s*[=:]\s*(["'])(?:(?!\1)[\s\S])*$/i;
 // An unquoted value still running at the end of the text. It ends at the LINE: `password: value`
 // is detected to the end of its line, and ending `password=value` there too only over-masks the rest
 // of that line, which is the safe direction. `(?![ \t"'])` stops the space run from backtracking onto
@@ -42,7 +42,7 @@ function unquote(value) {
 // is actually confidential earns fragment matching; the key name is ordinary text everywhere else.
 function cores(kind, value) {
   if (kind === 'assignment' || kind === 'environment-dump') return [unquote(value.slice(value.indexOf('=') + 1))];
-  if (kind === 'op-output') return [unquote(value.slice(value.indexOf(':') + 1))];
+  if (kind === 'op-output' || kind === 'key-value') return [unquote(value.slice(value.indexOf(':') + 1))];
   if (kind === 'private-key') return value.split(/\r?\n/).filter((line) => line.trim() && !line.startsWith('-----'));
   return [value];
 }
@@ -137,15 +137,19 @@ function secretSpans(text, from, final) {
 //
 // Three shapes, each with its own terminator:
 // - a quoted assignment ends at its closing quote (consumed with the value);
-// - an UNQUOTED assignment ends at the end of its line; the newline is ordinary text, so it is kept;
 // - a private key ends at `-----END `, which can arrive split across chunks, so `carry` keeps the
-//   last characters that could be its beginning.
+//   last characters that could be its beginning;
+// - ANY other detection still running at the end of the buffer - whatever its kind - ends at the end
+//   of its line; the newline is ordinary text, so it is kept. The test is "a detection reaches the
+//   buffer's end", not a list of kinds: a list is exactly what let `API_KEY=` and `credential:` through.
 function openState(text) {
   const open = OPEN_ASSIGNMENT.exec(text);
   if (open) return { kind: 'assignment', terminator: open[1], carry: 0 };
-  if (OPEN_UNQUOTED.test(text)) return { kind: 'assignment', pattern: UNQUOTED_END, carry: 0 };
   const begin = text.lastIndexOf(BEGIN);
   if (begin !== -1 && text.indexOf(END, begin) === -1) return { kind: 'private-key', terminator: END, carry: END.length - 1 };
+  if (OPEN_UNQUOTED.test(text)) return { kind: 'assignment', pattern: UNQUOTED_END, carry: 0 };
+  const reachesEnd = detections(text).some(({ value }) => typeof value === 'string' && value && text.endsWith(value));
+  if (reachesEnd) return { kind: 'detected', pattern: UNQUOTED_END, carry: 0 };
   return null;
 }
 
@@ -267,8 +271,11 @@ export async function* maskTurnStep(event, next, note, masked) {
       blocks.set(key, block);
       yield* emit(key, false);
       if (block.raw.length > MAX_BUFFER) {
-        block.open = openState(`${block.context}${block.raw}`);
-        block.carry = '';
+        const discarded = `${block.context}${block.raw}`;
+        block.open = openState(discarded);
+        // The tail of the DISCARDED text is kept too: a terminator whose first half ends this very
+        // chunk must still be found whole when its second half arrives.
+        block.carry = block.open?.carry ? discarded.slice(-block.open.carry) : '';
         block.raw = '';
         block.context = '';
         block.masked = true;

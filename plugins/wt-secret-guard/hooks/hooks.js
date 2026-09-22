@@ -22,7 +22,7 @@ const journalHost = ($) => ({
   fsRead: (path) => $.fs.read(path), fsWrite: (path, text) => $.fs.write(path, text), fsStat: (path) => $.fs.stat(path), processRun: (argv, init) => $.process.run(argv, init), pluginRoot: () => $.plugin.root, configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'),
   sessionId: () => $.session.id(), sessionCwd: () => $.session.cwd(), uiLog: (text) => $.ui.log(text),
 });
-const referenceHost = ($) => ({ processRun: (argv, init) => $.process.run(argv, init), fsRead: (path) => $.fs.read(path), uiLog: (text) => $.ui.log(text) });
+const referenceHost = ($) => ({ processRun: (argv, init) => $.process.run(argv, init), fsRead: (path) => $.fs.read(path), envGet: (name) => $.env.get(name), uiLog: (text) => $.ui.log(text) });
 const storageHost = ($) => ({
   configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'), sessionId: () => $.session.id(), sessionCwd: () => $.session.cwd(),
   fsRead: (path) => $.fs.read(path), fsStat: (path) => $.fs.stat(path), processRun: (argv, init) => $.process.run(argv, init), pluginRoot: () => $.plugin.root,
@@ -131,7 +131,7 @@ export const register = (on, options) => {
     const execute = async (originalEvent) => {
       const rewrite = await rewriteReferences(references, originalCommand);
       if (rewrite.invalidReference) {
-        return { deny: `wt-secret-guard refused Bash execution: the command carries ${rewrite.reason || 'a reference it does not support'}. Supported forms are op://vault/item/field, op read with one literal op:// reference and documented flags, secret:env:NAME, secret:file:/absolute/path[#line], and a redaction token this session issued - as a bare shell word, as the whole contents of a quoted word, or on an unquoted heredoc line.` };
+        return { deny: `wt-secret-guard refused Bash execution: the command carries ${rewrite.reason || 'a reference it does not support'}. Supported forms are op://vault/item/field, op read with one literal op:// reference and documented flags, secret:env:NAME, secret:file:/absolute/path[#line], and a redaction token this session issued - as a bare shell word or as the whole contents of a quoted word. A reference inside a heredoc body is left as text.` };
       }
       for (const reference of rewrite.references) {
         const resolved = await resolveRuntimeReference(references, reference.ref, reference.account);

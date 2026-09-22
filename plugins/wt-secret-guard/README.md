@@ -23,8 +23,8 @@ A classic `SessionStart` command prints one inactive-guard notice when the flag 
 The Bash hook expands a small allow-list, and refuses the command outright — with the reason and this list — for anything else it finds. Supported **forms**:
 
 - `op://vault/item/[section/]field`, a literal 1Password reference;
-- `op read <literal op:// reference>` with the documented flags `--account`, `-o`/`--out-file`, `--encoding`, `--file-mode`, `--format`, `--session`, `--config`, `-n`/`--no-newline`, `-f`/`--force`, `--no-color`, `--cache`, and plain redirections. The invocation is left as written and its reference is prefetched. The command word and the verb are read as the shell reads them, so `"op" read`, `op 'read'` and `/usr/bin/op read` are the same invocation as `op read` and earn the same validation — and the same refusal;
-- `secret:env:NAME`, where `NAME` is `UPPER_SNAKE_CASE`;
+- `op read <literal op:// reference>` with the documented flags `--account`, `-o`/`--out-file`, `--encoding`, `--file-mode`, `--format`, `--session`, `--config`, `-n`/`--no-newline`, `-f`/`--force`, `--no-color`, `--cache`, and plain redirections; global flags may also come before the verb (`op --account=team read …`). The invocation is left as written and its reference is prefetched, wherever it is written — including after a wrapper such as `exec`. Quoting that only changes spelling is read as the shell reads it, so `"op" read`, `op 'read'` and `/usr/bin/op read` are this same form;
+- `secret:env:NAME`, where `NAME` is `UPPER_SNAKE_CASE`. The guard reads the variable from **Claude Code's own environment** and binds that value into the command as data, so the value substituted is always one it knows and masks. A variable the guard cannot read — one set only in a shell profile, say — is refused rather than substituted unseen. A short value is masked wherever it appears in the output, so a reference to a variable holding `true` masks every `true`;
 - `secret:file:/absolute/path` with an optional `#line`;
 - a redaction token this session issued.
 
@@ -32,36 +32,43 @@ Supported **contexts**, one of which every reference must sit in:
 
 - a bare shell word, including inside `$( )`;
 - the complete contents of a single-quoted word;
-- the complete contents of a double-quoted word;
-- a line of an **unquoted** heredoc body.
+- the complete contents of a double-quoted word.
 
-Everything else is refused before the command runs, and the refusal names what was not understood: a reference inside a quoted heredoc (`<<'EOF'`, `<<"EOF"`), inside `${...}`, inside backticks or `$'...'`, inside a comment, inside a larger quoted string, preceded by a backslash escape (`\secret:env:NAME`), or in an unterminated quote; an `op read` whose reference is not a literal (`op read $REF`, `"op" read "$REF"`) or that carries an undocumented flag or a second reference; `op inject` or `op run` beside a reference; a reference written to a `.tpl` template destination; an unknown form such as `secret:1p:`; a redaction token this session never issued; and a file reference that cannot be read. A refusal never executes the command and never partially expands it.
+**A heredoc body is not a supported context — changed in this release.** A reference written inside any heredoc body, quoted (`<<'EOF'`) or not (`<<EOF`), stays **literal text** in what the command writes: it is not expanded, not prefetched, and does not refuse the command. The guard cannot tell "inject this secret into a file" from "write a document, a test or a brief that mentions a reference", and the first is exactly the path that puts a secret on disk. To inject secrets into a file, use 1Password's own `op inject`, outside the guard. Earlier releases expanded a reference on an unquoted heredoc line and refused one in a quoted heredoc; both now pass through as text.
+
+Everything else is refused before the command runs, and the refusal names what was not understood: a reference inside `${...}`, inside backticks or `$'...'`, inside a comment, inside a larger quoted string, preceded by a backslash escape (`\secret:env:NAME`), or in an unterminated quote; an `op read` whose reference is not a literal (`op read $REF`, `"op" read "$REF"`) or that carries an undocumented flag or a second reference; `op inject` or `op run` beside a reference; a reference written to a `.tpl` template destination; an unknown form such as `secret:1p:`; a redaction token this session never issued; and a file reference that cannot be read. A refusal never executes the command and never partially expands it.
 
 A `# comment` after a supported reference ends the line rather than opening unfinished syntax: `printf %s secret:env:NAME # note` is expanded normally. A reference written *inside* the comment is still refused.
 
-### A command that carries a reference is restricted to text the guard reads literally
+### The guard acts on its own forms — and nothing else
 
-The guard does **not** decode the shell's more exotic spellings, and this is deliberate. Bash can spell `op read` in more ways than any second implementation of its lexer will keep up with — ANSI-C escapes, octal bytes, NUL truncation, control escapes, globs, brace expansion. Instead of decoding them, the guard restricts.
+The guard acts on the reference forms above and on the one literal `op read` form. **A command that carries none of them runs untouched, whatever it mentions** — `op`, `read`, a parameter, a wrapper, ANSI-C quoting, backticks. It does not go looking for other ways a shell might end up running `op`.
 
-A command is the guard's business when it carries a secret reference, an `op` invocation, or a spelling that could hide one (an `op` verb such as `read` standing after a word the guard cannot read, or a literal `op` followed by one). **Such a command is refused, with the construct named, if anywhere in it there is:**
+A command that **does** use one of these forms may only be written in text the guard reads literally. It is refused, with the construct named, if anywhere in it there is:
 
 - ANSI-C quoting (`$'...'`), locale quoting (`$"..."`), a backtick substitution, or a NUL byte;
-- a command name the guard cannot read literally — a parameter (`$CMD`), a command substitution (`$(...)`), a glob (`/usr/bin/o?`), brace expansion (`{op,}`), or a leading `~`.
+- a command name the guard cannot read literally — a parameter (`$CMD`), a command substitution (`$(...)`), a glob, brace expansion, or a leading `~`.
 
-Quoting that only changes spelling is still read: `"op" read`, `op 'read'`, `o\p`, and a backslash-newline split through a word are the same invocation as `op read`, and are validated like it.
+The documented `op read` form written where the shell looks for a command name but without a literal reference (`op read "$REF"`, `op --account=team read "$REF"`) is refused too. The same words as arguments (`echo op read foo`) are text, not an invocation.
 
-**This is a limitation, and it is the trade this component exists to make.** If you need `$'\t'`, backticks or a computed command name, write that command without a reference in it. A command that carries no reference, no `op` invocation and no hidden verb is not the guard's business and runs untouched, whatever it spells.
+If you need `$'\t'`, backticks or a computed command name in a command, write that command without a reference in it.
 
-What the guard cannot see: a command that spells *every* part through constructs it does not read — the command name, the verb and the reference all computed, such as `$'op' $'read' "$REF"` with `REF` set earlier — carries nothing it recognises. The output scrub still runs on such a command's result, but the prefetch that makes short values scrubbable does not.
+#### Out of scope: computed, aliased, eval'd or wrapped `op` invocations
+
+**This is a stated limit, at the same weight as the rule above.** An `op` invocation the guard's own forms do not spell — `CMD=op; "$CMD" read "$REF"`, `eval 'op read "$REF"'`, an alias, a function, `$'op' read`, `/usr/bin/o? read`, or `exec`/`command`/`env`/`time` in front of `op read "$REF"` — is **not refused and not prefetched**. Its output is protected only by the pattern detectors and by values already in the vault. A short credential that matches no pattern and was never resolved through a reference this session is not masked in that output.
+
+Four rounds of review showed why the guard stops here: every attempt to find such invocations from the command text was bypassed by the next spelling, and the attempts refused ordinary work (`npm --prefix "$dir" run build`, `rg "$pattern" read`) along the way. A guard that is both bypassable and in the way gets switched off.
 
 ### What triggers a real `op` call
 
-**Every `op://` reference the guard understands is prefetched with a real `op read` before the command runs** — including one that the command would never use as a credential: a fixture path written through an unquoted heredoc, a reference inside a string a test is about to save, a reference typed into a `grep` pattern. That is not incidental: the value has to be in the vault before the command runs, or its appearance in the output could not be scrubbed. On a machine where 1Password asks for biometrics, that means **writing a file whose contents happen to contain a reference can raise an unlock prompt**.
+**Every `op://` reference the guard expands is prefetched with a real `op read` before the command runs** — a bare, single-quoted or double-quoted word on the command line, or the literal `op read` form — including one the command would never use as a credential: a reference inside a string a test is about to save, a reference typed into a `grep` pattern. That is not incidental: the value has to be in the vault before the command runs, or its appearance in the output could not be scrubbed. On a machine where 1Password asks for biometrics, such a command **can raise an unlock prompt**.
+
+A reference inside a **heredoc body** triggers no `op` call at all: heredoc bodies are text (see "Supported secret references").
 
 Two consequences worth knowing before you type one:
 
-- To handle a reference as *text*, put it somewhere the guard refuses rather than expands — a single-quoted heredoc (`<<'EOF'`), `${...}`, backticks, `$'...'`, or a larger quoted word. The command is then refused outright and no `op` call is made.
-- **A failed prefetch is remembered for 60 seconds** per account-and-reference, and re-answered from memory without spawning `op` again. The bound holds under concurrency — requests for a reference whose resolution is already running join it instead of spawning their own — and no number of other failures evicts a reference still inside its window. This bounds a caller that re-enters the failure path to one `op` call per reference per minute; it also means that fixing the underlying cause (signing in, unlocking) and retrying the same reference inside that window is still refused. A *successful* resolution is never cached — the value may have rotated, so it is read again each time.
+- To handle a reference as *text*, write it inside a heredoc body — it passes through untouched with no `op` call — or put it where the guard refuses rather than expands: `${...}`, backticks, `$'...'`, or a larger quoted word.
+- **A failed prefetch is remembered for 60 seconds** per account-and-reference, and re-answered from memory without spawning `op` again. The bound holds under concurrency — requests for a reference whose resolution is already running join it instead of spawning their own — and no number of other failures evicts a reference still inside its window. It is also absolute: at most 16 distinct resolutions run at once and at most 1,024 failures are remembered; a request past either limit is refused without spawning `op`, and expired entries are dropped at the next access. This bounds a caller that re-enters the failure path to one `op` call per reference per minute; it also means that fixing the underlying cause (signing in, unlocking) and retrying the same reference inside that window is still refused. A *successful* resolution is never cached — the value may have rotated, so it is read again each time.
 
 ## Options
 

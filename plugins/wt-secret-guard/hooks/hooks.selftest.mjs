@@ -27,6 +27,10 @@ const files = new Map([
   ['/tmp/wt-secret-guard-file', { text: "file-secret value with ' quote\nsecond-file-secret", mode: 0o600, inode: nextInode++ }],
 ]);
 const journalFiles = new Map();
+// Claude Code's own environment as the host reports it through $.env.get. An environment reference
+// is resolved from here - measured 2026-09-22 in a real `claude -p` session: $.env.get returns an
+// arbitrary variable of the claude process - so a test sets what its command references.
+const testEnv = new Map([['GH_TOKEN', 'fixture-gh-token-value'], ['QUOTE_SECRET', "quote ' secret"]]);
 const setFile = (path, text, mode = 0o600) => files.set(path, { text, mode, inode: nextInode++ });
 const getFile = (path) => files.get(path);
 let onSleep;
@@ -145,7 +149,7 @@ const $ = {
     }
     return { exitCode: 0, stdout: /^op(?:\.exe)?$/.test(argv[0]) ? 'op-fake-value\n' : '' };
   } },
-  env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: configDir, HOME: '/tmp/home' })[name] },
+  env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: configDir, HOME: '/tmp/home' })[name] ?? testEnv.get(name) },
   session: { cwd: async () => projectDir, id: async () => sessionId },
   clock: { sleep: async () => { if (onSleep) await onSleep(); }, now: () => 0 },
   plugin: { root: '/opt/wt-secret-guard' },
@@ -158,6 +162,7 @@ const journalHostFor = (runtime) => ({
   sessionId: () => runtime.session.id(), sessionCwd: () => runtime.session.cwd(), uiLog: (text) => runtime.ui.log(text),
 });
 const referenceHostFor = (runtime) => ({
+  envGet: (name) => runtime.env.get(name),
   processRun: (argv) => runtime.process.run(argv), fsRead: (path) => runtime.fs.read(path), uiLog: (text) => runtime.ui.log(text),
 });
 register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }));
@@ -297,11 +302,44 @@ const assertSkippedWhilePlainRewrites = async (command) => {
   assert.equal(plain, 'echo "$(op read \'op://Private/item/field\')"');
 };
 await test('op reference written to a tpl file is left literal', async () => { let executed = false; const result = await bash($, { tool: 'Bash', command: "printf '%s\\n' 'op://Private/item/field' > /tmp/profile.tpl" }, async () => { executed = true; return {}; }); assert.equal(executed, false); assert.match(result.deny, /refused/i); });
-await test('op reference in a heredoc body is left literal', async () => { let executed = false; const result = await bash($, { tool: 'Bash', command: "cat <<'EOF'\nop://Private/item/field\nEOF" }, async () => { executed = true; return {}; }); assert.equal(executed, false); assert.match(result.deny, /refused/i); });
+await test('V30 a heredoc that MENTIONS a reference triggers no op call and passes untouched', async () => {
+  // Decision (round 8 addendum): a heredoc body is not a context the guard expands. It cannot tell
+  // "inject this secret into a file" from "write a doc, a test or a brief that mentions a
+  // reference" - three real 1Password prompts in one night came from the second - and the first is
+  // exactly the path that writes a secret to disk. Injection into files belongs to `op inject`.
+  const token = tokenize('fixture', 'heredoc-token-value');
+  const references = ['op://Private/heredoc/field', 'secret:env:GH_TOKEN', 'secret:file:/tmp/wt-secret-guard-file', token];
+  const shapes = [];
+  for (const reference of references) {
+    shapes.push(`cat <<EOF\n${reference}\nEOF`, `cat <<'EOF'\n${reference}\nEOF`, `cat <<"EOF"\n${reference}\nEOF`, `cat > /tmp/brief.md <<EOF\nSee ${reference} for details.\nEOF`);
+  }
+  shapes.push('cat <<EOF\nop read op://Private/heredoc/field\nEOF');
+  for (const command of shapes) {
+    const spawned = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) spawned.push(argv); return $.process.run(argv, init); } } };
+    let received;
+    const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    assert.equal(result?.deny, undefined, `a heredoc mentioning a reference was refused: ${JSON.stringify(command)} -> ${result?.deny}`);
+    assert.equal(received, command, `a heredoc mentioning a reference was rewritten: ${JSON.stringify(command)}`);
+    assert.equal(spawned.length, 0, `a heredoc mentioning a reference spawned op: ${JSON.stringify(command)}`);
+  }
+  // The same reference OUTSIDE the heredoc, on the command line, is still ours.
+  const mixed = "printf %s 'op://Private/heredoc/field'; cat <<EOF\nop://Private/heredoc/field\nEOF";
+  let rewritten;
+  await bash($, { tool: 'Bash', command: mixed }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
+  assert.match(rewritten, /^printf %s "\$\(op read 'op:\/\/Private\/heredoc\/field'\)"; cat <<EOF\nop:\/\/Private\/heredoc\/field\nEOF$/, 'the command-line reference was not expanded, or the heredoc one was');
+});
 await test('op reference in a sed search pattern is left literal', async () => { await assertSkippedWhilePlainRewrites("sed -n '/op:\\/\\/Private\\/item\\/field/p' /tmp/input"); });
 await test('op reference inside a larger quoted string is left literal', async () => { let executed = false; const result = await bash($, { tool: 'Bash', command: "printf '%s\\n' 'prefix op://Private/item/field suffix'" }, async () => { executed = true; return {}; }); assert.equal(executed, false); assert.match(result.deny, /refused/i); });
 await test('already substituted op reference is not rewritten again', async () => { await assertSkippedWhilePlainRewrites("echo \"$(op read 'op://Private/item/field')\""); });
-await test('env reference rewrite', async () => { let received; await bash($, { tool: 'Bash', command: 'echo secret:env:GH_TOKEN' }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, 'echo "${GH_TOKEN}"'); });
+await test('env reference rewrite binds the value the guard read, never the raw shell variable', async () => {
+  let received;
+  await bash($, { tool: 'Bash', command: 'echo secret:env:GH_TOKEN' }, async (event) => { received = event.command; return { text: 'ok' }; });
+  assert.equal(received.includes('fixture-gh-token-value'), false, 'the raw value appears in the rewritten command');
+  assert.equal(received.includes('${GH_TOKEN}'), false, 'the shell variable is expanded by the shell instead of the value the guard knows');
+  assert.match(received, /base64 --decode/);
+  assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8', env: { PATH: process.env.PATH } }).stdout, 'fixture-gh-token-value\n');
+});
 await test('file reference rewrite binds encoded data and tokenises its content before Bash runs', async () => { const value = "file-secret value with ' quote\nsecond-file-secret"; let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file' }, async (event) => { received = event.command; return { text: value }; }); assert.equal(received.includes(value), false); assert.match(received, /base64 --decode/); assert(!JSON.stringify(result).includes(value)); assert.match(result.text, /secret:file#/); });
 await test('file reference line selection binds and tokenises only that line', async () => { let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file#2' }, async (event) => { received = event.command; return { text: 'second-file-secret' }; }); assert.equal(received.includes('second-file-secret'), false); assert.match(received, /base64 --decode/); assert(!JSON.stringify(result).includes('second-file-secret')); assert.match(result.text, /secret:file#/); });
 await test('missing file reference is refused and logs no path or value', async () => { let executed = false; const result = await bash($, { tool: 'Bash', command: 'cat secret:file:/tmp/wt-secret-guard-missing' }, async () => { executed = true; return { text: 'failed' }; }); assert.equal(executed, false); assert.match(result.deny, /refused/i); assert(logs.some((line) => line === 'wt-secret-guard: file reference unavailable (1 reference)')); assert(logs.every((line) => !line.includes('/tmp/wt-secret-guard-missing'))); });
@@ -1206,6 +1244,33 @@ await test('V24 a private-key terminator split across chunks still closes the ma
   assert.match(output, /a later ordinary chunk/, 'a later ordinary chunk was swallowed');
   assert.equal(leakedRunAt(output, varied(500, 32)), -1, 'key material before the split terminator escaped');
 });
+await test('V26 an OVERSIZED detected value of ANY kind keeps masking its continuation', async () => {
+  // Round 7 carried the open state for a list of kinds. Any detection still running at the size cap
+  // is unfinished, whatever its kind; the carry follows the detection, not a list.
+  for (const opener of ['API_KEY=', 'credential: ']) {
+    const continuation = varied(1000, 41);
+    const streamed = await collectStream(turnStep, [
+      { kind: 'text', index: 0, text: `${'Ω'.repeat(600)}\n${opener}${varied(66000, 42)}` },
+      { kind: 'text', index: 0, text: `${continuation}\nvisible after the value\n` },
+      { kind: 'stop' },
+    ]);
+    const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+    const at = leakedRunAt(output, continuation);
+    assert.equal(at, -1, `${opener.trim()} the continuation of an oversized detected value escaped at offset ${at}`);
+    assert.match(output, /visible after the value/, `${opener.trim()} text after the value's line was swallowed`);
+  }
+});
+await test('V28 a private-key terminator split across the FIRST overflowing chunk still closes the masking', async () => {
+  // The carry was reset when the buffer overflowed, so a terminator whose first half sits at the end
+  // of that very chunk was never seen whole.
+  const streamed = await collectStream(turnStep, [
+    { kind: 'text', index: 0, text: `-----BEGIN RSA PRIVATE KEY-----\n${varied(66000, 51)}\n-----EN` },
+    { kind: 'text', index: 0, text: 'D RSA PRIVATE KEY-----\nordinary text after the key\n' },
+    { kind: 'stop' },
+  ]);
+  const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+  assert.match(output, /ordinary text after the key/, 'text after a terminator split across the overflowing chunk was swallowed');
+});
 await test('stream fragment invariant holds at every split and every seeded chunking', async () => {
   // The value is long enough to outlast several cuts; the vault-sized cases that discriminate a
   // length-only hold-back live in V10 and V11, so this property stays cheap enough to run per gate.
@@ -1434,17 +1499,13 @@ await test('V23 the failure memory is a per-reference bound under concurrency an
   const retries = spawned.filter((ref) => ref === 'op://vault/evicted/password').length;
   assert.equal(retries, 1, `300 intervening failures let a reference inside its window spawn ${retries} times`);
 });
-await test('V17 line continuations and ANSI-C quoting cannot hide an op invocation', async () => {
-  // Bash removes a backslash-newline entirely - the planner decodes that, it is ordinary word
-  // reading. ANSI-C quoting it no longer decodes (V21): a command that uses it beside an op verb is
-  // refused instead. Either way `op read "$REF"` may not slip past under another spelling.
+await test('V17 a line continuation does not hide the documented op read form', async () => {
+  // Bash removes a backslash-newline entirely - that is ordinary word reading, and the literal form
+  // written with one is still OUR form. ANSI-C spellings of `op` are no longer this lock's business:
+  // they are the documented out-of-scope case, locked as such in V21.
   const cases = [
-    ["$'op' read \"$REF\"", 'ANSI-quoted command word'],
-    ["op $'read' \"$REF\"", 'ANSI-quoted verb'],
-    ["$'\\x6fp' read \"$REF\"", 'ANSI hex escape in the command word'],
     ['op r\\\nead "$REF"', 'line continuation inside the verb'],
     ['o\\\np read "$REF"', 'line continuation inside the command word'],
-    ["$'op' read \"$REF\" > /tmp/out", 'ANSI-quoted command word before a redirection'],
   ];
   for (const [command, shape] of cases) {
     let executed = false;
@@ -1453,44 +1514,60 @@ await test('V17 line continuations and ANSI-C quoting cannot hide an op invocati
     assert.match(result.deny ?? '', /refused/i, shape);
   }
 });
-await test('V21 a reference-bearing command may only spell its commands in text read literally', async () => {
-  // Three rounds each found another spelling that bash decodes to `op read` and the planner did not:
-  // quoted words, then ANSI-C and continuations, then octal truncation, NUL truncation and control
-  // escapes. The guard stops decoding and RESTRICTS instead: once a command is ours, any construct
-  // whose decoding we do not own refuses it. These are the reviewer's own bypasses plus the other
-  // spellings that reach a command word without literal text.
+await test('V21 the planner acts on OUR forms only: refused in unowned contexts, out of scope otherwise, ordinary work untouched', async () => {
+  // Four rounds showed that finding every way a shell reaches `op read` from the text cannot be won,
+  // and that trying refuses ordinary work. So the guard acts on OUR reference forms and the one
+  // literal documented `op read <literal op:// ref>` form, and on nothing else. This table locks all
+  // three directions at once, so none of them can drift without the others noticing.
+  const run = async (command) => {
+    const spawned = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) spawned.push(argv); return $.process.run(argv, init); } } };
+    let received;
+    const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'short-13-pass' }; });
+    return { result, received, spawned };
+  };
+  // 1. OUR forms inside a context we do not own: refused, by name, never executed.
   const refused = [
-    ["$'\\557\\560' read \"$REF\"", 'octal escapes bash truncates to bytes'],
-    ["$'op\\0tail' read \"$REF\"", 'NUL truncation (octal)'],
-    ["$'op\\x00tail' read \"$REF\"", 'NUL truncation (hex)'],
-    ["$'op\\u0000tail' read \"$REF\"", 'NUL truncation (\\u)'],
-    ["$'op\\U00000000tail' read \"$REF\"", 'NUL truncation (\\U)'],
-    ["$'op\\c@tail' read \"$REF\"", 'NUL truncation (\\c@)'],
-    ["$'op\\Uffffffff' read \"$REF\"", 'out-of-range Unicode'],
-    ["$'\\c1' read \"$REF\"", 'control escape'],
-    ["$'op\\c' read \"$REF\"", 'trailing control escape'],
-    ["$'op' $'read' 'op://vault/item/literal-ref'", 'ANSI-C words beside a literal reference'],
-    ["op $'read' --account=team 'op://vault/item/password'", 'an ANSI-C verb after a literal op'],
-    ['op "$VERB" "$REF"', 'a verb this guard cannot read after a literal op'],
-    ['$OP read "$REF"', 'a parameter as the command word before an op verb'],
-    ['sudo "$CMD" read "$REF"', 'an unreadable word before an op verb'],
-    ['$(printf op) read "$REF"', 'a command substitution as the command word'],
-    ['{op,} read "$REF"', 'brace expansion in the command word'],
-    ['/usr/bin/o? read "$REF"', 'a glob in the command word'],
-    ['$"op" read "$REF"', 'a locale-translated command word'],
-    ["printf %s $'x' secret:env:GH_TOKEN", 'an ANSI-C span elsewhere in a reference-bearing command'],
-    ['echo `date`; printf %s secret:env:GH_TOKEN', 'a backtick elsewhere in a reference-bearing command'],
-    ['printf %s secret:env:GH_TOKEN\u0000', 'a NUL byte in a reference-bearing command'],
-    ['"$EDITOR" op://vault/item/field', 'an unreadable command word in a reference-bearing command'],
+    ["$'op' $'read' 'op://vault/item/literal-ref'", 'ANSI-C words beside our 1Password form'],
+    ["op $'read' --account=team 'op://vault/item/password'", 'an ANSI-C verb beside our 1Password form'],
+    ["printf %s $'x' secret:env:GH_TOKEN", 'an ANSI-C span beside our env form'],
+    ['echo `date`; printf %s secret:env:GH_TOKEN', 'a backtick beside our env form'],
+    ['printf %s secret:env:GH_TOKEN\u0000', 'a NUL byte beside our env form'],
+    ['"$EDITOR" op://vault/item/field', 'a command name we cannot read beside our 1Password form'],
+    ['op read "$REF"', 'the documented op read form without a literal reference'],
+    ['op --account=team read "$REF"', 'the documented op read form, global flag first, without a literal reference'],
   ];
   for (const [command, shape] of refused) {
-    let executed = false;
-    const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'short-13-pass' }; });
-    assert.equal(executed, false, `${shape} executed: ${JSON.stringify(command)}`);
+    const { result, received } = await run(command);
+    assert.equal(received, undefined, `${shape} executed: ${JSON.stringify(command)}`);
     assert.match(result.deny ?? '', /refused/i, shape);
   }
-  // A command carrying no reference and no op invocation is not this guard's business, whatever it
-  // spells: the restriction must not leak into ordinary shell use.
+  // 2. DOCUMENTED OUT OF SCOPE: computed, aliased, eval'd or wrapped `op` invocations carrying none of
+  //    our forms. The honest behaviour is locked: NOT refused, NOT rewritten, and NO prefetch - their
+  //    output is protected only by the detectors and the values already in the vault (README).
+  const outOfScope = [
+    "$'\\557\\560' read \"$REF\"",
+    "$'op\\0tail' read \"$REF\"",
+    '$OP read "$REF"',
+    'sudo "$CMD" read "$REF"',
+    '$(printf op) read "$REF"',
+    '{op,} read "$REF"',
+    '/usr/bin/o? read "$REF"',
+    `eval 'op read "$REF"'`,
+    'alias r="op read"\nr "$REF"',
+    'exec op read "$REF"',
+    'command op read "$REF"',
+    'env op read "$REF"',
+    'time -p op read "$REF"',
+    'CMD=op; "$CMD" read "$REF"',
+  ];
+  for (const command of outOfScope) {
+    const { result, received, spawned } = await run(command);
+    assert.equal(result?.deny, undefined, `an out-of-scope invocation was refused: ${JSON.stringify(command)} -> ${result?.deny}`);
+    assert.equal(received, command, `an out-of-scope invocation was rewritten: ${JSON.stringify(command)}`);
+    assert.equal(spawned.length, 0, `an out-of-scope invocation was prefetched: ${JSON.stringify(command)}`);
+  }
+  // 3. Ordinary work carrying none of our forms passes untouched, whatever it mentions.
   const ordinary = [
     "printf %s $'a\\tb'",
     'echo `date`',
@@ -1498,13 +1575,64 @@ await test('V21 a reference-bearing command may only spell its commands in text 
     '"$EDITOR" /tmp/file',
     'ls {a,b}.txt *.md',
     'IFS= read -r first < /tmp/in',
+    'npm --prefix "$dir" run build',
+    'rg "$pattern" read',
+    'echo op "$x"',
+    'echo op read foo',
   ];
   for (const command of ordinary) {
-    let received;
-    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
-    assert.equal(result?.deny, undefined, `a command with no reference was refused: ${JSON.stringify(command)} -> ${result?.deny}`);
-    assert.equal(received, command, `a command with no reference was rewritten: ${JSON.stringify(command)}`);
+    const { result, received, spawned } = await run(command);
+    assert.equal(result?.deny, undefined, `ordinary work was refused: ${JSON.stringify(command)} -> ${result?.deny}`);
+    assert.equal(received, command, `ordinary work was rewritten: ${JSON.stringify(command)}`);
+    assert.equal(spawned.length, 0, `ordinary work spawned op: ${JSON.stringify(command)}`);
   }
+  // The literal documented form keeps working wherever it is written, wrappers included: its
+  // reference is literal, so it is prefetched and left as written.
+  for (const command of ["exec op read 'op://vault/item/wrapped'", "op --account=team read 'op://vault/item/flag-first'"]) {
+    const { result, received, spawned } = await run(command);
+    assert.equal(result?.deny, undefined, `the documented form was refused: ${command} -> ${result?.deny}`);
+    assert.equal(received, command, `the documented form was rewritten: ${command}`);
+    assert.equal(spawned.length, 1, `the documented form was not prefetched exactly once: ${command}`);
+  }
+});
+await test('V25 every value WE substitute is in the vault before the command runs - env references included', async () => {
+  // A 13-character value matches no detector, so the only thing that can mask it in the output is the
+  // vault knowing it. Env references were substituted as "${NAME}" and never registered.
+  // A value NO other test registers: D2 already puts `short-13-pass` in the vault, so using it here
+  // would let the vault mask it whether or not this path registers anything.
+  const value = 'env13-onlyhere';
+  assert.equal([...testState().values()].some((entry) => entry.value === value), false, 'fixture precondition: the value is already in the vault');
+  testEnv.set('TEST_VALUE', value);
+  let received;
+  const result = await bash($, { tool: 'Bash', command: 'printf %s secret:env:TEST_VALUE' }, async (event) => { received = event.command; return { text: value }; });
+  assert.equal(result?.deny, undefined, `the env reference was refused: ${result?.deny}`);
+  assert.equal(result.text.includes(value), false, 'the substituted env value reached the tool result raw');
+  assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8', env: { PATH: process.env.PATH } }).stdout, value, 'the command did not receive the value the guard registered');
+  // A reference whose value the guard cannot read is refused rather than substituted unknown.
+  let executed = false;
+  const unset = await bash($, { tool: 'Bash', command: 'printf %s secret:env:WT_NOT_SET_ANYWHERE' }, async () => { executed = true; return { text: 'x' }; });
+  assert.equal(executed, false, 'an env reference with no readable value executed');
+  assert.match(unset.deny ?? '', /refused/i);
+});
+await test('V27 a credential in a Python repr or a JSON body in command OUTPUT is detected', async () => {
+  // The source-code exemption let `(`...`,`/`)`/`}` shapes through, and a quoted key followed by `:`
+  // matched no pattern at all. Both are ordinary command output: a repr, an API response.
+  const value = 'repr-json-fixture-credential';
+  const shapes = [
+    `Config(${'pass'}word='${value}', user='x')`,
+    `Session(${'sec'}ret="${value}")`,
+    `{"${'pass'}word": "${value}", "user": "x"}`,
+    `{'${'tok'}en': '${value}', 'user': 'x'}`,
+    `{"user": "x", "${'sec'}ret": "${value}"}`,
+  ];
+  for (const shape of shapes) {
+    const result = await call('python -c "print(config)"', shape);
+    assert.equal(result.text.includes(value), false, `a credential survived command output: ${shape}`);
+  }
+  // Source code keeps its exemption where the value is a NAME, not a literal: passing a variable is
+  // not a credential, and reviewing such a call must not be scrubbed.
+  const source = `connect(${'pass'}word=${'pass'}word, user=user)`;
+  assert.equal((await call('git diff', source)).text, source, 'a call passing a variable was scrubbed');
 });
 await test('V15 a reference preceded by a backslash escape is refused instead of rewritten into broken syntax', async () => {
   // The escape belongs to the shell word. Replacing only the reference leaves the escape behind, and
@@ -1521,7 +1649,8 @@ await test('V16 a trailing comment ends the line instead of reading as unfinishe
   let rewritten;
   const result = await bash($, { tool: 'Bash', command: 'printf %s secret:env:GH_TOKEN # a note' }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
   assert.equal(result?.deny, undefined, `a supported reference followed by a comment was refused: ${result?.deny}`);
-  assert.equal(rewritten, 'printf %s "${GH_TOKEN}" # a note');
+  assert.match(rewritten, /printf %s "\$\{__wt_secret_0\}" # a note$/);
+  assert.equal(spawnSync('bash', ['-c', rewritten], { encoding: 'utf8' }).stdout, 'fixture-gh-token-value');
 });
 await test('reference allow-list: every supported form expands byte-identically in every supported context', async () => {
   let directory;
@@ -1534,6 +1663,7 @@ await test('reference allow-list: every supported form expands byte-identically 
     writeFileSync(join(directory, 'op'), `#!/bin/sh\nprintf '%s\\n' "${value}"\n`, { mode: 0o755 });
     const vaultToken = tokenize('fixture', value);
     setFile('/tmp/matrix-secret', value);
+    testEnv.set('MATRIX_SECRET', value);
     const path = `${directory}:${process.env.PATH}`;
     const run = (command) => spawnSync('bash', ['-c', command], { encoding: 'buffer', env: { ...process.env, PATH: path, MATRIX_SECRET: value } });
     const forms = [
@@ -1546,7 +1676,6 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['bare', (reference) => `printf %s ${reference}`],
       ['single-quoted', (reference) => `printf %s '${reference}'`],
       ['double-quoted', (reference) => `printf %s "${reference}"`],
-      ['unquoted heredoc', (reference) => `cat <<EOF\n${reference}\nEOF`],
       ['bare inside a substitution', (reference) => `printf %s "$(printf %s ${reference})"`],
       ['bare before a redirection', (reference) => `printf %s ${reference} > ${directory}/redirected; cat ${directory}/redirected`],
       ['double-quoted after a redirection target', (reference) => `> ${directory}/redirected printf %s "${reference}"; cat ${directory}/redirected`],
@@ -1560,6 +1689,22 @@ await test('reference allow-list: every supported form expands byte-identically 
         const execution = run(rewritten);
         assert.equal(execution.status, 0, `${form} in ${context}: ${execution.stderr?.toString()}`);
         assert.equal(execution.stdout.toString().replace(/\n$/, ''), value, `${form} in ${context} did not expand byte-identically`);
+      }
+    }
+    // A heredoc body is NOT a supported context (round 8 decision): every form, in every heredoc
+    // quoting, passes through as the literal text it is - unrewritten, unprefetched, unrefused - and
+    // the command writes exactly that text.
+    for (const [form, reference] of forms) {
+      for (const [quoting, build] of [['unquoted', (text) => `cat <<EOF\n${text}\nEOF`], ['single-quoted', (text) => `cat <<'EOF'\n${text}\nEOF`], ['double-quoted', (text) => `cat <<"EOF"\n${text}\nEOF`]]) {
+        const command = build(reference);
+        const spawned = [];
+        const counting = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) spawned.push(argv); return $.process.run(argv, init); } } };
+        let rewritten;
+        const result = await bash(counting, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
+        assert.equal(result?.deny, undefined, `${form} in a ${quoting} heredoc was refused: ${result?.deny}`);
+        assert.equal(rewritten, command, `${form} in a ${quoting} heredoc was rewritten`);
+        assert.equal(spawned.length, 0, `${form} in a ${quoting} heredoc was prefetched`);
+        assert.equal(run(rewritten).stdout.toString().replace(/\n$/, ''), reference, `${form} in a ${quoting} heredoc did not stay literal text`);
       }
     }
     const invocations = [
@@ -1590,10 +1735,6 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['op read with an undocumented flag', "op read --zap 'op://Private/matrix/password'"],
       ['op read with two references', "op read 'op://Private/matrix/password' 'op://Private/matrix/other'"],
       ['op inject beside a reference', 'op inject -i secret:file:/tmp/matrix-secret'],
-      ['a vault token in a single-quoted heredoc', `cat <<'EOF'\n${vaultToken}\nEOF`],
-      ['a file reference in a double-quoted heredoc', 'cat <<"EOF"\nsecret:file:/tmp/matrix-secret\nEOF'],
-      ['an environment reference in a quoted heredoc', "cat <<'EOF'\nsecret:env:MATRIX_SECRET\nEOF"],
-      ['a 1Password reference in a quoted heredoc', "cat <<'EOF'\nop://Private/matrix/password\nEOF"],
       ['a reference inside a larger quoted string', "printf '%s' 'prefix op://Private/matrix/password suffix'"],
       ['a reference inside a parameter expansion', 'printf %s "${REF:-secret:env:MATRIX_SECRET}"'],
       ['a reference inside backticks', 'printf %s `printf %s secret:env:MATRIX_SECRET`'],
@@ -1609,7 +1750,6 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['op run with a flag beside a reference', "op run --env-file /tmp/env -- printf %s 'op://Private/matrix/password'"],
       ['a quoted op command word whose reference is a variable', '"op" read "$REF"'],
       ['a quoted op verb whose reference is a variable', "op 'read' \"$REF\""],
-      ['op read inside an unquoted heredoc body', 'cat <<EOF\nop read op://Private/matrix/password\nEOF'],
     ];
     // Every rejection family against every supported FORM. A family verified against one form only
     // says nothing about the other three: each form takes a different path through `extent`, and a
@@ -1620,8 +1760,6 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['preceded by a backslash escape', (reference) => `printf %s \\${reference}`],
       ['beside op run', (reference) => `op run -- printf %s ${reference}`],
       ['written to a template destination', (reference) => `printf '%s' '${reference}' > /tmp/profile.tpl`],
-      ['inside a single-quoted heredoc', (reference) => `cat <<'EOF'\n${reference}\nEOF`],
-      ['inside a double-quoted heredoc', (reference) => `cat <<"EOF"\n${reference}\nEOF`],
       ['inside a parameter expansion', (reference) => `printf %s "\${REF:-${reference}}"`],
       ['inside backticks', (reference) => `printf %s \`printf %s ${reference}\``],
       ['inside a larger quoted word', (reference) => `printf '%s' 'prefix ${reference} suffix'`],
@@ -1726,6 +1864,39 @@ await test('D17 history storage returns immediately after successful repair', as
   await prompt($, { text: raw, origin: { kind: 'composer' } }, async () => ({}));
   onSleep = undefined;
   assert.equal(sleeps, 0, 'successful history repair kept retrying');
+});
+// LAST on purpose: it fills the failure memory, then empties it again by moving the clock.
+await test('V29 the failure memory has an absolute bound: size, concurrency and expiry', async () => {
+  // Measured by the reviewer at 28501c1f: 10,001 resident entries, 10,000 simultaneous distinct
+  // resolvers, and expired entries kept until later activity. The per-reference bound held; the
+  // ABSOLUTE one did not.
+  const spawned = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const gated = { ...$, process: { run: async (argv) => { spawned.push(argv.at(-1)); await gate; return { exitCode: 1, stdout: '' }; } } };
+  const burst = [];
+  for (let at = 0; at < 10000; at += 1) burst.push(resolveReference(gated, `op://vault/burst-${at}/password`, ''));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const simultaneous = spawned.length;
+  release();
+  const results = await Promise.all(burst);
+  assert(results.every((result) => result.token === null), 'a bounded-out request produced a token');
+  assert(simultaneous <= 16, `10,000 distinct references ran ${simultaneous} resolvers at once`);
+  const { referenceMemoryStats } = await import('./reference-runtime.js');
+  const failing = { ...$, process: { run: async () => ({ exitCode: 1, stdout: '' }) } };
+  for (let at = 0; at < 3000; at += 1) await resolveReference(failing, `op://vault/sequential-${at}/password`, '');
+  const resident = referenceMemoryStats().failures;
+  assert(resident <= 1024, `3,000 distinct failures left ${resident} resident entries`);
+  // Expiry: once the window has passed, the NEXT access leaves nothing expired behind.
+  const realNow = Date.now;
+  try {
+    Date.now = () => realNow() + 120_000;
+    await resolveReference(failing, 'op://vault/after-expiry/password', '');
+    assert(referenceMemoryStats().failures <= 1, `expired entries stayed resident: ${referenceMemoryStats().failures}`);
+  } finally { Date.now = realNow; }
+  // Leave nothing behind for the process: the entry just recorded carries the shifted clock.
+  Date.now = () => realNow() + 240_000;
+  try { await resolveReference(failing, 'op://vault/cleanup/password', ''); } finally { Date.now = realNow; }
 });
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);

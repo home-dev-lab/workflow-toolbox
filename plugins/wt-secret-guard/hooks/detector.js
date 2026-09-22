@@ -9,6 +9,9 @@ const patterns = [
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
   ['assignment', /\b(?:password|token|secret)\s*=\s*(?![=])(?:"[^"]+"|'[^']+'|[^\s;,)}"']+)/gi],
   ['op-output', /^\s*(?:password|token|secret|credential)\s*:\s*\S.+$/gim],
+  // A QUOTED key with a quoted value: a JSON body or a Python dict - `{"password": "..."}`. No other
+  // pattern matches it: `assignment` needs `=` and `op-output` needs an unquoted key at a line start.
+  ['key-value', /(["'])(?:password|token|secret)\1\s*:\s*(?:"[^"\n]+"|'[^'\n]+')/gi],
   ['environment-dump', /^\s*(?:\+\s*)?(?:export\s+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)\s*=\s*\S.+$/gm],
 ];
 
@@ -70,6 +73,11 @@ function sourceAssignment(text, match) {
   const sourceLine = (statementStart > 0 ? line.slice(statementStart) : line).replace(/^\s*(?:[-+]\s*)?/, '');
   if (/^(?:(?:export|default)\s+)*(?:const|let|var|type|interface|function|class|import)\b/.test(sourceLine)) return true;
 
+  // Inside a call or a literal, the exemption covers a value that is a NAME (`connect(password=pwd)`
+  // passes a variable). A QUOTED literal there is exactly what a Python repr or a keyword argument
+  // carries - `Config(password='hunter2', user='x')` - and ordinary command output prints it.
+  const value = match[0].slice(match[0].indexOf('=') + 1).trim();
+  if (/^["']/.test(value)) return false;
   const after = text.slice(match.index + match[0].length, lineEnd < 0 ? text.length : lineEnd);
   return /[({][^({]*$/.test(before) && /^\s*[,)}]/.test(after);
 }

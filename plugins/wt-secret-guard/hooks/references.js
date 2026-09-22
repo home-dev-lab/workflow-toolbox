@@ -12,13 +12,17 @@
 //   contexts  bare shell word (including inside $( ))
 //             the complete contents of a single-quoted word
 //             the complete contents of a double-quoted word
-//             an UNQUOTED heredoc body line
-//   restriction  a command carrying a reference, an `op` invocation or a spelling that could hide
-//             one may contain NO construct this module does not decode ($'...', $"...", backticks,
-//             NUL) and NO command name it cannot read literally. It restricts; it never decodes.
+//   not ours  a heredoc body, quoted or not: a reference there stays literal text, is not prefetched
+//             and does not refuse the command (injection into files is `op inject`'s job)
+//   restriction  a command using one of THESE forms may contain NO construct this module does not
+//             decode ($'...', $"...", backticks, NUL) and NO command name it cannot read literally.
+//   out of scope  anything else that might run `op` - a computed or aliased name, eval, a wrapper's
+//             argument list. Not refused, not prefetched: its output is protected only by the
+//             detectors and the values already in the vault.
 //
-// Measured over three review rounds: each round found another bash spelling of `op read` that a
-// decoder here got wrong. Restricting is the only posture that does not lose that race.
+// Measured over four review rounds: a decoder here lost to each new bash spelling of `op read`, and
+// a search for hidden invocations both missed some and refused ordinary work. This module therefore
+// acts on its own forms and nothing else.
 //
 // Measured 2026-09-08: OP_ACCOUNT does not cross WSL interop, while the explicit --account
 // positional argv does, so account identity stays part of each invocation.
@@ -44,8 +48,15 @@ const BACKTICKS = 'backtick command substitution';
 const NUL = 'a NUL byte';
 // Contexts whose text is never a shell word: skipped when reading words, never expanded into.
 const NOT_WORDS = new Set(['comment', 'heredoc', 'heredoc-quoted', 'heredoc-unsupported']);
-// Contexts where an `op` invocation written as raw text is refused rather than validated.
-const SHIELDED = new Set(['comment', 'heredoc', 'heredoc-quoted', 'heredoc-unsupported', 'unsupported']);
+// Contexts where an `op` invocation written as raw text is refused rather than validated. A heredoc
+// body is not among them: it is text the command writes, never a context this guard acts on.
+const SHIELDED = new Set(['comment', 'unsupported']);
+// A heredoc body - quoted or not - is NOT a context this guard expands (round 8 decision). A
+// reference written there stays literal in what the command writes, is not prefetched, and does not
+// refuse the command: the guard cannot tell "inject this secret into a file" from "write a document
+// that mentions a reference", and the first is exactly the path that puts a secret on disk. Injection
+// into files belongs to 1Password's own `op inject`.
+const HEREDOC_BODY = new Set(['heredoc', 'heredoc-quoted', 'heredoc-unsupported']);
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', 'time', '{']);
 
 const quoteForSingleQuotes = (value) => value.replace(/'/g, "'\"'\"'");
@@ -262,11 +273,15 @@ function invocationTokens(command, context, from) {
   return { words, end: index };
 }
 
+// Words from just after `op`: documented global flags, the `read` verb once, then documented flags
+// and exactly one literal op:// reference, in any order after the verb.
 function validateOpRead(words) {
   let account = '';
   let ref = '';
+  let verb = false;
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
+    if (!verb && !word.operator && word.literal && word.text === 'read') { verb = true; continue; }
     if (word.operator) {
       const target = words[index + 1];
       if (!target || target.operator || !target.literal || /^(?:op:\/\/|secret:)/i.test(target.text)) return { valid: false };
@@ -295,7 +310,7 @@ function validateOpRead(words) {
     }
     return { valid: false };
   }
-  return { valid: Boolean(ref), account, ref };
+  return { valid: verb && Boolean(ref), account, ref };
 }
 
 function templateDestination(command) {
@@ -340,50 +355,43 @@ function shellWords(command, context) {
   return words;
 }
 
-// The last word before `at` in the same simple command, or undefined.
-function previousInSegment(words, at) {
-  for (let index = at - 1; index >= 0; index -= 1) if (words[index].segment === words[at].segment) return words[index];
-  return undefined;
-}
-
+// The next word after `at` in the same simple command, or undefined.
 function nextInSegment(words, at) {
   for (let index = at + 1; index < words.length; index += 1) if (words[index].segment === words[at].segment) return words[index];
   return undefined;
 }
 
-// Signals that a command may run `op` although its spelling hides it: an op verb standing after a
-// word this guard cannot read, or a literal `op` whose next word it cannot read. Each one puts the
-// command in scope AND refuses it - the guard cannot know which command runs, so it cannot validate
-// it.
-function hiddenInvocations(words) {
-  const found = [];
-  for (let at = 0; at < words.length; at += 1) {
-    const word = words[at];
-    if (!word.literal) continue;
-    if (OP_VERBS.has(word.text)) {
-      const before = previousInSegment(words, at);
-      if (before && !before.literal) found.push(`an \`op\` verb (\`${word.text}\`) after a word this guard cannot read literally`);
-    }
-    if (OP_COMMAND.test(word.text)) {
-      const after = nextInSegment(words, at);
-      if (after && !after.literal) found.push('an `op` command whose verb this guard cannot read literally');
-    }
-  }
-  return found;
+// A global flag the 1Password CLI accepts BEFORE its subcommand (`op --account=team read ...`).
+function globalFlag(word) {
+  if (!word?.literal) return 0;
+  if (BOOLEAN_FLAGS.has(word.text)) return 1;
+  if (VALUE_FLAGS.has(word.text)) return 2;
+  const assigned = word.text.indexOf('=');
+  return word.text.startsWith('--') && assigned > 2 && VALUE_FLAGS.has(word.text.slice(0, assigned)) ? 1 : 0;
 }
 
+// The ONE literal form this guard owns besides its reference forms: a literal `op` word, documented
+// global flags, then a literal verb. Anything else that might run `op` - a computed name, an alias,
+// eval, a wrapper's argument list - is out of scope by design and is never looked for.
+// `command` records whether `op` stands where the shell looks for a command name: only there does an
+// INVALID use of the form refuse the command, so `echo op read foo` stays ordinary text.
 function opWords(command, context, words) {
   const found = [];
   for (let at = 0; at < words.length; at += 1) {
     const word = words[at];
-    const verb = nextInSegment(words, at);
     if (!word.literal || !OP_COMMAND.test(word.text)) continue;
+    let cursor = at;
+    let verb = nextInSegment(words, cursor);
+    for (let width = globalFlag(verb); width > 0; width = globalFlag(verb)) {
+      for (let step = 0; step < width; step += 1) { const following = nextInSegment(words, cursor); if (!following) break; cursor = words.indexOf(following); }
+      verb = nextInSegment(words, cursor);
+    }
     if (!verb || !verb.literal || !OP_VERBS.has(verb.text)) continue;
-    found.push({ at: word.start, verb: verb.text, after: verb.end, supported: true });
+    found.push({ at: word.start, verb: verb.text, after: word.end, supported: true, command: word.command });
   }
-  // In a heredoc body, a comment or an unsupported context there are no shell words to decode, so an
-  // `op read` written there as raw text is refused rather than validated: this guard never expands
-  // anything in those contexts.
+  // In a comment or an unsupported context there are no shell words to decode, so an `op read`
+  // written there as raw text is refused rather than validated (only when the command is ours). A
+  // heredoc body is not checked at all: it is text the command writes.
   const spelling = /\bop(?:\.exe)?\b/g;
   const verbAt = /(?:read|inject|run)\b/y;
   for (let match; (match = spelling.exec(command));) {
@@ -396,7 +404,7 @@ function opWords(command, context, words) {
     verbAt.lastIndex = after;
     const verb = verbAt.exec(command);
     if (!verb) continue;
-    found.push({ at, verb: verb[0], after: after + verb[0].length, supported: false });
+    found.push({ at, verb: verb[0], after: after + verb[0].length, supported: false, command: false });
   }
   return found.sort((left, right) => left.at - right.at);
 }
@@ -408,7 +416,7 @@ function extent(command, lexed, match) {
   // leave it behind and emit `\"${NAME}"` - accepted here, an unmatched quote at run time.
   if (escapes.has(start - 1)) return { refuse: 'a reference preceded by a backslash escape' };
   const where = context[start];
-  if (where !== 'bare' && where !== 'single' && where !== 'double' && where !== 'heredoc') return { refuse: 'an unsupported quoting context' };
+  if (where !== 'bare' && where !== 'single' && where !== 'double') return { refuse: 'an unsupported quoting context' };
   const quoted = where === 'single' || where === 'double';
   const wrapper = quoted ? bounds[start] : null;
   if (quoted && (!wrapper || wrapper[0] + 1 !== start)) return { refuse: 'a reference that is not the whole quoted word' };
@@ -472,31 +480,42 @@ export function planReferences(command, options = {}) {
   for (let match; (match = REFERENCE.exec(command));) {
     const before = command[match.index - 1];
     if (before !== undefined && /[A-Za-z0-9_]/.test(before)) continue;
+    if (HEREDOC_BODY.has(lexed.context[match.index])) continue;
     matches.push(match);
   }
   const words = shellWords(command, lexed.context);
   const entries = opWords(command, lexed.context, words);
-  const hidden = hiddenInvocations(words);
-  // RESTRICT, never decode. A command is this guard's business when it carries a reference, an `op`
-  // invocation, or a spelling that could hide one. Such a command may only be written in text this
-  // guard reads literally: every construct it does not decode refuses it, by name, and so does every
-  // command name it cannot read. A command with none of the three is left entirely alone, whatever
-  // it spells - the restriction must not leak into ordinary shell use.
-  const ours = matches.length > 0 || entries.length > 0 || hidden.length > 0;
-  if (ours) {
-    for (const construct of lexed.constructs) refusals.push(`${construct}, which this guard does not decode`);
-    refusals.push(...hidden);
-    if (words.some((word) => word.command && !word.literal)) refusals.push('a command name this guard cannot read literally');
-  }
+  // OUR FORMS ONLY. The guard acts on its reference forms and on the one literal documented
+  // `op read <literal op:// reference>` form - nothing else. It does not look for other ways a shell
+  // might reach `op` (a computed name, an alias, eval, a wrapper): that search cannot be won from the
+  // text, and trying refused ordinary work. Those invocations are out of scope by design (README).
+  const invalid = [];
   const consumed = [];
   for (const entry of entries) {
-    if (entry.verb !== 'read') { if (matches.length) refusals.push(`\`op ${entry.verb}\` beside a secret reference`); continue; }
-    if (!entry.supported) { refusals.push('`op read` inside a quoted string, a comment or a heredoc body'); continue; }
+    if (entry.verb !== 'read' || !entry.supported) continue;
     const parsed = invocationTokens(command, lexed.context, entry.after);
     const validated = validateOpRead(parsed.words);
-    if (!validated.valid) { refusals.push('`op read` without a single literal `op://` reference and documented flags'); continue; }
-    invocations.push({ ref: validated.ref, account: validated.account });
-    consumed.push([entry.at, parsed.end]);
+    if (validated.valid) {
+      invocations.push({ ref: validated.ref, account: validated.account });
+      consumed.push([entry.at, parsed.end]);
+    } else if (entry.command) {
+      // Only the documented form written where the shell looks for a command name, and written wrong,
+      // is ours to refuse. `echo op read x` is text; `exec op read "$REF"` is a wrapper - out of scope.
+      invalid.push('`op read` without a single literal `op://` reference and documented flags');
+    }
+  }
+  // A command that uses one of OUR forms may only be written in text this guard reads literally:
+  // every construct it does not decode refuses it, by name, and so does every command name it cannot
+  // read. A command with none of our forms is left alone, whatever it spells or mentions.
+  const ours = matches.length > 0 || invocations.length > 0 || invalid.length > 0;
+  if (ours) {
+    for (const construct of lexed.constructs) refusals.push(`${construct}, which this guard does not decode`);
+    if (words.some((word) => word.command && !word.literal)) refusals.push('a command name this guard cannot read literally');
+    refusals.push(...invalid);
+    for (const entry of entries) {
+      if (entry.verb !== 'read' && matches.length) refusals.push(`\`op ${entry.verb}\` beside a secret reference`);
+      if (entry.verb === 'read' && !entry.supported) refusals.push('`op read` inside a comment or an unsupported context');
+    }
   }
   // An unbalanced quote in a command that is not ours is the caller's business.
   if (!lexed.complete && ours) refusals.push('an incomplete quote, heredoc or substitution');
@@ -515,9 +534,9 @@ export function planReferences(command, options = {}) {
   return { ok: refusals.length === 0, reason: refusals[0] ?? '', occurrences, invocations };
 }
 
-/** A supported context decides how an expansion is quoted; every other context was already refused. */
+/** Every supported context is a shell word, so an expansion is always double-quoted. */
 export function renderReplacement(occurrence, expression) {
-  return occurrence.context === 'heredoc' ? expression : `"${expression}"`;
+  return `"${expression}"`;
 }
 
 export function opExpression(path, account) {

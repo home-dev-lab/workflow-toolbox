@@ -13,54 +13,62 @@ import { knownTokens, tokenize } from './token-vault.js';
 // whatever the caller does. Only failures are remembered: a value that resolved once may have
 // rotated since, and binding a stale secret into a command is worse than spawning `op` again.
 //
-// The bound is per reference and unconditional within the window:
+// The bound is per reference AND absolute:
 // - CONCURRENCY: a request arriving while a resolution for the same key is in flight joins it rather
-//   than spawning its own - forty simultaneous requests are one `op` call;
-// - EVICTION: only EXPIRED entries are ever removed. A key inside its window is never dropped to make
-//   room, so no amount of other failures lets it spawn early. The map is swept of expired entries
-//   once it passes FAILURE_SWEEP_AT, which bounds memory by the failure RATE times the window.
+//   than spawning its own - forty simultaneous requests are one `op` call. At most IN_FLIGHT_MAX
+//   distinct resolutions run at once; a request past that is refused without spawning.
+// - SIZE: at most FAILURE_MEMORY_MAX failures are remembered. A key inside its window is never
+//   evicted to make room - that would let it spawn early - so while the memory is full a NEW key is
+//   refused without spawning instead. Neither path records anything, so neither can grow the map.
+// - EXPIRY: entries are recorded in time order (Map insertion order, stamped at recording), so every
+//   access drops the expired ones from the FRONT and stops at the first live one - amortised O(1),
+//   and nothing expired stays resident past the next access.
 const FAILURE_MEMORY_MS = 60_000;
-const FAILURE_SWEEP_AT = 256;
+const FAILURE_MEMORY_MAX = 1024;
+const IN_FLIGHT_MAX = 16;
 const failures = new Map();
 const inFlight = new Map();
 
-function rememberedFailure(key, now) {
-  const at = failures.get(key);
-  if (at === undefined) return false;
-  if (now - at < FAILURE_MEMORY_MS) return true;
-  failures.delete(key);
-  return false;
-}
-
-function rememberFailure(key, now) {
-  if (failures.size >= FAILURE_SWEEP_AT) {
-    for (const [other, at] of failures) if (now - at >= FAILURE_MEMORY_MS) failures.delete(other);
+function expire(now) {
+  for (const [key, at] of failures) {
+    if (now - at < FAILURE_MEMORY_MS) break;
+    failures.delete(key);
   }
-  failures.set(key, now);
 }
 
-async function resolveOnce($, key, ref, account, now) {
+function rememberFailure(key) {
+  failures.delete(key);
+  failures.set(key, Date.now());
+}
+
+/** Resident sizes, for the bound's own locks. */
+export function referenceMemoryStats() {
+  return { failures: failures.size, inFlight: inFlight.size };
+}
+
+async function resolveOnce($, key, ref, account) {
   let result;
   // Measured 2026-09-08 00:43: a 13-character password matched no pattern, so every
   // explicit reference is prefetched. process.run takes positional argv (run 8).
   try { result = await $.processRun(opReadArgv(ref, account, config().opBinary)); } catch {
-    rememberFailure(key, now);
+    rememberFailure(key);
     await $.uiLog('wt-secret-guard: op resolve failed to start (1 reference)');
     return { token: null };
   }
   const value = opValueFrom(result);
-  if (!value) { rememberFailure(key, now); await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
+  if (!value) { rememberFailure(key); await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
   return { token: tokenize('onepassword', value) };
 }
 
 export async function resolveReference($, ref, account = config().opAccount) {
   const key = `${account}:${ref}`;
-  const now = Date.now();
+  expire(Date.now());
   // Answering from memory stays silent: a log line per attempt would storm exactly like the spawns.
-  if (rememberedFailure(key, now)) return { token: null };
+  if (failures.has(key)) return { token: null };
   const pending = inFlight.get(key);
   if (pending) return pending;
-  const resolution = resolveOnce($, key, ref, account, now);
+  if (inFlight.size >= IN_FLIGHT_MAX || failures.size >= FAILURE_MEMORY_MAX) return { token: null };
+  const resolution = resolveOnce($, key, ref, account);
   inFlight.set(key, resolution);
   try { return await resolution; } finally { inFlight.delete(key); }
 }
@@ -89,6 +97,15 @@ async function fileContent($, occurrence) {
   }
 }
 
+async function envValue($, name) {
+  try {
+    const value = await $.envGet?.(name);
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 const refused = (command, reason) => ({ command, count: 0, references: [], invalidReference: true, reason });
 
 export async function rewriteReferences($, command) {
@@ -103,12 +120,17 @@ export async function rewriteReferences($, command) {
     if (occurrence.form === 'op') {
       expression = opExpression(occurrence.path, account);
       references.push({ ref: `op://${occurrence.path}`, account });
-    } else if (occurrence.form === 'env') {
-      expression = `\${${occurrence.name}}`;
     } else {
-      const value = occurrence.form === 'file' ? await fileContent($, occurrence) : knownTokens().get(occurrence.label)?.value;
-      if (typeof value !== 'string') return refused(command, 'a reference whose value could not be read');
-      if (occurrence.form === 'file') tokenize('file', value);
+      // Every value WE substitute is bound as data and registered in the vault BEFORE the command
+      // runs: a value no detector recognises can only be masked in the output because the vault knows
+      // it. An env reference therefore binds the value the guard read from Claude Code's environment
+      // (measured 2026-09-22: $.env.get returns an arbitrary variable of the claude process) instead
+      // of letting the shell expand a variable the guard never saw.
+      const value = occurrence.form === 'file' ? await fileContent($, occurrence)
+        : occurrence.form === 'env' ? await envValue($, occurrence.name)
+          : knownTokens().get(occurrence.label)?.value;
+      if (typeof value !== 'string') return refused(command, occurrence.form === 'env' ? 'an environment reference whose value this guard cannot read' : 'a reference whose value could not be read');
+      if ((occurrence.form === 'file' || occurrence.form === 'env') && value) tokenize(occurrence.form === 'file' ? 'file' : 'environment', value);
       const bound = binding(bindings.length, value);
       bindings.push(bound.source);
       expression = `\${${bound.name}}`;

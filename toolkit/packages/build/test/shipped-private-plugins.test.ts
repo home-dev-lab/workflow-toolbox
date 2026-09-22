@@ -58,7 +58,7 @@ describe('shipped private plugins', () => {
       'double-quoted op reference rewrites with exactly one level of quoting',
       'single-quoted op reference rewrites with exactly one level of quoting',
       'op reference written to a tpl file is left literal',
-      'op reference in a heredoc body is left literal',
+      'V30 a heredoc that MENTIONS a reference triggers no op call and passes untouched',
       'op reference in a sed search pattern is left literal',
       'op reference inside a larger quoted string is left literal',
       'already substituted op reference is not rewritten again',
