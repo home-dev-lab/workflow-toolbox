@@ -406,6 +406,8 @@ function laneLauncher() {
     "const phase = basename(brief).replace('-brief.md', '');",
     "const phase = basename(/Write the report to `([^`]+)`/.exec(briefText)[1]).split('-report.')[0]; process.stdout.write('pid='+process.pid+'\\n');",
   )
+    .replace('appendFileSync, chmodSync,', 'appendFileSync, chmodSync, mkdirSync,')
+    .replace("const counts = JSON.parse(readFileSync(process.env.WT_FULL_COUNTS, 'utf8')); counts[key] = (counts[key] ?? 0) + 1; writeFileSync(process.env.WT_FULL_COUNTS, JSON.stringify(counts));", "let count = 1; while (true) { try { mkdirSync(join('.lane', key + '-' + count)); break; } catch (error) { if (error.code !== 'EEXIST') throw error; count += 1; } } const counts = { [key]: count };")
     .replaceAll('process.env.WT_FULL_COUNTS', "join('.lane', 'counts.json')")
     .replaceAll('process.env.WT_FULL_CALLS', "join('.lane', 'calls.jsonl')")
     .replace("process.env.WT_EDGE_CONFIG || '{}'", "readFileSync(join('.lane', 'edge-config.json'), 'utf8')")
