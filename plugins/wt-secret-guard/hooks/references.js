@@ -25,12 +25,14 @@ const FILE_LINE = /^#([1-9]\d*)/;
 const VAULT_TOKEN = /^secret:[a-z-]+#[a-f0-9]{6}/i;
 const REFERENCE = /op:\/\/|secret:[A-Za-z0-9_-]+[:#]/g;
 const SEPARATOR = /[\s;|&()<>]/;
+const OP_COMMAND = /^(?:[^\s/]*\/)*op(?:\.exe)?$/;
+const OP_VERBS = new Set(['read', 'inject', 'run']);
 const VALUE_FLAGS = new Set(['--account', '-o', '--out-file', '--encoding', '--file-mode', '--format', '--session', '--config']);
 const BOOLEAN_FLAGS = new Set(['-n', '--no-newline', '-f', '--force', '--no-color', '--cache']);
 
 const quoteForSingleQuotes = (value) => value.replace(/'/g, "'\"'\"'");
 
-function consumeHeredoc(command, context, doc, start) {
+function consumeHeredoc(command, context, escapes, doc, start) {
   let lineStart = start;
   while (lineStart <= command.length) {
     const lineEnd = command.indexOf('\n', lineStart);
@@ -45,7 +47,7 @@ function consumeHeredoc(command, context, doc, start) {
     for (let at = lineStart; at < end; at += 1) {
       const character = command[at];
       if (doc.quoted) { context[at] = 'unsupported'; continue; }
-      if (character === '\\') { context[at] = 'heredoc'; if (at + 1 < end) context[at + 1] = 'heredoc'; at += 1; continue; }
+      if (character === '\\') { context[at] = 'heredoc'; escapes.add(at); if (at + 1 < end) context[at + 1] = 'heredoc'; at += 1; continue; }
       if (character === '$' && (command[at + 1] === '(' || command[at + 1] === '{')) { depth += 1; context[at] = 'unsupported'; context[at + 1] = 'unsupported'; at += 1; continue; }
       if (depth > 0 && (character === ')' || character === '}')) { depth -= 1; context[at] = 'unsupported'; continue; }
       context[at] = depth > 0 ? 'unsupported' : 'heredoc';
@@ -60,10 +62,13 @@ function consumeHeredoc(command, context, doc, start) {
 // Returns, for every byte of the command, the quoting context it sits in, plus the bounds of the
 // quoted word that encloses it. 'unsupported' covers parameter expansion, backticks, $'...',
 // comments and quoted heredoc bodies - contexts this guard deliberately never expands into.
+// `escapes` carries the position of every backslash the shell consumes as an escape, so a caller
+// replacing a span can tell an escaped reference from one that starts its own word.
 export function lex(command) {
   const size = command.length;
   const context = new Array(size).fill('bare');
   const bounds = new Array(size).fill(null);
+  const escapes = new Set();
   const stack = [{ type: 'top' }];
   const pending = [];
   let complete = true;
@@ -97,7 +102,7 @@ export function lex(command) {
       context[index] = 'unsupported'; index += 1; continue;
     }
     if (frame.type === 'double') {
-      if (character === '\\') { context[index] = 'double'; if (index + 1 < size) context[index + 1] = 'double'; index += 2; continue; }
+      if (character === '\\') { context[index] = 'double'; escapes.add(index); if (index + 1 < size) context[index + 1] = 'double'; index += 2; continue; }
       if (character === '"') { close(frame, index, 'double'); context[index] = 'quote'; stack.pop(); index += 1; continue; }
       if (character === '$' && command[index + 1] === '(') { context[index] = 'double'; context[index + 1] = 'double'; stack.push({ type: 'subst' }); index += 2; continue; }
       if (character === '$' && command[index + 1] === '{') { context[index] = 'double'; stack.push({ type: 'param', depth: 0 }); index += 1; continue; }
@@ -105,7 +110,7 @@ export function lex(command) {
       context[index] = 'double'; index += 1; continue;
     }
     if (!base) { context[index] = 'unsupported'; index += 1; continue; }
-    if (character === '\\') { context[index] = 'bare'; if (index + 1 < size) context[index + 1] = 'bare'; index += 2; continue; }
+    if (character === '\\') { context[index] = 'bare'; escapes.add(index); if (index + 1 < size) context[index + 1] = 'bare'; index += 2; continue; }
     if (character === "'") { context[index] = 'quote'; stack.push({ type: 'single', start: index }); index += 1; continue; }
     if (character === '"') { context[index] = 'quote'; stack.push({ type: 'double', start: index }); index += 1; continue; }
     if (character === '$' && command[index + 1] === "'") { context[index] = 'unsupported'; context[index + 1] = 'unsupported'; stack.push({ type: 'ansi' }); index += 2; continue; }
@@ -142,7 +147,7 @@ export function lex(command) {
       context[index] = 'bare';
       index += 1;
       while (pending.length) {
-        const next = consumeHeredoc(command, context, pending.shift(), index);
+        const next = consumeHeredoc(command, context, escapes, pending.shift(), index);
         if (next < 0) { complete = false; index = size; break; }
         index = next;
       }
@@ -151,8 +156,11 @@ export function lex(command) {
     context[index] = frame.type === 'heredoc' ? 'heredoc' : 'bare';
     index += 1;
   }
+  // A comment is closed by the end of the line OR by the end of the input - it is never unfinished
+  // syntax, so a supported reference followed by `# note` stays supported.
+  while (stack.length > 1 && stack.at(-1).type === 'comment') stack.pop();
   if (stack.length > 1 || pending.length) complete = false;
-  return { context, bounds, complete };
+  return { context, bounds, escapes, complete };
 }
 
 function readWord(command, context, from) {
@@ -170,6 +178,9 @@ function readWord(command, context, from) {
     if (kind === 'single') { text += character; index += 1; continue; }
     if (kind === 'double') {
       if (character === '\\') { text += command[index + 1] ?? ''; index += 2; continue; }
+      // A command substitution opens a new command list: it ends the enclosing word for the purpose
+      // of reading command words, so `"$(op read ...)"` still shows `op` as a word of its own.
+      if (character === '$' && command[index + 1] === '(') break;
       if (character === '$' || character === '`') literal = false;
       text += character; index += 1; continue;
     }
@@ -184,7 +195,7 @@ function invocationTokens(command, context, from) {
   while (index < command.length) {
     const kind = context[index];
     const character = command[index];
-    if (kind !== 'bare') { const word = readWord(command, context, index); words.push({ ...word, operator: false }); index = word.end; continue; }
+    if (kind !== 'bare') { const word = readWord(command, context, index); if (word.end <= index) { index += 1; continue; } words.push({ ...word, operator: false }); index = word.end; continue; }
     if (/[ \t]/.test(character)) { index += 1; continue; }
     if (/[;|&\n)]/.test(character)) break;
     if (character === '<' || character === '>') {
@@ -243,24 +254,61 @@ function templateDestination(command) {
   return /(?:>{1,2}|\btee(?:\s+-\w+)*)\s*(?:"[^"\n]*\.tpl"|'[^'\n]*\.tpl'|[^\s;|&]+\.tpl)(?=\s|$|[;|&])/m.test(command);
 }
 
+// Every shell word of the command, decoded exactly as the shell would decode it: quoting changes a
+// word's spelling, never its meaning, so `"op"`, `o"p"` and `op` are all the word `op`. Heredoc
+// bodies and unsupported contexts carry no shell words at all and are skipped here.
+function shellWords(command, context) {
+  const words = [];
+  let index = 0;
+  while (index < command.length) {
+    const kind = context[index];
+    if (kind === 'heredoc' || kind === 'unsupported') { index += 1; continue; }
+    if (command[index] === '$' && command[index + 1] === '(') { index += 2; continue; }
+    if (kind === 'bare' && SEPARATOR.test(command[index])) { index += 1; continue; }
+    const word = readWord(command, context, index);
+    if (word.end <= index) { index += 1; continue; }
+    words.push(word);
+    index = word.end;
+  }
+  return words;
+}
+
 function opWords(command, context) {
   const found = [];
-  const expression = /\bop(?:\.exe)?\b/g;
-  for (let match; (match = expression.exec(command));) {
+  const words = shellWords(command, context);
+  for (let at = 0; at < words.length; at += 1) {
+    const word = words[at];
+    const verb = words[at + 1];
+    if (!word.literal || !OP_COMMAND.test(word.text)) continue;
+    if (!verb || !verb.literal || !OP_VERBS.has(verb.text)) continue;
+    found.push({ at: word.start, verb: verb.text, after: verb.end, supported: true });
+  }
+  // In a heredoc body or an unsupported context there are no shell words to decode - the text is
+  // literal data - so its raw spelling IS its decoded spelling. An `op read` written there is
+  // refused rather than validated, because this guard never expands anything in those contexts.
+  const spelling = /\bop(?:\.exe)?\b/g;
+  const verbAt = /(?:read|inject|run)\b/y;
+  for (let match; (match = spelling.exec(command));) {
     const at = match.index;
+    const kind = context[at];
+    if (kind !== 'heredoc' && kind !== 'unsupported') continue;
     if (at > 0 && !SEPARATOR.test(command[at - 1]) && command[at - 1] !== '/') continue;
     let after = at + match[0].length;
     while (/[ \t]/.test(command[after] ?? '')) after += 1;
-    const verb = /^(?:read|inject|run)\b/.exec(command.slice(after));
+    verbAt.lastIndex = after;
+    const verb = verbAt.exec(command);
     if (!verb) continue;
-    found.push({ at, verb: verb[0], after: after + verb[0].length, bare: context[at] === 'bare' && context[after] === 'bare' });
+    found.push({ at, verb: verb[0], after: after + verb[0].length, supported: false });
   }
-  return found;
+  return found.sort((left, right) => left.at - right.at);
 }
 
 function extent(command, lexed, match) {
-  const { context, bounds } = lexed;
+  const { context, bounds, escapes } = lexed;
   const start = match.index;
+  // An escape belongs to the shell word the reference sits in. Replacing the reference alone would
+  // leave it behind and emit `\"${NAME}"` - accepted here, an unmatched quote at run time.
+  if (escapes.has(start - 1)) return { refuse: 'a reference preceded by a backslash escape' };
   const where = context[start];
   if (where !== 'bare' && where !== 'single' && where !== 'double' && where !== 'heredoc') return { refuse: 'an unsupported quoting context' };
   const quoted = where === 'single' || where === 'double';
@@ -331,7 +379,7 @@ export function planReferences(command, options = {}) {
   const consumed = [];
   for (const entry of opWords(command, lexed.context)) {
     if (entry.verb !== 'read') { if (matches.length) refusals.push(`\`op ${entry.verb}\` beside a secret reference`); continue; }
-    if (!entry.bare) { refusals.push('`op read` inside a quoted string'); continue; }
+    if (!entry.supported) { refusals.push('`op read` inside a quoted string, a comment or a heredoc body'); continue; }
     const parsed = invocationTokens(command, lexed.context, entry.after);
     const validated = validateOpRead(parsed.words);
     if (!validated.valid) { refusals.push('`op read` without a single literal `op://` reference and documented flags'); continue; }

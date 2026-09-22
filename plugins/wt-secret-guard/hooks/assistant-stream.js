@@ -21,7 +21,9 @@ const MAX_BUFFER = 65536;
 const OVERSIZED = '[wt-secret-guard: oversized secret-bearing stream block masked]';
 const BEGIN = '-----BEGIN ';
 const END = '-----END ';
-const OPEN_ASSIGNMENT = /(?:password|token|secret)\s*[=:]\s*(["'])(?:(?!\1)[^\n])*$/i;
+// An unfinished quoted assignment holds until its closing quote arrives. The value may span LINES -
+// a newline does not close a quote - so the hold follows the quote, never the line.
+const OPEN_ASSIGNMENT = /(?:password|token|secret)\s*[=:]\s*(["'])(?:(?!\1)[\s\S])*$/i;
 
 function cleanText(text) { return scrub(text, '').value; }
 
@@ -48,20 +50,26 @@ function eligible(kind, options) {
 
 let fragments = { size: -1, emails: null, addresses: null, index: new Map() };
 
+// Every FRAGMENT-long window of a value's confidential core, mapped to what a span carrying it
+// renders as: a vault label, or - for a value this emission is the first to detect - the kind and
+// hidden text that `labelFor` tokenises into the same label its whole occurrence gets.
+function addGrams(index, kind, value, descriptor, options) {
+  if (typeof value !== 'string' || !value || !eligible(kind, options)) return index;
+  for (const core of cores(kind, value)) {
+    for (let at = 0; at + FRAGMENT <= core.length; at += 1) {
+      const gram = core.slice(at, at + FRAGMENT);
+      if (!index.has(gram)) index.set(gram, descriptor);
+    }
+  }
+  return index;
+}
+
 function fragmentIndex() {
   const vault = knownTokens();
   const options = config();
   if (fragments.size === vault.size && fragments.emails === options.maskEmails && fragments.addresses === options.maskIpAddresses) return fragments.index;
   const index = new Map();
-  for (const [label, entry] of vault) {
-    if (typeof entry.value !== 'string' || !eligible(entry.kind, options)) continue;
-    for (const core of cores(entry.kind, entry.value)) {
-      for (let at = 0; at + FRAGMENT <= core.length; at += 1) {
-        const gram = core.slice(at, at + FRAGMENT);
-        if (!index.has(gram)) index.set(gram, label);
-      }
-    }
-  }
+  for (const [label, entry] of vault) addGrams(index, entry.kind, entry.value, { label }, options);
   fragments = { size: vault.size, emails: options.maskEmails, addresses: options.maskIpAddresses, index };
   return index;
 }
@@ -80,19 +88,6 @@ function secretSpans(text, from, final) {
     if (entry.value.length >= FRAGMENT) continue; // longer values are covered by the fragment index
     for (const at of occurrences(text, entry.value, from)) spans.push({ start: at, end: at + entry.value.length, label });
   }
-  const index = fragmentIndex();
-  if (index.size) {
-    // Contiguous matches are merged as they are found: a 6,000-character run is one span, not
-    // 6,000 of them, which keeps the cut search linear instead of quadratic.
-    let run = null;
-    for (let at = Math.max(0, from - FRAGMENT + 1); at + FRAGMENT <= text.length; at += 1) {
-      const label = index.get(text.slice(at, at + FRAGMENT));
-      if (label === undefined) { run = null; continue; }
-      if (run && at <= run.end) { run.end = at + FRAGMENT; continue; }
-      run = { start: at, end: at + FRAGMENT, label };
-      spans.push(run);
-    }
-  }
   const found = [
     ...detections(text),
     ...optionalDetections(text, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }),
@@ -101,6 +96,25 @@ function secretSpans(text, from, final) {
     if (typeof finding.value !== 'string' || !finding.value) continue;
     const hidden = finding.secret ?? finding.value;
     for (const at of occurrences(text, finding.value, from)) spans.push({ start: at, end: at + finding.value.length, kind: finding.kind, hidden });
+  }
+  const index = fragmentIndex();
+  // THIS emission's detections are indexed too, before the scan: a value detected for the first time
+  // here must protect its own fragments in the same text, or its whole occurrence is masked while a
+  // shorter run of it beside is released raw.
+  const local = new Map();
+  for (const finding of found) addGrams(local, finding.kind, finding.value, { kind: finding.kind, hidden: finding.secret ?? finding.value }, options);
+  if (index.size || local.size) {
+    // Contiguous matches are merged as they are found: a 6,000-character run is one span, not
+    // 6,000 of them, which keeps the cut search linear instead of quadratic.
+    let run = null;
+    for (let at = Math.max(0, from - FRAGMENT + 1); at + FRAGMENT <= text.length; at += 1) {
+      const gram = text.slice(at, at + FRAGMENT);
+      const carrier = index.get(gram) ?? local.get(gram);
+      if (carrier === undefined) { run = null; continue; }
+      if (run && at <= run.end) { run.end = at + FRAGMENT; continue; }
+      run = { start: at, end: at + FRAGMENT, ...carrier };
+      spans.push(run);
+    }
   }
   if (final) {
     const open = OPEN_ASSIGNMENT.exec(text);

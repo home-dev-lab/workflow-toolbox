@@ -23,7 +23,7 @@ A classic `SessionStart` command prints one inactive-guard notice when the flag 
 The Bash hook expands a small allow-list, and refuses the command outright — with the reason and this list — for anything else it finds. Supported **forms**:
 
 - `op://vault/item/[section/]field`, a literal 1Password reference;
-- `op read <literal op:// reference>` with the documented flags `--account`, `-o`/`--out-file`, `--encoding`, `--file-mode`, `--format`, `--session`, `--config`, `-n`/`--no-newline`, `-f`/`--force`, `--no-color`, `--cache`, and plain redirections. The invocation is left as written and its reference is prefetched;
+- `op read <literal op:// reference>` with the documented flags `--account`, `-o`/`--out-file`, `--encoding`, `--file-mode`, `--format`, `--session`, `--config`, `-n`/`--no-newline`, `-f`/`--force`, `--no-color`, `--cache`, and plain redirections. The invocation is left as written and its reference is prefetched. The command word and the verb are read as the shell reads them, so `"op" read`, `op 'read'` and `/usr/bin/op read` are the same invocation as `op read` and earn the same validation — and the same refusal;
 - `secret:env:NAME`, where `NAME` is `UPPER_SNAKE_CASE`;
 - `secret:file:/absolute/path` with an optional `#line`;
 - a redaction token this session issued.
@@ -35,7 +35,9 @@ Supported **contexts**, one of which every reference must sit in:
 - the complete contents of a double-quoted word;
 - a line of an **unquoted** heredoc body.
 
-Everything else is refused before the command runs, and the refusal names what was not understood: a reference inside a quoted heredoc (`<<'EOF'`, `<<"EOF"`), inside `${...}`, inside backticks or `$'...'`, inside a comment, inside a larger quoted string, or in an unterminated quote; an `op read` whose reference is not a literal (`op read $REF`) or that carries an undocumented flag or a second reference; `op inject` or `op run` beside a reference; a reference written to a `.tpl` template destination; an unknown form such as `secret:1p:`; a redaction token this session never issued; and a file reference that cannot be read. A refusal never executes the command and never partially expands it.
+Everything else is refused before the command runs, and the refusal names what was not understood: a reference inside a quoted heredoc (`<<'EOF'`, `<<"EOF"`), inside `${...}`, inside backticks or `$'...'`, inside a comment, inside a larger quoted string, preceded by a backslash escape (`\secret:env:NAME`), or in an unterminated quote; an `op read` whose reference is not a literal (`op read $REF`, `"op" read "$REF"`) or that carries an undocumented flag or a second reference; `op inject` or `op run` beside a reference; a reference written to a `.tpl` template destination; an unknown form such as `secret:1p:`; a redaction token this session never issued; and a file reference that cannot be read. A refusal never executes the command and never partially expands it.
+
+A `# comment` after a supported reference ends the line rather than opening unfinished syntax: `printf %s secret:env:NAME # note` is expanded normally. A reference written *inside* the comment is still refused.
 
 ## Options
 

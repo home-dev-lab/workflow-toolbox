@@ -1111,6 +1111,43 @@ await test('V11 a detected value straddling a prefix/tail cut is never released 
     assert.equal(leakedRunAt(output, vendor), -1, `cut ${inside} characters into the token: a raw run crossed it`);
   }
 });
+// A deterministic, repeat-free filler: every 8-character window of it is distinct, so a leaked run
+// is attributable to this value rather than to an accidental match against another fixture.
+const varied = (length, offset = 0) => {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
+  let text = '';
+  for (let at = 0; at < length; at += 1) text += alphabet[(at * 7 + offset * 13 + 3) % alphabet.length];
+  return text;
+};
+await test('V12 an unfinished MULTILINE quoted assignment is held until the assignment completes', async () => {
+  // The hold-back must follow the assignment SYNTAX, not the line. A quoted value that spans lines
+  // is still unfinished, and releasing "everything but the last 512 characters" of it hands out the
+  // confidential bytes before any detector has seen the closing quote.
+  const confidential = `${varied(400, 1)}\n${varied(400, 2)}\n${varied(400, 3)}`;
+  const opener = `${'pass'}word = "`;
+  const streamed = await collectStream(turnStep, [
+    { kind: 'text', index: 0, text: `${'Ω'.repeat(600)}${opener}${confidential}` },
+    { kind: 'text', index: 0, text: '"\ndone\n' },
+    { kind: 'stop' },
+  ]);
+  const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+  const at = leakedRunAt(output, confidential);
+  assert.equal(at, -1, `a raw run of the unfinished multiline assignment escaped at offset ${at}`);
+  assert.equal(output.includes(confidential), false, 'the complete confidential value reached the stream');
+});
+await test('V13 a value first detected in an emission also protects its own fragments', async () => {
+  // The fragment index is what stops a value being released in pieces. Built from the vault ALONE it
+  // cannot know a value this emission is the first to detect, so that value's own prefix goes out raw
+  // beside its masked whole.
+  const fresh = `ghp_${'QwErTy12'.repeat(4)}AbCd`;
+  const streamed = await collectStream(turnStep, [
+    { kind: 'text', index: 0, text: `here it is ${fresh} and again ${fresh.slice(0, 20)} end` },
+    { kind: 'stop' },
+  ]);
+  const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+  const at = leakedRunAt(output, fresh);
+  assert.equal(at, -1, `a raw run of the newly detected value reached the stream at offset ${at}`);
+});
 await test('stream fragment invariant holds at every split and every seeded chunking', async () => {
   // The value is long enough to outlast several cuts; the vault-sized cases that discriminate a
   // length-only hold-back live in V10 and V11, so this property stays cheap enough to run per gate.
@@ -1258,6 +1295,9 @@ await test('V4 every supported op read argument placement is prefetched or refus
     ["op read -o /tmp/out 'op://vault/item/password' --account=team", 'team'],
     ["op read 'op://vault/item/password' > /tmp/out", ''],
     ["> /tmp/out op read --account=team 'op://vault/item/password'", 'team'],
+    ['"op" read \'op://vault/item/password\'', ''],
+    ["op 'read' --account=team 'op://vault/item/password'", 'team'],
+    ["o'p' read -n 'op://vault/item/password' --account team", 'team'],
   ];
   for (const [command, account] of cases) {
     let executed = false; let opArgv;
@@ -1267,6 +1307,33 @@ await test('V4 every supported op read argument placement is prefetched or refus
     assert.deepEqual(opArgv, account ? ['op', 'read', '--account', account, 'op://vault/item/password'] : ['op', 'read', 'op://vault/item/password']);
     assert.match(result.deny, /1Password reference/i);
   }
+});
+await test('V14 a quoted spelling of the `op` command word is validated like the bare spelling', async () => {
+  // Quoting changes the spelling of a shell word, never its meaning. `op 'read' "$REF"` runs exactly
+  // what `op read "$REF"` runs, so it earns the same validation - and the same refusal.
+  for (const command of ['op \'read\' "$REF"', '"op" read "$REF"', 'o"p" read "$REF"', "'op' 'read' \"$REF\"", 'op read"" "$REF"']) {
+    let executed = false;
+    const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'raw' }; });
+    assert.equal(executed, false, `${command} executed without validating its reference`);
+    assert.match(result.deny ?? '', /refused/i, command);
+  }
+});
+await test('V15 a reference preceded by a backslash escape is refused instead of rewritten into broken syntax', async () => {
+  // The escape belongs to the shell word. Replacing only the reference leaves the escape behind, and
+  // the emitted command then carries an unmatched quote - accepted here, failing at run time there.
+  setFile('/tmp/escaped-secret', 'escaped value');
+  for (const command of ['printf %s \\secret:env:QUOTE_SECRET', 'printf %s \\secret:file:/tmp/escaped-secret', 'printf %s \\op://Private/item/field']) {
+    let executed = false; let rewritten;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { executed = true; rewritten = event.command; return { text: 'raw' }; });
+    assert.equal(executed, false, `${command} was accepted and rewritten to ${rewritten}`);
+    assert.match(result.deny ?? '', /refused/i, command);
+  }
+});
+await test('V16 a trailing comment ends the line instead of reading as unfinished syntax', async () => {
+  let rewritten;
+  const result = await bash($, { tool: 'Bash', command: 'printf %s secret:env:GH_TOKEN # a note' }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
+  assert.equal(result?.deny, undefined, `a supported reference followed by a comment was refused: ${result?.deny}`);
+  assert.equal(rewritten, 'printf %s "${GH_TOKEN}" # a note');
 });
 await test('reference allow-list: every supported form expands byte-identically in every supported context', async () => {
   let directory;
@@ -1293,6 +1360,8 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['double-quoted', (reference) => `printf %s "${reference}"`],
       ['unquoted heredoc', (reference) => `cat <<EOF\n${reference}\nEOF`],
       ['bare inside a substitution', (reference) => `printf %s "$(printf %s ${reference})"`],
+      ['bare before a redirection', (reference) => `printf %s ${reference} > ${directory}/redirected; cat ${directory}/redirected`],
+      ['double-quoted after a redirection target', (reference) => `> ${directory}/redirected printf %s "${reference}"; cat ${directory}/redirected`],
     ];
     for (const [form, reference] of forms) {
       for (const [context, build] of contexts) {
@@ -1348,6 +1417,15 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['a lowercase environment name', 'printf %s secret:env:not_valid'],
       ['a truncated 1Password path', 'printf %s op://broken'],
       ['a reference written to a template destination', "printf '%s' 'op://Private/matrix/password' > /tmp/profile.tpl"],
+      ['a reference inside a comment', 'printf %s hello # secret:env:MATRIX_SECRET'],
+      ['a reference inside an ANSI-quoted word', "printf %s $'secret:env:MATRIX_SECRET'"],
+      ['a reference preceded by a backslash escape', 'printf %s \\secret:env:MATRIX_SECRET'],
+      ['a reference escaped inside a double-quoted word', 'printf %s "\\secret:env:MATRIX_SECRET"'],
+      ['op run beside a reference', 'op run -- printf %s secret:env:MATRIX_SECRET'],
+      ['op run beside a 1Password reference', "op run --env-file /tmp/env -- printf %s 'op://Private/matrix/password'"],
+      ['a quoted op command word whose reference is a variable', '"op" read "$REF"'],
+      ['a quoted op verb whose reference is a variable', "op 'read' \"$REF\""],
+      ['op read inside an unquoted heredoc body', 'cat <<EOF\nop read op://Private/matrix/password\nEOF'],
     ];
     for (const [shape, command] of refusals) {
       let executed = false;
