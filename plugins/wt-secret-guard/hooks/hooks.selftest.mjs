@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
-import { configure, register, testState } from './hooks.js';
+import { readFileSync } from 'node:fs';
+import { detections, optionalDetections } from './detector.js';
+import { configure, register, testState, tokenize } from './hooks.js';
 import { sha256 } from './sha256.js';
 import { resolveReference } from './hooks.js';
+import { opReadArgv, opReferencesIn, opValueFrom } from './op-resolve.js';
+
+const corpus = JSON.parse(readFileSync(new URL('./fixtures/secret-guard-corpus.json', import.meta.url), 'utf8'));
 
 const hooks = []; const logs = []; const calls = [];
 const configDir = '/tmp/wt-secret-guard-config';
@@ -106,7 +111,32 @@ await test('ordinary inbound message mentioning key is unchanged and answerable'
 });
 await test('does not register an inert user-tier prompt.context guard', async () => { assert.equal(context, undefined); });
 await test('sha256 known answer', async () => { assert.equal(sha256('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'); });
-await test('output scrub and distinct tokens', async () => { const result = await call('x', `${github}\n${aws}`); assert(!JSON.stringify(result).includes(github)); assert(!JSON.stringify(result).includes(aws)); assert.equal(testState().size, 2); });
+await test('shared corpus contains the 47 SR Cloud command verdicts and no local workspace path', async () => {
+  assert.equal(corpus.denyCommands.length, 47);
+  assert.equal(JSON.stringify(corpus).includes('/home/'), false);
+});
+await test('shared detector corpus characterizes built-in and optional cases', async () => {
+  for (const fixture of corpus.detections) assert.equal(detections(fixture.text)[0]?.kind ?? null, fixture.kind, fixture.name);
+  for (const fixture of corpus.optionalDetections) assert.equal(optionalDetections(fixture.text, fixture.options)[0]?.kind ?? null, fixture.kind, fixture.name);
+});
+await test('token format is stable for a repeated value', async () => {
+  const value = 'fixture-token-format-value';
+  const first = tokenize('fixture', value);
+  assert.match(first, /^secret:fixture#[a-f0-9]{6}$/);
+  assert.equal(tokenize('another-kind', value), first);
+});
+await test('op resolver pure helpers cover defaults, account selection, deduplication and empty output', async () => {
+  assert.deepEqual(opReadArgv('op://vault/item/field'), ['op', 'read', 'op://vault/item/field']);
+  assert.deepEqual(opReadArgv('op://vault/item/field', 'team', ''), ['op', 'read', '--account', 'team', 'op://vault/item/field']);
+  assert.deepEqual(opReferencesIn('echo op://vault/item/field op://vault/item/field secret:1p:other/item/password'), [
+    'op://vault/item/field',
+    'op://other/item/password',
+  ]);
+  assert.deepEqual(opReferencesIn(null), []);
+  assert.equal(opValueFrom({ stdout: 'value\r\n' }), 'value');
+  assert.equal(opValueFrom(), '');
+});
+await test('output scrub and distinct tokens', async () => { const result = await call('x', `${github}\n${aws}`); assert(!JSON.stringify(result).includes(github)); assert(!JSON.stringify(result).includes(aws)); const entries = [...testState().values()]; assert(entries.some((entry) => entry.kind === 'github-classic')); assert(entries.some((entry) => entry.kind === 'aws-access-key')); });
 await test('plain-line op credential output is scrubbed', async () => { const result = await call('op item get example --fields credential', `credential: ${opFake}`); assert.equal(JSON.stringify(result).includes(opFake), false); assert.match(result.text, /secret:op-output#/); });
 const concealedJson = (value) => JSON.stringify({ id: 'credential', label: 'credential', type: 'CONCEALED', value, padding: 'x'.repeat(100) }, null, 2);
 await test('complete concealed JSON output is scrubbed', async () => {
@@ -176,6 +206,13 @@ await test('file reference line selection quotes and tokenises only that line', 
 await test('missing file reference remains unchanged and logs no path or value', async () => { let received; await bash($, { tool: 'Bash', command: 'cat secret:file:/tmp/wt-secret-guard-missing' }, async (event) => { received = event.command; return { text: 'failed' }; }); assert.equal(received, 'cat secret:file:/tmp/wt-secret-guard-missing'); assert(logs.some((line) => line === 'wt-secret-guard: file reference unavailable (1 reference)')); assert(logs.every((line) => !line.includes('/tmp/wt-secret-guard-missing'))); });
 await test('Read result scrub publishes tokens without treating its path as a secret', async () => { const value = 'read-result-secret'; const result = await read($, { tool: 'Read', file_path: '/tmp/not-a-secret' }, async (event) => ({ ...event, text: `password = ${value}` })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.file_path, '/tmp/not-a-secret'); assert.match(result.text, /secret:assignment#/); });
 await test('MCP result scrub tokenises inbound sensitive text without rewriting its input', async () => { const value = 'mcp-result-secret'; const event = { tool: 'mcp__atrium__read_message', text: `token = ${value}` }; const result = await mcp($, event, async (received) => ({ ...received, text: received.text })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.tool, event.tool); assert.match(result.text, /secret:assignment#/); });
+await test('[KNOWN GAP deny layer] Bash secret-file reads currently reach the executor unchanged', async () => {
+  const command = corpus.denyCommands.find((fixture) => fixture.verdict)?.command;
+  let received;
+  const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event; return { text: 'fixture file contents' }; });
+  assert.equal(received.command, command);
+  assert.equal(result.deny, undefined);
+});
 await test('destructuring defaults named like credentials pass through tool results', async () => {
   const source = 'const { kind, value, secret = value } = result;';
   assert.equal((await call('git diff', source)).text, source);
