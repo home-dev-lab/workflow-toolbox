@@ -36,6 +36,7 @@ Measured on the release tree against the 0.181.0 baseline (kept on purpose, not 
 | Coverage statements % | 40.62 -> 74.69 | +34.07 | - -> - | - |
 
 ### Added
+- Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
 - Add a host adapter derived from real three-OS captures (`plugin/bin/lib/host/`): question-named operations, per-OS implementations, and a fake that replays the captured bytes BELOW the parsers so the real parsers run. The pid-to-parent-pid family moves behind it with a grep-zero perimeter lock over 212 non-generated source files; a platform that cannot answer returns a named unknown instead of a plausible zero. The Windows process-table capture is preserved as an explicit unavailable rather than invented
 - Add `wt-deep-search` (EXPERIMENTAL): a WebSearch substitution answering from the local Claude Code documentation mirror, context7, Brave or Exa, plus a detached deep-research rung that returns a handle and is collected later; zero dependencies, no key required, cross-platform verdict included
 - Add dispatch-only Linux, Windows, and macOS host probes for process tables, process-group termination, and real path behavior, with provenance-rich byte-stable evidence artifacts

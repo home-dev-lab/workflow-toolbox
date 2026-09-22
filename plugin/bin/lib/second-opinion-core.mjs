@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
+import { withRepositoryGuide } from './sdk-role-profile.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const QUOTA_PROBE = fileURLToPath(new URL('../wt-quota-probe.mjs', import.meta.url))
@@ -250,7 +251,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
   let failed = false
   try {
     const stream = query({
-      prompt: request,
+      prompt: withRepositoryGuide(options.repo, request),
       options: {
         model: 'fable',
         cwd: options.repo,

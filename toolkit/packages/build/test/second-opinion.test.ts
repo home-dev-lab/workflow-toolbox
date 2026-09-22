@@ -224,6 +224,7 @@ describe('second-opinion advisor', () => {
 
   it('uses one read-only Fable SDK query when lane consent is not given', async () => {
     const f = fixture(false)
+    writeFileSync(join(f.repo, 'CLAUDE.md'), '# Guide\n')
     let queryInput: unknown
     const query = vi.fn((input) => {
       queryInput = input
@@ -237,7 +238,7 @@ describe('second-opinion advisor', () => {
     expect(deps.probeQuota).toHaveBeenCalledOnce()
     expect(query).toHaveBeenCalledOnce()
     expect(queryInput).toMatchObject({
-      prompt: 'Question with facts and sources.',
+      prompt: `${join(f.repo, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
         model: 'fable',
         cwd: f.repo,
