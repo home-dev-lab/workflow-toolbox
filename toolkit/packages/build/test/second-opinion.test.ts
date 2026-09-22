@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
@@ -353,5 +353,28 @@ describe('second-opinion advisor', () => {
       if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
+  })
+
+  it('names output overflow and fails after terminating the owned companion family', async () => {
+    const f = fixture(true)
+    const companion = join(f.repo, 'overflow-companion.mjs')
+    writeFileSync(companion, "process.stdout.write('x'.repeat(1024))\n")
+    const endProcessFamily = vi.fn()
+    const adapter = {
+      platform: process.platform,
+      endProcessFamily,
+      readProcessSnapshot: () => ({ supported: true, processes: [] }),
+      readProcessRelationships: () => ({ status: 'known', processes: [] }),
+    }
+    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64 })
+    deps.resolveCodexCompanion = () => companion
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+    expect(lines(f.out)).toEqual([
+      'ROUTE=gpt-astra',
+      'REFUSED: Codex companion output exceeded 64 bytes.',
+      'EXIT=1',
+    ])
+    expect(endProcessFamily).toHaveBeenCalled()
   })
 })

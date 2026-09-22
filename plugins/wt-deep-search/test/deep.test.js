@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -13,6 +14,15 @@ import { startDeepResearch } from '../src/deep/runner.js';
 import { ProviderFailure } from '../src/provider-failure.js';
 
 const question = 'How should a team compare current battery recycling methods and their tradeoffs?';
+
+async function waitFor(check, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return Boolean(await check());
+}
 
 test('the fast hook has no opencode invocation or deep import', async () => {
   const source = await readFile(new URL('../hooks/hooks.js', import.meta.url), 'utf8');
@@ -330,11 +340,10 @@ test('opencode launch uses an argument array without a shell', () => {
 test('opencode timeout is owned by Node, kills the child, and records the timeout', () => {
   let onExit;
   let onTimeout;
-  let killed = false;
+  const signals = [];
   const writes = [];
   const child = {
     pid: 44,
-    kill() { killed = true; },
     once(event, callback) { if (event === 'exit') onExit = callback; },
     unref() {},
   };
@@ -345,6 +354,8 @@ test('opencode timeout is owned by Node, kills the child, and records the timeou
       clearTimeout() {},
       closeSync() {},
       openSync: () => 8,
+      processFamilyExists: () => false,
+      signalProcessFamily: (pid, signal) => signals.push([pid, signal]),
       setTimeout: (callback) => { onTimeout = callback; return 7; },
       spawn: () => child,
     },
@@ -352,8 +363,140 @@ test('opencode timeout is owned by Node, kills the child, and records the timeou
 
   onTimeout();
   onExit(null, 'SIGTERM');
-  assert.equal(killed, true);
+  assert.deepEqual(signals, [[44, 'SIGTERM']]);
   assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
+});
+
+test('opencode timeout escalates to SIGKILL and withholds the marker until the family is gone', () => {
+  const timers = [];
+  const signals = [];
+  const writes = [];
+  const familyStates = [true, false];
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', timeoutMs: 90_000 },
+    {
+      appendFileSync: (_path, value) => writes.push(value),
+      clearTimeout() {},
+      closeSync() {},
+      openSync: () => 8,
+      processFamilyExists: () => familyStates.shift(),
+      setTimeout: (callback) => { timers.push(callback); return timers.length; },
+      signalProcessFamily: (pid, signal) => signals.push([pid, signal]),
+      spawn: () => ({ pid: 44, once() {}, unref() {} }),
+    },
+  );
+
+  timers.shift()();
+  assert.deepEqual(writes, []);
+  timers.shift()();
+  assert.deepEqual(signals, [[44, 'SIGTERM'], [44, 'SIGKILL']]);
+  assert.deepEqual(writes, []);
+  timers.shift()();
+  assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
+});
+
+test('Windows timeout forces the process tree when it has not exited after graceful taskkill', () => {
+  let onExit;
+  const timers = [];
+  const signals = [];
+  const writes = [];
+  startOpencode(
+    { prompt: 'full brief', dir: String.raw`C:\work`, logPath: String.raw`C:\state\deep-1.log`, timeoutMs: 90_000 },
+    {
+      appendFileSync: (_path, value) => writes.push(value),
+      clearTimeout() {},
+      closeSync() {},
+      openSync: () => 8,
+      platform: 'win32',
+      setTimeout: (callback) => { timers.push(callback); return timers.length; },
+      signalProcessFamily: (pid, signal) => { signals.push([pid, signal]); return true; },
+      spawn: () => ({
+        pid: 44,
+        once(event, callback) { if (event === 'exit') onExit = callback; },
+        unref() {},
+      }),
+    },
+  );
+
+  timers.shift()();
+  timers.shift()();
+  assert.deepEqual(signals, [[44, 'SIGTERM'], [44, 'SIGKILL']]);
+  assert.deepEqual(writes, []);
+  onExit(null, 'SIGKILL');
+  assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
+});
+
+test('opencode timeout terminates the real detached child and grandchild before recording exit', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'deep-search-process-tree-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = join(root, 'process-tree.mjs');
+  const pidFile = join(root, 'pids');
+  const logPath = join(root, 'opencode.log');
+  await writeFile(fixture, [
+    "import { spawn } from 'node:child_process';",
+    "import { writeFileSync } from 'node:fs';",
+    'const grandchild = spawn(process.execPath, [\'-e\', \'setInterval(() => {}, 1000)\'], { stdio: \'ignore\' });',
+    'writeFileSync(process.argv[2], `${process.pid} ${grandchild.pid}`);',
+    'setInterval(() => {}, 1000);',
+  ].join('\n'));
+
+  const result = startOpencode(
+    { prompt: 'full brief', dir: root, logPath, timeoutMs: 100 },
+    {
+      spawn: (_command, _args, options) => spawn(process.execPath, [fixture, pidFile], options),
+      terminationGraceMs: 100,
+    },
+  );
+  let grandchildPid = 0;
+  try {
+    assert.equal(await waitFor(async () => {
+      try {
+        const pids = (await readFile(pidFile, 'utf8')).split(' ').map(Number);
+        grandchildPid = pids[1];
+        return pids[0] === result.pid && Number.isInteger(grandchildPid);
+      } catch { return false; }
+    }), true);
+    assert.equal(await waitFor(async () => (await readFile(logPath, 'utf8')).includes('EXIT=124')), true);
+    assert.throws(() => process.kill(result.pid, 0), { code: 'ESRCH' });
+    assert.throws(() => process.kill(grandchildPid, 0), { code: 'ESRCH' });
+  } finally {
+    try { process.kill(-result.pid, 'SIGKILL'); } catch {}
+  }
+});
+
+// The real worker (bin/deep.mjs) starts opencode and then has nothing else keeping it alive: the
+// child is unref'd, so the timeout itself must keep the worker process running until the run is
+// bounded. An unref'd timeout lets the worker exit at once, the timeout never fires, and the
+// detached opencode run is left unbounded with no terminal marker.
+test('opencode timeout keeps a worker that returns immediately alive until the run is bounded', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'deep-search-worker-alive-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fixture = join(root, 'long-child.mjs');
+  const worker = join(root, 'worker.mjs');
+  const pidFile = join(root, 'pid');
+  const logPath = join(root, 'opencode.log');
+  await writeFile(fixture, "import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000);");
+  const moduleUrl = new URL('../src/deep/opencode.js', import.meta.url).href;
+  await writeFile(worker, [
+    "import { spawn } from 'node:child_process';",
+    `import { startOpencode } from ${JSON.stringify(moduleUrl)};`,
+    `startOpencode({ prompt: 'p', dir: ${JSON.stringify(root)}, logPath: ${JSON.stringify(logPath)}, timeoutMs: 200 }, {`,
+    `  spawn: (_c, _a, options) => spawn(process.execPath, [${JSON.stringify(fixture)}, ${JSON.stringify(pidFile)}], options),`,
+    '  terminationGraceMs: 100,',
+    '});',
+  ].join('\n'));
+  const workerProcess = spawn(process.execPath, [worker], { stdio: 'ignore' });
+  await new Promise((resolveExit) => workerProcess.once('exit', resolveExit));
+  let childPid = 0;
+  try {
+    assert.equal(await waitFor(async () => {
+      try { childPid = Number(await readFile(pidFile, 'utf8')); return childPid > 0; } catch { return false; }
+    }), true);
+    assert.equal(await waitFor(async () => (await readFile(logPath, 'utf8')).includes('EXIT=124'), 2_000), true);
+    assert.throws(() => process.kill(childPid, 0), { code: 'ESRCH' });
+  } finally {
+    if (childPid) try { process.kill(-childPid, 'SIGKILL'); } catch {}
+  }
 });
 
 test('opencode accepts Windows absolute paths and refuses relative paths', () => {

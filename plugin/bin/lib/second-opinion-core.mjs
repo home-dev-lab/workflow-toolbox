@@ -8,6 +8,7 @@ import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const QUOTA_PROBE = fileURLToPath(new URL('../wt-quota-probe.mjs', import.meta.url))
+const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
@@ -35,7 +36,7 @@ function codexCompanion(env) {
   return null
 }
 
-function runCodex({ companion, cwd, effort, request, env, signal, adapter }) {
+function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES }) {
   const child = spawn(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
     cwd,
     env,
@@ -44,21 +45,39 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter }) {
     windowsHide: true,
   })
   const chunks = { stdout: [], stderr: [] }
+  let outputBytes = 0
+  let overflow = false
   const stopOwnedFamily = () => {
     if (child.pid) adapter.endProcessFamily(child.pid)
   }
-  child.stdout.on('data', (chunk) => chunks.stdout.push(chunk))
-  child.stderr.on('data', (chunk) => chunks.stderr.push(chunk))
+  const collect = (stream, chunk) => {
+    if (overflow) return
+    outputBytes += chunk.length
+    if (outputBytes > maxOutputBytes) {
+      overflow = true
+      chunks.stdout.length = 0
+      chunks.stderr.length = 0
+      stopOwnedFamily()
+      return
+    }
+    chunks[stream].push(chunk)
+  }
+  child.stdout.on('data', (chunk) => collect('stdout', chunk))
+  child.stderr.on('data', (chunk) => collect('stderr', chunk))
   signal?.addEventListener('abort', stopOwnedFamily, { once: true })
   return new Promise((resolve) => {
     child.once('error', (error) => {
       stopOwnedFamily()
-      resolve({ status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n` })
+      resolve(overflow
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
+        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n` })
     })
     child.once('close', (code, childSignal) => {
       stopOwnedFamily()
       signal?.removeEventListener('abort', stopOwnedFamily)
-      resolve({ status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString() })
+      resolve(overflow
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
+        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString() })
     })
   })
 }
@@ -117,9 +136,9 @@ function sdkRemedy(error) {
   return remedy ? `run: ${remedy}` : `install @anthropic-ai/claude-agent-sdk (${message})`
 }
 
-export const createSecondOpinionDependencies = (adapter) => ({
+export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveCodexCompanion: codexCompanion,
-  runCodex: (options) => runCodex({ ...options, adapter }),
+  runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes }),
   probeQuota,
   resolveSdkQuery,
   listBrokers: () => listBrokers(adapter),
