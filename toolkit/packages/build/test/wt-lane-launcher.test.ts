@@ -853,6 +853,32 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       try { process.kill(child.pid!, 'SIGKILL') } catch {}
     }
   })
+  it.skipIf(process.platform !== 'linux')('attributes an allow-no-git lane from its plain-directory owner record [requires Linux /proc orphan enumeration]', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const runtime = join(f.root, 'fake-opencode-runtime.mjs'); copyFileSync(FAKE_OPENCODE, runtime)
+    writeFileSync(join(f.root, 'bin', 'opencode'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(runtime)} opencode "$@"\n`)
+    const launch = run(f, ['--timeout', '60']); expect(launch.status, launch.stderr).toBe(0)
+    const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
+    const stateFile = currentStateFile(f.dir)
+    waitForContent(stateFile, /"state": "running"/); waitForFile(join(f.dir, 'opencode.pid'))
+    const childPid = JSON.parse(readFileSync(stateFile, 'utf8')).childPid
+    try {
+      const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.root, '--once'], { encoding: 'utf8', env: f.env })
+      expect(watcher.status, watcher.stderr).toBe(0)
+      expect(watcher.stdout).not.toContain(`WARNING: unattributed opencode pid=${childPid}`)
+    } finally {
+      try { process.kill(workerPid, 'SIGTERM') } catch {}
+    }
+  })
+  it.skipIf(process.platform !== 'linux')('still warns for a plain-directory opencode process with no owner record [requires Linux /proc orphan enumeration]', () => {
+    const f = fixture('true')
+    const plain = join(f.root, 'plain'); mkdirSync(plain)
+    const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run', '--dir', plain], { cwd: plain, stdio: 'ignore' })
+    spawnSync('sleep', ['0.1'])
+    const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.root, '--once'], { encoding: 'utf8', env: f.env })
+    expect(watcher.status, watcher.stderr).toBe(0)
+    expect(watcher.stdout).toContain(`WARNING: unattributed opencode pid=${child.pid}`)
+  })
   it.skipIf(process.platform !== 'linux')('does not report an unattributed opencode process whose cwd is a staging lane [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('true')
     const staging = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890')
@@ -1052,12 +1078,28 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(lines.slice(exitIndex + 1).some((line) => /\bstage=/.test(line))).toBe(false)
     expect(lines.at(-1)).toBe('EXIT=0')
   })
-  it('passes --variant through to opencode and refuses a malformed one', () => {
-    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; IFS= read -r x; echo done')
-    const res = run(f, ['--variant', 'high']); expect(res.status).toBe(0)
+  it('runs a known variant silently, refuses an unknown variant, and traces a forced unknown variant', () => {
+    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; printf "# Report\\n" > "$PWD/.lane/report.md"')
+    const known = run(f, ['--variant', 'high']); expect(known.status).toBe(0)
     const log = join(f.dir, '.lane', 'run.log'); waitFor(log)
+    expect(known.stderr).toBe('')
     expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nhigh\n/)
-    const bad = run(f, ['--variant', 'hi gh']); expect(bad.status).toBe(2); expect(bad.stderr).toContain('--variant')
+
+    const unknown = run(f, ['--variant', 'future-effort'])
+    expect(unknown.status).not.toBe(0)
+    expect(unknown.stderr).toContain('future-effort')
+    expect(unknown.stderr).toContain('openai/gpt-5.6-luna')
+    expect(unknown.stderr).toContain('known variants')
+    expect(unknown.stderr).toContain('--allow-unknown-variant')
+
+    const forced = run(f, ['--variant', 'future-effort', '--allow-unknown-variant'])
+    expect(forced.status).toBe(0)
+    waitFor(log)
+    expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nfuture-effort\n/)
+    expect(readFileSync(log, 'utf8')).toContain('variant=future-effort origin=override forced=true')
+    expect(readFileSync(join(f.dir, '.lane', 'report.md'), 'utf8')).toContain('variant=future-effort origin=override forced=true')
+
+    const malformed = run(f, ['--variant', 'hi gh']); expect(malformed.status).toBe(2); expect(malformed.stderr).toContain('--variant')
   })
   it('fences Claude Code skills while preserving the opencode argv contract and launch options', () => {
     const f = fixture('printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')

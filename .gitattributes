@@ -4,3 +4,6 @@
 # Git still auto-detects binary content, so this does not affect the tracked
 # png/webp/font assets under apps/observe-ui.
 * text=auto eol=lf
+
+# Host probe captures are byte evidence: never transform their UTF-8/LF bytes.
+probes/host-platform/evidence/** -text -eol

@@ -5,6 +5,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Add a host adapter derived from real three-OS captures (`plugin/bin/lib/host/`): question-named operations, per-OS implementations, and a fake that replays the captured bytes BELOW the parsers so the real parsers run. The pid-to-parent-pid family moves behind it with a grep-zero perimeter lock over 212 non-generated source files; a platform that cannot answer returns a named unknown instead of a plausible zero. The Windows process-table capture is preserved as an explicit unavailable rather than invented
+- Add `wt-deep-search` (EXPERIMENTAL): a WebSearch substitution answering from the local Claude Code documentation mirror, context7, Brave or Exa, plus a detached deep-research rung that returns a handle and is collected later; zero dependencies, no key required, cross-platform verdict included
+- Add dispatch-only Linux, Windows, and macOS host probes for process tables, process-group termination, and real path behavior, with provenance-rich byte-stable evidence artifacts
+- Add launch-time reasoning variants for all pilot, orchestrator, and executor roles, with model caps, explicit overrides, unknown-variant refusal and auditable forced overrides
+
+### Fixed
+- Terminate timed-out deep-search process families before recording their terminal marker, and restore the combined 64 MiB output ceiling for second-opinion companions with a named overflow failure
+- `wt-secret-guard` no longer rewrites source it reads: a declaration line, a diff-prefixed declaration and an assignment bounded by parameter or destructuring punctuation pass through unchanged, while a loose credential assignment in command output is still scrubbed. Reviewed false-positive candidates over 560 repository source files fell from 32 to 5 with the true-positive corpus unchanged; the cost is that output shaped like source can now pass through, and that is stated rather than hidden
+- Price Claude Haiku 4.5 and all default routable models from source-backed fallback rows, and make unknown-price run totals name the unpriced models in archives and What is running
+- Run host-timing quarantines visibly but non-blockingly under `pnpm test:blocking`, the release-certification and CI entry point, while `pnpm test` remains the full developer suite
+- Treat empty and whitespace-only model plugin options as unset in runtime resolution, `wt-config`, and SessionStart configuration context
+- Warn at SDK pilot launch when a routing-capable run has no board contract, and end a run partial immediately if `route_finding` is nevertheless attempted
+
 ## [0.185.0] - 2026-09-20
 
 ### Added

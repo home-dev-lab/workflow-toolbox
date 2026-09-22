@@ -1,10 +1,12 @@
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
@@ -41,6 +43,19 @@ function lines(file: string) {
   return readFileSync(file, 'utf8').trimEnd().split(/\r?\n/)
 }
 
+function waitFor(check: () => boolean, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs
+  while (!check() && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25)
+  return check()
+}
+
+function processExists(pid: number) {
+  try {
+    process.kill(pid, 0)
+    return !existsSync(`/proc/${pid}/stat`) || !/^\d+ \(.+\) Z /.test(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+  } catch { return false }
+}
+
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
     resolveCodexCompanion: vi.fn(() => '/fake/codex-companion.mjs'),
@@ -56,6 +71,22 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 }
 
 describe('second-opinion advisor', () => {
+  it('reads process discovery through the adapter supplied by its caller', () => {
+    const expected = { supported: true, processes: [{ pid: 7, ppid: 1, elapsedMs: 2000, command: 'broker' }] }
+    const adapter = { readProcessSnapshot: vi.fn(() => expected) }
+
+    expect(listProcessTable(adapter)).toBe(expected)
+    expect(adapter.readProcessSnapshot).toHaveBeenCalledOnce()
+  })
+
+  it('degrades to a named "unavailable" on a platform with no host implementation instead of throwing', () => {
+    const adapter = createHostAdapter({ platform: 'openbsd', unavailableFallback: true })
+    expect(adapter.available).toBe(false)
+    expect(listProcessTable(adapter)).toEqual({ supported: false, processes: [], reason: 'process discovery unavailable on this platform' })
+    expect(listProcessRelationships(adapter).status).toBe('unavailable')
+    expect(() => adapter.endProcessFamily(123)).not.toThrow()
+  })
+
   it('keeps automatic routing on Astra when lane consent is active', async () => {
     const f = fixture(true)
     const deps = dependencies()
@@ -292,5 +323,58 @@ describe('second-opinion advisor', () => {
     expect(deps.stopBroker).toHaveBeenCalledWith(21)
     expect(lines(f.out)).toContain('stopped broker pid 21 started by this call')
     expect(lines(f.out).at(-1)).toBe('EXIT=0')
+  })
+
+  it('stops the Codex app-server process family when the wrapper receives SIGTERM', () => {
+    const f = fixture(true)
+    const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
+    const appPidFile = join(f.repo, 'app-server.pid')
+    mkdirSync(companionDir, { recursive: true })
+    writeFileSync(join(companionDir, 'codex-companion.mjs'), [
+      "import { spawn } from 'node:child_process'",
+      "import { writeFileSync } from 'node:fs'",
+      "import { join } from 'node:path'",
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'app-server'], { stdio: 'ignore' })",
+      "writeFileSync(join(process.cwd(), 'app-server.pid'), String(child.pid))",
+      'setInterval(() => {}, 1000)',
+    ].join('\n'))
+    const wrapper = spawn(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
+      env: { ...process.env, ...f.env, HOME: f.repo },
+      stdio: 'ignore',
+    })
+    let appPid = 0
+    try {
+      expect(waitFor(() => existsSync(appPidFile))).toBe(true)
+      appPid = Number(readFileSync(appPidFile, 'utf8'))
+      expect(processExists(appPid)).toBe(true)
+      process.kill(wrapper.pid!, 'SIGTERM')
+      expect(waitFor(() => !processExists(appPid))).toBe(true)
+    } finally {
+      if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
+      if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
+    }
+  })
+
+  it('names output overflow and fails after terminating the owned companion family', async () => {
+    const f = fixture(true)
+    const companion = join(f.repo, 'overflow-companion.mjs')
+    writeFileSync(companion, "process.stdout.write('x'.repeat(1024))\n")
+    const endProcessFamily = vi.fn()
+    const adapter = {
+      platform: process.platform,
+      endProcessFamily,
+      readProcessSnapshot: () => ({ supported: true, processes: [] }),
+      readProcessRelationships: () => ({ status: 'known', processes: [] }),
+    }
+    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64 })
+    deps.resolveCodexCompanion = () => companion
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+    expect(lines(f.out)).toEqual([
+      'ROUTE=gpt-astra',
+      'REFUSED: Codex companion output exceeded 64 bytes.',
+      'EXIT=1',
+    ])
+    expect(endProcessFamily).toHaveBeenCalled()
   })
 })

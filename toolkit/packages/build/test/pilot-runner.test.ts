@@ -11,9 +11,11 @@ import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { resolveAgentSdkRequire } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+import { PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -25,6 +27,7 @@ const CONTEXT_MODE_TOOLS = {
   insight: `${CONTEXT_PREFIX}ctx_insight`, purge: `${CONTEXT_PREFIX}ctx_purge`, search: `${CONTEXT_PREFIX}ctx_search`, stats: `${CONTEXT_PREFIX}ctx_stats`,
 }
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
+const FIXED_CRITIC_ROUNDS = 3
 prepareContextModeFixture()
 const resolveContextModeRoot = (env: NodeJS.ProcessEnv) => env.WT_CONTEXT_MODE_ROOT || join(env.CLAUDE_CONFIG_DIR || join(env.HOME ?? '', '.claude'), 'plugins', 'cache', 'context-mode', 'context-mode', '1.0.177')
 
@@ -33,7 +36,8 @@ const CLI = join(ROOT, 'plugin/bin/wt-pilot-runner.mjs')
 const PLUGIN_ROOT = join(ROOT, 'plugin')
 const SHIPPED_PILOT = readFileSync(join(PLUGIN_ROOT, 'launch-agents/agents/pilot.md'), 'utf8')
 const SDK_RESOLVER = join(PLUGIN_ROOT, 'bin/lib/sdk-resolution.mjs')
-const ZOD_ROOT = dirname(createRequire(import.meta.url).resolve('zod/package.json'))
+const SDK_ENTRY = resolveAgentSdkRequire().resolve('@anthropic-ai/claude-agent-sdk')
+const ZOD_ROOT = dirname(createRequire(SDK_ENTRY).resolve('zod/package.json'))
 // The runner now REQUIRES a valid first `system:init` receipt: a fake stream without one used to
 // pass while proving nothing about whether any plugin or lifecycle tool ever loaded.
 const initMessage = (model?: string) => ({
@@ -151,6 +155,28 @@ describe('SDK pilot runner', () => {
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 60, timeoutExplicit: true, hard: false }, { query, resolvePilotModels: models, log: (line: string) => logged.push(line) })
     expect(result.summary).toMatchObject({ runner_timeout_seconds: 60, runner_timeout_explicit: true })
     expect(logged).toContain(`warning: ${route} timeout 60s is below the route's expected duration; ${reference}`)
+  })
+
+  it.each([
+    ['FULL', '# contract\n', true],
+    ['LITE', '# contract\nroute_finding is available\n', true],
+    ['LITE', '# contract\n', false],
+  ])('warns once when a %s run can need routing but has no board contract', async (route, contract, shouldWarn) => {
+    const f = fixture(); const logged: string[] = []
+    writeFileSync(f.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    writeFileSync(f.contract, contract)
+    const query = () => (async function* () { yield initMessage() })()
+    const options = { card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }
+    await runPilot(options, { query, resolvePilotModels: models, log: (line: string) => logged.push(line) })
+    const warning = 'warning: no board contract; findings that must be routed will end the run partial; relaunch with --board-contract <json file>'
+    expect(logged.filter((line) => line === warning)).toHaveLength(shouldWarn ? 1 : 0)
+
+    const boardContract = { boardId: 'board', listId: 'list', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'category' } }
+    const withContract = fixture(); const contractLogs: string[] = []
+    writeFileSync(withContract.cardFile, `Route: ${route}\n## Definition of done\n- exercise the runner\n`)
+    writeFileSync(withContract.contract, contract)
+    await runPilot({ ...options, cardFile: withContract.cardFile, dir: withContract.dir, contract: withContract.contract, mailbox: join(withContract.root, 'none'), boardContract }, { query, resolvePilotModels: models, log: (line: string) => contractLogs.push(line) })
+    expect(contractLogs).not.toContain(warning)
   })
 
   it('parses repeatable absolute plugin directories and refuses a relative one', () => {
@@ -305,6 +331,19 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }),
     })
     expect(reachedQuery).toBe(true)
+  })
+
+  // ⚠ This documents the invariant; it is NOT the discriminating lock. The lock is the
+  // clean-environment certification, which went RED twice on `Cannot find module
+  // 'zod/package.json'` before this change and is the only run whose layout can tell the two
+  // anchors apart. An earlier draft of this test asserted `ZOD_ROOT` against the expression
+  // ZOD_ROOT is defined by — a tautology that would pass with the fix reverted.
+  it('anchors the zod fixture at the declared SDK install, not at the test file', () => {
+    const manifest = JSON.parse(readFileSync(join(ROOT, 'toolkit/package.json'), 'utf8'))
+    expect(manifest.devDependencies).toHaveProperty('@anthropic-ai/claude-agent-sdk')
+    expect(SDK_ENTRY).toContain('claude-agent-sdk')
+    expect(() => createRequire(SDK_ENTRY).resolve('zod/package.json')).not.toThrow()
+    expect(ZOD_ROOT.startsWith(dirname(SDK_ENTRY)) || ZOD_ROOT.includes('zod@')).toBe(true)
   })
 
   it('resolves the SDK from the target project before plugin data', () => {
@@ -682,7 +721,7 @@ describe('SDK pilot runner', () => {
 
   it('H14-3 lock: completes a registered-server partial run with its continuation and exit code 2', async () => {
     const f = fixture(); let heads = 0
-    const reason = `plan not approved after ${MAX_CRITIC_ROUNDS} critic rounds`
+    const reason = `plan not approved after ${FIXED_CRITIC_ROUNDS} critic rounds`
     writeFileSync(f.cardFile, 'Route: FULL\n## Definition of done\n- exercise partial completion\n')
     const launcher = join(f.root, 'launcher.mjs')
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
@@ -696,7 +735,7 @@ describe('SDK pilot runner', () => {
       const run = server.instance._registeredTools.run!.handler
       yield initMessage(); await prompt.next()
       await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
-      for (let round = 1; round <= MAX_CRITIC_ROUNDS; round += 1) {
+      for (let round = 1; round <= FIXED_CRITIC_ROUNDS; round += 1) {
         await artifact({ kind: 'plan', content: plan }); await transition({ phase: 'plan', tool_use_id: `plan-${round}` })
         await artifact({ kind: 'critic-brief', content: `critic ${round}` }); await run({ kind: 'lane', phase: 'critic', timeout: 1 })
         await transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
@@ -713,7 +752,7 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
-    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } } })
+    expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } } })
     expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'worktree-retention.json'), 'utf8'))).toEqual({
       version: 1,
       cardId: '1',
@@ -977,6 +1016,22 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(ROOT, 'plugin/skills/adopt/scripts/install.mjs'), 'utf8')).toContain("{ file: 'PILOT-CONTRACT.md' }")
   })
 
+  it('tells pilots that lifecycle transitions name the phase being left', () => {
+    const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8')
+    expect(contract).toContain('Call `transition` with the phase being left, not the phase being entered.')
+  })
+
+  it('keeps the two escalation limits a contract compression once dropped', () => {
+    const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8')
+    expect(contract).toContain('then report disagreement to the order-giver, never loop.')
+    expect(contract).toContain('the owner decides what follows one.')
+  })
+
+  it('tells pilots the exact same-line E2E report format', () => {
+    const contract = readFileSync(join(ROOT, 'plugin/autonomy/PILOT-CONTRACT.md'), 'utf8')
+    expect(contract).toContain('Report E2E as `Command: <text>` and `Output: <text>` on those lines; a fenced block alone is refused.')
+  })
+
   it('registers the runner-hosted lifecycle server and composes the pilot role profile', async () => {
     type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], mcpServers: Record<string, unknown>, permissionMode?: string, allowDangerouslySkipPermissions?: boolean }
     const f = fixture(); let options: QueryOptions | undefined
@@ -1072,7 +1127,7 @@ describe('SDK pilot runner', () => {
       yield initMessage()
     })()
     await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, boardMoves: false }, { query, resolvePilotModels: models, resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }), log: (line: string) => logged.push(line) })
-    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet executor=gpt-lane')
+    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet variant=medium variant_origin=role base executor=gpt-lane')
     expect(permission).toEqual({ behavior: 'deny', message: "board moves are the orchestrator's" })
     expect(lifecycleCanUseTool(f.dir, 'mcp__planka__move_card', {}, { boardMoves: true }).behavior).toBe('allow')
   })

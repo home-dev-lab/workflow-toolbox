@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -8,7 +8,7 @@ import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const QUOTA_PROBE = fileURLToPath(new URL('../wt-quota-probe.mjs', import.meta.url))
-
+const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
@@ -36,15 +36,50 @@ function codexCompanion(env) {
   return null
 }
 
-function runCodex({ companion, cwd, effort, request, env }) {
-  const result = spawnSync(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
+function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES }) {
+  const child = spawn(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
     cwd,
     env,
-    encoding: 'utf8',
-    input: '',
-    maxBuffer: 64 * 1024 * 1024,
+    detached: adapter.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   })
-  return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+  const chunks = { stdout: [], stderr: [] }
+  let outputBytes = 0
+  let overflow = false
+  const stopOwnedFamily = () => {
+    if (child.pid) adapter.endProcessFamily(child.pid)
+  }
+  const collect = (stream, chunk) => {
+    if (overflow) return
+    outputBytes += chunk.length
+    if (outputBytes > maxOutputBytes) {
+      overflow = true
+      chunks.stdout.length = 0
+      chunks.stderr.length = 0
+      stopOwnedFamily()
+      return
+    }
+    chunks[stream].push(chunk)
+  }
+  child.stdout.on('data', (chunk) => collect('stdout', chunk))
+  child.stderr.on('data', (chunk) => collect('stderr', chunk))
+  signal?.addEventListener('abort', stopOwnedFamily, { once: true })
+  return new Promise((resolve) => {
+    child.once('error', (error) => {
+      stopOwnedFamily()
+      resolve(overflow
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
+        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n` })
+    })
+    child.once('close', (code, childSignal) => {
+      stopOwnedFamily()
+      signal?.removeEventListener('abort', stopOwnedFamily)
+      resolve(overflow
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
+        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString() })
+    })
+  })
 }
 
 export function parseProcessLines(stdout) {
@@ -57,31 +92,21 @@ export function parseProcessLines(stdout) {
   return pids
 }
 
-export function listProcessTable(platform = process.platform) {
+export function listProcessTable(adapter) {
   try {
-    if (['aix', 'darwin', 'freebsd', 'linux', 'sunos'].includes(platform)) {
-      const stdout = execFileSync('ps', ['-eo', 'pid=,ppid=,etimes=,args='], { encoding: 'utf8' })
-      const processes = stdout.split(/\r?\n/).flatMap((line) => {
-        const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/.exec(line)
-        return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: Number(match[3]) * 1000, command: match[4] }] : []
-      })
-      return { supported: true, processes }
-    }
-    if (platform === 'win32') {
-      const command = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.CommandLine }"
-      const stdout = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' })
-      const processes = stdout.split(/\r?\n/).flatMap((line) => {
-        const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line)
-        return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: null, command: match[3] }] : []
-      })
-      return { supported: true, processes }
-    }
+    return adapter.readProcessSnapshot()
   } catch {}
   return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
 }
 
-export function listBrokers(platform = process.platform) {
-  const table = listProcessTable(platform)
+export function listProcessRelationships(adapter) {
+  try { return adapter.readProcessRelationships() } catch {
+    return { status: 'unavailable', processes: [], reason: 'process relationship discovery unavailable on this platform' }
+  }
+}
+
+export function listBrokers(adapter) {
+  const table = listProcessTable(adapter)
   if (!table.supported) return { supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' }
   return { supported: true, pids: table.processes.filter((process) => /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(process.command)).map((process) => process.pid) }
 }
@@ -111,16 +136,16 @@ function sdkRemedy(error) {
   return remedy ? `run: ${remedy}` : `install @anthropic-ai/claude-agent-sdk (${message})`
 }
 
-export const defaultSecondOpinionDependencies = {
+export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveCodexCompanion: codexCompanion,
-  runCodex,
+  runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes }),
   probeQuota,
   resolveSdkQuery,
-  listBrokers,
+  listBrokers: () => listBrokers(adapter),
   stopBroker: (pid) => process.kill(pid, 'SIGTERM'),
-}
+})
 
-export async function runSecondOpinion(options, dependencies = defaultSecondOpinionDependencies, env = process.env) {
+export async function runSecondOpinion(options, dependencies, env = process.env) {
   const request = readFileSync(options.request, 'utf8')
   const consent = resolveConsent(options.repo, env)
   const route = options.route ?? 'auto'
@@ -152,12 +177,13 @@ export async function runSecondOpinion(options, dependencies = defaultSecondOpin
     const before = dependencies.listBrokers()
     let result
     try {
-      result = dependencies.runCodex({
+      result = await dependencies.runCodex({
         companion,
         cwd: options.repo,
         effort: options.effort,
         request: `${TOOL_NOTE}\n\n${request}`,
         env,
+        signal: options.signal,
       })
       appendOutput(options.out, result.stdout)
       appendOutput(options.out, result.stderr)

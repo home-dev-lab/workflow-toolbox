@@ -1,5 +1,6 @@
 import { resolveConsent } from './lane-consent-check-core.mjs'
-import { readWorkflowToolboxPluginOption } from './plugin-options.mjs'
+import { resolveRoleVariant } from './lane-model-allowlist.mjs'
+import { hasModelPluginValue, readWorkflowToolboxPluginOption } from './plugin-options.mjs'
 
 // Owner decisions 2026-09-14: the harness pilot and orchestrator (agents spawned by a session, no
 // enforced lifecycle) run on Opus, Fable for hard cards; the SDK runner's pilot and orchestrator run on
@@ -64,7 +65,7 @@ export function assertHarnessAlias(value) {
 }
 
 function resolveModelInput(plugin, key, env, settingsEnv, fallback) {
-  if (plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== '') {
+  if (hasModelPluginValue(plugin)) {
     return { value: plugin.value, source: 'plugin option' }
   }
   if (Object.prototype.hasOwnProperty.call(env, key)) return { value: env[key], source: 'env' }
@@ -78,7 +79,8 @@ export function resolvePilotModels({ env = {}, settingsEnv = {}, readPluginOptio
       const plugin = readPluginOption(option, { env })
       const { value, source } = resolveModelInput(plugin, key, env, settingsEnv, DEFAULT_MODELS[role])
       assertHarnessModel(value)
-      return [role, { value, source, ...effectiveModel(value, { env, settingsEnv }) }]
+      const effective = effectiveModel(value, { env, settingsEnv })
+      return [role, { value, source, ...effective, variant: resolveRoleVariant(role, effective.effective, { env, settingsEnv, readPluginOption }) }]
     }),
   )
 }
@@ -117,11 +119,13 @@ export function resolveExecutorProfile({ worktree, route, hard = false, env = {}
     const value = executor === 'gpt-lane'
       ? assertProviderModel(selected.value)
       : assertHarnessAlias(selected.value)
-    return [role, { value, source: selected.source }]
+    return [role, { value, source: selected.source, variant: resolveRoleVariant(role, value, { env, settingsEnv, readPluginOption }) }]
   }))
   return {
     executor,
     models: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.value])),
     modelSources: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.source])),
+    variants: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.variant.value])),
+    variantOrigins: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.variant.origin])),
   }
 }

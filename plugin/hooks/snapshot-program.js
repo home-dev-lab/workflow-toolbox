@@ -1,4 +1,4 @@
-import { executableName, resolvedBinary } from '../bin/lib/resolved-binary.mjs';
+import { classifyIdleHelper, executableName, IDLE_HELPER_SAFE_TO_STOP_SECONDS, resolvedBinary } from '../bin/lib/resolved-binary.mjs';
 import { PHASES as LIFECYCLE_PHASES } from './lifecycle-phases.js';
 import { stripAnsiAndControl } from './text-sanitize.js';
 
@@ -70,6 +70,8 @@ const markdownToHtml = ${markdownToHtml.toString()};
 const stripAnsiAndControl = ${stripAnsiAndControl.toString()};
 const executableName = ${executableName.toString()};
 const resolvedBinary = ${resolvedBinary.toString()};
+const classifyIdleHelper = ${classifyIdleHelper.toString()};
+const IDLE_HELPER_SAFE_TO_STOP_SECONDS = ${IDLE_HELPER_SAFE_TO_STOP_SECONDS};
 const now = Date.parse(config.now || new Date().toISOString());
 const UNKNOWN = 'unknown';
 const PRICE_UNKNOWN = 'price unknown';
@@ -268,15 +270,29 @@ function lifecycleTimeline(worktree) {
     && validRound(item.round) && Number.isFinite(item.entered_at) && validTime(item.exited_at))) return null;
   const phaseHistory = value.phases.map(item => item.phase);
   if (Number.isFinite(value.ended_at) && phaseHistory.at(-1) === 'report') phaseHistory.push('awaiting_fidelity');
-  const criticRounds = value.phases.filter(item => item.phase === 'critic').reduce((count, item) => Math.max(count, item.round || 0), 0);
-  return { source, phaseHistory, criticRounds, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
+  const phaseRounds = {};
+  for (const item of value.phases) if (item.round !== null) phaseRounds[item.phase] = item.round;
+  const criticRounds = phaseRounds.critic || 0;
+  return { source, phaseHistory, phaseRounds, criticRounds, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
+}
+function currentSupervisions(worktree) {
+  const records = [];
+  for (const name of list(lanePath(worktree)).filter(item => /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(item))) {
+    const dir = lanePath(worktree, name);
+    if (!info(dir)?.isDirectory()) continue;
+    const pointer = json(path.join(dir, 'current.json'));
+    if (typeof pointer?.runId !== 'string' || !/^\d+-\d+$/.test(pointer.runId)) continue;
+    const record = json(path.join(dir, pointer.runId + '.json'));
+    if (record) records.push({ slot: name === 'supervision' ? null : name.slice('supervision-'.length), record });
+  }
+  return records;
 }
 function info(file) { const safeFile = safePath(file); return safeFile ? infoUnrestricted(safeFile) : null; }
 function linkInfo(file) { try { return safePath(file) ? fs.lstatSync(file) : null; } catch { return null; } }
 function cardIds(value) { return [...new Set(String(value || '').match(/\b\d{19}\b/g) || [])]; }
 function briefCard(value) {
   const title = markdownHeadings(value).find(heading => !standardPreamble(heading)) || '';
-  return title.match(/^Brief[^\n]*\bcard\s+(\d{19})\b/i)?.[1] || null;
+  return title.match(/^(?:Brief[^\n]*\bcard\s+|Card\s+)(\d{19})\b/i)?.[1] || null;
 }
 function cardMarkdownId(value) { return String(value || '').match(/^Card(?: id)?:\s*(\d{19})\b/im)?.[1] || null; }
 function markdownHeadings(value) { return [...String(value || '').matchAll(/^#\s+(.+)$/gm)].map(match => match[1].trim()); }
@@ -290,7 +306,9 @@ function cleanCardTitle(value, id) {
   return title.trim() || null;
 }
 function laneCardReceipt(worktree, requestedId = null) {
-  const names = list(lanePath(worktree)).filter(name => /^card-\d{19}\.md$/.test(name));
+  const dir = lanePath(worktree);
+  if (!info(dir)?.isDirectory()) return null;
+  const names = list(dir).filter(name => /^card-\d{19}\.md$/.test(name));
   const name = (requestedId && names.find(candidate => candidate === 'card-' + requestedId + '.md')) || names.sort()[0];
   if (!name) return null;
   const id = name.match(/^card-(\d{19})\.md$/)?.[1] || null;
@@ -352,6 +370,8 @@ function criticSummary(value) {
 }
 function reportSummary(value) {
   const lines = String(value || '').split(/\r?\n/); const result = [];
+  const deferred = lines.find(line => /^Deferred:\s*\S/i.test(line));
+  if (deferred) result.push(deferred.trim());
   const wanted = /^(?:Implemented|Remaining Risks)$/i;
   const hasWanted = lines.some(line => wanted.test(line.replace(/^##\s+/, '').trim()) && /^##\s+/.test(line));
   for (let index = 0; index < lines.length; index += 1) if (/^##\s+/.test(lines[index]) && (!hasWanted || wanted.test(lines[index].replace(/^##\s+/, '').trim()))) {
@@ -798,7 +818,7 @@ function phaseCosts(worktree, timeline) {
   if (typeof archivePath === 'string' && path.isAbsolute(archivePath) && under(reportsRoot, archivePath)) {
     const archiveCost = path.join(archivePath, 'cost.json');
     const cost = json(archiveCost);
-    if (cost) return { costs: phaseCostRows(cost.phases), total: cost.totals?.usd !== undefined ? { usd: cost.totals.usd, priceLabel: Array.isArray(cost.price_labels) ? cost.price_labels.join('; ') : undefined } : summedCost(Object.values(phaseCostRows(cost.phases))), source: archiveCost, kind: 'archive cost.json' };
+    if (cost) return { costs: phaseCostRows(cost.phases), total: cost.totals?.usd !== undefined ? { usd: cost.totals.usd, priceLabel: Array.isArray(cost.price_labels) ? cost.price_labels.join('; ') : undefined, priceUnknownModels: Array.isArray(cost.price_unknown_models) ? cost.price_unknown_models : [] } : summedCost(Object.values(phaseCostRows(cost.phases))), source: archiveCost, kind: 'archive cost.json' };
     if (slice(archiveCost, JSON_BYTES, false, true) !== null) return { costs: Object.fromEntries(PHASES.map(phase => [phase, UNKNOWN])), source: archiveCost, kind: 'malformed archive cost.json' };
   }
   const live = livePhaseCosts(worktree, timeline);
@@ -1067,6 +1087,7 @@ for (const worktree of scannedWorktrees) {
         phaseHistory,
         phaseSource: timeline ? 'lifecycle' : 'log',
         lifecycleSource: timeline?.source || null,
+        phaseRounds: timeline?.phaseRounds || {},
         criticRounds,
         runnerLogTruncated: (info(runnerLogFile)?.size || 0) > LOG_TAIL_BYTES,
         outcome: 'running',
@@ -1121,6 +1142,39 @@ function nestedLane(lane, id) {
   const phaseRole = phase === UNKNOWN ? null : (phase === 'tdd' ? 'TDD' : phase.replace(/_/g, ' ').replace(/^./, letter => letter.toUpperCase())) + ' lane';
   return { id: 'lane:' + lane.worktree, cardId: id, cardUrl: cardUrl(id), kind: 'external', label: isFix ? 'Fix lane' : phaseRole || lane.label || 'Lane', phaseAvailability: (runner?.laneKind || 'plain') + ' lane', parentCardId: id, title: isFix ? detail : phaseRole ? null : cleanCardTitle(lane.title, id) || path.basename(lane.worktree), outcome: 'running', ...(runner?.model && runner.model !== UNKNOWN ? { model: runner.model } : {}), activity: laneActivity(lane.worktree, lastWrite), elapsed: actorElapsed(lane.worktree, processPid), worktree: lane.worktree, processPid, sessionPid: sessionPidFor(processPid), launcherSessionId: lane.launcherSessionId || laneSessionId(lane.worktree) };
 }
+function lifecycleLaneRows(worktree, timeline, id) {
+  if (!worktree || !timeline) return [];
+  const supervisionBySlot = new Map(currentSupervisions(worktree).map(item => [item.slot, item.record]));
+  return (timeline?.lanes || []).filter(lane => lane?.lane_id && lane.round === 1).map(lane => {
+    const phase = phaseOf(lane.phase);
+    const slot = phase + '-' + lane.lane_id;
+    const supervision = supervisionBySlot.get(slot);
+    const state = String(lane.state || supervision?.state || '').toLowerCase();
+    const outcome = /^(?:complete|completed|done)$/.test(state) ? 'done' : /^(?:error|failed|fail)/.test(state) ? 'error' : 'running';
+    const phaseName = phase === UNKNOWN ? 'Lane' : phase.replace(/_/g, ' ').replace(/^./, letter => letter.toUpperCase());
+    return {
+      id: 'lifecycle-lane:' + worktree + ':' + slot,
+      cardId: id,
+      cardUrl: cardUrl(id),
+      kind: 'external',
+      label: phaseName + ' ' + lane.lane_id,
+      phase,
+      phaseAvailability: 'lifecycle lane',
+      parentCardId: id,
+      title: null,
+      outcome,
+      model: lane.model || UNKNOWN,
+      usageFile: lane.usage_file || null,
+      activity: outcome === 'running' ? 'running' : 'lifecycle recorded ' + outcome,
+      elapsed: outcome === 'running' && Number.isFinite(lane.started_at) ? formatAge((now - lane.started_at) / 1000) : UNKNOWN,
+      worktree,
+      processPid: supervision?.childPid || null,
+      sessionPid: sessionPidFor(supervision?.childPid),
+      launcherSessionId: laneSessionId(worktree),
+      showModel: true,
+    };
+  });
+}
 
 const activeLifecycleIds = [...lifecycle].filter(([, value]) => value?.phase).map(([id]) => id);
 const activeExternalLanes = externalLanes.map(lane => ({ lane, active: externalLane(lane, lane.cardId) })).filter(item => item.active);
@@ -1155,6 +1209,7 @@ for (const id of ids) {
   const frozenRoute = worktree ? json(lanePath(worktree, 'route.json')) : null;
   if (waitingForArbiter) phaseStates.awaiting_fidelity = 'waiting for arbiter review';
   const { source: reviewSource, ...review } = reviewResult;
+  const lifecycleLanes = lifecycleLaneRows(worktree, timeline, id);
   rows.push({
     id,
     cardId: id,
@@ -1172,6 +1227,7 @@ for (const id of ids) {
     outcome: waitingForArbiter ? 'waiting for arbiter review' : lane?.outcome || failedOutcome || UNKNOWN,
     model: lane?.model || workers[0]?.model || UNKNOWN,
     models: frozenRoute?.models || {},
+    phaseRounds: lane?.phaseRounds || {},
     criticRounds: lane?.criticRounds,
     runnerLogTruncated: lane?.runnerLogTruncated || false,
     who,
@@ -1188,7 +1244,7 @@ for (const id of ids) {
     costApproximate: approximateWalkRoots.has(worktree),
     watchdog,
     inspectors: inspectors(worktree, lane ? frozenRoute : null, lane ? tail(sdkLogFile(worktree)) : null),
-    lanes: [nestedLane(lane, id)].filter(Boolean),
+    lanes: lifecycleLanes.length ? lifecycleLanes : [nestedLane(lane, id)].filter(Boolean),
     worktree,
     launcherSessionId: lane?.launcherSessionId || laneSessionId(worktree),
     processPid: sdkRunner?.pid || null,
@@ -1246,12 +1302,20 @@ for (const processRecord of processes.values()) {
 for (const actor of processActors) {
   let represented = null;
   if (actor.worktree) for (const row of rows) {
-    if (row.kind === 'external' && row.worktree === actor.worktree) { represented = row; break; }
-    represented = (row.lanes || []).find(lane => lane.worktree === actor.worktree) || null;
+    if (row.kind === 'external' && row.processPid === actor.processPid) { represented = row; break; }
+    const nested = row.lanes || [];
+    represented = nested.find(lane => lane.processPid === actor.processPid) || null;
+    if (!represented) {
+      const sameWorktree = nested.filter(lane => lane.worktree === actor.worktree);
+      represented = sameWorktree.length === 1 ? sameWorktree[0] : null;
+    }
     if (represented) break;
   }
-  if (represented) Object.assign(represented, { label: actor.label, roleInferred: actor.roleInferred, role: actor.role, model: actor.model, activity: actor.activity, elapsed: actor.elapsed, processPid: actor.processPid, sessionPid: actor.sessionPid });
-  else rows.push(actor);
+  if (represented) {
+    const identity = {};
+    if (!represented.showModel) Object.assign(identity, { label: actor.label, roleInferred: actor.roleInferred, role: actor.role, model: actor.model });
+    Object.assign(represented, identity, { activity: actor.activity, elapsed: actor.elapsed, processPid: actor.processPid, sessionPid: actor.sessionPid });
+  } else rows.push(actor);
 }
 
 function branchMerged(worktree, id) {
@@ -1509,7 +1573,8 @@ for (const processRecord of processes.values()) {
   const brokerScript = String(args[1] || '').replace(/\\/g, '/');
   const brokerRoot = brokerScript.endsWith('/bin/broker.js') ? path.dirname(path.dirname(args[1])) : null;
   const atriumMarker = brokerRoot ? json(path.join(brokerRoot, 'package.json'))?.name === servicesLayout.brokerPackage : false;
-  if (executable === executables.codex && args[1] === 'app-server' && !relatedToTask(processRecord.pid)) { label = 'Codex app-server'; target = helperItems; }
+  const helper = classifyIdleHelper({ argv: [executable, ...args.slice(1)], ageSeconds: processAge(processRecord.pid).seconds, relatedToTask: relatedToTask(processRecord.pid), thresholdSeconds: IDLE_HELPER_SAFE_TO_STOP_SECONDS });
+  if (helper.helper) { label = 'Codex app-server'; target = helperItems; }
   else if (scriptIs(args[1], 'artifactServer') && args[2] === 'serve') { label = 'Artifact server'; target = serviceItems; }
   else if (typeof executables.pythonPattern === 'string' && new RegExp(executables.pythonPattern).test(executable) && args[1] === '-m' && args[2] === 'http.server') { label = 'HTTP server'; target = serviceItems; }
   else if (executable === executables.bun && brokerScript.endsWith('/broker.js') && (servicesLayout.brokerPathPattern && new RegExp(servicesLayout.brokerPathPattern, 'i').test(brokerScript) || atriumMarker)) { label = servicesLayout.brokerLabel || 'Broker'; target = serviceItems; }
@@ -1519,7 +1584,7 @@ for (const processRecord of processes.values()) {
     // between the cmdline and stat reads; without live stat evidence it is not a server row.
     if (label === 'Artifact server' && age.seconds === null) continue;
     if (target === serviceItems && age.seconds !== null && age.seconds < MIN_SERVICE_AGE_SECONDS) continue;
-    target.push({ id: (target === helperItems ? 'helper:' : 'service:') + processRecord.pid, pid: processRecord.pid, label, age: age.text, ageSeconds: age.seconds });
+    target.push({ id: (target === helperItems ? 'helper:' : 'service:') + processRecord.pid, pid: processRecord.pid, label, age: age.text, ageSeconds: age.seconds, ...(target === helperItems ? { safeToStop: helper.safeToStop } : {}) });
   }
 }
 const oldestHelper = helperItems.filter(item => item.ageSeconds !== null).sort((left, right) => right.ageSeconds - left.ageSeconds)[0];

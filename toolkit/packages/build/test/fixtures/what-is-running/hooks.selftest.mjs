@@ -954,6 +954,18 @@ await test('[E-2] directory scans stop at the configured cap and record the capp
   cappedDiscoverySnapshot = snapshot;
 });
 
+await test('[partial discovery] worktrees without lane metadata are not reported as unreadable running work', async () => {
+  const isolated = join(root, 'worktree-without-lane');
+  const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now };
+  mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true });
+  mkdirSync(join(isolatedPaths.configDir, 'plugins', 'data'), { recursive: true });
+  mkdirSync(isolatedPaths.livenessDir, { recursive: true });
+  mkdirSync(join(isolatedPaths.suiteRoot, 'worktrees', 'historical-worktree'), { recursive: true });
+  const snapshot = await readSnapshot({ process: processCapability }, isolatedPaths);
+  assert.equal(snapshot.discovery, 'available');
+  assert.deepEqual(snapshot.unreadableScans, []);
+});
+
 await test('[collector budget] detailed worktree reads stop at their own cap and name the partial scan', async () => {
   const isolated = join(root, 'worktree-detail-cap');
   const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now, worktreeDetailCap: 3 };
@@ -1421,7 +1433,7 @@ await test('[project scope DoD 4] absent root options resolve from session confi
 await test('[E-2 pane] capped discovery renders one certainty warning instead of an empty-state claim', async () => {
   const { tree } = await renderSnapshot(cappedDiscoverySnapshot);
   const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
-  assert(text.includes('Some running work could not be listed'));
+  assert(text.includes(`Some running work could not be listed: scan cap reached: ${cappedDiscoverySnapshot.cappedScans[0]}`));
   assert(!text.includes('Nothing running in the background.'));
 });
 await test('[allowed roots pane] a refused live actor explains reduced certainty without exposing its path', async () => {
@@ -1432,6 +1444,39 @@ await test('[allowed roots pane] a refused live actor explains reduced certainty
   assert(text.includes('Some running work could not be listed'));
   assert(!text.includes(refusedPath));
   assert(!text.includes('Nothing running in the background.'));
+});
+
+await test('[critic lanes] two round-1 critic records render as indented stage children before next work', async () => {
+  const criticLanes = ['A', 'B'].map((laneId) => ({
+    id: `lifecycle-lane:/fixture/critic:${laneId}`,
+    cardId: '1862698281071544151',
+    kind: 'external',
+    label: `Critic ${laneId}`,
+    phase: 'critic',
+    phaseAvailability: 'lifecycle lane',
+    outcome: 'running',
+    model: 'openai/gpt-5.6-sol',
+    elapsed: '1 min',
+    showModel: true,
+  }));
+  const pilot = {
+    id: '1862698281071544151', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', phase: 'critic', phaseSource: 'lifecycle', route: 'FULL',
+    phaseStates: { discovery: 'done', plan: 'done', critic: 'running', tdd: 'not started', verify: 'not started', review: 'not started', refutation: 'not started', harden: 'not started', report: 'not started' },
+    phaseRounds: { plan: 1, critic: 1 }, phaseCosts: { critic: { usd: 0.5, priceLabel: 'API price' } }, outcome: 'running', gates: {}, review: {}, inspectors: {}, lanes: criticLanes, sources: {},
+  };
+  const snapshot = { discovery: 'available', rows: [pilot], sessions: [{ id: 'session:critic', project: 'critic', cards: [{ id: pilot.id, title: 'Parallel critics', actors: [pilot] }], actors: [] }], services: { count: 0, items: [] }, helpers: { count: 0, items: [] }, collectedAt: paths.now };
+  const { tree } = await renderSnapshot(snapshot);
+  const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value);
+  const criticStage = text.indexOf('[▶ Critic · round 1 (max 6) ●]');
+  const criticA = text.indexOf('[▶ Critic A]');
+  const criticB = text.indexOf('[▶ Critic B]');
+  const next = text.indexOf('next: TDD');
+  assert(criticStage >= 0 && criticStage < criticA && criticA < criticB && criticB < next, text);
+  for (const lane of criticLanes) {
+    const laneRow = descendants(tree, (item) => item.name === 'Box' && item.props.key === lane.id)[0];
+    assert.equal(laneRow?.props.paddingLeft, 2);
+    assert(hasDescendant(laneRow, (item) => item.name === 'Text' && ['├', '└'].includes(item.props.children.join(''))));
+  }
 });
 const renderProvidedSnapshot = async (snapshot, phaseLabel) => {
   const rendered = await renderSnapshot(snapshot);
@@ -1548,7 +1593,7 @@ await test('[Step 7 round 5 finding 1] failure and reasonless partial panes neve
     await forwarded(hookFor('command.run'), { command: 'wir' });
     const partial = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
     assertNoUnknownText(partial.result);
-    assert(hasDescendant(partial.result, (item) => item.name === 'Text' && item.props.children.includes('Some running work could not be listed')));
+    assert(hasDescendant(partial.result, (item) => item.name === 'Text' && item.props.children.join('').startsWith('Some running work could not be listed:')));
     processCapability.run = async () => ({ exitCode: 0, stdout: JSON.stringify({ discovery: 'available', rows: [], collectedAt: paths.now }), stderr: '' });
     await forwarded(hookFor('command.run'), { command: 'wir' });
     const empty = await forwarded(pane, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' });
@@ -2368,7 +2413,7 @@ await test('[changed Step 7 unknown omission][changed Round 3 report-first phase
     'harden-brief.md': '# Harden\nHARDEN BRIEF EVIDENCE\n',
     'harden-run.log': 'HARDEN RUN EVIDENCE\nEXIT=0\n',
     'harden-report.md': '# Harden report\nHARDEN REPORT EVIDENCE\n',
-    'pilot-report.md': '# Pilot report\n## Implemented\nREPORT EVIDENCE\n## Verification\nSHOULD NOT LEAD\n## Remaining Risks\nRISK EVIDENCE\n',
+    'pilot-report.md': 'Deferred: Host verification (card 42)\n# Pilot report\n## Implemented\nREPORT EVIDENCE\n## Verification\nSHOULD NOT LEAD\n## Remaining Risks\nRISK EVIDENCE\n',
   };
   for (const [name, content] of Object.entries(artifacts)) writeFileSync(join(lane, name), content);
   const row = (await readSnapshot({ process: processCapability }, isolatedPaths)).rows.find((item) => item.id === cardId);
@@ -2384,7 +2429,7 @@ await test('[changed Step 7 unknown omission][changed Round 3 report-first phase
   assert.match(row.inspectors.review.summary, /^verdict: clear\nfindings: 1\nREVIEW REPORT EVIDENCE\nbrief: Review/s);
   assert.match(row.inspectors.refutation.summary, /^verdict: clear\nfindings: 1\nREFUTATION REPORT EVIDENCE\nbrief: Refutation/s);
   assert.equal(row.inspectors.harden.summary, 'HARDEN REPORT EVIDENCE\nbrief: Harden');
-  assert.match(row.inspectors.report.summary, /^Implemented\nREPORT EVIDENCE\nRemaining Risks\nRISK EVIDENCE$/);
+  assert.match(row.inspectors.report.summary, /^Deferred: Host verification \(card 42\)\nImplemented\nREPORT EVIDENCE\nRemaining Risks\nRISK EVIDENCE$/);
   assert.equal(new Set(Object.values(row.inspectors).map((item) => item.summary)).size, 9);
 });
 
@@ -3054,7 +3099,7 @@ await test('[Step 8 rule 1] each card has one chronologically ordered, non-contr
   const ordered = ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Independent review (sol)', 'Independent refutation (astra)', 'Harden', 'Report'];
   let previous = -1;
   for (const label of ordered) {
-    const next = labels.indexOf(label);
+    const next = visible.findIndex((text, index) => index > previous && (text.startsWith(`${label} `) || text.includes(` ${label} `)));
     assert(next > previous, `${label}: ${labels}`);
     previous = next;
   }
@@ -3284,6 +3329,23 @@ await test('[phase cost pane] wide rows show compact totals, narrow rows retain 
   assert(detailText.includes('input 1 234 · cache write 5 678 · cache read 2 345 678 · output 901'));
   assert(detailText.includes('price unknown'));
   assert(detailText.includes('cost source: archive cost.json'));
+});
+
+await test('[run cost pane] a mixed priced and unpriced total stays unknown and names the missing model at narrow width', async () => {
+  const { snapshot } = step8Fixture();
+  const pilot = snapshot.sessions[0].cards[0].actors[0];
+  pilot.runCost = {
+    usd: 'price unknown',
+    priceUnknownModels: ['unpriced-model'],
+    models: {
+      'claude-haiku-4-5-20251001': { input: 1000000, output: 0, cacheRead: 0, cacheWrite: 0, usd: 1, priceLabel: 'API price' },
+      'unpriced-model': { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, usd: 'price unknown', priceLabel: 'price unknown' },
+    },
+  };
+  const rendered = await renderSnapshot(snapshot, null, false, 70);
+  const text = descendants(rendered.tree, (item) => item.name === 'Text').flatMap((item) => item.props.children).join(' ');
+  assert(text.includes('run total so far: price unknown'), text);
+  assert(text.includes('missing price for: unpriced-model'), text);
 });
 
 await test('[Step 8 round 2 jitter] process refusals appear only after two consecutive pane polls', async () => {

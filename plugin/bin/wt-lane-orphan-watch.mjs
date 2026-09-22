@@ -2,10 +2,12 @@
 import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, terminateLane } from './lib/lane-supervisor-core.mjs'
+import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionSlots, terminateLane } from './lib/lane-supervisor-core.mjs'
 import { posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
-import { listBrokers, listProcessTable } from './lib/second-opinion-core.mjs'
+import { listBrokers, listProcessRelationships, listProcessTable } from './lib/second-opinion-core.mjs'
+import { idleHelperEvents } from './lib/resolved-binary.mjs'
+import { hostAdapter } from './lib/host/adapter.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
@@ -13,6 +15,7 @@ const CONTROL = fileURLToPath(new URL('./wt-lane-control.mjs', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./wt-lane.mjs', import.meta.url))
 const TEST_SEAMS_ACTIVE = new Set([
   ...(process.env.WT_LANE_WATCH_TEST_SWEEP_LOG ? ['WT_LANE_WATCH_TEST_SWEEP_LOG'] : []),
+  ...(process.env.WT_LANE_WATCH_TEST_HELPERS ? ['WT_LANE_WATCH_TEST_HELPERS'] : []),
 ])
 const argvValue = (argv, flag) => {
   const index = Array.isArray(argv) ? argv.indexOf(flag) : -1
@@ -38,16 +41,19 @@ function records(project, staging = stagingLaneDirs(project)) {
   const worktrees = new Set([project, ...(git.status === 'known' ? git.worktrees : []), ...(umbrella.status === 'known' ? umbrella.worktrees : []), ...staging])
   const out = []
   for (const worktree of worktrees) {
-    const dir = supervisionPaths(worktree).dir
-    let currentRunId = null
-    try { currentRunId = JSON.parse(readFileSync(supervisionPaths(worktree).pointer, 'utf8')).runId } catch {}
-    let names = []
-    try { names = readdirSync(dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch {}
-    if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
-    for (const name of names) {
-      try {
-        const record = JSON.parse(readFileSync(path.join(dir, name), 'utf8'))
-        Object.defineProperty(record, '__recordWorktree', { value: worktree })
+    for (const slot of supervisionSlots(worktree)) {
+      const paths = supervisionPaths(worktree, null, slot)
+      let currentRunId = null
+      try { currentRunId = JSON.parse(readFileSync(paths.pointer, 'utf8')).runId } catch {}
+      let names = []
+      try { names = readdirSync(paths.dir).filter((name) => /^\d+-\d+\.json$/.test(name)) } catch {}
+      if (currentRunId) names.sort((a, b) => Number(b === `${currentRunId}.json`) - Number(a === `${currentRunId}.json`))
+      for (const name of names) try {
+        const record = JSON.parse(readFileSync(path.join(paths.dir, name), 'utf8'))
+        Object.defineProperties(record, {
+          __recordWorktree: { value: worktree },
+          __supervisionSlot: { value: slot },
+        })
         out.push(record)
       } catch {}
     }
@@ -80,6 +86,21 @@ const processDir = (argv, cwd) => {
     if (argv[index].startsWith('--dir=') && argv[index].slice('--dir='.length)) return path.resolve(cwd, argv[index].slice('--dir='.length))
   }
   return null
+}
+
+const isOpencodeCommand = (command) => /(?:^|[\\/\s])opencode(?:\.exe|\.cmd)?(?:\s|$)/i.test(command)
+
+function processRecordDirs(project, table) {
+  if (!table.supported) return []
+  const dirs = []
+  for (const item of table.processes) {
+    if (!isOpencodeCommand(item.command)) continue
+    const candidate = inspectProcess(item.pid)
+    if (!candidate?.cwd || (candidate.cwd !== project && !candidate.cwd.startsWith(`${project}${path.sep}`))) continue
+    const argv = Array.isArray(candidate.argv) && candidate.argv.length > 0 ? candidate.argv : posixCommandArgs(item.command)
+    if (reportableOpencodeArgv(argv)) dirs.push(processDir(argv, candidate.cwd) ?? candidate.cwd)
+  }
+  return dirs
 }
 
 async function main() {
@@ -144,7 +165,17 @@ async function main() {
       }
     }
     const staging = stagingLaneDirs(options.project)
-    const known = records(options.project, staging)
+    const table = listProcessTable(hostAdapter)
+    let helperRows = table.supported ? table.processes : []
+    let helperAges = new Map()
+    if (process.env.WT_LANE_WATCH_TEST_HELPERS) {
+      try { helperRows = JSON.parse(readFileSync(process.env.WT_LANE_WATCH_TEST_HELPERS, 'utf8')) } catch { helperRows = [] }
+    } else {
+      const relationships = listProcessRelationships(hostAdapter)
+      if (relationships.status === 'known') helperAges = new Map(relationships.processes.map((item) => [item.pid, item.elapsedSeconds]))
+    }
+    for (const event of idleHelperEvents(helperRows, { ageByPid: helperAges, inspect: inspectProcess })) if (!notified.has(event.key)) notice(event.key, event.message)
+    const known = records(options.project, [...staging, ...processRecordDirs(options.project, table)])
     for (const record of known) {
       const verdict = classifyLane(record)
       const processRecord = verdict.child === 'running' ? inspectProcess(record.childPid) : null
@@ -154,7 +185,8 @@ async function main() {
         const e = record.evidence ?? {}
         const model = argvValue(record.workerArgv, '--model')
         const brief = argvValue(record.workerArgv, '--brief')
-        const control = `node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)}`
+        const slot = record.__supervisionSlot ? ` --slot ${shellQuote(record.__supervisionSlot)}` : ''
+        const control = `node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)}${slot}`
         const restart = model && brief && path.isAbsolute(brief) && existsSync(brief)
           ? `; to relaunch from the worktree's current state, abandon, then run node ${shellQuote(LAUNCHER)} --dir ${shellQuote(record.worktree)} --model ${shellQuote(model)} --brief ${shellQuote(brief)}`
           : ''
@@ -188,7 +220,8 @@ async function main() {
         if (verdict.status === 'worker-gone-child-alive') {
           const orphanKey = `${record.runId}:worker-gone-child-alive`
           if (!journaled.has(orphanKey) && journal({ event: 'worker-gone-child-alive', runId: record.runId, pid: record.childPid, argv: argvSummary(processRecord?.argv ?? record.childArgv ?? []), worktree: record.worktree, owner: record.owner, reason: verdict.reason })) journaled.add(orphanKey)
-          if (ownsNotice && !notified.has(orphanKey)) notice(orphanKey, `LANE worker-gone-child-alive: worktree=${record.worktree} child pid=${record.childPid}; abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)} --decision abandon`)
+          const slot = record.__supervisionSlot ? ` --slot ${shellQuote(record.__supervisionSlot)}` : ''
+          if (ownsNotice && !notified.has(orphanKey)) notice(orphanKey, `LANE worker-gone-child-alive: worktree=${record.worktree} child pid=${record.childPid}; abandon with node ${shellQuote(CONTROL)} --dir ${shellQuote(record.worktree)}${slot} --decision abandon`)
         }
         continue
       }
@@ -202,10 +235,9 @@ async function main() {
       const result = terminateLane(record, { journal, source: 'watcher', recordWorktree: record.__recordWorktree })
       journal({ event: result.killed ? 'cleaned' : 'cleanup-refused', runId: record.runId, pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: result.killed ? verdict.reason : result.reason, evidence }, { killed: result.killed })
     }
-    const table = listProcessTable()
     const attributed = new Set(known.map((record) => record.childPid))
     if (table.supported) for (const item of table.processes) {
-      if (!/(?:^|[\\/\s])opencode(?:\.exe|\.cmd)?(?:\s|$)/i.test(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
+      if (!isOpencodeCommand(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
       const unknown = inspectProcess(item.pid)
       if (!unknown?.cwd || (unknown.cwd !== options.project && !unknown.cwd.startsWith(`${options.project}${path.sep}`))) continue
       const argv = Array.isArray(unknown.argv) && unknown.argv.length > 0 ? unknown.argv : posixCommandArgs(item.command)
@@ -216,7 +248,7 @@ async function main() {
       journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
       notice(`unknown:${item.pid}`, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
     }
-    const brokers = listBrokers()
+    const brokers = listBrokers(hostAdapter)
     if (brokers.supported) for (const pid of brokers.pids) {
       if (notified.has(`broker:${pid}`)) continue
       const broker = inspectProcess(pid)

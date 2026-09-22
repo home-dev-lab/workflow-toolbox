@@ -12,6 +12,7 @@ import { COLLECTOR_TIMEOUT_MS, fileUrlPath, readSnapshot, register, RENDER_JOURN
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
 const PHASE_COST_FIXTURE = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'phase-cost.json')
+const SNAPSHOT_CLI = join(REPO_ROOT, 'plugin', 'hooks', 'snapshot-cli')
 
 function runSelftest(filter?: string) {
   return spawnSync(process.execPath, [SELFTEST], {
@@ -152,7 +153,109 @@ function textChildren(tree: unknown): string[] {
   return [...own, ...children.flatMap(textChildren)]
 }
 
+function renderedTextColumns(tree: unknown, column = 0): Array<{ text: string; column: number }> {
+  if (!tree || typeof tree !== 'object') return []
+  const item = tree as { name?: string; props?: { children?: unknown; flexDirection?: string; columnGap?: number; paddingLeft?: number } }
+  const children = (Array.isArray(item.props?.children) ? item.props.children : [item.props?.children]).filter(Boolean)
+  const start = column + (Number(item.props?.paddingLeft) || 0)
+  if (item.name === 'Text' || item.name === 'Button') {
+    const text = children.filter((value): value is string => typeof value === 'string').join('')
+    return text ? [{ text, column: start }] : []
+  }
+  if (item.props?.flexDirection !== 'row') return children.flatMap((child) => renderedTextColumns(child, start))
+  const found: Array<{ text: string; column: number }> = []
+  let cursor = start
+  for (const child of children) {
+    const rendered = renderedTextColumns(child, cursor)
+    found.push(...rendered)
+    const width = rendered.reduce((maximum, entry) => Math.max(maximum, entry.column - cursor + entry.text.length), 0)
+    cursor += width + (Number(item.props?.columnGap) || 0)
+  }
+  return found
+}
+
 describe('What is running collector seam', () => {
+  it.each([120, 70])('indents expanded SDK stage detail beyond its stage label at %i columns', (bodyColumns) => {
+    const pilot = {
+      id: 'pilot:indent', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', phase: 'discovery', outcome: 'running',
+      phaseStates: { discovery: 'running' }, phaseCosts: { discovery: 'unknown' }, inspectors: { discovery: { summary: 'Route: FULL' } }, lanes: [],
+    }
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      { discovery: 'available', sessions: [{ id: 'session:indent', project: 'wt-suite', cards: [{ id: '1868819337624683548', title: 'Indent lock', actors: [pilot] }], actors: [] }], services: { count: 0 }, helpers: { count: 0 } },
+      new Set(['pilot:indent']), new Map([['timeline:session:indent:1868819337624683548', 'discovery']]), 'wt-suite', false,
+      { toggle: () => undefined, select: () => undefined, closeView: () => undefined, switchScope: () => undefined, close: () => undefined, bodyColumns },
+    )
+    const columns = renderedTextColumns(tree)
+    const stage = columns.find((entry) => entry.text.includes('Discovery ●'))
+    const detail = columns.find((entry) => entry.text === 'Discovery')
+    expect(stage).toBeTruthy()
+    expect(detail).toBeTruthy()
+    expect(detail!.column).toBeGreaterThan(stage!.column)
+  })
+
+  it('keeps this-project SDK work and its lane in the visible prefix after Show all', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const currentPilot = { id: 'pilot:current', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', phase: 'discovery', outcome: 'running', phaseStates: { discovery: 'running' }, lanes: [] }
+    const snapshot = { discovery: 'available', sessions: [
+      { id: 'session:000-other', project: 'other', cards: [{ id: '1868819337624683547', title: 'OTHER PROJECT', actors: [] }], actors: [] },
+      { id: 'session:999-current', project: 'wt-suite', cards: [{ id: '1868819337624683548', title: 'CURRENT SDK RUN', actors: [currentPilot, { id: 'lane:current', kind: 'external', label: 'Lane', title: 'CURRENT LANE', outcome: 'running' }] }], actors: [] },
+    ], services: { count: 0 }, helpers: { count: 0 } }
+    const render = (allProjects: boolean) => textChildren(renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') }, snapshot,
+      new Set(), new Map(), 'wt-suite', allProjects,
+      { toggle: () => undefined, select: () => undefined, closeView: () => undefined, switchScope: () => undefined, close: () => undefined, bodyColumns: 120 },
+    )).join(' ')
+    const local = render(false)
+    const all = render(true)
+    expect(local).toContain('CURRENT SDK RUN')
+    expect(local).toContain('CURRENT LANE')
+    expect(all).toContain('CURRENT SDK RUN')
+    expect(all).toContain('CURRENT LANE')
+    expect(all.indexOf('CURRENT SDK RUN')).toBeLessThan(all.indexOf('OTHER PROJECT'))
+  })
+
+  it('ships a documented command-line entry point that prints the collector snapshot', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-cli-'))
+    try {
+      const paths = collector(root)
+      const help = spawnSync(process.execPath, [SNAPSHOT_CLI, '--help'], { encoding: 'utf8' })
+      expect(help.status, help.stderr).toBe(0)
+      expect(help.stdout).toContain('--suite-root <path>')
+      expect(help.stdout).toContain('--planka-base-url <url>')
+      const result = spawnSync(process.execPath, [SNAPSHOT_CLI,
+        '--suite-root', paths.suiteRoot,
+        '--config-dir', paths.configDir,
+        '--liveness-dir', paths.livenessDir,
+        '--proc-root', paths.procRoot,
+        '--now', paths.now,
+        '--planka-base-url', 'http://localhost:3000/',
+      ], { encoding: 'utf8' })
+      expect(result.status, result.stderr).toBe(0)
+      expect(JSON.parse(result.stdout)).toMatchObject({ discovery: 'available', rows: [], sessions: [] })
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('builds a card URL for the card heading shape used by external lane briefs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-card-heading-'))
+    try {
+      const paths = collector(root, { plankaBaseUrl: 'http://localhost:3000/' })
+      const worktree = join(paths.suiteRoot, 'worktrees', 'heading-lane')
+      mkdirSync(join(worktree, '.lane'), { recursive: true })
+      writeFileSync(join(worktree, '.lane', 'brief.md'), '# Card 1868168343559603765 — Pane details\n')
+      writeFileSync(join(worktree, '.lane', 'run.log'), 'working\n')
+      mkdirSync(join(paths.procRoot, '700'))
+      writeFileSync(join(paths.procRoot, '700', 'status'), 'Name:\topencode\nPPid:\t1\n')
+      writeFileSync(join(paths.procRoot, '700', 'cmdline'), ['opencode', 'run', '--dir', worktree].join('\0') + '\0')
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.rows.find((row: { worktree?: string }) => row.worktree === worktree)).toMatchObject({
+        cardId: '1868168343559603765',
+        cardUrl: 'http://localhost:3000/cards/1868168343559603765',
+      })
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('resolves the shipped price table URL to a native Windows drive path', () => {
     expect(fileUrlPath(new URL('file:///C:/workflow-toolbox/plugin/pricing/model-prices.json'), 'win32'))
       .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
@@ -462,6 +565,128 @@ describe('What is running collector seam', () => {
     const expanded = allTreeStrings(render(80, new Set(['pilot-layout']))).map(({ value }) => value).join(' ')
     expect(expanded).toContain('anthropic/claude-opus-5 · input 12 · cache write 57 558 · cache read 206 064 · output 46 · $1.23')
     expect(expanded).toContain('owner: pilot runner')
+  })
+
+  it('renders each looping stage round and its lifecycle bound from the timeline', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-loop-rounds-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1868819337624683548'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'loop-rounds')
+      const lane = join(worktree, '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Loop rounds\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=harden\n')
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [
+        { phase: 'discovery', round: null, entered_at: 1, exited_at: 2 },
+        { phase: 'plan', round: 1, entered_at: 2, exited_at: 3 },
+        { phase: 'critic', round: 1, entered_at: 3, exited_at: 4 },
+        { phase: 'plan', round: 2, entered_at: 4, exited_at: 5 },
+        { phase: 'critic', round: 2, entered_at: 5, exited_at: 6 },
+        { phase: 'tdd', round: null, entered_at: 6, exited_at: 7 },
+        { phase: 'verify', round: null, entered_at: 7, exited_at: 8 },
+        { phase: 'review', round: 1, entered_at: 8, exited_at: 9 },
+        { phase: 'refutation', round: 1, entered_at: 9, exited_at: 10 },
+        { phase: 'harden', round: 1, entered_at: 10, exited_at: 11 },
+        { phase: 'verify', round: null, entered_at: 11, exited_at: 12 },
+        { phase: 'review', round: 2, entered_at: 12, exited_at: 13 },
+        { phase: 'refutation', round: 2, entered_at: 13, exited_at: 14 },
+        { phase: 'harden', round: 2, entered_at: 14, exited_at: null },
+      ], lanes: [] }))
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row.phaseRounds).toEqual({ plan: 2, critic: 2, review: 2, refutation: 2, harden: 2 })
+      const text = await renderedText({ ...snapshot, sessions: undefined, rows: [{ ...row, project: 'wt-suite' }] })
+      expect(text).toContain('Plan · round 2 (max 6)')
+      expect(text).toContain('Critic · round 2 (max 6)')
+      expect(text).toContain('Independent review · round 2 (max 6)')
+      expect(text).toContain('Independent refutation · round 2 (max 6)')
+      expect(text).toContain('Harden · round 2 (max 5)')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('does not treat a historical worktree without lane metadata as unreadable running work', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-no-lane-'))
+    try {
+      const paths = collector(root)
+      mkdirSync(join(paths.suiteRoot, 'worktrees', 'historical-worktree'))
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      expect(snapshot.discovery).toBe('available')
+      expect(snapshot.unreadableScans).toEqual([])
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('collects concurrent round-one critic slots as distinct pane sub-rows', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-critic-slots-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1868819337624683548'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'critic-slots')
+      const lane = join(worktree, '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Parallel critics\n`)
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=critic\n')
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [
+        { phase: 'critic', round: 1, entered_at: 1, exited_at: null },
+      ], lanes: [
+        { phase: 'critic', round: 1, lane_id: 'A', state: 'running', model: 'openai/critic-a', started_at: 2, ended_at: null, usage_file: 'critic-a.usage.json' },
+        { phase: 'critic', round: 1, lane_id: 'B', state: 'running', model: 'openai/critic-b', started_at: 3, ended_at: null, usage_file: 'critic-b.usage.json' },
+      ] }))
+      for (const [slot, runId, childPid] of [['critic-A', '10-20', 701], ['critic-B', '11-21', 702]] as const) {
+        const dir = join(lane, `supervision-${slot}`)
+        mkdirSync(dir)
+        writeFileSync(join(dir, 'current.json'), JSON.stringify({ version: 1, runId }))
+        writeFileSync(join(dir, `${runId}.json`), JSON.stringify({ runId, state: 'running', childPid, worktree }))
+        mkdirSync(join(paths.procRoot, String(childPid)))
+        writeFileSync(join(paths.procRoot, String(childPid), 'status'), `Name:\topencode\nPPid:\t1\n`)
+        writeFileSync(join(paths.procRoot, String(childPid), 'cmdline'), ['opencode', 'run', '--dir', worktree, '--model', `openai/critic-${slot.at(-1)!.toLowerCase()}`].join('\0') + '\0')
+      }
+
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const pilot = snapshot.rows.find((row: { id: string }) => row.id === cardId)
+      expect(pilot.lanes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ label: 'Critic A', phase: 'critic', outcome: 'running', model: 'openai/critic-a', usageFile: 'critic-a.usage.json' }),
+        expect.objectContaining({ label: 'Critic B', phase: 'critic', outcome: 'running', model: 'openai/critic-b', usageFile: 'critic-b.usage.json' }),
+      ]))
+      const paneSnapshot = { ...snapshot, rows: [], sessions: [{ id: 'session:critics', project: 'wt-suite', cards: [{ id: cardId, title: 'Parallel critics', actors: [pilot] }], actors: [] }] }
+      const tree = await renderedTree(paneSnapshot)
+      const text = JSON.stringify(tree, (_key, value) => typeof value === 'function' ? '[function]' : value)
+      expect(text.indexOf('Critic · round 1 (max 6)')).toBeLessThan(text.indexOf('[▶ Critic A]'))
+      expect(text.indexOf('[▶ Critic A]')).toBeLessThan(text.indexOf('[▶ Critic B]'))
+      expect(text.indexOf('[▶ Critic B]')).toBeLessThan(text.indexOf('next: TDD'))
+      const columns = renderedTextColumns(tree)
+      expect(columns.find((entry) => entry.text === '[▶ Critic A]')!.column)
+        .toBeGreaterThan(columns.find((entry) => entry.text.includes('Critic · round 1'))!.column)
+
+      const completedPilot = { ...pilot, phase: 'tdd', phaseStates: { ...pilot.phaseStates, critic: 'done', tdd: 'running' }, lanes: pilot.lanes.map((lane: Record<string, unknown>) => ({ ...lane, outcome: 'done' })) }
+      expect(await renderedText({ ...paneSnapshot, sessions: [{ ...paneSnapshot.sessions[0], cards: [{ id: cardId, title: 'Parallel critics', actors: [completedPilot] }] }] })).not.toContain('Critic A')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('renders expanded SDK pilot details directly below the pilot row and before the stage spine', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const pilot = {
+      id: 'pilot-detail-order', kind: 'pilot', label: 'SDK pilot', sdkLifecycle: true, phase: 'critic', outcome: 'running', route: 'FULL',
+      phaseStates: { discovery: 'done', plan: 'done', critic: 'running' }, phaseRounds: { plan: 2, critic: 2 }, lanes: [],
+    }
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      { discovery: 'available', sessions: [{ id: 'session-order', project: 'wt-suite', cards: [{ id: '1868819337624683548', title: 'Detail order', cardUrl: 'https://example.test/card', actors: [pilot] }], actors: [] }], services: { count: 0 }, helpers: { count: 0 } },
+      new Set(['pilot-detail-order']), new Map(), 'wt-suite', false,
+      { toggle: () => undefined, select: () => undefined, closeView: () => undefined, switchScope: () => undefined, close: () => undefined, bodyColumns: 120 },
+    )
+    const strings = allTreeStrings(tree).map(({ value }) => value)
+    const pilotRow = strings.findIndex((value) => value.includes('▼ SDK pilot'))
+    const details = strings.indexOf('SDK pilot details')
+    const cardLink = strings.indexOf('open card')
+    const firstStage = strings.findIndex((value) => value.includes('Discovery ✓'))
+    expect(pilotRow).toBeGreaterThanOrEqual(0)
+    expect(details).toBeGreaterThan(pilotRow)
+    expect(cardLink).toBeGreaterThan(details)
+    expect(firstStage).toBeGreaterThan(cardLink)
   })
 
   it('accumulates repeated archived lifecycle rounds for one normalized phase', async () => {
@@ -791,6 +1016,65 @@ describe('What is running collector seam', () => {
     }
     const texts = textChildren(await renderedTree(snapshot))
     expect(texts.filter((value) => value.includes(cardId))).toEqual([`Card ${cardId}`, `Card ${cardId}`])
+  })
+
+  it('uses the collector-owned explanation for an unreadable-only partial snapshot', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      {
+        discovery: 'partial', rows: [], sessions: [], collectedAt: '2026-09-20T12:00:00Z',
+        collectors: { work: { availability: { status: 'partial', reason: 'unreadable: /fixture/blocked' } } },
+      },
+      new Set(['discovery-detail']), new Map(), 'wt-suite', true,
+      { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
+    )
+    expect(textChildren(tree)).toContain('Some running work could not be listed: unreadable: /fixture/blocked')
+  })
+
+  it('names a scan cap in the collapsed partial footer', async () => {
+    const text = await renderedText({
+      discovery: 'partial', rows: [], sessions: [], collectedAt: '2026-09-20T12:00:00Z',
+      cappedScans: ['/fixture/capped'],
+    })
+    expect(text).toContain('Some running work could not be listed: scan cap reached: /fixture/capped')
+  })
+
+  it('names an unavailable reason instead of opening an empty partial detail', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      { discovery: 'partial', rows: [], sessions: [], collectedAt: '2026-09-20T12:00:00Z' },
+      new Set(['discovery-detail']), new Map(), 'wt-suite', true,
+      { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
+    )
+    expect(textChildren(tree)).toContain('reason unavailable')
+  })
+
+  it('keeps an expanded lane title once and degrades a valid card link to its visible URL without Link', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const id = '1868168343559603765'
+    const title = 'Pane details'
+    const href = `http://localhost:3000/cards/${id}`
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button') },
+      { discovery: 'available', rows: [{ id: 'lane:one', cardId: id, cardUrl: href, kind: 'external', label: 'Lane', title, outcome: 'running' }], collectedAt: '2026-09-20T12:00:00Z' },
+      new Set(['lane:one']), new Map(), 'wt-suite', true,
+      { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
+    )
+    expect(textChildren(tree).filter((text) => text === title)).toHaveLength(1)
+    expect(textChildren(tree)).toContain(`open card: ${href}`)
+  })
+
+  it('explains a missing Planka browser URL in expanded lane details', () => {
+    const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
+    const tree = renderPane(
+      { Box: component('Box'), Text: component('Text'), Button: component('Button'), Link: component('Link') },
+      { discovery: 'available', rows: [{ id: 'lane:one', cardId: '1868168343559603765', cardUrl: null, kind: 'external', label: 'Lane', outcome: 'running' }], collectedAt: '2026-09-20T12:00:00Z' },
+      new Set(['lane:one']), new Map(), 'wt-suite', true,
+      { toggle: () => undefined, switchScope: () => undefined, close: () => undefined, now: Date.parse('2026-09-20T12:00:00Z'), bodyColumns: 120 },
+    )
+    expect(textChildren(tree)).toContain('open card unavailable: Planka browser URL is not configured')
   })
 
   it('offers no button on a skipped or not-started stage even when evidence is recorded for it', async () => {

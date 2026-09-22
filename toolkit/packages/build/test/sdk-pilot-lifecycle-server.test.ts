@@ -19,9 +19,12 @@ import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 import { treeSignature } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { loadRules } from '../../../../plugin/bin/lib/rules-manifest.mjs'
 
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n'
 const FIXTURE_LANE_TIMEOUT_SECONDS = 10
+const PLUGIN_ROOT = fileURLToPath(new URL('../../../../plugin', import.meta.url))
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
@@ -113,9 +116,15 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
   })
 
   it('refuses route_finding without the runner board contract and names the launch remedy', async () => {
-    const lifecycle = testLifecycle('LITE')
+    const lifecycle = testLifecycle('FULL')
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    const reason = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
     expect(await text(lifecycle.routeFinding({ title: 'Follow up', l4Reason: 'different subsystem', risk: 'P1', effort: 'S' })))
-      .toContain('route_finding refused: no board contract; relaunch with --board-contract <json file>')
+      .toBe(`${reason}\nrouting is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`)
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'plan', round: null, reason, findings: [] }, deferred: null })
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `# report\nPartial: ${reason}\n` })))
+      .toBe(`pilot-report: partial run, make "Partial: ${reason}" the first line`)
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: ${reason}\n# report\n` }))).toBe('wrote pilot-report')
   })
 
   it('routes an L4 finding through the runner and persists its trusted lifecycle record', async () => {
@@ -464,6 +473,48 @@ printf 'report\n' > "$report"
     expect(spawnSync('git', ['status', '--porcelain'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout).toBe('')
   })
 
+  it('closes an ignored-only delivery by reading back its declared artefact and recording its digest', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport()
+    const content = 'ignored delivery\n'
+    writeFileSync(join(lifecycle.root, '.lane', 'delivery.txt'), content)
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/delivery.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'ignored-only' }))).toBe('accepted phase=awaiting_fidelity')
+    const expected = { path: '.lane/delivery.txt', size: Buffer.byteLength(content), sha256: createHash('sha256').update(content).digest('hex'), modified_after_started: true }
+    const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
+    expect(summary.delivery).toMatchObject({ mode: 'artefact-read-back', artifacts: [expected] })
+    expect(JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8')).delivery)
+      .toMatchObject({ mode: 'artefact-read-back', artifacts: [expected] })
+    expect(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout.trim()).toBe('1')
+  })
+
+  it('refuses an ignored-only delivery whose declared artefact is missing and names its path', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport()
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/missing.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing-artefact' })))
+      .toContain('missing declared artefact .lane/missing.txt')
+  })
+
+  it('refuses a declared artefact whose mtime predates the lifecycle', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport()
+    const artefact = join(lifecycle.root, '.lane', 'pre-existing.txt')
+    writeFileSync(artefact, 'pre-existing\n')
+    utimesSync(artefact, new Date(1), new Date(1))
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/pre-existing.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'pre-existing-artefact' })))
+      .toContain('declared artefact predates this run: .lane/pre-existing.txt')
+  })
+
+  it('still refuses a real-git delivery that changes nothing and declares no artefact', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport()
+    await lifecycle.artifact({ kind: 'pilot-report', content: liteReport })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'nothing-delivered' })))
+      .toContain('for a gitignored delivery add "- Delivered artefact: `relative/path`" under ## Implemented')
+  })
+
   it.each([
     ['failed commit', () => (_program: string, call: string[]) => { if (call[0] === 'commit') throw new Error('commit failed'); return call[0] === 'rev-parse' ? 'base\n' : '' }, /missing changed HEAD/],
     ['unchanged HEAD', () => (_program: string, call: string[]) => call[0] === 'rev-parse' ? 'base\n' : '', /missing changed HEAD/],
@@ -759,7 +810,7 @@ printf 'report\n' > "$report"
     const lifecycle = await lifecycleAtVerify()
     await writeGates(lifecycle)
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'passed' }))).toBe('accepted phase=report')
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null })
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: null, deferred: null })
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: '# report\nPartial: not partial\n' })))
       .toBe('pilot-report: this run is not partial')
   })
@@ -996,11 +1047,13 @@ printf 'report\n' > "$report"
     const lifecycle = await lifecycleReadyForReport({ cardText })
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven\n` })
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'missing' }))).toContain('expected `- Keep tests green.` followed by `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`')
-    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })))
+    const malformed = await lifecycleReadyForReport({ cardText })
+    expect(await text(malformed.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: maybe\n- Keep tests green.\n  Outcome: deferred: needs a real host\n` })))
       .toContain('deferred outcome must be `Outcome: deferred: card <id> — <L4 reason>`')
     // A proven outcome may carry its evidence on the same line; refusing that shape would loop a pilot on wording.
-    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven — byte lock in rules-manifest.test.ts\n- Keep tests green.\n  Outcome: proven: pnpm test EXIT=0\n` })
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'proven-with-evidence' }))).toContain('missing commit')
+    const proven = await lifecycleReadyForReport({ cardText })
+    await proven.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship exact bytes.\n  Outcome: proven — byte lock in rules-manifest.test.ts\n- Keep tests green.\n  Outcome: proven: pnpm test EXIT=0\n` })
+    expect(await text(proven.transition({ phase: 'report', tool_use_id: 'proven-with-evidence' }))).toContain('missing commit')
   })
 
   it.each([
@@ -1016,6 +1069,21 @@ printf 'report\n' > "$report"
     expect(lifecycle.state()).toEqual({
       phase: 'report',
       partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: [unmet] },
+      deferred: null,
+    })
+  })
+
+  it.each([
+    ['no outcome', ''],
+    ['an unrecognised outcome', '  Outcome: maybe\n'],
+  ])('keeps %s classified as partial while refusing its report schema', async (_name, outcome) => {
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## Definition of done\n- Ship exact bytes.\n' })
+    const report = `# report\n\n## E2E\nProcedure: run delivery fixture\nVerbatim output: fixture passed\n\n## Acceptance\n- Ship exact bytes.\n${outcome}`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'invalid-outcome' }))).toContain('pilot-report: missing expected')
+    expect(lifecycle.state()).toMatchObject({
+      partial: { reason: 'delivered partially: 1 unmet criteria', findings: ['Ship exact bytes.'] },
+      deferred: null,
     })
   })
 
@@ -1049,8 +1117,40 @@ printf 'report\n' > "$report"
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 99 — unavailable dependency\n` }))).toContain('card 99 is not in lifecycle routed_cards')
     expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n` }))).toBe('wrote pilot-report')
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Routed cards\n- card 42 — Host verification — unavailable dependency: real host')
-    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'deferred-partial' }))).toContain('Partial: delivered partially: 1 unmet criteria')
-    expect(lifecycle.state().partial).toEqual({ phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: ['Ship.'] })
+  })
+
+  it('classifies a routed-card deferral distinctly from a partial delivery and names it first', async () => {
+    const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
+    let revisions = 0
+    const git = (_program: string, call: string[]) => call[0] === 'rev-parse' ? `${++revisions === 1 ? 'base' : 'next'}\n` : ''
+    const lifecycle = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n', boardContract, routeFinding: async () => ({ id: '42', title: 'Host verification' }), git })
+    expect(await text(lifecycle.routeFinding({ title: 'Host verification', l4Reason: 'unavailable dependency: real host', risk: 'P2', effort: 'S' }))).toBe('routed card 42 — Host verification')
+    const report = `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: deferred: card 42 — unavailable dependency: real host\n`
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: report }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'deferred' }))).toContain('Deferred: Ship. (card 42)')
+
+    const partial = await lifecycleReadyForReport({ cardText: 'Route: LITE\n## DoD\n- Ship.\n' })
+    expect(await text(partial.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Acceptance\n- Ship.\n  Outcome: not done: unavailable dependency\n` }))).toBe('wrote pilot-report')
+    expect(await text(partial.transition({ phase: 'report', tool_use_id: 'partial' }))).toContain('Partial: delivered partially: 1 unmet criteria')
+
+    expect(lifecycle.state()).toEqual({
+      phase: 'report',
+      partial: null,
+      deferred: { phase: 'report', round: null, reason: 'delivery deferred: 1 criterion', findings: ['Ship. (card 42)'] },
+    })
+    expect(partial.state()).toEqual({
+      phase: 'report',
+      partial: { phase: 'report', round: null, reason: 'delivered partially: 1 unmet criteria', findings: ['Ship.'] },
+      deferred: null,
+    })
+    expect(lifecycle.state().deferred).not.toEqual(partial.state().partial)
+
+    expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Deferred: Ship. (card 42)\n${report}` }))).toBe('wrote pilot-report')
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'archive' }))).toBe('accepted phase=awaiting_fidelity')
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))).toMatchObject({
+      partial: null,
+      deferred: { reason: 'delivery deferred: 1 criterion', findings: ['Ship. (card 42)'] },
+    })
   })
 
   it('refuses a plan task marked deferred without a routed card id', async () => {
@@ -1130,6 +1230,29 @@ printf 'report\n' > "$report"
     expect(roundTwo).toContain('may not reopen a point a prior round demanded, or reverse a prior round\'s accepted position, unless you cite new evidence')
   })
 
+  it('narrows every critic-to-plan revision without sending the step-back rule to the pilot', async () => {
+    const lifecycle = testLifecycle('FULL', [], criticFindingsLauncher(['[blocking] add exact proof']), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, {
+      rules: loadRules({ shippedRoot: PLUGIN_ROOT }),
+    })
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
+    await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    const revision = await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['[blocking] add exact proof'], tool_use_id: 'critic-1' }))
+    const normalizedRevision = revision.replace(/\s+/g, ' ')
+    expect(normalizedRevision).toContain('Revise only for the blocking findings.')
+    expect(normalizedRevision).toContain('Keep every previously accepted part unchanged.')
+    expect(normalizedRevision).toContain('Do not restart the plan from scratch.')
+    expect(normalizedRevision).toContain('For each blocking finding, state what changed.')
+    expect(revision).not.toContain('# Step back to the architectural root')
+
+    await lifecycle.artifact({ kind: 'plan', content: plan })
+    const secondCritic = await text(lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' }))
+    expect(secondCritic).not.toContain('# Step back to the architectural root')
+  })
+
   it('allows exactly one plan round for a routed-card contest, then escalates the maintained disagreement', async () => {
     const finding = '[blocking] CONTEST routed card 42: this is in scope'
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
@@ -1155,14 +1278,35 @@ printf 'report\n' > "$report"
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8'))
       .toContain('- [blocking|non-blocking] <one finding per line when changes-requested>')
     const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
-    expect(brief).toContain('correctness defect')
-    expect(brief).toContain('unmet DoD item')
-    expect(brief).toContain('security or data-loss risk')
-    expect(brief).toContain('gate or test gap')
-    expect(brief).toContain('change what gets built')
-    expect(brief).toContain('optional wording, style, or polish')
+    expect(brief).toContain('the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item')
+    expect(brief).toContain('A defect that a test the plan already schedules would catch is non-blocking.')
     expect(brief).toContain('Blocking example:')
     expect(brief).toContain('Non-blocking example:')
+    expect(brief).toContain('## Coverage checklist')
+    expect(brief).toContain("the plan's decisions")
+    expect(brief).toContain('each introduced file, field, and claim and its downstream consumers')
+    expect(brief).toContain("the repository's mandatory gates")
+  })
+
+  it.each([
+    ['unions exact-deduplicated findings', [['changes-requested', ['[blocking] shared', '[blocking] alpha']], ['changes-requested', ['[blocking] shared', '[blocking] beta']]], 'changes-requested', ['[blocking] shared', '[blocking] alpha', '[blocking] beta']],
+    ['requests changes when only one critic blocks', [['approved', []], ['changes-requested', ['[blocking] one lane blocks']]], 'changes-requested', ['[blocking] one lane blocks']],
+    ['approves only when both critics approve', [['approved', []], ['approved', []]], 'approved', []],
+  ] as const)('runs two round-1 critics in parallel and %s', async (_name, reports, outcome, findings) => {
+    const lifecycle = await lifecycleAtCritic(dualCriticLauncher(reports))
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }))).toBe('lane critic EXIT=0')
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome, findings, tool_use_id: 'critic' })))
+      .toBe(`accepted phase=${outcome === 'approved' ? 'tdd' : 'plan'}`)
+    const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.lanes).toMatchObject([
+      { phase: 'critic', round: 1, lane_id: 'A', state: 'completed' },
+      { phase: 'critic', round: 1, lane_id: 'B', state: 'completed' },
+    ])
+    expect(Math.max(...timeline.lanes.map((lane: { started_at: number }) => lane.started_at)))
+      .toBeLessThanOrEqual(Math.min(...timeline.lanes.map((lane: { ended_at: number }) => lane.ended_at)))
+    expect(new Set(timeline.lanes.map((lane: { usage_file: string }) => lane.usage_file)).size).toBe(2)
+    expect(existsSync(join(lifecycle.root, '.lane', 'critic-A-report.md'))).toBe(true)
+    expect(existsSync(join(lifecycle.root, '.lane', 'critic-B-report.md'))).toBe(true)
   })
 
   it.each([
@@ -1211,7 +1355,7 @@ printf 'report\n' > "$report"
     const second = ['- [non-blocking] optional rename']
     const lifecycle = await lifecycleAtCritic(criticSequenceLauncher([first, second]))
     await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
-    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: first.map((line) => line.slice(2)), tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
+    expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: [...new Set(first.map((line) => line.slice(2)))], tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
     const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
     await lifecycle.artifact({ kind: 'plan', content: plan })
     await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })
@@ -1612,6 +1756,16 @@ function realGitLifecycle() {
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state }
 }
+async function realGitLifecycleReadyForReport() {
+  const lifecycle = realGitLifecycle()
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+  await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+  await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })
+  await lifecycle.transition({ phase: 'tdd', tool_use_id: 'tdd' })
+  await writeGates(lifecycle)
+  expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify' }))).toBe('accepted phase=report')
+  return lifecycle
+}
 function archiveProject() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-archive-'))); roots.push(root)
   writeFileSync(join(root, '.gitignore'), '.claude/reports/\n')
@@ -1645,7 +1799,10 @@ function criticReportLauncher(lines: string[]) {
   return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; writeFileSync(report,${JSON.stringify(report)}+'plan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function criticSequenceLauncher(rounds: string[][]) {
-  return launcher(`import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const root=args[args.indexOf('--dir')+1]; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const countFile=join(root,'.lane','critic-sequence-count'); const count=existsSync(countFile)?Number(readFileSync(countFile,'utf8')):0; const rounds=${JSON.stringify(rounds)}; writeFileSync(countFile,String(count+1)); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n'+rounds[count].join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
+  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const round=(brief.match(/^### Round /gm)||[]).length; const rounds=${JSON.stringify(rounds)}; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n'+rounds[round].join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
+}
+function dualCriticLauncher(reports: readonly (readonly [string, readonly string[]])[]) {
+  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const index=process.env.WT_LANE_SUPERVISION_SLOT.endsWith('-A')?0:1; const configured=${JSON.stringify(reports)}[index]; writeFileSync(report,'VERDICT: '+configured[0]+'\\nFINDINGS:\\n'+configured[1].map((finding)=>'- '+finding).join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function criticOversizeLauncher() {
   return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'x'.repeat(262145)); appendFileSync(log,'done\\nEXIT=0\\n')")

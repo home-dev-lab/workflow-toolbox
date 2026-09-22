@@ -1,12 +1,20 @@
 # wt-secret-guard
 
-`wt-secret-guard` replaces detected secrets in pasted prompts and Bash, Read, and MCP tool results with stable tokens. It can rewrite `op://` 1Password references, `secret:env:NAME`, and `secret:file:/path` references before Bash runs.
+`wt-secret-guard` replaces detected secrets in inbound deliveries, pasted prompts, and Bash, Read, and MCP tool results with stable tokens. It can rewrite `op://` 1Password references, `secret:env:NAME`, and `secret:file:/path` references before Bash runs.
+
+For an inbound delivery, the guard withholds the credential value before the message is queued while leaving the rewritten message answerable. Its visible notice says that revocation is the only remedy and links to the provider's key page when the detected shape identifies one. This only stops this Claude Code session from spreading the value into commands, files, logs, or further messages. It cannot remove or unsend the original message from Atrium, Remote Control, Slack, another client, or any append-only history where it was already sent.
+
+Its scope is text delivered to this Claude Code session, text the session sends through submitted prompts, and supported tool results. It does not filter text at the point where a human types it in another client.
+
+Known vendor shapes include Brave API keys (`BSA` plus 28 URL-safe characters). UUIDs remain unmasked in ordinary log text, but are masked when immediately used as a credential, including an Exa client constructor or a key, token, secret, or credential assignment. A key with no recognizable shape and no credential context word remains invisible. No entropy threshold that avoids flooding ordinary output can catch every such value, so the guard does not lower its entropy threshold as a fallback.
 
 ## Requirements
 
 This is a Claude Code Function Hooks plugin, an early-access API. Start Claude Code with `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`. Without Function Hooks, Claude Code does not load this plugin and secret guarding is unavailable.
 
 1Password reference resolution requires the [1Password CLI](https://developer.1password.com/docs/cli/) and a signed-in account. Configure `opBinary` when the CLI executable is not `op`; configure `opAccount` for a non-default account.
+
+The Bash hook resolves a well-formed `op://vault/item/[section/]field` reference when it is an unquoted shell word or the complete contents of a quoted shell word. It leaves references literal in larger quoted strings, heredoc bodies, `op read`/`op inject`/`op run` commands, and commands writing to a `.tpl` destination. Unsupported or ambiguous text is left unchanged rather than risking a broken command; this includes search patterns and references containing shell metacharacters.
 
 ## Options
 

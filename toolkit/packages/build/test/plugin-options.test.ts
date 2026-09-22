@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helpers have no declaration surface.
 import { describeWorkflowToolboxOptions, findOrphanedPluginConfigs, resolveWorkflowToolboxOption } from '../../../../plugin/bin/lib/plugin-options.mjs'
+// @ts-expect-error Standalone plugin helpers have no declaration surface.
+import { resolveExecutorProfile, resolvePilotModels } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
 import manifest from '../../../../plugin/.claude-plugin/plugin.json'
 
 const roots: string[] = []
@@ -93,12 +95,64 @@ describe('workflow-toolbox plugin option resolver', () => {
       pluginConfigs: { 'workflow-toolbox@local': { options: { executor_code_model: '' } } },
     })
     const rows = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest })
-    expect(rows.find((row: { option: string }) => row.option === 'pilot_model')).toMatchObject({ effective: 'haiku', source: 'env var' })
-    expect(rows.find((row: { option: string }) => row.option === 'executor_code_model')).toMatchObject({ effective: 'fable', source: 'env var', defaultValue: '' })
+    expect(rows.find((row: { option: string }) => row.option === 'pilot_model')).toMatchObject({ effective: 'haiku', source: 'settings' })
+    expect(rows.find((row: { option: string }) => row.option === 'executor_code_model')).toMatchObject({ effective: 'fable', source: 'settings', defaultValue: '' })
 
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_code_model: '' } } } }))
     const defaultRow = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest }).find((row: { option: string }) => row.option === 'executor_code_model')
     expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra', source: 'default' })
+  })
+
+  it('reports the same fallback source as both model resolvers for every empty model option', () => {
+    const settingsEnv = {
+      WT_PILOT_MODEL: 'haiku',
+      WT_PILOT_HARD_MODEL: 'opus',
+      WT_ORCHESTRATOR_MODEL: 'fable',
+      WT_SDK_PILOT_MODEL: 'sonnet',
+      WT_SDK_PILOT_HARD_MODEL: 'haiku',
+      WT_SDK_ORCHESTRATOR_MODEL: 'opus',
+      WT_EXECUTOR_CRITIC_MODEL: 'fable',
+      WT_EXECUTOR_CODE_MODEL: 'opus',
+      WT_EXECUTOR_REVIEW_MODEL: 'sonnet',
+      WT_EXECUTOR_REFUTATION_MODEL: 'haiku',
+    }
+    const options = {
+      pilot_model: '',
+      pilot_hard_model: ' ',
+      orchestrator_model: '',
+      sdk_pilot_model: ' ',
+      sdk_pilot_hard_model: '',
+      sdk_orchestrator_model: ' ',
+      executor_critic_model: '',
+      executor_code_model: ' ',
+      executor_review_model: '',
+      executor_refutation_model: ' ',
+    }
+    const f = fixture({ env: settingsEnv, pluginConfigs: { 'workflow-toolbox@local': { options } } })
+    const rows = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest })
+    const pilots = resolvePilotModels({ env: f.env, settingsEnv })
+    const executor = resolveExecutorProfile({
+      worktree: f.project,
+      route: 'FULL',
+      env: f.env,
+      settingsEnv,
+      resolveConsentImpl: () => ({ outcome: 'not_true' }),
+    })
+    const resolved = {
+      pilot_model: pilots.pilot,
+      pilot_hard_model: pilots.pilotHard,
+      orchestrator_model: pilots.orchestrator,
+      sdk_pilot_model: pilots.sdkPilot,
+      sdk_pilot_hard_model: pilots.sdkPilotHard,
+      sdk_orchestrator_model: pilots.sdkOrchestrator,
+      executor_critic_model: { value: executor.models.critic, source: executor.modelSources.critic },
+      executor_code_model: { value: executor.models.code, source: executor.modelSources.code },
+      executor_review_model: { value: executor.models.review, source: executor.modelSources.review },
+      executor_refutation_model: { value: executor.models.refutation, source: executor.modelSources.refutation },
+    }
+    for (const [option, model] of Object.entries(resolved)) {
+      expect(rows.find((row: { option: string }) => row.option === option), option).toMatchObject({ effective: model.value, source: model.source })
+    }
   })
 
   it.each([

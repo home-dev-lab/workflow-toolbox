@@ -1,4 +1,4 @@
-import { PHASES } from './lifecycle-phases.js';
+import { LOOP_BOUNDS, PHASES } from './lifecycle-phases.js';
 import { SNAPSHOT_PROGRAM } from './snapshot-program.js';
 import { stripAnsiAndControl } from './text-sanitize.js';
 
@@ -197,7 +197,12 @@ export const PANE_PHASES = Object.freeze(PHASES.map((phase) => Object.freeze([ph
 function phaseLabelFor(row, phase) {
   const label = PHASE_LABELS[phase] || phase;
   const model = phase === 'review' ? row.models?.review : phase === 'refutation' ? row.models?.refutation : null;
-  return model && model !== 'unknown' ? `${label} (${model})` : label;
+  const withModel = model && model !== 'unknown' ? `${label} (${model})` : label;
+  const round = row.phaseRounds?.[phase];
+  if (!Number.isSafeInteger(round) || round <= 0) return withModel;
+  let suffix = ` · round ${round}`;
+  if (LOOP_BOUNDS[phase]) suffix += ` (max ${LOOP_BOUNDS[phase]})`;
+  return withModel + suffix;
 }
 
 function stateOf(row, phase) {
@@ -246,9 +251,9 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const unattributedCount = Array.isArray(snapshot.sessions)
     ? hidden.filter((session) => !projectOf(session)).reduce((count, session) => count + workCount(session), 0)
     : hidden.filter((row) => !projectOf(row)).length;
-  if (!allProjects) snapshot = Array.isArray(snapshot.sessions)
-    ? { ...snapshot, sessions: snapshot.sessions.filter(sameProject) }
-    : { ...snapshot, rows: (snapshot.rows || []).filter(sameProject) };
+  snapshot = Array.isArray(snapshot.sessions)
+    ? { ...snapshot, sessions: allProjects ? [...candidates].sort((left, right) => Number(sameProject(right)) - Number(sameProject(left))) : candidates.filter(sameProject) }
+    : { ...snapshot, rows: allProjects ? [...candidates].sort((left, right) => Number(sameProject(right)) - Number(sameProject(left))) : candidates.filter(sameProject) };
   const ageSeconds = (timestamp) => {
     const parsed = Date.parse(timestamp || '');
     if (!Number.isFinite(parsed)) return null;
@@ -317,11 +322,15 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   const runCostStatus = (row, detailed = false) => {
     if (!row.runCost) return null;
     const approximate = row.costApproximate ? ' · cost approximate' : '';
+    const missingPrices = (row.runCost.priceUnknownModels?.length
+      ? row.runCost.priceUnknownModels
+      : Object.entries(row.runCost.models || {}).filter(([, value]) => value.usd === 'price unknown').map(([model]) => model));
+    const missingPriceText = missingPrices.length ? ` · missing price for: ${missingPrices.join(', ')}` : '';
     const modelLines = detailed
       ? Object.entries(row.runCost.models || {}).map(([model, value]) => node(Text, { key: `run-model:${row.id}:${model}`, wrap: 'wrap' }, formatModelUsage(model, value)))
       : [];
     return node(Box, { key: `run-cost:${row.id}`, flexDirection: 'column', paddingLeft: 1 },
-      node(Text, { dimColor: true }, `run total so far: ${formatUsd(row.runCost.usd, row.runCost.priceLabel)}${approximate}`),
+      node(Text, { dimColor: true, wrap: 'wrap' }, `run total so far: ${formatUsd(row.runCost.usd, row.runCost.priceLabel)}${missingPriceText}${approximate}`),
       ...modelLines,
     );
   };
@@ -334,9 +343,15 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     if (!id) return null;
     return fixed(node(Text, { bold: true }, `Card ${id}`));
   };
-  const renderCardLink = (row) => Link && isValidLinkHref(row.cardUrl)
-    ? node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, linked({ href: row.cardUrl, label: 'open card' }))
-    : null;
+  const renderCardLink = (row) => {
+    if (isValidLinkHref(row.cardUrl)) return node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, Link
+      ? linked({ href: row.cardUrl, label: 'open card' })
+      : node(Text, { underline: true, wrap: 'wrap' }, `open card: ${row.cardUrl}`));
+    if (!row.cardUrl && (row.cardId || /^\d{19}$/.test(String(row.id || '')))) {
+      return node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true, wrap: 'wrap' }, 'open card unavailable: Planka browser URL is not configured'));
+    }
+    return row.cardUrl ? node(Box, { key: `card-link:${row.id}`, paddingLeft: 1 }, node(Text, { dimColor: true }, 'open card unavailable: card URL is invalid')) : null;
+  };
   const renderOpenDetail = (buttonKey, label, onClose, ...content) => node(Box, { key: `open-${buttonKey}`, flexDirection: 'column', paddingLeft: 1 },
     node(Box, { key: `open-detail-header:${buttonKey}`, flexDirection: 'row', columnGap: 1 },
       fixedText({ bold: true }, label),
@@ -344,7 +359,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ),
     ...content,
   );
-  const renderExternal = (row, indent = 0, showCard = true) => {
+  const renderExternal = (row, indent = 0, showCard = true, treeGlyph = null) => {
     const cardId = renderCardId(row);
     const baseLabel = row.label && row.label !== 'Lane' ? row.label : pathBase(row.worktree) || 'External lane';
     const label = `${baseLabel}${row.roleInferred ? ' (inferred)' : ''}`;
@@ -362,15 +377,16 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
     ].filter(Boolean).join(' · ');
     return node(Box, { key: row.id, flexDirection: 'column', paddingLeft: indent },
       node(Box, { flexDirection: 'row', columnGap: 1 },
+        treeGlyph ? fixedText({ dimColor: true }, treeGlyph) : null,
         control({ key: buttonKey, plain: true, onPress: () => actions.toggle(row.id) }, `${isExpanded ? '▼' : '▶'} ${label}`, isExpanded ? COLORS.actionOpen : COLORS.action),
         showCard && cardId ? fixedText({ color: COLORS.external }, '·') : null,
         showCard ? cardId : null,
         fixedText({ color: COLORS.external, bold: row.outcome === 'running' }, `· ${outcomeLabel}`),
+        row.showModel && row.model && row.model !== 'unknown' ? fixedText({ dimColor: true }, `· ${row.model}`) : null,
         row.elapsed && row.elapsed !== 'unknown' ? fixedText({ dimColor: true }, `· ${row.elapsed}`) : null,
       ),
       row.title && row.title !== label ? node(Text, { color: COLORS.external, wrap: 'wrap' }, row.title) : null,
-      isExpanded && (details || row.title || (showCard && isValidLinkHref(row.cardUrl))) ? renderOpenDetail(buttonKey, `${label} details`, () => actions.toggle(row.id),
-        row.title ? node(Text, { wrap: 'wrap' }, row.title) : null,
+      isExpanded && (details || row.title || (showCard && (cardId || row.cardUrl))) ? renderOpenDetail(buttonKey, `${label} details`, () => actions.toggle(row.id),
         node(Text, { dimColor: true }, `owner: ${owner}`),
         details ? node(Text, { dimColor: true, wrap: 'wrap' }, details) : null,
         showCard ? renderCardLink(row) : null,
@@ -451,6 +467,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
       const shown = isExpanded ? stages : stages.filter((stage) => !['skipped', 'not started'].includes(stage.state.words));
       const skipped = stages.filter((stage) => stage.state.words === 'skipped');
       const next = stages.filter((stage) => stage.state.words === 'not started');
+      const lifecycleLanes = (pilot.lanes || []).filter((lane) => lane.phaseAvailability === 'lifecycle lane' && lane.outcome === 'running');
       const failed = /^(?:error|failed|fail)/i.test(String(pilot.outcome || ''));
       const stageRows = shown.map((stage, index) => {
         const buttonKey = `detail-toggle:stage:${sessionId}:${card.id}:${stage.id}`;
@@ -459,7 +476,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         const reportFallback = stage.inspector?.href ? 'A report was recorded.' : '';
         const report = stage.inspector?.summary || reportFallback;
         const openDetail = selection === stage.id
-          ? renderOpenDetail(buttonKey, stage.label, () => actions.closeView(key), ...phaseCostDetail(pilot, stage.id), ...renderEvidence(report), Link && isValidLinkHref(stage.inspector?.href) ? linked({ href: stage.inspector.href, label: '[Open report]' }) : null)
+          ? node(Box, { key: `stage-detail-indent:${key}:${stage.id}`, paddingLeft: 2 }, renderOpenDetail(buttonKey, stage.label, () => actions.closeView(key), ...phaseCostDetail(pilot, stage.id), ...renderEvidence(report), Link && isValidLinkHref(stage.inspector?.href) ? linked({ href: stage.inspector.href, label: '[Open report]' }) : null))
           : null;
         return node(Box, { key: `spine-stage:${key}:${stage.id}`, flexDirection: 'column', paddingLeft: 1 },
           node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
@@ -470,6 +487,7 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
           ),
           openDetail,
           failed && stage.id === pilot.phase ? node(Text, { color: COLORS.error, bold: true }, `owner: pilot runner · ${pilot.outcome}`) : null,
+          ...lifecycleLanes.filter((lane) => lane.phase === stage.id).map((lane, laneIndex, lanes) => renderExternal(lane, 2, false, laneIndex === lanes.length - 1 ? '└' : '├')),
         );
       });
       const nextNames = next.map((stage) => stage.label).join(', ') || 'none';
@@ -484,22 +502,23 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
         roundSummary = node(Text, { dimColor: true }, `Plan ↔ Critic: ${lowerBound}${pilot.criticRounds} ${unit}`);
       }
       const pilotLabel = pilot.label || 'SDK pilot';
+      const pilotDetails = isExpanded ? renderOpenDetail(`detail-toggle:row:${pilot.id}`, `${pilotLabel} details`, () => actions.toggle(pilot.id),
+        ...knownDetails(pilot).map((line) => node(Text, { dimColor: true }, line)),
+        roundSummary,
+        renderCardLink(card),
+      ) : null;
       return node(Box, { key, flexDirection: 'column' },
         node(Box, { flexDirection: 'row', flexWrap: 'wrap', columnGap: 1 },
           control({ key: `detail-toggle:row:${pilot.id}`, plain: true, onPress: () => actions.toggle(pilot.id) }, `${isExpanded ? '▼' : '▶'} ${pilotLabel}`, isExpanded ? COLORS.actionOpen : COLORS.action),
           fixedText({ bold: true }, 'drives the stages below'),
           isExpanded && pilot.route ? fixedText({ dimColor: true }, `· route ${pilot.route}`) : null,
         ),
+        pilotDetails,
         ...stageRows,
         collapsedSummary,
         runCostStatus(pilot, isExpanded),
         runningCostStatus(pilot),
-        roundSummary,
-        isExpanded ? renderOpenDetail(`detail-toggle:row:${pilot.id}`, `${pilotLabel} details`, () => actions.toggle(pilot.id),
-          ...knownDetails(pilot).map((line) => node(Text, { dimColor: true }, line)),
-          renderCardLink(card),
-        ) : null,
-        ...(pilot.lanes || []).map((lane) => renderExternal(lane, 1, false)),
+        ...(pilot.lanes || []).filter((lane) => lane.phaseAvailability !== 'lifecycle lane').map((lane) => renderExternal(lane, 1, false)),
       );
     }
     const stages = [];
@@ -619,15 +638,19 @@ export function renderPane(ui, snapshot, expanded, selected, currentProject, all
   if (processAvailability?.status === 'unknown') grouped.push(node(Text, { dimColor: true }, `The plugin could not list background processes (${processAvailability.reason || 'unavailable on this platform'})`));
   if (processAvailability?.status === 'partial') grouped.push(node(Text, { dimColor: true }, `process list partial (${processAvailability.reason || 'reason unavailable'})`));
   if (snapshot.discovery === 'partial') {
-    const reasons = [];
-    if (snapshot.cappedScans?.length) reasons.push(`scan cap reached: ${snapshot.cappedScans.join(', ')}`);
-    if (snapshot.scanLimits?.length) reasons.push(snapshot.scanLimits.join('; '));
-    if (snapshot.pathRefusals?.length) reasons.push(snapshot.pathRefusals.join('; '));
+    const collectorReason = snapshot.collectors?.work?.availability?.reason;
+    const reasons = collectorReason ? [collectorReason] : [
+      ...(snapshot.cappedScans || []).map((dir) => `scan cap reached: ${dir}`),
+      ...(snapshot.scanLimits || []),
+      ...(snapshot.unreadableScans || []).map((dir) => `unreadable: ${dir}`),
+      ...(snapshot.pathRefusals || []),
+    ];
+    if (!reasons.length) reasons.push('reason unavailable');
     const key = 'discovery-detail';
     const isExpanded = expanded.has(key);
     grouped.push(node(Box, { key, flexDirection: 'column' },
       control({ key: `detail-toggle:row:${key}`, plain: true, onPress: () => actions.toggle(key) }, `${isExpanded ? '▼' : '▶'} why`, isExpanded ? COLORS.actionOpen : COLORS.action),
-      node(Text, { dimColor: true }, 'Some running work could not be listed'),
+      node(Text, { dimColor: true, wrap: 'wrap' }, `Some running work could not be listed: ${reasons.join('; ')}`),
       isExpanded ? renderOpenDetail(`detail-toggle:row:${key}`, 'Why some work is missing', () => actions.toggle(key), ...reasons.map((reason) => node(Text, { dimColor: true, wrap: 'wrap' }, reason))) : null,
     ));
   }

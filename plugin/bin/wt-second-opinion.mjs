@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { runSecondOpinion } from './lib/second-opinion-core.mjs'
+import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
+import { hostAdapter } from './lib/host/adapter.mjs'
 
 const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|fable] [--repo <dir>]'
 
@@ -28,6 +29,14 @@ function parseArgs(argv) {
 }
 
 let outputPath
+const abortController = new AbortController()
+let terminationSignal = null
+const requestTermination = (signal) => {
+  terminationSignal = signal
+  abortController.abort()
+}
+process.once('SIGTERM', requestTermination)
+process.once('SIGINT', requestTermination)
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
@@ -41,10 +50,17 @@ async function main() {
     return 2
   }
   outputPath = options.out
-  return runSecondOpinion(options)
+  return runSecondOpinion({ ...options, signal: abortController.signal }, createSecondOpinionDependencies(hostAdapter))
 }
 
-main().then((code) => { process.exitCode = code }).catch((error) => {
+function finish(code) {
+  if (!terminationSignal) { process.exitCode = code; return }
+  process.removeListener('SIGTERM', requestTermination)
+  process.removeListener('SIGINT', requestTermination)
+  process.exitCode = terminationSignal === 'SIGINT' ? 130 : 143
+}
+
+main().then(finish).catch((error) => {
   const message = error instanceof Error ? error.stack ?? error.message : String(error)
   if (outputPath) {
     try {
@@ -57,5 +73,5 @@ main().then((code) => { process.exitCode = code }).catch((error) => {
     }
   }
   process.stderr.write(`wt-second-opinion: ${message}\n`)
-  process.exitCode = 1
+  finish(1)
 })

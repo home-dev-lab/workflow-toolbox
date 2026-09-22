@@ -8,6 +8,7 @@ import { MAX_CRITIC_ROUNDS, PLAN_SHAPE_DESCRIPTION } from './lifecycle-state-mac
 import { deriveRoute } from './route-from-card.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
+import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
@@ -274,6 +275,25 @@ function appendCostIndex({ archiveRoot, runId, card, route, cost, started, ended
   }
 }
 
+// A run that can need routing must know at launch that it cannot route, or it discovers it
+// after a full critic cycle. LITE counts only when its contract exposes route_finding.
+function missingBoardContractWarning(boardContract, route, contract) {
+  if (boardContract) return null
+  if (route !== 'FULL' && !/\broute_finding\b/.test(contract)) return null
+  return 'warning: no board contract; findings that must be routed will end the run partial; relaunch with --board-contract <json file>'
+}
+
+function lifecycleDelivery(summary, state) {
+  return {
+    partial: summary.partial ?? state.partial ?? null,
+    deferred: summary.deferred ?? state.deferred ?? null,
+  }
+}
+function completedPilotExitCode(completed, partial, deferred) {
+  if (!completed) return 1
+  return partial || deferred ? 2 : 0
+}
+
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
@@ -282,6 +302,7 @@ export async function runPilot(options, dependencies) {
   const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
   const model = options.hard ? (models.sdkPilotHard ?? models.pilotHard) : (models.sdkPilot ?? models.pilot)
+  const modelVariant = model.variant ?? resolveRoleVariant(options.hard ? 'sdkPilotHard' : 'sdkPilot', model.effective, { env, settingsEnv: profileEnv })
   // Defaults for programmatic callers (the orchestrator driver): the CLI's parser sets these, runPilot
   // called directly did not — the first real wave died on a `path` of undefined.
   const contractPath = options.contract ?? resolve(MODULE_DIR, '../../autonomy/PILOT-CONTRACT.md')
@@ -297,6 +318,8 @@ export async function runPilot(options, dependencies) {
   const boardContract = loadBoardContract(options.boardContract, readFile)
   if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
   const routing = deriveRoute(cardText)
+  const contractWarning = missingBoardContractWarning(boardContract, routing.route, contract)
+  if (contractWarning) log(contractWarning)
   const timeoutExplicit = options.timeoutExplicit === true
   const timeoutSeconds = options.timeout ?? ROUTE_TIMEOUTS[routing.route]
   if (timeoutExplicit && timeoutSeconds < ROUTE_EXPECTED_SECONDS[routing.route]) {
@@ -305,7 +328,7 @@ export async function runPilot(options, dependencies) {
   }
   options = { ...options, timeout: timeoutSeconds, timeoutExplicit }
   const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
-  log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} executor=${executorProfile.executor}`)
+  log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} variant=${modelVariant.value} variant_origin=${modelVariant.origin} executor=${executorProfile.executor}`)
   const report = join(options.dir, '.lane', 'pilot-report.md')
   const usagePath = join(options.dir, '.lane', 'usage.json')
   const summaryPath = join(options.dir, '.lane', 'summary.json')
@@ -392,7 +415,9 @@ export async function runPilot(options, dependencies) {
         const lifecycleState = lifecycleServer.state()
         const phase = lifecycleState.phase
         const content = lifecycleState.partial && phase === 'report'
-          ? `The run is partial (${lifecycleState.partial.reason}): write the pilot report with the line "Partial: ${lifecycleState.partial.reason}", then transition report.`
+          ? lifecycleState.partial.reason.startsWith('route_finding refused: no board contract;')
+            ? `The run is partial (${lifecycleState.partial.reason}): write the pilot report with "Partial: ${lifecycleState.partial.reason}" as its first line, then transition report.`
+            : `The run is partial (${lifecycleState.partial.reason}): write the pilot report with the line "Partial: ${lifecycleState.partial.reason}", then transition report.`
           : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.`
         injectedTurns += 1
         log(`injected: continuation ${content}`)
@@ -417,6 +442,7 @@ export async function runPilot(options, dependencies) {
   try {
     const queryOptions = composeSdkRoleQueryOptions({
       model: model.value,
+      effort: modelVariant.value,
       systemPrompt,
       settingSources: [],
       maxTurns: 120,
@@ -506,10 +532,10 @@ export async function runPilot(options, dependencies) {
   }
   let lifecycleSummary = {}
   try { lifecycleSummary = JSON.parse(readFile(summaryPath, 'utf8')) } catch { /* no transition reached the summary yet */ }
-  const partial = lifecycleSummary.partial ?? lifecycleServer.state().partial ?? null
+  const { partial, deferred } = lifecycleDelivery(lifecycleSummary, lifecycleServer.state())
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
-  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)
@@ -525,7 +551,7 @@ export async function runPilot(options, dependencies) {
     writeFile(join(options.dir, '.lane', 'cost.json'), costContent)
     let costReport = null
     if (exists(report)) {
-      const reportContent = readFile(report, 'utf8')
+      const reportContent = `${readFile(report, 'utf8').trimEnd()}\n\nvariant=${modelVariant.value} origin=${modelVariant.origin} forced=false\n`
       costReport = reconciledCostReport({ reportContent, cost, archive: lifecycleSummary.archive?.path, report, dir: options.dir })
       writeFile(report, costReport)
     }
@@ -545,5 +571,5 @@ export async function runPilot(options, dependencies) {
   log(`served model: ${servedModel ?? 'unknown'} (requested ${model.value})`)
   if (finalizationError) throw finalizationError
   if (streamError) throw streamError
-  return { usage, summary, exitCode: completedNormally ? (partial ? 2 : 0) : 1 }
+  return { usage, summary, exitCode: completedPilotExitCode(completedNormally, partial, deferred) }
 }

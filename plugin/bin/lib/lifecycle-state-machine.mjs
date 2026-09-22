@@ -16,11 +16,18 @@ import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
 export const AWAITING_FIDELITY_RESULT = 'accepted phase=awaiting_fidelity'
-// Owner rule: a loop gets three passes in all, never a fourth. The third refusal ends the run as a partial
-// report; whoever reads that report escalates. One number for both loops, so they cannot drift apart again.
-export const MAX_CRITIC_ROUNDS = 3
-export const MAX_REVIEW_ROUNDS = 3
+const FIXED_CRITIC_ROUNDS = 3
+const FIXED_REVIEW_ROUNDS = 3
+export const MAX_CRITIC_ROUNDS = 6
+export const MAX_REVIEW_ROUNDS = 6
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
+
+function lifecycleRound(state, phase) {
+  if (phase === 'plan' || phase === 'critic') return state.planRound + 1
+  if (phase === 'review' || phase === 'refutation') return state.reviewRound + 1
+  if (phase === 'harden') return state.reviewRound
+  return null
+}
 
 export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
 export { PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
@@ -38,6 +45,25 @@ const ARTIFACTS = {
 const INDEPENDENT_ROLES = new Set(['critic', 'review', 'refutation'])
 const MAX_REPORT_FINDINGS = 50
 const MAX_FINDING_CHARACTERS = 2000
+const NO_BOARD_CONTRACT_REASON = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
+const ROUTING_IMPOSSIBLE_INSTRUCTION = (reason) =>
+  `routing is impossible in this run; write the partial report with "Partial: ${reason}" as its first line`
+// Refuses route_finding when no board contract was supplied, and ends the run at `report` from inside
+// the tool call — no phase transition carries it there, so the timeline is advanced here.
+function partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now }) {
+  const reason = NO_BOARD_CONTRACT_REASON
+  if (state.phase !== 'report' && state.phase !== 'awaiting_fidelity') {
+    state.partial = { phase: state.phase, round: null, reason, findings: [] }
+    state.verifySnapshot = { tree: treeSignature(root), gates: {} }
+    audit()
+    const transitionedAt = now()
+    timeline.phases.at(-1).exited_at = transitionedAt
+    timeline.phases.push({ phase: 'report', round: null, entered_at: transitionedAt, exited_at: null, transition_id: null })
+    state.phase = 'report'
+    persistTimeline()
+  }
+  return `${reason}\n${ROUTING_IMPOSSIBLE_INSTRUCTION(reason)}`
+}
 function acceptanceEntries(content) {
   const section = acceptanceSection(content)
   const lines = section.split(/\r?\n/)
@@ -101,21 +127,46 @@ const reportAcceptanceProblem = (content, dodBullets) => acceptanceProblem(
   '`Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>`',
   '`Outcome: proven by tests/unit.test.ts`',
 )
-function reportDeliveryUnmet(content, dodBullets) {
+function reportDeliveryClassification(content, dodBullets, routedCards) {
   const entries = acceptanceEntries(content)
   const used = new Map()
   const unmet = []
+  const deferred = []
   for (const bullet of dodBullets ?? []) {
     const index = used.get(bullet) ?? 0
     const lines = entries.get(bullet)?.[index] ?? []
     used.set(bullet, index + 1)
     const outcomes = lines.filter((line) => /^Outcome:/i.test(line))
-    if (!outcomes.every((line) => /^Outcome:\s*proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?\s*$/i.test(line))) unmet.push(bullet)
+    const deferredCards = outcomes.flatMap((line) => {
+      const match = /^Outcome:\s*deferred:\s*card\s+([^\s]+)/i.exec(line)
+      return match && routedCards.some((card) => card.id === match[1]) ? [match[1]] : []
+    })
+    const delivered = outcomes.length > 0 && outcomes.every((line) =>
+      /^Outcome:\s*proven(?:\s*(?:[:—–-]\s*|by\s+)?\S.*)?\s*$/i.test(line) ||
+      /^Outcome:\s*deferred:/i.test(line) && deferredCards.length > 0,
+    )
+    if (!delivered) unmet.push(bullet)
+    else for (const card of new Set(deferredCards)) deferred.push(`${bullet} (card ${card})`)
   }
   const e2e = /(?:^|\n)## E2E\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)?.[1].trim() ?? ''
   if (/^e2e not run: \S[^\r\n]*$/i.test(e2e)) unmet.push(`E2E: ${e2e}`)
-  return unmet
+  return { unmet, deferred }
 }
+function classifyReportDelivery(content, dodBullets, routedCards, state, reportProblem) {
+  if (reportProblem && !reportProblem.startsWith('pilot-report: missing expected')) return
+  const { unmet, deferred } = reportDeliveryClassification(content, dodBullets, routedCards)
+  if (unmet.length > 0 && !state.partial) {
+    state.partial = { phase: 'report', round: null, reason: `delivered partially: ${unmet.length} unmet criteria`, findings: unmet }
+  } else if (deferred.length > 0 && !state.deferred) {
+    state.deferred = { phase: 'report', round: null, reason: `delivery deferred: ${deferred.length} ${deferred.length === 1 ? 'criterion' : 'criteria'}`, findings: deferred }
+  }
+}
+function deferredHeadlineProblem(content, deferred) {
+  if (!deferred) return null
+  const headline = `Deferred: ${deferred.findings.join('; ')}`
+  return content.split(/\r?\n/)[0] === headline ? null : `pilot-report: deferred delivery, make "${headline}" the first line`
+}
+const frozenDelivery = (delivery) => delivery ? Object.freeze({ ...delivery, findings: Object.freeze([...delivery.findings]) }) : null
 function uiOnlyE2eReason(reason) {
   if (/\b(?:tried|attempted)\b/i.test(reason)) return false
   const ui = '(?:(?:user-facing|graphical|visible|web|front-end)\\s+)?(?:uis?|guis?|user interfaces?|screens?|frontends?|front-ends?|pages?|browsers?|displays?)'
@@ -279,6 +330,32 @@ function verdictFromReport(phase, content) {
   return { outcome: match[1], findings, severities }
 }
 
+const normalizedFinding = (finding) => finding.toLowerCase().replace(/\s+/g, ' ').trim()
+function adaptiveRoundDecision(rounds, fixedRounds, maxRounds, plateauUsed) {
+  const latest = rounds.at(-1)
+  if (rounds.length < fixedRounds) return { continue: true, plateauUsed }
+  if (rounds.length >= maxRounds) return { continue: false, plateauUsed }
+  const earlier = new Set(rounds.slice(0, -1).flatMap((round) => round.findings.map(normalizedFinding)))
+  // Only a blocking finding can recur: a restated nit changes nothing the DoD checks.
+  if (latest.blockingFindings.some((finding) => earlier.has(normalizedFinding(finding)))) return { continue: false, plateauUsed }
+  const previousCount = rounds.at(-2).blockingFindings.length
+  const latestCount = latest.blockingFindings.length
+  if (latestCount < previousCount) return { continue: true, plateauUsed }
+  if (latestCount === previousCount && !plateauUsed) return { continue: true, plateauUsed: true }
+  return { continue: false, plateauUsed }
+}
+
+function initialLifecycleState() {
+  return {
+    phase: 'discovery', partial: null, deferred: null, pilotReportDigest: null,
+    planRound: 0, priorCriticRounds: [], criticPlateauUsed: false, nonBlockingFindings: [],
+    reviewRound: 0, priorReviewRounds: [], reviewPlateauUsed: false,
+    handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null,
+    resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
+    pendingStop: null, stopped: false,
+  }
+}
+
 function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop }) {
   const stoppedRefusal = () => `edge refused: ${state.phase}->next; ${state.partial?.reason ?? 'runner'} already stopped the lifecycle: ${laneDir}`
   const stopAtBoundary = (event) => {
@@ -439,23 +516,7 @@ export function createLifecycleStateMachine({
     `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, models: frozenModels, base: constructionBase }, null, 2)}\n`,
     { flag: 'wx' },
   )
-  let state = {
-    phase: 'discovery',
-    partial: null,
-    pilotReportDigest: null,
-    planRound: 0,
-    priorCriticRounds: [],
-    nonBlockingFindings: [],
-    reviewRound: 0,
-    handled: new Map(),
-    lastLaneMtime: 0,
-    verifySnapshot: null,
-    pendingControl: null,
-    resolvedRoutedCards: new Set(),
-    report: { stage: 'idle', base: null, head: null, tree: null },
-    pendingStop: null,
-    stopped: false,
-  }
+  const state = initialLifecycleState()
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
   const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
@@ -556,14 +617,16 @@ export function createLifecycleStateMachine({
     lanePlatform,
     gateRunner,
     now,
-    recordLaneStart: ({ phase, model, startedAt, usageFile }) => {
-      const record = { phase, round: phase === 'critic' ? state.priorCriticRounds.length + 1 : null, executor, model, started_at: startedAt, ended_at: null, usage_file: usageFile }
+    recordLaneStart: ({ phase, model, startedAt, usageFile, laneId }) => {
+      const record = { phase, round: lifecycleRound(state, phase), ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile }
       timeline.lanes.push(record)
       persistTimeline()
       return record
     },
-    recordLaneEnd: (record, endedAt) => {
+    recordLaneEnd: (record, endedAt, exitCode) => {
       record.ended_at = endedAt
+      record.exit_code = exitCode ?? 'missing'
+      record.state = record.exit_code === '0' ? 'completed' : 'failed'
       persistTimeline()
     },
   })
@@ -676,12 +739,18 @@ export function createLifecycleStateMachine({
         if (!reportContent.includes(digest)) {
           return refusal('critic->tdd', 'plan sha256', path.join(laneDir, 'critic-report.md'))
         }
-        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings] })
+        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings: [] })
         next = 'tdd'
       } else if (verdict.outcome === 'changes-requested') {
-        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings] })
+        const blockingFindings = verdict.findings.filter((finding, index) => {
+          const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(finding)?.[1]
+          return (!id || !repeatedContests.has(id)) && verdict.severities[index] !== 'non-blocking'
+        })
+        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings })
         state.planRound += 1
-        if (state.planRound < MAX_CRITIC_ROUNDS) next = 'plan'
+        const decision = adaptiveRoundDecision(state.priorCriticRounds, FIXED_CRITIC_ROUNDS, MAX_CRITIC_ROUNDS, state.criticPlateauUsed)
+        state.criticPlateauUsed = decision.plateauUsed
+        if (decision.continue) next = 'plan'
         else {
           const reason = `plan not approved after ${state.planRound} critic rounds`
           state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
@@ -730,9 +799,17 @@ export function createLifecycleStateMachine({
       if (verdict.outcome === 'changes-requested' && verdict.findings.length === 0) {
         return refusal(`${state.phase}->harden`, 'findings', path.join(laneDir, `${state.phase}-report.md`))
       }
-      if (verdict.outcome === 'changes-requested' && ++state.reviewRound >= MAX_REVIEW_ROUNDS) {
+      if (verdict.outcome === 'changes-requested') {
+        state.reviewRound += 1
+        state.priorReviewRounds.push({ round: state.reviewRound, findings: [...verdict.findings], blockingFindings: [...verdict.findings] })
+      }
+      const reviewDecision = verdict.outcome === 'changes-requested'
+        ? adaptiveRoundDecision(state.priorReviewRounds, FIXED_REVIEW_ROUNDS, MAX_REVIEW_ROUNDS, state.reviewPlateauUsed)
+        : null
+      if (reviewDecision) state.reviewPlateauUsed = reviewDecision.plateauUsed
+      if (reviewDecision && !reviewDecision.continue) {
         const phase = state.phase
-        const reason = `${phase} still requests changes after ${MAX_REVIEW_ROUNDS - 1} harden rounds`
+        const reason = `${phase} still requests changes after ${state.reviewRound - 1} harden rounds`
         state.partial = { phase, round: state.reviewRound, reason, findings: verdict.findings }
         next = 'report'
         resultDetail = ` (round bound reached: partial run, ${reason})`
@@ -758,13 +835,10 @@ export function createLifecycleStateMachine({
         return refusal('report->awaiting_fidelity', 'pilot report unchanged since write_artifact', pilotReportPath)
       }
       const reportProblem = pilotReportProblem(pilotReport, true)
+      classifyReportDelivery(pilotReport, dodBullets, timeline.routed_cards, state, reportProblem)
       if (reportProblem) return refusal('report->awaiting_fidelity', reportProblem, pilotReportPath)
-      const unmet = reportDeliveryUnmet(pilotReport, dodBullets)
-      if (unmet.length > 0 && !state.partial) {
-        state.partial = { phase: 'report', round: null, reason: `delivered partially: ${unmet.length} unmet criteria`, findings: unmet }
-        const partialProblem = pilotReportProblem(pilotReport, true)
-        if (partialProblem) return refusal('report->awaiting_fidelity', partialProblem, pilotReportPath)
-      }
+      const deliveryProblem = pilotReportProblem(pilotReport, true)
+      if (deliveryProblem) return refusal('report->awaiting_fidelity', deliveryProblem, pilotReportPath)
       const receipt = snapshotEvidence('report->awaiting_fidelity')
       if (receipt) return receipt
       const reportReceipt = completeLifecycleReport({
@@ -773,6 +847,7 @@ export function createLifecycleStateMachine({
         laneDir,
         cardId,
         sessionTag,
+        startedAt: lifecycleStartedAt,
         route: frozenRoute,
         state,
         evidencePath,
@@ -796,7 +871,7 @@ export function createLifecycleStateMachine({
       ? ''
       : composeRules(activeRules, {
           recipient: 'pilot',
-          triggers: [`phase:${next}`, ...(next === 'critic' && state.priorCriticRounds.length > 0 ? ['critic-round>=2'] : [])],
+          triggers: [`phase:${next}`, ...(state.phase === 'critic' && next === 'plan' ? ['critic->plan'] : [])],
         })
     const result = next === 'awaiting_fidelity'
       ? AWAITING_FIDELITY_RESULT
@@ -808,7 +883,7 @@ export function createLifecycleStateMachine({
     if (currentPhase?.transition_id !== event.tool_use_id) {
       currentPhase.exited_at = transitionedAt
       currentPhase.transition_id = event.tool_use_id
-      if (next !== 'awaiting_fidelity') timeline.phases.push({ phase: next, round: next === 'critic' ? state.priorCriticRounds.length + 1 : null, entered_at: transitionedAt, exited_at: null, transition_id: null })
+      if (next !== 'awaiting_fidelity') timeline.phases.push({ phase: next, round: lifecycleRound(state, next), entered_at: transitionedAt, exited_at: null, transition_id: null })
       else timeline.ended_at = transitionedAt
     }
     persistTimeline()
@@ -876,6 +951,11 @@ export function createLifecycleStateMachine({
   function pilotReportProblem(content, enforceSchema = false) {
     const partialLine = state.partial ? `Partial: ${state.partial.reason}` : null
     const lines = content.split(/\r?\n/)
+    const headlineProblem = deferredHeadlineProblem(content, state.deferred)
+    if (headlineProblem) return headlineProblem
+    if (partialLine?.startsWith('Partial: route_finding refused: no board contract;') && lines[0] !== partialLine) {
+      return `pilot-report: partial run, make "${partialLine}" the first line`
+    }
     if (partialLine && !lines.includes(partialLine)) {
       return `pilot-report: partial run, add the line "${partialLine}"`
     }
@@ -928,7 +1008,9 @@ export function createLifecycleStateMachine({
   }
   async function routeFindingTool(args) {
     if (state.stopped) return stoppedRefusal()
-    if (!boardContract || typeof routeFinding !== 'function') return 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
+    if (!boardContract || typeof routeFinding !== 'function') {
+      return partialForMissingBoardContract({ state, timeline, root, audit, persistTimeline, now })
+    }
     try {
       const created = await routeFinding({ ...args, type: args.type ?? 'chore', originCardId: String(cardId), sessionTag: String(sessionTag), boardContract, timestamp: new Date(now()).toISOString() })
       const id = String(created?.id ?? '')
@@ -981,7 +1063,7 @@ export function createLifecycleStateMachine({
       ),
       tool(
         'write_artifact',
-        'Write a phase-bound lifecycle artifact.',
+        'Write a phase-bound lifecycle artifact. For a gitignored pilot-report delivery, add the exact line "- Delivered artefact: `relative/path`" under `## Implemented`; the edge confines and reads each regular file, requires an mtime since the run started, and records path, size, SHA-256, mtime, and `modified_after_started` in the summary and manifest. Mtime bounds recency, not authorship.',
         {
           kind: z.string(),
           content: z.string(),
@@ -1034,9 +1116,8 @@ export function createLifecycleStateMachine({
   Object.defineProperty(server, 'state', {
     value: () => Object.freeze({
       phase: state.phase,
-      partial: state.partial
-        ? Object.freeze({ ...state.partial, findings: Object.freeze([...state.partial.findings]) })
-        : null,
+      partial: frozenDelivery(state.partial),
+      deferred: frozenDelivery(state.deferred),
     }),
   })
   Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })

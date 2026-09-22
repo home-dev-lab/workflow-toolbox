@@ -23,6 +23,10 @@ const WT_SUITE_ROOT = '/home/doublefx/projects/wt-suite'
 // Whitelist: everything that has a legitimate, committed reason to live at the umbrella
 // root. Anything else — a temp dir, a stray cache, a misrouted os.tmpdir() write — fails.
 const ALLOWED = new Set([
+  // The root instruction file. Since 2026-09-20 it is AGENTS.md, with CLAUDE.md a SYMLINK to it:
+  // the harness reads AGENTS.md only when no CLAUDE.md exists, so the link is what makes Claude
+  // Code and Codex/OpenCode read the same file. Both names therefore belong here.
+  'AGENTS.md',
   'CLAUDE.md',
   'CLAUDE.local.md',
   'docs',

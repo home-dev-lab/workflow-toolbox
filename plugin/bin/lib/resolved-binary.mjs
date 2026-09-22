@@ -43,3 +43,39 @@ export function executableName(value, platform, pathExt = '') {
   const extension = extensions.find((item) => basename.toLowerCase().endsWith(item.toLowerCase()))
   return extension ? basename.slice(0, -extension.length) : basename
 }
+
+export const IDLE_HELPER_SAFE_TO_STOP_SECONDS = 5 * 60
+
+export function classifyIdleHelper({ argv, command, ageSeconds, relatedToTask, thresholdSeconds }) {
+  const executableMatch = /codex(?:\.exe|\.cmd)?$/i.test(String(argv?.[0] ?? ''))
+  const commandMatch = /codex(?:\.exe|\.cmd)?\s+app-server(?:\s|$)/i.test(String(command ?? ''))
+  const helper = ((executableMatch && argv?.[1] === 'app-server') || commandMatch) && !relatedToTask
+  return { helper, safeToStop: helper && Number.isFinite(ageSeconds) && ageSeconds > thresholdSeconds }
+}
+
+export function idleHelperEvents(rows, { ageByPid = new Map(), inspect = () => null } = {}) {
+  const byPid = new Map(rows.map((item) => [item.pid, item]))
+  const events = []
+  const emitted = new Set()
+  const relatedToTask = (pid) => {
+    const seen = new Set()
+    let current = byPid.get(pid)
+    while (current && !seen.has(current.pid)) {
+      if (/wt-second-opinion\.mjs|codex-companion\.mjs\s+task/i.test(current.command ?? '')) return true
+      seen.add(current.pid)
+      current = byPid.get(current.ppid)
+    }
+    return false
+  }
+  for (const item of rows) {
+    const inspected = Array.isArray(item.argv) ? item : inspect(item.pid)
+    const ageSeconds = Number.isFinite(item.elapsedMs) ? Number(item.elapsedMs) / 1000 : ageByPid.get(item.pid)
+    const verdict = classifyIdleHelper({ argv: inspected?.argv ?? [], command: item.command, ageSeconds, relatedToTask: relatedToTask(item.pid), thresholdSeconds: IDLE_HELPER_SAFE_TO_STOP_SECONDS })
+    const key = `idle-helper:${item.pid}:${inspected?.startTime ?? 'unknown'}`
+    if (emitted.has(key)) continue
+    if (verdict.safeToStop) events.push({ key, message: `IDLE HELPER safe to stop: Codex app-server pid=${item.pid} idle for more than ${IDLE_HELPER_SAFE_TO_STOP_SECONDS / 60} minutes` })
+    else if (verdict.helper && !Number.isFinite(ageSeconds)) events.push({ key: `${key}:age-unavailable`, message: `IDLE HELPER age unavailable: Codex app-server pid=${item.pid}; safe-to-stop classification is degraded on this host` })
+    emitted.add(key)
+  }
+  return events
+}

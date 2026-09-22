@@ -23,7 +23,7 @@ describe('SDK role rules manifest', () => {
   it('validates every shipped source and exact heading against the published schema enums', () => {
     const rules = loadRules({ shippedRoot: PLUGIN_ROOT })
     const schema = JSON.parse(readFileSync(join(PLUGIN_ROOT, 'rules-manifest.schema.json'), 'utf8'))
-    expect(rules).toHaveLength(16)
+    expect(rules).toHaveLength(17)
     expect(schema.properties.entries.items.properties.recipients.items.enum).toEqual(RULE_RECIPIENTS)
     expect(schema.properties.entries.items.properties.triggers.items.enum).toEqual(RULE_TRIGGERS)
     const punctuated = rules.find((entry: { heading: string }) => entry.heading.includes('—'))!
@@ -56,15 +56,15 @@ describe('SDK role rules manifest', () => {
     mkdirSync(join(root, '.claude'))
     writeFileSync(join(root, '.claude', 'wt-rules-manifest.json'), JSON.stringify({ version: 1, entries: [{ source: 'rule.md', heading: '## Project rule', recipients: ['pilot'], triggers: ['standing'] }] }))
     const rules = loadRules({ projectRoot: root, shippedRoot: PLUGIN_ROOT })
-    expect(rules.filter((entry: { level: string }) => entry.level === 'shipped')).toHaveLength(16)
+    expect(rules.filter((entry: { level: string }) => entry.level === 'shipped')).toHaveLength(17)
     expect(rules.at(-1)).toMatchObject({ level: 'project', section: '## Project rule\r\nproject bytes\r\n' })
   })
 
   it('measures the composed standing system prompt before and after exact shipped sections', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
-    expect(Buffer.byteLength(contract)).toBe(6141)
-    expect(Buffer.byteLength(composed)).toBe(8373)
+    expect(Buffer.byteLength(contract)).toBe(6138)
+    expect(Buffer.byteLength(composed)).toBe(8370)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 
@@ -119,6 +119,12 @@ describe('SDK role rules manifest', () => {
         expect(content).toContain(entry.section)
       }
     }
+  })
+
+  it('keeps the architectural step-back rule in the harden lane', () => {
+    const harden = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: 'harden', trigger: 'lane:harden' })
+    expect(harden).toContain('# Step back to the architectural root')
+    expect(harden).toContain('Stop, question the shape.')
   })
 })
 

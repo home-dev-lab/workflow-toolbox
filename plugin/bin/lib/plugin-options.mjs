@@ -26,11 +26,21 @@ const DEFINITIONS = Object.freeze({
   sdk_pilot_model: { envKey: 'WT_SDK_PILOT_MODEL', type: 'string', defaultValue: 'opus' },
   sdk_pilot_hard_model: { envKey: 'WT_SDK_PILOT_HARD_MODEL', type: 'string', defaultValue: 'opus' },
   sdk_orchestrator_model: { envKey: 'WT_SDK_ORCHESTRATOR_MODEL', type: 'string', defaultValue: 'opus' },
+  pilot_variant: { envKey: 'WT_PILOT_VARIANT', type: 'string', defaultValue: 'medium' },
+  pilot_hard_variant: { envKey: 'WT_PILOT_HARD_VARIANT', type: 'string', defaultValue: 'medium' },
+  orchestrator_variant: { envKey: 'WT_ORCHESTRATOR_VARIANT', type: 'string', defaultValue: 'medium' },
+  sdk_pilot_variant: { envKey: 'WT_SDK_PILOT_VARIANT', type: 'string', defaultValue: 'medium' },
+  sdk_pilot_hard_variant: { envKey: 'WT_SDK_PILOT_HARD_VARIANT', type: 'string', defaultValue: 'medium' },
+  sdk_orchestrator_variant: { envKey: 'WT_SDK_ORCHESTRATOR_VARIANT', type: 'string', defaultValue: 'medium' },
   sdk_pilot_max_active: { envKey: 'WT_SDK_PILOT_MAX_ACTIVE', type: 'number', defaultValue: 3 },
   executor_critic_model: { envKey: 'WT_EXECUTOR_CRITIC_MODEL', type: 'string', defaultValue: '' },
   executor_code_model: { envKey: 'WT_EXECUTOR_CODE_MODEL', type: 'string', defaultValue: '' },
   executor_review_model: { envKey: 'WT_EXECUTOR_REVIEW_MODEL', type: 'string', defaultValue: '' },
   executor_refutation_model: { envKey: 'WT_EXECUTOR_REFUTATION_MODEL', type: 'string', defaultValue: '' },
+  executor_critic_variant: { envKey: 'WT_EXECUTOR_CRITIC_VARIANT', type: 'string', defaultValue: 'medium' },
+  executor_code_variant: { envKey: 'WT_EXECUTOR_CODE_VARIANT', type: 'string', defaultValue: 'medium' },
+  executor_review_variant: { envKey: 'WT_EXECUTOR_REVIEW_VARIANT', type: 'string', defaultValue: 'medium' },
+  executor_refutation_variant: { envKey: 'WT_EXECUTOR_REFUTATION_VARIANT', type: 'string', defaultValue: 'medium' },
   configDir: { envKey: null, type: 'string', defaultValue: '' },
   livenessDir: { envKey: null, type: 'string', defaultValue: '' },
   suiteRoot: { envKey: null, type: 'string', defaultValue: '' },
@@ -72,6 +82,10 @@ export function readWorkflowToolboxPluginOption(key, { env = process.env } = {})
   return pluginOption(readSettings(env), key, definition.type)
 }
 
+export function hasModelPluginValue(plugin) {
+  return plugin.present && typeof plugin.value === 'string' && plugin.value.trim() !== ''
+}
+
 function envValue(definition, env) {
   if (!definition.envKey) return { present: false }
   const raw = env[definition.envKey]
@@ -85,7 +99,7 @@ export function resolveWorkflowToolboxOption(key, { env = process.env } = {}) {
   const definition = DEFINITIONS[key]
   if (!definition) throw new Error(`unknown workflow-toolbox plugin option: ${key}`)
   const option = readWorkflowToolboxPluginOption(key, { env })
-  if (option.present) return { value: option.value, source: 'plugin option' }
+  if (option.present && (!key.endsWith('_model') || hasModelPluginValue(option))) return { value: option.value, source: 'plugin option' }
   const fallback = envValue(definition, env)
   if (fallback.present) return { value: fallback.value, source: 'env' }
   return { value: definition.defaultValue, source: 'default' }
@@ -135,12 +149,12 @@ const EXECUTOR_DEFAULT_DESCRIPTIONS = {
 
 function describedResolution(option, definition, env, settings) {
   const plugin = pluginOption(settings, option, definition.type)
-  const emptyExecutorOption = Object.hasOwn(EXECUTOR_DEFAULT_DESCRIPTIONS, option) && plugin.value === ''
-  if (plugin.present && !emptyExecutorOption) return { value: plugin.value, source: 'plugin option' }
+  const modelOption = option.endsWith('_model')
+  if (plugin.present && (!modelOption || hasModelPluginValue(plugin))) return { value: plugin.value, source: 'plugin option' }
   const processFallback = envValue(definition, env)
-  if (processFallback.present) return { value: processFallback.value, source: 'env var' }
+  if (processFallback.present) return { value: processFallback.value, source: modelOption ? 'env' : 'env var' }
   const settingsFallback = envValue(definition, settings?.env ?? {})
-  if (settingsFallback.present) return { value: settingsFallback.value, source: 'env var' }
+  if (settingsFallback.present) return { value: settingsFallback.value, source: modelOption ? 'settings' : 'env var' }
   return {
     value: EXECUTOR_DEFAULT_DESCRIPTIONS[option] ?? definition.defaultValue,
     source: 'default',

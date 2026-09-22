@@ -453,6 +453,12 @@ describe('orchestrator driver', () => {
     expect(readFileSync(f.report, 'utf8')).toContain('delivered partially: 1 unmet criteria; unmet: ship')
   })
 
+  it('records pilot exit 2 with a routed deferral as deferred, never partial', async () => {
+    const f = repoFixture(); const runPilot = async (...args: Parameters<typeof f.runPilot>) => ({ ...(await f.runPilot(...args)), exitCode: 2, summary: { partial: null, deferred: { phase: 'report', reason: 'delivery deferred: 1 criterion', findings: ['host check (card 42)'] } } }); const judge = async ({ row }: { row: { decision: string } }) => { row.decision = 'accepted' }
+    const result = await runOrchestrator(f.options, { ...f, runPilot, judge })
+    expect(result.rows[0]).toMatchObject({ pilot: 2, decision: 'deferred', reason: 'pilot EXIT=2: delivery deferred: 1 criterion; routed: host check (card 42)' })
+  })
+
   it('overlaps two pilots at concurrency 2 but judges and reports in card order', async () => {
     const cards = [{ id: '1', listName: 'Next', description: 'a\nDoD: ship' }, { id: '2', listName: 'Next', description: 'b\nDoD: ship' }]; const f = repoFixture(cards); let active = 0; let peak = 0; let release!: () => void; const barrier = new Promise<void>((resolve) => { release = resolve }); setTimeout(() => release(), 200); const judged: string[] = []
     const runPilot = async (...args: Parameters<typeof f.runPilot>) => { active += 1; peak = Math.max(peak, active); if (active === 2) release(); await barrier; const result = await f.runPilot(...args); writeFileSync(join(args[0].dir, 'shared.txt'), args[0].card); spawnSync('git', ['add', '.'], { cwd: args[0].dir }); spawnSync('git', ['commit', '-qm', 'shared'], { cwd: args[0].dir }); active -= 1; return result }

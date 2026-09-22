@@ -1,0 +1,43 @@
+name: host-platform-probes
+
+on:
+  # `workflow_dispatch` only fires when this file exists on the DEFAULT branch — documented four times
+  # in GitHub's own reference. Until a release carries it to `main`, the path filter below is the only
+  # way to exercise the probes: pushing a branch whose range touches this file starts the run on that
+  # branch. The same mechanism is what exercises `cross-os.yml`.
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/host-platform-probes.yml'
+      - 'probes/host-platform/**'
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      WT_RUNNER_IMAGE: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Capture process table
+        run: node probes/host-platform/process-table.mjs probes/host-platform/evidence/${{ matrix.os }}/process-table.json
+      - name: Capture process-group termination
+        run: node probes/host-platform/process-group-terminate.mjs probes/host-platform/evidence/${{ matrix.os }}/process-group-terminate.json
+      - name: Capture path resolution
+        run: node probes/host-platform/path-resolve.mjs probes/host-platform/evidence/${{ matrix.os }}/path-resolve.json
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-platform-evidence-${{ matrix.os }}
+          path: probes/host-platform/evidence/${{ matrix.os }}/
+          if-no-files-found: error

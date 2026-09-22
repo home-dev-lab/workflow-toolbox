@@ -34,6 +34,11 @@ Use red, green, refactor where practical. A bug fix carries a regression test th
 the fix and passes after it. When strict TDD is impractical, tests still accompany the change;
 do not retrofit a superficial test merely to satisfy the protocol.
 
+## Revise only blocking critic findings
+
+Revise only for the blocking findings. Keep every previously accepted part unchanged. Do not
+restart the plan from scratch. For each blocking finding, state what changed.
+
 ## Implement and verify
 
 Make the simplest correct change using the project's conventions. Do not add unrelated changes,

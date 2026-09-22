@@ -11,7 +11,7 @@ import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
 import { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'
-import { laneModelRefusal } from './lib/lane-model-allowlist.mjs'
+import { laneModelRefusal, resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 
@@ -26,7 +26,7 @@ const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
 const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
 }
 
 async function loadIntegrationModule() {
@@ -34,11 +34,11 @@ async function loadIntegrationModule() {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--variant <name>] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
 
 function parse(argv) {
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, allowNoGit: false, runId: null }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -54,7 +54,9 @@ function parse(argv) {
     else if (arg === '--owner-token') out.ownerToken = argv[++i] ?? null
     else if (arg === '--brief-cleanup-dir') out.briefCleanupDir = argv[++i] ?? null
     else if (arg === '--log') out.log = argv[++i] ?? null
-    else if (arg === '--variant') out.variant = argv[++i] ?? null
+    else if (arg === '--role') out.role = argv[++i] ?? null
+    else if (arg === '--variant') { out.variant = argv[++i] ?? null; out.variantExplicit = true }
+    else if (arg === '--allow-unknown-variant') out.allowUnknownVariant = true
     else if (arg === '--allow-no-git') out.allowNoGit = true
     else if (arg === '--run-id') out.runId = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') return { help: true }
@@ -66,6 +68,7 @@ function parse(argv) {
   if (!Number.isFinite(out.decisionGrace) || out.decisionGrace < 0) return { error: '--decision-grace must be a non-negative number of seconds' }
   if (!Number.isSafeInteger(out.maxExtensions) || out.maxExtensions < 0) return { error: '--max-extensions must be a non-negative integer' }
   if (!['session', 'pilot'].includes(out.owner)) return { error: '--owner must be session or pilot' }
+  if (out.role && !['pilot', 'pilotHard', 'orchestrator', 'sdkPilot', 'sdkPilotHard', 'sdkOrchestrator', 'critic', 'code', 'review', 'refutation'].includes(out.role)) return { error: '--role is not a known variant role' }
   if (out.runId && !/^\d+-\d+$/.test(out.runId)) return { error: 'internal run id is malformed' }
   // opencode's built-in effort axis; an unknown name falls back SILENTLY to the default on the opencode side, so it is validated here.
   if (out.variant !== undefined && out.variant !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(out.variant)) return { error: '--variant must be a plain variant name' }
@@ -212,6 +215,52 @@ function writeEnvLog(dir) {
   try { writeFileSync(path.join(dir, '.lane', 'env.log'), `${lines.join('\n')}\n`) } catch { /* best effort diagnostic */ }
 }
 
+function resolveLaunchConfiguration(opts, modules, env) {
+  const modelRefusal = modules.laneModelRefusal(opts.model, { env })
+  if (modelRefusal) return { refusal: modelRefusal, variant: null }
+  if (opts.variant) {
+    const refusal = modules.variantRefusal(opts.variant, opts.model)
+    if (refusal && !opts.allowUnknownVariant) return { refusal, variant: null }
+    return { refusal: null, variant: { value: opts.variant, origin: 'override', forced: Boolean(refusal) } }
+  }
+  if (!opts.role) return { refusal: null, variant: null }
+  try {
+    return { refusal: null, variant: modules.resolveRoleVariant(opts.role, opts.model, { env }) }
+  } catch (error) {
+    return { refusal: error instanceof Error ? error.message : String(error), variant: null }
+  }
+}
+
+function variantWorkerArgs(opts) {
+  return [
+    ...(opts.role ? ['--role', opts.role] : []),
+    ...(opts.variantExplicit && opts.variant ? ['--variant', opts.variant] : []),
+    ...(opts.variantForced ? ['--allow-unknown-variant'] : []),
+  ]
+}
+
+function applyResolvedVariant(opts, variant) {
+  opts.variant = variant ? variant.value : null
+  opts.variantOrigin = variant ? variant.origin : null
+  opts.variantForced = variant ? variant.forced : false
+}
+
+function appendVariantLog(log, variant) {
+  if (variant) appendFileSync(log, `variant=${variant.value} origin=${variant.origin} forced=${variant.forced}\n`)
+}
+
+function appendVariantReport(opts, variant) {
+  if (!variant) return
+  const fallback = path.join(opts.dir, '.lane', 'report.md')
+  let report = fallback
+  try {
+    const named = /Write the report to `([^`]+)`/.exec(readFileSync(opts.brief, 'utf8'))?.[1]
+    const resolved = named ? path.resolve(named) : fallback
+    if (path.dirname(resolved) === path.join(opts.dir, '.lane')) report = resolved
+  } catch { /* use the standalone lane report path */ }
+  try { appendFileSync(report, `\nvariant=${variant.value} origin=${variant.origin} forced=${variant.forced}\n`) } catch { /* a failed lane may not have produced its report */ }
+}
+
 export function writeLaneStage(file, stage, { reset = false, runId = null, header = [] } = {}) {
   try {
     mkdirSync(path.dirname(file), { recursive: true })
@@ -245,7 +294,9 @@ async function main() {
   let workerSpawnedChild = false
   if (worker && opts.runId && opts.dir) process.once('beforeExit', () => {
     if (workerSpawnedChild) return
-    const stateFile = path.join(opts.dir, '.lane', 'supervision', `${opts.runId}.json`)
+    const supervisionSlot = process.env.WT_LANE_SUPERVISION_SLOT
+    const supervisionDir = supervisionSlot && /^[A-Za-z0-9._-]+$/.test(supervisionSlot) ? `supervision-${supervisionSlot}` : 'supervision'
+    const stateFile = path.join(opts.dir, '.lane', supervisionDir, `${opts.runId}.json`)
     let current = null
     try { current = JSON.parse(readFileSync(stateFile, 'utf8')) } catch {}
     if (current && current.state !== 'launching') return
@@ -437,8 +488,10 @@ async function main() {
     }
   }
   writeLaneStage(opts.log, 'consent-check-start')
-  const modelRefusal = consentModules.laneModelRefusal(opts.model, { env: process.env })
-  if (modelRefusal) { process.stderr.write(`${modelRefusal}\n`); return 1 }
+  const launchConfiguration = resolveLaunchConfiguration(opts, consentModules, process.env)
+  if (launchConfiguration.refusal) { process.stderr.write(`${launchConfiguration.refusal}\n`); return 1 }
+  const variant = launchConfiguration.variant
+  applyResolvedVariant(opts, variant)
   const consent = consentModules.evaluateConsentGate(
     { tool_input: { command: 'opencode run' }, cwd: opts.dir },
     { resolveConsentImpl: consentModules.resolveConsent },
@@ -494,7 +547,8 @@ async function main() {
       chmodSync(briefSnapshotDir, 0o700)
       writeFileSync(briefSnapshot, briefEvidence.bytes, { flag: 'wx', mode: 0o400 })
       const briefReceipt = Buffer.from(JSON.stringify({ path: briefEvidence.path, age: briefEvidence.age, heading: briefEvidence.heading, sha256: briefEvidence.sha256 }), 'utf8').toString('base64url')
-      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...(opts.variant ? ['--variant', opts.variant] : []), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      appendVariantLog(opts.log, variant)
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
       const spawnedAt = Date.now()
@@ -722,6 +776,7 @@ async function main() {
     closeHandled = true
     clearTimeout(timer); clearTimeout(graceTimer); clearInterval(decisions)
     const exit = signal ? 124 : (code ?? 1)
+    appendVariantReport(opts, variant)
     try {
       const current = JSON.parse(readFileSync(stateFile, 'utf8'))
       if (['terminating', 'abandoned'].includes(current.state)) return

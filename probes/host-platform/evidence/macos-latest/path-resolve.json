@@ -1,0 +1,57 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "path-resolve",
+    "capturedAt": "2026-09-20T09:08:13.991Z",
+    "command": "node path-resolve.mjs /Users/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/macos-latest/path-resolve.json",
+    "runId": "35501457364",
+    "commitSha": "2ca53474daa3cf4368b62336ada74b15963023fd",
+    "runnerImage": {
+      "label": "macos-latest",
+      "os": "macos26",
+      "version": "20260907.0351.1"
+    },
+    "osRelease": {
+      "platform": "darwin",
+      "release": "25.6.0",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:16:43 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_VMAPPLE",
+      "arch": "arm64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "status": "not_used",
+        "reason": "procps is not the process-table provider on this OS"
+      },
+      "powershell": {
+        "status": "not_used",
+        "reason": "PowerShell is not used by these probes on this OS"
+      }
+    }
+  },
+  "tempDirectory": {
+    "reportedRoot": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T",
+    "createdPath": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx",
+    "machineEvidence": {
+      "status": "measured",
+      "input": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx",
+      "realpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx"
+    }
+  },
+  "symlinkedDirectory": {
+    "creation": "measured",
+    "status": "measured",
+    "input": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx/directory-link",
+    "realpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx/target",
+    "targetRealpath": "/private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-path-probe-U6x9Lx/target"
+  },
+  "windows83ShortForm": {
+    "status": "not_applicable",
+    "reason": "8.3 short paths are a Windows filesystem question; no path.win32 simulation was used."
+  },
+  "windowsUnc": {
+    "status": "not_applicable",
+    "reason": "UNC paths are a Windows host question; no string-only path.win32 result is presented as evidence."
+  },
+  "classification": "Only cases labelled machineEvidence or measured called the host filesystem. Labelled string_arithmetic values are inputs, not probe conclusions."
+}

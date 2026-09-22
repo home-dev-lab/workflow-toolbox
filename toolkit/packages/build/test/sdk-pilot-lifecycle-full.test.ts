@@ -11,7 +11,9 @@ import { MAX_CRITIC_ROUNDS, MAX_REVIEW_ROUNDS } from '../../../../plugin/bin/lib
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
 const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
-const FIXTURE_LANE_TIMEOUT_SECONDS = 10
+const FIXTURE_LANE_TIMEOUT_SECONDS = 20
+const FIXED_CRITIC_ROUNDS = 3
+const FIXED_REVIEW_ROUNDS = 3
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const roots: string[] = []
 
@@ -29,10 +31,11 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     const lifecycle = fullLifecycle({ executor: 'claude-sdk', knowledgeBase: { path: index, checkedPath: index } })
     edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
-    const call = JSON.parse(readFileSync(lifecycle.calls, 'utf8').trim())
-    expect(call.argv).toContain('--knowledge-base-index'); expect(call.argv).toContain(index)
-    expect(call.briefText).toContain(`KNOWLEDGE_BASE_INDEX: ${index}`)
-    expect(call.briefText).toContain('fiches are claims to verify against the current code, never evidence by themselves')
+    const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(calls).toHaveLength(2)
+    expect(calls.every((call) => call.argv.includes('--knowledge-base-index') && call.argv.includes(index))).toBe(true)
+    expect(calls.every((call) => call.briefText.includes(`KNOWLEDGE_BASE_INDEX: ${index}`))).toBe(true)
+    expect(calls.every((call) => call.briefText.includes('fiches are claims to verify against the current code, never evidence by themselves'))).toBe(true)
   })
 
   it('names the external knowledge-base index in GPT independent briefs with a refused-read instruction, without widening launcher arguments', async () => {
@@ -40,10 +43,11 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     const lifecycle = fullLifecycle({ knowledgeBase: { path: index, checkedPath: index } })
     edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
-    const call = JSON.parse(readFileSync(lifecycle.calls, 'utf8').trim())
-    expect(call.argv).not.toContain('--knowledge-base-index')
-    expect(call.briefText).toContain(`KNOWLEDGE_BASE_INDEX: ${index} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`)
-    expect(call.briefText).not.toContain('unavailable to this executor')
+    const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(calls).toHaveLength(2)
+    expect(calls.every((call) => !call.argv.includes('--knowledge-base-index'))).toBe(true)
+    expect(calls.every((call) => call.briefText.includes(`KNOWLEDGE_BASE_INDEX: ${index} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`))).toBe(true)
+    expect(calls.every((call) => !call.briefText.includes('unavailable to this executor'))).toBe(true)
   })
 
   it('writes server-owned review and refutation briefs with prospective working-tree diff inputs', async () => {
@@ -196,14 +200,80 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     expect(calls.filter((call) => ['tdd', 'harden'].includes(call.phase)).every((call) => call.briefText.includes('# Write release records'))).toBe(true)
   })
 
-  it('owner rule: both loops allow three passes in all, never a fourth', () => {
-    expect(MAX_CRITIC_ROUNDS).toBe(3)
-    expect(MAX_REVIEW_ROUNDS).toBe(3)
+  it('owner rule: both loops adapt after three fixed passes and stop at six', () => {
+    expect(FIXED_CRITIC_ROUNDS).toBe(3)
+    expect(FIXED_REVIEW_ROUNDS).toBe(3)
+    expect(MAX_CRITIC_ROUNDS).toBe(6)
+    expect(MAX_REVIEW_ROUNDS).toBe(6)
+  })
+
+  it('continues a converging critic past round three and approves', async () => {
+    const lifecycle = await runCriticRounds([
+      findings('r1', 4), findings('r2', 3), findings('r3', 2), null,
+    ])
+    expect(lifecycle.state()).toEqual({ phase: 'tdd', partial: null, deferred: null })
+  })
+
+  it('treats a narrowed critic finding as convergence rather than recurrence', async () => {
+    const lifecycle = await runCriticRounds([
+      ['proof misses every platform', 'first extra', 'second extra'],
+      ['proof misses the Windows branch', 'different extra'],
+      ['proof misses the Windows arm64 branch'],
+      null,
+    ])
+    expect(lifecycle.state().phase).toBe('tdd')
+  })
+
+  it('stops on a case-and-whitespace-insensitive recurring critic finding', async () => {
+    const lifecycle = await runCriticRounds([
+      ['Same point', 'first extra', 'second extra'],
+      ['new point', 'different extra'],
+      ['same   POINT'],
+    ])
+    expect(lifecycle.state()).toMatchObject({ phase: 'report', partial: { phase: 'critic', round: 3 } })
+  })
+
+  it('does not treat a repeated NON-BLOCKING critic finding as recurrence', async () => {
+    const nit = '[non-blocking] Rephrase the introduction for brevity.'
+    const lifecycle = await runCriticRounds([
+      [...findings('r1', 3), nit], [...findings('r2', 2), nit], [...findings('r3', 1), nit], null,
+    ])
+    expect(lifecycle.state().phase).toBe('tdd')
+  })
+
+  it('allows one critic plateau and stops on the second', async () => {
+    const lifecycle = await runCriticRounds([
+      findings('r1', 3), findings('r2', 2), findings('r3', 2), findings('r4', 2),
+    ])
+    expect(lifecycle.state()).toMatchObject({ phase: 'report', partial: { phase: 'critic', round: 4 } })
+  })
+
+  it('stops a still-converging critic at the six-round ceiling', async () => {
+    const lifecycle = await runCriticRounds([
+      findings('r1', 7), findings('r2', 6), findings('r3', 5), findings('r4', 4), findings('r5', 3), findings('r6', 2),
+    ])
+    expect(lifecycle.state()).toMatchObject({ phase: 'report', partial: { phase: 'critic', round: 6 } })
+  })
+
+  it('continues a converging review past round three and clears', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    for (const [index, roundFindings] of [findings('review-1', 4), findings('review-2', 3), findings('review-3', 2)].entries()) {
+      edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: roundFindings } })
+      await lifecycle.artifact({ kind: 'review-brief', content: `review ${index + 1}` })
+      await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+      expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: roundFindings, tool_use_id: `adaptive-review-${index + 1}` })).toBe('accepted phase=harden')
+      await lifecycle.artifact({ kind: 'harden-brief', content: 'harden' }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 })
+      await lifecycle.transition({ phase: 'harden', tool_use_id: `adaptive-harden-${index + 1}` }); await gates(lifecycle)
+      await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: `adaptive-verify-${index + 1}` })
+    }
+    edgeConfig(lifecycle, { review: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review 4' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'adaptive-review-4' })).toBe('accepted phase=refutation')
   })
 
   it('H14-1 lock: completes the exact last-critic-pass sequence as a partial committed and archived run', async () => {
     const lifecycle = fullLifecycle()
-    const criticRounds = MAX_CRITIC_ROUNDS
+    const criticRounds = FIXED_CRITIC_ROUNDS
     const reason = `plan not approved after ${criticRounds} critic rounds`
     edgeConfig(lifecycle, { critic: { verdict: 'changes-requested', findings: ['tighten the proof'] } })
     expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })).toBe('accepted phase=plan')
@@ -217,27 +287,31 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
         ? 'accepted phase=plan'
         : `accepted phase=report (round bound reached: partial run, ${reason})`)
     }
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } })
+    const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.phases.filter((item: { phase: string }) => ['plan', 'critic'].includes(item.phase)).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
+      ['plan', 1], ['critic', 1], ['plan', 2], ['critic', 2], ['plan', 3], ['critic', 3],
+    ])
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] }, deferred: null })
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: '# partial report\n' }))
       .toBe(`pilot-report: partial run, add the line "Partial: ${reason}"`)
     expect(await lifecycle.artifact({ kind: 'pilot-report', content: `${fullReport}Partial: ${reason}\n` })).toBe('wrote pilot-report')
     expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'report' })).toBe('accepted phase=awaiting_fidelity')
     expect(spawnSync('git', ['rev-list', '--count', 'HEAD'], { cwd: lifecycle.root, encoding: 'utf8' }).stdout.trim()).toBe('2')
     const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
-    expect(summary.partial).toEqual({ phase: 'critic', round: MAX_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] })
+    expect(summary.partial).toEqual({ phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] })
     const manifest = JSON.parse(readFileSync(join(summary.archive.path, 'manifest.json'), 'utf8'))
     expect(manifest.partial).toEqual(summary.partial)
   })
 
   it('H14-1 review lock: routes the last allowed review changes-requested verdict to a partial report', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
-    const reason = `review still requests changes after ${MAX_REVIEW_ROUNDS - 1} harden rounds`
+    const reason = `review still requests changes after ${FIXED_REVIEW_ROUNDS - 1} harden rounds`
     edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: ['finding'] } })
-    for (let round = 1; round <= MAX_REVIEW_ROUNDS; round += 1) {
+    for (let round = 1; round <= FIXED_REVIEW_ROUNDS; round += 1) {
       expect(await lifecycle.artifact({ kind: 'review-brief', content: `review ${round}` })).toBe('wrote review-brief')
       expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toBe('lane review EXIT=0')
       const result = await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['finding'], tool_use_id: `review-${round}` })
-      if (round === MAX_REVIEW_ROUNDS) expect(result).toBe(`accepted phase=report (round bound reached: partial run, ${reason})`)
+      if (round === FIXED_REVIEW_ROUNDS) expect(result).toBe(`accepted phase=report (round bound reached: partial run, ${reason})`)
       else {
         expect(result).toBe('accepted phase=harden')
         expect(await lifecycle.artifact({ kind: 'harden-brief', content: 'harden' })).toBe('wrote harden-brief')
@@ -247,7 +321,11 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
         expect(await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: `verify-${round}` })).toBe('accepted phase=review')
       }
     }
-    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: MAX_REVIEW_ROUNDS, reason, findings: ['finding'] } })
+    const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.phases.filter((item: { phase: string }) => ['review', 'harden'].includes(item.phase)).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
+      ['review', 1], ['harden', 1], ['review', 2], ['harden', 2], ['review', 3],
+    ])
+    expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: FIXED_REVIEW_ROUNDS, reason, findings: ['finding'] }, deferred: null })
   })
 
   it.each([
@@ -265,8 +343,8 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     ['report edge with a gate digest changed after verify is refused', async () => reportEdge(true, true), /gate digest changed/],
     ['report edge with a stale pilot-report never registered this run is refused (Sol round 14)', async () => reportEdge(false, false, 'stale'), /pilot report registered this run/],
     ['report edge with a pilot-report modified after write_artifact is refused (Sol round 14)', async () => reportEdge(true, false, 'modified'), /pilot report unchanged since write_artifact/],
-    ['spent planRound bound', criticBound, new RegExp(`^accepted phase=report \\(round bound reached: partial run, plan not approved after ${MAX_CRITIC_ROUNDS} critic rounds\\)$`)],
-    ['spent reviewRound bound', reviewBound, new RegExp(`^accepted phase=report \\(round bound reached: partial run, review still requests changes after ${MAX_REVIEW_ROUNDS - 1} harden rounds\\)$`)],
+    ['spent planRound bound', criticBound, new RegExp(`^accepted phase=report \\(round bound reached: partial run, plan not approved after ${FIXED_CRITIC_ROUNDS} critic rounds\\)$`)],
+    ['spent reviewRound bound', reviewBound, new RegExp(`^accepted phase=report \\(round bound reached: partial run, review still requests changes after ${FIXED_REVIEW_ROUNDS - 1} harden rounds\\)$`)],
     ['verdict and outcome mismatch', async () => reviewEdge('clear', 0, 'changes-requested'), /outcome does not match the lane report/],
     ['findings mismatch', async () => reviewEdge('changes-requested', 0, 'changes-requested', ['wrong finding']), /findings do not match the lane report/],
     ['report without a VERDICT block', async () => reviewEdge('clear', 0, 'clear', undefined, true), /VERDICT block/],
@@ -351,6 +429,18 @@ function liteLifecycle() {
 async function gates(lifecycle: { run: (args: Record<string, unknown>) => Promise<string> }) {
   for (const name of ['typecheck', 'lint', 'test']) expect(await lifecycle.run({ kind: 'gate', name })).toBe(`gate ${name} EXIT=0`)
 }
+function findings(prefix: string, count: number) { return Array.from({ length: count }, (_, index) => `${prefix} finding ${index + 1}`) }
+async function runCriticRounds(rounds: Array<string[] | null>) {
+  const lifecycle = fullLifecycle()
+  await lifecycle.transition({ phase: 'discovery', tool_use_id: 'adaptive-discovery' })
+  for (const [index, roundFindings] of rounds.entries()) {
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: `adaptive-plan-${index + 1}` })
+    edgeConfig(lifecycle, { critic: roundFindings === null ? { verdict: 'approved' } : { verdict: 'changes-requested', findings: roundFindings } })
+    await lifecycle.artifact({ kind: 'critic-brief', content: `critic ${index + 1}` }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    await lifecycle.transition({ phase: 'critic', outcome: roundFindings === null ? 'approved' : 'changes-requested', findings: roundFindings ?? [], tool_use_id: `adaptive-critic-${index + 1}` })
+  }
+  return lifecycle
+}
 async function writePassingGate({ log, root }: { log: string, root: string }) {
   const laneDir = join(root, '.lane')
   const laneMtime = Math.max(...readdirSync(laneDir)
@@ -388,23 +478,23 @@ async function reviewEdge(verdict: string, exit: number, outcome: string, findin
 async function criticBound() {
   const lifecycle = fullLifecycle(); edgeConfig(lifecycle, { critic: { verdict: 'changes-requested', findings: ['tighten the proof'] } })
   expect(await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start-1' })).toBe('accepted phase=plan')
-  for (let round = 1; round <= MAX_CRITIC_ROUNDS; round += 1) {
+  for (let round = 1; round <= FIXED_CRITIC_ROUNDS; round += 1) {
     expect(await lifecycle.artifact({ kind: 'plan', content: plan })).toBe('wrote plan')
     expect(await lifecycle.transition({ phase: 'plan', tool_use_id: `plan-${round}` })).toMatch(/^accepted phase=critic/)
     expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' })).toBe('wrote critic-brief')
     expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toBe('lane critic EXIT=0')
     const result = await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
-    if (round === MAX_CRITIC_ROUNDS) return result
+    if (round === FIXED_CRITIC_ROUNDS) return result
     expect(result).toBe('accepted phase=plan')
   }
   throw new Error('unreachable')
 }
 async function reviewBound() {
   const lifecycle = fullLifecycle(); await reachReview(lifecycle); edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: ['finding'] } })
-  for (let round = 1; round <= MAX_REVIEW_ROUNDS; round += 1) {
+  for (let round = 1; round <= FIXED_REVIEW_ROUNDS; round += 1) {
     expect(await lifecycle.artifact({ kind: 'review-brief', content: 'review\n' })).toBe('wrote review-brief')
     expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toBe('lane review EXIT=0')
-    const result = await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['finding'], tool_use_id: `review-${round}` }); if (round === MAX_REVIEW_ROUNDS) return result
+    const result = await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['finding'], tool_use_id: `review-${round}` }); if (round === FIXED_REVIEW_ROUNDS) return result
     expect(result).toBe('accepted phase=harden')
     expect(await lifecycle.artifact({ kind: 'harden-brief', content: 'harden\n' })).toBe('wrote harden-brief')
     expect(await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 })).toBe('lane harden EXIT=0')

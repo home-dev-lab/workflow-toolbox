@@ -63,6 +63,7 @@ const $ = {
 register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }));
 const bash = hooks.find((hook) => hook.event === 'tool.call').hook;
 const prompt = hooks.find((hook) => hook.event === 'prompt.submit').hook;
+const receive = hooks.find((hook) => hook.event === 'session.receive')?.hook;
 const context = hooks.find((hook) => hook.event === 'prompt.context')?.hook;
 const read = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Read').hook;
 const mcp = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool instanceof RegExp).hook;
@@ -72,20 +73,184 @@ async function test(name, fn) { try { await fn(); console.log(`PASS ${name}`); }
 
 const github = 'ghp_abcdefghijklmnopqrstuvwxyz0123456789';
 const aws = 'AKIA1234567890ABCDEF';
+const opFake = 'FAKEKEYFAKEKEYFAKEKEY0123456789';
+const exa = '123e4567-e89b-12d3-a456-426614174000';
+const brave = `BSA${'a1B_'.repeat(7)}`;
+await test('inbound known-vendor credential is withheld with a visible revocation notice', async () => {
+  assert(receive, 'session.receive hook was not registered');
+  const input = { origin: { kind: 'peer' }, text: `please inspect ${github}` };
+  const received = [];
+  const beforeLogs = logs.length;
+  const result = await receive($, input, async (event) => { received.push(event); return { queued: true }; });
+  assert.equal(result.queued, true);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].origin, input.origin);
+  assert.equal(received[0].text.includes(github), false, 'raw inbound credential reached the session');
+  assert.match(received[0].text, /secret:github-classic#/);
+  assert.match(received[0].text, /only remedy is revocation/i);
+  assert.match(received[0].text, /https:\/\/github\.com\/settings\/tokens/);
+  assert.match(received[0].text, /cannot unsend/i);
+  assert.equal(logs.slice(beforeLogs).some((line) => line.includes(github)), false);
+  assert(logs.slice(beforeLogs).some((line) => /credential.*revocation/i.test(line)));
+});
+await test('ordinary inbound message mentioning key is unchanged and answerable', async () => {
+  assert(receive, 'session.receive hook was not registered');
+  const input = { origin: { kind: 'bridge' }, text: 'Which key opens the storage room?' };
+  const received = [];
+  const beforeLogs = logs.length;
+  const outcome = { queued: true };
+  const result = await receive($, input, async (event) => { received.push(event); return outcome; });
+  assert.deepEqual(received, [input]);
+  assert.equal(result, outcome);
+  assert.equal(logs.length, beforeLogs);
+});
 await test('does not register an inert user-tier prompt.context guard', async () => { assert.equal(context, undefined); });
 await test('sha256 known answer', async () => { assert.equal(sha256('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'); });
 await test('output scrub and distinct tokens', async () => { const result = await call('x', `${github}\n${aws}`); assert(!JSON.stringify(result).includes(github)); assert(!JSON.stringify(result).includes(aws)); assert.equal(testState().size, 2); });
+await test('plain-line op credential output is scrubbed', async () => { const result = await call('op item get example --fields credential', `credential: ${opFake}`); assert.equal(JSON.stringify(result).includes(opFake), false); assert.match(result.text, /secret:op-output#/); });
+const concealedJson = (value) => JSON.stringify({ id: 'credential', label: 'credential', type: 'CONCEALED', value, padding: 'x'.repeat(100) }, null, 2);
+await test('complete concealed JSON output is scrubbed', async () => {
+  const concealed = concealedJson(opFake);
+  const result = await call('op item get example --fields credential --format json', concealed);
+  assert.equal(JSON.stringify(result).includes(opFake), false, 'concealed JSON value reached the tool result');
+  assert.match(result.text, /secret:op-json-concealed#/);
+});
+await test('truncated concealed JSON output is scrubbed', async () => {
+  const value = 'TRUNCATEDFAKEKEYFAKEKEY0123456789';
+  const concealed = concealedJson(value);
+  const truncated = concealed.slice(0, concealed.indexOf(value) + value.length + 1);
+  const result = await call('op.exe item get example --fields label=credential --format json 2>&1 | head -c 120', truncated);
+  assert.equal(JSON.stringify(result).includes(value), false, 'truncated concealed JSON value reached the tool result');
+});
+await test('stderr-prefixed concealed JSON output is scrubbed', async () => {
+  const value = 'PREFIXEDFAKEKEYFAKEKEY0123456789';
+  const concealed = concealedJson(value);
+  const result = await call('op.exe item get example --fields label=credential --format json 2>&1', `warning: fake diagnostic\n${concealed}`);
+  assert.equal(JSON.stringify(result).includes(value), false, 'stderr-prefixed concealed JSON value reached the tool result');
+});
+await test('trailing-line concealed JSON output is scrubbed', async () => {
+  const value = 'TRAILINGFAKEKEYFAKEKEY0123456789';
+  const concealed = concealedJson(value);
+  const result = await call('op.exe item get example --fields label=credential --format json; echo EXIT=$?', `${concealed}\nEXIT=0`);
+  assert.equal(JSON.stringify(result).includes(value), false, 'trailing-line concealed JSON value reached the tool result');
+});
+await test('concealed JSON escaped values are decoded while serialized bytes are scrubbed', async () => {
+  const escapedFake = 'ESCAPEDFAKEESCAPEDFAKE0123456789"\\suffix';
+  const escaped = await call('op item get example --format json', JSON.stringify({ type: 'CONCEALED', value: escapedFake }, null, 2));
+  assert.equal(escaped.text.includes(JSON.stringify(escapedFake).slice(1, -1)), false, 'escaped concealed JSON value reached the tool result');
+  assert([...testState().values()].some((entry) => entry.kind === 'op-json-concealed' && entry.value === escapedFake));
+});
+await test('ordinary JSON values are not scrubbed', async () => {
+  const ordinary = '{"label":"status","value":"ready"}';
+  assert.equal((await call('tool --json', ordinary)).text, ordinary);
+});
+await test('malformed concealed JSON does not throw and scrubs its value', async () => {
+  const malformed = '{"type":"CONCEALED","value":"MALFORMEDFAKEKEY0123456789"';
+  const result = await call('op item get example --format json', malformed);
+  assert.equal(result.text.includes('MALFORMEDFAKEKEY0123456789'), false, 'malformed concealed JSON value reached the tool result');
+  const imprecise = '{"type":"CONCEALED","value":IMPRECISEFAKEKEY0123456789';
+  const failSafe = await call('op item get example --format json', imprecise);
+  assert.equal(failSafe.text.includes('IMPRECISEFAKEKEY0123456789'), false, 'imprecise concealed JSON fragment reached the tool result');
+});
 await test('token round-trip', async () => { const [token, entry] = [...testState()][0]; let received; await bash($, { tool: 'Bash', command: `echo ${token}` }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, `echo ${entry.value}`); });
 await test('op reference rewrite with shell quoting', async () => { let received; const result = await bash($, { tool: 'Bash', command: "echo op://Private/O'Brien/token" }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, "echo \"$(op read 'op://Private/O'\"'\"'Brien/token')\""); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
 await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); let received; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { received = event.command; return { text: 'ok' }; }); configure({}); assert.equal(received, "echo \"$(op read --account 'my.1password.com' 'op://Private/item/field')\""); let plain; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { plain = event.command; return { text: 'ok' }; }); assert.equal(plain, "echo \"$(op read 'op://Private/item/field')\""); });
 await test('a value resolved through op:// is scrubbed from the result even when it matches no pattern', async () => { const result = await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw' }, async () => ({ result: { stdout: 'op-fake-value\n', stderr: '' }, text: 'op-fake-value\n' })); assert(!JSON.stringify(result).includes('op-fake-value')); assert(/secret:onepassword#/.test(result.text)); assert(calls.some((call) => call.capability === 'process.run' && call.argv[0] === 'op' && call.argv[1] === 'read')); });
+await test('double-quoted op reference rewrites with exactly one level of quoting', async () => { let received; await bash($, { tool: 'Bash', command: 'export K="op://Private/item/field"' }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, 'export K="$(op read \'op://Private/item/field\')"'); });
+await test('single-quoted op reference rewrites with exactly one level of quoting', async () => { let received; await bash($, { tool: 'Bash', command: "echo 'op://Private/item/field'" }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, 'echo "$(op read \'op://Private/item/field\')"'); });
+const assertSkippedWhilePlainRewrites = async (command) => {
+  let skipped; let plain;
+  await bash($, { tool: 'Bash', command }, async (event) => { skipped = event.command; return { text: 'ok' }; });
+  await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { plain = event.command; return { text: 'ok' }; });
+  assert.equal(skipped, command);
+  assert.equal(plain, 'echo "$(op read \'op://Private/item/field\')"');
+};
+await test('op reference written to a tpl file is left literal', async () => { await assertSkippedWhilePlainRewrites("printf '%s\\n' 'op://Private/item/field' > /tmp/profile.tpl"); });
+await test('op reference in a heredoc body is left literal', async () => { await assertSkippedWhilePlainRewrites("cat <<'EOF'\nop://Private/item/field\nEOF"); });
+await test('op reference in a sed search pattern is left literal', async () => { await assertSkippedWhilePlainRewrites("sed -n '/op:\\/\\/Private\\/item\\/field/p' /tmp/input"); });
+await test('op reference inside a larger quoted string is left literal', async () => { await assertSkippedWhilePlainRewrites("printf '%s\\n' 'prefix op://Private/item/field suffix'"); });
+await test('already substituted op reference is not rewritten again', async () => { await assertSkippedWhilePlainRewrites("echo \"$(op read 'op://Private/item/field')\""); });
 await test('env reference rewrite', async () => { let received; await bash($, { tool: 'Bash', command: 'echo secret:env:GH_TOKEN' }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, 'echo "$GH_TOKEN"'); });
 await test('file reference rewrite quotes and tokenises its content before Bash runs', async () => { const value = "file-secret value with ' quote\nsecond-file-secret"; let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file' }, async (event) => { received = event.command; return { text: value }; }); assert.equal(received, "echo 'file-secret value with '\"'\"' quote\nsecond-file-secret'"); assert(!JSON.stringify(result).includes(value)); assert.match(result.text, /secret:file#/); });
 await test('file reference line selection quotes and tokenises only that line', async () => { let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file#2' }, async (event) => { received = event.command; return { text: 'second-file-secret' }; }); assert.equal(received, "echo 'second-file-secret'"); assert(!JSON.stringify(result).includes('second-file-secret')); assert.match(result.text, /secret:file#/); });
 await test('missing file reference remains unchanged and logs no path or value', async () => { let received; await bash($, { tool: 'Bash', command: 'cat secret:file:/tmp/wt-secret-guard-missing' }, async (event) => { received = event.command; return { text: 'failed' }; }); assert.equal(received, 'cat secret:file:/tmp/wt-secret-guard-missing'); assert(logs.some((line) => line === 'wt-secret-guard: file reference unavailable (1 reference)')); assert(logs.every((line) => !line.includes('/tmp/wt-secret-guard-missing'))); });
 await test('Read result scrub publishes tokens without treating its path as a secret', async () => { const value = 'read-result-secret'; const result = await read($, { tool: 'Read', file_path: '/tmp/not-a-secret' }, async (event) => ({ ...event, text: `password = ${value}` })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.file_path, '/tmp/not-a-secret'); assert.match(result.text, /secret:assignment#/); });
 await test('MCP result scrub tokenises inbound sensitive text without rewriting its input', async () => { const value = 'mcp-result-secret'; const event = { tool: 'mcp__atrium__read_message', text: `token = ${value}` }; const result = await mcp($, event, async (received) => ({ ...received, text: received.text })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.tool, event.tool); assert.match(result.text, /secret:assignment#/); });
+await test('destructuring defaults named like credentials pass through tool results', async () => {
+  const source = 'const { kind, value, secret = value } = result;';
+  assert.equal((await call('git diff', source)).text, source);
+});
+await test('object literal assignment expressions named like credentials pass through tool results', async () => {
+  const source = 'const options = { token: token = fallback };';
+  assert.equal((await call('cat options.js', source)).text, source);
+});
+await test('function parameter defaults named like credentials pass through tool results', async () => {
+  const source = 'function connect(password = fallback) { return password; }';
+  assert.equal((await call('git diff', source)).text, source);
+});
+await test('short genuine credential assignments in command output remain scrubbed', async () => {
+  const result = await call('print-config', 'password = hunter2');
+  assert.equal(result.text.includes('hunter2'), false, 'genuine short password reached the tool result');
+  assert.match(result.text, /secret:assignment#/);
+});
+await test('source-looking prefixes do not exempt a later credential assignment on the same line', async () => {
+  const credentialValue = 'hunter2realcredential';
+  const mixedLines = [
+    `const harmless = true; secret=${credentialValue}`,
+    `let harmless = true; secret=${credentialValue}`,
+    `var harmless = true; secret=${credentialValue}`,
+    `type Harmless = string; secret=${credentialValue}`,
+    `interface Harmless {}; secret=${credentialValue}`,
+    `function harmless() {}; secret=${credentialValue}`,
+    `class Harmless {}; secret=${credentialValue}`,
+    `import harmless from 'harmless'; secret=${credentialValue}`,
+    `export const harmless = true; secret=${credentialValue}`,
+    `default function harmless() {}; secret=${credentialValue}`,
+    `+ const harmless = true; secret=${credentialValue}`,
+    `log(harmless); (secret=${credentialValue})`,
+    `log({ harmless: true }); { secret=${credentialValue} }`,
+  ];
+  for (const line of mixedLines) {
+    const result = await call('git diff', line);
+    assert.equal(result.text.includes(credentialValue), false, `credential survived mixed source line: ${line}`);
+  }
+});
+const exportedCredentials = [
+  ['NAME_SECRET', 'export-secret-value'],
+  ['NAME_TOKEN', 'export-token-value'],
+  ['NAME_KEY', 'export-key-value'],
+];
+const exportedCredentialLine = ([name, value], prefix = '') => `${prefix}export ${name}=${value}`;
+await test('exported credential assignments are scrubbed from tool results', async () => {
+  const output = exportedCredentials.map((credential) => exportedCredentialLine(credential)).join('\n');
+  const result = await call('print-config', output);
+  for (const [, value] of exportedCredentials) assert.equal(result.text.includes(value), false, `${value} reached the tool result`);
+  assert.match(result.text, /secret:environment-dump#/);
+});
+await test('exported credential assignments are scrubbed from inbound messages', async () => {
+  assert(receive, 'session.receive hook was not registered');
+  const input = { origin: { kind: 'peer' }, text: exportedCredentials.map((credential) => exportedCredentialLine(credential)).join('\n') };
+  const received = [];
+  await receive($, input, async (event) => { received.push(event); return { queued: true }; });
+  for (const [, value] of exportedCredentials) assert.equal(received[0].text.includes(value), false, `${value} reached the session`);
+});
+await test('indented and diff-prefixed exported credentials are scrubbed', async () => {
+  const prefixes = ['  ', '+'];
+  const output = prefixes.flatMap((prefix) => exportedCredentials.map((credential) => exportedCredentialLine(credential, prefix))).join('\n');
+  const result = await call('git diff', output);
+  for (const [, value] of exportedCredentials) assert.equal(result.text.includes(value), false, `${value} survived an indented or diff-prefixed export`);
+});
+await test('exported source declarations pass while an exported credential is scrubbed', async () => {
+  const source = 'export const SECRET_KEY = x\nexport let API_TOKEN = y';
+  const credentialValue = 'control-secret-value';
+  const result = await call('git diff', `${source}\nexport NAME_SECRET=${credentialValue}`);
+  assert.equal(result.text.includes(credentialValue), false, 'exported credential control did not match');
+  assert.equal(result.text.includes(source), true, 'exported source declaration control matched');
+});
 await test('allow-list', async () => { const input = '0123456789abcdef0123456789abcdef01234567 123e4567-e89b-12d3-a456-426614174000 secret:github#abcdef'; const result = await call('cat fixture.txt', input); assert.equal(result.text, input); });
+await test('UUID Exa API key in a provider client constructor is scrubbed', async () => { const result = await call('node app.mjs', `const client = new Exa("${exa}");`); assert.equal(result.text.includes(exa), false, 'Exa UUID API key reached the tool result'); assert.match(result.text, /secret:credential-uuid#/); });
+await test('bare UUID in a plain log line stays untouched', async () => { const input = `run id ${exa} completed`; const result = await call('cat run.log', input); assert.equal(result.text, input); });
+await test('Brave API key shape is scrubbed', async () => { const result = await call('env', `BRAVE_API_KEY=${brave}`); assert.equal(result.text.includes(brave), false, 'Brave API key reached the tool result'); assert.match(result.text, /secret:brave-api-key#/); });
 await test('logs contain no secret value', async () => { for (const value of [github, aws, "file-secret value with ' quote", 'second-file-secret', 'read-result-secret', 'mcp-result-secret']) assert(logs.every((line) => !line.includes(value))); });
 await test('detection table in the store carries tokens, kinds and salted hashes, never values', async () => { const publication = calls.filter((call) => call.capability === 'store.set' && call.key === 'detections').at(-1); assert(publication); const table = publication.value; const text = JSON.stringify(table); assert.equal(table.version, 1); assert(table.entries.length >= 2); assert(table.entries.every((entry) => entry.kind && /^secret:/.test(entry.token) && /^[a-f0-9]{64}$/.test(entry.sha256))); assert(!text.includes(github) && !text.includes(aws)); const saltWrite = calls.find((call) => call.capability === 'store.set' && call.key === 'salt'); assert(saltWrite); assert.equal(sha256(`${saltWrite.value}:${github}`), table.entries.find((entry) => entry.kind === 'github-classic').sha256); assert.notEqual(sha256(github), table.entries.find((entry) => entry.kind === 'github-classic').sha256); });
 await test('persistent store never carries a value; tokens only under the detections key', async () => { const writes = calls.filter((call) => call.capability === 'store.set'); assert(writes.length >= 3); for (const value of [github, aws, "file-secret value with ' quote", 'second-file-secret', 'read-result-secret', 'mcp-result-secret']) assert(writes.every((call) => !JSON.stringify(call.value).includes(value))); assert(writes.filter((call) => call.key !== 'detections').every((call) => !JSON.stringify(call.value).includes('secret:'))); });
@@ -306,6 +471,19 @@ await test('queue-operation targeting is independent of prompt origin and retrie
   assert.equal(sleeps, 2);
   assert.equal(getFile(transcriptPath).text.includes(raw), false);
   assert.match(getFile(transcriptPath).text, /secret:github-classic#/);
+});
+// Arbiter lock (2026-09-21): the narrowing is per STATEMENT, not per line. A declaration that follows a
+// semicolon is still source code and stays exempt — the first version of the fix detected it, which
+// makes the guard rewrite ordinary multi-statement lines (measured on the repo corpus: two such lines in
+// a test file). The value is built by concatenation so this file carries no literal credential.
+await test('a declaration after a semicolon stays exempt; a bare assignment after one is caught', async () => {
+  const value = 'hunter2' + 'realcredential9Xq';
+  const declaration = `const dir = '/tmp'; const token = '${value}'`;
+  const kept = await call('git diff', declaration);
+  assert.equal(kept.text, declaration, 'a declaration statement after a semicolon was rewritten');
+  const attack = `const harmless = true; token = '${value}'`;
+  const scrubbed = await call('git diff', attack);
+  assert.equal(scrubbed.text.includes(value), false, 'a bare assignment after a semicolon survived');
 });
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);
