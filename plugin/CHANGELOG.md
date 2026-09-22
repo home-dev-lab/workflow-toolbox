@@ -8,6 +8,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Changed
 - Refactor the adopt installer into bounded parsing, settings, audit, managed-item, migration, and command seams while preserving its standalone CLI transcripts and file effects; settings verification now also proves the exact prerequisite values before publication
 
+### Fixed
+- `wt-deep-search` (EXPERIMENTAL): a deep search started with no Exa key and no opencode on PATH is refused at once, naming both remedies and saying ordinary web search still works, instead of returning a handle that fails nine seconds later with a bare exit status; a missing Exa key is recorded as missing, a refused key as refused, and an opencode not-found failure names the program to install
+
 ### Added
 - Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
 

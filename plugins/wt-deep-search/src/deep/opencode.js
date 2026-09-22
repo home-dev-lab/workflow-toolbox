@@ -67,12 +67,19 @@ export function startOpencode(options, deps = {}) {
   const log = open(logPath, 'w');
   let child;
   try {
-    child = deps.spawn('opencode', ['run', '--auto', '--dir', dir, prompt], {
-      detached: true,
-      shell: false,
-      stdio: ['ignore', log, log],
-      env: childEnvironment(deps.env ?? process.env),
-    });
+    try {
+      child = deps.spawn('opencode', ['run', '--auto', '--dir', dir, prompt], {
+        detached: true,
+        shell: false,
+        stdio: ['ignore', log, log],
+        env: childEnvironment(deps.env ?? process.env),
+      });
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        throw new Error('opencode was not found; install opencode and ensure it is on PATH');
+      }
+      throw error;
+    }
   } finally {
     close(log);
   }
