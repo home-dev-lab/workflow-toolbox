@@ -1,5 +1,8 @@
 import { appendFileSync, closeSync, openSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { isAbsolute, win32 } from 'node:path';
+
+const TERMINATION_GRACE_MS = 1_000;
 
 const OPENCODE_ENVIRONMENT = [
   'PATH', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
@@ -18,6 +21,24 @@ function childEnvironment(source) {
 
 function absolutePath(value) {
   return typeof value === 'string' && (isAbsolute(value) || win32.isAbsolute(value));
+}
+
+function signalProcessFamily(pid, signal, platform = process.platform, kill = process.kill, run = spawnSync) {
+  if (platform === 'win32') {
+    const force = signal === 'SIGKILL' ? ['/F'] : [];
+    return run('taskkill', ['/PID', String(pid), '/T', ...force], { windowsHide: true, stdio: 'ignore' }).status === 0;
+  }
+  try { kill(-pid, signal); } catch (error) {
+    if (error?.code !== 'ESRCH') throw error;
+  }
+}
+
+function processFamilyExists(pid, platform = process.platform, kill = process.kill) {
+  if (platform === 'win32') return true;
+  try { kill(-pid, 0); return true; } catch (error) {
+    if (error?.code === 'ESRCH') return false;
+    throw error;
+  }
 }
 
 // ⚠ The child carries DEEP_SEARCH_WORKER=1 so that a deep-search run cannot start another one.
@@ -39,6 +60,10 @@ export function startOpencode(options, deps = {}) {
   const append = deps.appendFileSync ?? appendFileSync;
   const scheduleTimeout = deps.setTimeout ?? setTimeout;
   const cancelTimeout = deps.clearTimeout ?? clearTimeout;
+  const platform = deps.platform ?? process.platform;
+  const graceMs = deps.terminationGraceMs ?? TERMINATION_GRACE_MS;
+  const signalFamily = deps.signalProcessFamily ?? ((pid, signal) => signalProcessFamily(pid, signal, platform));
+  const familyExists = deps.processFamilyExists ?? ((pid) => processFamilyExists(pid, platform));
   const log = open(logPath, 'w');
   let child;
   try {
@@ -53,21 +78,54 @@ export function startOpencode(options, deps = {}) {
   }
 
   let finished = false;
+  let timedOut = false;
+  let childExited = false;
+  let windowsTreeKillConfirmed = false;
   let timeout;
+  let terminationWait;
   const finish = (code) => {
     if (finished) return;
     finished = true;
     if (timeout !== undefined) cancelTimeout(timeout);
+    if (terminationWait !== undefined) cancelTimeout(terminationWait);
     append(logPath, `\nEXIT=${code}\n`);
   };
-  child.once?.('exit', (code) => finish(Number.isInteger(code) ? code : 1));
-  child.once?.('error', () => finish(127));
+  const finishTimeoutIfTerminated = () => {
+    if ((platform === 'win32' && (!childExited || !windowsTreeKillConfirmed))
+      || (platform !== 'win32' && familyExists(child.pid))) return false;
+    append(logPath, `\nTIMEOUT=${timeoutMs}\nEXIT=124\n`);
+    finished = true;
+    if (terminationWait !== undefined) cancelTimeout(terminationWait);
+    return true;
+  };
+  const waitThenEscalate = (signal) => {
+    terminationWait = scheduleTimeout(() => {
+      if (finishTimeoutIfTerminated()) return;
+      if (signal) {
+        const confirmed = signalFamily(child.pid, signal) === true;
+        windowsTreeKillConfirmed ||= confirmed;
+        waitThenEscalate(null);
+      }
+    }, graceMs);
+  };
+  child.once?.('exit', (code) => {
+    childExited = true;
+    if (!timedOut) finish(Number.isInteger(code) ? code : 1);
+    else finishTimeoutIfTerminated();
+  });
+  child.once?.('error', () => {
+    childExited = true;
+    if (!timedOut) finish(127);
+    else finishTimeoutIfTerminated();
+  });
   timeout = scheduleTimeout(() => {
     if (finished) return;
-    finished = true;
-    append(logPath, `\nTIMEOUT=${timeoutMs}\nEXIT=124\n`);
-    child.kill();
+    timedOut = true;
+    windowsTreeKillConfirmed = signalFamily(child.pid, 'SIGTERM') === true;
+    waitThenEscalate('SIGKILL');
   }, timeoutMs);
+  // ⚠ Never unref the timeout or the termination wait: the worker has nothing else keeping it
+  // alive (the child is unref'd), so an unref'd timer lets it exit before the run is bounded.
   child.unref?.();
   return { logPath, pid: child.pid };
 }

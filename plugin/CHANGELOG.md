@@ -6,12 +6,46 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
+
+## [0.186.0] - 2026-09-22
+
+⚠ **The SDK pilot runner, its lifecycle server and What is running remain EXPERIMENTAL.** This release changes how the runner's plan loop behaves; a full FULL run was measured on it (370 min, no delivery: stopped by the runner's own 6 h limit in the fourth harden round) and the causes are carded, not fixed here.
+
+### Changed
+- SDK pilot plan loop: adaptive critic rounds (three fixed, then up to six while blocking findings keep narrowing), two independent round-1 critics run in parallel with the union of their findings, recurrence judged on blocking findings only, and the pilot revises only what a blocking finding asked (new section "Revise only blocking critic findings" in the shipped `wt-sdlc.md` rule).
+- What is running: each critic stage shows "round N (max M)", the two round-1 critics appear as Critic A / Critic B under their stage, pilot details sit at the top, and the missing-work footer names its cause.
+- The orphan watch reports an idle helper process, and `second-opinion` stops the Codex app-server it started.
+
+### Quality
+
+Measured on the release tree against the 0.181.0 baseline (kept on purpose, not refreshed). Cognitive complexity rose by 5 (lifecycle-launch.mjs, the two parallel critics), still under its ratchet; coverage rose by about 35 points of lines with the characterization tests added before tonight's refactors.
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 127 | 0 | 127 -> 127 | - |
+| Cognitive complexity | 261 -> 266 | +5 | 261 -> 266 | plugin/bin/lib/lifecycle-launch.mjs |
+| Biggest file (lines) | 2729 -> 2729 | 0 | 1747 -> 1894 | - |
+| Longest function (lines) | 708 -> 708 | 0 | 708 -> 708 | - |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 687 -> 687 | 0 | 41 -> 39 | plugin/bin/lib/lifecycle-state-machine.mjs |
+| Duplication % | 2.885613003631333 -> 2.7541460814661445 | -0.13 | 150 -> 150 | - |
+| Knip issues | 221 -> 221 | 0 | 4 -> 5 | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 77.39 | +35.39 | - -> - | - |
+| Coverage branches % | 40.12 -> 68.69 | +28.57 | 0 -> - | - |
+| Coverage functions % | 44.48 -> 78.56 | +34.08 | 0 -> - | - |
+| Coverage statements % | 40.62 -> 74.69 | +34.07 | - -> - | - |
+
+### Added
 - Add a host adapter derived from real three-OS captures (`plugin/bin/lib/host/`): question-named operations, per-OS implementations, and a fake that replays the captured bytes BELOW the parsers so the real parsers run. The pid-to-parent-pid family moves behind it with a grep-zero perimeter lock over 212 non-generated source files; a platform that cannot answer returns a named unknown instead of a plausible zero. The Windows process-table capture is preserved as an explicit unavailable rather than invented
 - Add `wt-deep-search` (EXPERIMENTAL): a WebSearch substitution answering from the local Claude Code documentation mirror, context7, Brave or Exa, plus a detached deep-research rung that returns a handle and is collected later; zero dependencies, no key required, cross-platform verdict included
 - Add dispatch-only Linux, Windows, and macOS host probes for process tables, process-group termination, and real path behavior, with provenance-rich byte-stable evidence artifacts
 - Add launch-time reasoning variants for all pilot, orchestrator, and executor roles, with model caps, explicit overrides, unknown-variant refusal and auditable forced overrides
 
 ### Fixed
+- Terminate timed-out deep-search process families before recording their terminal marker, and restore the combined 64 MiB output ceiling for second-opinion companions with a named overflow failure
 - `wt-secret-guard` no longer rewrites source it reads: a declaration line, a diff-prefixed declaration and an assignment bounded by parameter or destructuring punctuation pass through unchanged, while a loose credential assignment in command output is still scrubbed. Reviewed false-positive candidates over 560 repository source files fell from 32 to 5 with the true-positive corpus unchanged; the cost is that output shaped like source can now pass through, and that is stated rather than hidden
 - Price Claude Haiku 4.5 and all default routable models from source-backed fallback rows, and make unknown-price run totals name the unpriced models in archives and What is running
 - Run host-timing quarantines visibly but non-blockingly under `pnpm test:blocking`, the release-certification and CI entry point, while `pnpm test` remains the full developer suite

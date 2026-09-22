@@ -4,11 +4,33 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { absentPluginPaths } from './plugin-receipt.mjs'
+import { hostAdapter } from './host/adapter.mjs'
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_PLUGIN_ROOT = path.resolve(MODULE_DIR, '../..')
 const CONTEXT_MODE_VERSION = '1.0.177'
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
+const GUIDE_NAMES = ['CLAUDE.md', 'AGENTS.md']
+
+export function repositoryGuidePaths(worktree) {
+  const guides = GUIDE_NAMES.flatMap((name) => {
+    const guidePath = path.resolve(worktree, name)
+    const target = hostAdapter.resolveCanonicalPath(guidePath)
+    return target.status === 'resolved' ? [{ path: guidePath, target: target.path }] : []
+  })
+  const seen = new Set()
+  return guides.flatMap((guide) => {
+    if (seen.has(guide.target)) return []
+    seen.add(guide.target)
+    return [guides.find((candidate) => candidate.path === guide.target)?.path ?? guide.target]
+  })
+}
+
+export function withRepositoryGuide(worktree, prompt) {
+  const pointers = repositoryGuidePaths(worktree)
+    .map((guidePath) => `${guidePath} is the repository's contributor guide; read it before planning or changing code.`)
+  return pointers.length > 0 ? `${pointers.join('\n')}\n\n${prompt}` : prompt
+}
 
 // Initial support covers TypeScript and JavaScript worktrees. Add another table entry to extend
 // detection, binary resolution, and the generated Claude Code LSP plugin together.

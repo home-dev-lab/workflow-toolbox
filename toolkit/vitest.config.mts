@@ -94,7 +94,11 @@ export default defineConfig({
       reportOnFailure: true,
       reporter: ['text', 'json-summary'],
       reportsDirectory: '.lane/coverage',
-      include: ['packages/*/src/**/*.ts', resolve(import.meta.dirname, '../plugin/bin/**/*.mjs')],
+      include: [
+        'packages/*/src/**/*.ts',
+        resolve(import.meta.dirname, '../plugin/bin/**/*.mjs'),
+        resolve(import.meta.dirname, '../plugin/skills/adopt/scripts/install.mjs'),
+      ],
       exclude: [
         '**/*.test.ts',
         '**/test/**',
