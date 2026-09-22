@@ -284,7 +284,7 @@ await test('malformed concealed JSON does not throw and scrubs its value', async
   assert.equal(failSafe.text.includes('IMPRECISEFAKEKEY0123456789'), false, 'imprecise concealed JSON fragment reached the tool result');
 });
 await test('token round-trip binds decoded data without inserting raw shell source', async () => { const [token, entry] = [...testState()][0]; let received; await bash($, { tool: 'Bash', command: `printf %s ${token}` }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received.includes(entry.value), false); assert.match(received, /base64 --decode/); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, entry.value); });
-await test('op reference rewrite with shell quoting', async () => { let received; const result = await bash($, { tool: 'Bash', command: "echo op://Private/O'Brien/token" }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, "echo \"$(op read 'op://Private/O'\"'\"'Brien/token')\""); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
+await test('op reference rewrite with shell quoting', async () => { let received; const result = await bash($, { tool: 'Bash', command: 'echo "op://Private/O\'Brien/token"' }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, "echo \"$(op read 'op://Private/O'\"'\"'Brien/token')\""); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
 await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); let received; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { received = event.command; return { text: 'ok' }; }); configure({}); assert.equal(received, "echo \"$(op read --account 'my.1password.com' 'op://Private/item/field')\""); let plain; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { plain = event.command; return { text: 'ok' }; }); assert.equal(plain, "echo \"$(op read 'op://Private/item/field')\""); });
 await test('a value resolved through op:// is scrubbed from the result even when it matches no pattern', async () => { const result = await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw' }, async () => ({ result: { stdout: 'op-fake-value\n', stderr: '' }, text: 'op-fake-value\n' })); assert(!JSON.stringify(result).includes('op-fake-value')); assert(/secret:onepassword#/.test(result.text)); assert(calls.some((call) => call.capability === 'process.run' && call.argv[0] === 'op' && call.argv[1] === 'read')); });
 await test('double-quoted op reference rewrites with exactly one level of quoting', async () => { let received; await bash($, { tool: 'Bash', command: 'export K="op://Private/item/field"' }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, 'export K="$(op read \'op://Private/item/field\')"'); });
@@ -1026,11 +1026,13 @@ await test('D1 turn.step leaves tool input chunks byte-identical for tool.call r
 });
 await test('assistant stream remains bounded for long clean, detected, and unterminated private-key blocks', async () => {
   const raw = `ghp_${'b'.repeat(36)}`;
-  const clean = await collectStream(turnStep, [{ kind: 'text', index: 0, text: 'x'.repeat(5000) }, { kind: 'stop' }]);
+  // Filler characters are deliberately outside every fixture value: a run of a character that a
+  // registered secret also repeats is, by the invariant, a run of that secret.
+  const clean = await collectStream(turnStep, [{ kind: 'text', index: 0, text: 'Ω'.repeat(5000) }, { kind: 'stop' }]);
   assert.equal(clean.chunks.map((chunk) => chunk.text ?? '').join('').replace(/\n/g, '').length, 5000);
-  const detected = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${'x'.repeat(4500)}\n${raw}` }, { kind: 'stop' }]);
+  const detected = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${'Ω'.repeat(4500)}\n${raw}` }, { kind: 'stop' }]);
   assert.equal(detected.chunks.some((chunk) => chunk.text?.includes(raw)), false);
-  const oversized = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${'-----BEGIN PRIVATE KEY-----'}${'x'.repeat(66000)}` }, { kind: 'stop' }]);
+  const oversized = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${'-----BEGIN PRIVATE KEY-----'}${'Ω'.repeat(66000)}` }, { kind: 'stop' }]);
   assert.match(oversized.chunks.map((chunk) => chunk.text ?? '').join(''), /oversized secret-bearing stream block masked/);
   const answerOnly = await collectStream(turnStep, [], { answer: raw });
   assert.equal(JSON.stringify(answerOnly.result).includes(raw), false);
@@ -1058,46 +1060,106 @@ await test('V6 detected-prefix flush retains every byte of an incomplete known v
   ]);
   assert.equal(streamed.chunks.map((chunk) => chunk.text ?? '').join('').includes(raw), false, 'detected-prefix flush leaked a complete known value');
 });
-await test('stream hold-back property masks every secret boundary and seeded chunking', async () => {
-  const known = `known-${'k'.repeat(6001)}`;
-  tokenize('fixture', known);
+const FRAGMENT_SIZE = 8;
+const runsOf = (text) => {
+  const runs = new Set();
+  for (let at = 0; at + FRAGMENT_SIZE <= text.length; at += 1) runs.add(text.slice(at, at + FRAGMENT_SIZE));
+  return runs;
+};
+// The invariant is a SUBSTRING invariant: absence of the whole value proves nothing, because a
+// value released as two halves is absent and leaked at the same time.
+const leakedRunAt = (output, hidden) => {
+  const runs = runsOf(output);
+  for (let at = 0; at + FRAGMENT_SIZE <= hidden.length; at += 1) if (runs.has(hidden.slice(at, at + FRAGMENT_SIZE))) return at;
+  return -1;
+};
+// A length-based hold-back releases its buffer only once the buffer passes twice its window, and
+// that window follows the longest value in the live vault. Sizing the filler from the vault is what
+// keeps these locks able to FAIL: a fixed filler silently stops reaching the release path as soon as
+// an earlier test registers a longer value, and the leak then hides behind a green test.
+const holdBackChars = () => Math.max(512, ...[...testState().values()].map((entry) => entry.value.length));
+await test('V10 an incomplete known value is not released by a flush another detection triggers', async () => {
+  const hidden = `opaque-${'z'.repeat(6000)}`;
+  tokenize('fixture', hidden);
+  const detector = `ghp_${'h'.repeat(36)}`;
+  const before = journalSnapshot().size;
+  const streamed = await collectStream(turnStep, [
+    { kind: 'text', index: 0, text: `${detector} ${'x'.repeat(2 * holdBackChars() + 1200)} ${hidden.slice(0, 3000)}` },
+    { kind: 'text', index: 0, text: hidden.slice(3000) },
+    { kind: 'stop' },
+  ]);
+  const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+  assert.equal(output.includes(hidden), false, 'the complete known value reached the stream');
+  assert.equal(leakedRunAt(output, hidden), -1, 'a raw run of the known value reached the stream');
+  assert.equal(leakedRunAt(output, detector), -1, 'a raw run of the detected token reached the stream');
+  assert.match(output, /REDACTION TOKEN/);
+  assert(before >= 0 && [...journalSnapshot().values()].some((text) => text.includes('"surface":"assistant"') && text.includes('"action":"masked"')), 'masking produced no journal record');
+});
+await test('V11 a detected value straddling a prefix/tail cut is never released in halves', async () => {
+  // A hold-back that releases "everything but the last N characters" cuts the buffer at a fixed
+  // offset. This places a COMPLETE token across exactly that offset, where a released prefix holds
+  // the token's first bytes and no detector has seen enough of it to mask them.
+  const vendor = `ghp_${'j'.repeat(36)}`;
+  const hold = holdBackChars();
+  for (const inside of [1, 4, 8, 16, 24, 32, 35]) {
+    const streamed = await collectStream(turnStep, [
+      { kind: 'text', index: 0, text: `${'Ω'.repeat(hold + 1200)}${vendor}${'Ω'.repeat(hold - inside)}` },
+      { kind: 'text', index: 0, text: 'Ω'.repeat(1200) },
+      { kind: 'stop' },
+    ]);
+    const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+    assert.equal(leakedRunAt(output, vendor), -1, `cut ${inside} characters into the token: a raw run crossed it`);
+  }
+});
+await test('stream fragment invariant holds at every split and every seeded chunking', async () => {
+  // The value is long enough to outlast several cuts; the vault-sized cases that discriminate a
+  // length-only hold-back live in V10 and V11, so this property stays cheap enough to run per gate.
+  const long = `known-${'k'.repeat(1601)}`;
+  tokenize('fixture', long);
   const uuid = '123e4567-e89b-12d3-a456-426614174000';
-  const secrets = [
+  const paired = `\u{1F642}-${'m'.repeat(40)}-\u{1F642}`;
+  tokenize('fixture', paired);
+  const values = [
     github,
     `github_pat_${'A1_'.repeat(7)}Z`,
     aws,
     `sk-${'o'.repeat(24)}`,
     `xoxb-${'s'.repeat(16)}`,
     brave,
-    'eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2lnbmF0dXJl',
-    known,
+    `eyJhbGciOiJIUzI1NiJ9.${'a'.repeat(30)}.${'b'.repeat(43)}`,
+    long,
+    paired,
     `credential: ${uuid}`,
     `€${github}`,
   ];
+  const filler = 'Ω'.repeat(2400);
   const assertMasked = async (raw, chunks, label) => {
     const streamed = await collectStream(turnStep, [...chunks.map((text) => ({ kind: 'text', index: 0, text })), { kind: 'stop' }]);
     const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
-    const secret = raw.endsWith(uuid) ? uuid : raw.startsWith('€') ? github : raw;
-    assert.equal(Buffer.from(output).includes(Buffer.from(secret)), false, label);
+    const hidden = raw.startsWith('credential: ') ? uuid : raw.startsWith('€') ? github : raw;
+    const at = leakedRunAt(output, hidden);
+    assert.equal(at, -1, `${label}: a ${FRAGMENT_SIZE}-character run of a ${hidden.length}-character value leaked at offset ${at}`);
   };
-  for (const raw of secrets) {
+  for (const raw of values) {
+    // Text AFTER the value is what pushes it onto a prefix/tail boundary, so short values carry a
+    // trailing filler too; the long ones would only multiply the run time for the same boundary.
+    const trailing = filler;
     for (let split = 1; split < raw.length; split += 1) {
-      const prefix = `${'p'.repeat(13000)} `;
-      await assertMasked(raw, [`${prefix}${raw.slice(0, split)}`, raw.slice(split)], `${raw.slice(0, 12)} boundary ${split}`);
+      await assertMasked(raw, [`${github} ${filler} ${raw.slice(0, split)}`, `${raw.slice(split)}${trailing}`], `${raw.length}-char value, boundary ${split}`);
     }
   }
   let seed = 0x5eed1234;
   const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed; };
   for (let example = 0; example < 1000; example += 1) {
-    const raw = secrets[random() % secrets.length];
-    const source = `${'q'.repeat(random() % 14000)} ${raw}`;
+    const raw = values[random() % values.length];
+    const source = `${random() % 2 ? `${github} ` : ''}${'Ω'.repeat(random() % 3400)} ${raw}${random() % 2 ? 'Ω'.repeat(random() % 3400) : ''}`;
     const chunks = [];
-    for (let cursor = 0; cursor < source.length;) { const size = 1 + (random() % 997); chunks.push(source.slice(cursor, cursor + size)); cursor += size; }
+    for (let cursor = 0; cursor < source.length;) { const size = 1 + (random() % 331); chunks.push(source.slice(cursor, cursor + size)); cursor += size; }
     await assertMasked(raw, chunks, `seed=0x5eed1234 example=${example}`);
   }
-  const clean = `ordinary € text ${'z'.repeat(14000)}`;
+  const clean = `ordinary € text ${'Ωμ '.repeat(4000)}`;
   const streamed = await collectStream(turnStep, [{ kind: 'text', index: 0, text: clean.slice(0, 7777) }, { kind: 'text', index: 0, text: clean.slice(7777) }, { kind: 'stop' }]);
-  assert.equal(streamed.chunks.map((chunk) => chunk.text ?? '').join(''), clean);
+  assert.equal(streamed.chunks.map((chunk) => chunk.text ?? '').join(''), clean, 'text carrying no secret run was altered');
 });
 await test('AssistantMessage render masking is display-only and forwards only scrubbed props', async () => {
   assert(assistantRender, 'AssistantMessage ui.render guard was not registered');
@@ -1206,39 +1268,94 @@ await test('V4 every supported op read argument placement is prefetched or refus
     assert.match(result.deny, /1Password reference/i);
   }
 });
-await test('reference expansion matrix emits value bytes and refuses unresolved forms', async () => {
-  const value = 'matrix secret bytes';
-  const token = tokenize('fixture', value);
-  setFile('/tmp/matrix-secret', value);
-  const forms = [token, 'secret:file:/tmp/matrix-secret', 'secret:env:MATRIX_SECRET'];
-  const contexts = [
-    (reference) => `printf %s ${reference}`,
-    (reference) => `printf %s '${reference}'`,
-    (reference) => `printf %s "${reference}"`,
-    (reference) => `cat <<EOF\n${reference}\nEOF`,
-    (reference) => `printf %s "$(printf %s ${reference})"`,
-  ];
-  for (const form of forms) {
-    for (const context of contexts) {
-      const command = context(form);
-      let rewritten;
-      await bash($, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
-      const execution = spawnSync('bash', ['-c', rewritten], { encoding: 'buffer', env: { ...process.env, MATRIX_SECRET: value } });
-      assert.equal(execution.status, 0, `${command}: ${execution.stderr?.toString()}`);
-      assert.equal(execution.stdout.toString().replace(/\n$/, ''), value, command);
+await test('reference allow-list: every supported form expands byte-identically in every supported context', async () => {
+  let directory;
+  try { directory = mkdtempSync(join(tmpdir(), 'wt-secret-guard-op-')); } catch (error) {
+    if (['EACCES', 'EROFS', 'ENOENT'].includes(error?.code)) throw new SkipTest(`writable temporary directory unavailable (${error.code})`);
+    throw error;
+  }
+  try {
+    const value = "matrix value with ' quote and € sign";
+    writeFileSync(join(directory, 'op'), `#!/bin/sh\nprintf '%s\\n' "${value}"\n`, { mode: 0o755 });
+    const vaultToken = tokenize('fixture', value);
+    setFile('/tmp/matrix-secret', value);
+    const path = `${directory}:${process.env.PATH}`;
+    const run = (command) => spawnSync('bash', ['-c', command], { encoding: 'buffer', env: { ...process.env, PATH: path, MATRIX_SECRET: value } });
+    const forms = [
+      ['vault token', vaultToken],
+      ['file reference', 'secret:file:/tmp/matrix-secret'],
+      ['environment reference', 'secret:env:MATRIX_SECRET'],
+      ['1Password reference', 'op://Private/matrix/password'],
+    ];
+    const contexts = [
+      ['bare', (reference) => `printf %s ${reference}`],
+      ['single-quoted', (reference) => `printf %s '${reference}'`],
+      ['double-quoted', (reference) => `printf %s "${reference}"`],
+      ['unquoted heredoc', (reference) => `cat <<EOF\n${reference}\nEOF`],
+      ['bare inside a substitution', (reference) => `printf %s "$(printf %s ${reference})"`],
+    ];
+    for (const [form, reference] of forms) {
+      for (const [context, build] of contexts) {
+        const command = build(reference);
+        let rewritten;
+        const result = await bash($, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
+        assert.equal(result?.deny, undefined, `${form} in ${context} was refused: ${result?.deny}`);
+        const execution = run(rewritten);
+        assert.equal(execution.status, 0, `${form} in ${context}: ${execution.stderr?.toString()}`);
+        assert.equal(execution.stdout.toString().replace(/\n$/, ''), value, `${form} in ${context} did not expand byte-identically`);
+      }
     }
-  }
-  const firstToken = tokenize('fixture', 'first matrix value');
-  const secondToken = tokenize('fixture', 'second matrix value');
-  let multiple;
-  await bash($, { tool: 'Bash', command: `printf '%s|%s' ${secondToken} ${firstToken}` }, async (event) => { multiple = event.command; return { text: 'ok' }; });
-  assert.equal(spawnSync('bash', ['-c', multiple], { encoding: 'utf8' }).stdout, 'second matrix value|first matrix value');
-  for (const command of ['echo secret:file:/tmp/missing-matrix-secret', 'echo secret:env:not_valid', 'echo op://broken']) {
-    let executed = false;
-    const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'raw' }; });
-    assert.equal(executed, false, command);
-    assert.match(result.deny, /refused/i, command);
-  }
+    const invocations = [
+      ['bare reference', 'op read op://Private/matrix/password'],
+      ['single-quoted reference', "op read 'op://Private/matrix/password'"],
+      ['double-quoted reference', 'op read "op://Private/matrix/password"'],
+      ['documented flags', "op read --account 'my.1password.com' -n 'op://Private/matrix/password'"],
+      ['inside a substitution', `printf %s "$(op read 'op://Private/matrix/password')"`],
+      ['before a redirection', 'op read op://Private/matrix/password > /dev/null; op read op://Private/matrix/password'],
+    ];
+    for (const [placement, command] of invocations) {
+      let rewritten;
+      const result = await bash($, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
+      assert.equal(result?.deny, undefined, `op read ${placement} was refused: ${result?.deny}`);
+      assert.equal(rewritten, command, `op read ${placement} was rewritten`);
+      const execution = run(rewritten);
+      assert.equal(execution.status, 0, `op read ${placement}: ${execution.stderr?.toString()}`);
+      assert.equal(execution.stdout.toString().replace(/\n$/, ''), value, `op read ${placement} did not produce the value bytes`);
+    }
+    const multiple = tokenize('fixture', 'second matrix value');
+    let combined;
+    await bash($, { tool: 'Bash', command: `printf '%s|%s' ${multiple} ${vaultToken}` }, async (event) => { combined = event.command; return { text: 'ok' }; });
+    assert.equal(run(combined).stdout.toString(), `second matrix value|${value}`);
+    const refusals = [
+      ['op read whose reference is a variable', 'op read $REF > output.tpl'],
+      ['op read piped into op inject', 'op read $REF | op inject'],
+      ['op read of a quoted variable', 'op read "$REF"'],
+      ['op read with an undocumented flag', "op read --zap 'op://Private/matrix/password'"],
+      ['op read with two references', "op read 'op://Private/matrix/password' 'op://Private/matrix/other'"],
+      ['op inject beside a reference', 'op inject -i secret:file:/tmp/matrix-secret'],
+      ['a vault token in a single-quoted heredoc', `cat <<'EOF'\n${vaultToken}\nEOF`],
+      ['a file reference in a double-quoted heredoc', 'cat <<"EOF"\nsecret:file:/tmp/matrix-secret\nEOF'],
+      ['an environment reference in a quoted heredoc', "cat <<'EOF'\nsecret:env:MATRIX_SECRET\nEOF"],
+      ['a 1Password reference in a quoted heredoc', "cat <<'EOF'\nop://Private/matrix/password\nEOF"],
+      ['a reference inside a larger quoted string', "printf '%s' 'prefix op://Private/matrix/password suffix'"],
+      ['a reference inside a parameter expansion', 'printf %s "${REF:-secret:env:MATRIX_SECRET}"'],
+      ['a reference inside backticks', 'printf %s `printf %s secret:env:MATRIX_SECRET`'],
+      ['a reference in an unterminated quote', "printf %s 'op://Private/matrix/password"],
+      ['an undocumented reference form', 'printf %s secret:1p:Private/matrix/password'],
+      ['a redaction token this session never issued', 'printf %s secret:fixture#abcdef'],
+      ['a missing file reference', 'printf %s secret:file:/tmp/matrix-missing'],
+      ['a relative file reference', 'printf %s secret:file:relative/path'],
+      ['a lowercase environment name', 'printf %s secret:env:not_valid'],
+      ['a truncated 1Password path', 'printf %s op://broken'],
+      ['a reference written to a template destination', "printf '%s' 'op://Private/matrix/password' > /tmp/profile.tpl"],
+    ];
+    for (const [shape, command] of refusals) {
+      let executed = false;
+      const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'raw' }; });
+      assert.equal(executed, false, `${shape} executed`);
+      assert.match(result.deny ?? '', /refused/i, shape);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 await test('V5 file reference contents remain byte-identical in supported quote contexts', async () => {
   const value = 'a  b\nc\n';

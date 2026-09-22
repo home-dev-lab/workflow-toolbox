@@ -18,7 +18,24 @@ A classic `SessionStart` command prints one inactive-guard notice when the flag 
 
 1Password reference resolution requires the [1Password CLI](https://developer.1password.com/docs/cli/) and a signed-in account. Configure `opBinary` when the CLI executable is not `op`; configure `opAccount` for a non-default account.
 
-The Bash hook resolves a well-formed `op://vault/item/[section/]field` reference when it is an unquoted shell word or the complete contents of a quoted shell word. It leaves references literal in larger quoted strings, heredoc bodies, `op read`/`op inject`/`op run` commands, and commands writing to a `.tpl` destination. Unsupported or ambiguous text is left unchanged rather than risking a broken command; this includes search patterns and references containing shell metacharacters.
+### Supported secret references
+
+The Bash hook expands a small allow-list, and refuses the command outright — with the reason and this list — for anything else it finds. Supported **forms**:
+
+- `op://vault/item/[section/]field`, a literal 1Password reference;
+- `op read <literal op:// reference>` with the documented flags `--account`, `-o`/`--out-file`, `--encoding`, `--file-mode`, `--format`, `--session`, `--config`, `-n`/`--no-newline`, `-f`/`--force`, `--no-color`, `--cache`, and plain redirections. The invocation is left as written and its reference is prefetched;
+- `secret:env:NAME`, where `NAME` is `UPPER_SNAKE_CASE`;
+- `secret:file:/absolute/path` with an optional `#line`;
+- a redaction token this session issued.
+
+Supported **contexts**, one of which every reference must sit in:
+
+- a bare shell word, including inside `$( )`;
+- the complete contents of a single-quoted word;
+- the complete contents of a double-quoted word;
+- a line of an **unquoted** heredoc body.
+
+Everything else is refused before the command runs, and the refusal names what was not understood: a reference inside a quoted heredoc (`<<'EOF'`, `<<"EOF"`), inside `${...}`, inside backticks or `$'...'`, inside a comment, inside a larger quoted string, or in an unterminated quote; an `op read` whose reference is not a literal (`op read $REF`) or that carries an undocumented flag or a second reference; `op inject` or `op run` beside a reference; a reference written to a `.tpl` template destination; an unknown form such as `secret:1p:`; a redaction token this session never issued; and a file reference that cannot be read. A refusal never executes the command and never partially expands it.
 
 ## Options
 
@@ -36,7 +53,7 @@ This marketplace plugin cannot mask secrets already present in `CLAUDE.md` or ot
 
 Every `prompt.attachment` is scrubbed before forwarding. For SessionStart `additionalContext` from another classic hook, Secret Guard also emits a warning and a value-free journal record. Claude Code 2.1.278 did not propagate a Function Hook rewrite to the model-visible attachment in the measured probe, so model-side propagation remains unproven; it does not claim to purge or mask the source consumer store. Remove replayed secrets at that source.
 
-Signed thinking chunks cannot be rewritten. Visible assistant text is held back by at least 512 characters, or the longest known vault value, masked at character-boundary splits, annotated with the redaction note, and scrubbed again in the final answer. Oversized unresolved blocks are held and masked rather than emitted raw. `ui.render` masks old `AssistantMessage` rows only while drawing them and is not a storage guarantee.
+Signed thinking chunks cannot be rewritten. Visible assistant text is emitted under one invariant: it never carries a raw run of eight or more characters of any value that is known to the vault or detected when that text leaves the guard. The cut between "emit now" and "hold" is pushed out of every secret span rather than chosen by length, so a value can never be released as two halves; at least 512 characters are held back so no detector match is cut in two, and a run that reaches the end of the buffer is held until the stream ends. Text carrying no such run is emitted unchanged, possibly later and across different chunk boundaries. Masking carries the redaction note once per stream and one journal record, and the final answer is scrubbed again. Fragment matching uses the confidential part of a detected value, not the key name around it, so ordinary words such as `password` are not masked; a value shorter than eight characters and a known credential UUID with no credential context are matched whole, as elsewhere. Oversized unresolved blocks are held and masked rather than emitted raw. `ui.render` masks old `AssistantMessage` rows only while drawing them and is not a storage guarantee.
 
 Closing that gap requires host support that lets a user-tier guard participate in `prompt.context`, or deployment of the guard as an administrator-controlled prepend/append-tier plugin. Do not put secrets in instruction files. The guard deliberately does not rewrite instruction source files on disk because doing so would alter project content.
 

@@ -130,7 +130,9 @@ export const register = (on, options) => {
     if (refusal) return refusal;
     const execute = async (originalEvent) => {
       const rewrite = await rewriteReferences(references, originalCommand);
-      if (rewrite.invalidReference) return { deny: 'wt-secret-guard refused Bash execution because a secret reference could not be safely expanded or prefetched.' };
+      if (rewrite.invalidReference) {
+        return { deny: `wt-secret-guard refused Bash execution: the command carries ${rewrite.reason || 'a reference it does not support'}. Supported forms are op://vault/item/field, op read with one literal op:// reference and documented flags, secret:env:NAME, secret:file:/absolute/path[#line], and a redaction token this session issued - as a bare shell word, as the whole contents of a quoted word, or on an unquoted heredoc line.` };
+      }
       for (const reference of rewrite.references) {
         const resolved = await resolveRuntimeReference(references, reference.ref, reference.account);
         if (!resolved.token) return { deny: 'wt-secret-guard refused Bash execution because a 1Password reference could not be prefetched.' };
