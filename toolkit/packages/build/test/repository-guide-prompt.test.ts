@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -29,7 +29,7 @@ describe('repository contributor-guide prompt', () => {
     ] as const
     for (const [name, setup, expectedPaths] of cases) {
       const root = fixture(setup)
-      const lines = expectedPaths(root).map((path) => guideLine(resolve(path)))
+      const lines = expectedPaths(root).map((path) => guideLine(realpathSync(resolve(path))))
       expect(withRepositoryGuide(root, 'Task prompt'), name).toBe(lines.length ? `${lines.join('\n')}\n\nTask prompt` : 'Task prompt')
     }
   })

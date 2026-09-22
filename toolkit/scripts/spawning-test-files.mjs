@@ -151,6 +151,7 @@ export const spawningTestFiles = [
   'packages/build/test/wt-lane-wait.test.ts',
   'packages/build/test/wt-pilot-fidelity.test.ts',
   'packages/build/test/wt-shipped-twin-check-hook.test.ts',
+  'packages/debugger/test/observe-entrypoints.test.ts',
   'packages/debugger/test/stop-hook.integration.test.ts',
   'packages/patterns/test/provenance-gate.test.ts',
   'scripts/test/child-process-coverage.test.ts',

@@ -169,7 +169,7 @@ describe('Claude SDK executor', () => {
     expect(existsSync(outside)).toBe(false)
     const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
     expect(sdkReceipt).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
-    expect(sdkReceipt.prompt).toContain(`${join(f.worktree, 'AGENTS.md')} is the repository's contributor guide; read it before planning or changing code.`)
+    expect(sdkReceipt.prompt).toContain(`${realpathSync(join(f.worktree, 'AGENTS.md'))} is the repository's contributor guide; read it before planning or changing code.`)
     expect(sdkReceipt.plugins[0].path).toContain(join('hooks-modules', 'pilot-guard'))
     if (process.env.WT_EXECUTOR_E2E_OUTPUT === 'true') process.stdout.write(`CLAUDE_EXECUTOR_E2E ${result.stdout.trim()} EXIT=0 report=${readFileSync(report, 'utf8').trim()} outside=${existsSync(outside)}\n`)
   })

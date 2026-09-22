@@ -286,11 +286,11 @@ test('the engine that answered is named in prose and structured results', () => 
 test('state records default outside the repository under XDG or HOME', () => {
   assert.equal(
     resolveStateDirectory({ env: { XDG_STATE_HOME: '/state', HOME: '/home/test' }, cwd: '/repo' }),
-    '/state/deep-search',
+    join('/state', 'deep-search'),
   );
   assert.equal(
     resolveStateDirectory({ env: { HOME: '/home/test' }, cwd: '/repo' }),
-    '/home/test/.local/state/deep-search',
+    join('/home/test', '.local', 'state', 'deep-search'),
   );
 });
 
@@ -355,6 +355,7 @@ test('opencode timeout is owned by Node, kills the child, and records the timeou
       closeSync() {},
       openSync: () => 8,
       processFamilyExists: () => false,
+      platform: 'linux',
       signalProcessFamily: (pid, signal) => signals.push([pid, signal]),
       setTimeout: (callback) => { onTimeout = callback; return 7; },
       spawn: () => child,
@@ -380,6 +381,7 @@ test('opencode timeout escalates to SIGKILL and withholds the marker until the f
       closeSync() {},
       openSync: () => 8,
       processFamilyExists: () => familyStates.shift(),
+      platform: 'linux',
       setTimeout: (callback) => { timers.push(callback); return timers.length; },
       signalProcessFamily: (pid, signal) => signals.push([pid, signal]),
       spawn: () => ({ pid: 44, once() {}, unref() {} }),

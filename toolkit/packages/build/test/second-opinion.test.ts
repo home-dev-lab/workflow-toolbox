@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -238,7 +238,7 @@ describe('second-opinion advisor', () => {
     expect(deps.probeQuota).toHaveBeenCalledOnce()
     expect(query).toHaveBeenCalledOnce()
     expect(queryInput).toMatchObject({
-      prompt: `${join(f.repo, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
+      prompt: `${realpathSync(join(f.repo, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
         model: 'fable',
         cwd: f.repo,

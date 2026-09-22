@@ -748,7 +748,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     const sweepLog = join(f.root, 'sweeps.log')
     const watcher = spawnWatcher(['--project', f.dir, '--poll', '0.1'], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog } })
-    waitForContent(journal, /"event":"stalled"/)
+    waitForContent(journal, /"event":"stalled"/, 60_000)
     writeFileSync(marker, 'fresh')
     waitForContent(sweepLog, new RegExp(`${state.runId}:stalled:cleared`))
     ageTree(f.dir); utimesSync(f.dir, old, old)
@@ -758,7 +758,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.runId))).toEqual(new Set([state.runId]))
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.episodeStartedAt)).size).toBe(2)
     killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
-  })
+  }, 90_000)
   it('enforce mode escalates and journals cleaned only after the orphan is gone', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
@@ -1082,6 +1082,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; printf "# Report\\n" > "$PWD/.lane/report.md"')
     const known = run(f, ['--variant', 'high']); expect(known.status).toBe(0)
     const log = join(f.dir, '.lane', 'run.log'); waitFor(log)
+    waitForContent(currentStateFile(f.dir), /"state": "exited"/)
     expect(known.stderr).toBe('')
     expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nhigh\n/)
 
@@ -1093,8 +1094,8 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(unknown.stderr).toContain('--allow-unknown-variant')
 
     const forced = run(f, ['--variant', 'future-effort', '--allow-unknown-variant'])
-    expect(forced.status).toBe(0)
-    waitFor(log)
+    expect(forced.status, forced.stderr).toBe(0)
+    waitForContent(currentStateFile(f.dir), /"state": "exited"/)
     expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nfuture-effort\n/)
     expect(readFileSync(log, 'utf8')).toContain('variant=future-effort origin=override forced=true')
     expect(readFileSync(join(f.dir, '.lane', 'report.md'), 'utf8')).toContain('variant=future-effort origin=override forced=true')

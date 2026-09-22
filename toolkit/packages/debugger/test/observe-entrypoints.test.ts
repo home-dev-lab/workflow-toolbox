@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 import { main, scanRunsForPrune } from '../src/observe-cli.js'
 import { readBootId, readProcStartStamp, pidAlive, pidIdentityMatches, pidState } from '../src/observe-identity.js'
@@ -258,25 +259,20 @@ describe('wt-observe entry dispatch', () => {
     const app = join(observeRoot, 'apps', 'observe-ui')
     const source = join(root, 'source')
     const sourceTwo = join(root, 'source-two')
-    const fakeBin = join(root, 'bin')
     mkdirSync(join(app, 'server'), { recursive: true })
     mkdirSync(join(app, 'dist', 'assets'), { recursive: true })
     mkdirSync(source)
     mkdirSync(sourceTwo)
-    mkdirSync(fakeBin)
     writeFileSync(join(app, 'package.json'), JSON.stringify({ name: '@workflow-toolbox/observe-ui' }))
     writeFileSync(join(app, 'server', 'dev-api.ts'), '// characterization fixture')
     writeFileSync(join(app, 'dist', 'assets', 'index-characterized.js'), '// fixture')
-    const git = join(fakeBin, process.platform === 'win32' ? 'git.cmd' : 'git')
-    const writeGit = (branch: string, revision: string) => {
-      writeFileSync(git, process.platform === 'win32'
-        ? `@echo off\r\necho %* | findstr /C:"branch --show-current" >nul && (set /p="${branch}"<nul & exit /b 0)\r\necho %* | findstr /C:"rev-parse --short HEAD" >nul && (set /p="${revision}"<nul & exit /b 0)\r\n`
-        : `#!/bin/sh\ncase "$*" in\n  *"branch --show-current"*) printf ${branch} ;;\n  *"rev-parse --short HEAD"*) printf ${revision} ;;\nesac\n`)
-      if (process.platform !== 'win32') chmodSync(git, 0o755)
-    }
-    writeGit('main', 'abc123')
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: observeRoot, stdio: 'ignore' })
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.email', 'test@example.com')
+    git('config', 'user.name', 'Test')
+    git('add', '.')
+    git('commit', '-q', '-m', 'fixture')
     process.env['DWT_OBSERVE_ROOT'] = observeRoot
-    process.env['PATH'] = `${fakeBin}${delimiter}${originalEnv['PATH'] ?? ''}`
 
     let launchEnabled = true
     let multiSource = false
@@ -322,7 +318,7 @@ describe('wt-observe entry dispatch', () => {
     expect(await main(['start', '--source', source, '--enable-launch'])).toBe(0)
     multiSource = true
     expect(await main(['start', '--source', source, '--source', sourceTwo, '--enable-launch'])).toBe(0)
-    writeGit('feature', 'def456')
+    git('switch', '-q', '-c', 'feature')
     expect(await main(['start', '--source', source])).toBe(1)
     expect(await main(['start', '--source', source, '--allow-branch'])).toBe(0)
     expect(await main(['start', '--source', join(root, 'absent'), '--allow-branch'])).toBe(1)
