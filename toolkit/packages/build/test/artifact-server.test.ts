@@ -1146,9 +1146,12 @@ describe('owner decision 2: discovery and one instance', () => {
       const monitor = spawnEnsure(project, baseEnv(stateHome, {
         WT_ARTIFACT_SERVER_PORT: String(address.port), WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1',
       }))
+      const closed = new Promise<void>((resolve) => monitor.once('close', () => resolve()))
       const output = childOutput(monitor)
       await waitFor(() => /no available port/i.test(output.stdout()) ? true : null, 3_000)
       expect(output.stdout()).not.toMatch(/startup claim holder did not finish/i)
+      await closed
+      children.delete(monitor)
     } finally {
       await closeServer(foreign)
     }

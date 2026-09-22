@@ -146,6 +146,16 @@ function waitForVerdict(status: string, expected: string, ms = 15_000) {
     `${label}.record.cwd=${JSON.stringify(recorded.cwd)}; ${label}.actual.cwd=${JSON.stringify(actual?.cwd ?? null)}`
   throw new Error(`timed out waiting for ${expected} process verdict; received ${verdict}; ${fields('worker', { argv: state.workerArgv, startTime: state.workerStartTime, cwd: state.workerCwd ?? null }, workerActual)}; ${fields('child', { argv: state.childArgv, startTime: state.childStartTime, cwd: state.childCwd ?? null }, childActual)}; record=${JSON.stringify(state)}`)
 }
+function waitForLaunchable(status: string, ms = 15_000) {
+  const until = Date.now() + ms
+  let verdict = 'unknown'
+  while (Date.now() < until) {
+    verdict = classifyLane(JSON.parse(readFileSync(status, 'utf8')), { platform: process.platform }).status
+    if (['terminal', 'gone'].includes(verdict)) return
+    spawnSync('sleep', ['0.05'])
+  }
+  throw new Error(`timed out waiting for a launchable terminal lane; received ${verdict}`)
+}
 function killIdentity(expected: { pid: number, argv: string[], startTime?: number, cwd?: string | null } | null, signal: NodeJS.Signals) {
   if (!expected) throw new Error('expected test process identity is gone')
   const actual = inspectProcess(expected.pid)
@@ -1082,7 +1092,9 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; printf "# Report\\n" > "$PWD/.lane/report.md"')
     const known = run(f, ['--variant', 'high']); expect(known.status).toBe(0)
     const log = join(f.dir, '.lane', 'run.log'); waitFor(log)
-    waitForContent(currentStateFile(f.dir), /"state": "exited"/)
+    const knownStatus = currentStateFile(f.dir)
+    waitForContent(knownStatus, /"state": "exited"/)
+    waitForLaunchable(knownStatus)
     expect(known.stderr).toBe('')
     expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nhigh\n/)
 

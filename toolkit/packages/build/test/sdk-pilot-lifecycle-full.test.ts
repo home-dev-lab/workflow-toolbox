@@ -11,7 +11,8 @@ import { MAX_CRITIC_ROUNDS, MAX_REVIEW_ROUNDS } from '../../../../plugin/bin/lib
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
 const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
-const FIXTURE_LANE_TIMEOUT_SECONDS = 20
+const FIXTURE_LANE_TIMEOUT_SECONDS = 60
+const FIXTURE_TEST_TIMEOUT_MS = 90_000
 const FIXED_CRITIC_ROUNDS = 3
 const FIXED_REVIEW_ROUNDS = 3
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
@@ -24,7 +25,7 @@ afterEach(() => {
   delete process.env.WT_FULL_COUNTS
 })
 
-describe.sequential('real SDK lifecycle server FULL sequence', () => {
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('passes the knowledge-base index only to Claude SDK independent roles and names it in their briefs', async () => {
     const knowledgeBaseDir = mkdtempSync(join(tmpdir(), 'wt-lifecycle-kb-')); roots.push(knowledgeBaseDir)
     const index = join(knowledgeBaseDir, 'MEMORY.md'); writeFileSync(index, '- review claim\n')

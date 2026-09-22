@@ -4,8 +4,10 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 const cli = new URL('../bin/deep.mjs', import.meta.url);
+const cliPath = fileURLToPath(cli);
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'deep-cli-test-'));
@@ -16,7 +18,7 @@ async function fixture(t) {
   return {
     directory,
     env,
-    run: (...args) => spawnSync(process.execPath, [cli.pathname, ...args], { env, encoding: 'utf8' }),
+    run: (...args) => spawnSync(process.execPath, [cliPath, ...args], { env, encoding: 'utf8' }),
     write: async (record) => writeFile(
       join(directory, `${record.handle}.json`),
       JSON.stringify(record),
@@ -86,7 +88,7 @@ test('CLI result emits the requested consumer shape', async (t) => {
 test('CLI list prints persisted handles without loading repository data', async (t) => {
   const f = await fixture(t);
   await f.write({ handle: 'deep-one', status: 'done', engine: 'exa', createdAt: 10, updatedAt: 25 });
-  assert.equal(execFileSync(process.execPath, [cli.pathname, 'list'], { env: f.env, encoding: 'utf8' }), 'deep-one done exa\n');
+  assert.equal(execFileSync(process.execPath, [cliPath, 'list'], { env: f.env, encoding: 'utf8' }), 'deep-one done exa\n');
 });
 
 test('CLI reconciles an opencode EXIT marker before returning a result', async (t) => {
