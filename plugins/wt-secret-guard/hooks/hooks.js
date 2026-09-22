@@ -133,12 +133,15 @@ export const register = (on, options) => {
       if (rewrite.invalidReference) {
         return { deny: `wt-secret-guard refused Bash execution: the command carries ${rewrite.reason || 'a reference it does not support'}. Supported forms are op://vault/item/field, op read with one literal op:// reference and documented flags, secret:env:NAME, secret:file:/absolute/path[#line], and a redaction token this session issued - as a bare shell word or as the whole contents of a quoted word. A reference inside a heredoc body is left as text.` };
       }
+      // Every value the guard puts into this command is masked in its output, whatever its kind.
+      const substituted = new Set(rewrite.substituted);
       for (const reference of rewrite.references) {
         const resolved = await resolveRuntimeReference(references, reference.ref, reference.account);
         if (!resolved.token) return { deny: 'wt-secret-guard refused Bash execution because a 1Password reference could not be prefetched.' };
+        substituted.add(resolved.token);
       }
       const response = await next(rewrite.command === originalCommand ? originalEvent : { ...originalEvent, command: rewrite.command });
-      const cleaned = scrub(response, rewrite.command);
+      const cleaned = scrub(response, rewrite.command, true, substituted);
       await publish(audit);
       if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);
       return withNotes(cleaned.value, rewrite.count, cleaned.entropy, cleaned.changed);

@@ -15,10 +15,12 @@
 //   not ours  a heredoc body, quoted or not: a reference there stays literal text, is not prefetched
 //             and does not refuse the command (injection into files is `op inject`'s job)
 //   restriction  a command using one of THESE forms may contain NO construct this module does not
-//             decode ($'...', $"...", backticks, NUL) and NO command name it cannot read literally.
-//   out of scope  anything else that might run `op` - a computed or aliased name, eval, a wrapper's
-//             argument list. Not refused, not prefetched: its output is protected only by the
-//             detectors and the values already in the vault.
+//             decode ($'...', $"...", backticks, NUL), NO command name it cannot read literally in any
+//             position where bash reads one (see shellWords), NO syntax in which it cannot place
+//             those positions, and NO heredoc whose end it cannot place.
+//   out of scope  anything else that might run `op` - a computed or aliased name, eval, an external
+//             wrapper's argument list. Not refused, not prefetched: its output is protected only by
+//             the detectors and the values already in the vault.
 //
 // Measured over four review rounds: a decoder here lost to each new bash spelling of `op read`, and
 // a search for hidden invocations both missed some and refused ordinary work. This module therefore
@@ -47,7 +49,7 @@ const LOCALE = 'locale quoting ($"...")';
 const BACKTICKS = 'backtick command substitution';
 const NUL = 'a NUL byte';
 // Contexts whose text is never a shell word: skipped when reading words, never expanded into.
-const NOT_WORDS = new Set(['comment', 'heredoc', 'heredoc-quoted', 'heredoc-unsupported']);
+const NOT_WORDS = new Set(['comment', 'heredoc', 'heredoc-quoted', 'heredoc-unsupported', 'heredoc-end']);
 // Contexts where an `op` invocation written as raw text is refused rather than validated. A heredoc
 // body is not among them: it is text the command writes, never a context this guard acts on.
 const SHIELDED = new Set(['comment', 'unsupported']);
@@ -56,19 +58,40 @@ const SHIELDED = new Set(['comment', 'unsupported']);
 // refuse the command: the guard cannot tell "inject this secret into a file" from "write a document
 // that mentions a reference", and the first is exactly the path that puts a secret on disk. Injection
 // into files belongs to 1Password's own `op inject`.
-const HEREDOC_BODY = new Set(['heredoc', 'heredoc-quoted', 'heredoc-unsupported']);
-const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', 'time', '{']);
+const HEREDOC_BODY = new Set(['heredoc', 'heredoc-quoted', 'heredoc-unsupported', 'heredoc-end']);
+// Reserved words after which bash reads the next word as a command name. Only an UNQUOTED spelling
+// is reserved (measured: `time "-p" x` runs a command named -p).
+const LEADS_TO_COMMAND = new Set(['!', '{', 'then', 'do', 'else', 'elif', 'if', 'while', 'until']);
+const ENDS_COMPOUND = new Set(['fi', 'done', '}']);
+const COMPOUND_START = new Set(['{', 'if', 'while', 'until', 'for', 'select', 'case', '[[']);
+// Bash builtins whose argument is the command they run. External wrappers (sudo, env, timeout,
+// xargs...) are an open-ended list the guard does not chase - the README states it.
+const BUILTIN_WRAPPERS = new Set(['exec', 'command', 'builtin']);
 
 const quoteForSingleQuotes = (value) => value.replace(/'/g, "'\"'\"'");
 
+// Reads one heredoc body the way bash does, measured on bash 5.2.21:
+// - in an UNQUOTED heredoc bash removes every backslash-newline BEFORE it compares a line with the
+//   delimiter: `text\` then `EOF` reads as `textEOF`, which does not end the body, and `EO\` then `F`
+//   reads as `EOF`, which does. An odd run of trailing backslashes continues the line; an even one is
+//   escaped backslashes and does not;
+// - a quoted delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) joins nothing;
+// - `<<-` strips leading tabs from the LOGICAL line: `\tEO\` then `\tF` reads `EO\tF`, no end.
 function consumeHeredoc(command, context, escapes, constructs, doc, start) {
   let lineStart = start;
   while (lineStart <= command.length) {
-    const lineEnd = command.indexOf('\n', lineStart);
+    let logical = ''; let cursor = lineStart; let lineEnd;
+    for (;;) {
+      lineEnd = command.indexOf('\n', cursor);
+      const physical = command.slice(cursor, lineEnd < 0 ? command.length : lineEnd);
+      const trailing = physical.length - physical.replace(/\\+$/, '').length;
+      if (!doc.quoted && lineEnd >= 0 && trailing % 2 === 1) { logical += physical.slice(0, -1); cursor = lineEnd + 1; continue; }
+      logical += physical;
+      break;
+    }
     const end = lineEnd < 0 ? command.length : lineEnd;
-    const line = command.slice(lineStart, end);
-    if ((doc.strip ? line.replace(/^\t+/, '') : line) === doc.delimiter) {
-      for (let at = lineStart; at < end; at += 1) context[at] = 'bare';
+    if ((doc.strip ? logical.replace(/^\t+/, '') : logical) === doc.delimiter) {
+      for (let at = lineStart; at < end; at += 1) context[at] = 'heredoc-end';
       if (lineEnd >= 0) context[lineEnd] = 'bare';
       return lineEnd < 0 ? command.length : lineEnd + 1;
     }
@@ -107,6 +130,8 @@ export function lex(command) {
   const stack = [{ type: 'top' }];
   const pending = [];
   let complete = true;
+  // A heredoc whose end the guard cannot place with certainty: a command using our forms refuses.
+  let uncertain = false;
   let index = 0;
   const close = (frame, at, kind) => {
     for (let k = frame.start + 1; k < at; k += 1) if (context[k] === kind && bounds[k] === null) bounds[k] = [frame.start, at];
@@ -142,18 +167,36 @@ export function lex(command) {
       if (character === '\\') { context[index] = 'double'; escapes.add(index); if (index + 1 < size) context[index + 1] = 'double'; index += 2; continue; }
       if (character === '"') { close(frame, index, 'double'); context[index] = 'quote'; stack.pop(); index += 1; continue; }
       if (character === '$' && command[index + 1] === '(') { context[index] = 'double'; context[index + 1] = 'double'; stack.push({ type: 'subst' }); index += 2; continue; }
-      if (character === '$' && command[index + 1] === '{') { context[index] = 'double'; stack.push({ type: 'param', depth: 0 }); index += 1; continue; }
+      // The frame opens AFTER `${`: counting its own brace left every `${NAME}` open to the end of the
+      // command, so anything written after it read as unsupported and the command as unfinished.
+      if (character === '$' && command[index + 1] === '{') { context[index] = 'double'; context[index + 1] = 'unsupported'; stack.push({ type: 'param', depth: 0 }); index += 2; continue; }
       if (character === '`') { constructs.add(BACKTICKS); stack.push({ type: 'backtick' }); context[index] = 'unsupported'; index += 1; continue; }
       context[index] = 'double'; index += 1; continue;
     }
     if (!base) { context[index] = 'unsupported'; index += 1; continue; }
+    // A case pattern's `)` closes the PATTERN, not the enclosing `$(`: without this, the rest of
+    // `"$(case x in x) ...;; esac)"` read as the outer double-quoted string and every quoting context
+    // after it was wrong. Tracked per nesting frame: `case` ... `in` opens pattern mode, a pattern's
+    // `)` opens the body, `;;` `;&` `;;&` reopen pattern mode, `esac` closes the case.
+    if (/[a-z]/.test(character) && (index === 0 || SEPARATOR.test(command[index - 1]))) {
+      const word = /^[a-z]+(?=[\s;&|()<>]|$)/.exec(command.slice(index, index + 8))?.[0];
+      let back = index - 1;
+      while (back >= 0 && (command[back] === ' ' || command[back] === '\t')) back -= 1;
+      frame.cases ??= [];
+      const leads = back < 0 || /[;&|()\n{!]/.test(command[back]) || /(?:^|[\s;&|(])(?:then|do|else|elif|time)$/.test(command.slice(Math.max(0, back - 5), back + 1));
+      if (word === 'case' && leads) frame.caseWait = (frame.caseWait ?? 0) + 1;
+      else if (word === 'in' && frame.caseWait > 0) { frame.caseWait -= 1; frame.cases.push('pattern'); }
+      else if (word === 'esac' && frame.cases.length) frame.cases.pop();
+    }
+    if (character === ';' && frame.cases?.at(-1) === 'body' && (command[index + 1] === ';' || command[index + 1] === '&')) frame.cases[frame.cases.length - 1] = 'pattern';
+    if (character === ')' && frame.cases?.at(-1) === 'pattern') { frame.cases[frame.cases.length - 1] = 'body'; context[index] = 'bare'; index += 1; continue; }
     if (character === '\\') { context[index] = 'bare'; escapes.add(index); if (index + 1 < size) context[index + 1] = 'bare'; index += 2; continue; }
     if (character === "'") { context[index] = 'quote'; stack.push({ type: 'single', start: index }); index += 1; continue; }
     if (character === '"') { context[index] = 'quote'; stack.push({ type: 'double', start: index }); index += 1; continue; }
     if (character === '$' && command[index + 1] === "'") { constructs.add(ANSI_C); context[index] = 'unsupported'; context[index + 1] = 'unsupported'; stack.push({ type: 'ansi' }); index += 2; continue; }
     if (character === '$' && command[index + 1] === '"') { constructs.add(LOCALE); context[index] = 'bare'; context[index + 1] = 'quote'; stack.push({ type: 'double', start: index + 1 }); index += 2; continue; }
     if (character === '$' && command[index + 1] === '(') { context[index] = 'bare'; context[index + 1] = 'bare'; stack.push({ type: 'subst' }); index += 2; continue; }
-    if (character === '$' && command[index + 1] === '{') { context[index] = 'bare'; stack.push({ type: 'param', depth: 0 }); index += 1; continue; }
+    if (character === '$' && command[index + 1] === '{') { context[index] = 'bare'; context[index + 1] = 'unsupported'; stack.push({ type: 'param', depth: 0 }); index += 2; continue; }
     if (character === '`') { constructs.add(BACKTICKS); context[index] = 'unsupported'; stack.push({ type: 'backtick' }); index += 1; continue; }
     if (character === '(') { context[index] = 'bare'; stack.push({ type: 'paren' }); index += 1; continue; }
     if (character === ')') { context[index] = 'bare'; if (frame.type === 'subst' || frame.type === 'paren') stack.pop(); index += 1; continue; }
@@ -167,6 +210,9 @@ export function lex(command) {
       let delimiter = ''; let quoted = false;
       while (at < size && !SEPARATOR.test(command[at])) {
         const mark = command[at];
+        // bash decodes `$'...'` and `$"..."` in a delimiter word (measured: `<<$'EOF'` ends at `EOF`)
+        // and never expands `$X`. The guard does not own that decoding, so it cannot place the end.
+        if (mark === '$' || mark === '`') uncertain = true;
         if (mark === "'" || mark === '"') {
           quoted = true;
           const closer = command.indexOf(mark, at + 1);
@@ -198,14 +244,14 @@ export function lex(command) {
   while (stack.length > 1 && stack.at(-1).type === 'comment') stack.pop();
   if (stack.length > 1 || pending.length) complete = false;
   if (command.includes('\0')) constructs.add(NUL);
-  return { context, bounds, escapes, constructs, complete };
+  return { context, bounds, escapes, constructs, complete, uncertain };
 }
 
 // Reads one shell word. `literal` is true only when the word's text is exactly what the shell will
 // use: no expansion, no substitution, and no construct this guard does not decode. The guard never
 // guesses what a non-literal word becomes; in a reference-bearing command it refuses it instead.
 function readWord(command, context, from) {
-  let text = ''; let literal = true; let index = from; let braceOpen = false;
+  let text = ''; let literal = true; let index = from; let braceOpen = false; let bracketOpen = false;
   while (index < command.length) {
     const kind = context[index];
     const character = command[index];
@@ -218,10 +264,13 @@ function readWord(command, context, from) {
       if (character === '\\') { if (command[index + 1] !== '\n') text += command[index + 1] ?? ''; index += 2; continue; }
       // Globs, brace expansion and a leading tilde are expansions bash performs on unquoted text:
       // `/usr/bin/o?` and `{op,}` both become `op`.
-      if (character === '*' || character === '?' || character === '[') literal = false;
+      // A `[` is a bracket glob only when a `]` closes it: `[` and `[[` alone are literal words.
+      if (character === '*' || character === '?') literal = false;
       if (character === '~' && index === from) literal = false;
       if (character === '{') braceOpen = true;
       if (character === '}' && braceOpen) literal = false;
+      if (character === '[') bracketOpen = true;
+      if (character === ']' && bracketOpen) literal = false;
       text += character; index += 1; continue;
     }
     if (kind === 'quote') { index += 1; continue; }
@@ -323,36 +372,202 @@ function templateDestination(command) {
 // computes is marked non-literal by `readWord` and never decoded here. A command substitution is its
 // own segment, and when it stands where a command name goes, a non-literal placeholder takes that
 // position - `$(printf op) read` runs whatever the substitution prints.
-function shellWords(command, context) {
-  const words = [];
-  const nesting = [];
-  let segment = 0; let next = 0; let atStart = true; let redirect = false;
-  const boundary = () => { next += 1; segment = next; atStart = true; redirect = false; };
+//
+// Two passes. `shellTokens` cuts the command into words, operators, redirections and the openings of
+// nested command lists; `shellWords` walks them with the grammar positions where bash reads a command
+// name: the start of every list (after `;` `&` `&&` `||` `|` `|&`, a newline, `(`, `{`, `$(`, `<(`),
+// after `!` `time [-p] [--]` `coproc` `if` `then` `else` `elif` `while` `until` `do`, after leading
+// assignments and redirections (`2>/dev/null`, `{fd}>`, `&>`), a case body (after a pattern's `)`
+// and after `;;` `;&` `;;&`), a function body (`f() {`, `function f {`), and the argument of the
+// builtins exec/command/builtin. Syntax it cannot place makes the result `unsure`, and a command that
+// uses our forms is then refused rather than guessed at.
+function shellTokens(command, context, escapes) {
+  const tokens = [];
   let index = 0;
+  const push = (type, end, extra = {}) => { tokens.push({ type, start: index, end, ...extra }); index = end; };
   while (index < command.length) {
     const kind = context[index];
     const character = command[index];
     if (NOT_WORDS.has(kind)) { index += 1; continue; }
     if (character === '\\' && command[index + 1] === '\n') { index += 2; continue; }
-    if (character === '$' && command[index + 1] === '(') {
-      if (atStart && !redirect) { words.push({ text: '$(', literal: false, start: index, end: index + 2, segment, command: true }); atStart = false; }
-      nesting.push(segment); boundary(); index += 2; continue;
+    // `$(` opens a nested list, at the start of a word or glued to one (`x=$(...)`: readWord keeps the
+    // `$` in the word it was reading and stops at the `(`).
+    const opens = (kind === 'bare' || kind === 'double') && character === '$' && command[index + 1] === '(';
+    const glued = kind === 'bare' && character === '(' && command[index - 1] === '$' && context[index - 1] === 'bare' && !escapes.has(index - 2);
+    if (opens || glued) {
+      const after = opens ? index + 2 : index + 1;
+      push('open', after, { arith: command[after] === '(' });
+      continue;
     }
-    if (kind === 'bare' && character === '(') { nesting.push(segment); boundary(); index += 1; continue; }
-    if (kind === 'bare' && character === ')') { segment = nesting.length ? nesting.pop() : segment; atStart = false; redirect = false; index += 1; continue; }
-    if (kind === 'bare' && /[;|&\n]/.test(character)) { boundary(); index += 1; continue; }
-    if (kind === 'bare' && (character === '<' || character === '>')) { redirect = true; index += 1; continue; }
-    if (kind === 'bare' && SEPARATOR.test(character)) { index += 1; continue; }
+    if (kind === 'bare') {
+      if (character === ' ' || character === '\t') { index += 1; continue; }
+      if (character === '\n') { push('op', index + 1, { op: '\n' }); continue; }
+      if (character === ';') { const op = /^;;&|^;;|^;&|^;/.exec(command.slice(index, index + 3))[0]; push('op', index + op.length, { op }); continue; }
+      if (character === '|') { const op = /^\|\||^\|&|^\|/.exec(command.slice(index, index + 2))[0]; push('op', index + op.length, { op }); continue; }
+      if (character === '&' && command[index + 1] !== '>') { const op = command[index + 1] === '&' ? '&&' : '&'; push('op', index + op.length, { op }); continue; }
+      if ((character === '<' || character === '>') && command[index + 1] === '(') { push('open', index + 2, { arith: false }); continue; }
+      if (character === '<' || character === '>' || character === '&') {
+        const op = /^(?:&>>?|<<<|<<-?|<>|<&|>&|>>|>\||<|>)/.exec(command.slice(index, index + 3))[0];
+        push('redirect', index + op.length, { op }); continue;
+      }
+      if (character === '(' || character === ')') { push(character, index + 1); continue; }
+    }
     const word = readWord(command, context, index);
     if (word.end <= index) { index += 1; continue; }
+    const raw = command.slice(word.start, word.end);
+    // A file-descriptor number or `{name}` written against a redirection belongs to that redirection.
+    if (context[word.end] === 'bare' && /[<>]/.test(command[word.end] ?? '') && /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/.test(raw)) { index = word.end; continue; }
+    tokens.push({ type: 'word', ...word, raw });
     index = word.end;
-    if (redirect) { redirect = false; words.push({ ...word, segment, command: false }); continue; }
-    const assignment = atStart && context[word.start] === 'bare' && /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(command.slice(word.start, word.end));
-    const isCommand = atStart && !assignment;
-    words.push({ ...word, segment, command: isCommand });
-    if (isCommand) atStart = word.literal && KEYWORDS.has(word.text);
   }
-  return words;
+  return tokens;
+}
+
+function shellWords(command, lexed) {
+  const tokens = shellTokens(command, lexed.context, lexed.escapes);
+  const words = [];
+  let unsure = false;
+  let segments = 0;
+  const fresh = (state) => ({ state, segment: (segments += 1), cases: 0, target: false, lastEnd: -1, lastRole: null, wrapper: '', skipValue: false });
+  const stack = [];
+  let frame = fresh('command');
+  const boundary = (state) => { frame.state = state; frame.segment = (segments += 1); frame.target = false; frame.lastRole = null; };
+  const record = (token, role) => {
+    words.push({ text: token.text, literal: token.literal, start: token.start, end: token.end, segment: frame.segment, command: role === 'command', wrapped: role === 'wrapped' });
+    frame.lastEnd = token.end; frame.lastRole = role;
+  };
+  // The role of a word in the current frame, and the state it leaves behind.
+  const place = (token, next) => {
+    if (frame.target) { frame.target = false; return 'target'; }
+    const bare = token.literal && token.raw === token.text ? token.text : null;
+    switch (frame.state) {
+      case 'args': case 'arith': return 'arg';
+      case 'dbracket': if (bare === ']]') frame.state = 'args'; return 'arg';
+      case 'for': frame.state = 'for-args'; return 'arg';
+      case 'for-args': if (bare === 'do') frame.state = 'command'; return 'arg';
+      case 'case-subject': frame.state = 'case-in'; return 'arg';
+      case 'case-in': if (bare !== 'in') unsure = true; frame.state = 'case-pattern-start'; return 'arg';
+      case 'case-pattern-start':
+        if (bare === 'esac') { frame.cases -= 1; frame.state = 'args'; } else frame.state = 'case-pattern';
+        return 'arg';
+      case 'case-pattern': unsure = true; return 'arg';
+      case 'time':
+        if (bare === '-p' || bare === '--') return 'arg';
+        frame.state = 'command'; break;
+      case 'wrapper':
+        if (frame.skipValue) { frame.skipValue = false; return 'arg'; }
+        if (token.literal && /^-./.test(token.text)) {
+          // `command -v NAME` / `-V` only print how NAME resolves; they run nothing.
+          if (frame.wrapper === 'command' && /^-[a-zA-Z]*[vV]/.test(token.text)) { frame.state = 'args'; return 'arg'; }
+          if (frame.wrapper === 'exec' && token.text === '-a') frame.skipValue = true;
+          return 'arg';
+        }
+        if (token.literal && BUILTIN_WRAPPERS.has(token.text)) { frame.wrapper = token.text; return 'wrapped'; }
+        frame.state = 'args';
+        return 'wrapped';
+      case 'coproc': {
+        const compound = next && (next.type === '(' || (next.type === 'word' && next.literal && next.raw === next.text && COMPOUND_START.has(next.text)));
+        frame.state = 'command';
+        if (compound && token.literal) return 'arg';
+        break;
+      }
+      default: break;
+    }
+    // Where bash reads a command name. Leading assignments keep that position.
+    if (lexed.context[token.start] === 'bare' && /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(token.raw)) return 'assignment';
+    if (bare !== null && LEADS_TO_COMMAND.has(bare)) frame.state = 'command';
+    else if (token.literal && token.text === 'time') frame.state = 'time';
+    else if (bare === 'coproc') frame.state = 'coproc';
+    else if (bare === 'case') { frame.state = 'case-subject'; frame.cases += 1; }
+    else if (bare === 'for' || bare === 'select') frame.state = 'for';
+    else if (bare === 'function') frame.state = 'func-name';
+    else if (bare === '[[') frame.state = 'dbracket';
+    else if (bare === 'esac') { if (frame.cases > 0) frame.cases -= 1; else unsure = true; frame.state = 'args'; }
+    else if (bare !== null && ENDS_COMPOUND.has(bare)) frame.state = 'args';
+    else if (token.literal && BUILTIN_WRAPPERS.has(token.text)) { frame.state = 'wrapper'; frame.wrapper = token.text; frame.skipValue = false; }
+    else frame.state = 'args';
+    return 'command';
+  };
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const following = tokens[index + 1];
+    if (token.type === 'redirect') {
+      if (frame.state !== 'dbracket' && frame.state !== 'arith') frame.target = true;
+      continue;
+    }
+    if (token.type === 'op') {
+      const { op } = token;
+      if (frame.state === 'arith') continue;
+      if (frame.state === 'dbracket') { if (op !== '&&' && op !== '||') unsure = true; continue; }
+      if (op === '|' && frame.state === 'case-pattern') { frame.state = 'case-pattern-start'; continue; }
+      if (op === '\n' && ['case-subject', 'case-in', 'case-pattern-start'].includes(frame.state)) continue;
+      if (op === ';;' || op === ';&' || op === ';;&') { if (!frame.cases) unsure = true; boundary('case-pattern-start'); continue; }
+      if (frame.state.startsWith('case') || frame.state === 'func-name') unsure = true;
+      boundary('command');
+      continue;
+    }
+    if (token.type === '(') {
+      if (frame.state === 'arith') { stack.push(frame); frame = { ...fresh('arith'), segment: frame.segment }; continue; }
+      if (frame.state === 'dbracket' || frame.state === 'case-pattern-start') continue;
+      // NAME ( ) : a function definition - its body is a command position.
+      if (following?.type === ')' && frame.lastRole === 'command' && tokens[index - 1]?.type === 'word' && tokens[index - 1].end === frame.lastEnd && (frame.state === 'args' || frame.state === 'wrapper')) {
+        index += 1; boundary('command'); continue;
+      }
+      const arithmetic = following?.type === '(' && following.start === token.end;
+      // `name=( ... )` is an array literal: its words are values, never commands.
+      if (frame.lastRole === 'assignment' && token.start === frame.lastEnd) { stack.push(frame); frame = fresh('args'); continue; }
+      const subshellHere = frame.state === 'command' || frame.state === 'time' || frame.state === 'coproc';
+      if (!arithmetic && !subshellHere) unsure = true;
+      if (frame.state === 'for') frame.state = 'for-args';
+      else if (subshellHere) frame.state = 'args';
+      stack.push(frame);
+      frame = fresh(arithmetic ? 'arith' : 'command');
+      continue;
+    }
+    if (token.type === ')') {
+      if (frame.state === 'dbracket') continue;
+      if (frame.state === 'case-pattern') { boundary('command'); continue; }
+      if (frame.state.startsWith('case') || !stack.length) { unsure = true; continue; }
+      if (frame.cases) unsure = true;
+      frame = stack.pop();
+      frame.lastEnd = token.end;
+      continue;
+    }
+    if (token.type === 'open') {
+      // Glued to the word before it (`op$(x)`, `x=$(...)`): the rest of THAT word, in its role.
+      if (frame.lastRole && token.start === frame.lastEnd) {
+        if (frame.lastRole === 'command' || frame.lastRole === 'wrapped') {
+          words.push({ text: '$(', literal: false, start: token.start, end: token.end, segment: frame.segment, command: frame.lastRole === 'command', wrapped: frame.lastRole === 'wrapped' });
+        }
+      } else if (frame.state === 'func-name') {
+        unsure = true;
+      } else {
+        // The substitution stands where a word goes: a command name there runs whatever it prints.
+        const placeholder = { text: '$(', raw: '$(', literal: false, start: token.start, end: token.end };
+        record(placeholder, place(placeholder, following));
+      }
+      stack.push(frame);
+      frame = fresh(token.arith ? 'arith' : 'command');
+      continue;
+    }
+    // A word.
+    if (frame.lastRole && token.start === frame.lastEnd) {
+      // The rest of a word a substitution interrupted (`"$(x)y"`): same word, same role.
+      const role = frame.lastRole;
+      words.push({ text: token.text, literal: token.literal, start: token.start, end: token.end, segment: frame.segment, command: role === 'command' && !token.literal, wrapped: role === 'wrapped' && !token.literal });
+      frame.lastEnd = token.end;
+      continue;
+    }
+    if (frame.state === 'func-name' && !frame.target) {
+      record(token, 'arg');
+      if (following?.type === '(' && tokens[index + 2]?.type === ')') index += 2;
+      frame.state = 'command';
+      continue;
+    }
+    record(token, place(token, following));
+  }
+  if (stack.length || frame.cases || frame.state.startsWith('case') || frame.state === 'func-name' || frame.state === 'dbracket') unsure = true;
+  return { words, unsure };
 }
 
 // The next word after `at` in the same simple command, or undefined.
@@ -477,13 +692,18 @@ export function planReferences(command, options = {}) {
   const refusals = [];
   REFERENCE.lastIndex = 0;
   const matches = [];
+  let inBodies = 0;
   for (let match; (match = REFERENCE.exec(command));) {
     const before = command[match.index - 1];
     if (before !== undefined && /[A-Za-z0-9_]/.test(before)) continue;
-    if (HEREDOC_BODY.has(lexed.context[match.index])) continue;
+    if (HEREDOC_BODY.has(lexed.context[match.index])) { inBodies += 1; continue; }
     matches.push(match);
   }
-  const words = shellWords(command, lexed.context);
+  // A heredoc body is text only when the guard knows where it ends. When it cannot place that end - an
+  // unterminated body, a delimiter it does not decode - a reference it would call "body" may be a
+  // command line to bash, so such a command counts as using our forms and is refused.
+  const uncertainBody = inBodies > 0 && (!lexed.complete || lexed.uncertain);
+  const { words, unsure } = shellWords(command, lexed);
   const entries = opWords(command, lexed.context, words);
   // OUR FORMS ONLY. The guard acts on its reference forms and on the one literal documented
   // `op read <literal op:// reference>` form - nothing else. It does not look for other ways a shell
@@ -507,10 +727,12 @@ export function planReferences(command, options = {}) {
   // A command that uses one of OUR forms may only be written in text this guard reads literally:
   // every construct it does not decode refuses it, by name, and so does every command name it cannot
   // read. A command with none of our forms is left alone, whatever it spells or mentions.
-  const ours = matches.length > 0 || invocations.length > 0 || invalid.length > 0;
+  const ours = matches.length > 0 || invocations.length > 0 || invalid.length > 0 || uncertainBody;
   if (ours) {
     for (const construct of lexed.constructs) refusals.push(`${construct}, which this guard does not decode`);
-    if (words.some((word) => word.command && !word.literal)) refusals.push('a command name this guard cannot read literally');
+    if (words.some((word) => (word.command || word.wrapped) && !word.literal)) refusals.push('a command name this guard cannot read literally');
+    if (unsure) refusals.push('shell syntax in which this guard cannot place every command name');
+    if (lexed.uncertain) refusals.push('a heredoc whose end this guard cannot place');
     refusals.push(...invalid);
     for (const entry of entries) {
       if (entry.verb !== 'read' && matches.length) refusals.push(`\`op ${entry.verb}\` beside a secret reference`);

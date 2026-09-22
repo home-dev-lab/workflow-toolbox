@@ -67,7 +67,10 @@ export async function resolveReference($, ref, account = config().opAccount) {
   if (failures.has(key)) return { token: null };
   const pending = inFlight.get(key);
   if (pending) return pending;
-  if (inFlight.size >= IN_FLIGHT_MAX || failures.size >= FAILURE_MEMORY_MAX) return { token: null };
+  // Every resolution in flight may record one failure, so it counts against the memory NOW: checking
+  // the remembered size alone admitted 16 concurrent failures onto 1,023 and reached 1,039 (reviewer
+  // at d1814348).
+  if (inFlight.size >= IN_FLIGHT_MAX || failures.size + inFlight.size >= FAILURE_MEMORY_MAX) return { token: null };
   const resolution = resolveOnce($, key, ref, account);
   inFlight.set(key, resolution);
   try { return await resolution; } finally { inFlight.delete(key); }
@@ -106,7 +109,7 @@ async function envValue($, name) {
   }
 }
 
-const refused = (command, reason) => ({ command, count: 0, references: [], invalidReference: true, reason });
+const refused = (command, reason) => ({ command, count: 0, references: [], substituted: [], invalidReference: true, reason });
 
 export async function rewriteReferences($, command) {
   const plan = planReferences(command, { tokens: knownTokens() });
@@ -115,6 +118,9 @@ export async function rewriteReferences($, command) {
   const bindings = [];
   const replacements = [];
   const references = [...plan.invocations];
+  // The tokens whose values this rewrite puts into the command: masked in its output whatever their
+  // kind (op values join them once the caller has resolved them).
+  const substituted = [];
   for (const occurrence of plan.occurrences) {
     let expression;
     if (occurrence.form === 'op') {
@@ -130,7 +136,8 @@ export async function rewriteReferences($, command) {
         : occurrence.form === 'env' ? await envValue($, occurrence.name)
           : knownTokens().get(occurrence.label)?.value;
       if (typeof value !== 'string') return refused(command, occurrence.form === 'env' ? 'an environment reference whose value this guard cannot read' : 'a reference whose value could not be read');
-      if ((occurrence.form === 'file' || occurrence.form === 'env') && value) tokenize(occurrence.form === 'file' ? 'file' : 'environment', value);
+      if (occurrence.form === 'token') substituted.push(occurrence.label);
+      else if (value) substituted.push(tokenize(occurrence.form === 'file' ? 'file' : 'environment', value));
       const bound = binding(bindings.length, value);
       bindings.push(bound.source);
       expression = `\${${bound.name}}`;
@@ -146,6 +153,7 @@ export async function rewriteReferences($, command) {
     command: `${bindings.join('')}${rewritten}`,
     count: replacements.length,
     references: [...unique.values()],
+    substituted,
     invalidReference: false,
     reason: '',
   };

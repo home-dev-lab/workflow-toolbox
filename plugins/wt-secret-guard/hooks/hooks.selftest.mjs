@@ -778,7 +778,8 @@ await test('queue-operation targeting is independent of prompt origin and retrie
 // a test file). The value is built by concatenation so this file carries no literal credential.
 await test('a declaration after a semicolon stays exempt; a bare assignment after one is caught', async () => {
   const value = 'hunter2' + 'realcredential9Xq';
-  const declaration = `const dir = '/tmp'; const token = '${value}'`;
+  // The declaration passes a NAME: a quoted literal is never exempt, keyword or not (V35).
+  const declaration = `const dir = '/tmp'; const token = fallbackToken`;
   const kept = await call('git diff', declaration);
   assert.equal(kept.text, declaration, 'a declaration statement after a semicolon was rewritten');
   const attack = `const harmless = true; token = '${value}'`;
@@ -1536,6 +1537,10 @@ await test('V21 the planner acts on OUR forms only: refused in unowned contexts,
     ['"$EDITOR" op://vault/item/field', 'a command name we cannot read beside our 1Password form'],
     ['op read "$REF"', 'the documented op read form without a literal reference'],
     ['op --account=team read "$REF"', 'the documented op read form, global flag first, without a literal reference'],
+    // `time` is a reserved word and `-p` its option: bash reads the next word as a command name. Round 8
+    // listed this row as out of scope because the planner stopped at `-p` - a blind spot, not a rule.
+    ['time -p op read "$REF"', 'the documented op read form after time -p, without a literal reference'],
+    ['case x in x) op read "$REF";; esac', 'the documented op read form in a case body, without a literal reference'],
   ];
   for (const [command, shape] of refused) {
     const { result, received } = await run(command);
@@ -1558,7 +1563,6 @@ await test('V21 the planner acts on OUR forms only: refused in unowned contexts,
     'exec op read "$REF"',
     'command op read "$REF"',
     'env op read "$REF"',
-    'time -p op read "$REF"',
     'CMD=op; "$CMD" read "$REF"',
   ];
   for (const command of outOfScope) {
@@ -1866,6 +1870,276 @@ await test('D17 history storage returns immediately after successful repair', as
   assert.equal(sleeps, 0, 'successful history repair kept retrying');
 });
 // LAST on purpose: it fills the failure memory, then empties it again by moving the clock.
+await test('V31 a command using our forms never runs a program whose name the guard cannot read literally, wherever bash reads a command name', async () => {
+  // Reviewer at d1814348: `case x in x) "$CMD" "$VERB" secret:env:R;; esac` bound R's value, then ran
+  // whatever $CMD named - `op read` on that value - unprefetched, and its output reached the result
+  // unmasked. A function body, a leading numbered redirection and `time -p` did the same. The table
+  // is GENERATED: every place bash reads a command name x every non-literal spelling must refuse; the
+  // same places with a LITERAL command name and a non-literal ARGUMENT must pass untouched.
+  testEnv.set('WT_V31_REF', 'wt-v31-bound-value');
+  const form = 'secret:env:WT_V31_REF';
+  // [before, after, bash sanity]: `<name>` goes between before and after.
+  const positions = [
+    ['', ''], ['true; ', ''], ['true && ', ''], ['false || ', ''], ['true | ', ''], ['true |& ', ''], ['true & ', ''], ['true\n', ''],
+    ['( ', ' )'], ['{ ', '; }'], ['echo "$(', ')"'], ['x=$(', ')'], ['cat <(', ')'], ['echo "$(true; ', ')"'], ['echo "$(( 1 + 2 ))" "$(', ')"'],
+    ['! ', ''], ['time ', ''], ['time -p ', ''], ['time -p -- ', ''], ['time -- ', ''], ['! time -p ', ''],
+    ['coproc ', '; wait'], ['coproc NAME { ', '; }; wait'], ['coproc NAME ( ', ' ); wait'],
+    ['if ', '; then :; fi'], ['if true; then ', '; fi'], ['if false; then :; else ', '; fi'], ['if false; then :; elif ', '; then :; fi'],
+    ['while ', '; do break; done'], ['until ', '; do :; done'], ['for i in 1; do ', '; done'], ['for i in 1\ndo\n', '\ndone'], ['for (( i = 0; i < 1; i++ )); do ', '; done'],
+    ['while false; do :; done; ', ''], ['[[ -n x && -n y ]] && ', ''], ['(( 1 )) && ', ''],
+    ['case x in x) ', ';; esac'], ['case x in (x) ', ';; esac'], ['case "$v" in *) ', ';; esac'], ['case x in y) :;; x) ', ';; esac'],
+    ['case x in y) :;& x) ', ';; esac'], ['case x in x) :;;& *) ', ';; esac'], ['case x in y|x) ', ';; esac'], ['case x in\nx)\n', '\n;;\nesac'],
+    ['case x in x) ', '\nesac'], ['case x in x) true; ', ';; esac'], ['case $(echo x) in x) ', ';; esac'], ['echo "$(case x in x) ', ';; esac)"'],
+    ['f() { ', '; }; f'], ['f () { ', '; }; f'], ['function f { ', '; }; f'], ['function f() { ', '; }; f'], ['f() ( ', ' ); f'], ['f() {\n', '\n}\nf'],
+    ['2>/dev/null ', ''], ['>/dev/null ', ''], ['</dev/null ', ''], ['2>&1 ', ''], ['&>/dev/null ', ''], ['>|/dev/null ', ''], ['{fd}>/dev/null ', ''], ['3</dev/null ', ''],
+    ['A=1 ', ''], ['A=1 B=2 ', ''], ['A+=1 ', ''], ['A=1 2>/dev/null ', ''], ['2>/dev/null A=1 ', ''], ['a=(x y) ', ''],
+    ['exec ', ''], ['command ', ''], ['command -p ', '', false], ['exec -a name ', ''],
+  ];
+  // Method diversity: real bash confirms that each position IS a command name - a marker program
+  // placed there runs. A position bash did not read as a command name would make the table vacuous.
+  let directory;
+  try { directory = mkdtempSync(join(tmpdir(), 'wt-secret-guard-v31-')); } catch (error) {
+    if (['EACCES', 'EROFS', 'ENOENT'].includes(error?.code)) throw new SkipTest(`writable temporary directory unavailable (${error.code})`);
+    throw error;
+  }
+  try {
+    writeFileSync(join(directory, 'mark'), '#!/bin/sh\nprintf MARK >&9\n', { mode: 0o755 });
+    const notCommands = [];
+    for (const [before, after, sane = true] of positions) {
+      if (!sane) continue;
+      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { PATH: `${directory}:${process.env.PATH}` } });
+      if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
+    }
+    assert.deepEqual(notCommands, [], 'bash did not read a command name at these positions');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  const run = async (command) => {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    return { result, received };
+  };
+  const nonLiteral = ['"$CMD"', '$CMD', '${CMD}', '"${CMD}"', '$(printf op)', '"$(printf op)"', '{op,}', '/usr/bin/o?', '~/op', '"$CMD"x', 'o"$X"p', 'op$(printf x)'];
+  const ran = [];
+  for (const [before, after] of positions) {
+    for (const name of nonLiteral) {
+      const command = `${before}${name} "$VERB" ${form}${after}`;
+      const { result, received } = await run(command);
+      if (received !== undefined || !/command name/i.test(result?.deny ?? '')) ran.push(`${JSON.stringify(command)} -> ${received === undefined ? result?.deny : 'EXECUTED'}`);
+    }
+  }
+  assert.deepEqual(ran, [], 'a non-literal command name beside our form was not refused');
+  const literal = ['printf', '"printf"', "pr'in'tf", '/usr/bin/printf'];
+  const refused = [];
+  for (const [before, after] of positions) {
+    for (const name of literal) {
+      const command = `${before}${name} "$VERB" ${form}${after}`;
+      const { result, received } = await run(command);
+      if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+    }
+  }
+  assert.deepEqual(refused, [], 'a literal command name with a non-literal argument was refused');
+  // Where the model cannot place every command name, a command using our forms is refused, not guessed.
+  for (const command of [`case x in x) printf %s ${form}`, `printf %s ${form};; true`, `case x y in x) printf %s ${form};; esac`, `function ; printf %s ${form}`]) {
+    const { result, received } = await run(command);
+    assert.equal(received, undefined, `syntax the guard cannot place ran beside our form: ${JSON.stringify(command)}`);
+    assert.match(result?.deny ?? '', /cannot place/i, command);
+  }
+});
+await test('V32 a value the guard substituted is masked in that command output whatever its kind', async () => {
+  // Reviewer at d1814348: once a credential UUID was detected and tokenised, `printf %s <token>` printed
+  // it back unmasked, because a known credential UUID is kept out of unconditional masking - UUIDs are
+  // ordinary run ids elsewhere. A value WE put into the command is never ordinary in its output.
+  const run = (command) => bash($, { tool: 'Bash', command }, async (event) => {
+    const out = spawnSync('bash', ['-c', event.command], { encoding: 'utf8', env: { PATH: process.env.PATH } }).stdout;
+    return { result: { stdout: out, stderr: '' }, text: out };
+  });
+  const credentialUuid = '9f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f';
+  const detected = await call('print-config', `${'api'}_key = "${credentialUuid}"`);
+  const uuidToken = detected.text.match(/secret:credential-uuid#[a-f0-9]{6}/)?.[0];
+  assert(uuidToken, `fixture precondition: the credential UUID was not tokenised: ${detected.text}`);
+  const tokens = [
+    [uuidToken, credentialUuid],
+    [tokenize('email', 'v32-person@example.org'), 'v32-person@example.org'],
+    [tokenize('ip-address', '203.0.113.77'), '203.0.113.77'],
+  ];
+  for (const [token, value] of tokens) {
+    for (const command of [`printf %s ${token}`, `printf '%s\\n' "${token}" '${token}'`]) {
+      const result = await run(command);
+      assert.equal(result?.deny, undefined, `the token was refused: ${command} -> ${result?.deny}`);
+      assert.equal(result.text.includes(value), false, `a value the guard substituted reached the output raw: ${command}`);
+    }
+  }
+});
+await test('V33 the heredoc end matches bash exactly, and an uncertain heredoc refuses a command using our forms', async () => {
+  // Reviewer at d1814348: in an UNQUOTED heredoc bash removes backslash-newline BEFORE it compares a
+  // line with the delimiter, so `text\` + `EOF` does not end the body. The guard ended it there and
+  // expanded the next line's reference - whose value then reached `cat > file`.
+  const reference = 'op:/' + '/Private/heredoc/continued';
+  for (const form of [reference, 'secret:env:GH_TOKEN']) {
+    const command = `cat > /tmp/brief.md <<EOF\ntext\\\nEOF\n${form}\nEOF`;
+    const spawned = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) spawned.push(argv); return $.process.run(argv, init); } } };
+    let received;
+    const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    assert.equal(spawned.length, 0, `a reference bash reads as heredoc text was prefetched: ${JSON.stringify(command)}`);
+    assert.equal(result?.deny, undefined, `a heredoc bash delimits exactly was refused: ${JSON.stringify(command)} -> ${result?.deny}`);
+    assert.equal(received, command, `a reference bash reads as heredoc text was expanded: ${JSON.stringify(command)}`);
+  }
+  // Differential against real bash: for every shape, the guard's idea of where the body ends is
+  // bash's, or the guard says it cannot tell (and then refuses a command that uses our forms).
+  const { lex } = await import('./references.js');
+  const openers = [];
+  for (const operator of ['<<', '<<-']) for (const delimiter of ['EOF', "'EOF'", '"EOF"', '\\EOF', 'E"O"F']) openers.push(`cat ${operator}${delimiter}`);
+  const bodies = [[], ['text'], ['text\\'], ['text\\\\'], ['text\\\\\\'], ['\ttext\\'], ['\\'], ['EO\\'], ['\tEO\\'], ['text\\', 'more\\']];
+  const closers = ['EOF', '\tEOF', ' EOF', 'F', '\tF', 'EOF\\'];
+  const mismatches = [];
+  let compared = 0;
+  const scripts = [];
+  for (const opener of openers) for (const body of bodies) for (const closer of closers) {
+    scripts.push([opener, ...body, closer, `printf RAN-${scripts.length}-`, 'EOF', 'printf TAIL', ''].join('\n'));
+  }
+  // ONE bash process, no fork: every shape in its own `{ }` group, its `cat` replaced by a builtin
+  // printer. Each shape closes on its final `EOF` line, so the next one parses from a clean state; the
+  // per-shape marker says what bash did with that line. A minimal PATH: lines bash runs as commands
+  // (`EOF`, `F`) are looked up and not found, and a long PATH made that lookup the whole cost (600
+  // lookups over WSL's /mnt/c entries took 8 s; 0.15 s here). Checked equal to 600 separate `bash -c`
+  // runs: 0 disagreements over 600 shapes.
+  const printer = 'c() { while IFS= read -r line || [ -n "$line" ]; do printf "%s\\n" "$line"; done; }\n';
+  const out = spawnSync('bash', ['-c', printer + scripts.map((script) => `{\n${script.replace(/^cat /, 'c ')}}\n`).join('')], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout;
+  scripts.forEach((script, index) => {
+    const marker = `RAN-${index}-`;
+    const bashBody = out.includes(`printf ${marker}`);
+    assert(bashBody || out.includes(marker), `bash did neither print nor run the marker: ${JSON.stringify(script)}`);
+    const lexed = lex(script);
+    if (!lexed.complete || lexed.uncertain) return;
+    compared += 1;
+    const guardBody = /^heredoc/.test(lexed.context[script.indexOf(`printf ${marker}`)]);
+    if (guardBody !== bashBody) mismatches.push(`${JSON.stringify(script)}: bash ${bashBody ? 'body' : 'command'}, guard ${guardBody ? 'body' : 'command'}`);
+  });
+  assert.deepEqual(mismatches, [], 'the guard delimits a heredoc differently from bash');
+  // Every shape here has a plain delimiter the guard must place: "uncertain" is not an exit for them.
+  assert.equal(compared, openers.length * bodies.length * closers.length, 'the guard called a plain heredoc uncertain');
+  // A heredoc whose end the guard cannot place with certainty refuses a command using our forms.
+  for (const command of [
+    "cat <<$'EOF'\nbody\nEOF\nprintf %s secret:env:GH_TOKEN\n$'EOF'",
+    'echo "$(cat <<EOF\nbody\nEOF)"; printf %s secret:env:GH_TOKEN',
+    'cat <<EOF\nbody\nprintf %s secret:env:GH_TOKEN',
+  ]) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    assert.equal(received, undefined, `an uncertain heredoc beside our form executed: ${JSON.stringify(command)}`);
+    assert.match(result?.deny ?? '', /refused/i, command);
+  }
+});
+await test('V34 overlapping detections are merged before replacement: no pattern unmasks what another masked', async () => {
+  // Reviewer at d1814348: `SERVICE_SECRET={"password":"alpha","client_secret":"..."}` was fully masked
+  // at 28501c1f. Round 8 added the quoted key-value pattern; its replacement ran first, the whole-line
+  // environment-dump value no longer occurred verbatim, and the rest of the line leaked.
+  // Property: for every detector pattern that matches a text, every character it would mask ALONE is
+  // masked by the full scrub. Checked over every pair of patterns and several overlapping layouts.
+  const detector = await import('./detector.js');
+  const { scrub } = await import('./scrub.js');
+  const kinds = ['github-classic', 'github-fine-grained', 'aws-access-key', 'openai-api-key', 'slack-token', 'brave-api-key', 'jwt', 'private-key', 'assignment', 'op-output', 'key-value', 'environment-dump'];
+  if (detector.PATTERN_KINDS) assert.deepEqual([...detector.PATTERN_KINDS], kinds, 'a detector pattern was added without joining this property');
+  const W = 'word'; const S = '_SECRET'; const K = '_KEY';
+  const sample = (kind, n) => ({
+    'github-classic': `ghp_${`V34g${n}`.padEnd(36, 'q')}`,
+    'github-fine-grained': `github_pat_${`V34f${n}`.padEnd(24, 'r')}`,
+    'aws-access-key': `AKIA${`V34A${n}`.padEnd(16, 'Z')}`,
+    'openai-api-key': `sk-${`V34o${n}`.padEnd(24, 's')}`,
+    'slack-token': `xoxb-${`V34s${n}`.padEnd(12, 't')}`,
+    'brave-api-key': `BSA${`V34b${n}`.padEnd(28, 'u')}`,
+    jwt: `eyJ${`V34j${n}`}.eyJ${'v'.repeat(6)}.${'w'.repeat(6)}`,
+    'private-key': `-----BEGIN RSA PRIV${'ATE'} KEY-----\nV34k${n}\n-----END RSA PRIV${'ATE'} KEY-----`,
+    assignment: `pass${W}=v34assign${n}`,
+    'op-output': `pass${W}: v34output${n} tail`,
+    'key-value': `"pass${W}": "v34kv${n}"`,
+    'environment-dump': `SERVICE${S}=v34env${n} more`,
+  })[kind];
+  const layouts = [
+    (a, b) => `${a} ${b}`,
+    (a, b) => `${a}${b}`,
+    (a, b) => `SERVICE${S}={"pass${W}":"${a}","client_secret":"${b}"}`,
+    (a, b) => `export API${K}=${a} ${b}`,
+    (a, b) => `pass${W}: ${a} ${b}`,
+    (a, b) => `tok${'en'}=${a}${b}`,
+    (a, b) => `{"tok${'en'}": "${a} ${b}"}`,
+    (a, b) => `${a}\n${b}`,
+  ];
+  const texts = [`SERVICE${S}={"pass${W}":"alpha","client_secret":"v34-short-13x"}`];
+  let n = 0;
+  for (const first of kinds) for (const second of kinds) for (const layout of layouts) texts.push(layout(sample(first, n += 1), sample(second, n += 1)));
+  const occurrences = (text, value) => { const spans = []; for (let at = text.indexOf(value); value && at >= 0; at = text.indexOf(value, at + 1)) spans.push([at, at + value.length]); return spans; };
+  const failures = [];
+  for (const text of texts) {
+    const output = scrub(text, '', false).value;
+    // Expand every issued token back to its value, recording which characters came from a token.
+    const vault = testState();
+    let expanded = ''; const masked = []; let last = 0;
+    for (const match of output.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)) {
+      const entry = vault.get(match[0]);
+      if (!entry) continue;
+      const plain = output.slice(last, match.index);
+      expanded += plain; masked.push(...Array(plain.length).fill(false));
+      expanded += entry.value; masked.push(...Array(entry.value.length).fill(true));
+      last = match.index + match[0].length;
+    }
+    const tail = output.slice(last); expanded += tail; masked.push(...Array(tail.length).fill(false));
+    if (expanded !== text) { failures.push(`${JSON.stringify(text)}: the output does not expand back to the input: ${JSON.stringify(output)}`); continue; }
+    for (const kind of kinds) {
+      for (const { value } of detector.detections(text, '', [kind])) {
+        for (const [from, to] of occurrences(text, value)) {
+          const exposed = masked.slice(from, to).indexOf(false);
+          if (exposed >= 0) { failures.push(`${JSON.stringify(text)}: ${kind} alone masks ${JSON.stringify(value)}, the full scrub leaves ${JSON.stringify(text.slice(from + exposed, to))}`); break; }
+        }
+      }
+    }
+  }
+  assert.deepEqual(failures.slice(0, 5), [], `${failures.length} texts are masked less than by one of their patterns alone`);
+});
+await test('V35 the source-keyword exemption covers a NAME value, never a quoted literal', async () => {
+  // Reviewer at d1814348: `cat config.js` printing `const <credential name> = '<literal>';` passed
+  // unmasked - the keyword exemption (const, let, export ...) applied before the round-8 rule that a
+  // quoted literal is never exempt.
+  const value = `kw-literal-${'credential'}7Q`;
+  const lines = [
+    `const pass${'word'} = '${value}';`,
+    `let tok${'en'} = "${value}"`,
+    `export const sec${'ret'} = '${value}'`,
+    `var pass${'word'}='${value}'`,
+    `const dir = '/tmp'; const tok${'en'} = '${value}'`,
+    `+ const sec${'ret'} = "${value}";`,
+  ];
+  for (const line of lines) {
+    const result = await call('cat config.js', line);
+    assert.equal(result.text.includes(value), false, `a quoted literal survived the keyword exemption: ${line}`);
+  }
+  // A NAME value keeps the exemption: source that passes a variable is not a credential.
+  for (const source of [`const tok${'en'} = fallbackToken;`, `export const pass${'word'} = options.pass${'word'};`]) {
+    assert.equal((await call('cat config.js', source)).text, source, `source passing a name was scrubbed: ${source}`);
+  }
+});
+await test('V37 ordinary commands using our forms are not refused for the syntax around them', async () => {
+  // Eight of these were refused at d1814348: a `${NAME}` frame counted its own brace and never closed,
+  // so everything after it read as unsupported, and a lone `[` or `[[` read as a glob command name.
+  const form = 'secret:env:GH_TOKEN';
+  const rows = [
+    `[ -n "$X" ] && printf %s ${form}`, `for f in *.txt; do printf %s ${form}; done`, `if [ "$a" = b ]; then printf %s ${form}; fi`,
+    `x=$(printf %s ${form}); echo "$x"`, `printf %s "\${HOME}" ${form}`, `printf '%s\\n' ${form} | grep -c . >/dev/null`,
+    `cat <<EOF | printf %s ${form}\nbody\nEOF`, `test -n "$Y" && curl -u ${form} "$URL"`, `echo "$(date +%s)" ${form}`,
+    `while read -r line; do printf %s ${form}; done < /tmp/in`, `[[ "$a" == b* ]] && printf %s ${form}`, `(( n > 1 )) || printf %s ${form}`,
+    `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`, `arr=(a "$b"); printf %s ${form} "\${arr[@]}"`, `echo \${#X} ${form}`,
+    `printf %s ${form} 2>&1 | tee /tmp/log`, `{ printf %s ${form}; } > /tmp/out`, `time printf %s ${form}`,
+    `echo "\${X:-default}" ${form}`, `echo "\${X#pre}" ${form}`, `echo "$(case x in x) echo y;; esac)" ${form}`,
+    `command -v "$tool" >/dev/null && printf %s ${form}`, `command -V "$tool"; printf %s ${form}`,
+  ];
+  const refused = [];
+  for (const command of rows) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+  }
+  assert.deepEqual(refused, [], 'an ordinary command using our forms was refused');
+});
 await test('V29 the failure memory has an absolute bound: size, concurrency and expiry', async () => {
   // Measured by the reviewer at 28501c1f: 10,001 resident entries, 10,000 simultaneous distinct
   // resolvers, and expired entries kept until later activity. The per-reference bound held; the
@@ -1897,6 +2171,30 @@ await test('V29 the failure memory has an absolute bound: size, concurrency and 
   // Leave nothing behind for the process: the entry just recorded carries the shifted clock.
   Date.now = () => realNow() + 240_000;
   try { await resolveReference(failing, 'op://vault/cleanup/password', ''); } finally { Date.now = realNow; }
+});
+await test('V36 the failure memory never exceeds its bound, in-flight resolutions included', async () => {
+  // Reviewer at d1814348: with 1,023 failures remembered, 16 concurrent failures were all admitted -
+  // each checked the size before any of them recorded - and the memory reached 1,039.
+  const { referenceMemoryStats } = await import('./reference-runtime.js');
+  const failing = { ...$, process: { run: async () => ({ exitCode: 1, stdout: '' }) } };
+  for (let at = 0; referenceMemoryStats().failures < 1023 && at < 5000; at += 1) await resolveReference(failing, `op://vault/v36-fill-${at}/password`, '');
+  assert.equal(referenceMemoryStats().failures, 1023, 'fixture precondition: 1,023 failures remembered');
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const gated = { ...$, process: { run: async () => { await gate; return { exitCode: 1, stdout: '' }; } } };
+  const burst = [];
+  for (let at = 0; at < 16; at += 1) burst.push(resolveReference(gated, `op://vault/v36-burst-${at}/password`, ''));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const during = referenceMemoryStats();
+  release();
+  await Promise.all(burst);
+  const after = referenceMemoryStats().failures;
+  assert(during.failures + during.inFlight <= 1024, `remembered plus in flight reached ${during.failures + during.inFlight}`);
+  assert(after <= 1024, `16 concurrent failures on a memory of 1,023 left ${after} entries`);
+  // Leave nothing behind: the next access with the clock moved past the window expires everything.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 480_000;
+  try { await resolveReference(failing, 'op://vault/v36-cleanup/password', ''); } finally { Date.now = realNow; }
 });
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);

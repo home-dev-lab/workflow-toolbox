@@ -71,13 +71,17 @@ function sourceAssignment(text, match) {
   const statementStart = lineBefore.lastIndexOf(';') + 1;
   const before = lineBefore.slice(statementStart);
   const sourceLine = (statementStart > 0 ? line.slice(statementStart) : line).replace(/^\s*(?:[-+]\s*)?/, '');
+  // Every exemption below covers a value that is a NAME, never a QUOTED literal: `const x = y` passes a
+  // variable, while a quoted literal is the credential itself - in a Python repr or a keyword argument,
+  // and equally in a declaration a `cat config.js` prints (reviewer at d1814348: the keyword rule ran
+  // before this one and let `const <credential name> = '<literal>';` through).
+  const value = match[0].slice(match[0].indexOf('=') + 1).trim();
+  if (/^["']/.test(value)) return false;
   if (/^(?:(?:export|default)\s+)*(?:const|let|var|type|interface|function|class|import)\b/.test(sourceLine)) return true;
 
   // Inside a call or a literal, the exemption covers a value that is a NAME (`connect(password=pwd)`
   // passes a variable). A QUOTED literal there is exactly what a Python repr or a keyword argument
   // carries - `Config(password='hunter2', user='x')` - and ordinary command output prints it.
-  const value = match[0].slice(match[0].indexOf('=') + 1).trim();
-  if (/^["']/.test(value)) return false;
   const after = text.slice(match.index + match[0].length, lineEnd < 0 ? text.length : lineEnd);
   return /[({][^({]*$/.test(before) && /^\s*[,)}]/.test(after);
 }
@@ -163,12 +167,19 @@ function concealedJsonDetections(text) {
   return found.length ? found : scannedConcealedDetections(text);
 }
 
-export function detections(text, command = '') {
+/** The pattern kinds, in order. The V34 union property enumerates every one of them. */
+export const PATTERN_KINDS = patterns.map(([kind]) => kind);
+
+// `only` (optional) restricts the scan to those kinds - what one pattern ALONE would mask, which is
+// what the union property compares the full scrub against.
+export function detections(text, command = '', only) {
   if (typeof text !== 'string') return [];
+  const selected = only ? new Set(only) : null;
   const allowed = allowedRanges(text, command);
-  const concealed = concealedJsonDetections(text);
-  const found = [...concealed, ...credentialUuidDetections(text)];
+  const concealed = !selected || selected.has('op-json-concealed') ? concealedJsonDetections(text) : [];
+  const found = [...concealed, ...(!selected || selected.has('credential-uuid') ? credentialUuidDetections(text) : [])];
   for (const [kind, expression] of patterns) {
+    if (selected && !selected.has(kind)) continue;
     expression.lastIndex = 0;
     for (let match; (match = expression.exec(text));) {
       const duplicatesConcealed = concealed.some(({ value }) => value.includes(match[0]) || match[0].includes(value));
