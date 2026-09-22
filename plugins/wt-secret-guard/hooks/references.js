@@ -18,9 +18,11 @@
 //             decode ($'...', $"...", backticks, NUL), NO command name it cannot read literally in any
 //             position where bash reads one (see shellWords), NO syntax in which it cannot place
 //             those positions, and NO heredoc whose end it cannot place.
-//   out of scope  anything else that might run `op` - a computed or aliased name, eval, an external
-//             wrapper's argument list. Not refused, not prefetched: its output is protected only by
-//             the detectors and the values already in the vault.
+//             Listed external wrappers (WRAPPERS, find -exec) are parsed with their option grammar,
+//             chained, and their command position is one of those positions.
+//   out of scope  anything else that might run `op` - a computed or aliased name, eval, the argument
+//             list of a program not on the wrapper list. Not refused, not prefetched: its output is
+//             protected only by the detectors and the values already in the vault.
 //
 // Measured over four review rounds: a decoder here lost to each new bash spelling of `op read`, and
 // a search for hidden invocations both missed some and refused ordinary work. This module therefore
@@ -67,6 +69,51 @@ const COMPOUND_START = new Set(['{', 'if', 'while', 'until', 'for', 'select', 'c
 // Bash builtins whose argument is the command they run. External wrappers (sudo, env, timeout,
 // xargs...) are an open-ended list the guard does not chase - the README states it.
 const BUILTIN_WRAPPERS = new Set(['exec', 'command', 'builtin']);
+// A FIXED list of external wrappers whose argument list names the command they run, each with the
+// option grammar read on this machine (2026-09-23): GNU coreutils 9.4 env, timeout, nice, nohup,
+// stdbuf, chroot; util-linux 2.39.3 setsid, ionice, taskset; sudo 1.9.15p5; GNU findutils 4.9.0 xargs
+// (find is handled apart: its -exec actions). doas is not installed here: its grammar is doas(1)'s
+// synopsis, `doas [-Lns] [-a style] [-C config] [-u user] command`, not read locally.
+// Every one of them stops at its first non-option (measured: `timeout 5 printf %s -k 1` passes -k to
+// printf) and accepts a unique abbreviation of a long option (`env --uns=HOME`, `timeout --sig=KILL`).
+// Option kinds: 0 a flag; 1 takes a value (glued `-uroot`, or the next word; `--name=v` or `--name v`);
+// 'opt' a long option whose value is only ever `=v`; 'glued' a short option whose value is only ever
+// glued (`-l5`); 'none' no command runs (the rest are plain arguments); 'refuse' a grammar the guard
+// does not place (env -S splits a string into the command). `operands`: positional words before the
+// command (timeout's DURATION, chroot's NEWROOT, taskset's mask). Anything unknown refuses.
+// Not on this list - any other program that runs its arguments - is out of scope (README).
+const WRAPPERS = {
+  env: {
+    short: { i: 0, 0: 0, v: 0, u: 1, C: 1, S: 'refuse' },
+    long: { 'ignore-environment': 0, null: 0, unset: 1, chdir: 1, 'split-string': 'refuse', 'block-signal': 'opt', 'default-signal': 'opt', 'ignore-signal': 'opt', 'list-signal-handling': 0, debug: 0 },
+    dash: true, assignments: true,
+  },
+  timeout: { short: { k: 1, s: 1, v: 0 }, long: { 'kill-after': 1, signal: 1, verbose: 0, 'preserve-status': 0, foreground: 0 }, operands: 1 },
+  nice: { short: { n: 1 }, long: { adjustment: 1 }, numeric: true },
+  nohup: { short: {}, long: {} },
+  stdbuf: { short: { i: 1, o: 1, e: 1 }, long: { input: 1, output: 1, error: 1 } },
+  setsid: { short: { c: 0, f: 0, w: 0 }, long: { ctty: 0, fork: 0, wait: 0 } },
+  sudo: {
+    short: { A: 0, b: 0, B: 0, E: 0, H: 0, i: 0, k: 0, n: 0, P: 0, s: 0, S: 0, C: 1, D: 1, g: 1, p: 1, R: 1, r: 1, t: 1, T: 1, U: 1, u: 1, e: 'none', l: 'none', v: 'none', K: 'none', V: 'none', h: 'refuse' },
+    long: {
+      askpass: 0, background: 0, bell: 0, 'close-from': 1, chdir: 1, 'preserve-env': 'opt', edit: 'none', group: 1, 'set-home': 0, host: 1, login: 0,
+      'remove-timestamp': 'none', 'reset-timestamp': 0, list: 'none', 'non-interactive': 0, 'preserve-groups': 0, prompt: 1, chroot: 1, role: 1,
+      stdin: 0, shell: 0, type: 1, 'command-timeout': 1, 'other-user': 1, user: 1, validate: 'none',
+    },
+  },
+  doas: { short: { L: 'none', n: 0, s: 0, a: 1, C: 1, u: 1 }, long: {} },
+  chroot: { short: {}, long: { groups: 1, userspec: 1, 'skip-chdir': 0 }, operands: 1 },
+  ionice: { short: { c: 1, n: 1, t: 0, p: 'none', P: 'none', u: 'none' }, long: { class: 1, classdata: 1, ignore: 0, pid: 'none', pgid: 'none', uid: 'none' } },
+  taskset: { short: { a: 0, c: 0, p: 'none' }, long: { 'all-tasks': 0, 'cpu-list': 0, pid: 'none' }, operands: 1 },
+  xargs: {
+    short: { 0: 0, o: 0, p: 0, r: 0, t: 0, x: 0, a: 1, d: 1, E: 1, I: 1, L: 1, n: 1, P: 1, s: 1, e: 'glued', i: 'glued', l: 'glued' },
+    long: {
+      null: 0, 'arg-file': 1, delimiter: 1, eof: 'opt', replace: 'opt', 'max-lines': 1, 'max-args': 1, 'open-tty': 0, 'max-procs': 1,
+      interactive: 0, 'process-slot-var': 1, 'no-run-if-empty': 0, 'max-chars': 1, 'show-limits': 0, verbose: 0, exit: 0,
+    },
+  },
+};
+const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir']);
 
 const quoteForSingleQuotes = (value) => value.replace(/'/g, "'\"'\"'");
 
@@ -428,13 +475,104 @@ function shellWords(command, lexed) {
   const words = [];
   let unsure = false;
   let segments = 0;
-  const fresh = (state) => ({ state, segment: (segments += 1), cases: 0, target: false, lastEnd: -1, lastRole: null, wrapper: '', skipValue: false });
+  const fresh = (state) => ({ state, segment: (segments += 1), cases: 0, target: false, lastEnd: -1, lastRole: null, wrapper: '', skipValue: false, ext: [] });
   const stack = [];
   let frame = fresh('command');
-  const boundary = (state) => { frame.state = state; frame.segment = (segments += 1); frame.target = false; frame.lastRole = null; };
+  const boundary = (state) => { frame.state = state; frame.segment = (segments += 1); frame.target = false; frame.lastRole = null; frame.ext = []; };
   const record = (token, role) => {
-    words.push({ text: token.text, literal: token.literal, start: token.start, end: token.end, segment: frame.segment, command: role === 'command', wrapped: role === 'wrapped' });
-    frame.lastEnd = token.end; frame.lastRole = role;
+    // 'computed': a wrapped command whose name comes from somewhere the guard cannot read (find's `{}`,
+    // xargs's replace string) - recorded as a non-literal wrapped name.
+    const computed = role === 'computed';
+    words.push({ text: token.text, literal: computed ? false : token.literal, start: token.start, end: token.end, segment: frame.segment, command: role === 'command', wrapped: role === 'wrapped' || computed });
+    frame.lastEnd = token.end; frame.lastRole = computed ? 'wrapped' : role;
+  };
+  // External wrappers (WRAPPERS, and find's -exec actions), as a stack: a wrapper's command may be
+  // another wrapper (`env A=1 timeout 5 nice cmd`), and find's -exec command may be one too.
+  const externalName = (token) => {
+    if (!token.literal) return null;
+    const base = token.text.replace(/^.*\//, '');
+    return WRAPPERS[base] || base === 'find' ? base : null;
+  };
+  const startExternal = (name) => (name === 'find' ? { name, phase: 'expr', last: null } : { name, spec: WRAPPERS[name], phase: 'options', left: WRAPPERS[name].operands ?? 0, pending: false, replace: null });
+  // The word a wrapper runs. A non-literal one, or one spelled like the placeholder the wrapper fills
+  // from its input, is a name the guard cannot read.
+  const wrappedCommand = (token, placeholder) => {
+    if (!token.literal || (placeholder && token.text === placeholder)) { if (!frame.ext.length) frame.state = 'args'; return 'computed'; }
+    const name = externalName(token);
+    if (name) frame.ext.push(startExternal(name));
+    else if (!frame.ext.length) frame.state = 'args';
+    return 'wrapped';
+  };
+  // One option word of a wrapper: 'arg', or 'none' (no command runs) or 'refuse' (grammar not placed).
+  const wrapperOption = (entry, text) => {
+    const { spec } = entry;
+    const after = () => (entry.left > 0 ? 'operands' : spec.assignments ? 'assign' : 'command');
+    if (text === '--') { entry.phase = after(); return 'arg'; }
+    if (spec.numeric && /^--?\d+$/.test(text)) return 'arg';
+    if (text.startsWith('--')) {
+      const equals = text.indexOf('=');
+      const given = text.slice(2, equals < 0 ? undefined : equals);
+      if (given === 'help' || given === 'version') return 'none';
+      const names = Object.keys(spec.long);
+      const matching = names.includes(given) ? [given] : names.filter((name) => name.startsWith(given));
+      if (!given || matching.length !== 1) return 'refuse';
+      const [name] = matching;
+      const kind = spec.long[name];
+      if (kind === 'none' || kind === 'refuse') return kind;
+      if (entry.name === 'xargs' && name === 'replace') entry.replace = equals < 0 ? '{}' : text.slice(equals + 1) || '{}';
+      if (kind === 1 && equals < 0) entry.pending = 'value';
+      return 'arg';
+    }
+    for (let at = 1; at < text.length; at += 1) {
+      const letter = text[at];
+      const kind = Object.hasOwn(spec.short, letter) ? spec.short[letter] : 'refuse';
+      if (kind === 'none' || kind === 'refuse') return kind;
+      if (kind === 0) continue;
+      const rest = text.slice(at + 1);
+      if (kind === 'glued') { if (entry.name === 'xargs' && letter === 'i') entry.replace = rest || '{}'; return 'arg'; }
+      if (!rest) entry.pending = entry.name === 'xargs' && letter === 'I' ? 'replace' : 'value';
+      else if (entry.name === 'xargs' && letter === 'I') entry.replace = rest;
+      return 'arg';
+    }
+    return 'arg';
+  };
+  const externalStep = (token) => {
+    const entry = frame.ext.at(-1);
+    if (entry.name === 'find') {
+      if (entry.phase === 'exec-args') {
+        if (token.literal && (token.text === ';' || (token.text === '+' && entry.last === '{}'))) entry.phase = 'expr';
+        else entry.last = token.literal ? token.text : null;
+        return 'arg';
+      }
+      if (entry.phase === 'exec-command') { entry.phase = 'exec-args'; entry.last = null; return wrappedCommand(token, '{}'); }
+      if (token.literal && FIND_EXEC.has(token.text)) entry.phase = 'exec-command';
+      return 'arg';
+    }
+    if (entry.phase === 'none') return 'arg';
+    if (entry.pending) {
+      if (entry.pending === 'replace') { if (token.literal) entry.replace = token.text; else unsure = true; }
+      entry.pending = false;
+      return 'arg';
+    }
+    if (entry.phase === 'options') {
+      if (token.literal && token.text.startsWith('-') && token.text !== '-') {
+        const outcome = wrapperOption(entry, token.text);
+        if (outcome === 'refuse') unsure = true;
+        if (outcome !== 'arg') entry.phase = 'none';
+        return 'arg';
+      }
+      if (token.literal && token.text === '-' && entry.spec.dash) return 'arg';
+      entry.phase = entry.left > 0 ? 'operands' : entry.spec.assignments ? 'assign' : 'command';
+    }
+    if (entry.phase === 'operands') {
+      entry.left -= 1;
+      if (entry.left <= 0) entry.phase = entry.spec.assignments ? 'assign' : 'command';
+      return 'arg';
+    }
+    // env: a word whose literal prefix holds `=` is an assignment, the first one without is the command.
+    if (entry.phase === 'assign' && token.raw.split(/[$`]/)[0].includes('=')) return 'arg';
+    frame.ext.pop();
+    return wrappedCommand(token, entry.replace);
   };
   // The role of a word in the current frame, and the state it leaves behind.
   const place = (token, next) => {
@@ -463,8 +601,9 @@ function shellWords(command, lexed) {
           return 'arg';
         }
         if (token.literal && BUILTIN_WRAPPERS.has(token.text)) { frame.wrapper = token.text; return 'wrapped'; }
-        frame.state = 'args';
-        return 'wrapped';
+        frame.state = 'ext'; frame.ext = [];
+        return wrappedCommand(token, null);
+      case 'ext': return externalStep(token);
       case 'coproc': {
         const compound = next && (next.type === '(' || (next.type === 'word' && next.literal && next.raw === next.text && COMPOUND_START.has(next.text)));
         frame.state = 'command';
@@ -485,6 +624,7 @@ function shellWords(command, lexed) {
     else if (bare === 'esac') { if (frame.cases > 0) frame.cases -= 1; else unsure = true; frame.state = 'args'; }
     else if (bare !== null && ENDS_COMPOUND.has(bare)) frame.state = 'args';
     else if (token.literal && BUILTIN_WRAPPERS.has(token.text)) { frame.state = 'wrapper'; frame.wrapper = token.text; frame.skipValue = false; }
+    else if (externalName(token)) { frame.state = 'ext'; frame.ext = [startExternal(externalName(token))]; }
     else frame.state = 'args';
     return 'command';
   };
@@ -602,7 +742,7 @@ function opWords(command, context, words) {
       verb = nextInSegment(words, cursor);
     }
     if (!verb || !verb.literal || !OP_VERBS.has(verb.text)) continue;
-    found.push({ at: word.start, verb: verb.text, after: word.end, supported: true, command: word.command });
+    found.push({ at: word.start, verb: verb.text, after: word.end, supported: true, command: word.command, wrapped: word.wrapped });
   }
   // In a comment or an unsupported context there are no shell words to decode, so an `op read`
   // written there as raw text is refused rather than validated (only when the command is ours). A
@@ -718,9 +858,11 @@ export function planReferences(command, options = {}) {
     if (validated.valid) {
       invocations.push({ ref: validated.ref, account: validated.account });
       consumed.push([entry.at, parsed.end]);
-    } else if (entry.command) {
+    } else if (entry.command || (entry.wrapped && matches.length)) {
       // Only the documented form written where the shell looks for a command name, and written wrong,
-      // is ours to refuse. `echo op read x` is text; `exec op read "$REF"` is a wrapper - out of scope.
+      // is ours to refuse. `echo op read x` is text. Behind a wrapper (`exec op read "$REF"`) it is out of
+      // scope on its own - but beside one of our reference forms it would run op on a value the guard
+      // bound and never prefetched (`timeout 5 op read secret:env:R`), so there it is ours too.
       invalid.push('`op read` without a single literal `op://` reference and documented flags');
     }
   }

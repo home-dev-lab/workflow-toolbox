@@ -2030,6 +2030,175 @@ await test('V33 the heredoc end matches bash exactly, and an uncertain heredoc r
     assert.match(result?.deny ?? '', /refused/i, command);
   }
 });
+await test('V35 the source-keyword exemption covers a NAME value, never a quoted literal', async () => {
+  // Reviewer at d1814348: `cat config.js` printing `const <credential name> = '<literal>';` passed
+  // unmasked - the keyword exemption (const, let, export ...) applied before the round-8 rule that a
+  // quoted literal is never exempt.
+  const value = `kw-literal-${'credential'}7Q`;
+  const lines = [
+    `const pass${'word'} = '${value}';`,
+    `let tok${'en'} = "${value}"`,
+    `export const sec${'ret'} = '${value}'`,
+    `var pass${'word'}='${value}'`,
+    `const dir = '/tmp'; const tok${'en'} = '${value}'`,
+    `+ const sec${'ret'} = "${value}";`,
+  ];
+  for (const line of lines) {
+    const result = await call('cat config.js', line);
+    assert.equal(result.text.includes(value), false, `a quoted literal survived the keyword exemption: ${line}`);
+  }
+  // A NAME value keeps the exemption: source that passes a variable is not a credential.
+  for (const source of [`const tok${'en'} = fallbackToken;`, `export const pass${'word'} = options.pass${'word'};`]) {
+    assert.equal((await call('cat config.js', source)).text, source, `source passing a name was scrubbed: ${source}`);
+  }
+});
+await test('V37 ordinary commands using our forms are not refused for the syntax around them', async () => {
+  // Eight of these were refused at d1814348: a `${NAME}` frame counted its own brace and never closed,
+  // so everything after it read as unsupported, and a lone `[` or `[[` read as a glob command name.
+  const form = 'secret:env:GH_TOKEN';
+  const rows = [
+    `[ -n "$X" ] && printf %s ${form}`, `for f in *.txt; do printf %s ${form}; done`, `if [ "$a" = b ]; then printf %s ${form}; fi`,
+    `x=$(printf %s ${form}); echo "$x"`, `printf %s "\${HOME}" ${form}`, `printf '%s\\n' ${form} | grep -c . >/dev/null`,
+    `cat <<EOF | printf %s ${form}\nbody\nEOF`, `test -n "$Y" && curl -u ${form} "$URL"`, `echo "$(date +%s)" ${form}`,
+    `while read -r line; do printf %s ${form}; done < /tmp/in`, `[[ "$a" == b* ]] && printf %s ${form}`, `(( n > 1 )) || printf %s ${form}`,
+    `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`, `arr=(a "$b"); printf %s ${form} "\${arr[@]}"`, `echo \${#X} ${form}`,
+    `printf %s ${form} 2>&1 | tee /tmp/log`, `{ printf %s ${form}; } > /tmp/out`, `time printf %s ${form}`,
+    `echo "\${X:-default}" ${form}`, `echo "\${X#pre}" ${form}`, `echo "$(case x in x) echo y;; esac)" ${form}`,
+    `command -v "$tool" >/dev/null && printf %s ${form}`, `command -V "$tool"; printf %s ${form}`,
+  ];
+  const refused = [];
+  for (const command of rows) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+  }
+  assert.deepEqual(refused, [], 'an ordinary command using our forms was refused');
+});
+await test('V38 a command using our forms never runs, through a listed external wrapper, a program whose name the guard cannot read literally', async () => {
+  // Round 9 left external wrappers out of scope: `env "$CMD" "$VERB" secret:env:R` still ran $CMD. Each
+  // listed wrapper is parsed with its real option grammar (read on this machine: GNU coreutils 9.4 env,
+  // timeout, nice, nohup, stdbuf, chroot; util-linux 2.39.3 setsid, ionice, taskset; sudo 1.9.15p5;
+  // GNU findutils 4.9.0 xargs and find; doas is not installed here). The table is GENERATED:
+  // wrapper x option shape x non-literal spelling must refuse; the same shapes with a literal command
+  // and a non-literal ARGUMENT must pass untouched.
+  testEnv.set('WT_V38_REF', 'wt-v38-bound-value');
+  const form = 'secret:env:WT_V38_REF';
+  // [before, after, bash sanity]: `<name>` goes between before and after. sudo, doas and chroot need
+  // privileges or are absent, so bash cannot confirm them here.
+  const positions = [
+    ['env ', ''], ['env -i PATH="$PATH" ', ''], ['env - PATH="$PATH" ', ''], ['env -u HOME ', ''], ['env -uHOME ', ''], ['env --unset=HOME ', ''],
+    ['env --unset HOME ', ''], ['env --uns=HOME ', ''], ['env -C /tmp ', ''], ['env --chdir=/tmp ', ''], ['env A=1 ', ''], ['env -i PATH="$PATH" A=1 B="$x" ', ''],
+    ['env -- A=1 ', ''], ['env -v ', ''], ['env --ignore-signal=INT ', ''], ['env -iv PATH="$PATH" ', ''],
+    ['timeout 5 ', ''], ['timeout -k 1 5 ', ''], ['timeout -k1 5 ', ''], ['timeout --kill-after=1 5 ', ''], ['timeout -s KILL 5 ', ''],
+    ['timeout --signal KILL 5 ', ''], ['timeout --sig=KILL 5 ', ''], ['timeout --preserve-status 5 ', ''], ['timeout --foreground -v 5 ', ''], ['timeout -- 5 ', ''],
+    ['nice ', ''], ['nice -n 5 ', ''], ['nice -n5 ', ''], ['nice --adjustment=5 ', ''], ['nice -5 ', ''], ['nice -- ', ''],
+    ['nohup ', ''], ['nohup -- ', ''],
+    ['stdbuf -oL ', ''], ['stdbuf -o L ', ''], ['stdbuf --output=L ', ''], ['stdbuf -i0 -e0 ', ''],
+    ['setsid -w ', ''], ['setsid --wait ', ''], ['setsid -cw ', '', false],
+    ['sudo ', '', false], ['sudo -u root ', '', false], ['sudo -uroot ', '', false], ['sudo -nu root ', '', false], ['sudo --user=root ', '', false],
+    ['sudo -E ', '', false], ['sudo -g adm -u app ', '', false], ['sudo -- ', '', false], ['sudo --preserve-env=HOME ', '', false],
+    ['doas ', '', false], ['doas -u root ', '', false], ['doas -n ', '', false],
+    ['chroot / ', '', false], ['chroot --userspec=0:0 / ', '', false], ['chroot --skip-chdir / ', '', false],
+    ['ionice -c 3 ', ''], ['ionice -c3 ', ''], ['ionice --class 3 ', ''], ['ionice -c 2 -n 7 ', ''], ['ionice -t ', ''],
+    ['taskset 1 ', ''], ['taskset -c 0 ', ''], ['taskset -a 1 ', ''],
+    ['echo x | xargs ', ''], ['echo x | xargs -0 ', ''], ['echo x | xargs -n 1 ', ''], ['echo x | xargs -n1 -P 2 ', ''], ['echo x | xargs -I X ', ''],
+    ['echo x | xargs -r ', ''], ['echo x | xargs --max-args=1 ', ''], ['echo x | xargs -l ', ''], ['echo x | xargs -e ', ''],
+    ['find . -maxdepth 0 -exec ', ' {} \\;'], ['find . -maxdepth 0 -exec ', ' {} +'], ['find . -maxdepth 0 -execdir ', " ';'"],
+    ['find . -maxdepth 0 -name x -o -exec ', ' {} \\;'], ['find . -maxdepth 0 -exec true \\; -exec ', ' {} \\;'],
+    // Chains: a wrapper's command may itself be a wrapper.
+    ['env A=1 timeout 5 nice ', ''], ['sudo -u root env -i ', '', false], ['nohup setsid -w ', ''], ['exec env ', ''], ['command timeout 5 ', ''],
+    ['time -p nice -n 1 ', ''], ['find . -maxdepth 0 -exec env A=1 ', ' {} \\;'], ['echo x | xargs timeout 5 ', ''], ['true && env ', ''], ['( timeout 5 ', ' )'],
+    ['case x in x) nice ', ';; esac'], ['f() { stdbuf -oL ', '; }; f'], ['2>/dev/null env ', ''],
+  ];
+  let directory;
+  try { directory = mkdtempSync(join(tmpdir(), 'wt-secret-guard-v38-')); } catch (error) {
+    if (['EACCES', 'EROFS', 'ENOENT'].includes(error?.code)) throw new SkipTest(`writable temporary directory unavailable (${error.code})`);
+    throw error;
+  }
+  try {
+    writeFileSync(join(directory, 'mark'), '#!/bin/sh\nprintf MARK >&9\n', { mode: 0o755 });
+    const notCommands = [];
+    for (const [before, after, sane = true] of positions) {
+      if (!sane) continue;
+      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { PATH: `${directory}:/usr/bin:/bin` } });
+      if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
+    }
+    assert.deepEqual(notCommands, [], 'bash did not run the wrapped command at these positions');
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  const run = async (command) => {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    return { result, received };
+  };
+  const nonLiteral = ['"$CMD"', '$CMD', '${CMD}', '"${CMD}"', '$(printf op)', '"$(printf op)"', '{op,}', '/usr/bin/o?', '~/op', '"$CMD"x', 'o"$X"p', 'op$(printf x)'];
+  const ran = [];
+  for (const [before, after] of positions) {
+    for (const name of nonLiteral) {
+      const command = `${before}${name} "$VERB" ${form}${after}`;
+      const { result, received } = await run(command);
+      if (received !== undefined || !/command name/i.test(result?.deny ?? '')) ran.push(`${JSON.stringify(command)} -> ${received === undefined ? result?.deny : 'EXECUTED'}`);
+    }
+  }
+  assert.deepEqual(ran, [], 'a non-literal command behind a listed wrapper, beside our form, was not refused');
+  const literal = ['printf', '"printf"', "pr'in'tf", '/usr/bin/printf'];
+  const refused = [];
+  for (const [before, after] of positions) {
+    for (const name of literal) {
+      const command = `${before}${name} "$VERB" ${form}${after}`;
+      const { result, received } = await run(command);
+      if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+    }
+  }
+  assert.deepEqual(refused, [], 'a literal command behind a listed wrapper was refused');
+  // A command the wrapper takes from somewhere the guard cannot read, or a grammar it cannot place:
+  // refused beside our forms.
+  for (const command of [
+    `find . -exec {} \\; ; printf %s ${form}`, `echo x | xargs -I{} {} ${form}`, `echo x | xargs -i {} ${form}`, `echo x | xargs -I R R ${form}`,
+    `env -S 'printf %s' ${form}`, `env --split-string='printf %s' ${form}`, `timeout --bogus 5 printf %s ${form}`, `nice -z printf %s ${form}`,
+    `sudo -h host printf %s ${form}`, `echo x | xargs -Q printf %s ${form}`, `env --i printf %s ${form}`,
+  ]) {
+    const { result, received } = await run(command);
+    assert.equal(received, undefined, `a command the guard cannot place ran beside our form: ${JSON.stringify(command)}`);
+    assert.match(result?.deny ?? '', /command name|cannot place/i, command);
+  }
+});
+await test('V39 ordinary commands through a listed wrapper pass, and the op read form behind a wrapper is validated beside our forms', async () => {
+  const form = 'secret:env:GH_TOKEN';
+  const rows = [
+    `timeout 30 curl "$URL" -u ${form}`, `env -i PATH=/usr/bin printf %s ${form}`, `sudo -u app printf %s ${form}`, `nice -n 10 curl -u ${form} "$URL"`,
+    `nohup curl -u ${form} "$URL" > /tmp/out 2>&1 &`, `find . -name "$pattern" -exec grep -l x {} + ; printf %s ${form}`, `echo "$x" | xargs printf %s ${form}`,
+    `stdbuf -oL printf %s ${form} | tee /tmp/log`, `ionice -c 3 printf %s ${form}`, `taskset -c 0 printf %s ${form}`, `setsid -w printf %s ${form}`,
+    `timeout "$T" printf %s ${form}`, `env A="$x" printf %s ${form}`, `sudo -u "$USER" printf %s ${form}`, `ionice -p "$PID"; printf %s ${form}`,
+    `sudo -l; printf %s ${form}`, `env; printf %s ${form}`, `echo x | xargs; printf %s ${form}`,
+  ];
+  const refused = [];
+  for (const command of rows) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+  }
+  assert.deepEqual(refused, [], 'an ordinary command through a listed wrapper was refused');
+  // `op read` behind a wrapper, beside our forms, is the documented form and must be valid: otherwise it
+  // runs op on a value the guard never prefetched. Without our forms it stays out of scope (V21).
+  testEnv.set('WT_V39_REF', 'wt-v39-bound-value');
+  for (const command of ['exec op read secret:env:WT_V39_REF', 'timeout 5 op read secret:env:WT_V39_REF', `env -i op read "$REF" ${form}`, `sudo -u app op read secret:env:WT_V39_REF`]) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    assert.equal(received, undefined, `an invalid op read behind a wrapper ran beside our form: ${command}`);
+    assert.match(result?.deny ?? '', /refused/i, command);
+  }
+  const spawned = [];
+  const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) spawned.push(argv); return $.process.run(argv, init); } } };
+  let received;
+  const valid = "timeout 5 op read 'op://vault/item/behind-timeout'";
+  const result = await bash(runtime, { tool: 'Bash', command: valid }, async (event) => { received = event.command; return { text: 'ok' }; });
+  assert.equal(result?.deny, undefined, `the documented op read form behind a wrapper was refused: ${result?.deny}`);
+  assert.equal(received, valid, 'the documented op read form behind a wrapper was rewritten');
+  assert.equal(spawned.length, 1, 'the documented op read form behind a wrapper was not prefetched exactly once');
+});
+// V34 runs late on purpose: it registers about 2,300 values in the vault, and every later Bash-hook
+// call walks the whole vault - run before V38 it made V38 7 s and pushed the shipped-plugins vitest
+// file past its 15 s beforeAll.
 await test('V34 overlapping detections are merged before replacement: no pattern unmasks what another masked', async () => {
   // Reviewer at d1814348: `SERVICE_SECRET={"password":"alpha","client_secret":"..."}` was fully masked
   // at 28501c1f. Round 8 added the quoted key-value pattern; its replacement ran first, the whole-line
@@ -2095,50 +2264,6 @@ await test('V34 overlapping detections are merged before replacement: no pattern
     }
   }
   assert.deepEqual(failures.slice(0, 5), [], `${failures.length} texts are masked less than by one of their patterns alone`);
-});
-await test('V35 the source-keyword exemption covers a NAME value, never a quoted literal', async () => {
-  // Reviewer at d1814348: `cat config.js` printing `const <credential name> = '<literal>';` passed
-  // unmasked - the keyword exemption (const, let, export ...) applied before the round-8 rule that a
-  // quoted literal is never exempt.
-  const value = `kw-literal-${'credential'}7Q`;
-  const lines = [
-    `const pass${'word'} = '${value}';`,
-    `let tok${'en'} = "${value}"`,
-    `export const sec${'ret'} = '${value}'`,
-    `var pass${'word'}='${value}'`,
-    `const dir = '/tmp'; const tok${'en'} = '${value}'`,
-    `+ const sec${'ret'} = "${value}";`,
-  ];
-  for (const line of lines) {
-    const result = await call('cat config.js', line);
-    assert.equal(result.text.includes(value), false, `a quoted literal survived the keyword exemption: ${line}`);
-  }
-  // A NAME value keeps the exemption: source that passes a variable is not a credential.
-  for (const source of [`const tok${'en'} = fallbackToken;`, `export const pass${'word'} = options.pass${'word'};`]) {
-    assert.equal((await call('cat config.js', source)).text, source, `source passing a name was scrubbed: ${source}`);
-  }
-});
-await test('V37 ordinary commands using our forms are not refused for the syntax around them', async () => {
-  // Eight of these were refused at d1814348: a `${NAME}` frame counted its own brace and never closed,
-  // so everything after it read as unsupported, and a lone `[` or `[[` read as a glob command name.
-  const form = 'secret:env:GH_TOKEN';
-  const rows = [
-    `[ -n "$X" ] && printf %s ${form}`, `for f in *.txt; do printf %s ${form}; done`, `if [ "$a" = b ]; then printf %s ${form}; fi`,
-    `x=$(printf %s ${form}); echo "$x"`, `printf %s "\${HOME}" ${form}`, `printf '%s\\n' ${form} | grep -c . >/dev/null`,
-    `cat <<EOF | printf %s ${form}\nbody\nEOF`, `test -n "$Y" && curl -u ${form} "$URL"`, `echo "$(date +%s)" ${form}`,
-    `while read -r line; do printf %s ${form}; done < /tmp/in`, `[[ "$a" == b* ]] && printf %s ${form}`, `(( n > 1 )) || printf %s ${form}`,
-    `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`, `arr=(a "$b"); printf %s ${form} "\${arr[@]}"`, `echo \${#X} ${form}`,
-    `printf %s ${form} 2>&1 | tee /tmp/log`, `{ printf %s ${form}; } > /tmp/out`, `time printf %s ${form}`,
-    `echo "\${X:-default}" ${form}`, `echo "\${X#pre}" ${form}`, `echo "$(case x in x) echo y;; esac)" ${form}`,
-    `command -v "$tool" >/dev/null && printf %s ${form}`, `command -V "$tool"; printf %s ${form}`,
-  ];
-  const refused = [];
-  for (const command of rows) {
-    let received;
-    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
-    if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
-  }
-  assert.deepEqual(refused, [], 'an ordinary command using our forms was refused');
 });
 await test('V29 the failure memory has an absolute bound: size, concurrency and expiry', async () => {
   // Measured by the reviewer at 28501c1f: 10,001 resident entries, 10,000 simultaneous distinct

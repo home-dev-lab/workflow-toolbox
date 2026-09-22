@@ -66,6 +66,8 @@ describe('shipped private plugins', () => {
       'V35 the source-keyword exemption covers a NAME value, never a quoted literal',
       'V36 the failure memory never exceeds its bound, in-flight resolutions included',
       'V37 ordinary commands using our forms are not refused for the syntax around them',
+      'V38 a command using our forms never runs, through a listed external wrapper, a program whose name the guard cannot read literally',
+      'V39 ordinary commands through a listed wrapper pass, and the op read form behind a wrapper is validated beside our forms',
       'op reference in a sed search pattern is left literal',
       'op reference inside a larger quoted string is left literal',
       'already substituted op reference is not rewritten again',

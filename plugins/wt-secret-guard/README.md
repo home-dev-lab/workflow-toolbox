@@ -49,16 +49,40 @@ The guard acts on the reference forms above and on the one literal `op read` for
 A command that **does** use one of these forms may only be written in text the guard reads literally. It is refused, with the construct named, if anywhere in it there is:
 
 - ANSI-C quoting (`$'...'`), locale quoting (`$"..."`), a backtick substitution, or a NUL byte;
-- a command name the guard cannot read literally — a parameter (`$CMD`), a command substitution (`$(...)`), a glob, brace expansion, or a leading `~` — **wherever bash reads a command name**: the start of a command or pipeline stage, a subshell or `{ }` group, a `$( )` or `<( )`, after `!`, `time`, `time -p`, `coproc`, `if`/`then`/`else`/`elif`/`while`/`until`/`do`, after leading assignments and redirections (`2>/dev/null "$CMD"`), in a `case` body (after a pattern's `)` and after `;;`, `;&`, `;;&`), in a function body (`f() { … }`, `function f { … }`), and as the argument of the builtins `exec`, `command` and `builtin`;
+- a command name the guard cannot read literally — a parameter (`$CMD`), a command substitution (`$(...)`), a glob, brace expansion, or a leading `~` — **wherever bash reads a command name**: the start of a command or pipeline stage, a subshell or `{ }` group, a `$( )` or `<( )`, after `!`, `time`, `time -p`, `coproc`, `if`/`then`/`else`/`elif`/`while`/`until`/`do`, after leading assignments and redirections (`2>/dev/null "$CMD"`), in a `case` body (after a pattern's `)` and after `;;`, `;&`, `;;&`), in a function body (`f() { … }`, `function f { … }`), as the argument of the builtins `exec`, `command` and `builtin`, and as the command of a **listed external wrapper** (below);
 - shell syntax in which the guard cannot place every command name (an unterminated `case`, a stray `;;`), or a heredoc whose end it cannot place (see below).
 
-The documented `op read` form written where the shell looks for a command name but without a literal reference (`op read "$REF"`, `op --account=team read "$REF"`) is refused too. The same words as arguments (`echo op read foo`) are text, not an invocation.
+The documented `op read` form written where the shell looks for a command name but without a literal reference (`op read "$REF"`, `op --account=team read "$REF"`) is refused too. The same words as arguments (`echo op read foo`) are text, not an invocation. Behind a builtin or listed wrapper (`timeout 5 op read secret:env:REF`), the same form is refused when the command carries one of the guard's reference forms: there it would run `op` on a value the guard bound and never prefetched.
+
+#### Listed external wrappers — a fixed list
+
+In a command that uses one of the guard's forms, **the command these wrappers run must be written literally**, and wrappers chain (`env A=1 timeout 5 nice "$CMD"` is refused):
+
+| Wrapper | Grammar the guard reads (from the tool's own `--help` on the reference machine) |
+|---|---|
+| `env` | `-i`, `-`, `-0`, `-v`, `-u NAME`, `-C DIR`, the signal options, `--`, then `NAME=VALUE` words, then the command. `-S`/`--split-string` is refused: the command is inside a string. |
+| `timeout` | `-k`/`--kill-after`, `-s`/`--signal`, `-v`, `--preserve-status`, `--foreground`, then the DURATION, then the command |
+| `nice` | `-n N`/`--adjustment`, the obsolete `-N` |
+| `nohup` | none (`--`) |
+| `stdbuf` | `-i`/`-o`/`-e MODE` and their long forms |
+| `setsid` | `-c`, `-f`, `-w` |
+| `sudo` | its value options (`-u`, `-g`, `-C`, `-D`, `-p`, `-R`, `-r`, `-t`, `-T`, `-U`, their long forms) and flags; `-e`, `-l`, `-v`, `-K`, `-V` run no command; `-h` is refused (help or host) |
+| `doas` | `-a`, `-C`, `-u` values, `-n`, `-s`; `-L` runs none. Not installed on the reference machine: read from doas(1)'s synopsis, not locally |
+| `chroot` | `--groups`, `--userspec`, `--skip-chdir`, then NEWROOT, then the command |
+| `ionice` | `-c`, `-n` values, `-t`; `-p`, `-P`, `-u` act on running processes (no command) |
+| `taskset` | `-a`, `-c`, then the mask; `-p` acts on a running process |
+| `xargs` | its value options, `-e`/`-i`/`-l` glued values; the command it runs may also not be the replace string (`-I R`, `-i`), which input fills |
+| `find` | the command after each `-exec`, `-execdir`, `-ok`, `-okdir`, until `;` or `{} +`; `{}` as the command is refused |
+
+Short options may be clustered (`-nu root`) and long options abbreviated (`--sig=KILL`), as the tools accept. An option the guard does not know, an ambiguous abbreviation, or a replace string it cannot read is refused beside the guard's forms. A literal command behind any of them passes: `timeout 30 curl "$URL" -u secret:env:C`, `sudo -u app printf %s secret:env:X`.
+
+**Every other program that runs its arguments is out of scope, at the same weight as the rule above**: `strace`, `watch`, `flock`, `parallel`, `ssh`, `busybox`, `su -c`, a script of your own. A computed command name inside one of them, even beside the guard's forms, is not refused. The list is fixed on purpose: finding every program that runs its arguments cannot be won from the command text.
 
 If you need `$'\t'`, backticks or a computed command name in a command, write that command without a reference in it.
 
 #### Out of scope: computed, aliased, eval'd or wrapped `op` invocations
 
-**This is a stated limit, at the same weight as the rule above.** An `op` invocation the guard's own forms do not spell — `CMD=op; "$CMD" read "$REF"`, `eval 'op read "$REF"'`, an alias, a function, `$'op' read`, `/usr/bin/o? read`, or `exec`/`command`/`env` in front of `op read "$REF"` — is **not refused and not prefetched**. (`time op read "$REF"` is not in this list: `time` is a reserved word, bash reads the next word as a command name, and the documented form written there without a literal reference is refused.) External wrappers — `sudo`, `env`, `timeout`, `xargs`, `nohup` and any script that runs its arguments — are not examined even in a command that uses one of the guard's forms: their argument lists are an open-ended set, and a computed command name inside one is out of scope. Its output is protected only by the pattern detectors and by values already in the vault. A short credential that matches no pattern and was never resolved through a reference this session is not masked in that output.
+**This is a stated limit, at the same weight as the rule above.** An `op` invocation the guard's own forms do not spell — `CMD=op; "$CMD" read "$REF"`, `eval 'op read "$REF"'`, an alias, a function, `$'op' read`, `/usr/bin/o? read`, or `exec`/`command`/`env` in front of `op read "$REF"` — is **not refused and not prefetched**. (`time op read "$REF"` is not in this list: `time` is a reserved word, bash reads the next word as a command name, and the documented form written there without a literal reference is refused.) A wrapper outside the listed ones is not examined even in a command that uses one of the guard's forms (see "Listed external wrappers"). Its output is protected only by the pattern detectors and by values already in the vault. A short credential that matches no pattern and was never resolved through a reference this session is not masked in that output.
 
 Four rounds of review showed why the guard stops here: every attempt to find such invocations from the command text was bypassed by the next spelling, and the attempts refused ordinary work (`npm --prefix "$dir" run build`, `rg "$pattern" read`) along the way. A guard that is both bypassable and in the way gets switched off.
 
