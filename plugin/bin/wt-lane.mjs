@@ -5,6 +5,7 @@ import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, e
 import { readFileSync as readLaneLog } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { constants as osConstants } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
@@ -20,10 +21,12 @@ const GRACE_MS = 250
 const DEFAULT_DECISION_GRACE = 300
 const DEFAULT_MAX_EXTENSIONS = 3
 const DEFAULT_MAX_BRIEF_AGE = 600
+const DEFAULT_MIN_AVAILABLE_MIB = 1024
 const DECISION_TRANSITION_BOUND_MS = 5_000
 const LAUNCH_LOCK_MAX_AGE_MS = 120_000
 const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
 const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000
+const PLATFORM = process.platform
 
 async function loadConsentModules() {
   return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
@@ -34,11 +37,11 @@ async function loadIntegrationModule() {
 }
 
 function usage() {
-  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
+  return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
 
 function parse(argv) {
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null }
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(process.env.WT_LANE_MIN_AVAILABLE_MIB ?? DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -50,6 +53,7 @@ function parse(argv) {
     else if (arg === '--timeout') out.timeout = Number(argv[++i])
     else if (arg === '--decision-grace') out.decisionGrace = Number(argv[++i])
     else if (arg === '--max-extensions') out.maxExtensions = Number(argv[++i])
+    else if (arg === '--min-available-mib') out.minAvailableMib = Number(argv[++i])
     else if (arg === '--owner') out.owner = argv[++i] ?? null
     else if (arg === '--owner-token') out.ownerToken = argv[++i] ?? null
     else if (arg === '--brief-cleanup-dir') out.briefCleanupDir = argv[++i] ?? null
@@ -67,6 +71,7 @@ function parse(argv) {
   if (!Number.isFinite(out.timeout) || out.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
   if (!Number.isFinite(out.decisionGrace) || out.decisionGrace < 0) return { error: '--decision-grace must be a non-negative number of seconds' }
   if (!Number.isSafeInteger(out.maxExtensions) || out.maxExtensions < 0) return { error: '--max-extensions must be a non-negative integer' }
+  if (!Number.isFinite(out.minAvailableMib) || out.minAvailableMib < 0) return { error: '--min-available-mib (or WT_LANE_MIN_AVAILABLE_MIB) must be a non-negative number of MiB' }
   if (!['session', 'pilot'].includes(out.owner)) return { error: '--owner must be session or pilot' }
   if (out.role && !['pilot', 'pilotHard', 'orchestrator', 'sdkPilot', 'sdkPilotHard', 'sdkOrchestrator', 'critic', 'code', 'review', 'refutation'].includes(out.role)) return { error: '--role is not a known variant role' }
   if (out.runId && !/^\d+-\d+$/.test(out.runId)) return { error: 'internal run id is malformed' }
@@ -78,6 +83,72 @@ function parse(argv) {
   if (out.briefCleanupDir) out.briefCleanupDir = path.resolve(out.briefCleanupDir)
   out.log = path.resolve(out.log ?? path.join(out.dir, '.lane', 'run.log'))
   return out
+}
+
+function commandOutput(command, args, run) {
+  try {
+    const result = run(command, args, { encoding: 'utf8', timeout: 3_000, windowsHide: true, env: { PATH: process.env.PATH ?? '', LC_ALL: 'C' } })
+    return !result.error && result.status === 0 ? String(result.stdout ?? '') : null
+  } catch { return null }
+}
+
+export function readAvailableMemory({ platform = process.platform, readFile = readFileSync, run = spawnSync } = {}) {
+  if (platform === 'linux') {
+    try {
+      const match = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(readFile('/proc/meminfo', 'utf8'))
+      return match ? { mib: Math.floor(Number(match[1]) / 1024), source: 'MemAvailable from /proc/meminfo' } : { mib: null, source: 'MemAvailable from /proc/meminfo', reason: 'field missing' }
+    } catch { return { mib: null, source: 'MemAvailable from /proc/meminfo', reason: 'unreadable' } }
+  }
+  if (platform === 'darwin') {
+    const output = commandOutput('vm_stat', [], run)
+    if (output === null) return { mib: null, source: 'available pages from vm_stat', reason: 'unreadable' }
+    const pageSize = /page size of (\d+) bytes/.exec(output)
+    const available = [...output.matchAll(/^Pages (?:free|inactive|speculative|purgeable):\s+(\d+)\./gm)].reduce((sum, match) => sum + Number(match[1]), 0)
+    return pageSize && available > 0
+      ? { mib: Math.floor(available * Number(pageSize[1]) / 1024 / 1024), source: 'available pages from vm_stat' }
+      : { mib: null, source: 'available pages from vm_stat', reason: 'fields missing' }
+  }
+  if (platform === 'win32') {
+    const output = commandOutput('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory'], run)
+    const kib = output === null ? NaN : Number(output.trim())
+    return Number.isFinite(kib) && kib >= 0
+      ? { mib: Math.floor(kib / 1024), source: 'FreePhysicalMemory from Win32_OperatingSystem' }
+      : { mib: null, source: 'FreePhysicalMemory from Win32_OperatingSystem', reason: output === null ? 'unreadable' : 'invalid value' }
+  }
+  return { mib: null, source: `available memory on ${platform}`, reason: 'unsupported platform' }
+}
+
+function assertLaunchMemory(worker, minimumMib) {
+  if (worker) return
+  const memory = readAvailableMemory()
+  if (memory.mib === null) throw new Error(`Refused: available memory is unknown (${memory.source}: ${memory.reason}); refusing to launch until the source is readable.`)
+  if (memory.mib < minimumMib) throw new Error(`Refused: available memory ${memory.mib} MiB is below the required ${minimumMib} MiB; lower WT_LANE_MIN_AVAILABLE_MIB only after freeing or deliberately budgeting memory.`)
+}
+
+function signalExit(signal) {
+  const number = osConstants.signals[signal]
+  return Number.isSafeInteger(number) ? 128 + number : 1
+}
+
+function journalEvidence(commandArgs, pid, pattern, run) {
+  const output = commandOutput('journalctl', commandArgs, run)
+  if (output === null) return null
+  const exactPid = new RegExp(`(?:^|\\D)${pid}(?:\\D|$)`)
+  return output.split(/\r?\n/).map((line) => line.replace(/[^\t\x20-\x7e]/g, '').trim()).find((line) => exactPid.test(line) && pattern.test(line))?.slice(0, 1000) ?? null
+}
+
+export function identifySignalCause(pid, signal, { platform = process.platform, startedAt = Date.now(), run = spawnSync } = {}) {
+  if (platform !== 'linux') return { signal, cause: 'unknown' }
+  const since = `@${Math.floor(startedAt / 1000)}`
+  const earlyoom = journalEvidence(['--no-pager', '-o', 'short-iso', '--since', since, '-u', 'earlyoom'], pid, /(?:sending SIG[A-Z]+ to process|killing process|process killed)/i, run)
+  if (earlyoom) return { signal, cause: 'earlyoom', evidence: earlyoom }
+  const kernel = journalEvidence(['--no-pager', '-o', 'short-iso', '--since', since, '-k'], pid, /(?:killed process|kill process|oom-kill)/i, run)
+  return kernel ? { signal, cause: 'kernel-oom', evidence: kernel } : { signal, cause: 'unknown' }
+}
+
+function killedByLines(killedBy) {
+  if (killedBy.cause === 'unknown') return [`KILLED_BY=signal ${killedBy.signal}, cause unknown`]
+  return [`KILLED_BY=${killedBy.cause} signal ${killedBy.signal}`, `KILL_EVIDENCE=${JSON.stringify(killedBy.evidence)}`]
 }
 
 function formatAge(ageMs) {
@@ -335,6 +406,7 @@ async function main() {
     }
   }
   if (!opts.allowNoGit && !checkGitWorktree(opts.dir)) return 2
+  assertLaunchMemory(worker, opts.minAvailableMib)
 
   // Invoke the same consent resolver and wording as the PreToolUse gate before a node wrapper
   // can bypass its text matcher.
@@ -547,7 +619,7 @@ async function main() {
       chmodSync(briefSnapshotDir, 0o700)
       writeFileSync(briefSnapshot, briefEvidence.bytes, { flag: 'wx', mode: 0o400 })
       const briefReceipt = Buffer.from(JSON.stringify({ path: briefEvidence.path, age: briefEvidence.age, heading: briefEvidence.heading, sha256: briefEvidence.sha256 }), 'utf8').toString('base64url')
-      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
+      const workerArgs = [process.argv[1], '--worker', '--dir', opts.dir, '--model', opts.model, '--brief', briefSnapshot, '--brief-receipt', briefReceipt, '--timeout', String(opts.timeout), '--decision-grace', String(opts.decisionGrace), '--max-extensions', String(opts.maxExtensions), '--min-available-mib', String(opts.minAvailableMib), '--owner', opts.owner, '--run-id', runId, ...(opts.ownerToken ? ['--owner-token', opts.ownerToken] : []), ...(opts.briefCleanupDir ? ['--brief-cleanup-dir', opts.briefCleanupDir] : []), '--log', opts.log, ...variantWorkerArgs(opts), ...(opts.allowNoGit ? ['--allow-no-git'] : [])]
       appendVariantLog(opts.log, variant)
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
@@ -634,7 +706,7 @@ async function main() {
   }
   appendWorkerStage('child-identity-capture-start')
   const childCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: child.spawnfile ?? opencodeBinary, expectedArgv: child.spawnargs, spawnedAt: childSpawnedAt })
-  if (process.platform === 'win32' && !childCapture.identity) {
+  if (PLATFORM === 'win32' && !childCapture.identity) {
     const reason = captureTimeoutReason(childCapture)
     appendWorkerStage(`child-identity-capture-timeout ${reason}`)
     consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', worktree: opts.dir, reason })
@@ -647,7 +719,7 @@ async function main() {
   appendWorkerStage('child-identity-capture-done')
   appendWorkerStage('worker-identity-capture-start')
   const workerCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, process.pid, { expectedCommand: process.execPath, expectedArgv: process.argv, spawnedAt: PROCESS_STARTED_AT })
-  if (process.platform === 'win32' && !workerCapture.identity) {
+  if (PLATFORM === 'win32' && !workerCapture.identity) {
     const reason = captureTimeoutReason(workerCapture)
     appendWorkerStage(`worker-identity-capture-timeout ${reason}`)
     consentModules.writeJsonAtomic(statePaths.record, { version: 1, runId, state: 'launch-failed', worktree: opts.dir, reason })
@@ -660,7 +732,7 @@ async function main() {
   appendWorkerStage('worker-identity-capture-done')
   const childIdentity = childCapture.identity
   const workerIdentity = workerCapture.identity
-  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(process.platform === 'win32' ? { workerStartTimeApproximate: workerIdentity?.startTimeApproximate ?? false, workerImage: workerIdentity?.image ?? null } : {}), ...(process.platform === 'darwin' ? { workerCwd: workerIdentity?.cwd ?? null } : {}), ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(process.platform === 'win32' ? { childStartTimeApproximate: childIdentity?.startTimeApproximate ?? false, childImage: childIdentity?.image ?? null } : {}), ...(process.platform === 'darwin' ? { childCwd: childIdentity?.cwd ?? null } : {}), ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
+  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(PLATFORM === 'win32' ? { workerStartTimeApproximate: workerIdentity?.startTimeApproximate ?? false, workerImage: workerIdentity?.image ?? null } : {}), ...(PLATFORM === 'darwin' ? { workerCwd: workerIdentity?.cwd ?? null } : {}), ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(PLATFORM === 'win32' ? { childStartTimeApproximate: childIdentity?.startTimeApproximate ?? false, childImage: childIdentity?.image ?? null } : {}), ...(PLATFORM === 'darwin' ? { childCwd: childIdentity?.cwd ?? null } : {}), ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
   let currentState = baseState
   const writeState = (extra) => {
     currentState = { ...currentState, ...extra }
@@ -673,7 +745,7 @@ async function main() {
   consentModules.writeJsonAtomic(statePaths.pointer, { version: 1, runId })
   journal({ event: 'launched', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner })
   let finished = false
-  const finish = (code) => {
+  const finish = (code, receiptLines = []) => {
     if (finished) return
     finished = true
     // The lane's own terminal line wins: when opencode already wrote `EXIT=<n>` and the group is
@@ -683,13 +755,14 @@ async function main() {
       const tail = readLaneLog(opts.log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1) ?? ''
       if (/^EXIT=\d+$/.test(tail)) return
     } catch { /* unreadable log: append below */ }
-    try { appendFileSync(opts.log, `EXIT=${code}\n`) } catch { /* best effort after a log write failure */ }
+    const receipt = receiptLines.length ? `${receiptLines.join('\n')}\n` : ''
+    try { appendFileSync(opts.log, `${receipt}EXIT=${code}\n`) } catch { /* best effort after a log write failure */ }
   }
   // Ending the lane, from either the timeout or an external signal, ends the whole process group:
   // the worker is the group leader (detached) and opencode lives in that group, so a signal sent to
   // the worker's pid alone used to kill the launcher and leave the lane running, invisible.
-  const endGroup = (code, { writeReceipt = true, terminal = null } = {}) => {
-    if (writeReceipt) finish(code)
+  const endGroup = (code, { writeReceipt = true, receiptLines = [], terminal = null } = {}) => {
+    if (writeReceipt) finish(code, receiptLines)
     process.removeAllListeners('SIGTERM'); process.removeAllListeners('SIGINT')
     process.on('SIGTERM', () => {}); process.on('SIGINT', () => {})
     consentModules.terminateLane(currentState, { graceMs: GRACE_MS, journal, source: 'worker', ownedChild: child, ...(terminal ? { markTerminal: (stage) => writeState(stage === 'terminal' ? terminal : { ...terminal, state: 'terminating' }) } : {}) })
@@ -728,7 +801,7 @@ async function main() {
         } else {
           journal({ event: 'decision', decision: 'abandon', source: 'grace-default', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: 'extension ceiling reached' })
           cleanupBrief()
-          endGroup(126, { terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'grace-default', decidedAt: new Date().toISOString(), extensionCount, evidence } })
+          endGroup(126, { receiptLines: ['TERMINATION=timeout'], terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'grace-default', decidedAt: new Date().toISOString(), extensionCount, evidence } })
         }
       } catch {}
     }, opts.decisionGrace * 1000)
@@ -760,7 +833,7 @@ async function main() {
         writeState({ state: 'running', decision: 'extend', decisionSource: 'owner', decidedAt: new Date().toISOString(), extensionCount })
         armTimeout(Number.isFinite(decision.extendSeconds) && decision.extendSeconds > 0 ? decision.extendSeconds : opts.timeout)
       } else {
-        cleanupBrief(); endGroup(126, { terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'extension-ceiling', decidedAt: new Date().toISOString(), extensionCount } })
+        cleanupBrief(); endGroup(126, { receiptLines: ['TERMINATION=timeout'], terminal: { state: 'abandoned', decision: 'abandon', decisionSource: 'extension-ceiling', decidedAt: new Date().toISOString(), extensionCount } })
       }
     } else {
       journal({ event: 'decision', decision: 'abandon', source: 'owner', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: decision.reason ?? null })
@@ -775,16 +848,17 @@ async function main() {
     if (closeHandled) return
     closeHandled = true
     clearTimeout(timer); clearTimeout(graceTimer); clearInterval(decisions)
-    const exit = signal ? 124 : (code ?? 1)
+    const killedBy = signal ? identifySignalCause(child.pid, signal, { startedAt: childSpawnedAt }) : null
+    const exit = signal ? signalExit(signal) : (code ?? 1)
     appendVariantReport(opts, variant)
     try {
       const current = JSON.parse(readFileSync(stateFile, 'utf8'))
       if (['terminating', 'abandoned'].includes(current.state)) return
     } catch {}
-    writeState({ state: 'exited', exit, exitedAt: new Date().toISOString() })
-    journal({ event: 'exited', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: signal ?? `exit ${exit}` })
+    writeState({ state: 'exited', exit, ...(killedBy ? { killedBy } : {}), exitedAt: new Date().toISOString() })
+    journal({ event: 'exited', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: killedBy ? `${killedBy.cause} ${signal}` : `exit ${exit}` })
     cleanupBrief()
-    endGroup(exit)
+    endGroup(exit, { receiptLines: killedBy ? killedByLines(killedBy) : [] })
   }
   child.on('close', onChildClose)
   if (earlyChildClose) onChildClose(...earlyChildClose)
