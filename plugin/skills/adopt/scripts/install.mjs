@@ -171,32 +171,37 @@ function cloneJson(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-function verifySettingsWrite(before, after, addedKeys) {
-  const beforeRoot = before && isPlainObject(before) ? before : {}
-  const afterRoot = after && isPlainObject(after) ? after : null
-  if (!afterRoot) fail('settings write verification failed: root is not a JSON object after writing')
-  const beforeRootCount = Object.keys(beforeRoot).length
-  const afterRootCount = Object.keys(afterRoot).length
+function verifyPreservedKeys(before, after, scope, ignored = null) {
+  for (const key of Object.keys(before)) {
+    if (key === ignored) continue
+    if (!Object.prototype.hasOwnProperty.call(after, key)) fail(`settings write verification failed: ${scope} key lost (${key})`)
+    if (JSON.stringify(after[key]) !== JSON.stringify(before[key])) {
+      fail(`settings write verification failed: ${scope} key changed unexpectedly (${key})`)
+    }
+  }
+}
+
+function verifySettingsAdditions(afterEnv, additions) {
+  for (const { key, value } of additions) {
+    if (!Object.prototype.hasOwnProperty.call(afterEnv, key)) fail(`settings write verification failed: intended env key missing (${key})`)
+    if (afterEnv[key] !== value) fail(`settings write verification failed: intended env value differs (${key})`)
+  }
+}
+
+function verifySettingsWrite(before, after, additions) {
+  const beforeRoot = isPlainObject(before) ? before : {}
+  if (!isPlainObject(after)) fail('settings write verification failed: root is not a JSON object after writing')
   const beforeEnv = isPlainObject(beforeRoot.env) ? beforeRoot.env : {}
-  const afterEnv = isPlainObject(afterRoot.env) ? afterRoot.env : null
+  const afterEnv = isPlainObject(after.env) ? after.env : null
   if (!afterEnv) fail('settings write verification failed: env is missing or not an object after writing')
-  const expectedRootCount = beforeRootCount + (Object.prototype.hasOwnProperty.call(beforeRoot, 'env') ? 0 : 1)
-  const expectedEnvCount = Object.keys(beforeEnv).length + addedKeys.length
-  if (afterRootCount !== expectedRootCount) fail('settings write verification failed: root key count changed unexpectedly')
-  if (Object.keys(afterEnv).length !== expectedEnvCount) fail('settings write verification failed: env key count changed unexpectedly')
-  for (const key of Object.keys(beforeRoot)) {
-    if (key === 'env') continue
-    if (!Object.prototype.hasOwnProperty.call(afterRoot, key)) fail(`settings write verification failed: root key lost (${key})`)
-    if (JSON.stringify(afterRoot[key]) !== JSON.stringify(beforeRoot[key])) {
-      fail(`settings write verification failed: root key changed unexpectedly (${key})`)
-    }
+  const expectedRootCount = Object.keys(beforeRoot).length + (Object.prototype.hasOwnProperty.call(beforeRoot, 'env') ? 0 : 1)
+  if (Object.keys(after).length !== expectedRootCount) fail('settings write verification failed: root key count changed unexpectedly')
+  if (Object.keys(afterEnv).length !== Object.keys(beforeEnv).length + additions.length) {
+    fail('settings write verification failed: env key count changed unexpectedly')
   }
-  for (const key of Object.keys(beforeEnv)) {
-    if (!Object.prototype.hasOwnProperty.call(afterEnv, key)) fail(`settings write verification failed: env key lost (${key})`)
-    if (JSON.stringify(afterEnv[key]) !== JSON.stringify(beforeEnv[key])) {
-      fail(`settings write verification failed: env key changed unexpectedly (${key})`)
-    }
-  }
+  verifyPreservedKeys(beforeRoot, after, 'root', 'env')
+  verifyPreservedKeys(beforeEnv, afterEnv, 'env')
+  verifySettingsAdditions(afterEnv, additions)
 }
 
 function backupSettingsFile(filePath) {
@@ -244,6 +249,48 @@ function writeSettingsTrace(configRoot, settingsPath, version, writes, priorTrac
   writeJsonFile(tracePath, base)
 }
 
+function planSettingsUpdate(requirements, settingsRead, traceRead) {
+  const plannedWrites = []
+  const statuses = new Map()
+  for (const requirement of requirements) {
+    const status = classifyEnvRequirement(settingsRead, traceRead, requirement)
+    statuses.set(requirement.key, status.status)
+    if (status.write) {
+      plannedWrites.push(requirement)
+    }
+  }
+  return { plannedWrites, statuses }
+}
+
+function commitSettingsUpdate(configRoot, settingsPath, settingsRead, traceRead, plannedWrites, version) {
+  const beforeValue = settingsRead.kind === 'ok' ? settingsRead.value : {}
+  const nextValue = cloneJson(beforeValue)
+  const beforeEnv = isPlainObject(nextValue.env) ? nextValue.env : {}
+  nextValue.env = { ...beforeEnv }
+  for (const requirement of plannedWrites) nextValue.env[requirement.key] = requirement.value
+  verifySettingsWrite(beforeValue, nextValue, plannedWrites)
+  fs.mkdirSync(configRoot, { recursive: true })
+  let backupPath = null
+  if (settingsRead.kind === 'ok') backupPath = backupSettingsFile(settingsPath)
+  writeJsonFile(settingsPath, nextValue)
+  const reread = readJsonObject(settingsPath, 'settings')
+  if (reread.kind !== 'ok') fail('settings write verification failed: could not re-read settings.json after writing')
+  verifySettingsWrite(beforeValue, reread.value, plannedWrites)
+  writeSettingsTrace(configRoot, settingsPath, version, plannedWrites, traceRead)
+  return backupPath
+}
+
+function renderSettingsStatuses(requirements, plan, backupPath = null, wrote = false) {
+  for (const requirement of requirements) {
+    const verb = wrote && plan.plannedWrites.some((planned) => planned.key === requirement.key)
+      ? backupPath
+        ? `WROTE (backup ${path.basename(backupPath)} created)`
+        : 'WROTE'
+      : plan.statuses.get(requirement.key)
+    process.stdout.write(`  ${requirement.key}: ${verb}\n`)
+  }
+}
+
 function processSettings(configRoot, chosen, args, version) {
   const requirements = settingsRequirementsFor(chosen)
   if (requirements.length === 0) return { anyAbsent: false, anyProblem: false }
@@ -255,44 +302,16 @@ function processSettings(configRoot, chosen, args, version) {
   process.stdout.write(
     'adopt: account-level env prerequisites are checked only for the ACTIVE config profile here; if you use other CLAUDE_CONFIG_DIR profiles, rerun under each profile.\n',
   )
-  let anyAbsent = false
-  let anyProblem = settingsRead.kind === 'invalid' || settingsRead.kind === 'unreadable'
-  const plannedWrites = []
-  const statuses = new Map()
-  for (const requirement of requirements) {
-    const status = classifyEnvRequirement(settingsRead, traceRead, requirement)
-    statuses.set(requirement.key, status.status)
-    if (status.write) {
-      anyAbsent = true
-      plannedWrites.push(requirement)
-    }
-  }
-  if (args.mode !== 'install' || plannedWrites.length === 0) {
-    for (const requirement of requirements) process.stdout.write(`  ${requirement.key}: ${statuses.get(requirement.key)}\n`)
+  const settingsPlan = planSettingsUpdate(requirements, settingsRead, traceRead)
+  const anyAbsent = settingsPlan.plannedWrites.length > 0
+  const anyProblem = settingsRead.kind === 'invalid' || settingsRead.kind === 'unreadable'
+  if (args.mode !== 'install' || !anyAbsent) {
+    renderSettingsStatuses(requirements, settingsPlan)
     return { anyAbsent, anyProblem }
   }
   if (!(settingsRead.kind === 'ok' || settingsRead.kind === 'missing')) return { anyAbsent, anyProblem: true }
-  const beforeValue = settingsRead.kind === 'ok' ? settingsRead.value : {}
-  const nextValue = cloneJson(beforeValue)
-  const beforeEnv = isPlainObject(nextValue.env) ? nextValue.env : {}
-  nextValue.env = { ...beforeEnv }
-  for (const requirement of plannedWrites) nextValue.env[requirement.key] = requirement.value
-  fs.mkdirSync(configRoot, { recursive: true })
-  let backupPath = null
-  if (settingsRead.kind === 'ok') backupPath = backupSettingsFile(settingsPath)
-  writeJsonFile(settingsPath, nextValue)
-  const reread = readJsonObject(settingsPath, 'settings')
-  if (reread.kind !== 'ok') fail('settings write verification failed: could not re-read settings.json after writing')
-  verifySettingsWrite(beforeValue, reread.value, plannedWrites.map((item) => item.key))
-  writeSettingsTrace(configRoot, settingsPath, version, plannedWrites, traceRead)
-  for (const requirement of requirements) {
-    const verb = plannedWrites.some((planned) => planned.key === requirement.key)
-      ? backupPath
-        ? `WROTE (backup ${path.basename(backupPath)} created)`
-        : 'WROTE'
-      : statuses.get(requirement.key)
-    process.stdout.write(`  ${requirement.key}: ${verb}\n`)
-  }
+  const backupPath = commitSettingsUpdate(configRoot, settingsPath, settingsRead, traceRead, settingsPlan.plannedWrites, version)
+  renderSettingsStatuses(requirements, settingsPlan, backupPath, true)
   return { anyAbsent, anyProblem }
 }
 
@@ -1391,8 +1410,34 @@ function printChangelogSpan(root, fromVersion, toVersion) {
   }
 }
 
-function parseArgs(argv) {
-  const args = {
+const CLI_VALUE_OPTIONS = {
+  '--dir': 'dir',
+  '--set': 'set',
+  '--user-dir': 'userDir',
+  '--pairs-file': 'pairsFile',
+  '--declarations-file': 'declarationsFile',
+  '--secondary-dir': 'secondaryDir',
+  '--file': 'file',
+}
+
+const CLI_BOOLEAN_OPTIONS = {
+  '--force': 'force',
+  '--replace-symlinks': 'replaceSymlinks',
+  '--global': 'global',
+  '--dry-run': 'dryRun',
+  '--ignore-secondary': 'ignoreSecondary',
+  '--execute': 'execute',
+}
+
+const CLI_MODE_OPTIONS = {
+  '--install': 'install',
+  '--check': 'check',
+  '--audit-overlap': 'audit-overlap',
+  '--migrate': 'migrate',
+}
+
+function defaultCliArgs() {
+  return {
     mode: 'check',
     dir: null,
     global: false,
@@ -1409,28 +1454,19 @@ function parseArgs(argv) {
     diffFile: null,
     file: null,
   }
+}
+
+function parseArgs(argv) {
+  const args = defaultCliArgs()
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--install') args.mode = 'install'
-    else if (argv[i] === '--check') args.mode = 'check'
-    else if (argv[i] === '--force') args.force = true
-    else if (argv[i] === '--replace-symlinks') args.replaceSymlinks = true
-    else if (argv[i] === '--global') args.global = true
-    else if (argv[i] === '--dir') args.dir = argv[++i]
-    else if (argv[i] === '--set') args.set = argv[++i]
-    else if (argv[i] === '--audit-overlap') args.mode = 'audit-overlap'
-    else if (argv[i] === '--user-dir') args.userDir = argv[++i]
-    else if (argv[i] === '--pairs-file') args.pairsFile = argv[++i]
-    else if (argv[i] === '--declarations-file') args.declarationsFile = argv[++i]
-    else if (argv[i] === '--migrate') args.mode = 'migrate'
-    else if (argv[i] === '--dry-run') args.dryRun = true
-    else if (argv[i] === '--secondary-dir') args.secondaryDir = argv[++i]
-    else if (argv[i] === '--ignore-secondary') args.ignoreSecondary = true
-    else if (argv[i] === '--execute') args.execute = true
-    else if (argv[i] === '--diff') {
+    const token = argv[i]
+    if (CLI_MODE_OPTIONS[token]) args.mode = CLI_MODE_OPTIONS[token]
+    else if (CLI_BOOLEAN_OPTIONS[token]) args[CLI_BOOLEAN_OPTIONS[token]] = true
+    else if (CLI_VALUE_OPTIONS[token]) args[CLI_VALUE_OPTIONS[token]] = argv[++i]
+    else if (token === '--diff') {
       args.mode = 'diff'
       args.diffFile = argv[++i]
     }
-    else if (argv[i] === '--file') args.file = argv[++i]
   }
   return args
 }
@@ -1528,290 +1564,247 @@ function findFile(searchDirs, filename) {
   return null
 }
 
+function auditInventory(searchDirs) {
+  const entries = []
+  let found = false
+  for (const dir of searchDirs) {
+    try {
+      entries.push(...fs.readdirSync(dir))
+      found = true
+    } catch {
+      // A candidate may be absent during the flat-root transition.
+    }
+  }
+  if (!found) fail(`user directory does not exist: ${searchDirs.join(' nor ')}`)
+  return [...new Set(entries)]
+}
+
+function readShipDeclarations(declarationsFile, pairsPath, declaredUsers, declaredShipped) {
+  const defaultPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ship-declarations.json')
+  const declarationsPath = path.resolve(declarationsFile || defaultPath)
+  let declarations
+  try {
+    declarations = JSON.parse(fs.readFileSync(declarationsPath, 'utf8'))
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return new Map()
+    if (error instanceof SyntaxError) fail(`invalid ship declarations file ${declarationsPath}: invalid JSON`)
+    throw error
+  }
+  if (!Array.isArray(declarations)) fail(`invalid ship declarations file ${declarationsPath}: root must be a JSON array`)
+  for (const [index, entry] of declarations.entries()) {
+    validateShipDeclaration(entry, index, declarationsPath, pairsPath, declaredUsers, declaredShipped)
+  }
+  return new Map(declarations.map((entry) => [entry.user, entry]))
+}
+
+function validateShipDeclaration(entry, index, declarationsPath, pairsPath, declaredUsers, declaredShipped) {
+  const prefix = `invalid ship declarations file ${declarationsPath}: entry ${index}`
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) fail(`${prefix} must be an object`)
+  if (typeof entry.user !== 'string' || entry.user.trim() === '') fail(`${prefix} field 'user' must be a non-empty string`)
+  if (!['private', 'undecided', 'shipped-as'].includes(entry.status)) {
+    fail(`${prefix} field 'status' must be one of private | undecided | shipped-as`)
+  }
+  const hasTarget = Object.prototype.hasOwnProperty.call(entry, 'target')
+  if (entry.status === 'shipped-as' && (typeof entry.target !== 'string' || entry.target.trim() === '')) {
+    fail(`${prefix} field 'target' must be a non-empty string when status is 'shipped-as'`)
+  }
+  if (entry.status !== 'shipped-as' && hasTarget) fail(`${prefix} field 'target' is allowed only when status is 'shipped-as'`)
+  if (declaredUsers.has(entry.user) || declaredShipped.has(entry.user)) {
+    fail(`${prefix} user '${entry.user}' collides with a declared pair (user or shipped side) in ${pairsPath}`)
+  }
+}
+
+function emptyAuditCounts() {
+  return {
+    duplicate: 0, drift: 0, absent: 0, unpaired: 0, unmapped: 0,
+    declaredPrivate: 0, undecided: 0, declaredPorted: 0, declarationError: 0,
+    driftMissingFromShipped: 0, driftMissingFromProject: 0,
+  }
+}
+
+function countUnpaired(setConfig, root, declaredShipped, pairsPath, set) {
+  let count = 0
+  for (const item of setConfig.resolveItems(root)) {
+    if (declaredShipped.has(item.file)) continue
+    count++
+    process.stdout.write(
+      `UNPAIRED ${item.file}: no pairing entry in ${pairsPath} — this shipped ${set === 'agents' ? 'agent' : 'rule'} is untracked by audit-overlap\n`,
+    )
+  }
+  return count
+}
+
+function countLocationDuplicates(setConfig, root, searchDirs, set) {
+  if (set !== 'rules' || searchDirs.length < 2 || searchDirs[0] === searchDirs[1]) return 0
+  let count = 0
+  for (const item of setConfig.resolveItems(root)) {
+    const primaryPath = path.join(searchDirs[0], item.file)
+    const otherPath = path.join(searchDirs[1], item.file)
+    if (!realFile(primaryPath) || !realFile(otherPath)) continue
+    count++
+    process.stdout.write(
+      `DUPLICATE-LOCATION ${item.file}: present at BOTH ${primaryPath} and ${otherPath} — loaded twice (pre-migration copy not yet removed)\n`,
+    )
+  }
+  return count
+}
+
+function pairLocations(pair, userDir, searchDirs, shippedDir) {
+  const foundUserPath = findFile(searchDirs, pair.user)
+  const foundShippedPath = pair.shipped !== pair.user ? findFile(searchDirs, pair.shipped) : null
+  return {
+    userExists: foundUserPath !== null,
+    adoptedDirectly: foundShippedPath !== null,
+    declaredUserPath: foundUserPath || path.join(userDir, pair.user),
+    adoptedPath: foundShippedPath || path.join(userDir, pair.shipped),
+    shippedPath: path.join(shippedDir, pair.shipped),
+  }
+}
+
+function pairLineDiff(pair, locations, set, setConfig, stripBanner) {
+  const userPath = locations.userExists ? locations.declaredUserPath : locations.adoptedPath
+  const userContent = fs.readFileSync(userPath, 'utf8')
+  const userHasBanner = VERSION_RE.test(bannerLine(setConfig, userContent))
+  const userLines = normalizedLines(userHasBanner ? stripBanner(userContent) : userContent)
+  const shippedLines = new Set(normalizedLines(stripBanner(fs.readFileSync(locations.shippedPath, 'utf8'))))
+  const allow = Array.isArray(pair.allowExtraPatterns) ? pair.allowExtraPatterns.map((pattern) => new RegExp(pattern)) : []
+  const extras = [...new Set(userLines.filter((line) => line !== '' && !shippedLines.has(line)))].filter(
+    (line) => !allow.some((pattern) => pattern.test(line)),
+  )
+  const userLineSet = new Set(userLines)
+  const missing = set === 'agents'
+    ? [...new Set([...shippedLines].filter((line) => line !== '' && !userLineSet.has(line)))]
+    : []
+  return { extras, missing }
+}
+
+function renderPairDrift(pair, locations, extras, missing) {
+  const partial = pair.partial === true
+  const label = partial ? 'DRIFT (partial, informational)' : 'DRIFT'
+  process.stdout.write(
+    locations.adoptedDirectly
+      ? `${label} ${pair.user}: adopted under shipped name (${pair.shipped}), content diverges from the shipped source\n`
+      : `${label} ${pair.user}\n`,
+  )
+  for (const line of extras.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_SHIPPED}): ${line}\n`)
+  if (extras.length > 40) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_SHIPPED}): +${extras.length - 40} more\n`)
+  for (const line of missing.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_PROJECT}): ${line}\n`)
+  if (missing.length > 40) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_PROJECT}): +${missing.length - 40} more\n`)
+  return {
+    drift: partial ? 0 : 1,
+    driftMissingFromShipped: !partial && extras.length > 0 ? 1 : 0,
+    driftMissingFromProject: !partial && missing.length > 0 ? 1 : 0,
+  }
+}
+
+function auditPair(pair, context) {
+  const locations = pairLocations(pair, context.userDir, context.searchDirs, context.shippedDir)
+  if (!locations.userExists && !locations.adoptedDirectly) {
+    process.stdout.write(`ABSENT ${pair.user}: ABSENT (declared pair, no user file present)\n`)
+    return { absent: context.set === 'agents' ? 1 : 0 }
+  }
+  if (locations.userExists && locations.adoptedDirectly) {
+    const partial = pair.partial === true
+    process.stdout.write(`${partial ? 'DUPLICATE (partial, informational)' : 'DUPLICATE'} ${locations.declaredUserPath} + ${locations.adoptedPath}\n`)
+    return { duplicate: partial ? 0 : 1 }
+  }
+  if (!realFile(locations.shippedPath)) {
+    process.stdout.write(`CLEAN ${pair.user}: no shipped comparison file\n`)
+    return {}
+  }
+  const { extras, missing } = pairLineDiff(pair, locations, context.set, context.setConfig, context.stripBanner)
+  if (extras.length === 0 && missing.length === 0) {
+    process.stdout.write(
+      locations.adoptedDirectly ? `CLEAN ${pair.user}: adopted under shipped name (${pair.shipped})\n` : `CLEAN ${pair.user}\n`,
+    )
+    return {}
+  }
+  return renderPairDrift(pair, locations, extras, missing)
+}
+
+function mergeAuditCounts(counts, addition) {
+  for (const [key, value] of Object.entries(addition)) counts[key] += value
+}
+
+function auditUnmappedFile(file, foundPath, context) {
+  if (context.set !== 'rules') {
+    process.stdout.write(`UNMAPPED ${foundPath}\n`)
+    return { unmapped: 1 }
+  }
+  const declaration = context.declaredStatus.get(file)
+  if (!declaration) {
+    process.stdout.write(`UNMAPPED ${foundPath}\n`)
+    return { unmapped: 1 }
+  }
+  if (declaration.status === 'private') return { declaredPrivate: 1 }
+  if (declaration.status === 'undecided') {
+    process.stdout.write(`UNDECIDED ${foundPath}: ship/keep-private decision recorded as owed — resolve before the next release\n`)
+    return { undecided: 1 }
+  }
+  const targetPath = path.join(context.shippedDir, declaration.target)
+  if (realFile(targetPath)) return { declaredPorted: 1 }
+  process.stdout.write(
+    `DECLARATION-ERROR ${foundPath}: declared shipped-as '${declaration.target}', but no such shipped file exists at ${targetPath}\n`,
+  )
+  return { declarationError: 1 }
+}
+
+function auditUnmapped(entries, context, counts) {
+  for (const file of entries.filter((entry) => entry.endsWith('.md')).sort()) {
+    if (context.declaredUsers.has(file) || context.declaredShipped.has(file)) continue
+    const foundPath = findFile(context.searchDirs, file)
+    if (foundPath) mergeAuditCounts(counts, auditUnmappedFile(file, foundPath, context))
+  }
+}
+
+function renderAuditSummary(set, counts) {
+  if (set === 'agents') {
+    process.stdout.write(
+      `audit-overlap: ${counts.duplicate} duplicate, ${counts.drift} drift, ${counts.absent} absent, ${counts.unpaired} unpaired, ${counts.unmapped} unmapped\n`,
+    )
+  } else {
+    process.stdout.write(
+      `audit-overlap: ${counts.duplicate} duplicate, ${counts.drift} drift, ${counts.unpaired} unpaired, ${counts.unmapped} unmapped, ` +
+        `${counts.declaredPrivate} declared-private (silent), ${counts.undecided} undecided, ${counts.declaredPorted} declared-ported (silent), ${counts.declarationError} declaration-error\n`,
+    )
+  }
+  if (counts.driftMissingFromShipped > 0 || counts.driftMissingFromProject > 0) {
+    process.stdout.write(
+      `  ↳ drift direction: ${counts.driftMissingFromProject} pair(s) ${MISSING_FROM_PROJECT} (project is BEHIND the shipped template), ` +
+        `${counts.driftMissingFromShipped} pair(s) ${MISSING_FROM_SHIPPED} (project has DIVERGED ahead of the shipped template)\n`,
+    )
+  }
+  if (counts.duplicate || counts.drift || counts.unpaired || (set === 'agents' && counts.absent) || counts.declarationError) {
+    process.exitCode = 1
+  }
+}
+
 function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules') {
   const setConfig = SETS[set]
   if (!setConfig) fail(`unknown audit-overlap set '${set}' (expected rules | agents)`)
   const searchDirs = set === 'rules' ? rulesSearchDirs(userDir) : [userDir]
   process.stdout.write(`[audit-overlap:${set}] target=${userDir}\n`)
   if (searchDirs.length > 1) process.stdout.write(`  ↳ also searching ${searchDirs[1]} (flat-root/rules-wt transition, card 1835727457)\n`)
-  let entries = []
-  let anyDirFound = false
-  for (const dir of searchDirs) {
-    try {
-      for (const f of fs.readdirSync(dir)) entries.push(f)
-      anyDirFound = true
-    } catch {
-      /* this candidate location doesn't exist — fine as long as at least one search dir does */
-    }
-  }
-  entries = [...new Set(entries)]
-  if (!anyDirFound) {
-    fail(`user directory does not exist: ${searchDirs.join(' nor ')}`)
-  }
+  const entries = auditInventory(searchDirs)
   const defaultPairsFile = set === 'agents' ? 'agent-pairs.json' : 'rule-pairs.json'
   const pairsPath = path.resolve(pairsFile || path.join(path.dirname(fileURLToPath(import.meta.url)), defaultPairsFile))
   const pairs = JSON.parse(fs.readFileSync(pairsPath, 'utf8'))
-  const shippedDir = path.join(root, setConfig.srcDir)
-  const stripBanner = set === 'agents' ? stripAgentBanner : stripRuleBanner
   const declaredUsers = new Set(pairs.map((pair) => pair.user))
-  // The shipped-side basename of a declared pair is never itself a candidate for UNMAPPED:
-  // it is either explained by DUPLICATE (both present), ABSENT (only the user side missing —
-  // the shipped-only file just isn't examined by that branch), or the correct target end
-  // state (user side removed, shipped copy installed) — never "no known counterpart".
   const declaredShipped = new Set(pairs.map((pair) => pair.shipped))
-  let declaredStatus = new Map()
-  let duplicate = 0
-  let drift = 0
-  let absent = 0
-  let unpaired = 0
-  let unmapped = 0
-  let declaredPrivate = 0
-  let undecided = 0
-  let declaredPorted = 0
-  let declarationError = 0
-  // Direction breakdown of `drift`: the single `drift`
-  // count says a pair diverges, never which way — so "2 drift" cannot tell a reader whether
-  // the project is BEHIND the shipped template or has DIVERGED locally ahead of it. Counted
-  // per PAIR (a pair can contribute to both when it both adds and drops lines), never
-  // double-counted against `drift` itself, which stays the pre-existing gate signal.
-  let driftMissingFromShipped = 0
-  let driftMissingFromProject = 0
-
-  if (set === 'rules') {
-    const defaultDeclarationsFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'ship-declarations.json')
-    const declarationsPath = path.resolve(declarationsFile || defaultDeclarationsFile)
-    let declarations = []
-    try {
-      const raw = fs.readFileSync(declarationsPath, 'utf8')
-      declarations = JSON.parse(raw)
-    } catch (error) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-        declarations = []
-      } else if (error instanceof SyntaxError) {
-        fail(`invalid ship declarations file ${declarationsPath}: invalid JSON`)
-      } else {
-        throw error
-      }
-    }
-    if (!Array.isArray(declarations)) fail(`invalid ship declarations file ${declarationsPath}: root must be a JSON array`)
-    for (const [index, entry] of declarations.entries()) {
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-        fail(`invalid ship declarations file ${declarationsPath}: entry ${index} must be an object`)
-      }
-      if (typeof entry.user !== 'string' || entry.user.trim() === '') {
-        fail(`invalid ship declarations file ${declarationsPath}: entry ${index} field 'user' must be a non-empty string`)
-      }
-      if (!['private', 'undecided', 'shipped-as'].includes(entry.status)) {
-        fail(`invalid ship declarations file ${declarationsPath}: entry ${index} field 'status' must be one of private | undecided | shipped-as`)
-      }
-      const hasTarget = Object.prototype.hasOwnProperty.call(entry, 'target')
-      if (entry.status === 'shipped-as') {
-        if (typeof entry.target !== 'string' || entry.target.trim() === '') {
-          fail(`invalid ship declarations file ${declarationsPath}: entry ${index} field 'target' must be a non-empty string when status is 'shipped-as'`)
-        }
-      } else if (hasTarget) {
-        fail(`invalid ship declarations file ${declarationsPath}: entry ${index} field 'target' is allowed only when status is 'shipped-as'`)
-      }
-      // Collision check covers BOTH sides of a declared pair, not just `user`: the UNMAPPED
-      // loop below only ever consults `declaredStatus` for a file already proven absent from
-      // BOTH `declaredUsers` and `declaredShipped` (a file matching either is handled by the
-      // pairs machinery instead). A declaration whose `user` equals a paired SHIPPED basename
-      // therefore used to be accepted here and then silently never looked up — dead
-      // configuration that read as valid. Review finding, reproduced on this checkout: such an
-      // entry was accepted and the run stayed green with 0 declared-private, i.e. the
-      // declaration had no effect at all.
-      if (declaredUsers.has(entry.user) || declaredShipped.has(entry.user)) {
-        fail(
-          `invalid ship declarations file ${declarationsPath}: entry ${index} user '${entry.user}' collides with a declared pair (user or shipped side) in ${pairsPath}`,
-        )
-      }
-    }
-    declaredStatus = new Map(declarations.map((entry) => [entry.user, entry]))
+  const declaredStatus = set === 'rules'
+    ? readShipDeclarations(declarationsFile, pairsPath, declaredUsers, declaredShipped)
+    : new Map()
+  const context = {
+    set, setConfig, userDir, searchDirs, declaredUsers, declaredShipped, declaredStatus,
+    shippedDir: path.join(root, setConfig.srcDir),
+    stripBanner: set === 'agents' ? stripAgentBanner : stripRuleBanner,
   }
-
-  for (const item of setConfig.resolveItems(root)) {
-    if (!declaredShipped.has(item.file)) {
-      unpaired++
-      process.stdout.write(
-        `UNPAIRED ${item.file}: no pairing entry in ${pairsPath} — this shipped ${set === 'agents' ? 'agent' : 'rule'} is untracked by audit-overlap\n`,
-      )
-    }
-  }
-
-  // Dual-location duplicate: the SAME basename present at BOTH search dirs at once (the
-  // pre-migration flat root AND rules/wt/) — the exact "loaded twice" hazard the migration
-  // dry-run projects, caught here as ground truth on whatever is actually on disk today.
-  // Orthogonal to the pair-based DUPLICATE check below (which compares a DIFFERENT pair of
-  // basenames — a local override vs the shipped name — not two locations of the same file).
-  if (set === 'rules' && searchDirs.length > 1 && searchDirs[0] !== searchDirs[1]) {
-    for (const item of setConfig.resolveItems(root)) {
-      const primaryPath = path.join(searchDirs[0], item.file)
-      const otherPath = path.join(searchDirs[1], item.file)
-      if (realFile(primaryPath) && realFile(otherPath)) {
-        duplicate++
-        process.stdout.write(
-          `DUPLICATE-LOCATION ${item.file}: present at BOTH ${primaryPath} and ${otherPath} — loaded ` +
-            'twice (pre-migration copy not yet removed)\n',
-        )
-      }
-    }
-  }
-
-  for (const pair of pairs) {
-    const foundUserPath = findFile(searchDirs, pair.user)
-    const declaredUserPath = foundUserPath || path.join(userDir, pair.user)
-    const shippedPath = path.join(shippedDir, pair.shipped)
-    const userExists = foundUserPath !== null
-    const foundShippedInUserPath = pair.shipped !== pair.user ? findFile(searchDirs, pair.shipped) : null
-    const shippedInUserPath = foundShippedInUserPath || path.join(userDir, pair.shipped)
-    const shippedAdoptedDirectly = foundShippedInUserPath !== null
-    if (!userExists && !shippedAdoptedDirectly) {
-      if (set === 'agents') absent++
-      process.stdout.write(`ABSENT ${pair.user}: ABSENT (declared pair, no user file present)\n`)
-      continue
-    }
-    if (userExists && shippedAdoptedDirectly) {
-      // A `partial` pair (e.g. delegation-lanes.md / wt-delegation-ladder.md) is a DELIBERATE,
-      // accepted, bounded coexistence — both files are MEANT to be present together. Flagging
-      // it as a hard DUPLICATE would fail the guard on the documented target state itself.
-      const partial = pair.partial === true
-      if (!partial) duplicate++
-      const label = partial ? 'DUPLICATE (partial, informational)' : 'DUPLICATE'
-      process.stdout.write(`${label} ${declaredUserPath} + ${shippedInUserPath}\n`)
-      continue
-    }
-    // Exactly one of {declaredUserPath, shippedInUserPath} exists. When it's the shipped
-    // name alone (no separate local override authored), that is a VALID adoption — but it
-    // must still be drift-checked against the shipped source below, not waved through as
-    // CLEAN on existence alone: review finding on this same card showed an earlier version
-    // of this fix declared it CLEAN without ever reading the file, so an edited
-    // shipped-name-adopted copy passed silently. `--audit-overlap` is a standalone mode
-    // (main() returns before reaching --check/--install's classify()/plan() codepath), so
-    // nothing else in this invocation would have caught that edit.
-    const userPath = userExists ? declaredUserPath : shippedInUserPath
-    const adoptedUnderShippedName = !userExists
-    if (!realFile(shippedPath)) {
-      process.stdout.write(`CLEAN ${pair.user}: no shipped comparison file\n`)
-      continue
-    }
-    const allowExtraPatterns = Array.isArray(pair.allowExtraPatterns)
-      ? pair.allowExtraPatterns.map((pattern) => new RegExp(pattern))
-      : []
-    // A correctly-adopted user copy carries the SAME banner line the shipped side never has
-    // (stamped by --install) — comparing it unstripped against the stripped shipped content
-    // would report the banner itself as permanent, undiscriminating drift (an adopted copy
-    // could never go CLEAN). Strip it ONLY when the user file's own first-post-frontmatter
-    // line actually IS a recognized banner (VERSION_RE) — a hand-authored file with no banner
-    // must NOT have its real first line eaten.
-    const userContent = fs.readFileSync(userPath, 'utf8')
-    const userHasBanner = VERSION_RE.test(bannerLine(setConfig, userContent))
-    const userLines = normalizedLines(userHasBanner ? stripBanner(userContent) : userContent)
-    const shippedLines = new Set(normalizedLines(stripBanner(fs.readFileSync(shippedPath, 'utf8'))))
-    const extras = [...new Set(userLines.filter((line) => line !== '' && !shippedLines.has(line)))].filter(
-      (line) => !allowExtraPatterns.some((pattern) => pattern.test(line)),
-    )
-    // ADDITIONS-only was a real gap for the `agents` set (review finding):
-    // a project copy that DELETES a shipped line (e.g. a safety
-    // clause) adds no new line, so `extras` alone stays empty and the pair reports CLEAN —
-    // exactly the class of silent drift this gate exists to catch, since our own design
-    // decision is that an adopted agent copy = shipped body + ONE approved override line,
-    // nothing else may differ in either direction.
-    // Scoped to `agents` ONLY: `rules` copies are explicitly documented, in their own
-    // banner, as an "editable copy" users may freely trim/adapt — a blanket deletion check
-    // would fail every legitimately-edited rule and recreate the always-red trap this same
-    // pass just removed in the other direction. Rules-set behavior is therefore UNCHANGED
-    // (additions-only, as before).
-    const userLineSet = new Set(userLines)
-    const missing =
-      set === 'agents'
-        ? [...new Set([...shippedLines].filter((line) => line !== '' && !userLineSet.has(line)))]
-        : []
-    if (extras.length === 0 && missing.length === 0) {
-      process.stdout.write(
-        adoptedUnderShippedName
-          ? `CLEAN ${pair.user}: adopted under shipped name (${pair.shipped})\n`
-          : `CLEAN ${pair.user}\n`,
-      )
-    } else {
-      const partial = pair.partial === true
-      if (!partial) drift++
-      if (!partial && extras.length > 0) driftMissingFromShipped++
-      if (!partial && missing.length > 0) driftMissingFromProject++
-      const label = partial ? 'DRIFT (partial, informational)' : 'DRIFT'
-      process.stdout.write(
-        adoptedUnderShippedName
-          ? `${label} ${pair.user}: adopted under shipped name (${pair.shipped}), content diverges from the shipped source\n`
-          : `${label} ${pair.user}\n`,
-      )
-      for (const line of extras.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_SHIPPED}): ${line}\n`)
-      if (extras.length > 40) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_SHIPPED}): +${extras.length - 40} more\n`)
-      for (const line of missing.slice(0, 40)) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_PROJECT}): ${line}\n`)
-      if (missing.length > 40) process.stdout.write(`${label} ${pair.user} (${MISSING_FROM_PROJECT}): +${missing.length - 40} more\n`)
-    }
-  }
-  for (const file of entries.filter((f) => f.endsWith('.md')).sort()) {
-    const foundPath = findFile(searchDirs, file)
-    if (!declaredUsers.has(file) && !declaredShipped.has(file) && foundPath) {
-      if (set !== 'rules') {
-        unmapped++
-        process.stdout.write(`UNMAPPED ${foundPath}\n`)
-        continue
-      }
-      const decl = declaredStatus.get(file)
-      if (!decl) {
-        unmapped++
-        process.stdout.write(`UNMAPPED ${foundPath}\n`)
-      } else if (decl.status === 'private') {
-        declaredPrivate++
-      } else if (decl.status === 'undecided') {
-        undecided++
-        process.stdout.write(
-          `UNDECIDED ${foundPath}: ship/keep-private decision recorded as owed — resolve before the next release\n`,
-        )
-      } else {
-        const targetPath = path.join(shippedDir, decl.target)
-        if (realFile(targetPath)) {
-          declaredPorted++
-        } else {
-          declarationError++
-          process.stdout.write(
-            `DECLARATION-ERROR ${foundPath}: declared shipped-as '${decl.target}', but no such shipped file exists at ${targetPath}\n`,
-          )
-        }
-      }
-    }
-  }
-  if (set === 'agents') {
-    process.stdout.write(
-      `audit-overlap: ${duplicate} duplicate, ${drift} drift, ${absent} absent, ${unpaired} unpaired, ${unmapped} unmapped\n`,
-    )
-  } else {
-    process.stdout.write(
-      `audit-overlap: ${duplicate} duplicate, ${drift} drift, ${unpaired} unpaired, ${unmapped} unmapped, ` +
-        `${declaredPrivate} declared-private (silent), ${undecided} undecided, ${declaredPorted} declared-ported (silent), ${declarationError} declaration-error\n`,
-    )
-  }
-  // The single `drift` count above still decides the exit code (unchanged) — this line adds
-  // DIRECTION on top of it, never in place of it, so "2 drift" is never left to mean "behind"
-  // or "ahead" depending on which the reader happens to assume. Printed only when there is a
-  // direction to report; a project that's fully caught up gets no extra line to read.
-  if (driftMissingFromShipped > 0 || driftMissingFromProject > 0) {
-    process.stdout.write(
-      `  ↳ drift direction: ${driftMissingFromProject} pair(s) ${MISSING_FROM_PROJECT} (project is BEHIND the shipped template), ` +
-        `${driftMissingFromShipped} pair(s) ${MISSING_FROM_SHIPPED} (project has DIVERGED ahead of the shipped template)\n`,
-    )
-  }
-  // `unmapped` is deliberately NOT in this condition — it decides nothing. A file with no
-  // pairing entry (e.g. this project's own wt-check.md / wt-reviewer.md agents, which will
-  // never join the managed suite) is a PERMANENT, legitimate state for some projects: if it
-  // gated the exit code, the gate could never go green on those projects, and a bloqueur that
-  // is always red is bypassed by reflex — the day it also carries a real `drift`, nobody can
-  // tell the two apart in the same non-zero exit (measured 27/07/2026).
-  // `unmapped` stays fully VISIBLE above (one UNMAPPED line per file, counted in the summary)
-  // because an unmapped file can just as well be the symptom of an INCOMPLETE adoption — the
-  // tool cannot tell intent from omission, so it reports and lets a human judge, it just never
-  // blocks a release on that judgment call alone.
-  if (duplicate || drift || unpaired || (set === 'agents' && absent) || declarationError) process.exitCode = 1
+  const counts = emptyAuditCounts()
+  counts.unpaired = countUnpaired(setConfig, root, declaredShipped, pairsPath, set)
+  counts.duplicate = countLocationDuplicates(setConfig, root, searchDirs, set)
+  for (const pair of pairs) mergeAuditCounts(counts, auditPair(pair, context))
+  auditUnmapped(entries, context, counts)
+  renderAuditSummary(set, counts)
 }
 
 /** Decide the status label and (for --install) whether to write. `force` only ever
@@ -1819,7 +1812,7 @@ function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules')
  *  with no toolbox banner is NEVER overwritten — we won't clobber a file we never
  *  stamped. A symlink is never written THROUGH: it writes only under `replaceSymlinks`
  *  (and then processSet unlinks the link first, preserving its target). */
-function plan(c, version, force, replaceSymlinks, shippedFp, currentContentFp = shippedFp) {
+function plan({ classification: c, version, force, replaceSymlinks, shippedFp, currentContentFp = shippedFp }) {
   // CONTENT wins over banner metadata, including an old/ahead version or stale stored hash.
   // Comparison uses contentFingerprint's trailing-EOF-whitespace normalization.
   if (c.installedVer && shippedFp && c.contentFp === shippedFp) {
@@ -1875,131 +1868,132 @@ function plan(c, version, force, replaceSymlinks, shippedFp, currentContentFp = 
   }
 }
 
+function legacyItemDecision(set, dir, item, classification) {
+  if (classification.state !== 'absent' || set.kind !== 'rules') return null
+  const legacyDir = legacyRulesDir(dir)
+  if (!legacyDir) return null
+  const legacy = classify(path.join(legacyDir, item.file), set)
+  if (legacy.state === 'absent') return null
+  const location = `${legacyDir}/${item.file}`
+  const found = legacy.state === 'symlink' ? `found as a SYMLINK at the pre-migration location ${location}` : `found at the pre-migration location ${location}`
+  return {
+    status: `MIGRATION-PENDING (${found}; not yet migrated to ${dir}/ — run the adopt:migrate skill's --dry-run before --install here, or --install would write a fresh copy here and leave the old one in place, loading it twice)`,
+    write: false,
+  }
+}
+
+function decideManagedItem(set, dir, item, args, version, root, nestedDir) {
+  const target = path.join(dir, item.file)
+  const classification = classify(target, set)
+  const shippedFp = shippedFingerprint(set, item, root)
+  const currentContentFp = shippedFingerprint(set, item, root, classification.body, true)
+  let decision = plan({
+    classification,
+    version,
+    force: args.force,
+    replaceSymlinks: args.replaceSymlinks,
+    shippedFp,
+    currentContentFp,
+  })
+  let duplicate = false
+  if (nestedDir && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(nestedDir, item.file))) {
+    duplicate = true
+    decision = { status: `DUPLICATE (also present in ${nestedDir}/${item.file})`, write: false }
+  }
+  const legacyDecision = legacyItemDecision(set, dir, item, classification)
+  if (legacyDecision) decision = legacyDecision
+  const stale =
+    classification.state === 'clean' &&
+    ((cmp(classification.installedVer, version) < 0 && shippedFp && classification.contentFp !== shippedFp) ||
+      (cmp(classification.installedVer, version) === 0 && currentContentFp && classification.contentFp !== currentContentFp))
+  return { target, classification, decision, stale, migrationPending: !!legacyDecision, duplicate }
+}
+
+function localAgentContent(set, target, classification) {
+  if (set.kind !== 'agents' || !['edited', 'edited-unknown'].includes(classification.state)) return null
+  try {
+    return fs.readFileSync(target, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function managedWriteVerb(classification, force) {
+  if (classification.state === 'absent') return 'WROTE'
+  if (classification.state === 'symlink') return 'REPLACED symlink with'
+  if (force && classification.state !== 'clean') return 'OVERWROTE (--force)'
+  return 'REFRESHED'
+}
+
+function writeManagedItem(set, dir, item, args, version, root, planned) {
+  const { target, classification } = planned
+  const oldContent = localAgentContent(set, target, classification)
+  // This ordering is intentionally characterized: replacement opt-in unlinks before rendering.
+  if (classification.state === 'symlink') fs.rmSync(target, { force: true })
+  const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent)
+  if (preserved.length > 0) {
+    process.stdout.write(
+      `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
+    )
+  }
+  fs.writeFileSync(target, finalText)
+  const verb = managedWriteVerb(classification, args.force)
+  appendAdoptionJournal(dir, {
+    timestamp: new Date().toISOString(),
+    file: item.file,
+    directory: dir,
+    action: verb,
+    beforeVersion: classification.installedVer ?? null,
+    afterVersion: version,
+    adoptedText: stripBannerFor(set, finalText),
+  })
+  const versions = classification.installedVer ? `v${classification.installedVer} -> v${version}` : `none -> v${version}`
+  process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})\n`)
+}
+
+function renderManagedItem(set, dir, item, args, version, root, nestedDir) {
+  const planned = decideManagedItem(set, dir, item, args, version, root, nestedDir)
+  const { classification, decision } = planned
+  if (args.mode === 'install') {
+    if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
+    else process.stdout.write(`  ${item.file}: SKIPPED — ${decision.status}\n`)
+  } else {
+    process.stdout.write(`  ${item.file}: ${decision.status}\n`)
+    if (decision.status.startsWith('STALE') && classification.installedVer) {
+      printChangelogSpan(root, classification.installedVer, version)
+    }
+  }
+  return {
+    anyAbsent: classification.state === 'absent',
+    anyStale: planned.stale,
+    anyEdited: ['edited', 'edited-unknown'].includes(classification.state),
+    anySymlink: classification.state === 'symlink',
+    anyMigrationPending: planned.migrationPending,
+    anyDuplicate: planned.duplicate,
+  }
+}
+
 /** Process one set into `dir`. Returns the aggregate flags for the check-mode hint. */
 function processSet(set, dir, args, version, root) {
   if (args.mode === 'install') fs.mkdirSync(dir, { recursive: true })
   process.stdout.write(`[${set.kind}] target=${dir}\n`)
-
-  let anyAbsent = false
-  let anyStale = false
-  let anyEdited = false
-  let anySymlink = false
-  let anyMigrationPending = false
-  let anyDuplicate = false
   const nestedDir = explicitNestedTarget(set, dir, args)
   const items = set.resolveItems(root)
   if (args.file && !items.some((item) => item.file === args.file)) {
     fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
   }
-  for (const item of items.filter((candidate) => !args.file || candidate.file === args.file)) {
-    const target = path.join(dir, item.file)
-    const c = classify(target, set)
-    const shippedFp = shippedFingerprint(set, item, root)
-    const currentContentFp = shippedFingerprint(set, item, root, c.body, true)
-    let p = plan(c, version, args.force, args.replaceSymlinks, shippedFp, currentContentFp)
-    if (nestedDir && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(nestedDir, item.file))) {
-      anyDuplicate = true
-      p = { status: `DUPLICATE (also present in ${nestedDir}/${item.file})`, write: false }
-    }
-
-    // LEGACY-LOCATION FALLBACK (rules/wt/ migration, card 1835727457): an item ABSENT at the
-    // new default target may simply be UN-MIGRATED, still sitting at the pre-migration flat
-    // location (dir's own parent, when dir itself is a `wt` subfolder). Without this check, a
-    // project that has not migrated yet reads as "nothing adopted" here — a false negative
-    // indistinguishable from a genuinely fresh machine, on a perfectly healthy pre-migration
-    // install. It is deliberately a REPORT-ONLY finding: --install must NEVER auto-write a
-    // fresh copy at the new location while the legacy one is still there un-migrated — doing
-    // so is exactly how a project ends up with the same rule loaded twice (see the
-    // `adopt:migrate --dry-run` mode, which is the only place a move is even PLANNED, and
-    // still never executed by this script).
-    if (c.state === 'absent' && set.kind === 'rules') {
-      const legacyDir = legacyRulesDir(dir)
-      if (legacyDir) {
-        const legacyClassified = classify(path.join(legacyDir, item.file), set)
-        if (legacyClassified.state !== 'absent') {
-          anyMigrationPending = true
-          const legacyNote =
-            legacyClassified.state === 'symlink'
-              ? `MIGRATION-PENDING (found as a SYMLINK at the pre-migration location ${legacyDir}/${item.file}; not yet migrated to ${dir}/ — run the adopt:migrate skill's --dry-run before --install here, or --install would write a fresh copy here and leave the old one in place, loading it twice)`
-              : `MIGRATION-PENDING (found at the pre-migration location ${legacyDir}/${item.file}; not yet migrated to ${dir}/ — run the adopt:migrate skill's --dry-run before --install here, or --install would write a fresh copy here and leave the old one in place, loading it twice)`
-          p = { status: legacyNote, write: false }
-        }
-      }
-    }
-    if (c.state === 'absent') anyAbsent = true
-    // Mirrors plan()'s own condition exactly, so the per-file lines and the closing hint can
-    // never disagree — a summary that says "refresh the STALE item(s)" above a list with no
-    // STALE line sends the reader looking for something that isn't there.
-    if (
-      c.state === 'clean' &&
-      ((cmp(c.installedVer, version) < 0 && shippedFp && c.contentFp !== shippedFp) ||
-        (cmp(c.installedVer, version) === 0 && currentContentFp && c.contentFp !== currentContentFp))
-    )
-      anyStale = true
-    if (c.state === 'edited' || c.state === 'edited-unknown') anyEdited = true
-    if (c.state === 'symlink') anySymlink = true
-
-    if (args.mode === 'install') {
-      if (p.write) {
-        // Capture the pre-overwrite content BEFORE any mutation, for the agents set only (rules
-        // carry no frontmatter to preserve) and only when the classifier already found a REAL
-        // local edit (`edited` / `edited-unknown`). Deliberately excludes `clean` (incl. a
-        // STALE-but-clean refresh): a clean copy's content, by definition, was never modified
-        // after install — any key present in it but absent from the fresh shipped text is a
-        // field the PLUGIN itself retired, not something the user added. Preserving on a plain
-        // refresh would silently resurrect a field upstream deliberately removed (cross-family
-        // review finding).
-        let oldContent = null
-        if (set.kind === 'agents' && (c.state === 'edited' || c.state === 'edited-unknown')) {
-          try {
-            oldContent = fs.readFileSync(target, 'utf8')
-          } catch {
-            oldContent = null
-          }
-        }
-        // A symlink is REPLACED, never written THROUGH: unlink the link first (its real
-        // target is left untouched), then write a regular managed file in its place.
-        if (c.state === 'symlink') fs.rmSync(target, { force: true })
-        const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent)
-        if (preserved.length > 0) {
-          process.stdout.write(
-            `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
-          )
-        }
-        fs.writeFileSync(target, finalText)
-        const verb =
-          c.state === 'absent'
-            ? 'WROTE'
-            : c.state === 'symlink'
-              ? 'REPLACED symlink with'
-              : args.force && c.state !== 'clean'
-                ? 'OVERWROTE (--force)'
-                : 'REFRESHED'
-        appendAdoptionJournal(dir, {
-          timestamp: new Date().toISOString(),
-          file: item.file,
-          directory: dir,
-          action: verb,
-          beforeVersion: c.installedVer ?? null,
-          afterVersion: version,
-          adoptedText: stripBannerFor(set, finalText),
-        })
-        const versions = c.installedVer ? `v${c.installedVer} -> v${version}` : `none -> v${version}`
-        process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})\n`)
-      } else {
-        process.stdout.write(`  ${item.file}: SKIPPED — ${p.status}\n`)
-      }
-    } else {
-      process.stdout.write(`  ${item.file}: ${p.status}\n`)
-      // The payoff the card exists for: a STALE report by itself is a number moving,
-      // rationally ignored. `c.installedVer` is only ever set for a 'clean'/'edited'-family
-      // classification (never 'absent'), which is exactly the set STALE can be true for.
-      if (p.status.startsWith('STALE') && c.installedVer) {
-        printChangelogSpan(root, c.installedVer, version)
-      }
-    }
+  const state = {
+    anyAbsent: false,
+    anyStale: false,
+    anyEdited: false,
+    anySymlink: false,
+    anyMigrationPending: false,
+    anyDuplicate: false,
   }
-  return { anyAbsent, anyStale, anyEdited, anySymlink, anyMigrationPending, anyDuplicate }
+  for (const item of items.filter((candidate) => !args.file || candidate.file === args.file)) {
+    mergeSetState(state, renderManagedItem(set, dir, item, args, version, root, nestedDir))
+  }
+  return state
 }
 
 // --- --migrate --dry-run --------------------------------------------------------------------
@@ -2392,28 +2386,7 @@ function moveFileVerified(from, to) {
   }
 }
 
-function executeMigration(dir, args) {
-  const wtDir = dir
-  const flatDir = legacyRulesDir(wtDir)
-  if (!flatDir) {
-    fail(
-      `adopt:migrate expects a rules/wt/ target — resolved dir was ${wtDir}, whose basename is not ` +
-        `'wt'. Pass --dir <…/rules/wt> or rely on the default (no --dir, no --global).`,
-    )
-  }
-  process.stdout.write(`[migrate --execute] flat root=${flatDir}  →  new location=${wtDir}\n`)
-
-  const set = SETS.rules
-  const { moves, stays } = planMigrationItems(flatDir, wtDir, set)
-
-  // Refuse BEFORE moving anything if the plan is not safe. duplicateRisk is the SAME flag
-  // migrateDryRun's own exit-nonzero check reads (planMigrationItems sets it for: a file
-  // present at both the old and new location — 'destination already exists', and a locally
-  // edited copy that a later --install would duplicate) — one plan, one notion of "safe",
-  // read by both modes. Adds the read-failure case, which is a plan property too: a file
-  // planMigrationItems could not even classify is exactly the "unreadable source" case this
-  // increment must refuse on, so it is folded into the plan itself rather than special-cased
-  // here.
+function migrationPreflight(moves, stays, args) {
   const blockers = stays.filter((s) => s.duplicateRisk)
   if (blockers.length > 0) {
     process.stdout.write(
@@ -2426,18 +2399,20 @@ function executeMigration(dir, args) {
         '--migrate --execute.\n',
     )
     process.exitCode = 1
-    return
+    return false
   }
-
   if (moves.length > 0 && !args.secondaryDir && !args.ignoreSecondary) {
     process.stdout.write(
       'adopt:migrate --execute: REFUSING — a second config dir could hold per-file symlinks that this move would break. ' +
         'Pass --secondary-dir <path-to-its-rules-dir> to reconcile it, or --ignore-secondary to proceed with that risk explicitly. Nothing has been moved.\n',
     )
     process.exitCode = 1
-    return
+    return false
   }
+  return true
+}
 
+function renderEmptyMigration(wtDir, moves, stays, args) {
   if (moves.length === 0) {
     process.stdout.write(
       `adopt:migrate --execute: nothing to move — the plan is empty. No-op (not an error): either ` +
@@ -2445,10 +2420,12 @@ function executeMigration(dir, args) {
         `place by design (hand-authored — never managed).\n  destination: ${wtDir}\n`,
     )
     if (args.secondaryDir) reconcileSecondaryDir(args.secondaryDir, wtDir, moves)
-    return
+    return true
   }
+  return false
+}
 
-  const plannedCount = moves.length
+function executeMigrationMoves(moves) {
   let movedCount = 0
   let firstFailure = null
   for (const m of moves) {
@@ -2462,18 +2439,19 @@ function executeMigration(dir, args) {
       process.stdout.write(`  FAILED ${m.file}: ${firstFailure.message}\n`)
     }
   }
-  const notReached = moves.slice(movedCount + (firstFailure ? 1 : 0))
+  return { movedCount, firstFailure }
+}
 
-  // Count before, count after, compare — a move that silently loses a file is the failure
-  // this whole increment exists to prevent, so this is not decorative: verify each PLANNED
-  // move actually landed, source gone and destination present, independent of the per-move
-  // verification above.
-  let confirmed = 0
-  for (const m of moves) {
-    if (!fs.existsSync(m.from) && realFile(m.to)) confirmed++
-  }
+function confirmedMigrationCount(moves) {
+  return moves.filter((move) => !fs.existsSync(move.from) && realFile(move.to)).length
+}
+
+function renderMigrationResult(wtDir, moves, stays, result) {
+  const plannedCount = moves.length
+  const confirmed = confirmedMigrationCount(moves)
+  const notReached = moves.slice(result.movedCount + (result.firstFailure ? 1 : 0))
   process.stdout.write(
-    `\nadopt:migrate --execute: ${movedCount} of ${plannedCount} planned file(s) moved, ` +
+    `\nadopt:migrate --execute: ${result.movedCount} of ${plannedCount} planned file(s) moved, ` +
       `${confirmed} of ${plannedCount} confirmed present at destination and absent from origin.\n`,
   )
   if (stays.length > 0) {
@@ -2485,52 +2463,62 @@ function executeMigration(dir, args) {
     for (const n of notReached) process.stdout.write(`  NOT REACHED ${n.file}\n`)
   }
   process.stdout.write(`destination: ${wtDir}\n`)
-
-  if (firstFailure || confirmed !== plannedCount) {
+  if (result.firstFailure || confirmed !== plannedCount) {
     process.stdout.write('adopt:migrate --execute: EXITING NON-ZERO — not every planned move is confirmed.\n')
     process.exitCode = 1
-    return
+    return false
   }
+  return true
+}
+
+function executeMigration(dir, args) {
+  const wtDir = dir
+  const flatDir = legacyRulesDir(wtDir)
+  if (!flatDir) {
+    fail(
+      `adopt:migrate expects a rules/wt/ target — resolved dir was ${wtDir}, whose basename is not ` +
+        `'wt'. Pass --dir <…/rules/wt> or rely on the default (no --dir, no --global).`,
+    )
+  }
+  process.stdout.write(`[migrate --execute] flat root=${flatDir}  →  new location=${wtDir}\n`)
+  const { moves, stays } = planMigrationItems(flatDir, wtDir, SETS.rules)
+  if (!migrationPreflight(moves, stays, args) || renderEmptyMigration(wtDir, moves, stays, args)) return
+  const result = executeMigrationMoves(moves)
+  if (!renderMigrationResult(wtDir, moves, stays, result)) return
   if (args.secondaryDir) reconcileSecondaryDir(args.secondaryDir, wtDir, moves)
 }
 
-function main() {
-  const args = parseArgs(process.argv.slice(2))
-  checkFlagModeAsymmetry(args)
-  if (args.mode === 'migrate') {
-    if (args.dryRun && args.execute) {
-      fail('adopt:migrate: pass exactly one of --dry-run or --execute, never both in the same run.')
-    }
-    if (!args.dryRun && !args.execute) {
-      fail(
-        'adopt:migrate needs --dry-run (read-only preview) or --execute (perform the real move) — ' +
-          'bare --migrate does nothing. Run --migrate --dry-run first and read its real output before ' +
-          'ever passing --migrate --execute (card 1835727457, item 2): the real move is a deliberate, ' +
-          'separate step this script does not take on its own.',
-      )
-    }
-    if (args.set !== 'rules') fail(`adopt:migrate only applies to the rules set (got --set ${args.set})`)
-    const globalRoot = resolvedConfigRoot()
-    const set = SETS.rules
-    const dir = path.resolve(
-      args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
+function commandTargetDir(args, set, globalRoot) {
+  return path.resolve(
+    args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
+  )
+}
+
+function runMigrationCommand(args) {
+  if (args.dryRun && args.execute) fail('adopt:migrate: pass exactly one of --dry-run or --execute, never both in the same run.')
+  if (!args.dryRun && !args.execute) {
+    fail(
+      'adopt:migrate needs --dry-run (read-only preview) or --execute (perform the real move) — ' +
+        'bare --migrate does nothing. Run --migrate --dry-run first and read its real output before ' +
+        'ever passing --migrate --execute (card 1835727457, item 2): the real move is a deliberate, ' +
+        'separate step this script does not take on its own.',
     )
-    if (args.execute) {
-      executeMigration(dir, args)
-    } else {
-      migrateDryRun(dir, args)
-    }
-    return
   }
-  if (args.mode === 'audit-overlap') {
-    if (!args.userDir) fail('--user-dir is required with --audit-overlap')
-    if (!['rules', 'agents'].includes(args.set)) {
-      fail(`unknown --set '${args.set}' for --audit-overlap (expected rules | agents)`)
-    }
-    const root = pluginRoot()
-    auditOverlap(path.resolve(args.userDir), root, args.pairsFile, args.declarationsFile, args.set)
-    return
+  if (args.set !== 'rules') fail(`adopt:migrate only applies to the rules set (got --set ${args.set})`)
+  const dir = commandTargetDir(args, SETS.rules, resolvedConfigRoot())
+  if (args.execute) executeMigration(dir, args)
+  else migrateDryRun(dir, args)
+}
+
+function runAuditCommand(args) {
+  if (!args.userDir) fail('--user-dir is required with --audit-overlap')
+  if (!['rules', 'agents'].includes(args.set)) {
+    fail(`unknown --set '${args.set}' for --audit-overlap (expected rules | agents)`)
   }
+  auditOverlap(path.resolve(args.userDir), pluginRoot(), args.pairsFile, args.declarationsFile, args.set)
+}
+
+function standardCommandContext(args) {
   if (![...MANAGED_SET_NAMES, 'all'].includes(args.set)) {
     fail(`unknown --set '${args.set}' (expected ${MANAGED_SET_NAMES.join(' | ')} | all)`)
   }
@@ -2551,16 +2539,49 @@ function main() {
   // Deliberately one rule in two places rather than an import: these are a shipped hook and
   // a standalone script that must each run alone. They are locked in step by tests, not by
   // a shared module they cannot both reach.
-  const globalRoot = resolvedConfigRoot()
-  if (args.mode === 'diff') {
-    if (chosen.length !== 1) fail('--diff requires a single --set')
-    const set = SETS[chosen[0]]
-    const dir = path.resolve(
-      args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
+  return { root, version, chosen, globalRoot: resolvedConfigRoot() }
+}
+
+function runDiffCommand(args, context) {
+  if (context.chosen.length !== 1) fail('--diff requires a single --set')
+  const set = SETS[context.chosen[0]]
+  printThreeWayDiff(set, commandTargetDir(args, set, context.globalRoot), args.diffFile, context.version, context.root)
+}
+
+function renderCheckHints(args, state) {
+  if (args.mode !== 'check') return
+  if (state.anyAbsent) process.stdout.write('adopt: run with --install to write the ABSENT item(s).\n')
+  else if (state.anyStale) process.stdout.write('adopt: run with --install to refresh the STALE item(s).\n')
+  else if (state.anyEdited) process.stdout.write('adopt: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
+  else if (state.anySettingsProblem) process.stdout.write('adopt: account-level settings need manual attention before this tool can manage them safely.\n')
+  else process.stdout.write('adopt: nothing to do.\n')
+  if (state.anyMigrationPending) {
+    process.stdout.write(
+      'adopt: item(s) found only at the pre-migration rules/ location — run the adopt:migrate ' +
+        'skill\'s --dry-run before --install here (a bare --install would write a fresh copy at ' +
+        'the new location and leave the old one in place, loading it twice).\n',
     )
-    printThreeWayDiff(set, dir, args.diffFile, version, root)
-    return
   }
+  if (state.anySymlink && !args.replaceSymlinks) {
+    process.stdout.write(
+      'adopt: symlinked target(s) present — left untouched; pass --replace-symlinks to replace them with managed copies.\n',
+    )
+    process.stdout.write(
+      '  ↳ A symlinked item is NOT checked for staleness here — its managed copy lives at the\n' +
+        '    link target. Re-run --check/--install with --dir pointing at the target directory to\n' +
+        '    refresh it; this directory then follows automatically through the links.\n',
+    )
+  }
+}
+
+function mergeSetState(state, result) {
+  for (const key of ['anyAbsent', 'anyStale', 'anyEdited', 'anySymlink', 'anyMigrationPending', 'anyDuplicate']) {
+    state[key] = state[key] || result[key]
+  }
+}
+
+function runManagedCommand(args, context) {
+  const { root, version, chosen, globalRoot } = context
   const implicitInstallDirs = resolveImplicitInstallDirs(chosen, args, root)
 
   preflightAdoptedLauncherRuntime(chosen, root)
@@ -2569,13 +2590,15 @@ function main() {
     `adopt: ${BANNER_TOOL} v${version} · mode=${args.mode}${args.force ? ' --force' : ''} · set=${args.set}\n`,
   )
 
-  let anyAbsent = false
-  let anyStale = false
-  let anyEdited = false
-  let anySymlink = false
-  let anySettingsProblem = false
-  let anyMigrationPending = false
-  let anyDuplicate = false
+  const state = {
+    anyAbsent: false,
+    anyStale: false,
+    anyEdited: false,
+    anySymlink: false,
+    anySettingsProblem: false,
+    anyMigrationPending: false,
+    anyDuplicate: false,
+  }
   for (const name of chosen) {
     const set = SETS[name]
     // `set.defaultDir` is project-relative ('.claude/rules/wt' | '.claude/agents'); under
@@ -2590,60 +2613,30 @@ function main() {
           : path.join(process.cwd(), set.defaultDir)),
     )
     refuseExplicitRootInstall(set, dir, args, root)
-    const r = processSet(set, dir, args, version, root)
-    anyAbsent = anyAbsent || r.anyAbsent
-    anyStale = anyStale || r.anyStale
-    anyEdited = anyEdited || r.anyEdited
-    anySymlink = anySymlink || r.anySymlink
-    anyMigrationPending = anyMigrationPending || r.anyMigrationPending
-    anyDuplicate = anyDuplicate || r.anyDuplicate
+    mergeSetState(state, processSet(set, dir, args, version, root))
   }
 
-  if (anyDuplicate) process.exitCode = 1
+  if (state.anyDuplicate) process.exitCode = 1
 
   const settingsResult = processSettings(globalRoot, chosen, args, version)
-  anyAbsent = anyAbsent || settingsResult.anyAbsent
-  anySettingsProblem = anySettingsProblem || settingsResult.anyProblem
+  state.anyAbsent = state.anyAbsent || settingsResult.anyAbsent
+  state.anySettingsProblem = state.anySettingsProblem || settingsResult.anyProblem
 
   const untouchedLine = chosen.length === 1 ? untouchedSetLine(chosen[0], MANAGED_SET_NAMES) : null
   if (untouchedLine) process.stdout.write(untouchedLine)
 
   if (chosen.includes('agents')) printRegisteredAgentsNote(root, path.join(globalRoot, 'agents'))
+  renderCheckHints(args, state)
+}
 
-  if (args.mode === 'check') {
-    if (anyAbsent) process.stdout.write('adopt: run with --install to write the ABSENT item(s).\n')
-    else if (anyStale) process.stdout.write('adopt: run with --install to refresh the STALE item(s).\n')
-    else if (anyEdited) process.stdout.write('adopt: locally-edited item(s) present — --install leaves them; --force overwrites.\n')
-    else if (anySettingsProblem) process.stdout.write('adopt: account-level settings need manual attention before this tool can manage them safely.\n')
-    else process.stdout.write('adopt: nothing to do.\n')
-    // Migration-pending is an independent advisory, printed regardless of the branch above
-    // (it can coexist with absent/stale/edited items that have nothing to do with migration).
-    if (anyMigrationPending) {
-      process.stdout.write(
-        'adopt: item(s) found only at the pre-migration rules/ location — run the adopt:migrate ' +
-          'skill\'s --dry-run before --install here (a bare --install would write a fresh copy at ' +
-          'the new location and leave the old one in place, loading it twice).\n',
-      )
-    }
-    // Symlinks are an independent advisory (they can coexist with absent/stale items).
-    // Suppressed when --replace-symlinks is already set — no point telling the user to
-    // pass a flag they passed (the per-item line then previews the replacement).
-    if (anySymlink && !args.replaceSymlinks) {
-      process.stdout.write(
-        'adopt: symlinked target(s) present — left untouched; pass --replace-symlinks to replace them with managed copies.\n',
-      )
-      // The operative half. Without it, a "nothing to do." on a fully-symlinked dir reads as
-      // "this dir is up to date", and a later --install here would silently refresh NOTHING —
-      // every item is skipped as a symlink. The managed copies live at the link TARGETS, so
-      // that is where a version bump must be applied; the links then serve it to this dir for
-      // free. Two config dirs sharing one rule set is a deliberate, supported setup.
-      process.stdout.write(
-        '  ↳ A symlinked item is NOT checked for staleness here — its managed copy lives at the\n' +
-        '    link target. Re-run --check/--install with --dir pointing at the target directory to\n' +
-        '    refresh it; this directory then follows automatically through the links.\n',
-      )
-    }
-  }
+function main() {
+  const args = parseArgs(process.argv.slice(2))
+  checkFlagModeAsymmetry(args)
+  if (args.mode === 'migrate') return runMigrationCommand(args)
+  if (args.mode === 'audit-overlap') return runAuditCommand(args)
+  const context = standardCommandContext(args)
+  if (args.mode === 'diff') return runDiffCommand(args, context)
+  runManagedCommand(args, context)
 }
 
 try {
