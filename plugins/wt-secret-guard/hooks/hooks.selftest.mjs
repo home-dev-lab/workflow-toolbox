@@ -427,7 +427,9 @@ await test('reference runtime handles host text objects, invalid text and empty 
   assert.equal((await rewriteReferences(referenceHostFor(invalidRuntime), 'echo secret:file:/tmp/object')).command, 'echo secret:file:/tmp/object');
   assert.equal((await rewriteReferences(referenceHostFor(objectRuntime), 'echo secret:file:/tmp/object#9')).command, 'echo secret:file:/tmp/object#9');
   const emptyResolver = { ...$, process: { run: async () => ({ exitCode: 7, stdout: '' }) } };
-  assert.equal((await resolveReference(emptyResolver, 'op://vault/item/field')).token, null);
+  // Its own item: a failed prefetch is remembered for the session (V19), so a shared reference would
+  // make the next test's SUCCESS assertion read a cached failure instead of calling the resolver.
+  assert.equal((await resolveReference(emptyResolver, 'op://vault/empty-resolver/field')).token, null);
 });
 await test('destructuring defaults named like credentials pass through tool results', async () => {
   const source = 'const { kind, value, secret = value } = result;';
@@ -1111,12 +1113,18 @@ await test('V11 a detected value straddling a prefix/tail cut is never released 
     assert.equal(leakedRunAt(output, vendor), -1, `cut ${inside} characters into the token: a raw run crossed it`);
   }
 });
-// A deterministic, repeat-free filler: every 8-character window of it is distinct, so a leaked run
-// is attributable to this value rather than to an accidental match against another fixture.
+// A deterministic filler whose windows do not recur: an arithmetic walk over the alphabet has a
+// period of 34 characters, so two such fillers share every 8-character window and a "leak" can be
+// read off a fixture that never leaked. This one is driven by an LCG, so a run found in the output
+// is attributable to the value it came from.
 const varied = (length, offset = 0) => {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';
+  let seed = (offset * 2654435761 + 0x9e3779b9) >>> 0;
   let text = '';
-  for (let at = 0; at < length; at += 1) text += alphabet[(at * 7 + offset * 13 + 3) % alphabet.length];
+  for (let at = 0; at < length; at += 1) {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    text += alphabet[(seed >>> 16) % alphabet.length];
+  }
   return text;
 };
 await test('V12 an unfinished MULTILINE quoted assignment is held until the assignment completes', async () => {
@@ -1147,6 +1155,22 @@ await test('V13 a value first detected in an emission also protects its own frag
   const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
   const at = leakedRunAt(output, fresh);
   assert.equal(at, -1, `a raw run of the newly detected value reached the stream at offset ${at}`);
+});
+await test('V18 an OVERSIZED unfinished assignment keeps masking its continuation', async () => {
+  // Discarding the buffer at the size cap also discards the knowledge that an assignment was left
+  // open. The next chunk then looks like ordinary text to every detector, so the continuation of a
+  // value whose opening quote was already masked is released raw.
+  const opener = `${'pass'}word = "`;
+  const continuation = varied(1000, 11);
+  const streamed = await collectStream(turnStep, [
+    { kind: 'text', index: 0, text: `${'Ω'.repeat(600)}${opener}${varied(66000, 12)}` },
+    { kind: 'text', index: 0, text: `${continuation}"\ndone\n` },
+    { kind: 'stop' },
+  ]);
+  const output = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+  const at = leakedRunAt(output, continuation);
+  assert.equal(at, -1, `the continuation of an oversized unfinished assignment escaped at offset ${at}`);
+  assert.match(output, /oversized secret-bearing stream block masked/);
 });
 await test('stream fragment invariant holds at every split and every seeded chunking', async () => {
   // The value is long enough to outlast several cuts; the vault-sized cases that discriminate a
@@ -1298,13 +1322,20 @@ await test('V4 every supported op read argument placement is prefetched or refus
     ['"op" read \'op://vault/item/password\'', ''],
     ["op 'read' --account=team 'op://vault/item/password'", 'team'],
     ["o'p' read -n 'op://vault/item/password' --account team", 'team'],
+    ["op read -n \\\n 'op://vault/item/password' --account team", 'team'],
+    ["op $'read' --account=team 'op://vault/item/password'", 'team'],
   ];
-  for (const [command, account] of cases) {
+  // Each placement carries its OWN item: a failed prefetch is remembered for the session (V19), so
+  // reusing one reference would let the cache answer for every case after the first and the
+  // placements after it would assert nothing.
+  for (const [index, [shape, account]] of cases.entries()) {
+    const ref = `op://vault/item/password-${index}`;
+    const command = shape.replaceAll('op://vault/item/password', ref);
     let executed = false; let opArgv;
     const runtime = { ...$, process: { run: async (argv) => { opArgv = argv; return { exitCode: 1, stdout: '' }; } } };
     const result = await bash(runtime, { tool: 'Bash', command }, async () => { executed = true; return { text: 'leaked' }; });
     assert.equal(executed, false, `op invocation executed without a successful prefetch: ${command}`);
-    assert.deepEqual(opArgv, account ? ['op', 'read', '--account', account, 'op://vault/item/password'] : ['op', 'read', 'op://vault/item/password']);
+    assert.deepEqual(opArgv, account ? ['op', 'read', '--account', account, ref] : ['op', 'read', ref]);
     assert.match(result.deny, /1Password reference/i);
   }
 });
@@ -1316,6 +1347,54 @@ await test('V14 a quoted spelling of the `op` command word is validated like the
     const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'raw' }; });
     assert.equal(executed, false, `${command} executed without validating its reference`);
     assert.match(result.deny ?? '', /refused/i, command);
+  }
+});
+await test('V19 a FAILED prefetch is answered from memory instead of spawning op again', async () => {
+  // Measured in a real session: one command carrying one reference produced 42,716 `op read` spawns
+  // in about 100 seconds. The plugin resolves each reference once per call, so the re-entry is above
+  // it - which is exactly why the bound has to sit here, where it holds whatever re-enters.
+  const attempts = [];
+  const runtime = { ...$, process: { run: async (argv) => { if (argv[0] === 'op') { attempts.push(argv); return { exitCode: 1, stdout: '' }; } return $.process.run(argv); } } };
+  const command = "printf %s 'op://vault/storm/password'";
+  for (let round = 0; round < 40; round += 1) {
+    const result = await bash(runtime, { tool: 'Bash', command }, async () => ({ text: 'leaked' }));
+    assert.match(result.deny ?? '', /refused/i, `round ${round} was not refused`);
+  }
+  assert.equal(attempts.length, 1, `a failing reference reached op ${attempts.length} times across 40 identical commands`);
+});
+await test('V20 a SUCCESSFUL resolution is never served from memory', async () => {
+  // The other half of the same decision, locked so it cannot drift: a value that resolved once may
+  // have rotated since, so re-reading it is the behaviour, and only the FAILURE is remembered.
+  const attempts = [];
+  const runtime = { ...$, process: { run: async (argv) => { if (argv[0] === 'op') { attempts.push(argv); return { exitCode: 0, stdout: 'rotating-value\n' }; } return $.process.run(argv); } } };
+  for (let round = 0; round < 3; round += 1) {
+    await bash(runtime, { tool: 'Bash', command: "printf %s 'op://vault/rotating/password'" }, async () => ({ text: 'ok' }));
+  }
+  assert.equal(attempts.length, 3, `a succeeding reference reached op ${attempts.length} times across 3 commands`);
+  // The other bound, and the one the runaway analysis rests on: WITHIN one Bash call each DISTINCT
+  // reference is resolved exactly once, however many times it is written.
+  const perCall = [];
+  const counting = { ...$, process: { run: async (argv) => { if (argv[0] === 'op') { perCall.push(argv.at(-1)); return { exitCode: 0, stdout: 'per-call-value\n' }; } return $.process.run(argv); } } };
+  await bash(counting, { tool: 'Bash', command: "printf '%s%s%s' 'op://vault/once/a' 'op://vault/once/a' 'op://vault/once/b'" }, async () => ({ text: 'ok' }));
+  assert.deepEqual(perCall, ['op://vault/once/a', 'op://vault/once/b'], 'one Bash call did not resolve each distinct reference exactly once');
+});
+await test('V17 line continuations and ANSI-C quoting are decoded before the command word is read', async () => {
+  // Bash removes a backslash-newline entirely and decodes $'...' before it decides what command it
+  // is running. A planner that reads the raw spelling sees neither, so `op read "$REF"` slips past
+  // the validation its plain spelling is refused by.
+  const cases = [
+    ["$'op' read \"$REF\"", 'ANSI-quoted command word'],
+    ["op $'read' \"$REF\"", 'ANSI-quoted verb'],
+    ["$'\\x6fp' read \"$REF\"", 'ANSI hex escape in the command word'],
+    ['op r\\\nead "$REF"', 'line continuation inside the verb'],
+    ['o\\\np read "$REF"', 'line continuation inside the command word'],
+    ["$'op' read \"$REF\" > /tmp/out", 'ANSI-quoted command word before a redirection'],
+  ];
+  for (const [command, shape] of cases) {
+    let executed = false;
+    const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'short-13-pass' }; });
+    assert.equal(executed, false, `${shape} executed without validating its reference: ${JSON.stringify(command)}`);
+    assert.match(result.deny ?? '', /refused/i, shape);
   }
 });
 await test('V15 a reference preceded by a backslash escape is refused instead of rewritten into broken syntax', async () => {
@@ -1417,16 +1496,30 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['a lowercase environment name', 'printf %s secret:env:not_valid'],
       ['a truncated 1Password path', 'printf %s op://broken'],
       ['a reference written to a template destination', "printf '%s' 'op://Private/matrix/password' > /tmp/profile.tpl"],
-      ['a reference inside a comment', 'printf %s hello # secret:env:MATRIX_SECRET'],
-      ['a reference inside an ANSI-quoted word', "printf %s $'secret:env:MATRIX_SECRET'"],
-      ['a reference preceded by a backslash escape', 'printf %s \\secret:env:MATRIX_SECRET'],
       ['a reference escaped inside a double-quoted word', 'printf %s "\\secret:env:MATRIX_SECRET"'],
-      ['op run beside a reference', 'op run -- printf %s secret:env:MATRIX_SECRET'],
-      ['op run beside a 1Password reference', "op run --env-file /tmp/env -- printf %s 'op://Private/matrix/password'"],
+      ['op run with a flag beside a reference', "op run --env-file /tmp/env -- printf %s 'op://Private/matrix/password'"],
       ['a quoted op command word whose reference is a variable', '"op" read "$REF"'],
       ['a quoted op verb whose reference is a variable', "op 'read' \"$REF\""],
       ['op read inside an unquoted heredoc body', 'cat <<EOF\nop read op://Private/matrix/password\nEOF'],
     ];
+    // Every rejection family against every supported FORM. A family verified against one form only
+    // says nothing about the other three: each form takes a different path through `extent`, and a
+    // refusal that depends on the form rather than on the context is exactly what this catches.
+    const families = [
+      ['inside a comment', (reference) => `printf %s hello # ${reference}`],
+      ['inside an ANSI-quoted word', (reference) => `printf %s $'${reference}'`],
+      ['preceded by a backslash escape', (reference) => `printf %s \\${reference}`],
+      ['beside op run', (reference) => `op run -- printf %s ${reference}`],
+      ['written to a template destination', (reference) => `printf '%s' '${reference}' > /tmp/profile.tpl`],
+      ['inside a single-quoted heredoc', (reference) => `cat <<'EOF'\n${reference}\nEOF`],
+      ['inside a double-quoted heredoc', (reference) => `cat <<"EOF"\n${reference}\nEOF`],
+      ['inside a parameter expansion', (reference) => `printf %s "\${REF:-${reference}}"`],
+      ['inside backticks', (reference) => `printf %s \`printf %s ${reference}\``],
+      ['inside a larger quoted word', (reference) => `printf '%s' 'prefix ${reference} suffix'`],
+    ];
+    for (const [form, reference] of forms) {
+      for (const [family, build] of families) refusals.push([`a ${form} ${family}`, build(reference)]);
+    }
     for (const [shape, command] of refusals) {
       let executed = false;
       const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'raw' }; });

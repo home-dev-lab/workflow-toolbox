@@ -39,6 +39,17 @@ Everything else is refused before the command runs, and the refusal names what w
 
 A `# comment` after a supported reference ends the line rather than opening unfinished syntax: `printf %s secret:env:NAME # note` is expanded normally. A reference written *inside* the comment is still refused.
 
+Command words are compared after the shell's own decoding, so a line continuation and ANSI-C quoting change a command's spelling without changing what it is. A backslash-newline split through the middle of `read`, `$'op' read "$REF"` and `$'\x6fp' read "$REF"` are all the same invocation as `op read "$REF"`, and are refused with it. ANSI-C quoting stays an unsupported *context* — a reference written inside `$'...'` is still refused.
+
+### What triggers a real `op` call
+
+**Every `op://` reference the guard understands is prefetched with a real `op read` before the command runs** — including one that the command would never use as a credential: a fixture path written through an unquoted heredoc, a reference inside a string a test is about to save, a reference typed into a `grep` pattern. That is not incidental: the value has to be in the vault before the command runs, or its appearance in the output could not be scrubbed. On a machine where 1Password asks for biometrics, that means **writing a file whose contents happen to contain a reference can raise an unlock prompt**.
+
+Two consequences worth knowing before you type one:
+
+- To handle a reference as *text*, put it somewhere the guard refuses rather than expands — a single-quoted heredoc (`<<'EOF'`), `${...}`, backticks, `$'...'`, or a larger quoted word. The command is then refused outright and no `op` call is made.
+- **A failed prefetch is remembered for 60 seconds** per account-and-reference, and re-answered from memory without spawning `op` again. This bounds a caller that re-enters the failure path; it also means that fixing the underlying cause (signing in, unlocking) and retrying the same reference inside that window is still refused. A *successful* resolution is never cached — the value may have rotated, so it is read again each time.
+
 ## Options
 
 `maskIpAddresses` and `maskEmails` are boolean plugin options and both default to `false`. Enable either option to mask that value class in submitted prompts and Bash, Read, and MCP tool results. IPv4 and IPv6 addresses are covered.

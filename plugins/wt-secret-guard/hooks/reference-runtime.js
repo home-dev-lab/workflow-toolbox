@@ -6,16 +6,44 @@ import { opReadArgv, opValueFrom } from './op-resolve.js';
 import { opExpression, planReferences, renderReplacement } from './references.js';
 import { knownTokens, tokenize } from './token-vault.js';
 
+// A FAILED prefetch is remembered for a short window, keyed by account and reference.
+// Measured 2026-09-22 in a real session: ONE Bash command carrying ONE reference produced 42,716
+// `op read` spawns in about 100 seconds. This module resolves each reference exactly once per call,
+// so whatever re-entered that call sits above it - which is why the bound lives here, where it holds
+// whatever the caller does. Only failures are remembered: a value that resolved once may have
+// rotated since, and binding a stale secret into a command is worse than spawning `op` again.
+const FAILURE_MEMORY_MS = 60_000;
+const FAILURE_MEMORY_MAX = 256;
+const failures = new Map();
+
+function rememberedFailure(key, now) {
+  const at = failures.get(key);
+  if (at === undefined) return false;
+  if (now - at < FAILURE_MEMORY_MS) return true;
+  failures.delete(key);
+  return false;
+}
+
+function rememberFailure(key, now) {
+  if (failures.size >= FAILURE_MEMORY_MAX) failures.clear();
+  failures.set(key, now);
+}
+
 export async function resolveReference($, ref, account = config().opAccount) {
+  const key = `${account}:${ref}`;
+  const now = Date.now();
+  // Answering from memory stays silent: a log line per attempt would storm exactly like the spawns.
+  if (rememberedFailure(key, now)) return { token: null };
   let result;
   // Measured 2026-09-08 00:43: a 13-character password matched no pattern, so every
   // explicit reference is prefetched. process.run takes positional argv (run 8).
   try { result = await $.processRun(opReadArgv(ref, account, config().opBinary)); } catch {
+    rememberFailure(key, now);
     await $.uiLog('wt-secret-guard: op resolve failed to start (1 reference)');
     return { token: null };
   }
   const value = opValueFrom(result);
-  if (!value) { await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
+  if (!value) { rememberFailure(key, now); await $.uiLog(`wt-secret-guard: op resolve returned nothing (exit ${result?.exitCode ?? 'unknown'})`); return { token: null }; }
   return { token: tokenize('onepassword', value) };
 }
 

@@ -85,10 +85,15 @@ export function lex(command) {
       context[index] = 'single'; index += 1; continue;
     }
     if (frame.type === 'ansi' || frame.type === 'backtick') {
-      const closer = frame.type === 'ansi' ? "'" : '`';
-      context[index] = 'unsupported';
-      if (character === '\\') { if (index + 1 < size) context[index + 1] = 'unsupported'; index += 2; continue; }
-      if (character === closer) { stack.pop(); index += 1; continue; }
+      // An ANSI-C span gets its own context rather than 'unsupported'. It is still never expanded
+      // into - `extent` accepts only bare, single, double and heredoc - but its body IS a literal
+      // the shell decodes, so a command word spelled $'op' has to be readable as the word `op`.
+      const ansi = frame.type === 'ansi';
+      const closer = ansi ? "'" : '`';
+      const inside = ansi ? 'ansi' : 'unsupported';
+      context[index] = inside;
+      if (character === '\\') { if (index + 1 < size) context[index + 1] = inside; index += 2; continue; }
+      if (character === closer) { context[index] = ansi ? 'quote' : 'unsupported'; stack.pop(); index += 1; continue; }
       index += 1; continue;
     }
     if (frame.type === 'param') {
@@ -113,7 +118,7 @@ export function lex(command) {
     if (character === '\\') { context[index] = 'bare'; escapes.add(index); if (index + 1 < size) context[index + 1] = 'bare'; index += 2; continue; }
     if (character === "'") { context[index] = 'quote'; stack.push({ type: 'single', start: index }); index += 1; continue; }
     if (character === '"') { context[index] = 'quote'; stack.push({ type: 'double', start: index }); index += 1; continue; }
-    if (character === '$' && command[index + 1] === "'") { context[index] = 'unsupported'; context[index + 1] = 'unsupported'; stack.push({ type: 'ansi' }); index += 2; continue; }
+    if (character === '$' && command[index + 1] === "'") { context[index] = 'quote'; context[index + 1] = 'quote'; stack.push({ type: 'ansi' }); index += 2; continue; }
     if (character === '$' && command[index + 1] === '"') { context[index] = 'bare'; context[index + 1] = 'quote'; stack.push({ type: 'double', start: index + 1 }); index += 2; continue; }
     if (character === '$' && command[index + 1] === '(') { context[index] = 'bare'; context[index + 1] = 'bare'; stack.push({ type: 'subst' }); index += 2; continue; }
     if (character === '$' && command[index + 1] === '{') { context[index] = 'bare'; stack.push({ type: 'param', depth: 0 }); index += 1; continue; }
@@ -163,6 +168,29 @@ export function lex(command) {
   return { context, bounds, escapes, complete };
 }
 
+// One ANSI-C escape, decoded the way the shell decodes it. Unknown escapes keep their backslash,
+// which is what bash does; a code point outside Unicode keeps its raw spelling rather than throwing.
+const ANSI_SIMPLE = { a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' };
+function ansiEscape(command, at) {
+  const character = command[at];
+  if (character === undefined) return { text: '\\', end: at };
+  if (Object.hasOwn(ANSI_SIMPLE, character)) return { text: ANSI_SIMPLE[character], end: at + 1 };
+  if (character === 'x' || character === 'u' || character === 'U') {
+    const width = character === 'x' ? 2 : character === 'u' ? 4 : 8;
+    const digits = /^[0-9a-fA-F]+/.exec(command.slice(at + 1, at + 1 + width));
+    const code = digits ? Number.parseInt(digits[0], 16) : Number.NaN;
+    if (!digits || !(code >= 0 && code <= 0x10ffff)) return { text: `\\${character}`, end: at + 1 };
+    return { text: String.fromCodePoint(code), end: at + 1 + digits[0].length };
+  }
+  if (character === 'c') {
+    const next = command[at + 1];
+    return next === undefined ? { text: '\\c', end: at + 1 } : { text: String.fromCharCode(next.toUpperCase().charCodeAt(0) ^ 64), end: at + 2 };
+  }
+  const octal = /^[0-7]{1,3}/.exec(command.slice(at));
+  if (octal) return { text: String.fromCharCode(Number.parseInt(octal[0], 8)), end: at + octal[0].length };
+  return { text: `\\${character}`, end: at + 1 };
+}
+
 function readWord(command, context, from) {
   let text = ''; let literal = true; let index = from;
   while (index < command.length) {
@@ -171,13 +199,27 @@ function readWord(command, context, from) {
     if (kind === 'bare') {
       if (SEPARATOR.test(character)) break;
       if (character === '$' || character === '`') { literal = false; text += character; index += 1; continue; }
-      if (character === '\\') { text += command[index + 1] ?? ''; index += 2; continue; }
+      // A backslash-newline is a line continuation: the shell removes BOTH characters, so the word
+      // continues with nothing added. Keeping the newline makes `r\<newline>ead` decode as something
+      // no command is ever named.
+      if (character === '\\') { if (command[index + 1] !== '\n') text += command[index + 1] ?? ''; index += 2; continue; }
       text += character; index += 1; continue;
     }
     if (kind === 'quote') { index += 1; continue; }
     if (kind === 'single') { text += character; index += 1; continue; }
+    if (kind === 'ansi') {
+      if (character === '\\') { const decoded = ansiEscape(command, index + 1); text += decoded.text; index = decoded.end; continue; }
+      text += character; index += 1; continue;
+    }
     if (kind === 'double') {
-      if (character === '\\') { text += command[index + 1] ?? ''; index += 2; continue; }
+      // Inside double quotes a backslash escapes only $ ` " \ and a newline; before anything else it
+      // is an ordinary character the shell keeps.
+      if (character === '\\') {
+        const escaped = command[index + 1];
+        if (escaped === '\n') { index += 2; continue; }
+        if (escaped === '$' || escaped === '`' || escaped === '"' || escaped === '\\') { text += escaped; index += 2; continue; }
+        text += character; index += 1; continue;
+      }
       // A command substitution opens a new command list: it ends the enclosing word for the purpose
       // of reading command words, so `"$(op read ...)"` still shows `op` as a word of its own.
       if (character === '$' && command[index + 1] === '(') break;
@@ -196,6 +238,7 @@ function invocationTokens(command, context, from) {
     const kind = context[index];
     const character = command[index];
     if (kind !== 'bare') { const word = readWord(command, context, index); if (word.end <= index) { index += 1; continue; } words.push({ ...word, operator: false }); index = word.end; continue; }
+    if (character === '\\' && command[index + 1] === '\n') { index += 2; continue; }
     if (/[ \t]/.test(character)) { index += 1; continue; }
     if (/[;|&\n)]/.test(character)) break;
     if (character === '<' || character === '>') {
@@ -263,6 +306,7 @@ function shellWords(command, context) {
   while (index < command.length) {
     const kind = context[index];
     if (kind === 'heredoc' || kind === 'unsupported') { index += 1; continue; }
+    if (command[index] === '\\' && command[index + 1] === '\n') { index += 2; continue; }
     if (command[index] === '$' && command[index + 1] === '(') { index += 2; continue; }
     if (kind === 'bare' && SEPARATOR.test(command[index])) { index += 1; continue; }
     const word = readWord(command, context, index);

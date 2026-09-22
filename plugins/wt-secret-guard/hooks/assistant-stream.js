@@ -125,6 +125,17 @@ function secretSpans(text, from, final) {
   return spans.filter((span) => span.end > from).sort((left, right) => left.start - right.start || right.end - left.end);
 }
 
+// What a discarded buffer was in the MIDDLE of, and the text that will end it. Discarding the bytes
+// at the size cap must not discard this: the continuation of an unfinished value matches no detector
+// on its own, so without it the opening is masked and the rest is released.
+function openState(text) {
+  const open = OPEN_ASSIGNMENT.exec(text);
+  if (open) return { kind: 'assignment', terminator: open[1] };
+  const begin = text.lastIndexOf(BEGIN);
+  if (begin !== -1 && text.indexOf(END, begin) === -1) return { kind: 'private-key', terminator: END };
+  return null;
+}
+
 function cutPoint(raw, spans, offset) {
   let cut = raw.length - HOLD;
   const begin = raw.lastIndexOf(BEGIN);
@@ -172,6 +183,23 @@ export async function* maskTurnStep(event, next, note, masked) {
   const emit = async function* (key, final) {
     const block = blocks.get(key);
     if (!block) return;
+    if (block.open) {
+      // The buffer carrying this value's opening was discarded at the size cap. Everything that
+      // follows is still inside it, and nothing in it looks confidential on its own, so it is
+      // dropped until its terminator arrives rather than emitted.
+      if (block.raw) { block.masked = true; await announce(); }
+      const at = block.raw.indexOf(block.open.terminator);
+      if (at < 0) {
+        block.raw = '';
+        if (!final) return;
+        blocks.delete(key);
+        if (block.masked && !noted) { noted = true; yield { ...block.chunk, text: note }; }
+        return;
+      }
+      block.raw = block.raw.slice(at + block.open.terminator.length);
+      block.context = '';
+      block.open = null;
+    }
     const text = `${block.context}${block.raw}`;
     const offset = block.context.length;
     const spans = secretSpans(text, offset, final);
@@ -214,6 +242,7 @@ export async function* maskTurnStep(event, next, note, masked) {
       blocks.set(key, block);
       yield* emit(key, false);
       if (block.raw.length > MAX_BUFFER) {
+        block.open = openState(`${block.context}${block.raw}`);
         block.raw = '';
         block.context = '';
         block.masked = true;
