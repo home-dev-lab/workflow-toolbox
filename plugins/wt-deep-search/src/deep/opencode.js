@@ -36,7 +36,9 @@ function signalProcessFamily(pid, signal, platform = process.platform, kill = pr
 function processFamilyExists(pid, platform = process.platform, kill = process.kill) {
   if (platform === 'win32') return true;
   try { kill(-pid, 0); return true; } catch (error) {
-    if (error?.code === 'ESRCH') return false;
+    // EPERM means the group has no member we can signal. Once our child has exited,
+    // those inaccessible members are outside the process family we can manage.
+    if (error?.code === 'ESRCH' || error?.code === 'EPERM') return false;
     throw error;
   }
 }
@@ -63,7 +65,7 @@ export function startOpencode(options, deps = {}) {
   const platform = deps.platform ?? process.platform;
   const graceMs = deps.terminationGraceMs ?? TERMINATION_GRACE_MS;
   const signalFamily = deps.signalProcessFamily ?? ((pid, signal) => signalProcessFamily(pid, signal, platform));
-  const familyExists = deps.processFamilyExists ?? ((pid) => processFamilyExists(pid, platform));
+  const familyExists = deps.processFamilyExists ?? ((pid) => processFamilyExists(pid, platform, deps.kill ?? process.kill));
   const log = open(logPath, 'w');
   let child;
   try {

@@ -8,6 +8,10 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Added
 - Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
 
+### Fixed
+- Finish timed-out deep-search runs on macOS when the exited child's process group contains only non-signalable members, and make provider and process-tree fixtures use host-correct semantics and startup budgets.
+- Give Windows lane-watcher process scans enough time to emit decision notices under CI load.
+
 ## [0.186.0] - 2026-09-22
 
 ⚠ **The SDK pilot runner, its lifecycle server and What is running remain EXPERIMENTAL.** This release changes how the runner's plan loop behaves; a full FULL run was measured on it (370 min, no delivery: stopped by the runner's own 6 h limit in the fourth harden round) and the causes are carded, not fixed here.

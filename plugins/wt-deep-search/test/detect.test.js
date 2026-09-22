@@ -40,7 +40,7 @@ test('detects every available provider', () => {
     '/usr/local/bin/opencode',
   ]);
 
-  assert.deepEqual(detectProviders(env, fs), {
+  assert.deepEqual(detectProviders(env, fs, { platform: 'linux' }), {
     mirror: { available: true, path: '/home/tester/.claude-code-docs' },
     brave: { available: true },
     exa: { available: true },
@@ -77,6 +77,7 @@ test('reports every unavailable provider with a reason', () => {
   const providers = detectProviders(
     { HOME: '/home/tester', PATH: '/usr/bin' },
     fakeFs(['/home/tester/.claude-code-docs']),
+    { platform: 'linux' },
   );
 
   assert.deepEqual(providers, {
@@ -109,8 +110,8 @@ test('requires both the mirror directory and manifest', () => {
   assert.match(providers.mirror.reason, /mirror directory/i);
 });
 
-test('reports missing HOME and PATH without throwing', () => {
-  const providers = detectProviders({}, fakeFs([]));
+test('reports missing HOME and PATH without throwing on POSIX', () => {
+  const providers = detectProviders({}, fakeFs([]), { platform: 'linux' });
 
   assert.deepEqual(providers.mirror, {
     available: false,

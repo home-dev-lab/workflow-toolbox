@@ -5,6 +5,7 @@
 - Resolve the pilot-runner test's Zod fixture through its declared Agent SDK dependency instead of relying on a hoisted transitive package.
 - Run the installed OpenCode skill-fence integration file after parallel tests have drained, preventing CPU starvation without weakening its cold-cache probes.
 - Workflow config schemas now reject unknown top-level arguments and unknown role-map keys with a nearest-key suggestion.
+- Make Observatory's Windows process-identity probes tolerate cold PowerShell startup and keep its fake Git checkout fixture native to the host OS.
 
 ## 0.4.0
 

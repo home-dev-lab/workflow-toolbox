@@ -30,6 +30,16 @@ describe('shipped wt-deep-search', () => {
     expect(run.status, run.stdout.slice(-4000) || run.stderr).toBe(0)
   })
 
+  it('records a timeout when the remaining macOS process group is not signalable', () => {
+    const run = spawnSync(process.execPath, [
+      '--test',
+      '--test-name-pattern',
+      'remaining process group is not signalable',
+      'test/deep.test.js',
+    ], { cwd: PLUGIN, encoding: 'utf8' })
+    expect(run.status, run.stdout.slice(-4000) || run.stderr).toBe(0)
+  })
+
   it('declares no dependency, at build time or at run time', () => {
     const manifest = JSON.parse(readFileSync(join(PLUGIN, 'package.json'), 'utf8'))
     expect(Object.keys(manifest.dependencies ?? {})).toEqual([])

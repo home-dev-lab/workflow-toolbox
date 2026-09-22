@@ -395,6 +395,35 @@ test('opencode timeout escalates to SIGKILL and withholds the marker until the f
   assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
 });
 
+test('opencode timeout records exit when the remaining process group is not signalable', () => {
+  let onExit;
+  let onTimeout;
+  const writes = [];
+  const permissionDenied = Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', timeoutMs: 90_000 },
+    {
+      appendFileSync: (_path, value) => writes.push(value),
+      clearTimeout() {},
+      closeSync() {},
+      openSync: () => 8,
+      setTimeout: (callback) => { onTimeout = callback; return 7; },
+      signalProcessFamily() {},
+      spawn: () => ({
+        pid: 44,
+        once(event, callback) { if (event === 'exit') onExit = callback; },
+        unref() {},
+      }),
+      platform: 'darwin',
+      kill() { throw permissionDenied; },
+    },
+  );
+
+  onTimeout();
+  assert.doesNotThrow(() => onExit(null, 'SIGTERM'));
+  assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
+});
+
 test('Windows timeout forces the process tree when it has not exited after graceful taskkill', () => {
   let onExit;
   const timers = [];
@@ -441,7 +470,7 @@ test('opencode timeout terminates the real detached child and grandchild before 
   ].join('\n'));
 
   const result = startOpencode(
-    { prompt: 'full brief', dir: root, logPath, timeoutMs: 100 },
+    { prompt: 'full brief', dir: root, logPath, timeoutMs: process.platform === 'win32' ? 2_000 : 100 },
     {
       spawn: (_command, _args, options) => spawn(process.execPath, [fixture, pidFile], options),
       terminationGraceMs: 100,
