@@ -9,6 +9,7 @@ import { appendEvent, buildEvent, deriveAggregates, journalSnapshot, promotionSt
 import { locateReplacements } from './prompt-storage.js';
 import { rewriteReferences } from './reference-runtime.js';
 import { verdictForBash, verdictForPath } from './secret-read-policy.js';
+import { classifyOutbound } from './outbound-tools.js';
 
 const corpus = JSON.parse(readFileSync(new URL('./fixtures/secret-guard-corpus.json', import.meta.url), 'utf8'));
 
@@ -65,6 +66,19 @@ const $ = {
       file.text = after.toString();
       return { exitCode: 0, stdout: '' };
     }
+    if (/powershell/i.test(argv[0])) {
+      const path = argv[5];
+      const offset = Number(argv[6]);
+      const length = Number(argv[7]);
+      const mode = argv[8];
+      const file = getFile(path);
+      if (mode === 'read') return { exitCode: 0, stdout: Buffer.from(file.text).subarray(offset, offset + length).toString('base64') };
+      const before = Buffer.from(file.text);
+      const replacement = Buffer.from(argv[9], 'base64');
+      const after = Buffer.alloc(Math.max(before.length, offset + replacement.length));
+      before.copy(after); replacement.copy(after, offset); file.text = after.toString();
+      return { exitCode: 0, stdout: '' };
+    }
     return { exitCode: 0, stdout: argv[0] === 'op' ? 'op-fake-value\n' : '' };
   } },
   env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: configDir, HOME: '/tmp/home' })[name] },
@@ -75,7 +89,7 @@ const journalHostFor = (runtime) => ({
   getSalt: () => runtime.store.get('salt'), setSalt: (value) => runtime.store.set('salt', value),
   setDetections: (value) => runtime.store.set('detections', value), getStats: () => runtime.store.get('stats'),
   setStats: (value) => runtime.store.set('stats', value), setLastPublishedAt: (value) => runtime.store.set('lastpublishedat', value),
-  fsWrite: (path, text) => runtime.fs.write(path, text), configDir: () => runtime.env.get('CLAUDE_CONFIG_DIR'), home: () => runtime.env.get('HOME'),
+  fsRead: (path) => runtime.fs.read(path), fsWrite: (path, text) => runtime.fs.write(path, text), configDir: () => runtime.env.get('CLAUDE_CONFIG_DIR'), home: () => runtime.env.get('HOME'),
   sessionId: () => runtime.session.id(), sessionCwd: () => runtime.session.cwd(), uiLog: (text) => runtime.ui.log(text),
 });
 const referenceHostFor = (runtime) => ({
@@ -89,6 +103,10 @@ const context = hooks.find((hook) => hook.event === 'prompt.context')?.hook;
 const read = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Read').hook;
 const notebookRead = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'NotebookRead').hook;
 const mcp = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool instanceof RegExp).hook;
+const hookForTool = (name) => hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === name)?.hook;
+const turnStep = hooks.find((hook) => hook.event === 'turn.step')?.hook;
+const assistantRender = hooks.find((hook) => hook.event === 'ui.render' && hook.matcher?.component === 'AssistantMessage')?.hook;
+const attachment = hooks.find((hook) => hook.event === 'prompt.attachment')?.hook;
 const call = (command, output) => bash($, { tool: 'Bash', command }, async (event) => ({ result: { stdout: output ?? event.command, stderr: '' }, text: output ?? event.command }));
 let failures = 0;
 async function test(name, fn) { try { await fn(); console.log(`PASS ${name}`); } catch (error) { failures += 1; console.log(`FAIL ${name}: ${error.message}`); } }
@@ -222,7 +240,7 @@ await test('file reference rewrite quotes and tokenises its content before Bash 
 await test('file reference line selection quotes and tokenises only that line', async () => { let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file#2' }, async (event) => { received = event.command; return { text: 'second-file-secret' }; }); assert.equal(received, "echo 'second-file-secret'"); assert(!JSON.stringify(result).includes('second-file-secret')); assert.match(result.text, /secret:file#/); });
 await test('missing file reference remains unchanged and logs no path or value', async () => { let received; await bash($, { tool: 'Bash', command: 'cat secret:file:/tmp/wt-secret-guard-missing' }, async (event) => { received = event.command; return { text: 'failed' }; }); assert.equal(received, 'cat secret:file:/tmp/wt-secret-guard-missing'); assert(logs.some((line) => line === 'wt-secret-guard: file reference unavailable (1 reference)')); assert(logs.every((line) => !line.includes('/tmp/wt-secret-guard-missing'))); });
 await test('Read result scrub publishes tokens without treating its path as a secret', async () => { const value = 'read-result-secret'; const result = await read($, { tool: 'Read', file_path: '/tmp/not-a-secret' }, async (event) => ({ ...event, text: `password = ${value}` })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.file_path, '/tmp/not-a-secret'); assert.match(result.text, /secret:assignment#/); });
-await test('MCP result scrub tokenises inbound sensitive text without rewriting its input', async () => { const value = 'mcp-result-secret'; const event = { tool: 'mcp__atrium__read_message', text: `token = ${value}` }; const result = await mcp($, event, async (received) => ({ ...received, text: received.text })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.tool, event.tool); assert.match(result.text, /secret:assignment#/); });
+await test('MCP result scrub tokenises inbound sensitive text without rewriting its input', async () => { const value = 'mcp-result-secret'; const event = { tool: 'mcp__atrium__read_message', query: 'clean control' }; const result = await mcp($, event, async (received) => ({ ...received, text: `token = ${value}` })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.tool, event.tool); assert.equal(result.query, event.query); assert.match(result.text, /secret:assignment#/); });
 await test('Bash secret-file reads warn and execute in measurement mode', async () => {
   const command = corpus.denyCommands.find((fixture) => fixture.verdict)?.command;
   let received;
@@ -362,6 +380,13 @@ await test('short genuine credential assignments in command output remain scrubb
   const result = await call('print-config', 'password = hunter2');
   assert.equal(result.text.includes('hunter2'), false, 'genuine short password reached the tool result');
   assert.match(result.text, /secret:assignment#/);
+});
+await test('an assignment nested in shell quotes is scrubbed without consuming its closing quote', async () => {
+  const value = 'synthetic-fixture-value-quote-lock';
+  const input = `printf "%s" "password=${value}"`;
+  const result = await call('print-command', input);
+  assert.equal(result.text.includes(value), false);
+  assert.match(result.text, /printf "%s" "secret:assignment#[a-f0-9]{6}"/);
 });
 await test('source-looking prefixes do not exempt a later credential assignment on the same line', async () => {
   const credentialValue = 'hunter2realcredential';
@@ -654,6 +679,215 @@ await test('a declaration after a semicolon stays exempt; a bare assignment afte
   const attack = `const harmless = true; token = '${value}'`;
   const scrubbed = await call('git diff', attack);
   assert.equal(scrubbed.text.includes(value), false, 'a bare assignment after a semicolon survived');
+});
+await test('raw outbound values are refused on every governed tool without calling next', async () => {
+  const raw = `ghp_${'o'.repeat(36)}`;
+  const cases = [
+    ['Bash', { command: `printf %s ${raw}` }],
+    ['Write', { file_path: '/tmp/outbound.txt', content: raw }],
+    ['Edit', { file_path: '/tmp/outbound.txt', old_string: 'old', new_string: raw }],
+    ['NotebookEdit', { notebook_path: '/tmp/outbound.ipynb', new_source: raw }],
+    ['mcp', { tool: 'mcp__fixture__send', payload: { api_key: raw } }],
+  ];
+  for (const [name, fields] of cases) {
+    const hook = name === 'mcp' ? mcp : hookForTool(name);
+    assert(hook, `${name} outbound guard was not registered`);
+    let called = false;
+    const result = await hook($, { tool: name, tool_use_id: `outbound-${name}`, ...fields }, async () => { called = true; return { text: 'sent' }; });
+    assert.equal(called, false, `${name} reached next`);
+    assert.match(result.deny, /refused/i);
+    assert.equal(result.deny.includes(raw), false);
+  }
+});
+await test('field-aware outbound classification catches credential UUIDs but not bare run ids', async () => {
+  const rawUuid = '123e4567-e89b-12d3-a456-426614174111';
+  let callsToNext = 0;
+  const denied = await mcp($, { tool: 'mcp__fixture__send', tool_use_id: 'uuid-key', payload: { api_key: rawUuid } }, async () => { callsToNext += 1; return {}; });
+  assert.match(denied.deny, /refused/i);
+  const clean = { tool: 'mcp__fixture__send', tool_use_id: 'uuid-run', payload: { run_id: rawUuid } };
+  await mcp($, clean, async (event) => { callsToNext += 1; assert.deepEqual(event, clean); return { text: 'ok' }; });
+  assert.equal(callsToNext, 1);
+});
+await test('outbound fixture canonicalization and unsupported-tool branches fail closed', async () => {
+  const raw = `ghp_${'k'.repeat(36)}`;
+  const event = { tool: 'Write', file_path: 'C:\\plugin\\hooks\\fixtures\\case.txt', content: raw };
+  assert.deepEqual(await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, event), { surface: 'write', findings: [{ kind: 'github-classic', value: raw }] });
+  assert((await classifyOutbound({ pluginRoot: async () => 'C:\\plugin', fsStat: async () => { throw new Error('unresolved'); } }, event)).findings.length > 0);
+  for (const key of ['resolvedPath', 'realPath', 'path']) {
+    const host = { pluginRoot: async () => 'C:\\plugin', fsStat: async (path) => ({ [key]: path }) };
+    assert.deepEqual((await classifyOutbound(host, event)).findings, [], key);
+  }
+  const fallback = { pluginRoot: async () => 'C:\\plugin\\', fsStat: async () => ({}) };
+  assert.deepEqual((await classifyOutbound(fallback, event)).findings, []);
+  assert.deepEqual(await classifyOutbound(fallback, { tool: 'Read', file_path: '/tmp/x' }), { surface: null, findings: [] });
+  assert.deepEqual(await classifyOutbound(fallback, {}), { surface: null, findings: [] });
+});
+await test('reference-shaped outbound values and clean controls pass byte-identically', async () => {
+  const cases = [
+    ['Bash', { tool: 'Bash', command: 'export GH_TOKEN=op://Private/item/token' }],
+    ['Write', { tool: 'Write', file_path: '/tmp/ref.txt', content: 'secret:env:GH_TOKEN' }],
+    ['Edit', { tool: 'Edit', file_path: '/tmp/ref.txt', old_string: 'old', new_string: '${GH_TOKEN}' }],
+    ['NotebookEdit', { tool: 'NotebookEdit', notebook_path: '/tmp/ref.ipynb', new_source: 'clean text' }],
+  ];
+  for (const [name, event] of cases) {
+    const hook = hookForTool(name);
+    assert(hook, `${name} outbound guard was not registered`);
+    let received;
+    await hook($, event, async (forwarded) => { received = forwarded; return { text: 'ok' }; });
+    if (name !== 'Bash') assert.deepEqual(received, event);
+  }
+});
+await test('only the canonical plugin fixture directory is exempt from outbound write refusal', async () => {
+  const raw = `ghp_${'f'.repeat(36)}`;
+  const fixture = '/opt/wt-secret-guard/hooks/fixtures/outbound.txt';
+  const runtime = {
+    ...$,
+    env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: configDir, HOME: '/tmp/home', CLAUDE_PLUGIN_ROOT: '/opt/wt-secret-guard' })[name] },
+    fs: { ...$.fs, stat: async (path) => ({ kind: 'file', resolvedPath: path }) },
+  };
+  let allowed = false;
+  await hookForTool('Write')(runtime, { tool: 'Write', file_path: fixture, content: raw }, async () => { allowed = true; return {}; });
+  assert.equal(allowed, true);
+  const lookalike = await hookForTool('Write')(runtime, { tool: 'Write', file_path: '/tmp/wt-secret-guard/hooks/fixtures/outbound.txt', content: raw }, async () => ({}));
+  assert.match(lookalike.deny, /refused/i);
+});
+await test('denied tool input is repaired in place in the transcript by tool_use_id', async () => {
+  const raw = `ghp_${'t'.repeat(36)}`;
+  const toolUseId = 'tool-denied-transcript';
+  const original = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command: `echo ${raw}` } }] } })}\n`;
+  setFile(transcriptPath, original);
+  let called = false;
+  const result = await bash($, { tool: 'Bash', tool_use_id: toolUseId, command: `echo ${raw}` }, async () => { called = true; return {}; });
+  const stored = getFile(transcriptPath);
+  assert.equal(called, false);
+  assert.match(result.deny, /refused/i);
+  assert.equal(stored.text.includes(raw), false);
+  assert.match(stored.text, /secret:github-classic#/);
+  assert.equal(Buffer.byteLength(stored.text), Buffer.byteLength(original));
+});
+async function collectStream(hook, chunks, result = {}) {
+  const seen = [];
+  const iterator = hook($, {}, async function* () { for (const chunk of chunks) yield chunk; return result; })[Symbol.asyncIterator]();
+  for (;;) {
+    const step = await iterator.next();
+    if (step.done) return { chunks: seen, result: step.value };
+    seen.push(step.value);
+  }
+}
+await test('assistant stream masks every character-boundary split and scrubs the final answer', async () => {
+  assert(turnStep, 'turn.step assistant guard was not registered');
+  const raw = `ghp_${'s'.repeat(36)}`;
+  for (let split = 1; split < raw.length; split += 1) {
+    const streamed = await collectStream(turnStep, [
+      { kind: 'text', index: 0, text: raw.slice(0, split) },
+      { kind: 'text', index: 0, text: raw.slice(split) },
+      { kind: 'engine' },
+      { kind: 'stop' },
+    ], { answer: raw });
+    const text = streamed.chunks.map((chunk) => chunk.text ?? '').join('');
+    assert.equal(text.includes(raw), false, `split ${split}`);
+    assert.match(text, /secret:github-classic#/);
+    assert.match(text, /REDACTION TOKEN/);
+    assert.equal(JSON.stringify(streamed.result).includes(raw), false);
+  }
+});
+await test('assistant stream finally flushes held text while signed thinking remains untouched', async () => {
+  assert(turnStep, 'turn.step assistant guard was not registered');
+  const raw = `ghp_${'v'.repeat(36)}`;
+  const seen = [];
+  const iterator = turnStep($, {}, () => ({
+    [Symbol.asyncIterator]() { return (async function* () { yield { kind: 'text', index: 0, text: raw }; yield { kind: 'thinking', index: 1, text: raw }; throw new Error('fixture stream failure'); })(); },
+  }))[Symbol.asyncIterator]();
+  await assert.rejects(async () => { for (;;) { const step = await iterator.next(); if (step.done) break; seen.push(step.value); } }, /fixture stream failure/);
+  const visible = seen.filter((chunk) => chunk.kind === 'text').map((chunk) => chunk.text).join('');
+  assert.equal(visible.includes(raw), false);
+  assert(seen.some((chunk) => chunk.kind === 'thinking' && chunk.text === raw), 'signed thinking must pass through unchanged');
+});
+await test('turn.step best-effort input buffering flushes valid masked JSON at block end', async () => {
+  assert(turnStep, 'turn.step assistant guard was not registered');
+  const raw = `ghp_${'i'.repeat(36)}`;
+  const json = JSON.stringify({ command: `echo ${raw}` });
+  const streamed = await collectStream(turnStep, [
+    { kind: 'tool', index: 2, id: 'stream-tool', name: 'Bash' },
+    { kind: 'input', index: 2, json: json.slice(0, 17) },
+    { kind: 'input', index: 2, json: json.slice(17) },
+    { kind: 'engine' },
+    { kind: 'stop' },
+  ]);
+  const output = streamed.chunks.filter((chunk) => chunk.kind === 'input').map((chunk) => chunk.json).join('');
+  assert.doesNotThrow(() => JSON.parse(output));
+  assert.equal(output.includes(raw), false);
+});
+await test('assistant stream remains bounded for long clean, detected, and unterminated private-key blocks', async () => {
+  const raw = `ghp_${'b'.repeat(36)}`;
+  const clean = await collectStream(turnStep, [{ kind: 'text', index: 0, text: 'x'.repeat(5000) }, { kind: 'stop' }]);
+  assert.equal(clean.chunks.map((chunk) => chunk.text ?? '').join('').replace(/\n/g, '').length, 5000);
+  const detected = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${'x'.repeat(4500)}\n${raw}` }, { kind: 'stop' }]);
+  assert.equal(detected.chunks.some((chunk) => chunk.text?.includes(raw)), false);
+  const oversized = await collectStream(turnStep, [{ kind: 'text', index: 0, text: `${'-----BEGIN PRIVATE KEY-----'}${'x'.repeat(66000)}` }, { kind: 'stop' }]);
+  assert.match(oversized.chunks.map((chunk) => chunk.text ?? '').join(''), /oversized secret-bearing stream block masked/);
+  const answerOnly = await collectStream(turnStep, [], { answer: raw });
+  assert.equal(JSON.stringify(answerOnly.result).includes(raw), false);
+});
+await test('AssistantMessage render masking is display-only and forwards only scrubbed props', async () => {
+  assert(assistantRender, 'AssistantMessage ui.render guard was not registered');
+  const raw = `ghp_${'u'.repeat(36)}`;
+  const event = { component: 'AssistantMessage', props: { text: raw, other: true } };
+  let received;
+  await assistantRender($, event, async (forwarded) => { received = forwarded; return {}; });
+  assert.equal(received.props.text.includes(raw), false);
+  assert.equal(event.props.text, raw, 'ui.render must not pretend to mutate stored input');
+  const clean = { component: 'AssistantMessage', props: { text: 'clean' } };
+  let cleanReceived;
+  await assistantRender($, clean, async (forwarded) => { cleanReceived = forwarded; return {}; });
+  assert.equal(cleanReceived, clean);
+  const withoutText = { component: 'AssistantMessage', props: {} };
+  let withoutTextReceived;
+  await assistantRender($, withoutText, async (forwarded) => { withoutTextReceived = forwarded; return {}; });
+  assert.equal(withoutTextReceived, withoutText);
+});
+await test('journal reload preserves records already present in the per-session file', async () => {
+  const disk = new Map(); let storedSalt = 's'.repeat(64);
+  const host = {
+    getSalt: async () => storedSalt, setSalt: async (value) => { storedSalt = value; },
+    fsRead: async (path) => { if (!disk.has(path)) { const error = new Error('ENOENT'); error.code = 'ENOENT'; throw error; } return disk.get(path); },
+    fsWrite: async (path, text) => disk.set(path, text), configDir: async () => '/tmp/reload-config', home: async () => '/tmp/reload-home',
+    sessionId: async () => 'reload-session', sessionCwd: async () => '/tmp/reload-project', uiLog: async () => {},
+  };
+  const first = await import(`./journal.js?reload-first=${Date.now()}`);
+  await first.appendEvent(host, { surface: 'bash', action: 'evaluated' });
+  const second = await import(`./journal.js?reload-second=${Date.now()}`);
+  await second.appendEvent(host, { surface: 'read', action: 'evaluated' });
+  assert.equal([...disk.values()][0].trim().split('\n').length, 2);
+});
+await test('Windows prompt repair uses PowerShell FileStream and verifies the byte range', async () => {
+  const raw = `ghp_${'w'.repeat(36)}`;
+  setFile(historyPath, `${JSON.stringify({ display: raw, pastedContents: {} })}\n`);
+  const before = calls.length;
+  const windows = { ...$, env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: configDir, HOME: '/tmp/home', OS: 'Windows_NT' })[name] } };
+  await prompt(windows, { text: raw, origin: { kind: 'composer' } }, async () => ({}));
+  const runs = calls.slice(before).filter((entry) => entry.capability === 'process.run');
+  assert(runs.some((entry) => /powershell/i.test(entry.argv[0]) && entry.argv.some((part) => String(part).includes('FileStream'))));
+  assert.equal(runs.some((entry) => entry.argv[0] === 'dd'), false);
+});
+await test('classic startup notice requires the flag and stays silent when Function Hooks are enabled', async () => {
+  const { startupNotice, startupPayload } = await import('../bin/function-hooks-notice.mjs');
+  assert.match(startupNotice({}), /Function Hooks.*disabled/i);
+  assert.equal(startupNotice({ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' }), '');
+  assert.match(startupPayload({}).systemMessage, /Secret guarding is inactive/);
+  assert.equal(startupPayload({ CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' }), null);
+});
+await test('SessionStart hook attachments warn and journal without claiming a model-visible rewrite', async () => {
+  assert(attachment, 'prompt.attachment warning hook was not registered');
+  const raw = `ghp_${'a'.repeat(36)}`;
+  const event = { origin: { kind: 'hook', event: 'SessionStart' }, text: `replayed ${raw}` };
+  let received;
+  const beforeLogs = logs.length;
+  await attachment($, event, async (forwarded) => { received = forwarded; return {}; });
+  assert.equal(received, event);
+  assert(logs.slice(beforeLogs).some((line) => /SessionStart.*cannot rewrite/i.test(line)));
+  assert(logs.slice(beforeLogs).every((line) => !line.includes(raw)));
+  assert([...journalSnapshot().values()].some((text) => text.includes('"surface":"attachment"') && text.includes('"action":"warned"')));
 });
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);

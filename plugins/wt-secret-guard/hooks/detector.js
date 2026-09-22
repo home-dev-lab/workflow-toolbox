@@ -7,7 +7,7 @@ const patterns = [
   ['brave-api-key', /(?<![A-Za-z0-9_-])BSA[A-Za-z0-9_-]{28}(?![A-Za-z0-9_-])/g],
   ['jwt', /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g],
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
-  ['assignment', /\b(?:password|token|secret)\s*=\s*(?![=])(?:"[^"]+"|'[^']+'|[^\s;,)}]+)/gi],
+  ['assignment', /\b(?:password|token|secret)\s*=\s*(?![=])(?:"[^"]+"|'[^']+'|[^\s;,)}"']+)/gi],
   ['op-output', /^\s*(?:password|token|secret|credential)\s*:\s*\S.+$/gim],
   ['environment-dump', /^\s*(?:\+\s*)?(?:export\s+)?[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET)\s*=\s*\S.+$/gm],
 ];

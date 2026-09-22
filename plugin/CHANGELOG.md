@@ -8,6 +8,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Changed
 - Refactor the adopt installer into bounded parsing, settings, audit, managed-item, migration, and command seams while preserving its standalone CLI transcripts and file effects; settings verification now also proves the exact prerequisite values before publication
 - Split Secret Guard hooks by responsibility and add warn-only secret-file read measurement for original Bash input, Read, and NotebookRead with value-free per-session journals
+- Refuse raw secret-bearing MCP, Bash, Write, Edit, and NotebookEdit inputs; repair denied transcript inputs in place by tool-use identifier; mask visible assistant streams; warn on unrewritable SessionStart replay; preserve journal records across module reloads; and add a platform-seamed Windows FileStream writer pending native CI proof
 
 ### Added
 - Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target

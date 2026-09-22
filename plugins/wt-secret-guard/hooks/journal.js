@@ -2,8 +2,8 @@
 import { sha256 } from './sha256.js';
 import { knownTokens, restorePending, takePending } from './token-vault.js';
 
-const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'assistant']);
-const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'mention-allowed', 'policy-disabled', 'unknown-tool']);
+const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'assistant', 'attachment']);
+const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'warned', 'mention-allowed', 'policy-disabled', 'unknown-tool']);
 const RULES = new Set(['guarded-path-read', 'guarded-path-mention', 'policy']);
 const PATH_CLASSES = new Set(['npm-config', 'env-file', 'cloud-secret', 'aws-credentials', 'ssh-key', 'gh-hosts', 'netrc', 'shell-history', 'docker-config', 'kube-config', 'pypi-config', 'git-credentials', 'other-guarded']);
 const COMMAND_CLASSES = new Set(['bash', 'read', 'notebook-read', 'metadata', 'prose', 'other']);
@@ -60,7 +60,14 @@ async function journalPath($, sessionId, suffix = '') {
 async function enqueueWrite($, path, record) {
   const prior = writeQueues.get(path) ?? Promise.resolve();
   const write = prior.catch(() => {}).then(async () => {
-    const next = `${journalText.get(path) ?? ''}${JSON.stringify(record)}\n`;
+    let current = journalText.get(path);
+    if (current === undefined) {
+      try { current = await $.fsRead(path); } catch (error) {
+        if (error?.code !== 'ENOENT' && !String(error?.message).includes('ENOENT')) throw error;
+        current = '';
+      }
+    }
+    const next = `${current}${JSON.stringify(record)}\n`;
     await $.fsWrite(path, next);
     journalText.set(path, next);
   });

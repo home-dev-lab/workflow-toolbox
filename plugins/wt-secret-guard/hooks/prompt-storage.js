@@ -57,7 +57,13 @@ export function locateReplacements(text, replacements, target) {
     const record = JSON.parse(line);
     const queueTarget = target === 'queue' && record.type === 'queue-operation';
     for (const range of jsonStringRanges(line)) {
-      const eligible = target === 'history' ? range.path[0] === 'display' || range.path[0] === 'pastedContents' : queueTarget && range.path[0] === 'content';
+      let eligible = target === 'history' ? range.path[0] === 'display' || range.path[0] === 'pastedContents' : queueTarget && range.path[0] === 'content';
+      if (target?.kind === 'tool-use') {
+        for (let depth = 0; depth < range.path.length; depth += 1) {
+          const candidate = range.path.slice(0, depth).reduce((value, key) => value?.[key], record);
+          if (candidate?.type === 'tool_use' && candidate.id === target.toolUseId && range.path[depth] === 'input') eligible = true;
+        }
+      }
       if (!eligible) continue;
       const source = line.slice(range.start, range.end);
       for (const { raw, token } of replacements) {
