@@ -574,6 +574,8 @@ const MISSING_FROM_PROJECT = 'missing from project copy'
 // The leading YAML frontmatter block of an agent def, incl. its trailing newline.
 const FRONTMATTER_RE = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/
 
+class AdoptFatalError extends Error {}
+
 function fail(msg) {
   process.stdout.write(`adopt: ${msg}\n`)
   process.exit(1)
@@ -778,7 +780,8 @@ function shippedFingerprint(set, item, root, installedBody = null, preserveAgent
         ? preserveLocalFrontmatter(rendered, installedBody).content
         : rendered
     return contentFingerprint(expected)
-  } catch {
+  } catch (error) {
+    if (error instanceof AdoptFatalError) throw error
     return null
   }
 }
@@ -1460,9 +1463,9 @@ function parseArgs(argv) {
   const args = defaultCliArgs()
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]
-    if (CLI_MODE_OPTIONS[token]) args.mode = CLI_MODE_OPTIONS[token]
-    else if (CLI_BOOLEAN_OPTIONS[token]) args[CLI_BOOLEAN_OPTIONS[token]] = true
-    else if (CLI_VALUE_OPTIONS[token]) args[CLI_VALUE_OPTIONS[token]] = argv[++i]
+    if (Object.hasOwn(CLI_MODE_OPTIONS, token)) args.mode = CLI_MODE_OPTIONS[token]
+    else if (Object.hasOwn(CLI_BOOLEAN_OPTIONS, token)) args[CLI_BOOLEAN_OPTIONS[token]] = true
+    else if (Object.hasOwn(CLI_VALUE_OPTIONS, token)) args[CLI_VALUE_OPTIONS[token]] = argv[++i]
     else if (token === '--diff') {
       args.mode = 'diff'
       args.diffFile = argv[++i]

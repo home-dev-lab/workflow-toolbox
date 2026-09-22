@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -64,7 +64,7 @@ function mutateScript(replacements: Array<[string, string]>): string {
 }
 
 describe('adopt installer refactor pins', () => {
-  it('P1 reports truthful recovery state after a middle migration move fails', () => {
+  it('P1 streams truthful recovery state before a middle migration move can continue', async () => {
     const root = tempDir()
     const flat = join(root, 'rules')
     const wt = join(flat, 'wt')
@@ -77,16 +77,49 @@ describe('adopt installer refactor pins', () => {
     const mutant = mutateScript([
       [
         'function moveFileVerified(from, to) {',
-        `function moveFileVerified(from, to) {\n  if (path.basename(from) === ${JSON.stringify(files[1])}) throw new Error('PINNED MOVE FAILURE')`,
+        `function moveFileVerified(from, to) {\n  if (path.basename(from) === ${JSON.stringify(files[1])}) {\n    while (!fs.existsSync(${JSON.stringify(join(root, 'release-second-move'))})) {}\n    throw new Error('PINNED MOVE FAILURE')\n  }`,
       ],
     ])
 
-    const result = run(['--migrate', '--execute', '--dir', wt, '--ignore-secondary'], { config, script: mutant })
+    const release = join(root, 'release-second-move')
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string; movedWhileRunning: boolean }>((resolve) => {
+      const child = spawn(process.execPath, [mutant, '--migrate', '--execute', '--dir', wt, '--ignore-secondary'], {
+        env: env(config),
+      })
+      let stdout = ''
+      let stderr = ''
+      let movedWhileRunning = false
+      let released = false
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk
+        if (!released && stdout.includes(`MOVED ${files[0]}`)) {
+          movedWhileRunning = child.exitCode === null
+          released = true
+          writeFileSync(release, '')
+        }
+      })
+      child.stderr.on('data', (chunk) => { stderr += chunk })
+      const timeout = setTimeout(() => child.kill('SIGKILL'), 5_000)
+      child.on('close', (status) => {
+        clearTimeout(timeout)
+        resolve({ status, stdout, stderr, movedWhileRunning })
+      })
+    })
 
+    expect(result.movedWhileRunning).toBe(true)
     expect(result.status).toBe(1)
-    expect(result.stdout).toContain(`MOVED ${files[0]}`)
-    expect(result.stdout).toContain(`FAILED ${files[1]}: PINNED MOVE FAILURE`)
-    expect(result.stdout).toContain(`NOT REACHED ${files[2]}`)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe(
+      `[migrate --execute] flat root=${flat}  →  new location=${wt}\n` +
+      `  MOVED ${files[0]}: ${join(flat, files[0]!)} -> ${join(wt, files[0]!)}\n` +
+      `  FAILED ${files[1]}: PINNED MOVE FAILURE\n\n` +
+      'adopt:migrate --execute: 1 of 3 planned file(s) moved, 1 of 3 confirmed present at destination and absent from origin.\n' +
+      `1 file(s) NOT REACHED (a prior move failed; stopped):\n  NOT REACHED ${files[2]}\n` +
+      `destination: ${wt}\n` +
+      'adopt:migrate --execute: EXITING NON-ZERO — not every planned move is confirmed.\n',
+    )
     expect(existsSync(join(wt, files[0]!))).toBe(true)
     expect(existsSync(join(flat, files[1]!))).toBe(true)
     expect(existsSync(join(flat, files[2]!))).toBe(true)
@@ -110,20 +143,30 @@ describe('adopt installer refactor pins', () => {
     expect(readFileSync(linkTarget, 'utf8')).toBe('target stays intact\n')
   })
 
-  it('P3 does not let a shipped-fingerprint catch swallow a fatal transformation error', () => {
+  it('P3 does not let a shipped-fingerprint catch swallow a one-shot fatal error', () => {
     const fixture = fixturePlugin()
     cpSync(join(PLUGIN, 'bin'), join(fixture.root, 'bin'), { recursive: true })
-    const waiter = join(fixture.root, 'bin/wt-lane-wait.mjs')
-    writeFileSync(waiter, readFileSync(waiter, 'utf8').replace("import { classifyLane, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'", '// removed by pin'))
+    let source = readFileSync(fixture.script, 'utf8')
+    source = source.replace(
+      "function fail(msg) {\n  process.stdout.write(`adopt: ${msg}\\n`)\n  process.exit(1)\n}",
+      "function fail(msg) { throw new AdoptFatalError(msg) }",
+    )
+    source = source.replace(
+      'function itemContent(set, item, root) {',
+      "function itemContent(set, item, root) {\n  if (item.file === 'wt-lane-wait.mjs' && !globalThis.__fatalPinThrown) { globalThis.__fatalPinThrown = true; fail('PINNED ONE-SHOT FATAL') }",
+    )
+    writeFileSync(fixture.script, source)
+    const target = tempDir()
 
-    const result = run(['--set', 'scripts', '--install', '--file', 'wt-lane-wait.mjs', '--dir', tempDir()], {
+    const result = run(['--set', 'scripts', '--install', '--file', 'wt-lane-wait.mjs', '--dir', target], {
       plugin: fixture.root,
       script: fixture.script,
     })
 
     expect(result.status).toBe(1)
-    expect(result.stdout).toContain('waiter transformation expected exactly one occurrence')
     expect(result.stdout).not.toContain('SKIPPED')
+    expect(result.stderr).toContain('PINNED ONE-SHOT FATAL')
+    expect(existsSync(join(target, 'wt-lane-wait.mjs'))).toBe(false)
   })
 
   it('U1 preserves last-option and last-mode precedence', () => {
@@ -155,6 +198,13 @@ describe('adopt installer refactor pins', () => {
     const result = run(['--unknown-token', '--check', '--dir'], { cwd })
     expect(result.status).toBe(0)
     expect(result.stdout).toContain(`[rules] target=${join(cwd, '.claude/rules/wt')}`)
+  })
+
+  it.each(['toString', 'constructor', '__proto__'])('U4 ignores inherited object-property argv token %s', (token) => {
+    const cwd = tempDir()
+    const expected = run(['--set', 'docs', '--check', '--dir', join(cwd, 'target')], { cwd })
+    const actual = run(['--set', 'docs', '--check', '--dir', join(cwd, 'target'), token], { cwd })
+    expect(actual).toEqual(expected)
   })
 
   it('U5 treats an invalid settings trace as unavailable and replaces it on install', () => {
@@ -247,7 +297,14 @@ describe('adopt installer refactor pins', () => {
 
   it('verifies the exact intended settings additions before publication', () => {
     const config = tempDir('wt-adopt-refactor-config-')
-    writeFileSync(join(config, 'settings.json'), '{"theme":"dark"}\n')
+    const settings = join(config, 'settings.json')
+    const trace = join(config, 'workflow-toolbox/adopt-settings-trace.json')
+    writeFileSync(settings, '{"theme":"dark"}\n')
+    mkdirSync(join(config, 'workflow-toolbox'))
+    writeFileSync(trace, '{"schemaVersion":1,"tool":"workflow-toolbox","owner":"adopt","keys":{}}\n')
+    const settingsBefore = readFileSync(settings)
+    const traceBefore = readFileSync(trace)
+    const backupsBefore = readdirSync(config).filter((file) => file.startsWith('settings.json.workflow-toolbox.bak.'))
     const fixture = fixturePlugin()
     cpSync(join(PLUGIN, 'rules'), join(fixture.root, 'rules'), { recursive: true })
     const source = readFileSync(fixture.script, 'utf8')
@@ -262,5 +319,8 @@ describe('adopt installer refactor pins', () => {
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('settings write verification failed')
     expect(result.stdout).toContain('CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH')
+    expect(readFileSync(settings)).toEqual(settingsBefore)
+    expect(readFileSync(trace)).toEqual(traceBefore)
+    expect(readdirSync(config).filter((file) => file.startsWith('settings.json.workflow-toolbox.bak.'))).toEqual(backupsBefore)
   })
 })
