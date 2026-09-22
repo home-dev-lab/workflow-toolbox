@@ -20,6 +20,8 @@ The Bash hook resolves a well-formed `op://vault/item/[section/]field` reference
 
 `maskIpAddresses` and `maskEmails` are boolean plugin options and both default to `false`. Enable either option to mask that value class in submitted prompts and Bash, Read, and MCP tool results. IPv4 and IPv6 addresses are covered.
 
+`secretFileReadWarnings` defaults to `true`. The guard evaluates the original Bash command before reference rewriting and also evaluates Read and NotebookRead paths. A guarded read still executes in this measurement release, but its result carries `WOULD BLOCK; executed in measurement mode`. Set the option to `false` only to diagnose noisy warnings; disabling it is recorded without storing the command or path.
+
 ## Context limitation
 
 This marketplace plugin cannot mask secrets already present in `CLAUDE.md` or other first-message context blocks. Claude Code computes those blocks in `prompt.context`, but its prepend-tier security plugin bypasses the entire user-plugin tier for that event. Marketplace plugins are user-tier, so registering a handler appears valid but the handler does not run, including in `-p` sessions. The host still records and sends the original block.
@@ -48,3 +50,5 @@ Detected values are replaced with stable `secret:<kind>#<id>` tokens before they
 The in-place operation is supported on Linux and macOS, whose `dd` implementations support `bs=1`, `skip`, `count`, `seek`, and `conv=notrunc`. On Windows without a compatible `dd` on `PATH`, scrubbing degrades to the notice above and does not silently claim success.
 
 Prefer `op://...` or `secret:env:NAME` references over pasting raw values. Those references are resolved only when a Bash command runs, so the raw value never passes through the prompt or prompt-history files.
+
+Secret-file policy measurements use one append-only NDJSON record stream per session. Records contain fixed policy enums, counts, the host session/tool identifiers, and a salted project identity only. They never contain commands, paths, argument keys, tool names, excerpts, or secret values. A separate identifier-only ledger records review dispositions. The existing `salt`, `detections`, `stats`, and `lastpublishedat` publication contract is unchanged.

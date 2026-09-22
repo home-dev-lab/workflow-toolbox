@@ -5,6 +5,10 @@ import { configure, register, testState, tokenize } from './hooks.js';
 import { sha256 } from './sha256.js';
 import { resolveReference } from './hooks.js';
 import { opReadArgv, opReferencesIn, opValueFrom } from './op-resolve.js';
+import { appendEvent, buildEvent, deriveAggregates, journalSnapshot, promotionStatus, recordDisposition } from './journal.js';
+import { locateReplacements } from './prompt-storage.js';
+import { rewriteReferences } from './reference-runtime.js';
+import { verdictForBash, verdictForPath } from './secret-read-policy.js';
 
 const corpus = JSON.parse(readFileSync(new URL('./fixtures/secret-guard-corpus.json', import.meta.url), 'utf8'));
 
@@ -18,6 +22,7 @@ let nextInode = 1;
 const files = new Map([
   ['/tmp/wt-secret-guard-file', { text: "file-secret value with ' quote\nsecond-file-secret", mode: 0o600, inode: nextInode++ }],
 ]);
+const journalFiles = new Map();
 const setFile = (path, text, mode = 0o600) => files.set(path, { text, mode, inode: nextInode++ });
 const getFile = (path) => files.get(path);
 let onSleep;
@@ -33,6 +38,7 @@ const $ = {
   fs: {
     read: readFile,
     readFile,
+    write: async (path, text) => { journalFiles.set(path, text); calls.push({ capability: 'fs.write', path, value: text }); },
     stat: async (path) => ({ kind: 'file', size: Buffer.byteLength(files.get(path).text), mtimeMs: 0 }),
   },
   store: { get: async () => ({}), set: async (key, value) => calls.push({ capability: 'store.set', key, value }) },
@@ -65,12 +71,23 @@ const $ = {
   session: { cwd: async () => projectDir, id: async () => sessionId },
   clock: { sleep: async () => { if (onSleep) await onSleep(); }, now: () => 0 },
 };
+const journalHostFor = (runtime) => ({
+  getSalt: () => runtime.store.get('salt'), setSalt: (value) => runtime.store.set('salt', value),
+  setDetections: (value) => runtime.store.set('detections', value), getStats: () => runtime.store.get('stats'),
+  setStats: (value) => runtime.store.set('stats', value), setLastPublishedAt: (value) => runtime.store.set('lastpublishedat', value),
+  fsWrite: (path, text) => runtime.fs.write(path, text), configDir: () => runtime.env.get('CLAUDE_CONFIG_DIR'), home: () => runtime.env.get('HOME'),
+  sessionId: () => runtime.session.id(), sessionCwd: () => runtime.session.cwd(), uiLog: (text) => runtime.ui.log(text),
+});
+const referenceHostFor = (runtime) => ({
+  processRun: (argv) => runtime.process.run(argv), fsRead: (path) => runtime.fs.read(path), uiLog: (text) => runtime.ui.log(text),
+});
 register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }));
 const bash = hooks.find((hook) => hook.event === 'tool.call').hook;
 const prompt = hooks.find((hook) => hook.event === 'prompt.submit').hook;
 const receive = hooks.find((hook) => hook.event === 'session.receive')?.hook;
 const context = hooks.find((hook) => hook.event === 'prompt.context')?.hook;
 const read = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Read').hook;
+const notebookRead = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'NotebookRead').hook;
 const mcp = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool instanceof RegExp).hook;
 const call = (command, output) => bash($, { tool: 'Bash', command }, async (event) => ({ result: { stdout: output ?? event.command, stderr: '' }, text: output ?? event.command }));
 let failures = 0;
@@ -206,12 +223,128 @@ await test('file reference line selection quotes and tokenises only that line', 
 await test('missing file reference remains unchanged and logs no path or value', async () => { let received; await bash($, { tool: 'Bash', command: 'cat secret:file:/tmp/wt-secret-guard-missing' }, async (event) => { received = event.command; return { text: 'failed' }; }); assert.equal(received, 'cat secret:file:/tmp/wt-secret-guard-missing'); assert(logs.some((line) => line === 'wt-secret-guard: file reference unavailable (1 reference)')); assert(logs.every((line) => !line.includes('/tmp/wt-secret-guard-missing'))); });
 await test('Read result scrub publishes tokens without treating its path as a secret', async () => { const value = 'read-result-secret'; const result = await read($, { tool: 'Read', file_path: '/tmp/not-a-secret' }, async (event) => ({ ...event, text: `password = ${value}` })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.file_path, '/tmp/not-a-secret'); assert.match(result.text, /secret:assignment#/); });
 await test('MCP result scrub tokenises inbound sensitive text without rewriting its input', async () => { const value = 'mcp-result-secret'; const event = { tool: 'mcp__atrium__read_message', text: `token = ${value}` }; const result = await mcp($, event, async (received) => ({ ...received, text: received.text })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.tool, event.tool); assert.match(result.text, /secret:assignment#/); });
-await test('[KNOWN GAP deny layer] Bash secret-file reads currently reach the executor unchanged', async () => {
+await test('Bash secret-file reads warn and execute in measurement mode', async () => {
   const command = corpus.denyCommands.find((fixture) => fixture.verdict)?.command;
   let received;
   const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event; return { text: 'fixture file contents' }; });
   assert.equal(received.command, command);
   assert.equal(result.deny, undefined);
+  assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+});
+await test('all 47 SR Cloud rows retain their recorded verdict at source commit 369120f', async () => {
+  for (const fixture of corpus.denyCommands) assert.equal(verdictForBash(fixture.command).verdict, fixture.verdict, fixture.command);
+});
+await test('Bash policy evaluates the byte-identical original before reference rewrites', async () => {
+  const command = 'cat ~/.npmrc && echo op://Private/item/field';
+  let received;
+  const result = await bash($, { tool: 'Bash', command, tool_use_id: 'tool-order' }, async (event) => { received = event.command; return { text: 'ok' }; });
+  assert.equal(received.includes('op read'), true);
+  assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+});
+await test('Read and NotebookRead guarded paths warn but still execute', async () => {
+  for (const [hook, event] of [[read, { tool: 'Read', file_path: '/tmp/.env' }], [notebookRead, { tool: 'NotebookRead', notebook_path: '/tmp/.aws/credentials' }]]) {
+    let executed = false;
+    const result = await hook($, event, async () => { executed = true; return { text: 'contents' }; });
+    assert.equal(executed, true);
+    assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
+  }
+});
+await test('malformed read events fail open after a value-free evaluation', async () => {
+  const result = await read($, { tool: 'Read', file_path: { unexpected: true } }, async () => ({ text: 'ok' }));
+  assert.equal(result.text, 'ok');
+});
+await test('prose mentions pass and journal mention-allowed without command text', async () => {
+  const command = 'echo "the .npmrc file is documented in the README"';
+  const before = calls.length;
+  const result = await bash($, { tool: 'Bash', command }, async () => ({ text: 'ok' }));
+  assert.equal(result.text, 'ok');
+  const writes = calls.slice(before).filter((entry) => entry.capability === 'fs.write');
+  assert(writes.some((entry) => entry.value.includes('mention-allowed')));
+  assert(writes.every((entry) => !entry.value.includes(command) && !entry.value.includes('.npmrc')));
+});
+await test('secret-file warning option off remains fail-open and journals policy-disabled', async () => {
+  configure({ secretFileReadWarnings: false });
+  const before = calls.length;
+  const result = await bash($, { tool: 'Bash', command: 'cat ~/.npmrc' }, async () => ({ text: 'ok' }));
+  assert.equal(result.text, 'ok');
+  assert(calls.slice(before).some((entry) => entry.capability === 'fs.write' && entry.value.includes('policy-disabled')));
+  configure({});
+});
+await test('journal builder permits fixed enums and identifiers only', async () => {
+  const event = await buildEvent(journalHostFor($), { surface: 'bash', action: 'would-block', ruleId: 'guarded-path-read', pathClass: 'npm-config', commandClass: 'bash', toolUseId: 'tool-safe', command: 'cat fixture-secret-path', arbitrarySecretKey: 'fixture-secret-value' });
+  assert.deepEqual(Object.keys(event).sort(), ['action', 'at', 'commandClass', 'count', 'pathClass', 'project', 'ruleId', 'sessionId', 'surface', 'toolUseId', 'version'].sort());
+  assert.equal(JSON.stringify(event).includes('fixture-secret'), false);
+});
+await test('journal uses distinct append-only session files for concurrent sessions', async () => {
+  const runtime = (id) => ({ ...$, session: { ...$.session, id: async () => id } });
+  await Promise.all([
+    appendEvent(journalHostFor(runtime('session-a')), { surface: 'bash', action: 'evaluated', ruleId: 'guarded-path-read', commandClass: 'bash' }),
+    appendEvent(journalHostFor(runtime('session-b')), { surface: 'read', action: 'evaluated', ruleId: 'guarded-path-read', commandClass: 'read' }),
+  ]);
+  const paths = [...journalSnapshot().keys()].filter((path) => /session-[ab]\.ndjson$/.test(path));
+  assert.equal(paths.length, 2);
+  assert(paths.every((path) => journalSnapshot().get(path).trim().split('\n').length === 1));
+});
+await test('journal deduplicates correlated hits and a write failure stays fail-open', async () => {
+  const journalPath = `/tmp/home/.local/state/wt-secret-guard/journal/${sessionId}.ndjson`;
+  const before = journalSnapshot().get(journalPath)?.split('\n').length ?? 0;
+  const fields = { surface: 'bash', action: 'would-block', ruleId: 'guarded-path-read', commandClass: 'bash', dedupeKey: 'same-hit' };
+  assert.equal(await appendEvent(journalHostFor($), fields), true);
+  assert.equal(await appendEvent(journalHostFor($), fields), false);
+  const after = journalSnapshot().get(journalPath).split('\n').length;
+  assert.equal(after, before + 1);
+  const failing = { ...$, fs: { ...$.fs, write: async () => { throw new Error('fixture write failure'); } } };
+  assert.equal(await appendEvent(journalHostFor(failing), { surface: 'read', action: 'evaluated', ruleId: 'guarded-path-read', commandClass: 'read' }), false);
+});
+await test('disposition ledger and aggregates make promotion queries measurable', async () => {
+  await recordDisposition(journalHostFor($), { toolUseId: 'tool-safe' }, 'true-positive');
+  const events = [
+    { action: 'evaluated', project: 'one', at: '2026-08-01T00:00:00.000Z' },
+    { action: 'would-block', project: 'one', at: '2026-08-01T00:00:00.000Z' },
+  ];
+  const dispositions = [{ disposition: 'true-positive' }];
+  assert.deepEqual(deriveAggregates(events, dispositions), { evaluations: 1, hits: 1, reviewed: 1, falsePositives: 0, projects: 1, falsePositiveRate: 0 });
+  assert.equal(promotionStatus(events, dispositions, Date.parse('2026-09-22T00:00:00.000Z')).measurable, false);
+  assert([...journalSnapshot().entries()].some(([path, text]) => path.includes('.dispositions.ndjson') && text.includes('true-positive')));
+});
+await test('mechanical journal scan contains no fixture values, paths, commands, argument keys, or tool names', async () => {
+  const journal = [...journalSnapshot().values()].join('\n');
+  for (const forbidden of ['fixture-secret-value', '/tmp/.env', 'cat ~/.npmrc', 'file_path', 'notebook_path', 'Bash', 'Read', 'NotebookRead']) assert.equal(journal.includes(forbidden), false, forbidden);
+});
+await test('journal rejects open enums and invalid dispositions and supports HOME fallback', async () => {
+  await assert.rejects(buildEvent(journalHostFor($), { surface: 'raw-tool-name', action: 'evaluated' }), /invalid journal event/);
+  await assert.rejects(recordDisposition(journalHostFor($), {}, 'maybe'), /invalid disposition/);
+  const homeOnly = { ...$, env: { get: async (name) => name === 'HOME' ? '/tmp/home' : undefined }, session: { ...$.session, id: async () => 'home-session' } };
+  assert.equal(await appendEvent(journalHostFor(homeOnly), { surface: 'bash', action: 'evaluated', kinds: ['github-classic', 4, 'NOT VALID'], count: 2, ruleId: 'guarded-path-read', commandClass: 'bash' }), true);
+  assert([...journalSnapshot().keys()].some((path) => path === '/tmp/home/.local/state/wt-secret-guard/journal/home-session.ndjson'));
+  assert.equal(deriveAggregates([{ action: 'evaluated', project: 'one' }]).falsePositiveRate, 0);
+});
+await test('promotion query requires duration, volume, projects, all governed tools and zero recent false positives', async () => {
+  const started = '2026-08-01T00:00:00.000Z';
+  const events = Array.from({ length: 200 }, (_, index) => ({ action: 'evaluated', surface: ['bash', 'read', 'notebook-read'][index % 3], project: ['one', 'two', 'three'][index % 3], at: started }));
+  events.push({ action: 'would-block', surface: 'bash', project: 'one', at: started });
+  const now = Date.parse('2026-09-22T00:00:00.000Z');
+  const status = promotionStatus(events, [{ disposition: 'true-positive', at: '2026-09-01T00:00:00.000Z' }], now);
+  assert.equal(status.measurable, true);
+  assert.equal(status.allGovernedTools, true);
+  assert.equal(promotionStatus(events, [{ disposition: 'false-positive', at: '2026-09-20T00:00:00.000Z' }], now).measurable, false);
+});
+await test('prompt planner covers CRLF, primitive JSON, malformed JSON and long-token masking', async () => {
+  const text = `${JSON.stringify({ display: 'raw', count: 1, active: true })}\r\n`;
+  const changes = locateReplacements(text, [{ raw: 'raw', token: 'secret:fixture#toolong' }], 'history');
+  assert.equal(changes.length, 1);
+  assert.equal(changes[0].replacement, '***');
+  assert.throws(() => locateReplacements('{"display":"unterminated}', [{ raw: 'x', token: 'y' }], 'history'), /unterminated/i);
+  assert.throws(() => locateReplacements('{"display" "x"}', [], 'history'), /property name|invalid JSON object/);
+});
+await test('reference runtime handles host text objects, invalid text and empty resolver output', async () => {
+  const objectRuntime = { ...$, fs: { ...$.fs, read: async () => ({ text: 'object-file-secret' }) } };
+  assert.match((await rewriteReferences(referenceHostFor(objectRuntime), 'echo secret:file:/tmp/object')).command, /object-file-secret/);
+  const invalidRuntime = { ...$, fs: { ...$.fs, read: async () => ({ bytes: true }) } };
+  assert.equal((await rewriteReferences(referenceHostFor(invalidRuntime), 'echo secret:file:/tmp/object')).command, 'echo secret:file:/tmp/object');
+  assert.equal((await rewriteReferences(referenceHostFor(objectRuntime), 'echo secret:file:/tmp/object#9')).command, 'echo secret:file:/tmp/object#9');
+  const emptyResolver = { ...$, process: { run: async () => ({ exitCode: 7, stdout: '' }) } };
+  assert.equal((await resolveReference(emptyResolver, 'op://vault/item/field')).token, null);
 });
 await test('destructuring defaults named like credentials pass through tool results', async () => {
   const source = 'const { kind, value, secret = value } = result;';
