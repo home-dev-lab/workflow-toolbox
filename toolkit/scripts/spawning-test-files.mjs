@@ -125,6 +125,7 @@ export const spawningTestFiles = [
   'packages/build/test/sdk-pilot-lifecycle-full.test.ts',
   'packages/build/test/sdk-pilot-lifecycle-server.test.ts',
   'packages/build/test/second-opinion.test.ts',
+  'packages/build/test/secret-guard-native-helpers.test.ts',
   'packages/build/test/service-watch.test.ts',
   'packages/build/test/session-role.test.ts',
   'packages/build/test/session-start-duplicate-hooks.test.ts',
