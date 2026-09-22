@@ -1819,6 +1819,92 @@ describe('adversarialVerification — provenance gate (external verifierType)', 
     expect(result.warnings.some((w) => /2 external verifier votes DISQUALIFIED/.test(w))).toBe(true)
   })
 
+  it('logs provenance warnings synchronously around retries before toll and diagnostics', async () => {
+    const events: string[] = []
+    const retryLabels: string[] = []
+    class EventRuntime extends FakeRuntime {
+      override log(message: string): void {
+        const kind = message.includes('DISQUALIFIED')
+          ? 'disqualified'
+          : message.includes('RECOVERED')
+            ? 'recovered'
+            : message.includes('remained unrecovered')
+              ? 'unrecovered'
+              : message.includes('SELF-ANSWER TOLL')
+                ? 'toll'
+                : message.includes('structured-output salvage')
+                  ? 'salvage'
+                  : message.includes('returned null')
+                    ? 'null'
+                    : message.includes('left unverifiable')
+                      ? 'unverifiable'
+                      : message.startsWith('[wt:digest]')
+                        ? 'digest'
+                        : message
+        events.push(`log:${kind}`)
+        super.log(message)
+      }
+    }
+    const rt = new EventRuntime({
+      onAgent: ({ opts }) => {
+        const label = opts?.label ?? ''
+        events.push(`agent:${label}`)
+        if (label.endsWith(':provenance-check:retry')) {
+          return JSON.stringify({
+            anchored: true,
+            results: retryLabels.map((retryLabel) => ({
+              label: retryLabel,
+              cliSeen: retryLabel.endsWith(':0:retry'),
+            })),
+          })
+        }
+        if (label.endsWith(':provenance-check')) {
+          return JSON.stringify({
+            anchored: true,
+            results: [
+              { label: 'adversarialVerification:verify:0:0', cliSeen: false },
+              { label: 'adversarialVerification:verify:0:1', cliSeen: false },
+              { label: 'adversarialVerification:verify:1:0:salvage', cliSeen: false },
+            ],
+          })
+        }
+        if (label.endsWith(':retry')) {
+          retryLabels.push(label)
+          return confirmedVote
+        }
+        if (label.includes(':verify:1:0')) return null
+        return confirmedVote
+      },
+    })
+
+    await adversarialVerification(rt, makeOptions({
+      claims: ['retry', 'dead'],
+      votesPerClaim: (claim) => claim === 'retry' ? 2 : 1,
+      refuteThreshold: 2,
+      minValidVotes: 1,
+      verifierType: OPENCODE,
+    }))
+
+    expect(events).toEqual([
+      'agent:adversarialVerification:verify:0:0',
+      'agent:adversarialVerification:verify:0:1',
+      'agent:adversarialVerification:verify:1:0',
+      'agent:adversarialVerification:verify:1:0:salvage',
+      'agent:adversarialVerification:provenance-check',
+      'log:disqualified',
+      'agent:adversarialVerification:verify:0:0:retry',
+      'agent:adversarialVerification:verify:0:1:retry',
+      'agent:adversarialVerification:provenance-check:retry',
+      'log:recovered',
+      'log:unrecovered',
+      'log:toll',
+      'log:salvage',
+      'log:null',
+      'log:unverifiable',
+      'log:digest',
+    ])
+  })
+
   it('does NOT gate a registered NON-external verifierType (false-positive invariant)', async () => {
     const rt = new FakeRuntime({
       onAgent: (call) => {
