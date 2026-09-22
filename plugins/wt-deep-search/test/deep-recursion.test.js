@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { startOpencode } from '../src/deep/opencode.js';
@@ -10,6 +11,7 @@ import { continueDeepResearch } from '../src/deep/runner.js';
 import { ProviderFailure } from '../src/provider-failure.js';
 
 const cli = new URL('../bin/deep.mjs', import.meta.url);
+const cliPath = fileURLToPath(cli);
 
 // ⚠ Measured 2026-09-21 00:39 +01:00, on the first REAL run. Exa refused, the availability door
 // launched `opencode run --auto --dir <the plugin's own directory>`, and the agent — doing exactly
@@ -26,7 +28,7 @@ async function stateRoot(t) {
 test('a deep-search worker refuses to start another deep-search run', async (t) => {
   const root = await stateRoot(t);
   const env = { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_WORKER: '1' };
-  const result = spawnSync(process.execPath, [cli.pathname, 'start', '--mode', 'deep-lite', '--question', 'anything'], { env, encoding: 'utf8' });
+  const result = spawnSync(process.execPath, [cliPath, 'start', '--mode', 'deep-lite', '--question', 'anything'], { env, encoding: 'utf8' });
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /already inside a deep-search run/i);
 });
@@ -52,8 +54,8 @@ test('an agentic run never works inside the plugin that launched it', async (t) 
   const env = { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1' };
   const result = spawnSync(
     process.execPath,
-    [cli.pathname, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
-    { env, encoding: 'utf8', cwd: new URL('..', cli).pathname },
+    [cliPath, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
+    { env, encoding: 'utf8', cwd: fileURLToPath(new URL('..', cli)) },
   );
   assert.equal(result.status, 0, result.stderr);
   const { handle } = JSON.parse(result.stdout);
@@ -70,7 +72,7 @@ test('start does not spawn a worker when the no-worker seam is set', async (t) =
   const before = spawnSync('bash', ['-lc', 'ps -eo args | grep -c "[o]pencode run" || true'], { encoding: 'utf8' }).stdout.trim();
   const result = spawnSync(
     process.execPath,
-    [cli.pathname, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
+    [cliPath, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
     { env: { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1' }, encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);

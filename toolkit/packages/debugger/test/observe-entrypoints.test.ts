@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createServer, type Server } from 'node:http'
@@ -258,20 +259,20 @@ describe('wt-observe entry dispatch', () => {
     const app = join(observeRoot, 'apps', 'observe-ui')
     const source = join(root, 'source')
     const sourceTwo = join(root, 'source-two')
-    const fakeBin = join(root, 'bin')
     mkdirSync(join(app, 'server'), { recursive: true })
     mkdirSync(join(app, 'dist', 'assets'), { recursive: true })
     mkdirSync(source)
     mkdirSync(sourceTwo)
-    mkdirSync(fakeBin)
     writeFileSync(join(app, 'package.json'), JSON.stringify({ name: '@workflow-toolbox/observe-ui' }))
     writeFileSync(join(app, 'server', 'dev-api.ts'), '// characterization fixture')
     writeFileSync(join(app, 'dist', 'assets', 'index-characterized.js'), '// fixture')
-    const git = join(fakeBin, 'git')
-    writeFileSync(git, '#!/bin/sh\ncase "$*" in\n  *"branch --show-current"*) printf main ;;\n  *"rev-parse --short HEAD"*) printf abc123 ;;\nesac\n')
-    chmodSync(git, 0o755)
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: observeRoot, stdio: 'ignore' })
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.email', 'test@example.com')
+    git('config', 'user.name', 'Test')
+    git('add', '.')
+    git('commit', '-q', '-m', 'fixture')
     process.env['DWT_OBSERVE_ROOT'] = observeRoot
-    process.env['PATH'] = `${fakeBin}:${originalEnv['PATH'] ?? ''}`
 
     let launchEnabled = true
     let multiSource = false
@@ -317,7 +318,7 @@ describe('wt-observe entry dispatch', () => {
     expect(await main(['start', '--source', source, '--enable-launch'])).toBe(0)
     multiSource = true
     expect(await main(['start', '--source', source, '--source', sourceTwo, '--enable-launch'])).toBe(0)
-    writeFileSync(git, '#!/bin/sh\ncase "$*" in\n  *"branch --show-current"*) printf feature ;;\n  *"rev-parse --short HEAD"*) printf def456 ;;\nesac\n')
+    git('switch', '-q', '-c', 'feature')
     expect(await main(['start', '--source', source])).toBe(1)
     expect(await main(['start', '--source', source, '--allow-branch'])).toBe(0)
     expect(await main(['start', '--source', join(root, 'absent'), '--allow-branch'])).toBe(1)

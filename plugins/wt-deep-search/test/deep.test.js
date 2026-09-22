@@ -286,11 +286,11 @@ test('the engine that answered is named in prose and structured results', () => 
 test('state records default outside the repository under XDG or HOME', () => {
   assert.equal(
     resolveStateDirectory({ env: { XDG_STATE_HOME: '/state', HOME: '/home/test' }, cwd: '/repo' }),
-    '/state/deep-search',
+    join('/state', 'deep-search'),
   );
   assert.equal(
     resolveStateDirectory({ env: { HOME: '/home/test' }, cwd: '/repo' }),
-    '/home/test/.local/state/deep-search',
+    join('/home/test', '.local', 'state', 'deep-search'),
   );
 });
 
@@ -355,6 +355,7 @@ test('opencode timeout is owned by Node, kills the child, and records the timeou
       closeSync() {},
       openSync: () => 8,
       processFamilyExists: () => false,
+      platform: 'linux',
       signalProcessFamily: (pid, signal) => signals.push([pid, signal]),
       setTimeout: (callback) => { onTimeout = callback; return 7; },
       spawn: () => child,
@@ -380,6 +381,7 @@ test('opencode timeout escalates to SIGKILL and withholds the marker until the f
       closeSync() {},
       openSync: () => 8,
       processFamilyExists: () => familyStates.shift(),
+      platform: 'linux',
       setTimeout: (callback) => { timers.push(callback); return timers.length; },
       signalProcessFamily: (pid, signal) => signals.push([pid, signal]),
       spawn: () => ({ pid: 44, once() {}, unref() {} }),
@@ -392,6 +394,35 @@ test('opencode timeout escalates to SIGKILL and withholds the marker until the f
   assert.deepEqual(signals, [[44, 'SIGTERM'], [44, 'SIGKILL']]);
   assert.deepEqual(writes, []);
   timers.shift()();
+  assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
+});
+
+test('opencode timeout records exit when the remaining process group is not signalable', () => {
+  let onExit;
+  let onTimeout;
+  const writes = [];
+  const permissionDenied = Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', timeoutMs: 90_000 },
+    {
+      appendFileSync: (_path, value) => writes.push(value),
+      clearTimeout() {},
+      closeSync() {},
+      openSync: () => 8,
+      setTimeout: (callback) => { onTimeout = callback; return 7; },
+      signalProcessFamily() {},
+      spawn: () => ({
+        pid: 44,
+        once(event, callback) { if (event === 'exit') onExit = callback; },
+        unref() {},
+      }),
+      platform: 'darwin',
+      kill() { throw permissionDenied; },
+    },
+  );
+
+  onTimeout();
+  assert.doesNotThrow(() => onExit(null, 'SIGTERM'));
   assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
 });
 
@@ -441,7 +472,7 @@ test('opencode timeout terminates the real detached child and grandchild before 
   ].join('\n'));
 
   const result = startOpencode(
-    { prompt: 'full brief', dir: root, logPath, timeoutMs: 100 },
+    { prompt: 'full brief', dir: root, logPath, timeoutMs: process.platform === 'win32' ? 2_000 : 100 },
     {
       spawn: (_command, _args, options) => spawn(process.execPath, [fixture, pidFile], options),
       terminationGraceMs: 100,

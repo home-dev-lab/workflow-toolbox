@@ -67,7 +67,7 @@ describe('lane orphan watcher self-detection', () => {
     expect(result.stdout).toContain('LANE decision-needed:')
     expect(result.stdout).not.toContain('unattributed opencode')
     expect(result.stdout).toContain('--slot \'critic-Z\' --decision extend')
-  }))
+  }), process.platform === 'win32' ? 60_000 : 20_000)
 
   it('uses the same strict five-minute boundary for a Windows command line', () => {
     const classify = (ageSeconds: number) => classifyIdleHelper({

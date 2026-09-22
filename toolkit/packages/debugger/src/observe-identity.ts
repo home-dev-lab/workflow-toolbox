@@ -17,7 +17,7 @@ import { parsePowershellInt, parsePsLstartEpochSec, parseSysctlBoottimeSec, type
  *  as identity-unknown, the safe direction), never wedge start/stop/status. */
 function probeExec(cmd: string, args: readonly string[]): string | null {
   try {
-    return execFileSync(cmd, args as string[], { encoding: 'utf8', timeout: 3_000, stdio: ['ignore', 'pipe', 'ignore'] })
+    return execFileSync(cmd, args as string[], { encoding: 'utf8', timeout: process.platform === 'win32' ? 8_000 : 3_000, stdio: ['ignore', 'pipe', 'ignore'] })
   } catch {
     return null
   }

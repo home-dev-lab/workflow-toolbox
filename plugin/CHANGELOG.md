@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- macOS: a timed-out deep-search run no longer crashes on `EPERM` from its already-exited process group; it records its terminal marker. Windows: Observatory identity probes allow for a cold PowerShell start; test portability for deep-search, lane-watch, lane-launcher and wt-observe entry points.
+
 ## [0.186.0] - 2026-09-22
 
 ⚠ **The SDK pilot runner, its lifecycle server and What is running remain EXPERIMENTAL.** This release changes how the runner's plan loop behaves; a full FULL run was measured on it (370 min, no delivery: stopped by the runner's own 6 h limit in the fourth harden round) and the causes are carded, not fixed here.

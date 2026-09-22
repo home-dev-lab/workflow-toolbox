@@ -1267,7 +1267,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync as readFileSync3 } from "node:fs";
 function probeExec(cmd, args) {
   try {
-    return execFileSync(cmd, args, { encoding: "utf8", timeout: 3e3, stdio: ["ignore", "pipe", "ignore"] });
+    return execFileSync(cmd, args, { encoding: "utf8", timeout: process.platform === "win32" ? 8e3 : 3e3, stdio: ["ignore", "pipe", "ignore"] });
   } catch {
     return null;
   }
