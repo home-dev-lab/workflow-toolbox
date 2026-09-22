@@ -465,7 +465,7 @@ instead of reasoning itself (`plugin/agents/opencode-envelope.md:3-7`,
   (`toolkit/packages/patterns/README.md:25-27`,
   `toolkit/packages/patterns/src/classify-and-act.ts:121`,
   `toolkit/packages/patterns/src/fan-out-and-synthesize.ts:124`,
-  `toolkit/packages/patterns/src/adversarial-verification.ts:244`).
+  `resolveVerifierModel` in `toolkit/packages/patterns/src/adversarial-verification.ts`).
 - **When to define an `.md` vs inline the prompt.** Inline when the leaf is a generic worker
   the default subagent's capabilities already fit. Define a registered agentType `.md` when you
   need a capability fence (above), reusable discipline across workflows, or a specific

@@ -872,7 +872,7 @@ describe('pr-review review-lens wrapper model (haiku doctrine)', () => {
     const verify = rt.calls.filter((c) => c.opts?.label?.startsWith('adversarialVerification:verify:'))
     expect(verify.length).toBeGreaterThan(0)
     // adversarialVerification ALWAYS sets an explicit `model` on every agent()
-    // call it makes (toolkit/packages/patterns/src/adversarial-verification.ts:390,
+    // call it makes (resolveVerifierModel in adversarial-verification.ts,
     // `effectiveModel = model ?? (isExternalVerifier ? 'haiku' : BEST_MODEL)`) —
     // it never leaves `model` undefined. Here agentTypes.verify was NOT routed
     // (only agentTypes.review was), so isExternalVerifier is false

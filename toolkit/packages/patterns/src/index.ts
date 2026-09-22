@@ -35,7 +35,7 @@ export type { AgentTypeProbe, AgentTypeProbeReport, ProbeAgentTypeOptions } from
 // isExternalBridgeType is the SINGLE source of truth for "is this agentType
 // an external CLI bridge (opencode/codex family), not a Claude specialist" —
 // adversarialVerification's own haiku-vs-BEST_MODEL fan decision already
-// keys off the SAME registry (adversarial-verification.ts:376,390, via the
+// keys off the SAME registry (resolveVerifierModel in adversarial-verification.ts, via the
 // richer `externalGateExpectation`, kept un-exported here — its expectation
 // record is provenance-gate's own internal contract, not a public
 // commitment). Exported at the package root (card #1826112535493871358) so a

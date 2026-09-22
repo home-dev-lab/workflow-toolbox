@@ -1139,8 +1139,98 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     return (suffix) => suffix !== void 0 ? `${stage}:${suffix}${salt}` : `${stage}${salt}`;
   }
 
-  // ../packages/patterns/src/adversarial-verification.ts
-  var STAGE = "adversarialVerification";
+  // ../packages/patterns/src/adversarial-verification-audit.ts
+  function tallyVerifierVotes(votes, claimVotes, refuteThreshold, minValidVotes) {
+    const valid = votes.filter((vote) => vote !== null);
+    const threshold = Math.min(refuteThreshold, claimVotes);
+    const floor = Math.min(minValidVotes, claimVotes);
+    let verdict;
+    if (valid.length === 0) verdict = "unverifiable";
+    else if (valid.filter((vote) => vote.verdict === "refuted").length >= threshold) verdict = "refuted";
+    else if (valid.every((vote) => vote.verdict === "confirmed")) verdict = "confirmed";
+    else verdict = "partially-confirmed";
+    const floored = (verdict === "confirmed" || verdict === "refuted") && valid.length < floor;
+    return { verdict: floored ? "partially-confirmed" : verdict, floored };
+  }
+  function originalDecision(vote, disqualified) {
+    if (vote !== null) return { decision: vote.verdict };
+    if (disqualified) return { decision: "disqualified-no-provenance" };
+    return {};
+  }
+  function retryDecision(recovered, disqualified) {
+    if (recovered !== null) return { decision: "retried-after-disqualification" };
+    if (disqualified) return { decision: "disqualified-no-provenance" };
+    return {};
+  }
+  function projectClaim(route, claim) {
+    const originalTrail = [];
+    const retryTrail = [];
+    const warnings = [];
+    let attemptsSpawned = 0;
+    for (let voteIndex = 0; voteIndex < claim.votes.length; voteIndex++) {
+      const outcome = claim.voteOuts[voteIndex] ?? null;
+      const vote = claim.votes[voteIndex] ?? null;
+      const stage = claim.voteStages[voteIndex];
+      attemptsSpawned += outcome?.spawns ?? 1;
+      originalTrail.push(makeRecord(stage, vote !== null, {
+        model: route.effectiveModel,
+        ...route.config.effort !== void 0 ? { effort: route.config.effort } : {},
+        ...originalDecision(vote, claim.provenanceDisqualified[voteIndex] ?? false)
+      }));
+      if (outcome?.salvageAttempted === true) {
+        originalTrail.push(makeRecord(`${stage}:salvage`, outcome.salvaged, {
+          model: route.effectiveModel,
+          ...route.config.effort !== void 0 ? { effort: route.config.effort } : {}
+        }));
+      }
+      for (const message of outcome?.warnings ?? []) warnings.push(`adversarialVerification: ${message}`);
+      const retryStage = claim.retryStages[voteIndex];
+      if (retryStage === void 0) continue;
+      const retryOutcome = claim.retryOuts[voteIndex] ?? null;
+      const recovered = claim.retryVotes[voteIndex] ?? null;
+      attemptsSpawned += retryOutcome?.spawns ?? 1;
+      retryTrail.push(makeRecord(retryStage, recovered !== null, {
+        model: route.effectiveModel,
+        ...route.config.effort !== void 0 ? { effort: route.config.effort } : {},
+        ...retryDecision(recovered, claim.retryDisqualified[voteIndex] ?? false)
+      }));
+      if (retryOutcome?.salvageAttempted === true) {
+        retryTrail.push(makeRecord(`${retryStage}:salvage`, retryOutcome.salvaged, {
+          model: route.effectiveModel,
+          ...route.config.effort !== void 0 ? { effort: route.config.effort } : {}
+        }));
+      }
+      for (const message of retryOutcome?.warnings ?? []) warnings.push(`adversarialVerification: ${message}`);
+    }
+    const mergedVotes = claim.votes.map((vote, index) => vote ?? claim.retryVotes[index] ?? null);
+    const tally = tallyVerifierVotes(
+      mergedVotes,
+      claim.claimVotes,
+      route.config.refuteThreshold,
+      route.config.minValidVotes
+    );
+    return {
+      verified: { claim: claim.claim, verdict: tally.verdict, votes: mergedVotes },
+      originalTrail,
+      retryTrail,
+      warnings,
+      attemptsSpawned,
+      floored: tally.floored
+    };
+  }
+  function projectVerifiedClaims(route, perClaim) {
+    const projected = perClaim.map((claim) => projectClaim(route, claim));
+    return {
+      verified: projected.map((claim) => claim.verified),
+      originalTrail: projected.flatMap((claim) => claim.originalTrail),
+      retryTrail: projected.flatMap((claim) => claim.retryTrail),
+      warnings: projected.flatMap((claim) => claim.warnings),
+      attemptsSpawned: projected.reduce((total, claim) => total + claim.attemptsSpawned, 0),
+      flooredCount: projected.filter((claim) => claim.floored).length
+    };
+  }
+
+  // ../packages/patterns/src/adversarial-verification-call.ts
   var VERIFIER_SCHEMA = {
     type: "object",
     properties: {
@@ -1153,16 +1243,70 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
     required: ["verdict", "reason"],
     additionalProperties: false
   };
-  async function adversarialVerification(rt, options) {
-    rt = withEnvelopeContract(rt);
+  function runVerifierAttempt(rt, request) {
+    const lensLine = request.lens !== void 0 ? `
+Examine it through the lens of: ${request.lens}.` : "";
+    const prompt = 'Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.' + lensLine + `
+Claim:
+${request.renderClaim(request.claim)}`;
+    return agentWithSchemaSalvage(rt, prompt, {
+      schema: VERIFIER_SCHEMA,
+      label: request.label,
+      ...request.phase !== void 0 ? { phase: request.phase } : {},
+      model: request.model,
+      ...request.effort !== void 0 ? { effort: request.effort } : {},
+      ...request.agentType !== void 0 ? { agentType: request.agentType } : {}
+    });
+  }
+
+  // ../packages/patterns/src/adversarial-verification-burst.ts
+  function runInitialVerificationBurst(rt, route, keptClaims) {
+    const { config } = route;
+    return Promise.all(keptClaims.map(async (claim, claimIndex) => {
+      const claimVotes = config.perClaimVotes[claimIndex] ?? config.votes;
+      const voteStages = Array.from(
+        { length: claimVotes },
+        (_unused, voteIndex) => route.stage(`verify:${claimIndex}:${voteIndex}`)
+      );
+      const rawVotes = await rt.parallel(voteStages.map((label, voteIndex) => async () => runVerifierAttempt(rt, {
+        claim,
+        renderClaim: config.renderClaim,
+        lens: config.lenses?.[voteIndex],
+        label,
+        phase: config.phase,
+        model: route.effectiveModel,
+        effort: config.effort,
+        agentType: config.verifierType
+      })));
+      const voteOuts = rawVotes.map((value) => value);
+      const votes = voteOuts.map((outcome) => outcome?.value ?? null);
+      return {
+        claim,
+        claimVotes,
+        voteOuts,
+        votes,
+        voteStages,
+        effectiveStages: voteStages.map((stage, index) => voteOuts[index]?.salvaged === true ? `${stage}:salvage` : stage),
+        provenanceDisqualified: new Array(votes.length).fill(false),
+        retryStages: new Array(votes.length).fill(void 0),
+        retryEffectiveStages: new Array(votes.length).fill(void 0),
+        retryOuts: new Array(votes.length).fill(null),
+        retryVotes: new Array(votes.length).fill(null),
+        retryDisqualified: new Array(votes.length).fill(false)
+      };
+    }));
+  }
+
+  // ../packages/patterns/src/adversarial-verification-config.ts
+  function resolveAdversarialVerificationConfig(options) {
     const {
       claims,
       renderClaim,
-      votes: votesOpt = 3,
-      refuteThreshold: refuteThresholdOpt,
+      votes = 3,
+      refuteThreshold: thresholdOption,
       lenses,
       votesPerClaim,
-      minValidVotes: minValidVotesOpt,
+      minValidVotes: floorOption,
       model,
       effort,
       phase,
@@ -1171,411 +1315,290 @@ Do NOT analyze the ${expectation.id} verdicts yourself. Do NOT read or reason ab
       cacheWarm,
       stageKey
     } = options;
-    const refuteThreshold = refuteThresholdOpt ?? 2;
-    const minValidVotes = minValidVotesOpt ?? 2;
+    const refuteThreshold = thresholdOption ?? 2;
+    const minValidVotes = floorOption ?? 2;
     if (claims.length === 0) {
-      throw new Error(
-        "adversarialVerification: empty claims \u2014 provide at least one claim to verify"
-      );
+      throw new Error("adversarialVerification: empty claims \u2014 provide at least one claim to verify");
     }
-    if (votesOpt < 1) {
-      throw new Error(
-        `adversarialVerification: votes must be >= 1, got ${votesOpt}`
-      );
+    if (votes < 1) {
+      throw new Error(`adversarialVerification: votes must be >= 1, got ${votes}`);
     }
     if (refuteThreshold < 1) {
-      throw new Error(
-        `adversarialVerification: refuteThreshold must be >= 1, got ${refuteThreshold}`
-      );
+      throw new Error(`adversarialVerification: refuteThreshold must be >= 1, got ${refuteThreshold}`);
     }
-    if (votesPerClaim === void 0 && refuteThreshold > votesOpt) {
-      throw new Error(
-        `adversarialVerification: refuteThreshold (${refuteThreshold}) must not be > votes (${votesOpt})`
-      );
+    if (votesPerClaim === void 0 && refuteThreshold > votes) {
+      throw new Error(`adversarialVerification: refuteThreshold (${refuteThreshold}) must not be > votes (${votes})`);
     }
     if (!Number.isInteger(minValidVotes) || minValidVotes < 1) {
-      throw new Error(
-        `adversarialVerification: minValidVotes must be an integer >= 1, got ${String(minValidVotesOpt)}`
-      );
+      throw new Error(`adversarialVerification: minValidVotes must be an integer >= 1, got ${String(floorOption)}`);
     }
-    if (lenses !== void 0 && lenses.length !== votesOpt) {
-      throw new Error(
-        `adversarialVerification: lenses.length (${lenses.length}) must equal votes (${votesOpt}) \u2014 each lens corresponds to one vote`
-      );
+    if (lenses !== void 0 && lenses.length !== votes) {
+      throw new Error(`adversarialVerification: lenses.length (${lenses.length}) must equal votes (${votes}) \u2014 each lens corresponds to one vote`);
     }
     if (lenses !== void 0 && votesPerClaim !== void 0) {
-      throw new Error(
-        "adversarialVerification: lenses cannot be combined with votesPerClaim \u2014 lenses require a fixed votes count (one lens per vote); use one or the other"
-      );
+      throw new Error("adversarialVerification: lenses cannot be combined with votesPerClaim \u2014 lenses require a fixed votes count (one lens per vote); use one or the other");
     }
-    const perClaimVotes = claims.map((claim, i) => {
-      if (votesPerClaim === void 0) return votesOpt;
-      const n = votesPerClaim(claim);
-      if (!Number.isInteger(n) || n < 1) {
-        throw new Error(
-          `adversarialVerification: votesPerClaim(claims[${i}]) returned ${String(n)} \u2014 must be an integer >= 1`
-        );
+    const perClaimVotes = claims.map((claim, index) => {
+      if (votesPerClaim === void 0) return votes;
+      const count = votesPerClaim(claim);
+      if (!Number.isInteger(count) || count < 1) {
+        throw new Error(`adversarialVerification: votesPerClaim(claims[${index}]) returned ${String(count)} \u2014 must be an integer >= 1`);
       }
-      return n;
+      return count;
     });
     if (verifierType !== void 0 && verifierType.trim().length === 0) {
-      throw new Error(
-        'adversarialVerification: verifierType must be a non-empty subagent-type string (e.g. "magic-claude:ts-reviewer") \u2014 omit it for the standard subagent'
-      );
+      throw new Error('adversarialVerification: verifierType must be a non-empty subagent-type string (e.g. "magic-claude:ts-reviewer") \u2014 omit it for the standard subagent');
     }
     if (maxVerifyClaims !== void 0 && maxVerifyClaims < 1) {
-      throw new Error(
-        `adversarialVerification: maxVerifyClaims must be >= 1, got ${maxVerifyClaims}`
-      );
+      throw new Error(`adversarialVerification: maxVerifyClaims must be >= 1, got ${maxVerifyClaims}`);
     }
-    let agentsSpawned = 0;
-    const warnings = [];
-    const trail = [];
-    let selfAnswerCount = 0;
-    let undeterminedFirstPassCount = 0;
-    let recoveredAfterRetry = 0;
-    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, stageKey);
-    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
-    const stg = stageBuilder(STAGE, salt);
-    const gateExpectation = externalGateExpectation(verifierType);
-    const isExternalVerifier = gateExpectation !== null;
-    const effectiveModel = model ?? (isExternalVerifier ? "haiku" : BEST_MODEL);
-    if (!isExternalVerifier && model !== void 0 && model !== BEST_MODEL) {
-      warn(
-        rt,
-        warnings,
-        `adversarialVerification: verifier model downgraded to "${model}" \u2014 verification quality is model-sensitive`
-      );
-    }
-    const { kept: keptClaims, truncated } = applyCap(claims, maxVerifyClaims);
-    if (truncated > 0) {
-      warn(
-        rt,
-        warnings,
-        `adversarialVerification: ${truncated} of ${claims.length} claims truncated by maxVerifyClaims=${maxVerifyClaims ?? "?"} \u2014 kept as unverified-by-cap`
-      );
-    }
-    function buildVerifierPrompt(claim, lens) {
-      const lensLine = lens !== void 0 ? `
-Examine it through the lens of: ${lens}.` : "";
-      return `Adversarially verify the following claim. Actively try to REFUTE it; default to "refuted" when uncertain.` + lensLine + `
-Claim:
-${renderClaim(claim)}`;
-    }
-    if (cacheWarm ?? true) {
-      agentsSpawned++;
-      trail.push(await runCacheWarmup(rt, warnings, stg("warm"), STAGE, {
-        ...phase !== void 0 ? { phase } : {},
-        model: effectiveModel,
-        ...effort !== void 0 ? { effort } : {},
-        ...verifierType !== void 0 ? { agentType: verifierType } : {}
-      }));
-    }
-    const trailByClaim = [];
-    const retryTrailByClaim = [];
-    const warningsByClaim = [];
-    const perClaim = await Promise.all(
-      keptClaims.map(async (claim, claimIndex) => {
-        const claimVotes = perClaimVotes[claimIndex] ?? votesOpt;
-        const voteStages = Array.from(
-          { length: claimVotes },
-          (_, voteIndex) => stg(`verify:${claimIndex}:${voteIndex}`)
-        );
-        const voteThunks = Array.from({ length: claimVotes }, (_, voteIndex) => {
-          return async () => {
-            const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
-            const prompt = buildVerifierPrompt(claim, lens);
-            const opts = {
-              schema: VERIFIER_SCHEMA,
-              label: voteStages[voteIndex],
-              ...phase !== void 0 ? { phase } : {},
-              model: effectiveModel,
-              ...effort !== void 0 ? { effort } : {},
-              ...verifierType !== void 0 ? { agentType: verifierType } : {}
-            };
-            return agentWithSchemaSalvage(rt, prompt, opts);
-          };
-        });
-        const rawVotes = await rt.parallel(voteThunks);
-        const voteOuts = rawVotes.map(
-          (v) => v
-        );
-        const votes = voteOuts.map((o) => o?.value ?? null);
-        return {
-          claim,
-          claimVotes,
-          voteOuts,
-          votes,
-          voteStages,
-          // A salvaged vote's credited value came from the `:salvage` respawn transcript —
-          // point the provenance checker THERE (fix round, below).
-          effectiveStages: voteStages.map(
-            (s, vi) => voteOuts[vi]?.salvaged === true ? `${s}:salvage` : s
-          ),
-          provenanceDisqualified: new Array(votes.length).fill(false),
-          retryStages: new Array(votes.length).fill(void 0),
-          retryEffectiveStages: new Array(votes.length).fill(void 0),
-          retryOuts: new Array(votes.length).fill(null),
-          retryVotes: new Array(votes.length).fill(null),
-          retryDisqualified: new Array(votes.length).fill(false)
-        };
-      })
-    );
-    let checkerRecord = null;
-    if (gateExpectation !== null) {
-      const allLabels = perClaim.flatMap((pc) => pc.effectiveStages);
-      if (allLabels.length > 0) {
-        agentsSpawned++;
-        const checkLabel = stg(PROVENANCE_CHECK_SUFFIX);
-        const { map: provMap, replyOk } = await runProvenanceChecker(rt, gateExpectation, allLabels, {
-          label: checkLabel,
-          ...phase !== void 0 ? { phase } : {},
-          model: "haiku",
-          effort: "low",
-          // Fold rendered claim content into the nonce so two runs with the same vote SHAPE
-          // but different claims get different anchors (cross-family review 2026-07-21).
-          nonce: deriveProvenanceNonce(allLabels, perClaim.map((pc) => renderClaim(pc.claim)).join(" "))
-        });
-        checkerRecord = makeRecord(checkLabel, replyOk, { model: "haiku", effort: "low" });
-        let disqualifiedCount = 0;
-        let undeterminedCount = 0;
-        for (const pc of perClaim) {
-          for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
-            if (pc.votes[voteIndex] === null) continue;
-            const provenance = provMap.get(pc.effectiveStages[voteIndex]) ?? "undetermined";
-            if (provenance === "seen") continue;
-            pc.votes[voteIndex] = null;
-            pc.provenanceDisqualified[voteIndex] = true;
-            if (provenance === "absent") disqualifiedCount++;
-            else undeterminedCount++;
-          }
-        }
-        if (disqualifiedCount > 0) {
-          warn(
-            rt,
-            warnings,
-            `adversarialVerification: ${disqualifiedCount} external verifier votes DISQUALIFIED \u2014 no ${gateExpectation.id} CLI invocation found in the vote transcript (possible self-answer); treated as null`
-          );
-        }
-        if (undeterminedCount > 0) {
-          warn(
-            rt,
-            warnings,
-            `adversarialVerification: ${undeterminedCount} external verifier votes had UNDETERMINED provenance (the checker ${replyOk ? "did not resolve them" : "failed"}); fail-closed, treated as null`
-          );
-        }
-        selfAnswerCount = disqualifiedCount;
-        undeterminedFirstPassCount = undeterminedCount;
+    return {
+      claims,
+      renderClaim,
+      votes,
+      refuteThreshold,
+      lenses,
+      perClaimVotes,
+      minValidVotes,
+      model,
+      effort,
+      phase,
+      maxVerifyClaims,
+      verifierType,
+      cacheWarm,
+      stageKey
+    };
+  }
+
+  // ../packages/patterns/src/adversarial-verification-provenance.ts
+  function collectRetryTargets(perClaim) {
+    const targets = [];
+    for (const claim of perClaim) {
+      for (let voteIndex = 0; voteIndex < claim.votes.length; voteIndex++) {
+        if (claim.provenanceDisqualified[voteIndex]) targets.push({ claim, voteIndex });
       }
     }
-    let retryCheckerRecord = null;
-    if (gateExpectation !== null) {
-      const retryTargets = [];
-      for (const pc of perClaim) {
-        for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
-          if (pc.provenanceDisqualified[voteIndex]) retryTargets.push({ pc, voteIndex });
-        }
-      }
-      if (retryTargets.length > 0) {
-        const retryThunks = retryTargets.map(({ pc, voteIndex }) => {
-          const stage = `${pc.voteStages[voteIndex]}:retry`;
-          pc.retryStages[voteIndex] = stage;
-          return async () => {
-            const lens = lenses !== void 0 ? lenses[voteIndex] : void 0;
-            const prompt = buildVerifierPrompt(pc.claim, lens);
-            const opts = {
-              schema: VERIFIER_SCHEMA,
-              label: stage,
-              ...phase !== void 0 ? { phase } : {},
-              model: effectiveModel,
-              ...effort !== void 0 ? { effort } : {},
-              ...verifierType !== void 0 ? { agentType: verifierType } : {}
-            };
-            return agentWithSchemaSalvage(rt, prompt, opts);
-          };
-        });
-        const retryRaw = await rt.parallel(retryThunks);
-        retryTargets.forEach((t, i) => {
-          const out = retryRaw[i] ?? null;
-          t.pc.retryOuts[t.voteIndex] = out;
-          const retryStage = t.pc.retryStages[t.voteIndex];
-          t.pc.retryEffectiveStages[t.voteIndex] = out?.salvaged === true ? `${retryStage}:salvage` : retryStage;
-        });
-        const retryLabels = retryTargets.map((t) => t.pc.retryEffectiveStages[t.voteIndex]);
-        agentsSpawned++;
-        const retryCheckLabel = stg(`${PROVENANCE_CHECK_SUFFIX}:retry`);
-        const { map: retryProvMap, replyOk: retryReplyOk } = await runProvenanceChecker(
-          rt,
-          gateExpectation,
-          retryLabels,
-          {
-            label: retryCheckLabel,
-            ...phase !== void 0 ? { phase } : {},
-            model: "haiku",
-            effort: "low",
-            nonce: deriveProvenanceNonce(retryLabels, perClaim.map((pc) => renderClaim(pc.claim)).join(" "))
-          }
-        );
-        retryCheckerRecord = makeRecord(retryCheckLabel, retryReplyOk, { model: "haiku", effort: "low" });
-        let recoveredCount = 0;
-        let unrecoveredCount = 0;
-        for (const { pc, voteIndex } of retryTargets) {
-          const retryVote = pc.retryOuts[voteIndex]?.value ?? null;
-          const provenance = retryProvMap.get(pc.retryEffectiveStages[voteIndex]) ?? "undetermined";
-          if (retryVote !== null && provenance === "seen") {
-            pc.retryVotes[voteIndex] = retryVote;
-            recoveredCount++;
-          } else {
-            if (retryVote !== null) pc.retryDisqualified[voteIndex] = true;
-            unrecoveredCount++;
-          }
-        }
-        if (recoveredCount > 0) {
-          warn(
-            rt,
-            warnings,
-            `adversarialVerification: ${recoveredCount} gate-nullified verifier votes RECOVERED after one retry (a real ${gateExpectation.id} CLI invocation found on the re-spawn)`
-          );
-        }
-        if (unrecoveredCount > 0) {
-          warn(
-            rt,
-            warnings,
-            `adversarialVerification: ${unrecoveredCount} gate-nullified verifier votes remained unrecovered after one retry`
-          );
-        }
-        recoveredAfterRetry = recoveredCount;
-      }
-    }
-    if (gateExpectation !== null) {
-      const unprovenancedFirstPass = selfAnswerCount + undeterminedFirstPassCount;
-      if (unprovenancedFirstPass > 0) {
-        const totalExternalVotes = perClaim.reduce((n, pc) => n + pc.votes.length, 0);
-        const stillNull = unprovenancedFirstPass - recoveredAfterRetry;
-        warn(
-          rt,
-          warnings,
-          `adversarialVerification: SELF-ANSWER TOLL \u2014 ${unprovenancedFirstPass} of ${totalExternalVotes} external verifier votes returned a verdict with NO credited ${gateExpectation.id} CLI invocation (${selfAnswerCount} confirmed self-answer, ${undeterminedFirstPassCount} undetermined); each spent the wrapper's full budget (wrapper model=${effectiveModel}) before the provenance gate nullified it \u2014 ${recoveredAfterRetry} recovered on retry, ${stillNull} remain null. At audit scale keep the wrapper model 'haiku' to bound this cost.`
-        );
-      }
-    }
-    let flooredCount = 0;
-    const verifiedKept = perClaim.map((pc, claimIndex) => {
-      const claimRecords = [];
-      const claimRetryRecords = [];
-      const claimWarnings = [];
-      for (let voteIndex = 0; voteIndex < pc.votes.length; voteIndex++) {
-        const out = pc.voteOuts[voteIndex] ?? null;
-        const vote = pc.votes[voteIndex] ?? null;
-        const stage = pc.voteStages[voteIndex];
-        agentsSpawned += out?.spawns ?? 1;
-        claimRecords.push(makeRecord(
-          stage,
-          vote !== null,
-          {
-            model: effectiveModel,
-            ...effort !== void 0 ? { effort } : {},
-            // A surviving vote records its verdict; a gate-nullified vote records the
-            // control reason (so the trail distinguishes a self-answer disqualification
-            // from a plain agent failure); a plain failure records neither. The ORIGINAL
-            // record ALWAYS reflects the first-pass outcome — a Phase B2 recovery does NOT
-            // rewrite it (the recovered vote is a separate `:retry` record below), so the
-            // disqualification stays auditable.
-            ...vote !== null ? { decision: vote.verdict } : pc.provenanceDisqualified[voteIndex] ? { decision: "disqualified-no-provenance" } : {}
-          }
-        ));
-        if (out !== null && out.salvageAttempted) {
-          claimRecords.push(makeRecord(
-            `${stage}:salvage`,
-            out.salvaged,
-            {
-              model: effectiveModel,
-              ...effort !== void 0 ? { effort } : {}
-            }
-          ));
-        }
-        for (const message of out?.warnings ?? []) claimWarnings.push(`${STAGE}: ${message}`);
-        const retryStage = pc.retryStages[voteIndex];
-        if (retryStage !== void 0) {
-          const retryOut = pc.retryOuts[voteIndex] ?? null;
-          const recovered = pc.retryVotes[voteIndex] ?? null;
-          agentsSpawned += retryOut?.spawns ?? 1;
-          claimRetryRecords.push(makeRecord(
-            retryStage,
-            recovered !== null,
-            {
-              model: effectiveModel,
-              ...effort !== void 0 ? { effort } : {},
-              ...recovered !== null ? { decision: "retried-after-disqualification" } : pc.retryDisqualified[voteIndex] ? { decision: "disqualified-no-provenance" } : {}
-            }
-          ));
-          if (retryOut !== null && retryOut.salvageAttempted) {
-            claimRetryRecords.push(makeRecord(
-              `${retryStage}:salvage`,
-              retryOut.salvaged,
-              {
-                model: effectiveModel,
-                ...effort !== void 0 ? { effort } : {}
-              }
-            ));
-          }
-          for (const message of retryOut?.warnings ?? []) claimWarnings.push(`${STAGE}: ${message}`);
-        }
-      }
-      trailByClaim[claimIndex] = claimRecords;
-      retryTrailByClaim[claimIndex] = claimRetryRecords;
-      warningsByClaim[claimIndex] = claimWarnings;
-      const mergedVotes = pc.votes.map(
-        (v, i) => v !== null ? v : pc.retryVotes[i] ?? null
-      );
-      const nonNull = mergedVotes.filter((v) => v !== null);
-      const effectiveThreshold = Math.min(refuteThreshold, pc.claimVotes);
-      const effectiveFloor = Math.min(minValidVotes, pc.claimVotes);
-      let verdict;
-      if (nonNull.length === 0) {
-        verdict = "unverifiable";
-      } else if (nonNull.filter((v) => v.verdict === "refuted").length >= effectiveThreshold) {
-        verdict = "refuted";
-      } else if (nonNull.every((v) => v.verdict === "confirmed")) {
-        verdict = "confirmed";
-      } else {
-        verdict = "partially-confirmed";
-      }
-      if ((verdict === "confirmed" || verdict === "refuted") && nonNull.length < effectiveFloor) {
-        verdict = "partially-confirmed";
-        flooredCount++;
-      }
-      return { claim: pc.claim, verdict, votes: mergedVotes };
+    return targets;
+  }
+  async function runRetryBurst(rt, route, targets) {
+    const { config } = route;
+    const retryRaw = await rt.parallel(targets.map(({ claim, voteIndex }) => {
+      const label = `${claim.voteStages[voteIndex]}:retry`;
+      claim.retryStages[voteIndex] = label;
+      return async () => runVerifierAttempt(rt, {
+        claim: claim.claim,
+        renderClaim: config.renderClaim,
+        lens: config.lenses?.[voteIndex],
+        label,
+        phase: config.phase,
+        model: route.effectiveModel,
+        effort: config.effort,
+        agentType: config.verifierType
+      });
+    }));
+    targets.forEach((target, index) => {
+      const outcome = retryRaw[index] ?? null;
+      const label = target.claim.retryStages[target.voteIndex];
+      target.claim.retryOuts[target.voteIndex] = outcome;
+      target.claim.retryEffectiveStages[target.voteIndex] = outcome?.salvaged === true ? `${label}:salvage` : label;
     });
-    trail.push(...trailByClaim.flat());
-    if (checkerRecord !== null) trail.push(checkerRecord);
-    trail.push(...retryTrailByClaim.flat());
-    if (retryCheckerRecord !== null) trail.push(retryCheckerRecord);
-    for (const message of warningsByClaim.flat()) warn(rt, warnings, message);
-    const truncatedClaims = claims.slice(keptClaims.length).map((claim) => ({ claim, verdict: "unverified-by-cap", votes: [] }));
-    const value = [...verifiedKept, ...truncatedClaims];
+  }
+  function applyFirstGate(perClaim, provenance) {
+    let absent = 0;
+    let undetermined = 0;
+    for (const claim of perClaim) {
+      for (let voteIndex = 0; voteIndex < claim.votes.length; voteIndex++) {
+        if (claim.votes[voteIndex] === null) continue;
+        const status = provenance.get(claim.effectiveStages[voteIndex]) ?? "undetermined";
+        if (status === "seen") continue;
+        claim.votes[voteIndex] = null;
+        claim.provenanceDisqualified[voteIndex] = true;
+        if (status === "absent") absent++;
+        else undetermined++;
+      }
+    }
+    return { absent, undetermined };
+  }
+  function applyRetryGate(targets, provenance) {
+    let recovered = 0;
+    let unrecovered = 0;
+    for (const { claim, voteIndex } of targets) {
+      const vote = claim.retryOuts[voteIndex]?.value ?? null;
+      const status = provenance.get(claim.retryEffectiveStages[voteIndex]) ?? "undetermined";
+      if (vote !== null && status === "seen") {
+        claim.retryVotes[voteIndex] = vote;
+        recovered++;
+      } else {
+        if (vote !== null) claim.retryDisqualified[voteIndex] = true;
+        unrecovered++;
+      }
+    }
+    return { recovered, unrecovered };
+  }
+  async function enforceVerifierProvenance(rt, route, expectation, perClaim, emitWarning) {
+    const empty = {
+      checkerRecord: null,
+      retryCheckerRecord: null,
+      checkerSpawns: 0,
+      selfAnswerCount: 0,
+      undeterminedFirstPassCount: 0,
+      recoveredAfterRetry: 0
+    };
+    if (expectation === null) return empty;
+    const labels = perClaim.flatMap((claim) => claim.effectiveStages);
+    if (labels.length === 0) return empty;
+    const { config } = route;
+    const checkLabel = route.stage(PROVENANCE_CHECK_SUFFIX);
+    const first = await runProvenanceChecker(rt, expectation, labels, {
+      label: checkLabel,
+      ...config.phase !== void 0 ? { phase: config.phase } : {},
+      model: "haiku",
+      effort: "low",
+      nonce: deriveProvenanceNonce(labels, perClaim.map((claim) => config.renderClaim(claim.claim)).join(" "))
+    });
+    const firstCounts = applyFirstGate(perClaim, first.map);
+    if (firstCounts.absent > 0) {
+      emitWarning(
+        `adversarialVerification: ${firstCounts.absent} external verifier votes DISQUALIFIED \u2014 no ${expectation.id} CLI invocation found in the vote transcript (possible self-answer); treated as null`
+      );
+    }
+    if (firstCounts.undetermined > 0) {
+      emitWarning(
+        `adversarialVerification: ${firstCounts.undetermined} external verifier votes had UNDETERMINED provenance (the checker ${first.replyOk ? "did not resolve them" : "failed"}); fail-closed, treated as null`
+      );
+    }
+    const result = {
+      checkerRecord: makeRecord(checkLabel, first.replyOk, { model: "haiku", effort: "low" }),
+      retryCheckerRecord: null,
+      checkerSpawns: 1,
+      selfAnswerCount: firstCounts.absent,
+      undeterminedFirstPassCount: firstCounts.undetermined,
+      recoveredAfterRetry: 0
+    };
+    const targets = collectRetryTargets(perClaim);
+    if (targets.length === 0) return result;
+    await runRetryBurst(rt, route, targets);
+    const retryLabels = targets.map(({ claim, voteIndex }) => claim.retryEffectiveStages[voteIndex]);
+    const retryCheckLabel = route.stage(`${PROVENANCE_CHECK_SUFFIX}:retry`);
+    const retry = await runProvenanceChecker(rt, expectation, retryLabels, {
+      label: retryCheckLabel,
+      ...config.phase !== void 0 ? { phase: config.phase } : {},
+      model: "haiku",
+      effort: "low",
+      nonce: deriveProvenanceNonce(retryLabels, perClaim.map((claim) => config.renderClaim(claim.claim)).join(" "))
+    });
+    const retryCounts = applyRetryGate(targets, retry.map);
+    if (retryCounts.recovered > 0) {
+      emitWarning(
+        `adversarialVerification: ${retryCounts.recovered} gate-nullified verifier votes RECOVERED after one retry (a real ${expectation.id} CLI invocation found on the re-spawn)`
+      );
+    }
+    if (retryCounts.unrecovered > 0) {
+      emitWarning(`adversarialVerification: ${retryCounts.unrecovered} gate-nullified verifier votes remained unrecovered after one retry`);
+    }
+    result.retryCheckerRecord = makeRecord(retryCheckLabel, retry.replyOk, { model: "haiku", effort: "low" });
+    result.checkerSpawns++;
+    result.recoveredAfterRetry = retryCounts.recovered;
+    return result;
+  }
+
+  // ../packages/patterns/src/adversarial-verification-summary.ts
+  function appendTruncatedClaims(verified, claims, keptCount) {
+    const truncated = claims.slice(keptCount).map((claim) => ({
+      claim,
+      verdict: "unverified-by-cap",
+      votes: []
+    }));
+    return [...verified, ...truncated];
+  }
+  function countNullVotes(verified) {
     let nullVoteCount = 0;
     let allNullClaimsCount = 0;
-    for (const verified of verifiedKept) {
-      const nullsInClaim = verified.votes.filter((v) => v === null).length;
-      nullVoteCount += nullsInClaim;
-      if (nullsInClaim === verified.votes.length) {
-        allNullClaimsCount++;
-      }
+    for (const claim of verified) {
+      const nulls = claim.votes.filter((vote) => vote === null).length;
+      nullVoteCount += nulls;
+      if (nulls === claim.votes.length) allNullClaimsCount++;
     }
-    if (nullVoteCount > 0) {
+    return { nullVoteCount, allNullClaimsCount };
+  }
+  function buildAdversarialStats(claimCount, agentsSpawned, nullVoteCount, truncated) {
+    return {
+      itemsIn: claimCount,
+      itemsOut: claimCount,
+      agentsSpawned,
+      dropped: nullVoteCount,
+      truncated
+    };
+  }
+  var DIGEST_KEY = {
+    confirmed: "confirmed",
+    refuted: "refuted",
+    "partially-confirmed": "partiallyConfirmed",
+    unverifiable: "unverifiable",
+    "unverified-by-cap": "unverifiedByCap"
+  };
+  function buildAdversarialCounts(value, claimCount) {
+    const counts = {
+      claims: claimCount,
+      confirmed: 0,
+      refuted: 0,
+      partiallyConfirmed: 0,
+      unverifiable: 0,
+      unverifiedByCap: 0
+    };
+    for (const verdict of Object.keys(DIGEST_KEY)) {
+      counts[DIGEST_KEY[verdict]] = value.filter((claim) => claim.verdict === verdict).length;
+    }
+    return counts;
+  }
+
+  // ../packages/patterns/src/adversarial-verification.ts
+  var STAGE = "adversarialVerification";
+  function resolveVerifierModel(rt, config, external, warnings) {
+    const effectiveModel = config.model ?? (external ? "haiku" : BEST_MODEL);
+    if (!external && config.model !== void 0 && config.model !== BEST_MODEL) {
       warn(
         rt,
         warnings,
-        `adversarialVerification: ${nullVoteCount} verifier votes returned null across ${verifiedKept.length} claims`
+        `adversarialVerification: verifier model downgraded to "${config.model}" \u2014 verification quality is model-sensitive`
       );
+    }
+    return effectiveModel;
+  }
+  function warnForTruncation(rt, warnings, truncated, claims, cap) {
+    if (truncated === 0) return;
+    warn(
+      rt,
+      warnings,
+      `adversarialVerification: ${truncated} of ${claims} claims truncated by maxVerifyClaims=${cap ?? "?"} \u2014 kept as unverified-by-cap`
+    );
+  }
+  async function warmVerifierCache(rt, config, effectiveModel, stage, warnings, trail) {
+    if (!(config.cacheWarm ?? true)) return 0;
+    trail.push(await runCacheWarmup(rt, warnings, stage("warm"), STAGE, {
+      ...config.phase !== void 0 ? { phase: config.phase } : {},
+      model: effectiveModel,
+      ...config.effort !== void 0 ? { effort: config.effort } : {},
+      ...config.verifierType !== void 0 ? { agentType: config.verifierType } : {}
+    }));
+    return 1;
+  }
+  function warnForSelfAnswerToll(rt, warnings, effectiveModel, provenance, totalExternalVotes, expectationId) {
+    const unprovenanced = provenance.selfAnswerCount + provenance.undeterminedFirstPassCount;
+    if (expectationId === void 0 || unprovenanced === 0) return;
+    const stillNull = unprovenanced - provenance.recoveredAfterRetry;
+    warn(
+      rt,
+      warnings,
+      `adversarialVerification: SELF-ANSWER TOLL \u2014 ${unprovenanced} of ${totalExternalVotes} external verifier votes returned a verdict with NO credited ${expectationId} CLI invocation (${provenance.selfAnswerCount} confirmed self-answer, ${provenance.undeterminedFirstPassCount} undetermined); each spent the wrapper's full budget (wrapper model=${effectiveModel}) before the provenance gate nullified it \u2014 ${provenance.recoveredAfterRetry} recovered on retry, ${stillNull} remain null. At audit scale keep the wrapper model 'haiku' to bound this cost.`
+    );
+  }
+  function warnForDiagnostics(rt, warnings, nullVoteCount, allNullClaimsCount, verifiedClaims, flooredCount, minValidVotes) {
+    if (nullVoteCount > 0) {
+      warn(rt, warnings, `adversarialVerification: ${nullVoteCount} verifier votes returned null across ${verifiedClaims} claims`);
     }
     if (allNullClaimsCount > 0) {
-      warn(
-        rt,
-        warnings,
-        `adversarialVerification: ${allNullClaimsCount} claims left unverifiable (all verifiers failed)`
-      );
+      warn(rt, warnings, `adversarialVerification: ${allNullClaimsCount} claims left unverifiable (all verifiers failed)`);
     }
     if (flooredCount > 0) {
       warn(
@@ -1584,34 +1607,69 @@ ${renderClaim(claim)}`;
         `adversarialVerification: ${flooredCount} claims demoted to partially-confirmed by the confidence floor (fewer than minValidVotes=${minValidVotes} surviving valid votes) \u2014 set minValidVotes:1 to disable`
       );
     }
-    const stats = {
-      itemsIn: claims.length,
-      itemsOut: claims.length,
-      // claims never dropped — always equal
+  }
+  async function adversarialVerification(runtime, options) {
+    const rt = withEnvelopeContract(runtime);
+    const config = resolveAdversarialVerificationConfig(options);
+    const warnings = [];
+    const trail = [];
+    let agentsSpawned = 0;
+    const { salt, warning: stageKeyWarning } = claimStageInstance(rt, STAGE, config.stageKey);
+    if (stageKeyWarning !== void 0) warn(rt, warnings, stageKeyWarning);
+    const stage = stageBuilder(STAGE, salt);
+    const gateExpectation = externalGateExpectation(config.verifierType);
+    const effectiveModel = resolveVerifierModel(rt, config, gateExpectation !== null, warnings);
+    const { kept: keptClaims, truncated } = applyCap(config.claims, config.maxVerifyClaims);
+    warnForTruncation(rt, warnings, truncated, config.claims.length, config.maxVerifyClaims);
+    agentsSpawned += await warmVerifierCache(rt, config, effectiveModel, stage, warnings, trail);
+    const route = { config, effectiveModel, stage };
+    const perClaim = await runInitialVerificationBurst(rt, route, keptClaims);
+    const provenance = await enforceVerifierProvenance(
+      rt,
+      route,
+      gateExpectation,
+      perClaim,
+      (message) => warn(rt, warnings, message)
+    );
+    agentsSpawned += provenance.checkerSpawns;
+    const totalExternalVotes = perClaim.reduce((total, claim) => total + claim.votes.length, 0);
+    warnForSelfAnswerToll(
+      rt,
+      warnings,
+      effectiveModel,
+      provenance,
+      totalExternalVotes,
+      gateExpectation?.id
+    );
+    const projection = projectVerifiedClaims(route, perClaim);
+    agentsSpawned += projection.attemptsSpawned;
+    trail.push(...projection.originalTrail);
+    if (provenance.checkerRecord !== null) trail.push(provenance.checkerRecord);
+    trail.push(...projection.retryTrail);
+    if (provenance.retryCheckerRecord !== null) trail.push(provenance.retryCheckerRecord);
+    for (const message of projection.warnings) warn(rt, warnings, message);
+    const value = appendTruncatedClaims(projection.verified, config.claims, keptClaims.length);
+    const { nullVoteCount, allNullClaimsCount } = countNullVotes(projection.verified);
+    warnForDiagnostics(
+      rt,
+      warnings,
+      nullVoteCount,
+      allNullClaimsCount,
+      projection.verified.length,
+      projection.flooredCount,
+      config.minValidVotes
+    );
+    const stats = buildAdversarialStats(
+      config.claims.length,
       agentsSpawned,
-      dropped: nullVoteCount,
-      // null votes = lost work units
+      nullVoteCount,
       truncated
-    };
-    const DIGEST_KEY = {
-      confirmed: "confirmed",
-      refuted: "refuted",
-      "partially-confirmed": "partiallyConfirmed",
-      unverifiable: "unverifiable",
-      "unverified-by-cap": "unverifiedByCap"
-    };
-    const counts = {
-      claims: claims.length,
-      confirmed: 0,
-      refuted: 0,
-      partiallyConfirmed: 0,
-      unverifiable: 0,
-      unverifiedByCap: 0
-    };
-    for (const verdict of Object.keys(DIGEST_KEY)) {
-      counts[DIGEST_KEY[verdict]] = value.filter((v) => v.verdict === verdict).length;
-    }
-    emitDigest(rt, { stage: STAGE, ...phase !== void 0 ? { phase } : {}, counts });
+    );
+    emitDigest(rt, {
+      stage: STAGE,
+      ...config.phase !== void 0 ? { phase: config.phase } : {},
+      counts: buildAdversarialCounts(value, config.claims.length)
+    });
     return { value, stats, warnings, trail };
   }
 

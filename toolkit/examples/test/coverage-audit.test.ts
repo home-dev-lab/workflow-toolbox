@@ -301,7 +301,7 @@ describe('coverage-audit OPENCODE_WORKDIR auto-injection', () => {
     const verify = stageCalls(rt, 'Verify', 'verdict for one undocumented-capability claim')
     expect(verify.length).toBeGreaterThan(0)
     // adversarialVerification embeds renderClaim's own output after its own
-    // "\nClaim:\n" preamble (patterns/src/adversarial-verification.ts:425),
+    // "\nClaim:\n" preamble (patterns/src/adversarial-verification-call.ts),
     // not at the very start of the final verifier prompt — so the injected
     // line is checked at ITS embedding point, not via .startsWith().
     expect(verify.every((c) =>

@@ -75,7 +75,7 @@ export function opencodeWorkdirLine(resolvedType: string | null | undefined, rep
 // provenance-gate.ts) — the canonical, ALREADY-SHIPPED discriminator built
 // on the SAME registry (EXTERNAL_CLI_SIGNATURES) that
 // adversarialVerification's own haiku-vs-BEST_MODEL fan decision keys off
-// (adversarial-verification.ts:376,390). Exported at the package root
+// (resolveVerifierModel in adversarial-verification.ts). Exported at the package root
 // specifically for this reuse — two earlier
 // drafts of this helper hand-rolled a SECOND registry (an exact-name list,
 // then a mirrored regex pair); both were rejected on review as an avoidable
