@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,7 @@ import { createHandleStore } from '../src/deep/handle.js';
 import { startOpencode } from '../src/deep/opencode.js';
 import { continueDeepResearch, startDeepResearch } from '../src/deep/runner.js';
 import { ProviderFailure } from '../src/provider-failure.js';
+import { detectProviders } from '../src/detect.js';
 
 const MODES = new Set(['deep-lite', 'deep', 'deep-reasoning', 'agentic']);
 const SHAPES = new Set(['prose', 'structured']);
@@ -52,7 +54,9 @@ async function reconcile(record) {
       status: 'failed',
       error: timeout
         ? `opencode timed out after ${timeout[1]}ms`
-        : `opencode exited with status ${marker[1]}`,
+        : marker[1] === '127'
+          ? 'opencode was not found; install opencode and ensure it is on PATH'
+          : `opencode exited with status ${marker[1]}`,
     });
   }
   let result = output;
@@ -81,9 +85,9 @@ async function worker(handle) {
   const exa = {
     run: async (runOptions) => {
       if (!process.env.EXA_API_KEY) {
-        throw new ProviderFailure('Exa API key is unavailable', {
+        throw new ProviderFailure('EXA_API_KEY is not set; Exa deep search is unavailable', {
           provider: 'exa',
-          classification: 'exhausted',
+          classification: 'missing',
         });
       }
       return runExaDeepSearch(
@@ -119,6 +123,10 @@ async function start(args) {
   // directory under the state root gives it nothing to recurse into.
   const workDir = flags.dir ?? join(store.directory, 'work');
   if (!isAbsolute(workDir)) throw new Error(`--dir must be an absolute path: ${workDir}`);
+  const providers = detectProviders(process.env, fs);
+  if (!providers.exa.available && !providers.opencode.available) {
+    throw new Error('No deep-search provider is available: set EXA_API_KEY, or install opencode and ensure it is on PATH. Ordinary web search still works.');
+  }
   await mkdir(workDir, { recursive: true });
   const options = {
     mode: flags.mode,
@@ -154,7 +162,8 @@ async function status(handle) {
   const record = await reconcile(await store.read(handle));
   const endedAt = record.status === 'running' ? Date.now() : (record.updatedAt ?? Date.now());
   const elapsed = Math.max(0, endedAt - record.createdAt);
-  process.stdout.write(`${record.status} ${record.engine} ${elapsed}ms\n`);
+  const detail = record.status === 'failed' && record.error ? `: ${record.error}` : '';
+  process.stdout.write(`${record.status} ${record.engine} ${elapsed}ms${detail}\n`);
 }
 
 async function result(handle, args) {
@@ -162,7 +171,8 @@ async function result(handle, args) {
   const flags = parseOptions(args);
   const record = await reconcile(await store.read(handle));
   if (record.status !== 'done') {
-    throw new Error(`Deep-search run ${handle} is ${record.status}, not done`);
+    const detail = record.status === 'failed' && record.error ? `: ${record.error}` : '';
+    throw new Error(`Deep-search run ${handle} is ${record.status}, not done${detail}`);
   }
   const shape = flags.shape ?? record.shape ?? 'prose';
   const answer = formatResult(record, { shape });

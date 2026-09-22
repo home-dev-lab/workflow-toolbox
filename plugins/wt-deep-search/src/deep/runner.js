@@ -66,7 +66,7 @@ export async function continueDeepResearch(handle, options, deps) {
           const result = await deps.exa.run(options);
           await deps.store.update(handle, { status: 'done', engine: 'exa', result });
         } catch (error) {
-          if (['exhausted', 'rate-limit', 'fatal'].includes(error?.classification)
+          if (['missing', 'exhausted', 'refused', 'rate-limit', 'fatal'].includes(error?.classification)
             && deps.opencode?.start) {
             try {
               await launchOpencode('availability', {

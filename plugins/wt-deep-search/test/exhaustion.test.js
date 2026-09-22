@@ -86,6 +86,14 @@ for (const [provider, search, bodies] of [
     assert.equal(error.classification, 'exhausted');
   });
 
+  test(`${provider} distinguishes a refused API key from exhaustion`, async () => {
+    const { error, calls } = await failureFrom(search, 401, { error: 'invalid API key' });
+
+    assert.equal(calls, 1);
+    assert.equal(error.classification, 'refused');
+    assert.match(error.message, /API key was refused/i);
+  });
+
   test(`${provider} retries a 5xx as transient without marking exhaustion`, async () => {
     let now = 10_000;
     const memory = createExhaustionMemory({ now: () => now, fallbackMs: 500 });
