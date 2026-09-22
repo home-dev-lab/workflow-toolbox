@@ -48,7 +48,16 @@ function isOpConsumer(command, index) {
   return /\bop(?:\.exe)?\s+(?:read|inject|run)\b/.test(segment);
 }
 
+export function opInvocationsIn(command) {
+  const expression = /\bop(?:\.exe)?\s+read(?:\s+--account\s+(?:'([^']*)'|"([^"]*)"|([^\s"']+)))?\s+(?:'(op:\/\/[^']+)'|"(op:\/\/[^"]+)"|(op:\/\/[^\s"']+))/g;
+  const invocations = [];
+  for (let match; (match = expression.exec(command));) invocations.push({ account: match[1] ?? match[2] ?? match[3] ?? '', ref: match[4] ?? match[5] ?? match[6] });
+  return invocations;
+}
+
 export function rewriteOpReferences(command, account = '') {
+  // Measured 2026-09-08: OP_ACCOUNT does not cross WSL interop, while the explicit
+  // --account positional argv does, so account identity remains part of each invocation.
   if (hasTemplateDestination(command)) return { command, count: 0, references: [] };
   const bodies = heredocBodies(command);
   const prefix = /secret:1p:|op:\/\//g;
@@ -69,15 +78,17 @@ export function rewriteOpReferences(command, account = '') {
     }
     if (!OP_PATH.test(path)) continue;
     const reference = `op://${path}`;
-    if (isOpConsumer(command, match.index)) { references.push(reference); continue; }
+    if (isOpConsumer(command, match.index)) continue;
     if (context.quote && (context.opener + 1 !== match.index || replacementEnd !== end + 1)) continue;
     const accountArg = account ? ` --account '${quoteForSingleQuotes(account)}'` : '';
     replacements.push({ start: replacementStart, end: replacementEnd, value: `"$(op read${accountArg} 'op://${quoteForSingleQuotes(path)}')"` });
-    references.push(reference); prefix.lastIndex = replacementEnd;
+    references.push({ ref: reference, account }); prefix.lastIndex = replacementEnd;
   }
   let rewritten = command;
   for (const replacement of replacements.reverse()) rewritten = `${rewritten.slice(0, replacement.start)}${replacement.value}${rewritten.slice(replacement.end)}`;
-  return { command: rewritten, count: replacements.length, references: [...new Set(references)] };
+  const exact = opInvocationsIn(rewritten);
+  const unique = new Map([...references, ...exact].map((item) => [`${item.account}:${item.ref}`, item]));
+  return { command: rewritten, count: replacements.length, references: [...unique.values()] };
 }
 
 export { quoteForSingleQuotes };

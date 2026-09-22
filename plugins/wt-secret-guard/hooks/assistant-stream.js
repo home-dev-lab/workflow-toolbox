@@ -1,14 +1,13 @@
-// Bounded streaming defense for visible assistant text and best-effort tool-input JSON.
+// Bounded streaming defense for visible assistant text. Tool input stays raw for tool.call refusal.
 import { scrub } from './scrub.js';
+import { knownTokens } from './token-vault.js';
 
-const HOLD = 2048;
+const MIN_HOLD = 512;
 const MAX_BUFFER = 65536;
 const PRIVATE_KEY_START = '-----BEGIN ';
 
 function cleanText(text) { return scrub(text, '').value; }
-function cleanInput(json) {
-  try { return JSON.stringify(scrub(JSON.parse(json), '').value); } catch { return json; }
-}
+function holdBack() { return Math.max(MIN_HOLD, ...[...knownTokens().values()].map(({ value }) => value.length)); }
 
 export async function* maskTurnStep(event, next, note, masked) {
   const buffers = new Map();
@@ -18,8 +17,8 @@ export async function* maskTurnStep(event, next, note, masked) {
     const buffered = buffers.get(key);
     if (!buffered) return;
     buffers.delete(key);
-    const field = buffered.kind === 'input' ? 'json' : 'text';
-    const cleaned = buffered.kind === 'input' ? cleanInput(buffered.value) : cleanText(buffered.value);
+    const field = 'text';
+    const cleaned = cleanText(buffered.value);
     const changed = cleaned !== buffered.value;
     let value = cleaned;
     if (changed && buffered.kind === 'text' && !noted) { value = `${value}\n${note}`; noted = true; }
@@ -41,12 +40,12 @@ export async function* maskTurnStep(event, next, note, masked) {
         return cleaned.value;
       }
       const chunk = step.value;
-      if (chunk.kind !== 'text' && chunk.kind !== 'input') {
+      if (chunk.kind !== 'text') {
         yield* flushAll();
         yield chunk;
         continue;
       }
-      const field = chunk.kind === 'input' ? 'json' : 'text';
+      const field = 'text';
       const key = `${chunk.kind}:${chunk.index}`;
       for (const other of [...buffers.keys()]) if (other !== key) yield* flush(other);
       const value = `${buffers.get(key)?.value ?? ''}${chunk[field] ?? ''}`;
@@ -57,12 +56,13 @@ export async function* maskTurnStep(event, next, note, masked) {
         yield* flush(key);
         continue;
       }
-      if (value.length > HOLD * 2 && !value.includes(PRIVATE_KEY_START)) {
-        const cleaned = chunk.kind === 'input' ? cleanInput(value) : cleanText(value);
+      const hold = holdBack();
+      if (value.length > hold * 2 && !value.includes(PRIVATE_KEY_START)) {
+        const cleaned = cleanText(value);
         if (cleaned !== value) yield* flush(key);
         else {
-          const prefix = value.slice(0, -HOLD);
-          buffers.set(key, { kind: chunk.kind, chunk, value: value.slice(-HOLD) });
+          const prefix = value.slice(0, -hold);
+          buffers.set(key, { kind: chunk.kind, chunk, value: value.slice(-hold) });
           yield { ...chunk, [field]: prefix };
         }
       }

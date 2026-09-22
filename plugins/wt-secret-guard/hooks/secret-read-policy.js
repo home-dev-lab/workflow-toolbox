@@ -2,8 +2,8 @@
 const GUARDED_PATTERNS = [
   ['cloud-secret', /\.atlassian-cli\/config/i],
   ['cloud-secret', /\.claude(-work)?\/secrets/i],
-  ['npm-config', /\.npmrc\b/i],
-  ['aws-credentials', /\.aws\/credentials/i],
+  ['npm-config', /\.(?:npmrc\b|np\*)/i],
+  ['aws-credentials', /\.aws[\\/]credentials/i],
   ['ssh-key', /\.ssh\/id_\w+(?!\.pub)\b/],
   ['gh-hosts', /\.config\/gh\/hosts/i],
   ['netrc', /\.netrc\b/i],
@@ -13,7 +13,7 @@ const GUARDED_PATTERNS = [
   ['pypi-config', /\.pypirc\b/i],
   ['git-credentials', /\.git-credentials\b/i],
 ];
-const ENV_FILE = /(^|[/\s"'=])\.env(\.[A-Za-z0-9_-]+)?\b/;
+const ENV_FILE = /(^|[\\/\s"'=])\.env(?:rc|\.[A-Za-z0-9_-]+)?\b/;
 const ENV_TEMPLATE = /\.env\.(example|sample|template|dist)\b/i;
 const METADATA_ONLY = new Set(['ls', 'stat', 'test', '[', 'chmod', 'chown', 'rm', 'mv', 'touch', 'mkdir', 'basename', 'dirname', 'realpath', 'readlink', 'file', 'du', 'find', 'sha256sum', 'sha1sum', 'md5sum', 'cksum', 'shasum']);
 const PROSE_VERBS = new Set(['echo', 'printf', 'git', 'gh', 'glab', 'atlassian-cli']);
@@ -23,8 +23,9 @@ const INLINE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-c']);
 const PATH_PREFIXES = ['${HOME}', '$HOME', '../', './', '/', '~', '$'];
 
 function pathClass(text) {
-  for (const [kind, expression] of GUARDED_PATTERNS) if (expression.test(text)) return kind;
-  if (ENV_FILE.test(text) && !ENV_TEMPLATE.test(text)) return 'env-file';
+  const normalized = String(text).replace(/\\+/g, '/');
+  for (const [kind, expression] of GUARDED_PATTERNS) if (expression.test(normalized)) return kind;
+  if (ENV_FILE.test(normalized.replace(ENV_TEMPLATE, 'ENV_TEMPLATE'))) return 'env-file';
   return null;
 }
 
@@ -102,7 +103,7 @@ function stripHeredocBodies(text) {
     if (closer !== null) { if (line.trim() === closer) closer = null; continue; }
     kept.push(line);
     const match = line.match(/<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_]\w*))/);
-    if (match) closer = match[1] ?? match[2] ?? match[3];
+    if (match && (match[1] || match[2])) closer = match[1] ?? match[2];
   }
   return kept.join('\n');
 }

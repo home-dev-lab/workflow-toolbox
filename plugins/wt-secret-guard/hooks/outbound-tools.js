@@ -1,50 +1,67 @@
 // Last-responsible-moment policy: identify raw outbound values without rewriting destinations.
 import { detections, optionalDetections } from './detector.js';
 import { config } from './config.js';
+import { knownTokens } from './token-vault.js';
 
-const REFERENCE = /(?:op:\/\/[^\s"']+|secret:(?:env|file|1p):[^\s"']+|\$\{[A-Za-z_][A-Za-z0-9_]*\}|secret:[a-z-]+#[a-f0-9]{6})/i;
-const PATH_FIELD = { Write: 'file_path', Edit: 'file_path', NotebookEdit: 'notebook_path' };
-const SURFACE = { Bash: 'bash', Write: 'write', Edit: 'edit', NotebookEdit: 'notebook-edit' };
+const REFERENCE = /(?:op:\/\/[^\s"']+|secret:(?:env|file|1p):[^\s"']+|\$\{[A-Za-z_][A-Za-z0-9_]*\}|secret:[a-z-]+#[a-f0-9]{6})/gi;
+const SURFACE = {
+  Bash: 'bash', Write: 'write', Edit: 'edit', NotebookEdit: 'notebook-edit',
+  WebFetch: 'web-fetch', WebSearch: 'web-search', Agent: 'agent', Task: 'task',
+};
+const OUTBOUND_FIELDS = {
+  Edit: new Set(['new_string']),
+  Write: new Set(['content']),
+  NotebookEdit: new Set(['new_source']),
+  WebFetch: new Set(['url', 'prompt']),
+  WebSearch: new Set(['query']),
+  Agent: new Set(['prompt']),
+  Task: new Set(['prompt']),
+};
+
+function withoutReferences(value) { return value.replace(REFERENCE, ' '); }
+function base64Utf8(value) {
+  let binary = '';
+  for (const byte of new TextEncoder().encode(value)) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function pushStringFindings(found, value, key, path, options) {
+  const candidate = withoutReferences(value);
+  const direct = detections(candidate);
+  found.push(...direct, ...optionalDetections(candidate, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }));
+  if (key) {
+    for (const item of detections(`${key}: ${candidate}`)) {
+      if (!direct.some(({ value: directValue }) => directValue === item.value)) found.push({ ...item, value, secret: value, path });
+    }
+  }
+  for (const [, entry] of knownTokens()) {
+    const encoded = base64Utf8(entry.value);
+    if (candidate.includes(entry.value)) found.push({ kind: entry.kind, value: entry.value, secret: entry.value, path });
+    if (encoded && candidate.includes(encoded)) found.push({ kind: entry.kind, value: encoded, secret: entry.value, path });
+  }
+}
 
 function findingsIn(value) {
   const options = config();
   const found = [];
-  if (typeof value === 'string') found.push(...detections(value), ...optionalDetections(value, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }));
-  const pending = value && typeof value === 'object' ? [value] : [];
+  if (typeof value === 'string') pushStringFindings(found, value, '', [], options);
+  const pending = value && typeof value === 'object' ? [{ value, path: [] }] : [];
   while (pending.length) {
     const item = pending.pop();
-    for (const [key, child] of Object.entries(item)) {
-      if (child && typeof child === 'object') pending.push(child);
-      else if (typeof child === 'string') found.push(
-        ...detections(child), ...detections(`${key}: ${child}`),
-        ...optionalDetections(child, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }),
-      );
+    for (const [key, child] of Object.entries(item.value)) {
+      const path = [...item.path, key];
+      if (child && typeof child === 'object') pending.push({ value: child, path });
+      else if (typeof child === 'string') pushStringFindings(found, child, key, path, options);
     }
   }
-  const unique = new Map(found.filter(({ value: detected }) => !REFERENCE.test(detected)).map((item) => [`${item.kind}:${item.value}`, item]));
+  const unique = new Map(found.filter(({ value: detected }) => detected).map((item) => [`${item.kind}:${item.value}`, item]));
   return [...unique.values()];
 }
 
-const normalized = (path) => String(path ?? '').replace(/\\/g, '/').replace(/\/+$/, '');
-const resolvedPath = (stat, fallback) => normalized(stat?.resolvedPath ?? stat?.realPath ?? stat?.path ?? fallback);
-
-async function ownFixture($, event) {
-  const field = PATH_FIELD[event.tool];
-  if (!field || typeof event[field] !== 'string') return false;
-  const root = await $.pluginRoot();
-  if (!root) return false;
-  try {
-    const [rootStat, targetStat] = await Promise.all([$.fsStat(root, { resolve: true }), $.fsStat(event[field], { resolve: true })]);
-    const canonicalRoot = resolvedPath(rootStat, root);
-    const canonicalTarget = resolvedPath(targetStat, event[field]);
-    return canonicalTarget.startsWith(`${canonicalRoot}/hooks/fixtures/`);
-  } catch { return false; }
-}
-
-export async function classifyOutbound($, event) {
+export async function classifyOutbound(_host, event) {
   const surface = event.tool?.startsWith('mcp__') ? 'mcp' : SURFACE[event.tool];
   if (!surface) return { surface: null, findings: [] };
-  if (await ownFixture($, event)) return { surface, findings: [] };
-  const input = Object.fromEntries(Object.entries(event).filter(([key]) => !['tool', 'tool_use_id'].includes(key)));
+  const fields = OUTBOUND_FIELDS[event.tool];
+  const input = Object.fromEntries(Object.entries(event).filter(([key]) => fields ? fields.has(key) : !['tool', 'tool_use_id', 'agentId'].includes(key)));
   return { surface, findings: findingsIn(input) };
 }

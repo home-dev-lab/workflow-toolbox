@@ -1,3 +1,4 @@
+// @ts-check
 // Composition root and dependency inversion: wire pure policies to host capabilities in order.
 import { configure, config } from './config.js';
 import { detections } from './detector.js';
@@ -18,17 +19,14 @@ const journalHost = ($) => ({
   getSalt: () => $.store.get('salt'), setSalt: (value) => $.store.set('salt', value),
   setDetections: (value) => $.store.set('detections', value), getStats: () => $.store.get('stats'),
   setStats: (value) => $.store.set('stats', value), setLastPublishedAt: (value) => $.store.set('lastpublishedat', value),
-  fsRead: (path) => $.fs.read(path), fsWrite: (path, text) => $.fs.write(path, text), configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'),
+  fsRead: (path) => $.fs.read(path), fsWrite: (path, text) => $.fs.write(path, text), fsStat: (path) => $.fs.stat(path), processRun: (argv, init) => $.process.run(argv, init), pluginRoot: () => $.plugin.root, configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'),
   sessionId: () => $.session.id(), sessionCwd: () => $.session.cwd(), uiLog: (text) => $.ui.log(text),
 });
-const referenceHost = ($) => ({ processRun: (argv) => $.process.run(argv), fsRead: (path) => $.fs.read(path), uiLog: (text) => $.ui.log(text) });
+const referenceHost = ($) => ({ processRun: (argv, init) => $.process.run(argv, init), fsRead: (path) => $.fs.read(path), uiLog: (text) => $.ui.log(text) });
 const storageHost = ($) => ({
   configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'), sessionId: () => $.session.id(), sessionCwd: () => $.session.cwd(),
-  fsRead: (path) => $.fs.read(path), processRun: (argv, init) => $.process.run(argv, init),
+  fsRead: (path) => $.fs.read(path), fsStat: (path) => $.fs.stat(path), processRun: (argv, init) => $.process.run(argv, init), pluginRoot: () => $.plugin.root,
   sleep: (milliseconds, options) => $.clock.sleep(milliseconds, options), uiLog: (text) => $.ui.log(text), isWindows: async () => await $.env.get('OS') === 'Windows_NT',
-});
-const outboundHost = ($) => ({
-  pluginRoot: () => $.env.get('CLAUDE_PLUGIN_ROOT'), fsStat: (path, options) => $.fs.stat(path, options),
 });
 export const resolveReference = ($, ref, account) => resolveRuntimeReference(referenceHost($), ref, account);
 
@@ -88,16 +86,20 @@ async function measuredRead($, event, next, surface) {
 }
 
 async function refuseRawOutbound($, event) {
-  const classified = await classifyOutbound(outboundHost($), event);
+  const classified = await classifyOutbound({}, event);
   if (!classified.findings.length) return null;
   const replacements = classified.findings.map(({ kind, value, secret = value }) => ({ raw: value, token: tokenize(kind, secret) }));
-  await scrubToolUseStorage(storageHost($), replacements, event.tool_use_id);
+  if (event.agentId) await $.ui.log('wt-secret-guard: denied subagent input; subagent transcript location is unmeasured, so persisted input could not be repaired.');
+  else await scrubToolUseStorage(storageHost($), replacements, event.tool_use_id);
   await appendEvent(journalHost($), {
     surface: classified.surface, action: 'refused', kinds: classified.findings.map(({ kind }) => kind), count: classified.findings.length,
     toolUseId: event.tool_use_id, dedupeKey: event.tool_use_id ? `outbound:${event.tool_use_id}` : undefined,
   });
   await publish(journalHost($));
-  return { deny: `wt-secret-guard refused raw secret-bearing ${classified.surface} input; use an op://, secret:env:, secret:file:, or environment reference instead.` };
+  const guidance = classified.surface === 'bash'
+    ? ' Use a supported secret reference instead.'
+    : ' Remove the raw value from the outbound content.';
+  return { deny: `wt-secret-guard refused raw secret-bearing ${classified.surface} input.${guidance}` };
 }
 
 async function guardedOutbound($, event, next) {
@@ -107,11 +109,12 @@ async function guardedOutbound($, event, next) {
 }
 
 async function warnHookAttachment($, event, next) {
-  if (event.origin?.kind === 'hook' && event.origin?.event === 'SessionStart' && scrub(event, '').changed) {
-    await appendEvent(journalHost($), { surface: 'attachment', action: 'warned', dedupeKey: `attachment:${event.attachment_id ?? 'session-start'}` });
-    await $.ui.log('wt-secret-guard: detected a secret in SessionStart hook context; this host exposes the attachment but cannot rewrite what reaches the model. Remove the value from the source hook or consumer store.');
+  const cleaned = scrub(event, '');
+  if (event.origin?.kind === 'hook' && event.origin?.event === 'SessionStart' && cleaned.changed) {
+    await appendEvent(journalHost($), { surface: 'attachment', action: 'warned', dedupeKey: `attachment:${event.index ?? 'session-start'}` });
+    await $.ui.log('wt-secret-guard: detected and scrubbed a SessionStart hook attachment; model-side propagation of attachment rewrites is unproven. Remove the value from the source hook or consumer store.');
   }
-  return next(event);
+  return next(cleaned.value);
 }
 
 /** @type {import('claude-code').Register} */
@@ -127,7 +130,10 @@ export const register = (on, options) => {
     if (refusal) return refusal;
     const execute = async (originalEvent) => {
       const rewrite = await rewriteReferences(references, originalCommand);
-      for (const ref of rewrite.references) { try { await resolveRuntimeReference(references, ref); } catch {} }
+      for (const reference of rewrite.references) {
+        const resolved = await resolveRuntimeReference(references, reference.ref, reference.account);
+        if (!resolved.token) return { deny: 'wt-secret-guard refused Bash execution because a 1Password reference could not be prefetched.' };
+      }
       const response = await next(rewrite.command === originalCommand ? originalEvent : { ...originalEvent, command: rewrite.command });
       const cleaned = scrub(response, rewrite.command);
       await publish(audit);
@@ -145,9 +151,15 @@ export const register = (on, options) => {
   on('tool.call', { tool: 'Write' }, guardedOutbound);
   on('tool.call', { tool: 'Edit' }, guardedOutbound);
   on('tool.call', { tool: 'NotebookEdit' }, guardedOutbound);
+  on('tool.call', { tool: 'WebFetch' }, guardedOutbound);
+  on('tool.call', { tool: 'WebSearch' }, guardedOutbound);
+  on('tool.call', { tool: 'Agent' }, guardedOutbound);
+  on('tool.call', { tool: 'Task' }, guardedOutbound);
+  on('tool.call', { tool: 'Grep' }, scrubToolResult);
+  on('tool.call', { tool: 'Glob' }, scrubToolResult);
   on('tool.call', { tool: /^mcp__/ }, guardedOutbound);
   on('turn.step', async function* ($, event, next) {
-    const correlation = event.turn_id ?? event.step_id;
+    const correlation = event.turnId ?? event.index;
     const stream = maskTurnStep(event, next, REDACTION_NOTE, () => appendEvent(journalHost($), { surface: 'assistant', action: 'masked', dedupeKey: correlation ? `assistant:${correlation}` : undefined }));
     for (;;) {
       const step = await stream.next();

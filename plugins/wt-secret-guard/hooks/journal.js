@@ -2,7 +2,7 @@
 import { sha256 } from './sha256.js';
 import { knownTokens, restorePending, takePending } from './token-vault.js';
 
-const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'assistant', 'attachment']);
+const SURFACES = new Set(['bash', 'read', 'notebook-read', 'mcp', 'write', 'edit', 'notebook-edit', 'web-fetch', 'web-search', 'agent', 'task', 'assistant', 'attachment']);
 const ACTIONS = new Set(['evaluated', 'would-block', 'refused', 'masked', 'warned', 'mention-allowed', 'policy-disabled', 'unknown-tool']);
 const RULES = new Set(['guarded-path-read', 'guarded-path-mention', 'policy']);
 const PATH_CLASSES = new Set(['npm-config', 'env-file', 'cloud-secret', 'aws-credentials', 'ssh-key', 'gh-hosts', 'netrc', 'shell-history', 'docker-config', 'kube-config', 'pypi-config', 'git-credentials', 'other-guarded']);
@@ -53,6 +53,8 @@ export async function buildEvent($, fields) {
 
 async function journalPath($, sessionId, suffix = '') {
   const home = await $.home();
+  // Measured 2026-09-21: $.fs.write refuses paths under a .claude-named directory,
+  // so HOME state is preferred over the configuration-directory fallback.
   const root = home ? `${home}/.local/state/wt-secret-guard` : `${await $.configDir()}/wt-secret-guard`;
   return `${String(root).replace(/[\\/]+$/, '')}/journal/${sessionId}${suffix}.ndjson`;
 }
@@ -60,16 +62,13 @@ async function journalPath($, sessionId, suffix = '') {
 async function enqueueWrite($, path, record) {
   const prior = writeQueues.get(path) ?? Promise.resolve();
   const write = prior.catch(() => {}).then(async () => {
-    let current = journalText.get(path);
-    if (current === undefined) {
-      try { current = await $.fsRead(path); } catch (error) {
-        if (error?.code !== 'ENOENT' && !String(error?.message).includes('ENOENT')) throw error;
-        current = '';
-      }
-    }
-    const next = `${current}${JSON.stringify(record)}\n`;
-    await $.fsWrite(path, next);
-    journalText.set(path, next);
+    const line = `${JSON.stringify(record)}\n`;
+    const root = await $.pluginRoot();
+    if (!root) throw new Error('plugin root unavailable');
+    const result = await $.processRun(['node', `${String(root).replace(/[\\/]+$/, '')}/hooks/journal-append.mjs`, path], { stdin: line });
+    if (result?.exitCode !== 0) throw new Error('append failed');
+    const target = result.stdout || path;
+    journalText.set(target, `${journalText.get(target) ?? ''}${line}`);
   });
   writeQueues.set(path, write);
   await write;
