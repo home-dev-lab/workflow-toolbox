@@ -48,11 +48,53 @@ function isOpConsumer(command, index) {
   return /\bop(?:\.exe)?\s+(?:read|inject|run)\b/.test(segment);
 }
 
+function invocationWords(command, start) {
+  const words = []; let value = ''; let quote = '';
+  for (let index = start; index <= command.length; index += 1) {
+    const character = command[index] ?? '\n';
+    if (character === '\\' && quote !== "'") { value += command[index + 1] ?? ''; index += 1; continue; }
+    if (character === quote) { quote = ''; continue; }
+    if (!quote && (character === "'" || character === '"')) { quote = character; continue; }
+    if (!quote && /[\s;|&)]/.test(character)) {
+      if (value) { words.push(value); value = ''; }
+      if (/\n|[;|&)]/.test(character)) break;
+      continue;
+    }
+    value += character;
+  }
+  return { words, complete: !quote };
+}
+
+function parseOpRead(words) {
+  let account = ''; let ref = ''; let valid = true;
+  const valueFlags = new Set(['--account', '-o', '--out-file', '--encoding']);
+  for (let index = 0; index < words.length; index += 1) {
+    const word = words[index];
+    if (word.startsWith('op://')) { if (ref) valid = false; ref = word; continue; }
+    if (word.startsWith('--account=')) { account = word.slice('--account='.length); valid &&= Boolean(account); continue; }
+    if (/^(?:--out-file|--encoding)=/.test(word)) { valid &&= word.split('=').slice(1).join('=').length > 0; continue; }
+    if (valueFlags.has(word)) {
+      const argument = words[index + 1];
+      if (!argument || argument.startsWith('-') || argument.startsWith('op://')) { valid = false; continue; }
+      if (word === '--account') account = argument;
+      index += 1; continue;
+    }
+    if (word.startsWith('-')) continue;
+    valid = false;
+  }
+  return { valid: valid && Boolean(ref), account, ref };
+}
+
 export function opInvocationsIn(command) {
-  const expression = /\bop(?:\.exe)?\s+read(?:\s+--account\s+(?:'([^']*)'|"([^"]*)"|([^\s"']+)))?\s+(?:'(op:\/\/[^']+)'|"(op:\/\/[^"]+)"|(op:\/\/[^\s"']+))/g;
-  const invocations = [];
-  for (let match; (match = expression.exec(command));) invocations.push({ account: match[1] ?? match[2] ?? match[3] ?? '', ref: match[4] ?? match[5] ?? match[6] });
-  return invocations;
+  const expression = /\bop(?:\.exe)?\s+read\b/g;
+  const invocations = []; let invalid = false;
+  for (let match; (match = expression.exec(command));) {
+    const invocation = invocationWords(command, expression.lastIndex);
+    const parsed = parseOpRead(invocation.words);
+    if (parsed.valid && invocation.complete) invocations.push({ account: parsed.account, ref: parsed.ref });
+    else invalid = true;
+  }
+  return { invocations, invalid };
 }
 
 export function rewriteOpReferences(command, account = '') {
@@ -87,8 +129,8 @@ export function rewriteOpReferences(command, account = '') {
   let rewritten = command;
   for (const replacement of replacements.reverse()) rewritten = `${rewritten.slice(0, replacement.start)}${replacement.value}${rewritten.slice(replacement.end)}`;
   const exact = opInvocationsIn(rewritten);
-  const unique = new Map([...references, ...exact].map((item) => [`${item.account}:${item.ref}`, item]));
-  return { command: rewritten, count: replacements.length, references: [...unique.values()] };
+  const unique = new Map([...references, ...exact.invocations].map((item) => [`${item.account}:${item.ref}`, item]));
+  return { command: rewritten, count: replacements.length, references: [...unique.values()], invalidOpRead: exact.invalid };
 }
 
 export { quoteForSingleQuotes };

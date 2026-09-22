@@ -32,17 +32,26 @@ async function rewriteFileReferences($, command) {
     } catch { await $.uiLog('wt-secret-guard: file reference unavailable (1 reference)'); continue; }
     tokenize('file', content);
     rewritten += command.slice(cursor, match.index);
-    rewritten += dataExpression(content);
+    const quote = quoteAt(command, match.index);
+    rewritten += quote ? `${quote}${dataExpression(content)}${quote}` : dataExpression(content);
     cursor = match.index + reference.length; count += 1;
   }
   return { command: count ? `${rewritten}${command.slice(cursor)}` : command, count };
 }
 
+function quoteAt(command, end) {
+  let quote = '';
+  for (let index = 0; index < end; index += 1) {
+    if (command[index] === '\\' && quote === '"') index += 1;
+    else if (command[index] === quote) quote = '';
+    else if (!quote && (command[index] === "'" || command[index] === '"')) quote = command[index];
+  }
+  return quote;
+}
+
 function dataExpression(value) {
-  let binary = '';
-  for (const byte of new TextEncoder().encode(value)) binary += String.fromCharCode(byte);
-  const encoded = btoa(binary);
-  return `"$(printf '%s' '${encoded}' | base64 --decode)"`;
+  const encoded = [...new TextEncoder().encode(value)].map((byte) => `\\x${byte.toString(16).padStart(2, '0')}`).join('');
+  return `$'${encoded}'`;
 }
 
 function bindKnownValues(command) {

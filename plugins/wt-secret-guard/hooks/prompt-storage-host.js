@@ -20,32 +20,40 @@ function base64Utf8(value) {
   return btoa(binary);
 }
 
-async function byteRange($, mode, path, offset, length, replacement = '') {
+function decodeBase64(value) {
+  const bytes = Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+  return { bytes, text: new TextDecoder().decode(bytes) };
+}
+
+async function byteRange($, mode, path, offset, length, replacement = '', identity, expected = '') {
   if (await $.isWindows()) {
     const root = await $.pluginRoot();
     if (!root) throw new Error('plugin root unavailable');
     // Measured 2026-09-21: PowerShell positional argv reaches $args only with -File;
     // -Command appends trailing values to source and exposes paths to command injection.
     const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-File', joinPath(root, 'hooks', 'prompt-storage-range.ps1'), path, String(offset), String(length), mode];
-    if (mode === 'write') argv.push(base64Utf8(replacement));
+    if (mode === 'write') argv.push(base64Utf8(replacement), base64Utf8(expected), String(identity.size), identity.prefix);
     const result = await $.processRun(argv);
     if (mode !== 'read' || result?.exitCode !== 0) return result;
-    const bytes = Uint8Array.from(atob(result.stdout), (character) => character.charCodeAt(0));
-    return { ...result, stdout: new TextDecoder().decode(bytes) };
+    const decoded = decodeBase64(result.stdout);
+    return { ...result, stdout: decoded.text, bytes: decoded.bytes };
   }
-  return mode === 'read'
-    ? $.processRun(['dd', `if=${path}`, 'bs=1', `skip=${offset}`, `count=${length}`])
-    : $.processRun(['dd', `of=${path}`, 'bs=1', `seek=${offset}`, 'conv=notrunc'], { stdin: replacement });
+  const root = await $.pluginRoot();
+  if (!root) throw new Error('plugin root unavailable');
+  if (mode === 'read') {
+    const result = await $.processRun(['node', joinPath(root, 'hooks', 'prompt-storage-range.mjs'), path, String(offset), String(length), '', 'read']);
+    if (result?.exitCode !== 0) return result;
+    const decoded = decodeBase64(result.stdout);
+    return { ...result, stdout: decoded.text, bytes: decoded.bytes };
+  }
+  return $.processRun(
+    ['node', joinPath(root, 'hooks', 'prompt-storage-range.mjs'), path, String(offset), String(length), String(identity.inode ?? ''), 'write'],
+    { stdin: JSON.stringify({ expected: base64Utf8(expected), replacement: base64Utf8(replacement), size: identity.size, prefix: identity.prefix }) },
+  );
 }
 
 async function replaceByteRange($, path, change, identity) {
-  if (await $.isWindows()) return byteRange($, 'write', path, change.offset, change.length, change.replacement);
-  const root = await $.pluginRoot();
-  if (!root) throw new Error('plugin root unavailable');
-  return $.processRun(
-    ['node', joinPath(root, 'hooks', 'prompt-storage-range.mjs'), path, String(change.offset), String(change.length), String(identity.inode ?? '')],
-    { stdin: JSON.stringify({ expected: base64Utf8(change.expected), replacement: base64Utf8(change.replacement) }) },
-  );
+  return byteRange($, 'write', path, change.offset, change.length, change.replacement, identity, change.expected);
 }
 
 async function fileIdentity($, path) {
@@ -54,13 +62,24 @@ async function fileIdentity($, path) {
   const prefixLength = Math.min(64, size);
   const prefix = prefixLength ? await byteRange($, 'read', path, 0, prefixLength) : { exitCode: 0, stdout: '' };
   if (prefix?.exitCode !== 0) throw new Error('file identity unavailable');
-  return { inode: stat?.ino ?? stat?.inode, size, prefix: prefix.stdout };
+  if (!Number.isFinite(size) || size < 0) throw new Error('file identity unavailable');
+  return { inode: stat?.ino ?? stat?.inode, size, prefix: base64Bytes(prefix.bytes) };
+}
+
+function base64Bytes(bytes) {
+  let binary = '';
+  for (const byte of bytes ?? []) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 async function identityMatches($, path, original) {
   const current = await fileIdentity($, path);
-  if (original.inode !== undefined && current.inode !== undefined) return original.inode === current.inode;
-  return current.size >= original.size && current.prefix === original.prefix;
+  if (original.inode !== undefined && current.inode !== undefined) {
+    if (original.inode !== current.inode) throw new Error('stored file replaced');
+    return true;
+  }
+  if (current.size !== original.size || current.prefix !== original.prefix) throw new Error('stored file changed');
+  return true;
 }
 
 async function rewriteStoredPrompt($, path, replacements, target) {
@@ -73,26 +92,28 @@ async function rewriteStoredPrompt($, path, replacements, target) {
   let offset = identity.size - length;
   const read = await byteRange($, 'read', path, offset, length);
   if (read?.exitCode !== 0) throw new Error('tail read failed');
-  let text = read.stdout;
+  let bytes = read.bytes;
   if (offset) {
-    const newline = text.indexOf('\n');
+    const newline = bytes.indexOf(10);
     if (newline < 0) return false;
-    const discarded = text.slice(0, newline + 1);
-    offset += new TextEncoder().encode(discarded).length;
-    text = text.slice(newline + 1);
+    offset += newline + 1;
+    bytes = bytes.slice(newline + 1);
   }
+  const text = new TextDecoder().decode(bytes);
   if (text && !text.endsWith('\n')) {
     try { JSON.parse(text.slice(text.lastIndexOf('\n') + 1)); } catch { return false; }
   }
   const changes = locateReplacements(text, replacements, target).map((change) => ({ ...change, offset: change.offset + offset }));
   for (const change of changes) {
     const compare = await byteRange($, 'read', path, change.offset, change.length);
-    if (compare?.exitCode !== 0 || compare?.stdout !== change.expected) throw new Error('stored bytes changed');
-    if (!await identityMatches($, path, identity)) throw new Error('stored file changed');
+    if (compare?.exitCode !== 0 || compare?.stdout !== change.expected) return false;
+    if (!await identityMatches($, path, identity)) return false;
     const write = await replaceByteRange($, path, change, identity);
-    if (write?.exitCode !== 0) throw new Error('in-place overwrite failed');
+    if (write?.exitCode === 6) return false;
+    if (write?.exitCode !== 0) throw new Error('in-place overwrite refused');
     const verify = await byteRange($, 'read', path, change.offset, change.length);
-    if (verify?.exitCode !== 0 || verify?.stdout !== change.replacement) throw new Error('in-place verification failed');
+    if (verify?.exitCode !== 0 || verify?.stdout !== change.replacement) return false;
+    identity = await fileIdentity($, path);
   }
   return changes.length > 0;
 }

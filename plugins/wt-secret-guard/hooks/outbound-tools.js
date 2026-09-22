@@ -18,7 +18,7 @@ const OUTBOUND_FIELDS = {
   Task: new Set(['prompt']),
 };
 
-function withoutReferences(value) { return value.replace(REFERENCE, ' '); }
+function withoutReferences(value) { return value.replace(REFERENCE, (reference) => ' '.repeat(reference.length)); }
 function base64Utf8(value) {
   let binary = '';
   for (const byte of new TextEncoder().encode(value)) binary += String.fromCharCode(byte);
@@ -27,7 +27,10 @@ function base64Utf8(value) {
 
 function pushStringFindings(found, value, key, path, options) {
   const candidate = withoutReferences(value);
-  const direct = detections(candidate);
+  const direct = detections(candidate).map((item) => {
+    const start = candidate.indexOf(item.value);
+    return start < 0 ? item : { ...item, value: value.slice(start, start + item.value.length) };
+  });
   found.push(...direct, ...optionalDetections(candidate, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }));
   if (key) {
     for (const item of detections(`${key}: ${candidate}`)) {
@@ -36,8 +39,8 @@ function pushStringFindings(found, value, key, path, options) {
   }
   for (const [, entry] of knownTokens()) {
     const encoded = base64Utf8(entry.value);
-    if (candidate.includes(entry.value)) found.push({ kind: entry.kind, value: entry.value, secret: entry.value, path });
-    if (encoded && candidate.includes(encoded)) found.push({ kind: entry.kind, value: encoded, secret: entry.value, path });
+    if (value.includes(entry.value)) found.push({ kind: entry.kind, value: entry.value, secret: entry.value, path });
+    if (encoded && value.includes(encoded)) found.push({ kind: entry.kind, value: encoded, secret: entry.value, path });
   }
 }
 

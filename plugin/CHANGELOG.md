@@ -13,6 +13,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Added
 - Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
 
+### Fixed
+- Close Secret Guard bypasses around reference-wrapped vault values and alternate `op read` arguments; preserve file-reference bytes and UTF-8 transcript offsets; fail closed on storage replacement races; retain streamed known secrets through flush boundaries; and reuse the active journal rotation segment
+
 ## [0.186.0] - 2026-09-22
 
 ⚠ **The SDK pilot runner, its lifecycle server and What is running remain EXPERIMENTAL.** This release changes how the runner's plan loop behaves; a full FULL run was measured on it (370 min, no delivery: stopped by the runner's own 6 h limit in the fourth harden round) and the causes are carded, not fixed here.

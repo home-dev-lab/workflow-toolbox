@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { detections, optionalDetections } from './detector.js';
 import { configure, register, testState, tokenize } from './hooks.js';
 import { sha256 } from './sha256.js';
@@ -29,6 +32,7 @@ const getFile = (path) => files.get(path);
 let onSleep;
 let onBeforeCompare;
 let onBeforeWrite;
+let onBeforeWindowsWrite;
 const readFile = async (path) => {
   if (typeof path !== 'string') throw new Error('fs.read takes a path string (positional)');
   if (!files.has(path)) throw new Error('ENOENT');
@@ -81,19 +85,34 @@ const $ = {
       const mode = argv[8];
       const file = getFile(path);
       if (mode === 'read') return { exitCode: 0, stdout: Buffer.from(file.text).subarray(offset, offset + length).toString('base64') };
+      if (onBeforeWindowsWrite) await onBeforeWindowsWrite(path, offset);
       const before = Buffer.from(file.text);
+      const expected = argv[10] ? Buffer.from(argv[10], 'base64') : null;
+      const expectedSize = argv[11] === undefined ? null : Number(argv[11]);
+      const expectedPrefix = argv[12] ? Buffer.from(argv[12], 'base64') : null;
+      if ((expectedSize !== null && before.length !== expectedSize)
+        || (expectedPrefix && !before.subarray(0, expectedPrefix.length).equals(expectedPrefix))
+        || (expected && !before.subarray(offset, offset + length).equals(expected))) return { exitCode: 3, stdout: '' };
       const replacement = Buffer.from(argv[9], 'base64');
       const after = Buffer.alloc(Math.max(before.length, offset + replacement.length));
       before.copy(after); replacement.copy(after, offset); file.text = after.toString();
       return { exitCode: 0, stdout: '' };
     }
     if (argv[0] === 'node' && /prompt-storage-range\.mjs$/.test(argv[1])) {
-      const path = argv[2]; const offset = Number(argv[3]); const length = Number(argv[4]); const inode = Number(argv[5]);
+      const path = argv[2]; const offset = Number(argv[3]); const length = Number(argv[4]); const inode = argv[5];
+      if (argv[6] === 'read') {
+        if (onBeforeCompare) await onBeforeCompare(path, offset, length);
+        return { exitCode: 0, stdout: Buffer.from(getFile(path).text).subarray(offset, offset + length).toString('base64') };
+      }
       if (onBeforeWrite) await onBeforeWrite(path, offset, init.stdin);
       const file = getFile(path); const payload = JSON.parse(init.stdin);
       const expected = Buffer.from(payload.expected, 'base64'); const replacement = Buffer.from(payload.replacement, 'base64');
       const before = Buffer.from(file.text);
-      if (file.inode !== inode || !before.subarray(offset, offset + length).equals(expected)) return { exitCode: 3, stdout: '' };
+      const prefix = payload.prefix ? Buffer.from(payload.prefix, 'base64') : null;
+      if (inode && String(file.inode) !== inode) return { exitCode: 2, stdout: '' };
+      if (payload.size !== undefined && before.length !== payload.size) return { exitCode: 6, stdout: '' };
+      if ((prefix && !before.subarray(0, prefix.length).equals(prefix))
+        || !before.subarray(offset, offset + length).equals(expected)) return { exitCode: 3, stdout: '' };
       const after = Buffer.alloc(Math.max(before.length, offset + replacement.length));
       before.copy(after); replacement.copy(after, offset); file.text = after.toString();
       return { exitCode: 0, stdout: '' };
@@ -242,7 +261,7 @@ await test('malformed concealed JSON does not throw and scrubs its value', async
   const failSafe = await call('op item get example --format json', imprecise);
   assert.equal(failSafe.text.includes('IMPRECISEFAKEKEY0123456789'), false, 'imprecise concealed JSON fragment reached the tool result');
 });
-await test('token round-trip binds decoded data without inserting raw shell source', async () => { const [token, entry] = [...testState()][0]; let received; await bash($, { tool: 'Bash', command: `echo ${token}` }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received.includes(entry.value), false); assert(received.includes(Buffer.from(entry.value).toString('base64'))); });
+await test('token round-trip binds decoded data without inserting raw shell source', async () => { const [token, entry] = [...testState()][0]; let received; await bash($, { tool: 'Bash', command: `echo ${token}` }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received.includes(entry.value), false); assert(received.includes(`\\x${Buffer.from(entry.value)[0].toString(16)}`)); });
 await test('op reference rewrite with shell quoting', async () => { let received; const result = await bash($, { tool: 'Bash', command: "echo op://Private/O'Brien/token" }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, "echo \"$(op read 'op://Private/O'\"'\"'Brien/token')\""); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
 await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); let received; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { received = event.command; return { text: 'ok' }; }); configure({}); assert.equal(received, "echo \"$(op read --account 'my.1password.com' 'op://Private/item/field')\""); let plain; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { plain = event.command; return { text: 'ok' }; }); assert.equal(plain, "echo \"$(op read 'op://Private/item/field')\""); });
 await test('a value resolved through op:// is scrubbed from the result even when it matches no pattern', async () => { const result = await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw' }, async () => ({ result: { stdout: 'op-fake-value\n', stderr: '' }, text: 'op-fake-value\n' })); assert(!JSON.stringify(result).includes('op-fake-value')); assert(/secret:onepassword#/.test(result.text)); assert(calls.some((call) => call.capability === 'process.run' && call.argv[0] === 'op' && call.argv[1] === 'read')); });
@@ -261,8 +280,8 @@ await test('op reference in a sed search pattern is left literal', async () => {
 await test('op reference inside a larger quoted string is left literal', async () => { await assertSkippedWhilePlainRewrites("printf '%s\\n' 'prefix op://Private/item/field suffix'"); });
 await test('already substituted op reference is not rewritten again', async () => { await assertSkippedWhilePlainRewrites("echo \"$(op read 'op://Private/item/field')\""); });
 await test('env reference rewrite', async () => { let received; await bash($, { tool: 'Bash', command: 'echo secret:env:GH_TOKEN' }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, 'echo "$GH_TOKEN"'); });
-await test('file reference rewrite binds encoded data and tokenises its content before Bash runs', async () => { const value = "file-secret value with ' quote\nsecond-file-secret"; let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file' }, async (event) => { received = event.command; return { text: value }; }); assert.equal(received.includes(value), false); assert(received.includes(Buffer.from(value).toString('base64'))); assert(!JSON.stringify(result).includes(value)); assert.match(result.text, /secret:file#/); });
-await test('file reference line selection binds and tokenises only that line', async () => { let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file#2' }, async (event) => { received = event.command; return { text: 'second-file-secret' }; }); assert.equal(received.includes('second-file-secret'), false); assert(received.includes(Buffer.from('second-file-secret').toString('base64'))); assert(!JSON.stringify(result).includes('second-file-secret')); assert.match(result.text, /secret:file#/); });
+await test('file reference rewrite binds encoded data and tokenises its content before Bash runs', async () => { const value = "file-secret value with ' quote\nsecond-file-secret"; let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file' }, async (event) => { received = event.command; return { text: value }; }); assert.equal(received.includes(value), false); assert(received.includes('\\x66\\x69\\x6c\\x65')); assert(!JSON.stringify(result).includes(value)); assert.match(result.text, /secret:file#/); });
+await test('file reference line selection binds and tokenises only that line', async () => { let received; const result = await bash($, { tool: 'Bash', command: 'echo secret:file:/tmp/wt-secret-guard-file#2' }, async (event) => { received = event.command; return { text: 'second-file-secret' }; }); assert.equal(received.includes('second-file-secret'), false); assert(received.includes('\\x73\\x65\\x63\\x6f')); assert(!JSON.stringify(result).includes('second-file-secret')); assert.match(result.text, /secret:file#/); });
 await test('missing file reference remains unchanged and logs no path or value', async () => { let received; await bash($, { tool: 'Bash', command: 'cat secret:file:/tmp/wt-secret-guard-missing' }, async (event) => { received = event.command; return { text: 'failed' }; }); assert.equal(received, 'cat secret:file:/tmp/wt-secret-guard-missing'); assert(logs.some((line) => line === 'wt-secret-guard: file reference unavailable (1 reference)')); assert(logs.every((line) => !line.includes('/tmp/wt-secret-guard-missing'))); });
 await test('Read result scrub publishes tokens without treating its path as a secret', async () => { const value = 'read-result-secret'; const result = await read($, { tool: 'Read', file_path: '/tmp/not-a-secret' }, async (event) => ({ ...event, text: `password = ${value}` })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.file_path, '/tmp/not-a-secret'); assert.match(result.text, /secret:assignment#/); });
 await test('MCP result scrub tokenises inbound sensitive text without rewriting its input', async () => { const value = 'mcp-result-secret'; const event = { tool: 'mcp__atrium__read_message', query: 'clean control' }; const result = await mcp($, event, async (received) => ({ ...received, text: `token = ${value}` })); assert(!JSON.stringify(result).includes(value)); assert.equal(result.tool, event.tool); assert.equal(result.query, event.query); assert.match(result.text, /secret:assignment#/); });
@@ -381,7 +400,7 @@ await test('prompt planner covers CRLF, primitive JSON, malformed JSON and long-
 });
 await test('reference runtime handles host text objects, invalid text and empty resolver output', async () => {
   const objectRuntime = { ...$, fs: { ...$.fs, read: async () => ({ text: 'object-file-secret' }) } };
-  assert.match((await rewriteReferences(referenceHostFor(objectRuntime), 'echo secret:file:/tmp/object')).command, new RegExp(Buffer.from('object-file-secret').toString('base64')));
+  assert.match((await rewriteReferences(referenceHostFor(objectRuntime), 'echo secret:file:/tmp/object')).command, /\\x6f\\x62\\x6a\\x65/);
   const invalidRuntime = { ...$, fs: { ...$.fs, read: async () => ({ bytes: true }) } };
   assert.equal((await rewriteReferences(referenceHostFor(invalidRuntime), 'echo secret:file:/tmp/object')).command, 'echo secret:file:/tmp/object');
   assert.equal((await rewriteReferences(referenceHostFor(objectRuntime), 'echo secret:file:/tmp/object#9')).command, 'echo secret:file:/tmp/object#9');
@@ -807,6 +826,23 @@ await test('D2 known vault values and their base64 forms are refused outbound', 
     assert.match(result.deny, /refused/i);
   }
 });
+await test('V1 known vault values remain refused inside reference-looking wrappers', async () => {
+  const raw = 'wrapped-vault-value';
+  const encoded = Buffer.from(raw).toString('base64');
+  tokenize('fixture', raw);
+  for (const content of [`op://vault/${raw}/field`, `secret:file:/tmp/${encoded}`]) {
+    const result = await classifyOutbound({}, { tool: 'Write', file_path: '/tmp/out', content });
+    assert(result.findings.some((finding) => finding.secret === raw), `wrapped vault value was allowed: ${content}`);
+  }
+});
+await test('V2 reference-adjacent refusal repairs the original raw transcript span', async () => {
+  const raw = 'token: hunter2 ${_}';
+  const toolUseId = 'tool-reference-adjacent';
+  setFile(transcriptPath, `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: toolUseId, input: { content: raw } }] } })}\n`);
+  const result = await hookForTool('Write')($, { tool: 'Write', tool_use_id: toolUseId, file_path: '/tmp/out', content: raw }, async () => ({}));
+  assert.match(result.deny, /refused/i);
+  assert.equal(getFile(transcriptPath).text.includes(raw), false, 'original reference-adjacent raw span survived transcript repair');
+});
 await test('D11 refusal guidance is surface specific', async () => {
   const raw = `ghp_${'j'.repeat(36)}`;
   const writeResult = await hookForTool('Write')($, { tool: 'Write', file_path: '/tmp/out', content: raw }, async () => ({}));
@@ -863,6 +899,31 @@ await test('R3 replacement between compare and write fails closed on file identi
   onBeforeWrite = async (path) => { setFile(path, original); onBeforeWrite = undefined; };
   await bash($, { tool: 'Bash', tool_use_id: toolUseId, command: raw }, async () => ({}));
   assert.equal(getFile(transcriptPath).text, original, 'replacement file was overwritten');
+});
+await test('V3 no-inode replacement fails closed on size and prefix identity', async () => {
+  const raw = `ghp_${'n'.repeat(36)}`;
+  const toolUseId = 'tool-no-inode-original';
+  const replacementId = 'tool-no-inode-otherxxx';
+  const original = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: toolUseId, input: { command: raw } }] } })}\n`;
+  const replacement = original.replace('assistant', 'different').replace(toolUseId, replacementId);
+  assert.equal(Buffer.byteLength(replacement), Buffer.byteLength(original));
+  setFile(transcriptPath, original);
+  const runtime = { ...$, fs: { ...$.fs, stat: async (path) => { const value = await $.fs.stat(path); const { ino: _ino, ...withoutInode } = value; return withoutInode; } } };
+  onBeforeWrite = async (path) => { const inode = getFile(path).inode; files.set(path, { text: replacement, mode: 0o600, inode }); onBeforeWrite = undefined; };
+  await bash(runtime, { tool: 'Bash', tool_use_id: toolUseId, command: raw }, async () => ({}));
+  assert.equal(getFile(transcriptPath).text, replacement, 'no-inode helper overwrote a different record');
+});
+await test('V7 bounded UTF-8 tails repair at every byte alignment', async () => {
+  const raw = `ghp_${'u'.repeat(36)}`;
+  for (let alignment = 0; alignment < 3; alignment += 1) {
+    const toolUseId = `tool-utf8-${alignment}`;
+    const record = `${JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: toolUseId, input: { command: raw } }] } })}\n`;
+    const discardedLength = 4 * 1024 * 1024 + alignment - Buffer.byteLength('€') - Buffer.byteLength(record);
+    const prefix = `${'x'.repeat(10)}€${'y'.repeat(discardedLength - 1)}\n`;
+    setFile(transcriptPath, `${prefix}${record}`);
+    await bash($, { tool: 'Bash', tool_use_id: toolUseId, command: raw }, async () => ({}));
+    assert.equal(getFile(transcriptPath).text.includes(raw), false, `UTF-8 tail alignment ${alignment} kept the raw value`);
+  }
 });
 await test('D13 subagent denial names the unmeasured storage gap without touching the main transcript', async () => {
   const raw = `ghp_${'d'.repeat(36)}`;
@@ -947,6 +1008,19 @@ await test('R5 assistant stream masks a long opaque known value split across flu
   ]);
   assert.equal(streamed.chunks.map((chunk) => chunk.text ?? '').join('').includes(raw), false, 'long registered secret crossed a stream flush');
 });
+await test('V6 detected-prefix flush retains every byte of an incomplete known value', async () => {
+  const raw = `opaque-${'z'.repeat(6000)}`;
+  tokenize('fixture', raw);
+  const detector = `ghp_${'h'.repeat(36)}`;
+  const streamed = await collectStream(turnStep, [
+    { kind: 'text', index: 1, text: `${detector}${'w'.repeat(13000)}` },
+    { kind: 'engine' },
+    { kind: 'text', index: 0, text: `${detector}${'x'.repeat(10000)}${raw.slice(0, 3000)}` },
+    { kind: 'text', index: 0, text: raw.slice(3000) },
+    { kind: 'stop' },
+  ]);
+  assert.equal(streamed.chunks.map((chunk) => chunk.text ?? '').join('').includes(raw), false, 'detected-prefix flush leaked a complete known value');
+});
 await test('AssistantMessage render masking is display-only and forwards only scrubbed props', async () => {
   assert(assistantRender, 'AssistantMessage ui.render guard was not registered');
   const raw = `ghp_${'u'.repeat(36)}`;
@@ -1007,13 +1081,26 @@ await test('R4 Windows prompt repair uses a shipped PowerShell -File adapter', a
   assert(runs.some((entry) => /powershell/i.test(entry.argv[0]) && entry.argv[3] === '-File' && /\.ps1$/i.test(entry.argv[4])));
   assert.equal(runs.some((entry) => entry.argv[0] === 'dd'), false);
 });
+await test('V8 Windows range writes recheck identity and expected bytes before writing', async () => {
+  const raw = `ghp_${'w'.repeat(36)}`;
+  const original = `${JSON.stringify({ display: raw, pastedContents: {} })}\n`;
+  const replacement = `${JSON.stringify({ display: `ghp_${'r'.repeat(36)}`, pastedContents: {} })}\n`;
+  setFile(historyPath, original);
+  const windows = { ...$, env: { get: async (name) => ({ CLAUDE_CONFIG_DIR: configDir, HOME: '/tmp/home', OS: 'Windows_NT' })[name] } };
+  onBeforeWindowsWrite = async (path) => { const inode = getFile(path).inode; files.set(path, { text: replacement, mode: 0o600, inode }); onBeforeWindowsWrite = undefined; };
+  await prompt(windows, { text: raw, origin: { kind: 'composer' } }, async () => ({}));
+  assert.equal(getFile(historyPath).text, replacement, 'Windows adapter corrupted a replacement file');
+  const script = readFileSync(new URL('./prompt-storage-range.ps1', import.meta.url), 'utf8');
+  assert.match(script, /expected/i);
+  assert.match(script, /Length/);
+});
 await test('D4 file references bind contents as data instead of shell source', async () => {
   setFile('/tmp/injection-secret', '$(printf INJECTED)');
   let received;
   const runtime = { ...$, process: { run: async (argv) => { received = argv; return { exitCode: 0, stdout: '' }; } } };
   await bash(runtime, { tool: 'Bash', command: 'printf %s secret:file:/tmp/injection-secret' }, async (event) => { received = event.command; return { text: 'ok' }; });
   assert.equal(received.includes('INJECTED'), false, 'secret content was inserted into shell source');
-  assert(received.includes(Buffer.from('$(printf INJECTED)').toString('base64')), 'secret content was not encoded as shell data');
+  assert(received.includes('\\x24\\x28\\x70\\x72'), 'secret content was not encoded as shell data');
 });
 await test('D5 explicit op read keeps account and failed prefetch refuses execution', async () => {
   const command = "echo \"$(op read --account 'other' 'op://vault/item/password')\"";
@@ -1023,6 +1110,48 @@ await test('D5 explicit op read keeps account and failed prefetch refuses execut
   assert.deepEqual(opArgv, ['op', 'read', '--account', 'other', 'op://vault/item/password']);
   assert.equal(executed, false, 'command executed after op prefetch failed');
   assert.match(result.deny, /1Password reference/i);
+});
+await test('V4 every supported op read argument placement is prefetched or refused', async () => {
+  const cases = [
+    ["op read --account='team' -o /tmp/out 'op://vault/item/password'", 'team'],
+    ["op read 'op://vault/item/password' --account team -o /tmp/out", 'team'],
+    ["op read -o /tmp/out 'op://vault/item/password' --account=team", 'team'],
+  ];
+  for (const [command, account] of cases) {
+    let executed = false; let opArgv;
+    const runtime = { ...$, process: { run: async (argv) => { opArgv = argv; return { exitCode: 1, stdout: '' }; } } };
+    const result = await bash(runtime, { tool: 'Bash', command }, async () => { executed = true; return { text: 'leaked' }; });
+    assert.equal(executed, false, `op invocation executed without a successful prefetch: ${command}`);
+    assert.deepEqual(opArgv, ['op', 'read', '--account', account, 'op://vault/item/password']);
+    assert.match(result.deny, /1Password reference/i);
+  }
+});
+await test('V5 file reference contents remain byte-identical in supported quote contexts', async () => {
+  const value = 'a  b\nc\n';
+  setFile('/tmp/whitespace-secret', value);
+  for (const command of ['printf %s secret:file:/tmp/whitespace-secret', 'printf %s "secret:file:/tmp/whitespace-secret"', "printf %s 'secret:file:/tmp/whitespace-secret'"]) {
+    let rewritten;
+    await bash($, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
+    const execution = spawnSync('bash', ['-c', rewritten], { encoding: 'buffer' });
+    assert.equal(execution.status, 0);
+    assert.deepEqual(execution.stdout, Buffer.from(value), `file reference bytes changed for ${command}`);
+  }
+});
+await test('V9 journal rotation reuses the active segment', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'wt-secret-guard-journal-'));
+  try {
+    const path = join(directory, 'session.ndjson');
+    writeFileSync(path, Buffer.alloc(4 * 1024 * 1024));
+    const helper = new URL('./journal-append.mjs', import.meta.url);
+    for (const line of ['one\n', 'two\n', 'three\n']) {
+      const result = spawnSync(process.execPath, [helper.pathname, path], { input: line, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    const entries = readdirSync(directory).filter((name) => name.startsWith('session.ndjson'));
+    assert.equal(entries.length, 2, 'rotation created more than one active segment');
+    const segment = entries.find((name) => name !== 'session.ndjson');
+    assert.equal(statSync(join(directory, segment)).size, 14);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 await test('D7 resolver startup diagnostics never include arbitrary exception text', async () => {
   const raw = `ghp_${'r'.repeat(36)}`;

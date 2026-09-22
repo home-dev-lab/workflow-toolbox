@@ -58,13 +58,14 @@ export async function* maskTurnStep(event, next, note, masked) {
       }
       const hold = holdBack();
       if (value.length > hold * 2 && !value.includes(PRIVATE_KEY_START)) {
-        const cleaned = cleanText(value);
-        if (cleaned !== value) yield* flush(key);
-        else {
-          const prefix = value.slice(0, -hold);
-          buffers.set(key, { kind: chunk.kind, chunk, value: value.slice(-hold) });
-          yield { ...chunk, [field]: prefix };
-        }
+        const prefix = value.slice(0, -hold);
+        const tail = value.slice(-hold);
+        const cleaned = cleanText(prefix);
+        if (cleaned !== prefix) {
+          buffers.set(key, { kind: chunk.kind, chunk, value: prefix });
+          yield* flush(key);
+        } else yield { ...chunk, [field]: prefix };
+        buffers.set(key, { kind: chunk.kind, chunk, value: tail });
       }
     }
   } finally {

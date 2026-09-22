@@ -1,5 +1,5 @@
-import { appendFile, mkdir, stat } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { appendFile, mkdir, readdir, stat } from 'node:fs/promises';
+import { basename, dirname } from 'node:path';
 
 const path = process.argv[2];
 const input = await new Promise((resolve) => {
@@ -11,7 +11,16 @@ const input = await new Promise((resolve) => {
 await mkdir(dirname(path), { recursive: true, mode: 0o700 });
 let target = path;
 try {
-  if ((await stat(path)).size >= 4 * 1024 * 1024) target = `${path}.${Date.now()}`;
+  if ((await stat(path)).size >= 4 * 1024 * 1024) {
+    const prefix = `${basename(path)}.`;
+    const segments = (await readdir(dirname(path))).filter((name) => name.startsWith(prefix))
+      .map((name) => ({ name, number: Number(name.slice(prefix.length)) }))
+      .filter(({ number }) => Number.isInteger(number) && number > 0)
+      .sort((left, right) => left.number - right.number);
+    const active = segments.at(-1);
+    target = active ? `${dirname(path)}/${active.name}` : `${path}.1`;
+    if (active && (await stat(target)).size >= 4 * 1024 * 1024) target = `${path}.${active.number + 1}`;
+  }
 } catch (error) {
   if (error?.code !== 'ENOENT') throw error;
 }
