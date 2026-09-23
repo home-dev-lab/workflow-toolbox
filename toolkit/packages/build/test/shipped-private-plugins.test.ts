@@ -73,6 +73,8 @@ describe('shipped private plugins', () => {
       'V42 beside our forms only the allow-list grammar runs; without our forms every command passes byte-identical',
       'V43 the verify10 bypasses and masking failures are closed',
       'V44 beside our forms a word whose role or expansion is uncertain is refused',
+      'V45 the verify11 bypasses and masking failures are closed',
+      'V46 beside our forms: no continuation, no CR, no $[ ], keywords decoded, no xargs, idempotent tokens, newline variants masked',
       'op reference in a sed search pattern is left literal',
       'op reference inside a larger quoted string is left literal',
       'already substituted op reference is not rewritten again',

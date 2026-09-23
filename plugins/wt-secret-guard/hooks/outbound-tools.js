@@ -37,10 +37,22 @@ function pushStringFindings(found, value, key, path, options) {
       if (!direct.some(({ value: directValue }) => directValue === item.value)) found.push({ ...item, value, secret: value, path });
     }
   }
+  // A known value is ignored only where an occurrence lies ENTIRELY inside a token's spelling: a token can
+  // contain a vault value (`secret`, a kind name), and flagging it refused the token itself (Astra M7 at
+  // f98cf712). An occurrence that straddles a token-shaped run is still raw text and stays flagged
+  // (round 13's first version blanked the token and lost the straddling value). Only tokens are exempt -
+  // a raw value wrapped in an `op://...`-looking string stays refused (V1).
+  const tokenRanges = [...value.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/gi)].map((match) => [match.index, match.index + match[0].length]);
+  const outsideTokens = (needle) => {
+    for (let at = value.indexOf(needle); at >= 0; at = value.indexOf(needle, at + 1)) {
+      if (!tokenRanges.some(([from, to]) => at >= from && at + needle.length <= to)) return true;
+    }
+    return false;
+  };
   for (const [, entry] of knownTokens()) {
     const encoded = base64Utf8(entry.value);
-    if (value.includes(entry.value)) found.push({ kind: entry.kind, value: entry.value, secret: entry.value, path });
-    if (encoded && value.includes(encoded)) found.push({ kind: entry.kind, value: encoded, secret: entry.value, path });
+    if (entry.value && outsideTokens(entry.value)) found.push({ kind: entry.kind, value: entry.value, secret: entry.value, path });
+    if (encoded && outsideTokens(encoded)) found.push({ kind: entry.kind, value: encoded, secret: entry.value, path });
   }
 }
 

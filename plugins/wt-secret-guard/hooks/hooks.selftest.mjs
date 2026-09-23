@@ -1443,7 +1443,8 @@ await test('V4 every supported op read argument placement is prefetched or refus
     ['"op" read \'op://vault/item/password\'', ''],
     ["op 'read' --account=team 'op://vault/item/password'", 'team'],
     ["o'p' read -n 'op://vault/item/password' --account team", 'team'],
-    ["op read -n \\\n 'op://vault/item/password' --account team", 'team'],
+    // (round 13: a line continuation beside a reference is refused before any prefetch - V46)
+    ["op read -n 'op://vault/item/password' --account team", 'team'],
   ];
   // Each placement carries its OWN item: a failed prefetch is remembered for the session (V19), so
   // reusing one reference would let the cache answer for every case after the first and the
@@ -1532,15 +1533,24 @@ await test('V17 a line continuation does not hide the documented op read form', 
   // Bash removes a backslash-newline entirely - that is ordinary word reading, and the literal form
   // written with one is still OUR form. ANSI-C spellings of `op` are no longer this lock's business:
   // they are the documented out-of-scope case, locked as such in V21.
+  // Round 13: beside a reference, any line continuation is refused (V46). With NO reference, the words
+  // sit in shell the allow-list does not read, and reference-free `op read` words there are text
+  // (Astra M6) - the same out-of-scope case as any computed `op` call.
   const cases = [
-    ['op r\\\nead "$REF"', 'line continuation inside the verb'],
-    ['o\\\np read "$REF"', 'line continuation inside the command word'],
+    ['op r\\\nead "$REF" secret:env:GH_TOKEN', 'line continuation inside the verb, beside a reference'],
+    ['o\\\np read "$REF" secret:env:GH_TOKEN', 'line continuation inside the command word, beside a reference'],
   ];
   for (const [command, shape] of cases) {
     let executed = false;
     const result = await bash($, { tool: 'Bash', command }, async () => { executed = true; return { text: 'short-13-pass' }; });
     assert.equal(executed, false, `${shape} executed without validating its reference: ${JSON.stringify(command)}`);
     assert.match(result.deny ?? '', /refused/i, shape);
+  }
+  for (const command of ['op r\\\nead "$REF"', 'o\\\np read "$REF"']) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    assert.equal(result?.deny, undefined, `reference-free continued op read words were refused: ${JSON.stringify(command)}`);
+    assert.equal(received, command, 'reference-free continued op read words were rewritten');
   }
 });
 await test('V21 the planner acts on OUR forms only: refused in unowned contexts, out of scope otherwise, ordinary work untouched', async () => {
@@ -1567,8 +1577,9 @@ await test('V21 the planner acts on OUR forms only: refused in unowned contexts,
     ['op --account=team read "$REF"', 'the documented op read form, global flag first, without a literal reference'],
     // `time` is a reserved word and `-p` its option: bash reads the next word as a command name. Round 8
     // listed this row as out of scope because the planner stopped at `-p` - a blind spot, not a rule.
-    ['time -p op read "$REF"', 'the documented op read form after time -p, without a literal reference'],
-    ['case x in x) op read "$REF";; esac', 'the documented op read form in a case body, without a literal reference'],
+    // (round 13: `time -p op read "$REF"` and `case x in x) op read "$REF";; esac` carry no reference and
+    // sit in shell the allow-list does not read - text now, locked in V45 M6)
+    ['time -p op read "$REF" secret:env:GH_TOKEN', 'the documented op read form after time -p, beside a reference'],
   ];
   for (const [command, shape] of refused) {
     const { result, received } = await run(command);
@@ -1780,8 +1791,9 @@ await test('reference allow-list: every supported form expands byte-identically 
     await bash($, { tool: 'Bash', command: `printf '%s|%s' ${multiple} ${vaultToken}` }, async (event) => { combined = event.command; return { text: 'ok' }; });
     assert.equal(run(combined).stdout.toString(), `second matrix value|${value}`);
     const refusals = [
-      ['op read whose reference is a variable', 'op read $REF > output.tpl'],
-      ['op read piped into op inject', 'op read $REF | op inject'],
+      // (round 13: without any reference these are text - the reference beside them keeps them ours)
+      ['op read whose reference is a variable', 'op read $REF > output.tpl; printf %s secret:env:MATRIX_SECRET'],
+      ['op read piped into op inject', 'op read $REF | op inject; printf %s secret:env:MATRIX_SECRET'],
       ['op read of a quoted variable', 'op read "$REF"'],
       ['op read with an undocumented flag', "op read --zap 'op://Private/matrix/password'"],
       ['op read with two references', "op read 'op://Private/matrix/password' 'op://Private/matrix/other'"],
@@ -2221,7 +2233,8 @@ await test('V38 a command using our forms never runs, through a listed external 
       const command = `${before}${name} "$VERB" ${form}${after}`;
       const { result, received } = await run(command);
       const passed = !result?.deny && received !== undefined;
-      if (passed === compound.has(before)) wrong.push(`${JSON.stringify(command)} -> ${passed ? 'PASSED' : result?.deny}`);
+      // Round 13: xargs is refused beside our forms outright (its input becomes words of its command).
+      if (passed === (compound.has(before) || before.includes('| xargs'))) wrong.push(`${JSON.stringify(command)} -> ${passed ? 'PASSED' : result?.deny}`);
     }
   }
   assert.deepEqual(wrong, [], 'a literal command behind a listed wrapper was refused, or passed in a compound position');
@@ -2241,9 +2254,9 @@ await test('V39 ordinary commands through a listed wrapper pass, and the op read
   const form = 'secret:env:GH_TOKEN';
   const rows = [
     `timeout 30 curl "$URL" -u ${form}`, `env -i PATH=/usr/bin printf %s ${form}`, `sudo -u app printf %s ${form}`, `nice -n 10 curl -u ${form} "$URL"`,
-    `nohup curl -u ${form} "$URL" > /tmp/out 2>&1 &`, `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`, `echo "$x" | xargs printf %s ${form}`,
+    `nohup curl -u ${form} "$URL" > /tmp/out 2>&1 &`, `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`,
     `stdbuf -oL printf %s ${form} | tee /tmp/log`, `ionice -c 3 printf %s ${form}`, `taskset -c 0 printf %s ${form}`, `setsid -w printf %s ${form}`,
-    `ionice -p "$PID"; printf %s ${form}`, `sudo -l; printf %s ${form}`, `env; printf %s ${form}`, `echo x | xargs; printf %s ${form}`,
+    `ionice -p "$PID"; printf %s ${form}`, `sudo -l; printf %s ${form}`, `env; printf %s ${form}`,
   ];
   const refused = [];
   for (const command of rows) {
@@ -2254,11 +2267,11 @@ await test('V39 ordinary commands through a listed wrapper pass, and the op read
   assert.deepEqual(refused, [], 'an ordinary command through a listed wrapper was refused');
   // Passed through round 11, refused by round 12's strict wrapper rule: an expanded word between a
   // wrapper and its command, or in a find invocation - the arbiter's trade, locked both ways.
-  for (const command of [`find . -name "$pattern" -exec grep -l x {} + ; printf %s ${form}`, `timeout "$T" printf %s ${form}`, `env A="$x" printf %s ${form}`, `sudo -u "$USER" printf %s ${form}`]) {
+  for (const command of [`echo "$x" | xargs printf %s ${form}`, `echo x | xargs; printf %s ${form}`, `find . -name "$pattern" -exec grep -l x {} + ; printf %s ${form}`, `timeout "$T" printf %s ${form}`, `env A="$x" printf %s ${form}`, `sudo -u "$USER" printf %s ${form}`]) {
     let received;
     const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
     assert.equal(received, undefined, `an expanded wrapper word ran beside our form: ${command}`);
-    assert.match(result?.deny ?? '', /not a plain literal/, command);
+    assert.match(result?.deny ?? '', /not a plain literal|xargs/, command);
   }
   // `op read` behind a wrapper, beside our forms, is the documented form and must be valid: otherwise it
   // runs op on a value the guard never prefetched. Without our forms it stays out of scope (V21).
@@ -2343,7 +2356,7 @@ const V42_REFUSED = [
   "printf %s $(op read 'op://vault/item/v42u') FORM", "timeout $(op read 'op://vault/item/v42t') printf %s FORM",
   // Round 12 (strict): an unquoted heredoc body with `$`, an expanded wrapper word, a tilde, an
   // argument-position assignment.
-  'cat <<EOF\nhome ${HOME} and $USER\nEOF\nprintf %s FORM', 'timeout "$T" printf %s FORM', 'printf %s ~/v42 FORM', "export V42X=$(op read 'op://vault/item/v42x'); printf %s FORM",
+  'cat <<EOF\nhome ${HOME} and $USER\nEOF\nprintf %s FORM', 'echo "$x" | xargs printf %s FORM', 'timeout "$T" printf %s FORM', 'printf %s ~/v42 FORM', "export V42X=$(op read 'op://vault/item/v42x'); printf %s FORM",
   // An UNQUOTED heredoc body runs its substitutions: beside our forms that is a command position.
   'cat <<EOF\n$("$CMD" "$VERB")\nEOF\nprintf %s FORM', 'cat <<EOF\n${Y:-$(date)}\nEOF\nprintf %s FORM', 'cat <<EOF\n$((1+2))\nEOF\nprintf %s FORM',
 ];
@@ -2355,7 +2368,7 @@ const V42_ALLOWED = [
   'cat <<EOF\nplain body, no expansion\nEOF\nprintf %s FORM', 'cat <<\'EOF\'\n$(date) stays text in a quoted body\nEOF\nprintf %s FORM',
   'test -n "$Y" && curl -u FORM "$URL"', 'command -v "$tool" >/dev/null && printf %s FORM', 'exec printf %s FORM', 'timeout 30 curl "$URL" -u FORM',
   'env -i PATH=/usr/bin printf %s FORM', 'sudo -u app printf %s FORM', "find . -name '*.js' -exec grep -l x {} + ; printf %s FORM",
-  'echo "$x" | xargs printf %s FORM', 'export V42=FORM', 'printf "%s\\n" "cost: \\$5" FORM',
+  'export V42=FORM', 'printf "%s\\n" "cost: \\$5" FORM',
   // The documented literal form inside a substitution stays accepted: double-quoted, or as the value of
   // an assignment PREFIX (round 12: `export V=$(...)` is an argument, refused).
   "V42B=$(op read 'op://vault/item/v42b'); printf %s FORM", "curl -H \"Authorization: Bearer $(op read 'op://vault/item/v42c')\" -u FORM \"$URL\"",
@@ -2524,6 +2537,112 @@ await test('V44 beside our forms a word whose role or expansion is uncertain is 
     if (result?.deny || received === undefined) wrong.push(`${JSON.stringify(command)} -> ${result?.deny}`);
   }
   assert.deepEqual(wrong, [], 'a strict allow-list shape was refused');
+});
+const V45_REF = (item) => `${'op:/'}/vault/item/${item}`;
+await test('V45 the verify11 bypasses and masking failures are closed', async () => {
+  // GPT-6 Astra at f98cf712. Every input collected, so one red shows them all.
+  testEnv.set('WT_V45_X', 'wt-v45-value');
+  const form = 'secret:env:WT_V45_X';
+  const failures = [];
+  const hook = async (command, runtime = $, output = 'ok') => {
+    let received;
+    const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return typeof output === 'function' ? output(event.command) : { text: output }; });
+    return { result, received };
+  };
+  for (const [finding, command] of [
+    ['H1', `ti\\\nme -p "$CMD" %s ${form}`], ['H1', `i\\\nf true; then printf %s ${form}; fi`], ['H1', `f\\\nor x in a; do printf %s ${form}; done`],
+    ['H1', `co\\\nproc printf %s ${form}`], ['H2', `printf %s "$[A]" ${form}`], ['H2', `"$[1+2]" %s ${form}`],
+    ['H3', `printf %s --kill-after=1 | xargs -I R timeout R 1 "$CMD" %s ${form}`], ['H4', `cat <<EOF\r\nEOF\nprintf %s ${form}\nEOF\r`],
+  ]) {
+    const { result, received } = await hook(command);
+    if (received !== undefined || !/beside a secret reference|which this guard does not decode/.test(result?.deny ?? '')) failures.push(`${finding} ${received !== undefined ? 'executed' : `refused for another reason (${result?.deny?.slice(47, 150)})`}: ${JSON.stringify(command)}`);
+  }
+  // H5: bash strips trailing newlines in a substitution; the stripped value must be masked too.
+  {
+    const runtime = { ...$, process: { run: async (argv, init) => (/^op(?:\.exe)?$/.test(argv[0]) ? { exitCode: 0, stdout: 'v45-newline-pass\n\n' } : $.process.run(argv, init)) } };
+    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+    const { result } = await hook(`printf %s "$(op read '${V45_REF('v45-h5')}')"`, runtime, execute);
+    if (result?.deny) failures.push(`H5 refused: ${result.deny}`);
+    else if (result.text.includes('v45-newline-pass')) failures.push('H5 a value with its trailing newlines stripped reached the output unmasked');
+  }
+  // M6: the literal words `op read` in a compound command with no reference are text.
+  for (const command of ['for x in a; do echo op read foo; done', 'if true; then echo op read "$REF"; fi', 'case x in x) op read "$REF";; esac']) {
+    const { result, received } = await hook(command);
+    if (result?.deny || received !== command) failures.push(`M6 reference-free op read words were refused or rewritten: ${JSON.stringify(command)} -> ${result?.deny}`);
+  }
+  // M7: an issued token is never re-tokenised, even when its value is part of its own text, and a token
+  // submitted back in a command rehydrates.
+  {
+    // (token kinds are letters and hyphens only - every token pattern expects that shape)
+    const token = tokenize('vfortyfive', 'vfortyfive');
+    const { scrub } = await import('./scrub.js');
+    const scrubbed = scrub(`printf %s ${token}`, '').value;
+    if (scrubbed !== `printf %s ${token}`) failures.push(`M7 scrubbing re-tokenised an issued token: ${scrubbed}`);
+    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+    const { result, received } = await hook(`printf '[%s]' ${token}`, $, execute);
+    if (result?.deny || received === undefined) failures.push(`M7 a token submitted back was refused: ${result?.deny}`);
+    else if (spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout !== '[vfortyfive]') failures.push('M7 a token submitted back did not rehydrate');
+    // Idempotence covers the TOKEN only: a span that overlaps a token-shaped run and extends past it
+    // is clipped to the text outside, never dropped whole (round 13's first version dropped it, and
+    // the c264f237 stream module then leaked a complete known value through V6).
+    const tail = `v45-straddle-tail-${'q'.repeat(24)}`;
+    tokenize('vfortyfive', `9f00aa-${tail}`);
+    const straddled = scrub(`printf %s secret:env#9f00aa-${tail}`, '').value;
+    if (straddled.includes(tail)) failures.push(`M7 a value straddling a token-shaped run was left unmasked: ${straddled}`);
+    // A value no detector flags on its own, so only the known-value check can refuse it.
+    tokenize('vfortyfive', '0b00aa ordinary words v45 outbound');
+    const outbound = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v45-straddle.txt', content: 'note secret:env#0b00aa ordinary words v45 outbound' });
+    if (!outbound.findings.some((finding) => finding.secret === '0b00aa ordinary words v45 outbound')) failures.push(`M7 a raw known value straddling a token-shaped run was not flagged outbound: ${JSON.stringify(outbound.findings)}`);
+    const tokenOnly = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v45-token.txt', content: `note ${token}` });
+    if (tokenOnly.findings.length) failures.push(`M7 an issued token alone was flagged outbound: ${JSON.stringify(tokenOnly.findings)}`);
+  }
+  // M8: options that change how op resolves are carried into the prefetch exactly, or refused.
+  for (const command of [`op --config /tmp/v45-config --session s1 read '${V45_REF('v45-m8a')}'`, `op read --session s1 '${V45_REF('v45-m8b')}'`, `op --cache read '${V45_REF('v45-m8c')}'`, `op read --config=/tmp/c '${V45_REF('v45-m8d')}'`]) {
+    const argvs = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) argvs.push(argv); return $.process.run(argv, init); } } };
+    const { result } = await hook(command, runtime);
+    const carried = argvs.length && ['--config', '--session', '--cache'].every((flag) => !command.includes(flag) || argvs[0].some((part) => part.startsWith(flag)));
+    if (!result?.deny && !carried) failures.push(`M8 a resolution option was dropped from the prefetch: ${command} -> ${JSON.stringify(argvs[0])}`);
+  }
+  assert.deepEqual(failures, [], 'verify11 findings remain');
+});
+await test('V46 beside our forms: no continuation, no CR, no $[ ], keywords decoded, no xargs, idempotent tokens, newline variants masked', async () => {
+  const form = 'secret:env:GH_TOKEN';
+  const ran = [];
+  for (const command of [
+    `printf %s a\\\nb ${form}`, `printf %s "a\\\nb" ${form}`, `cat <<EOF\na\\\nb\nEOF\nprintf %s ${form}`, `printf %s ${form} \\\n  x`,
+    `printf %s ${form}\r`, `printf '%s\r' ${form}`, `printf %s "\r" ${form}`, `printf %s $[1] ${form}`, `printf %s "a$[1]b" ${form}`,
+    `"time" printf %s ${form}`, `\\if true; then :; fi; printf %s ${form}`, `"for" x; printf %s ${form}`,
+    `echo x | xargs printf %s ${form}`, `echo x | xargs -r printf %s ${form}`, `printf %s ${form} | xargs echo`, `echo x | xargs -J % printf % ${form}`,
+    `find . -maxdepth 0 -exec timeout {} 5 printf x \\; ; printf %s ${form}`, `find . -maxdepth 0 -exec env A={} printf x \\; ; printf %s ${form}`,
+  ]) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (received !== undefined || !/refused/i.test(result?.deny ?? '')) ran.push(JSON.stringify(command));
+  }
+  assert.deepEqual(ran, [], 'a shape outside the strict allow-list ran beside our form');
+  // A backslash-newline inside a QUOTED heredoc body is text, and stays accepted.
+  let received;
+  const quoted = `cat <<'EOF'\na\\\nb\nEOF\nprintf %s ${form}`;
+  const result = await bash($, { tool: 'Bash', command: quoted }, async (event) => { received = event.command; return { text: 'ok' }; });
+  assert.equal(result?.deny, undefined, `a continuation inside a quoted heredoc body was refused: ${result?.deny}`);
+  assert.ok(received, 'a continuation inside a quoted heredoc body did not run');
+  // Any token-shaped text - issued or not - is left alone by the scrub.
+  const { scrub } = await import('./scrub.js');
+  for (const text of ['see secret:environment#a64479 here', 'secret:onepassword#abcdef', 'a secret:file#012345:rest']) assert.equal(scrub(text, '').value, text, `token-shaped text was rewritten: ${text}`);
+  // Every bound value is registered with the variant a substitution produces: trailing newlines removed.
+  setFile('/tmp/v46-trailing', 'v46-file-value\n\n\n');
+  const vaultHas = (value) => [...testState().values()].some((entry) => entry.value === value);
+  await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/v46-trailing' }, async () => ({ text: 'ok' }));
+  assert.ok(vaultHas('v46-file-value\n\n\n') && vaultHas('v46-file-value'), 'a bound file value was not registered with its newline-stripped variant');
+  testEnv.set('WT_V46_ENV', 'v46-env-value\n');
+  await bash($, { tool: 'Bash', command: 'printf %s secret:env:WT_V46_ENV' }, async () => ({ text: 'ok' }));
+  assert.ok(vaultHas('v46-env-value'), 'a bound env value was not registered with its newline-stripped variant');
+  // --account is carried into the prefetch exactly.
+  const argvs = [];
+  const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) argvs.push(argv); return $.process.run(argv, init); } } };
+  await bash(runtime, { tool: 'Bash', command: `op --account=team read '${V45_REF('v46-account')}'` }, async () => ({ text: 'ok' }));
+  assert.deepEqual(argvs.at(-1), ['op', 'read', '--account', 'team', V45_REF('v46-account')], 'the account was not carried into the prefetch');
 });
 // V34 runs late on purpose: it registers about 2,300 values in the vault, and every later Bash-hook
 // call walks the whole vault - run before V38 it made V38 7 s and pushed the shipped-plugins vitest

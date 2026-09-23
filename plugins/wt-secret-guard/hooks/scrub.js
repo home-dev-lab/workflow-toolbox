@@ -37,6 +37,24 @@ function replaceKnown(text, command, includeOptional, substituted) {
     ...(includeOptional ? optionalDetections(text, { emails: options.maskEmails, ipAddresses: options.maskIpAddresses }) : []),
   ];
   for (const detection of found) for (const [from, to] of occurrences(text, detection.value)) spans.push({ from, to, detection });
+  // A token already in the text is never scrubbed again, whatever value lies inside its spelling:
+  // re-tokenising it made it impossible to rehydrate (Astra M7 at f98cf712 - a vault value `secret`
+  // turned `secret:environment#a64479` into `secret:environment#a64479:environment#a64479`).
+  // Only the token itself is exempt: a span overlapping a token and extending past it is CLIPPED to
+  // the text outside the token, never dropped whole - dropping it released that outside text (round 13's
+  // first version leaked a complete known value that way through the c264f237 stream module, V6).
+  const tokenRanges = [...text.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)].map((match) => [match.index, match.index + match[0].length]);
+  for (let at = spans.length - 1; at >= 0; at -= 1) {
+    const span = spans[at];
+    const inside = tokenRanges.filter(([from, to]) => span.from < to && span.to > from);
+    if (!inside.length) continue;
+    const pieces = [];
+    let from = span.from;
+    for (const [tokenFrom, tokenTo] of inside) { if (tokenFrom > from) pieces.push([from, tokenFrom]); from = Math.max(from, tokenTo); }
+    if (from < span.to) pieces.push([from, span.to]);
+    const kind = span.detection?.kind ?? knownTokens().get(span.token)?.kind ?? 'merged';
+    spans.splice(at, 1, ...pieces.map(([pieceFrom, pieceTo]) => ({ from: pieceFrom, to: pieceTo, detection: { kind, value: text.slice(pieceFrom, pieceTo) } })));
+  }
   if (!spans.length) return { value: text, changed: false, entropy: entropyCandidates(text) };
   spans.sort((left, right) => left.from - right.from || right.to - left.to);
   const groups = [];

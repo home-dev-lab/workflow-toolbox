@@ -57,14 +57,16 @@ const NOT_WORDS = new Set(['comment', 'heredoc', 'heredoc-quoted', 'heredoc-unsu
 // that mentions a reference", and the first is exactly the path that puts a secret on disk. Injection
 // into files belongs to 1Password's own `op inject`.
 const HEREDOC_BODY = new Set(['heredoc', 'heredoc-quoted', 'heredoc-unsupported', 'heredoc-end']);
-// Bash builtins whose argument is the command they run. External wrappers (sudo, env, timeout,
-// xargs...) are an open-ended list the guard does not chase - the README states it.
 // `op read` flags whose output the guard cannot reproduce from a bound value.
 const OUTPUT_FLAGS = new Set(['-o', '--out-file', '--encoding', '--file-mode', '--format']);
+// `op read` options that change how 1Password RESOLVES the reference. The prefetch carries --account
+// exactly; these it does not carry, so the command is refused rather than resolved differently from what
+// it asked (Astra at f98cf712: --config and --session were silently dropped).
+const RESOLUTION_FLAGS = new Set(['--config', '--session', '--cache']);
 // A FIXED list of external wrappers whose argument list names the command they run, each with the
 // option grammar read on this machine (2026-09-23): GNU coreutils 9.4 env, timeout, nice, nohup,
-// stdbuf, chroot; util-linux 2.39.3 setsid, ionice, taskset; sudo 1.9.15p5; GNU findutils 4.9.0 xargs
-// (find is handled apart: its -exec actions). doas is not installed here: its grammar is doas(1)'s
+// stdbuf, chroot; util-linux 2.39.3 setsid, ionice, taskset; sudo 1.9.15p5 (find is handled apart:
+// its -exec actions; xargs is refused outright, see commandHead). doas is not installed here: its grammar is doas(1)'s
 // synopsis, `doas [-Lns] [-a style] [-C config] [-u user] command`, not read locally.
 // Every one of them stops at its first non-option (measured: `timeout 5 printf %s -k 1` passes -k to
 // printf) and accepts a unique abbreviation of a long option (`env --uns=HOME`, `timeout --sig=KILL`).
@@ -102,13 +104,6 @@ const WRAPPERS = {
   chroot: { short: {}, long: { groups: 1, userspec: 1, 'skip-chdir': 0 }, operands: 1 },
   ionice: { short: { c: 1, n: 1, t: 0, p: 'none', P: 'none', u: 'none' }, long: { class: 1, classdata: 1, ignore: 0, pid: 'none', pgid: 'none', uid: 'none' } },
   taskset: { short: { a: 0, c: 0, p: 'none' }, long: { 'all-tasks': 0, 'cpu-list': 0, pid: 'none' }, operands: 1 },
-  xargs: {
-    short: { 0: 0, o: 0, p: 0, r: 0, t: 0, x: 0, a: 1, d: 1, E: 1, I: 1, L: 1, n: 1, P: 1, s: 1, e: 'glued', i: 'glued', l: 'glued' },
-    long: {
-      null: 0, 'arg-file': 1, delimiter: 1, eof: 'opt', replace: 'opt', 'max-lines': 1, 'max-args': 1, 'open-tty': 0, 'max-procs': 1,
-      interactive: 0, 'process-slot-var': 1, 'no-run-if-empty': 0, 'max-chars': 1, 'show-limits': 0, verbose: 0, exit: 0,
-    },
-  },
 };
 const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir']);
 
@@ -361,6 +356,7 @@ function validateOpRead(words) {
   let verb = false;
   let noNewline = false;
   let reproducible = true;
+  let carried = true;
   for (let index = 0; index < words.length; index += 1) {
     const word = words[index];
     if (!verb && !word.operator && word.literal && word.text === 'read') { verb = true; continue; }
@@ -377,6 +373,7 @@ function validateOpRead(words) {
       if (!VALUE_FLAGS.has(name) || !value) return { valid: false };
       if (name === '--account') account = value;
       if (OUTPUT_FLAGS.has(name)) reproducible = false;
+      if (RESOLUTION_FLAGS.has(name)) carried = false;
       continue;
     }
     if (VALUE_FLAGS.has(word.text)) {
@@ -384,9 +381,10 @@ function validateOpRead(words) {
       if (!value || value.operator || !value.literal || !value.text || value.text.startsWith('-') || /^(?:op:\/\/|secret:)/i.test(value.text)) return { valid: false };
       if (word.text === '--account') account = value.text;
       if (OUTPUT_FLAGS.has(word.text)) reproducible = false;
+      if (RESOLUTION_FLAGS.has(word.text)) carried = false;
       index += 1; continue;
     }
-    if (BOOLEAN_FLAGS.has(word.text)) { if (word.text === '-n' || word.text === '--no-newline') noNewline = true; continue; }
+    if (BOOLEAN_FLAGS.has(word.text)) { if (word.text === '-n' || word.text === '--no-newline') noNewline = true; if (RESOLUTION_FLAGS.has(word.text)) carried = false; continue; }
     if (word.text.startsWith('-')) return { valid: false };
     if (word.text.startsWith('op://')) {
       if (ref || !OP_PATH.test(word.text.slice('op://'.length))) return { valid: false };
@@ -394,7 +392,7 @@ function validateOpRead(words) {
     }
     return { valid: false };
   }
-  return { valid: verb && Boolean(ref), account, ref, noNewline, reproducible };
+  return { valid: verb && Boolean(ref), account, ref, noNewline, reproducible, carried };
 }
 
 function templateDestination(command) {
@@ -522,7 +520,10 @@ function wordKind(command, context, from, to) {
       const rest = command.slice(at, to);
       const name = /^\$\{[A-Za-z_][A-Za-z0-9_]*\}|^\$[A-Za-z_][A-Za-z0-9_]*/.exec(rest);
       if (name) { kind = 'field'; at += name[0].length - 1; continue; }
-      if (/^\$[{(0-9@*#?$!-]/.test(rest)) return { refuse: rest[1] === '{' ? 'a ${...} expansion with an operator' : rest[1] === '(' ? 'a command substitution' : 'a special parameter ($1, $@, $?...)' };
+      // Strict: a `$` is accepted only as `$NAME`, `${NAME}`, or a literal `$` before a blank or the
+      // closing quote. Anything else is an expansion - `$[...]` arithmetic among them (Astra at
+      // f98cf712: `"$[A]"` with A holding `a[$(cmd)]` ran cmd).
+      if (!/^\$(?:[\s"]|$)/.test(rest)) return { refuse: rest[1] === '{' ? 'a ${...} expansion with an operator' : rest[1] === '(' ? 'a command substitution' : rest[1] === '[' ? 'a $[...] arithmetic expansion' : 'a special parameter or expansion ($1, $@, $?, $[...])' };
       continue;
     }
     return { refuse: 'an expansion this guard does not accept ($(...), ${...} with an operator, backticks)' };
@@ -531,7 +532,7 @@ function wordKind(command, context, from, to) {
 }
 
 // One option word of a listed wrapper: 'arg', or 'none' (no command runs) or 'refuse' (a grammar the
-// guard does not place). Updates `entry` (phase, pending value, xargs replace string).
+// guard does not place). Updates `entry` (phase, pending value).
 function wrapperOption(entry, text) {
   const { spec } = entry;
   if (text === '--') { entry.phase = entry.left > 0 ? 'operands' : spec.assignments ? 'assign' : 'command'; return 'arg'; }
@@ -546,7 +547,6 @@ function wrapperOption(entry, text) {
     const [name] = matching;
     const kind = spec.long[name];
     if (kind === 'none' || kind === 'refuse') return kind;
-    if (entry.name === 'xargs' && name === 'replace') entry.replace = equals < 0 ? '{}' : text.slice(equals + 1) || '{}';
     if (kind === 1 && equals < 0) entry.pending = 'value';
     return 'arg';
   }
@@ -556,9 +556,8 @@ function wrapperOption(entry, text) {
     if (kind === 'none' || kind === 'refuse') return kind;
     if (kind === 0) continue;
     const rest = text.slice(at + 1);
-    if (kind === 'glued') { if (entry.name === 'xargs' && letter === 'i') entry.replace = rest || '{}'; return 'arg'; }
-    if (!rest) entry.pending = entry.name === 'xargs' && letter === 'I' ? 'replace' : 'value';
-    else if (entry.name === 'xargs' && letter === 'I') entry.replace = rest;
+    if (kind === 'glued') return 'arg';
+    if (!rest) entry.pending = 'value';
     return 'arg';
   }
   return 'arg';
@@ -568,17 +567,17 @@ function wrapperOption(entry, text) {
 // Every word from the wrapper up to its command must be a plain literal: an option, a value, an
 // operand or an assignment whose text is expanded (`"$T"` holding `--kill-after=1`, measured by Astra
 // at ca950a58) moves the command position where the guard cannot see it.
-function wrapperCommand(words, from, name) {
+function wrapperCommand(words, from, name, filled) {
   const spec = WRAPPERS[name];
   const entry = { name, spec, phase: 'options', left: spec.operands ?? 0, pending: false, replace: null };
-  // Each branch that consumes a word as something OTHER than the command checks it is plain.
-  const plain = (word) => (word.kind === 'literal' && !word.reference ? null : { refuse: `a word of ${name} that is not a plain literal (${word.raw})` });
+  // Each branch that consumes a word as something OTHER than the command checks it is plain - and,
+  // under find -exec, not built from `{}`, which find fills from a file name.
+  const plain = (word) => (word.kind === 'literal' && !word.reference && !(filled && word.text.includes(filled)) ? null : { refuse: `a word of ${name} that is not a plain literal (${word.raw})` });
   for (let at = from; at < words.length; at += 1) {
     const word = words[at];
     if (entry.pending) {
       const refusal = plain(word);
       if (refusal) return refusal;
-      if (entry.pending === 'replace') entry.replace = word.text;
       entry.pending = false;
       continue;
     }
@@ -624,12 +623,17 @@ function commandHead(words, from, positions, role, filled) {
   if (name.kind !== 'literal') return 'a command name this guard cannot read literally';
   if (name.reference) return 'a secret reference as a command name (references are accepted as arguments only)';
   if (filled && name.text.includes(filled)) return `a command built from ${filled}, which its wrapper fills from input`;
-  if (name.raw === name.text && RESERVED.has(name.text)) return `the shell keyword \`${name.text}\``;
+  // Keywords on the DECODED text: a quoted or escaped `"time"` is a command bash runs, `/usr/bin/time`,
+  // and it runs its argument. Strict: any spelling of a reserved word is refused as a command name.
+  if (RESERVED.has(name.text)) return `the shell keyword \`${name.text}\` (in any spelling)`;
   if (STRING_RUNNERS.has(name.text)) return `\`${name.text}\`, which runs a string as shell code`;
+  // xargs turns its INPUT into words of the command it runs - options, operands, even the command
+  // itself once a wrapper is left open (Astra at f98cf712: `-I R timeout R 1 "$CMD"`). Not bounded.
+  if (name.text.replace(/^.*\//, '') === 'xargs') return '`xargs`, whose input becomes words of the command it runs';
   positions.set(name.start, role);
   const base = name.text.replace(/^.*\//, '');
   if (WRAPPERS[base]) {
-    const found = wrapperCommand(words, at + 1, base);
+    const found = wrapperCommand(words, at + 1, base, filled);
     if (found.refuse) return found.refuse;
     if (found.none) return null;
     return commandHead(words, found.index, positions, 'wrapped', found.replace ?? filled);
@@ -665,6 +669,13 @@ function allowList(command, lexed, tokens, referenceStarts) {
     if ((context[at] === 'heredoc' || context[at] === 'heredoc-unsupported') && (command[at] === '$' || command[at] === '`')) {
       return { refuse: 'a `$` or backtick inside an unquoted heredoc body (quote the delimiter: <<\'EOF\')' };
     }
+  }
+  // Bash's line continuation and a carriage return change what a word is AFTER the guard has read it:
+  // `ti\\` + newline + `me` is the keyword `time`, and `EOF\r` is a different heredoc delimiter
+  // (Astra at f98cf712). Strict: neither is accepted, except inside a quoted heredoc body, which is text.
+  for (let at = 0; at < command.length; at += 1) {
+    if (command[at] === '\r') return { refuse: 'a carriage return (CR)' };
+    if (command[at] === '\\' && command[at + 1] === '\n' && context[at] !== 'heredoc-quoted') return { refuse: 'a backslash-newline line continuation' };
   }
   const carriesReference = (from, to) => referenceStarts.some((at) => at >= from && at < to);
   const positions = new Map();
@@ -825,12 +836,17 @@ export function planReferences(command, options = {}) {
   // OUR FORMS ONLY. The guard acts on its reference forms and on its literal `op read` words, nothing
   // else: a command carrying none of them is never examined, and passes exactly as written.
   // Only `op read` is our form: `op inject` / `op run` without a reference are not ours (Astra M7).
-  const ours = matches.length > 0 || sequences.some((entry) => entry.verb === 'read') || uncertainBody;
+  const byReference = matches.length > 0 || uncertainBody;
+  const ours = byReference || sequences.some((entry) => entry.verb === 'read');
   if (!ours) return { ok: true, reason: '', occurrences, invocations };
   for (const construct of lexed.constructs) refusals.push(`${construct}, which this guard does not decode`);
   if (!lexed.complete) refusals.push('an incomplete quote, heredoc or substitution');
   if (lexed.uncertain) refusals.push('a heredoc whose end this guard cannot place');
   const allowed = refusals.length ? { positions: new Map() } : allowList(command, lexed, tokens, matches.map((match) => match.index));
+  // With no reference at all, the literal `op read` words are ours only where the allow-list can place
+  // them. Inside shell it does not read - a loop, a case body - they are text, and the command passes
+  // untouched (Astra M6 at f98cf712: `for x in a; do echo op read foo; done` was refused).
+  if (!byReference && (refusals.length || allowed.refuse)) return { ok: true, reason: '', occurrences, invocations };
   if (allowed.refuse) refusals.push(`${allowed.refuse} - beside a secret reference this guard accepts only simple commands with literal command names, joined by ; && || | & or a newline`);
   const consumed = [];
   for (const entry of sequences) {
@@ -847,7 +863,8 @@ export function planReferences(command, options = {}) {
       // (Astra H6 at ca950a58: a second `op read` returned a rotated value no mask knew). So the form
       // must stand where the guard can replace `op` - a command position - and ask only for output
       // the guard can reproduce.
-      if (role === 'command' && validated.reproducible) invocations.push({ ref: validated.ref, account: validated.account, at: entry.at, wordEnd: entry.after, noNewline: validated.noNewline });
+      if (!validated.carried) refusals.push('an `op read` option that changes how 1Password resolves the reference (--config, --session, --cache), which the prefetch does not carry');
+      else if (role === 'command' && validated.reproducible) invocations.push({ ref: validated.ref, account: validated.account, at: entry.at, wordEnd: entry.after, noNewline: validated.noNewline });
       else if (role === 'command') refusals.push('an `op read` flag whose output this guard cannot reproduce from the prefetched value (-o, --out-file, --encoding, --file-mode, --format)');
       else refusals.push(`the literal \`op read\` form ${role === 'wrapped' ? 'behind a wrapper' : 'as an argument'}, where the guard cannot bind the value it prefetched (write it as a command of its own)`);
     } else if (role === 'command' || (role === 'wrapped' && matches.length)) {

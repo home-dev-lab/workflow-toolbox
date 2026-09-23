@@ -117,6 +117,14 @@ const refused = (command, reason, extra = {}) => ({ command, count: 0, reference
 // vault does not hold, so the command is refused instead.
 const unrepresentable = (value) => value.includes('\0') || !value.isWellFormed();
 
+// The variants bash can produce from a bound value in a substitution: `"$(printf ...)"` and every
+// `$( )` remove ALL trailing newlines. Each variant is registered and masked with the value itself
+// (Astra H5 at f98cf712: a prefetch of `value\n\n` reached the output as `value`, unmasked).
+function substitutionVariants(kind, value) {
+  const stripped = value.replace(/\n+$/, '');
+  return stripped && stripped !== value ? [tokenize(kind, stripped)] : [];
+}
+
 export async function rewriteReferences($, command) {
   const plan = planReferences(command, { tokens: knownTokens() });
   if (!plan.ok) return refused(command, plan.reason);
@@ -161,6 +169,8 @@ export async function rewriteReferences($, command) {
       else if (value) substituted.push(tokenize(occurrence.form === 'file' ? 'file' : 'environment', value));
     }
     if (unrepresentable(value)) return refused(command, 'a value holding a NUL byte or an unpaired surrogate, which bash cannot carry unchanged');
+    const kind = occurrence.form === 'op' ? 'onepassword' : occurrence.form === 'file' ? 'file' : occurrence.form === 'env' ? 'environment' : knownTokens().get(occurrence.label)?.kind ?? 'token';
+    if (value) substituted.push(...substitutionVariants(kind, value));
     replacements.push({ start: occurrence.replaceStart, end: occurrence.replaceEnd, value: renderReplacement(occurrence, `\${${bind(value)}}`) });
   }
   // The literal `op read <ref>` form: its `op` word becomes a function that prints the bound value with
@@ -170,7 +180,7 @@ export async function rewriteReferences($, command) {
     const resolved = await opValue(invocation.ref, invocation.account);
     if (!resolved) return prefetchFailed();
     if (unrepresentable(resolved.value)) return refused(command, 'a value holding a NUL byte or an unpaired surrogate, which bash cannot carry unchanged');
-    substituted.push(resolved.token);
+    substituted.push(resolved.token, ...substitutionVariants('onepassword', resolved.value));
     const name = bind(resolved.value);
     const printer = `__wt_op_${index}`;
     bindings.push(`${printer}() { printf '${invocation.noNewline ? '%s' : '%s\\n'}' "\${${name}}"; }; `);
