@@ -43,7 +43,11 @@ function replaceKnown(text, command, includeOptional, substituted) {
   // Only the token itself is exempt: a span overlapping a token and extending past it is CLIPPED to
   // the text outside the token, never dropped whole - dropping it released that outside text (round 13's
   // first version leaked a complete known value that way through the c264f237 stream module, V6).
-  const tokenRanges = [...text.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)].map((match) => [match.index, match.index + match[0].length]);
+  // Only a token this vault ISSUED is exempt: a token-SHAPED string never issued is ordinary text, masked
+  // when it is a known value (Astra at 2618aa81: an environment value spelled `secret:environment#abcdef`
+  // reached the output unmasked because its shape alone exempted it).
+  const issued = knownTokens();
+  const tokenRanges = [...text.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)].filter((match) => issued.has(match[0])).map((match) => [match.index, match.index + match[0].length]);
   for (let at = spans.length - 1; at >= 0; at -= 1) {
     const span = spans[at];
     const inside = tokenRanges.filter(([from, to]) => span.from < to && span.to > from);
@@ -92,7 +96,8 @@ export function scrub(value, command, includeOptional = true, substituted = new 
   if (value && typeof value === 'object') {
     let changed = false; let entropy = 0;
     const result = {};
-    for (const [key, item] of Object.entries(value)) { const next = scrub(item, command, includeOptional, substituted); result[key] = next.value; changed ||= next.changed; entropy += next.entropy; }
+    // defineProperty, not assignment: `result['__proto__'] = …` sets the prototype and drops the field.
+    for (const [key, item] of Object.entries(value)) { const next = scrub(item, command, includeOptional, substituted); Object.defineProperty(result, key, { value: next.value, enumerable: true, writable: true, configurable: true }); changed ||= next.changed; entropy += next.entropy; }
     return { value: result, changed, entropy };
   }
   return { value, changed: false, entropy: 0 };

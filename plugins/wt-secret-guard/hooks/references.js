@@ -33,12 +33,18 @@
 const OP_PATH = /^[\p{L}\p{N}._' -]+(?:\/[\p{L}\p{N}._' -]+){2,3}$/u;
 const BARE_PATH = /^[\p{L}\p{N}._-]+(?:\/[\p{L}\p{N}._-]+){2,3}(?!\/)/u;
 const ENV_NAME = /^[A-Z][A-Z0-9_]*/;
-const FILE_PATH = /^\/[^\s"'#)<>&;|`$\\]+/;
+// Every word/blank decision uses bash's OWN blank set - space, tab and newline - never JavaScript's `\s`,
+// which also holds the vertical tab, the form feed, NBSP and every Unicode space: bash reads those as
+// ordinary word characters (Astra at 2618aa81: `x\v# "$(printf MARK)"` is one word to bash, not a word
+// and a comment, and bash ran the substitution).
+const FILE_PATH = /^\/[^ \t\n"'#)<>&;|`$\\]+/;
 const FILE_LINE = /^#([1-9]\d*)/;
 const VAULT_TOKEN = /^secret:[a-z-]+#[a-f0-9]{6}/i;
 const REFERENCE = /op:\/\/|secret:[A-Za-z0-9_-]+[:#]/g;
-const SEPARATOR = /[\s;|&()<>]/;
-const OP_COMMAND = /^(?:[^\s/]*\/)*op(?:\.exe)?$/;
+const SEPARATOR = /[ \t\n;|&()<>]/;
+const OP_COMMAND = /^(?:[^ \t\n/]*\/)*op(?:\.exe)?$/;
+// Beside our forms a command holds only printable ASCII, space, tab and newline (see allowList).
+const OUTSIDE_ALLOWED_BYTES = /[^\x20-\x7e\t\n]/u;
 const OP_VERBS = new Set(['read', 'inject', 'run']);
 const VALUE_FLAGS = new Set(['--account', '-o', '--out-file', '--encoding', '--file-mode', '--format', '--session', '--config']);
 const BOOLEAN_FLAGS = new Set(['-n', '--no-newline', '-f', '--force', '--no-color', '--cache']);
@@ -105,6 +111,9 @@ const WRAPPERS = {
   ionice: { short: { c: 1, n: 1, t: 0, p: 'none', P: 'none', u: 'none' }, long: { class: 1, classdata: 1, ignore: 0, pid: 'none', pgid: 'none', uid: 'none' } },
   taskset: { short: { a: 0, c: 0, p: 'none' }, long: { 'all-tasks': 0, 'cpu-list': 0, pid: 'none' }, operands: 1 },
 };
+// Own properties only: a command named `toString` or `constructor` read the inherited method as a
+// wrapper spec and threw on the reference-free path (Astra at 2618aa81).
+const wrapperSpec = (name) => (Object.hasOwn(WRAPPERS, name) ? WRAPPERS[name] : undefined);
 const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir']);
 
 const quoteForSingleQuotes = (value) => value.replace(/'/g, "'\"'\"'");
@@ -396,7 +405,7 @@ function validateOpRead(words) {
 }
 
 function templateDestination(command) {
-  return /(?:>{1,2}|\btee(?:\s+-\w+)*)\s*(?:"[^"\n]*\.tpl"|'[^'\n]*\.tpl'|[^\s;|&]+\.tpl)(?=\s|$|[;|&])/m.test(command);
+  return /(?:>{1,2}|\btee(?:[ \t]+-\w+)*)[ \t]*(?:"[^"\n]*\.tpl"|'[^'\n]*\.tpl'|[^ \t\n;|&]+\.tpl)(?=[ \t\n]|$|[;|&])/m.test(command);
 }
 
 function shellTokens(command, context, escapes) {
@@ -523,7 +532,7 @@ function wordKind(command, context, from, to) {
       // Strict: a `$` is accepted only as `$NAME`, `${NAME}`, or a literal `$` before a blank or the
       // closing quote. Anything else is an expansion - `$[...]` arithmetic among them (Astra at
       // f98cf712: `"$[A]"` with A holding `a[$(cmd)]` ran cmd).
-      if (!/^\$(?:[\s"]|$)/.test(rest)) return { refuse: rest[1] === '{' ? 'a ${...} expansion with an operator' : rest[1] === '(' ? 'a command substitution' : rest[1] === '[' ? 'a $[...] arithmetic expansion' : 'a special parameter or expansion ($1, $@, $?, $[...])' };
+      if (!/^\$(?:[ \t\n"]|$)/.test(rest)) return { refuse: rest[1] === '{' ? 'a ${...} expansion with an operator' : rest[1] === '(' ? 'a command substitution' : rest[1] === '[' ? 'a $[...] arithmetic expansion' : 'a special parameter or expansion ($1, $@, $?, $[...])' };
       continue;
     }
     return { refuse: 'an expansion this guard does not accept ($(...), ${...} with an operator, backticks)' };
@@ -568,7 +577,7 @@ function wrapperOption(entry, text) {
 // operand or an assignment whose text is expanded (`"$T"` holding `--kill-after=1`, measured by Astra
 // at ca950a58) moves the command position where the guard cannot see it.
 function wrapperCommand(words, from, name, filled) {
-  const spec = WRAPPERS[name];
+  const spec = wrapperSpec(name);
   const entry = { name, spec, phase: 'options', left: spec.operands ?? 0, pending: false, replace: null };
   // Each branch that consumes a word as something OTHER than the command checks it is plain - and,
   // under find -exec, not built from `{}`, which find fills from a file name.
@@ -632,7 +641,7 @@ function commandHead(words, from, positions, role, filled) {
   if (name.text.replace(/^.*\//, '') === 'xargs') return '`xargs`, whose input becomes words of the command it runs';
   positions.set(name.start, role);
   const base = name.text.replace(/^.*\//, '');
-  if (WRAPPERS[base]) {
+  if (wrapperSpec(base)) {
     const found = wrapperCommand(words, at + 1, base, filled);
     if (found.refuse) return found.refuse;
     if (found.none) return null;
@@ -673,8 +682,16 @@ function allowList(command, lexed, tokens, referenceStarts) {
   // Bash's line continuation and a carriage return change what a word is AFTER the guard has read it:
   // `ti\\` + newline + `me` is the keyword `time`, and `EOF\r` is a different heredoc delimiter
   // (Astra at f98cf712). Strict: neither is accepted, except inside a quoted heredoc body, which is text.
+  // Beside our forms only printable ASCII, space, tab and newline, ANYWHERE - words, quotes, heredoc
+  // delimiters and bodies: a vertical tab, a form feed, NBSP or any other Unicode space or control is a
+  // word character to bash and a blank to JavaScript (Astra at 2618aa81), and a CR changes a heredoc
+  // delimiter (Astra at f98cf712). Strict: none is accepted, rather than each being modelled.
+  const outside = OUTSIDE_ALLOWED_BYTES.exec(command);
+  if (outside) {
+    const point = outside[0].codePointAt(0);
+    return { refuse: `a character outside printable ASCII, space, tab and newline (U+${point.toString(16).toUpperCase().padStart(4, '0')})` };
+  }
   for (let at = 0; at < command.length; at += 1) {
-    if (command[at] === '\r') return { refuse: 'a carriage return (CR)' };
     if (command[at] === '\\' && command[at + 1] === '\n' && context[at] !== 'heredoc-quoted') return { refuse: 'a backslash-newline line continuation' };
   }
   const carriesReference = (from, to) => referenceStarts.some((at) => at >= from && at < to);
@@ -830,7 +847,11 @@ export function planReferences(command, options = {}) {
   // A heredoc body is text only when the guard knows where it ends. When it cannot place that end - an
   // unterminated body, a delimiter it does not decode - a reference it would call "body" may be a
   // command line to bash, so such a command counts as using our forms and is refused.
-  const uncertainBody = inBodies > 0 && (!lexed.complete || lexed.uncertain);
+  // A byte outside printable ASCII, space, tab and newline makes the placement uncertain too: the guard
+  // models bash's reading of those bytes nowhere (a vertical tab or a CR in a delimiter, a NUL that ends
+  // the string a process receives), so a form it would call "body" beside one counts as ours - and the
+  // allow-list then refuses the byte (Astra at 2618aa81; "heredoc delimiters and bodies included").
+  const uncertainBody = inBodies > 0 && (!lexed.complete || lexed.uncertain || OUTSIDE_ALLOWED_BYTES.test(command));
   const tokens = shellTokens(command, lexed.context, lexed.escapes);
   const sequences = opSequences(tokens);
   // OUR FORMS ONLY. The guard acts on its reference forms and on its literal `op read` words, nothing

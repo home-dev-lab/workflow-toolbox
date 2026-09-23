@@ -177,7 +177,9 @@ export async function rewriteReferences($, command) {
   // op read's own output contract - a trailing newline unless -n / --no-newline. Its flags, its
   // redirections and its place in a pipeline or a "$( )" stay exactly as written.
   for (const [index, invocation] of plan.invocations.entries()) {
-    const resolved = await opValue(invocation.ref, invocation.account);
+    // The configured account applies exactly as to a bare reference when the command names none
+    // (Astra at 2618aa81: `op read <ref>` prefetched without the configured --account).
+    const resolved = await opValue(invocation.ref, invocation.account || account);
     if (!resolved) return prefetchFailed();
     if (unrepresentable(resolved.value)) return refused(command, 'a value holding a NUL byte or an unpaired surrogate, which bash cannot carry unchanged');
     substituted.push(resolved.token, ...substitutionVariants('onepassword', resolved.value));

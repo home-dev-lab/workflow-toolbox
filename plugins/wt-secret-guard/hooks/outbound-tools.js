@@ -42,7 +42,10 @@ function pushStringFindings(found, value, key, path, options) {
   // f98cf712). An occurrence that straddles a token-shaped run is still raw text and stays flagged
   // (round 13's first version blanked the token and lost the straddling value). Only tokens are exempt -
   // a raw value wrapped in an `op://...`-looking string stays refused (V1).
-  const tokenRanges = [...value.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/gi)].map((match) => [match.index, match.index + match[0].length]);
+  // Only a token this vault ISSUED is exempt; a token-shaped string never issued is raw text (Astra at
+  // 2618aa81: a Write carrying a known value spelled like a token produced no finding).
+  const issued = knownTokens();
+  const tokenRanges = [...value.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)].filter((match) => issued.has(match[0])).map((match) => [match.index, match.index + match[0].length]);
   const outsideTokens = (needle) => {
     for (let at = value.indexOf(needle); at >= 0; at = value.indexOf(needle, at + 1)) {
       if (!tokenRanges.some(([from, to]) => at >= from && at + needle.length <= to)) return true;
@@ -74,9 +77,11 @@ function findingsIn(value) {
 }
 
 export async function classifyOutbound(_host, event) {
-  const surface = event.tool?.startsWith('mcp__') ? 'mcp' : SURFACE[event.tool];
+  // Own properties only: a tool named `toString` read the inherited method as its surface (Astra at 2618aa81).
+  const own = (table, key) => (typeof key === 'string' && Object.hasOwn(table, key) ? table[key] : undefined);
+  const surface = event.tool?.startsWith('mcp__') ? 'mcp' : own(SURFACE, event.tool);
   if (!surface) return { surface: null, findings: [] };
-  const fields = OUTBOUND_FIELDS[event.tool];
+  const fields = own(OUTBOUND_FIELDS, event.tool);
   const input = Object.fromEntries(Object.entries(event).filter(([key]) => fields ? fields.has(key) : !['tool', 'tool_use_id', 'agentId'].includes(key)));
   return { surface, findings: findingsIn(input) };
 }

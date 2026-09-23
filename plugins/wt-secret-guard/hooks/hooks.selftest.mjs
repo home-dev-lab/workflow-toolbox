@@ -239,7 +239,9 @@ await test('op resolver pure helpers cover defaults, account selection, deduplic
     'op://other/item/password',
   ]);
   assert.deepEqual(opReferencesIn(null), []);
-  assert.equal(opValueFrom({ stdout: 'value\r\n' }), 'value');
+  assert.equal(opValueFrom({ exitCode: 0, stdout: 'value\r\n' }), 'value');
+  // Fail closed: a result that does not say it succeeded carries no value (round 14).
+  assert.equal(opValueFrom({ stdout: 'value\r\n' }), '');
   assert.equal(opValueFrom(), '');
 });
 await test('output scrub and distinct tokens', async () => { const result = await call('x', `${github}\n${aws}`); assert(!JSON.stringify(result).includes(github)); assert(!JSON.stringify(result).includes(aws)); const entries = [...testState().values()]; assert(entries.some((entry) => entry.kind === 'github-classic')); assert(entries.some((entry) => entry.kind === 'aws-access-key')); });
@@ -2627,7 +2629,8 @@ await test('V46 beside our forms: no continuation, no CR, no $[ ], keywords deco
   const result = await bash($, { tool: 'Bash', command: quoted }, async (event) => { received = event.command; return { text: 'ok' }; });
   assert.equal(result?.deny, undefined, `a continuation inside a quoted heredoc body was refused: ${result?.deny}`);
   assert.ok(received, 'a continuation inside a quoted heredoc body did not run');
-  // Any token-shaped text - issued or not - is left alone by the scrub.
+  // Token-shaped text that is neither an issued token nor a known value nor a detection stays as written
+  // (round 14: only ISSUED tokens are exempt; V47 locks a never-issued token-shaped known value).
   const { scrub } = await import('./scrub.js');
   for (const text of ['see secret:environment#a64479 here', 'secret:onepassword#abcdef', 'a secret:file#012345:rest']) assert.equal(scrub(text, '').value, text, `token-shaped text was rewritten: ${text}`);
   // Every bound value is registered with the variant a substitution produces: trailing newlines removed.
@@ -2643,6 +2646,160 @@ await test('V46 beside our forms: no continuation, no CR, no $[ ], keywords deco
   const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) argvs.push(argv); return $.process.run(argv, init); } } };
   await bash(runtime, { tool: 'Bash', command: `op --account=team read '${V45_REF('v46-account')}'` }, async () => ({ text: 'ok' }));
   assert.deepEqual(argvs.at(-1), ['op', 'read', '--account', 'team', V45_REF('v46-account')], 'the account was not carried into the prefetch');
+});
+await test('V47 the verify12 bypasses and failures are closed', async () => {
+  // GPT-6 Astra at 2618aa81. Every input collected, so one red shows them all.
+  testEnv.set('WT_V47_X', 'review-marker');
+  const form = 'secret:env:WT_V47_X';
+  const failures = [];
+  const hook = async (command, runtime = $, output = 'ok') => {
+    let received;
+    const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return typeof output === 'function' ? output(event.command) : { text: output }; });
+    return { result, received };
+  };
+  const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+  // 1 + 2: a vertical tab is not a blank to bash; beside our forms it is refused, in words and heredocs.
+  for (const [finding, command] of [
+    ['1', `printf %s ${form} x\u000b# "$(printf MARK)"`],
+    ['2', `cat <<EOF\u000b\nEOF\nprintf %s ${form}\nEOF\u000b`],
+    ['2', `cat <<EOF\u000b\nEOF\u000b\nprintf %s "$(printf MARK)" ${form}\nEOF`],
+  ]) {
+    const { result, received } = await hook(command, $, execute);
+    if (received !== undefined) failures.push(`${finding} executed: ${JSON.stringify(command)} -> ${JSON.stringify(execute(received).text)}`);
+    else if (!/refused/i.test(result?.deny ?? '')) failures.push(`${finding} not refused: ${JSON.stringify(command)}`);
+  }
+  // 3: a known value spelled like a token that was never issued is masked, and flagged outbound.
+  {
+    const value = 'secret:environment#a47c3e';
+    testEnv.set('WT_V47_TOKENISH', value);
+    const { result } = await hook('printf %s secret:env:WT_V47_TOKENISH', $, execute);
+    if (result?.deny) failures.push(`3 refused: ${result.deny}`);
+    else if (JSON.stringify(result).includes(value)) failures.push('3 a token-shaped known value that was never issued reached the output unmasked');
+    const outbound = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v47-tokenish.txt', content: `note ${value}` });
+    if (!outbound.findings.some((finding) => finding.secret === value)) failures.push(`3 a token-shaped known value that was never issued was not flagged outbound: ${JSON.stringify(outbound.findings)}`);
+  }
+  // 4: the reference-free path never throws on a name the lookup tables inherit.
+  for (const command of ['toString --foo op read foo', 'constructor op read foo']) {
+    try {
+      const { result, received } = await hook(command);
+      if (result?.deny || received !== command) failures.push(`4 a reference-free command was refused or rewritten: ${JSON.stringify(command)} -> ${result?.deny}`);
+    } catch (error) { failures.push(`4 threw on ${JSON.stringify(command)}: ${error.name}`); }
+  }
+  // 5: the configured account applies to the literal op read form exactly as to a bare reference.
+  {
+    const argvs = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) argvs.push(argv); return $.process.run(argv, init); } } };
+    configure({ opAccount: 'configured-team' });
+    try {
+      await hook(`op read '${V45_REF('v47-account-literal')}'`, runtime);
+      await hook(`printf %s ${V45_REF('v47-account-bare')}`, runtime);
+      await hook(`op read --account other-team '${V45_REF('v47-account-explicit')}'`, runtime);
+    } finally { configure({}); }
+    const find = (item) => argvs.find((argv) => argv.includes(V45_REF(item)));
+    if (!find('v47-account-literal')?.includes('configured-team')) failures.push(`5 the configured account was not carried for the literal op read form: ${JSON.stringify(find('v47-account-literal'))}`);
+    if (!find('v47-account-bare')?.includes('configured-team')) failures.push(`5 the configured account was not carried for a bare reference: ${JSON.stringify(find('v47-account-bare'))}`);
+    if (!find('v47-account-explicit')?.includes('other-team') || find('v47-account-explicit')?.includes('configured-team')) failures.push(`5 an explicit --account did not win over the configured one: ${JSON.stringify(find('v47-account-explicit'))}`);
+  }
+  // 6: a prefetch whose op exit status is not 0 is a failure, whatever its stdout.
+  {
+    const runtime = { ...$, process: { run: async (argv, init) => (/^op(?:\.exe)?$/.test(argv[0]) ? { exitCode: 1, stdout: 'partial-failed-result\n' } : $.process.run(argv, init)) } };
+    for (const command of [`op read '${V45_REF('v47-failure-literal')}'`, `printf %s ${V45_REF('v47-failure-bare')}`]) {
+      const { result, received } = await hook(command, runtime, execute);
+      if (received !== undefined) failures.push(`6 a failed prefetch was used: ${JSON.stringify(command)}`);
+      else if (!/could not be prefetched/.test(result?.deny ?? '')) failures.push(`6 a failed prefetch was refused for another reason: ${result?.deny}`);
+    }
+    if (opValueFrom({ exitCode: 1, stdout: 'partial-failed-result\n' }) !== '') failures.push('6 opValueFrom returned a value for a non-zero exit');
+  }
+  assert.deepEqual(failures, [], 'verify12 findings remain');
+});
+// Every code point bash does not read as a blank but JavaScript's \s, a Unicode space class or a control
+// class covers - plus every other control - beside our forms, in every position: refused. Without our
+// forms the same bytes pass untouched.
+const V48_CODE_POINTS = (() => {
+  const points = [];
+  for (let cp = 0; cp <= 0x10ffff; cp += 1) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    if ((cp >= 0x20 && cp <= 0x7e) || cp === 0x09 || cp === 0x0a) continue;
+    const character = String.fromCodePoint(cp);
+    if (cp < 0xa0 || /\s/u.test(character) || /[\p{Cc}\p{Cf}\p{Zs}\p{Zl}\p{Zp}]/u.test(character)) points.push(cp);
+  }
+  return points;
+})();
+await test('V48 beside our forms every byte outside printable ASCII, space, tab and newline is refused, in every position', async () => {
+  const { planReferences } = await import('./references.js');
+  const form = 'secret:env:GH_TOKEN';
+  assert.ok(V48_CODE_POINTS.length > 200 && V48_CODE_POINTS.includes(0x0b) && V48_CODE_POINTS.includes(0xa0) && V48_CODE_POINTS.includes(0x3000) && V48_CODE_POINTS.includes(0xfeff), 'the generated table misses a known member');
+  const accepted = [];
+  const touched = [];
+  for (const cp of V48_CODE_POINTS) {
+    const c = String.fromCodePoint(cp);
+    const name = `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`;
+    for (const command of [
+      `printf %s ${form} x${c}# "$(printf MARK)"`, `printf %s${c}${form}`, `printf %s ${form}${c}`, `printf '%s${c}' ${form}`, `printf %s "${c}" ${form}`,
+      `cat <<EOF${c}\nEOF\nprintf %s ${form}\nEOF${c}`, `cat <<EOF${c}\nEOF${c}\nprintf %s ${form}\nEOF`, `cat <<'EOF'\n${c}\nEOF\nprintf %s ${form}`,
+      `${c}printf %s ${form}`, `printf %s ${form};${c}true`,
+    ]) {
+      if (planReferences(command).ok) accepted.push(`${name} ${JSON.stringify(command)}`);
+    }
+    for (const command of [`printf %s x${c}y`, `echo op read foo${c}bar`]) {
+      const plan = planReferences(command);
+      if (!plan.ok || plan.occurrences.length || plan.invocations.length) touched.push(`${name} ${JSON.stringify(command)}`);
+    }
+    // A form the guard would call a heredoc-body mention, beside such a byte, cannot be placed with
+    // certainty: it counts as ours and is refused - never rewritten, never passed as a mention.
+    for (const command of [`cat <<EOF${c}\nsee ${form}\nEOF${c}`, `cat <<'EOF'\nsee ${form}${c}\nEOF`]) {
+      if (planReferences(command).ok) accepted.push(`${name} body mention ${JSON.stringify(command)}`);
+    }
+  }
+  // The lexer itself reads bash's blank set, independently of the refusal above: none of these code
+  // points separates a word, so `x<c>#` is one word (no comment) and `<<EOF<c>` names the delimiter `EOF<c>`.
+  const { lex } = await import('./references.js');
+  const misread = [];
+  for (const cp of V48_CODE_POINTS) {
+    if (cp === 0) continue;
+    const c = String.fromCodePoint(cp);
+    const comment = `printf x${c}#y`;
+    if (lex(comment).context[comment.indexOf('#')] !== 'bare') misread.push(`U+${cp.toString(16)} read as a blank before #`);
+    const heredoc = `cat <<EOF${c}\nEOF\nbody\nEOF${c}\n`;
+    if (lex(heredoc).context[heredoc.indexOf('body')] !== 'heredoc') misread.push(`U+${cp.toString(16)} ended the heredoc delimiter`);
+  }
+  assert.deepEqual(misread.slice(0, 20), [], `${misread.length} code points were read as bash blanks by the lexer`);
+  assert.deepEqual(accepted.slice(0, 20), [], `${accepted.length} commands carrying a non-blank space or control beside our form were accepted`);
+  assert.deepEqual(touched.slice(0, 20), [], `${touched.length} reference-free commands were refused or rewritten`);
+});
+await test('V49 no lookup in the guard answers for an inherited property name', async () => {
+  const { planReferences } = await import('./references.js');
+  const { scrub } = await import('./scrub.js');
+  const names = ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString', '__defineGetter__', '__lookupGetter__'];
+  const failures = [];
+  const form = 'secret:env:GH_TOKEN';
+  for (const name of names) {
+    // Reference-free: never throws, never touched.
+    for (const command of [`${name} --foo op read foo`, `${name} op read foo`, `env ${name} op read foo`, `timeout 5 ${name} --x op read foo`, `/usr/bin/${name} -x op read foo`, `env --${name} op read foo`, `nice -${name[0]} op read foo`]) {
+      try {
+        const plan = planReferences(command);
+        if (!plan.ok || plan.occurrences.length || plan.invocations.length) failures.push(`plan touched ${JSON.stringify(command)}`);
+        let received;
+        const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+        if (result?.deny || received !== command) failures.push(`hook touched ${JSON.stringify(command)}: ${result?.deny}`);
+      } catch (error) { failures.push(`threw on ${JSON.stringify(command)}: ${error.name}`); }
+    }
+    // Beside our form: a decision, never a throw.
+    for (const command of [`${name} --foo printf %s ${form}`, `env --${name} printf %s ${form}`, `timeout --${name} 5 printf %s ${form}`, `printf %s ${form} | ${name}`]) {
+      try { planReferences(command); } catch (error) { failures.push(`threw beside a form on ${JSON.stringify(command)}: ${error.name}`); }
+    }
+    // Outbound classification by tool name.
+    for (const tool of [name, `mcp__fixture__${name}`]) {
+      try { await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool, [name]: 'x' }); } catch (error) { failures.push(`outbound threw for tool ${tool}: ${error.name}`); }
+    }
+    // Scrubbing an object keeps a key named like an inherited property as an own field.
+    const input = JSON.parse(`{"${name}": "kept-${name}", "other": "value"}`);
+    try {
+      const output = scrub(input, '').value;
+      if (!Object.hasOwn(output, name) || output[name] !== `kept-${name}`) failures.push(`scrub lost the own field ${name}`);
+    } catch (error) { failures.push(`scrub threw on key ${name}: ${error.name}`); }
+  }
+  assert.deepEqual(failures, [], 'a lookup answered for an inherited property name');
 });
 // V34 runs late on purpose: it registers about 2,300 values in the vault, and every later Bash-hook
 // call walks the whole vault - run before V38 it made V38 7 s and pushed the shipped-plugins vitest

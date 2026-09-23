@@ -42,7 +42,7 @@ const PROVIDER_KEY_PAGES = {
 };
 
 function inboundNotice(found) {
-  const pages = [...new Set(found.map(({ kind }) => PROVIDER_KEY_PAGES[kind]).filter(Boolean))];
+  const pages = [...new Set(found.map(({ kind }) => (Object.hasOwn(PROVIDER_KEY_PAGES, kind) ? PROVIDER_KEY_PAGES[kind] : undefined)).filter(Boolean))];
   const provider = pages.length ? ` Provider key page${pages.length === 1 ? '' : 's'}: ${pages.join(', ')}.` : '';
   return `[wt-secret-guard: A credential was detected in this message. Its value has been withheld from this session to stop us from spreading it. This cannot unsend anything; the only remedy is revocation.${provider}]`;
 }
