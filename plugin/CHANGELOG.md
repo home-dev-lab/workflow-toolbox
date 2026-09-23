@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Disable `secret:env:NAME` in `wt-secret-guard`: Claude Code refuses a whole hooks module whose `$.env.get` takes a non-literal name, so the guard loaded nothing in any real session while it read arbitrary variables. A command carrying the form is now refused with that reason and a pointer to `secret:file` or a 1Password reference; the form returns only with a design that names its variables literally. The toolkit suite now runs `claude plugin validate --strict` on every shipped plugin where the binary is available
 - Refactor the adopt installer into bounded parsing, settings, audit, managed-item, migration, and command seams while preserving its standalone CLI transcripts and file effects; settings verification now also proves the exact prerequisite values before publication
 - Split Secret Guard hooks by responsibility and add warn-only secret-file read measurement for original Bash input, Read, and NotebookRead with value-free per-session journals
 - Refuse raw secret-bearing MCP, Bash, Write, Edit, and NotebookEdit inputs; repair denied transcript inputs in place by tool-use identifier; mask visible assistant streams; warn on SessionStart replay; and preserve journal records across module reloads
