@@ -2,8 +2,9 @@
 const INDEPENDENT_ROLES = { critic: 'critic', review: 'reviewer', refutation: 'refuter' }
 const PLAN_STAGE_SEVERITY_POLICY = `
 Severity policy:
-- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking] The plan omits the required rollback test.\`
+- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking][anchor: DoD 1][location: plan.md:20] The plan omits the required rollback test.\`
 - A defect that a test the plan already schedules would catch is non-blocking. Use \`[non-blocking]\` for it and for optional wording, style, or polish that changes nothing the DoD checks. Non-blocking example: \`[non-blocking] Rephrase the introduction for brevity.\`
+- You MUST find issues. If one plan section yields no finding, account for what you attacked and why nothing holds under \`## No-finding attack account\`. A zero-finding report without that per-section account is a failed critic round and is re-run once.
 
 ## Coverage checklist
 
@@ -20,12 +21,16 @@ function fenced(content) {
 
 export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none' }) {
   const verdict = phase === 'critic' ? 'approved|changes-requested' : 'clear|changes-requested'
-  const severityPolicy = phase === 'critic' ? PLAN_STAGE_SEVERITY_POLICY : ''
-  const priorRoundsSection = phase === 'critic' && priorRounds.length > 0
+  const severityPolicy = phase === 'critic' ? PLAN_STAGE_SEVERITY_POLICY : `
+Severity policy:
+- CRITICAL, HIGH, and MEDIUM block only when the finding names the DoD criterion or plan task it serves. LOW never blocks. An unanchored finding never blocks.
+- Use \`[CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <finding>\`.
+`
+  const priorRoundsSection = priorRounds.length > 0
     ? `
 ## Prior rounds (runner-owned, trusted)
 
-These findings come from prior critic reports attested by the runner. You may not reopen a point a prior round demanded, or reverse a prior round's accepted position, unless you cite new evidence.
+These findings come from prior ${phase} reports attested by the runner. You may not reopen a point a prior round demanded, or reverse a prior round's accepted position, unless you cite new evidence. A finding may use \`extends prior finding <n>\`; the runner counts that declaration as recurrence.
 
 ${priorRounds.map(({ round, findings }) => `### Round ${round}\n${findings.map((finding) => `- ${finding}`).join('\n')}`).join('\n\n')}
 `
@@ -48,7 +53,7 @@ ${rules ? `\n## Rules that apply to this role (authoritative)\n\n${rules}\n` : '
 ## Artefacts to judge
 
 ${artifacts.map((artifact) => `- \`${artifact}\``).join('\n')}
-${constructionBase ? `\nThe prospective implementation patch is \`${artifacts[0]}\`, computed against construction base \`${constructionBase}\`.` : ''}
+${constructionBase ? `\nThe prospective implementation patch is \`${artifacts[0]}\`, computed against ${phase === 'review' && priorRounds.length > 0 ? 'the fix since previously reviewed tree' : 'construction base'} \`${constructionBase}\`.` : ''}
 ${snapshotDir ? `\nThese are read-only launch inputs in the runner-owned snapshot directory \`${snapshotDir}\`.` : ''}
 ${discoverySection}
 
@@ -63,7 +68,7 @@ ${severityPolicy}
 
 VERDICT: <${verdict}>
 FINDINGS:
-${phase === 'critic' ? '- [blocking|non-blocking] <one finding per line when changes-requested>' : '- <one finding per line when changes-requested>'}
+${phase === 'critic' ? '- [blocking|non-blocking][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>' : '- [CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>'}
 ${planDigest ? `\nThe critic report must include this line verbatim: plan sha256: ${planDigest}\n` : ''}`
 }
 

@@ -42,14 +42,18 @@ function combinedCriticReport(reports) {
     const lines = findingsText.split(/\r?\n/)
     const sectionEnd = lines.findIndex((line) => /^#/.test(line))
     const findings = (sectionEnd < 0 ? lines : lines.slice(0, sectionEnd)).map(reportFinding).filter(Boolean)
-    return { outcome, findings }
+    const attackAccount = /(?:^|\n)## No-finding attack account\s*\r?\n\s*\S[\s\S]*?(?=\r?\n## |$)/i.exec(content)?.[0].trim() ?? null
+    return { outcome, findings, attackAccount }
   })
   if (parsed.some((report) => !report.outcome || report.outcome === 'changes-requested' && report.findings.length === 0)) return null
   const findings = [...new Set(parsed.flatMap((report) => report.findings))]
   const outcome = parsed.every((report) => report.outcome === 'approved') ? 'approved' : 'changes-requested'
   const digest = reports.map((content) => /^plan sha256:\s*[a-f0-9]{64}\s*$/mi.exec(content)?.[0]).find(Boolean)
   const findingLines = findings.map((finding) => `- ${finding}`).join('\n')
-  return `VERDICT: ${outcome}\nFINDINGS:\n${findingLines}${findings.length ? '\n' : ''}${digest ?? ''}\n`
+  const attackAccount = outcome === 'approved' && parsed.every((report) => report.attackAccount)
+    ? `\n## No-finding attack account\n${parsed.map((report, index) => `### Lane ${index + 1}\n${report.attackAccount.replace(/^## No-finding attack account\s*/i, '').trim()}`).join('\n\n')}\n`
+    : ''
+  return `VERDICT: ${outcome}\nFINDINGS:\n${findingLines}${findings.length ? '\n' : ''}${digest ?? ''}\n${attackAccount}`
 }
 
 function criticLaneLaunchIdentity(laneId, executorEnv) {

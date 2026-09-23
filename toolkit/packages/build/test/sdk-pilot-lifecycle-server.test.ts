@@ -833,6 +833,7 @@ printf 'report\n' > "$report"
     const recordedInput = `${recordedBrief}.diff`
     roots.push(recordedBrief, recordedInput)
     const worker = rawLauncher(`import { spawn } from 'node:child_process'; import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const text=readFileSync(brief,'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(text)[1]; if (text.includes('independent reviewer')) { writeFileSync(join(root,'.lane/review-brief.md'),'forged brief\\n'); writeFileSync(join(root,'.lane/review-input.diff'),'forged diff\\n'); await new Promise((resolve)=>setTimeout(resolve,40)); writeFileSync(${JSON.stringify(recordedBrief)},readFileSync(brief)); const input=/prospective implementation patch is \`([^\`]+)\`/.exec(text)[1]; writeFileSync(${JSON.stringify(recordedInput)},readFileSync(input)); writeFileSync(report,'VERDICT: clear\\nFINDINGS:\\n'); } else if (text.includes('independent critic')) { const digest=/plan sha256: ([a-f0-9]{64})/.exec(text)[1]; writeFileSync(report,'VERDICT: approved\\nFINDINGS:\\nplan sha256: '+digest+'\\n'); } else writeFileSync(report,'report\\n'); const child=spawn('sleep',['600'],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
+    writeFileSync(worker, readFileSync(worker, 'utf8').replace("+'\\n'); } else", "+'\\n\\n## No-finding attack account\\n- Tasks: attacked all tasks; no defect held.\\n'); } else"))
     const git = (_program: string, args: string[]) => args[0] === 'status'
       ? ' M changed.txt\n'
       : args[0] === 'diff' && args.includes('--binary')
@@ -1276,7 +1277,7 @@ printf 'report\n' > "$report"
     await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
     await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8'))
-      .toContain('- [blocking|non-blocking] <one finding per line when changes-requested>')
+      .toContain('- [blocking|non-blocking][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>')
     const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
     expect(brief).toContain('the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item')
     expect(brief).toContain('A defect that a test the plan already schedules would catch is non-blocking.')
@@ -1802,6 +1803,9 @@ function criticSequenceLauncher(rounds: string[][]) {
   return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const round=(brief.match(/^### Round /gm)||[]).length; const rounds=${JSON.stringify(rounds)}; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n'+rounds[round].join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function dualCriticLauncher(reports: readonly (readonly [string, readonly string[]])[]) {
+  if (reports.every(([outcome]) => outcome === 'approved')) {
+    return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; writeFileSync(report,'VERDICT: approved\\nFINDINGS:\\nplan sha256: '+digest+'\\n\\n## No-finding attack account\\n- Tasks: attacked all tasks; no defect held.\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
+  }
   return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const index=process.env.WT_LANE_SUPERVISION_SLOT.endsWith('-A')?0:1; const configured=${JSON.stringify(reports)}[index]; writeFileSync(report,'VERDICT: '+configured[0]+'\\nFINDINGS:\\n'+configured[1].map((finding)=>'- '+finding).join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function criticOversizeLauncher() {

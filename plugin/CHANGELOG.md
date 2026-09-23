@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 - Refactor the adopt installer into bounded parsing, settings, audit, managed-item, migration, and command seams while preserving its standalone CLI transcripts and file effects; settings verification now also proves the exact prerequisite values before publication
+- SDK pilot review loops now require criterion/task anchors, block only anchored MEDIUM-or-higher findings, route LOW and unanchored findings, review only each later harden diff with prior findings, and stop after three rounds with an explicit question for the parent; critic extensions count as recurrence and empty critics must account for their attacks or retry once
 
 ### Fixed
 - `wt-deep-search` (EXPERIMENTAL): a deep search started with no Exa key and no opencode on PATH is refused at once, naming both remedies and saying ordinary web search still works, instead of returning a handle that fails nine seconds later with a bare exit status; a missing Exa key is recorded as missing, a refused key as refused, and an opencode not-found failure names the program to install
