@@ -71,6 +71,8 @@ describe('shipped private plugins', () => {
       'V40 the verify9 bypasses never run a command using our forms',
       'V41 a token identifies exactly one value: no collision overwrites a vault entry',
       'V42 beside our forms only the allow-list grammar runs; without our forms every command passes byte-identical',
+      'V43 the verify10 bypasses and masking failures are closed',
+      'V44 beside our forms a word whose role or expansion is uncertain is refused',
       'op reference in a sed search pattern is left literal',
       'op reference inside a larger quoted string is left literal',
       'already substituted op reference is not rewritten again',

@@ -289,17 +289,27 @@ await test('malformed concealed JSON does not throw and scrubs its value', async
   assert.equal(failSafe.text.includes('IMPRECISEFAKEKEY0123456789'), false, 'imprecise concealed JSON fragment reached the tool result');
 });
 await test('token round-trip binds decoded data without inserting raw shell source', async () => { const [token, entry] = [...testState()][0]; let received; await bash($, { tool: 'Bash', command: `printf %s ${token}` }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received.includes(entry.value), false); assert.match(received, /base64 --decode/); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, entry.value); });
-await test('op reference rewrite with shell quoting', async () => { let received; const result = await bash($, { tool: 'Bash', command: 'echo "op://Private/O\'Brien/token"' }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, "echo \"$(op read 'op://Private/O'\"'\"'Brien/token')\""); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
-await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); let received; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { received = event.command; return { text: 'ok' }; }); configure({}); assert.equal(received, "echo \"$(op read --account 'my.1password.com' 'op://Private/item/field')\""); let plain; await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { plain = event.command; return { text: 'ok' }; }); assert.equal(plain, "echo \"$(op read 'op://Private/item/field')\""); });
+// Round 12: an op:// reference is prefetched once and BOUND into the command as data; the command
+// itself never runs `op`. These helpers read the command part of a rewrite and the prefetch argv.
+const commandPart = (rewritten) => rewritten.split(/readonly __wt_secret_\d+; /).at(-1);
+const prefetchArgv = async (command) => {
+  const argvs = [];
+  const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) argvs.push(argv); return $.process.run(argv, init); } } };
+  let received;
+  const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+  return { received, argvs, result };
+};
+await test('op reference rewrite with shell quoting', async () => { const { received, argvs, result } = await prefetchArgv('echo "op://Private/O\'Brien/token"'); assert.equal(commandPart(received), 'echo "${__wt_secret_0}"'); assert.deepEqual(argvs.at(-1), ['op', 'read', "op://Private/O'Brien/token"], 'the quote in the reference did not reach the prefetch argv intact'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n'); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
+await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); const withAccount = await prefetchArgv('echo op://Private/item/field-account'); configure({}); assert.deepEqual(withAccount.argvs.at(-1), ['op', 'read', '--account', 'my.1password.com', 'op://Private/item/field-account']); assert.equal(commandPart(withAccount.received), 'echo "${__wt_secret_0}"'); const plain = await prefetchArgv('echo op://Private/item/field-plain'); assert.deepEqual(plain.argvs.at(-1), ['op', 'read', 'op://Private/item/field-plain']); });
 await test('a value resolved through op:// is scrubbed from the result even when it matches no pattern', async () => { const result = await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw' }, async () => ({ result: { stdout: 'op-fake-value\n', stderr: '' }, text: 'op-fake-value\n' })); assert(!JSON.stringify(result).includes('op-fake-value')); assert(/secret:onepassword#/.test(result.text)); assert(calls.some((call) => call.capability === 'process.run' && call.argv[0] === 'op' && call.argv[1] === 'read')); });
-await test('double-quoted op reference rewrites with exactly one level of quoting', async () => { let received; await bash($, { tool: 'Bash', command: 'export K="op://Private/item/field"' }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, 'export K="$(op read \'op://Private/item/field\')"'); });
-await test('single-quoted op reference rewrites with exactly one level of quoting', async () => { let received; await bash($, { tool: 'Bash', command: "echo 'op://Private/item/field'" }, async (event) => { received = event.command; return { text: 'ok' }; }); assert.equal(received, 'echo "$(op read \'op://Private/item/field\')"'); });
+await test('double-quoted op reference rewrites with exactly one level of quoting', async () => { const { received } = await prefetchArgv('export K="op://Private/item/field-dq"; printf %s "$K"'); assert.equal(commandPart(received), 'export K="${__wt_secret_0}"; printf %s "$K"'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value'); });
+await test('single-quoted op reference rewrites with exactly one level of quoting', async () => { const { received } = await prefetchArgv("echo 'op://Private/item/field-sq'"); assert.equal(commandPart(received), 'echo "${__wt_secret_0}"'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n'); });
 const assertSkippedWhilePlainRewrites = async (command) => {
   let skipped; let plain;
   await bash($, { tool: 'Bash', command }, async (event) => { skipped = event.command; return { text: 'ok' }; });
   await bash($, { tool: 'Bash', command: 'echo op://Private/item/field' }, async (event) => { plain = event.command; return { text: 'ok' }; });
   assert.equal(skipped, command);
-  assert.equal(plain, 'echo "$(op read \'op://Private/item/field\')"');
+  assert.equal(commandPart(plain), 'echo "${__wt_secret_0}"');
 };
 await test('op reference written to a tpl file is left literal', async () => { let executed = false; const result = await bash($, { tool: 'Bash', command: "printf '%s\\n' 'op://Private/item/field' > /tmp/profile.tpl" }, async () => { executed = true; return {}; }); assert.equal(executed, false); assert.match(result.deny, /refused/i); });
 await test('V30 a heredoc that MENTIONS a reference triggers no op call and passes untouched', async () => {
@@ -327,11 +337,19 @@ await test('V30 a heredoc that MENTIONS a reference triggers no op call and pass
   const mixed = "printf %s 'op://Private/heredoc/field'; cat <<EOF\nop://Private/heredoc/field\nEOF";
   let rewritten;
   await bash($, { tool: 'Bash', command: mixed }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
-  assert.match(rewritten, /^printf %s "\$\(op read 'op:\/\/Private\/heredoc\/field'\)"; cat <<EOF\nop:\/\/Private\/heredoc\/field\nEOF$/, 'the command-line reference was not expanded, or the heredoc one was');
+  assert.equal(commandPart(rewritten), 'printf %s "${__wt_secret_0}"; cat <<EOF\nop://Private/heredoc/field\nEOF', 'the command-line reference was not expanded, or the heredoc one was');
 });
 await test('op reference in a sed search pattern is left literal', async () => { await assertSkippedWhilePlainRewrites("sed -n '/op:\\/\\/Private\\/item\\/field/p' /tmp/input"); });
 await test('op reference inside a larger quoted string is left literal', async () => { let executed = false; const result = await bash($, { tool: 'Bash', command: "printf '%s\\n' 'prefix op://Private/item/field suffix'" }, async () => { executed = true; return {}; }); assert.equal(executed, false); assert.match(result.deny, /refused/i); });
-await test('already substituted op reference is not rewritten again', async () => { await assertSkippedWhilePlainRewrites("echo \"$(op read 'op://Private/item/field')\""); });
+await test('already substituted op reference is not rewritten again', async () => {
+  // Round 12: the literal form's `op` becomes a printer of the bound value, and its reference is NOT
+  // expanded a second time inside it.
+  const { received, argvs } = await prefetchArgv("echo \"$(op read 'op://Private/item/field-sub')\"");
+  assert.match(received, /echo "\$\(__wt_op_0 read 'op:\/\/Private\/item\/field-sub'\)"$/);
+  assert.equal((received.match(/readonly __wt_secret_/g) ?? []).length, 1, 'the reference was bound twice');
+  assert.equal(argvs.length, 1, 'the reference was not prefetched exactly once');
+  assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n');
+});
 await test('env reference rewrite binds the value the guard read, never the raw shell variable', async () => {
   let received;
   await bash($, { tool: 'Bash', command: 'echo secret:env:GH_TOKEN' }, async (event) => { received = event.command; return { text: 'ok' }; });
@@ -357,10 +375,11 @@ await test('all SR Cloud and review rows retain their recorded verdicts', async 
   for (const fixture of corpus.denyCommands) assert.equal(verdictForBash(fixture.command).verdict, fixture.verdict, fixture.command);
 });
 await test('Bash policy evaluates the byte-identical original before reference rewrites', async () => {
-  const command = 'cat ~/.npmrc && echo op://Private/item/field';
+  // (round 12: no unquoted tilde beside our forms, so the path is written with "$HOME")
+  const command = 'cat "$HOME/.npmrc" && echo op://Private/item/field';
   let received;
   const result = await bash($, { tool: 'Bash', command, tool_use_id: 'tool-order' }, async (event) => { received = event.command; return { text: 'ok' }; });
-  assert.equal(received.includes('op read'), true);
+  assert.equal(received?.includes('__wt_secret_0'), true, 'the reference was not rewritten');
   assert.match(result.text, /WOULD BLOCK; executed in measurement mode/);
 });
 await test('Read and NotebookRead guarded paths warn but still execute', async () => {
@@ -1414,9 +1433,11 @@ await test('D5 explicit op read keeps account and failed prefetch refuses execut
 });
 await test('V4 every supported op read argument placement is prefetched or refused', async () => {
   const cases = [
-    ["op read --account='team' -o /tmp/out 'op://vault/item/password'", 'team'],
-    ["op read 'op://vault/item/password' --account team -o /tmp/out", 'team'],
-    ["op read -o /tmp/out 'op://vault/item/password' --account=team", 'team'],
+    // (round 12: `-o` is refused before any prefetch - its output cannot be reproduced from a bound
+    // value; its placements are asserted as refusals below)
+    ["op read --account='team' 'op://vault/item/password'", 'team'],
+    ["op read 'op://vault/item/password' --account team", 'team'],
+    ["op read --no-color 'op://vault/item/password' --account=team", 'team'],
     ["op read 'op://vault/item/password' > /tmp/out", ''],
     ["> /tmp/out op read --account=team 'op://vault/item/password'", 'team'],
     ['"op" read \'op://vault/item/password\'', ''],
@@ -1436,6 +1457,13 @@ await test('V4 every supported op read argument placement is prefetched or refus
     assert.equal(executed, false, `op invocation executed without a successful prefetch: ${command}`);
     assert.deepEqual(opArgv, account ? ['op', 'read', '--account', account, ref] : ['op', 'read', ref]);
     assert.match(result.deny, /1Password reference/i);
+  }
+  for (const command of ["op read --account='team' -o /tmp/out 'op://vault/item/out-a'", "op read 'op://vault/item/out-b' --account team -o /tmp/out", "op read --out-file=/tmp/out 'op://vault/item/out-c'"]) {
+    const spawned = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) spawned.push(argv); return $.process.run(argv, init); } } };
+    const result = await bash(runtime, { tool: 'Bash', command }, async () => ({ text: 'leaked' }));
+    assert.match(result.deny ?? '', /cannot reproduce/i, command);
+    assert.equal(spawned.length, 0, `an unreproducible op read was prefetched: ${command}`);
   }
 });
 await test('V14 a quoted spelling of the `op` command word is validated like the bare spelling', async () => {
@@ -1590,13 +1618,22 @@ await test('V21 the planner acts on OUR forms only: refused in unowned contexts,
     assert.equal(received, command, `ordinary work was rewritten: ${JSON.stringify(command)}`);
     assert.equal(spawned.length, 0, `ordinary work spawned op: ${JSON.stringify(command)}`);
   }
-  // The literal documented form keeps working wherever it is written, wrappers included: its
-  // reference is literal, so it is prefetched and left as written.
-  for (const command of ["exec op read 'op://vault/item/wrapped'", "op --account=team read 'op://vault/item/flag-first'"]) {
+  // The literal documented form in a command position is prefetched once and its `op` word replaced by
+  // a printer of the bound value (round 12): the command never reads 1Password a second time. Behind a
+  // wrapper the guard cannot put that printer in its place, so there it is refused.
+  {
+    const command = "op --account=team read 'op://vault/item/flag-first'";
     const { result, received, spawned } = await run(command);
     assert.equal(result?.deny, undefined, `the documented form was refused: ${command} -> ${result?.deny}`);
-    assert.equal(received, command, `the documented form was rewritten: ${command}`);
+    assert.match(received ?? '', /__wt_op_0 --account=team read 'op:\/\/vault\/item\/flag-first'$/, `the documented form still calls op: ${received}`);
     assert.equal(spawned.length, 1, `the documented form was not prefetched exactly once: ${command}`);
+  }
+  {
+    const command = "exec op read 'op://vault/item/wrapped'";
+    const { result, received, spawned } = await run(command);
+    assert.equal(received, undefined, `the documented form behind a wrapper ran: ${command}`);
+    assert.match(result?.deny ?? '', /behind a wrapper/, command);
+    assert.equal(spawned.length, 0, `the documented form behind a wrapper was prefetched: ${command}`);
   }
 });
 await test('V25 every value WE substitute is in the vault before the command runs - env references included', async () => {
@@ -1664,7 +1701,10 @@ await test('reference allow-list: every supported form expands byte-identically 
   }
   try {
     const value = "matrix value with ' quote and € sign";
-    writeFileSync(join(directory, 'op'), `#!/bin/sh\nprintf '%s\\n' "${value}"\n`, { mode: 0o755 });
+    // Round 12: the guard prefetches and BINDS the value; the command never reads 1Password again. The
+    // `op` on PATH therefore prints a different, rotated value: any second read shows up as a mismatch.
+    writeFileSync(join(directory, 'op'), '#!/bin/sh\nprintf "%s\\n" rotated-away\n', { mode: 0o755 });
+    const prefetching = { ...$, process: { run: async (argv, init) => (/^op(?:\.exe)?$/.test(argv[0]) ? { exitCode: 0, stdout: `${value}\n` } : $.process.run(argv, init)) } };
     const vaultToken = tokenize('fixture', value);
     setFile('/tmp/matrix-secret', value);
     testEnv.set('MATRIX_SECRET', value);
@@ -1689,7 +1729,7 @@ await test('reference allow-list: every supported form expands byte-identically 
       for (const [context, build] of contexts) {
         const command = build(reference);
         let rewritten;
-        const result = await bash($, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
+        const result = await bash(prefetching, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
         assert.equal(result?.deny, undefined, `${form} in ${context} was refused: ${result?.deny}`);
         const execution = run(rewritten);
         assert.equal(execution.status, 0, `${form} in ${context}: ${execution.stderr?.toString()}`);
@@ -1726,9 +1766,11 @@ await test('reference allow-list: every supported form expands byte-identically 
     ];
     for (const [placement, command] of invocations) {
       let rewritten;
-      const result = await bash($, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
+      const result = await bash(prefetching, { tool: 'Bash', command }, async (event) => { rewritten = event.command; return { text: 'ok' }; });
       assert.equal(result?.deny, undefined, `op read ${placement} was refused: ${result?.deny}`);
-      assert.equal(rewritten, command, `op read ${placement} was rewritten`);
+      // Round 12: its `op` word becomes a printer of the bound value; flags and redirections stay.
+      assert.match(rewritten, /__wt_op_\d+ read /, `op read ${placement} still calls op at run time`);
+      assert.equal(/(?:^|[\s;|&("])op read /.test(rewritten), false, `op read ${placement} still calls op at run time`);
       const execution = run(rewritten);
       assert.equal(execution.status, 0, `op read ${placement}: ${execution.stderr?.toString()}`);
       assert.equal(execution.stdout.toString().replace(/\n$/, ''), value, `op read ${placement} did not produce the value bytes`);
@@ -2166,7 +2208,12 @@ await test('V38 a command using our forms never runs, through a listed external 
   assert.deepEqual(ran, [], 'a non-literal command behind a listed wrapper, beside our form, was not refused');
   // Round 11 allow-list: behind a listed wrapper a literal command passes, except in the four compound
   // positions of this table, which the allow-list refuses whatever the command.
-  const compound = new Set(['time -p nice -n 1 ', '( timeout 5 ', 'case x in x) nice ', 'f() { stdbuf -oL ']);
+  // Round 12 adds the positions where a word from the wrapper to its command is expanded (env's
+  // `PATH="$PATH"`), and every find position: the literal rows pass a non-literal argument ("$VERB") and
+  // every word of a find invocation must be plain.
+  const compound = new Set(['time -p nice -n 1 ', '( timeout 5 ', 'case x in x) nice ', 'f() { stdbuf -oL ', 'env -i PATH="$PATH" ', 'env - PATH="$PATH" ',
+    'env -i PATH="$PATH" A=1 B="$x" ', 'env -iv PATH="$PATH" ', 'find . -maxdepth 0 -exec ', 'find . -maxdepth 0 -execdir ', 'find . -maxdepth 0 -name x -o -exec ',
+    'find . -maxdepth 0 -exec true \\; -exec ', 'find . -maxdepth 0 -exec env A=1 ']);
   const literal = ['printf', '"printf"', "pr'in'tf", '/usr/bin/printf'];
   const wrong = [];
   for (const [before, after] of positions) {
@@ -2194,10 +2241,9 @@ await test('V39 ordinary commands through a listed wrapper pass, and the op read
   const form = 'secret:env:GH_TOKEN';
   const rows = [
     `timeout 30 curl "$URL" -u ${form}`, `env -i PATH=/usr/bin printf %s ${form}`, `sudo -u app printf %s ${form}`, `nice -n 10 curl -u ${form} "$URL"`,
-    `nohup curl -u ${form} "$URL" > /tmp/out 2>&1 &`, `find . -name "$pattern" -exec grep -l x {} + ; printf %s ${form}`, `echo "$x" | xargs printf %s ${form}`,
+    `nohup curl -u ${form} "$URL" > /tmp/out 2>&1 &`, `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`, `echo "$x" | xargs printf %s ${form}`,
     `stdbuf -oL printf %s ${form} | tee /tmp/log`, `ionice -c 3 printf %s ${form}`, `taskset -c 0 printf %s ${form}`, `setsid -w printf %s ${form}`,
-    `timeout "$T" printf %s ${form}`, `env A="$x" printf %s ${form}`, `sudo -u "$USER" printf %s ${form}`, `ionice -p "$PID"; printf %s ${form}`,
-    `sudo -l; printf %s ${form}`, `env; printf %s ${form}`, `echo x | xargs; printf %s ${form}`,
+    `ionice -p "$PID"; printf %s ${form}`, `sudo -l; printf %s ${form}`, `env; printf %s ${form}`, `echo x | xargs; printf %s ${form}`,
   ];
   const refused = [];
   for (const command of rows) {
@@ -2206,6 +2252,14 @@ await test('V39 ordinary commands through a listed wrapper pass, and the op read
     if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
   }
   assert.deepEqual(refused, [], 'an ordinary command through a listed wrapper was refused');
+  // Passed through round 11, refused by round 12's strict wrapper rule: an expanded word between a
+  // wrapper and its command, or in a find invocation - the arbiter's trade, locked both ways.
+  for (const command of [`find . -name "$pattern" -exec grep -l x {} + ; printf %s ${form}`, `timeout "$T" printf %s ${form}`, `env A="$x" printf %s ${form}`, `sudo -u "$USER" printf %s ${form}`]) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    assert.equal(received, undefined, `an expanded wrapper word ran beside our form: ${command}`);
+    assert.match(result?.deny ?? '', /not a plain literal/, command);
+  }
   // `op read` behind a wrapper, beside our forms, is the documented form and must be valid: otherwise it
   // runs op on a value the guard never prefetched. Without our forms it stays out of scope (V21).
   testEnv.set('WT_V39_REF', 'wt-v39-bound-value');
@@ -2218,11 +2272,13 @@ await test('V39 ordinary commands through a listed wrapper pass, and the op read
   const spawned = [];
   const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) spawned.push(argv); return $.process.run(argv, init); } } };
   let received;
+  // Round 12: behind a wrapper the guard cannot replace `op` with a printer of the prefetched value, so
+  // even the VALID literal form is refused there - before any prefetch.
   const valid = "timeout 5 op read 'op://vault/item/behind-timeout'";
   const result = await bash(runtime, { tool: 'Bash', command: valid }, async (event) => { received = event.command; return { text: 'ok' }; });
-  assert.equal(result?.deny, undefined, `the documented op read form behind a wrapper was refused: ${result?.deny}`);
-  assert.equal(received, valid, 'the documented op read form behind a wrapper was rewritten');
-  assert.equal(spawned.length, 1, 'the documented op read form behind a wrapper was not prefetched exactly once');
+  assert.equal(received, undefined, 'the documented op read form behind a wrapper ran');
+  assert.match(result?.deny ?? '', /behind a wrapper/);
+  assert.equal(spawned.length, 0, 'the documented op read form behind a wrapper was prefetched');
 });
 await test('V40 the verify9 bypasses never run a command using our forms', async () => {
   // GPT-6 Astra at 5a2134a5, each a bash-grammar spelling the command-position model missed: nested
@@ -2285,6 +2341,9 @@ const V42_REFUSED = [
   'find . -maxdepth 0 -exec {} FORM \\;', 'echo x | xargs -I R R FORM', 'echo "$(op read \'op://vault/item/v42\') $(date)" FORM',
   // The literal op read form unquoted, outside an assignment: its output splits into fields.
   "printf %s $(op read 'op://vault/item/v42u') FORM", "timeout $(op read 'op://vault/item/v42t') printf %s FORM",
+  // Round 12 (strict): an unquoted heredoc body with `$`, an expanded wrapper word, a tilde, an
+  // argument-position assignment.
+  'cat <<EOF\nhome ${HOME} and $USER\nEOF\nprintf %s FORM', 'timeout "$T" printf %s FORM', 'printf %s ~/v42 FORM', "export V42X=$(op read 'op://vault/item/v42x'); printf %s FORM",
   // An UNQUOTED heredoc body runs its substitutions: beside our forms that is a command position.
   'cat <<EOF\n$("$CMD" "$VERB")\nEOF\nprintf %s FORM', 'cat <<EOF\n${Y:-$(date)}\nEOF\nprintf %s FORM', 'cat <<EOF\n$((1+2))\nEOF\nprintf %s FORM',
 ];
@@ -2293,12 +2352,13 @@ const V42_ALLOWED = [
   'sleep 0 & printf %s FORM', 'true\nprintf %s FORM', 'printf %s FORM > /tmp/v42-out 2>&1', 'printf %s FORM 2>/dev/null >> /tmp/v42-log',
   'printf %s FORM <<< literal', 'A=1 B="$x" printf %s FORM', 'printf %s "$HOME" "${HOME}" "a $HOME b" \'$HOME\' FORM', 'printf %s FORM # a note',
   'cat > /tmp/v42 <<\'EOF\'\nbody $HOME\nEOF\nprintf %s FORM', 'cat <<EOF | printf %s FORM\nbody\nEOF', '[ -n "$X" ] && printf %s FORM',
-  'cat <<EOF\nhome ${HOME} and $USER\nEOF\nprintf %s FORM', 'cat <<\'EOF\'\n$(date) stays text in a quoted body\nEOF\nprintf %s FORM',
+  'cat <<EOF\nplain body, no expansion\nEOF\nprintf %s FORM', 'cat <<\'EOF\'\n$(date) stays text in a quoted body\nEOF\nprintf %s FORM',
   'test -n "$Y" && curl -u FORM "$URL"', 'command -v "$tool" >/dev/null && printf %s FORM', 'exec printf %s FORM', 'timeout 30 curl "$URL" -u FORM',
-  'env -i PATH=/usr/bin printf %s FORM', 'sudo -u app printf %s FORM', 'timeout "$T" printf %s FORM', "find . -name '*.js' -exec grep -l x {} + ; printf %s FORM",
-  'echo "$x" | xargs printf %s FORM', 'export V42=FORM', 'printf %s ~/v42 FORM', 'printf "%s\\n" "cost: \\$5" FORM',
-  // The documented literal form inside a substitution stays accepted: quoted, or as an assignment value.
-  "export V42B=$(op read 'op://vault/item/v42b'); printf %s FORM", "curl -H \"Authorization: Bearer $(op read 'op://vault/item/v42c')\" -u FORM \"$URL\"",
+  'env -i PATH=/usr/bin printf %s FORM', 'sudo -u app printf %s FORM', "find . -name '*.js' -exec grep -l x {} + ; printf %s FORM",
+  'echo "$x" | xargs printf %s FORM', 'export V42=FORM', 'printf "%s\\n" "cost: \\$5" FORM',
+  // The documented literal form inside a substitution stays accepted: double-quoted, or as the value of
+  // an assignment PREFIX (round 12: `export V=$(...)` is an argument, refused).
+  "V42B=$(op read 'op://vault/item/v42b'); printf %s FORM", "curl -H \"Authorization: Bearer $(op read 'op://vault/item/v42c')\" -u FORM \"$URL\"",
 ];
 await test('V42 beside our forms only the allow-list grammar runs; without our forms every command passes byte-identical', async () => {
   const run = async (command) => {
@@ -2351,6 +2411,119 @@ await test('V42 beside our forms only the allow-list grammar runs; without our f
     if (result?.deny || received !== command || spawned.length) changed.push(`${JSON.stringify(command)} -> ${result?.deny ?? (spawned.length ? 'op spawned' : 'rewritten')}`);
   }
   assert.deepEqual(changed, [], 'a command without our forms was not passed through byte-identical');
+});
+await test('V43 the verify10 bypasses and masking failures are closed', async () => {
+  // GPT-6 Astra at ca950a58. Each input is refused beside our form, or - for rotation and NUL - never
+  // lets a value the vault does not hold reach the output.
+  testEnv.set('WT_V43_X', 'wt-v43-value');
+  // Each value readable and each reference fresh, so a refusal can only come from the grammar.
+  testEnv.set('DEST', '/tmp/v43-dest');
+  const form = 'secret:env:WT_V43_X';
+  const failures = [];
+  const refusedInputs = [
+    `exec -ca label "$CMD" %s ${form}`,
+    `timeout "$T" 1 "$CMD" %s MARK; printf %s ${form}`,
+    `find /usr/bin/printf "$ACTION" "$CMD" %s MARK \\; ; printf %s ${form}`,
+    `cat <<EOF\n$\\\n(printf MARK)\nEOF\nprintf %s ${form}`,
+    `printf %s A=$(op read ${'op:/'}/vault/item/v43-h3)`,
+    `${form} %s MARK`,
+    `printf %s ${form} > secret:env:DEST`,
+    `printf %s ~ ${form}`,
+  ];
+  for (const command of refusedInputs) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (received !== undefined || !/beside a secret reference/.test(result?.deny ?? '')) failures.push(`H1-4 ${received !== undefined ? 'executed' : `refused for another reason (${result?.deny?.slice(47, 140)})`}: ${JSON.stringify(command)}`);
+  }
+  // M5: a value bash cannot carry (a NUL byte) would be altered by the binding and escape the vault.
+  setFile('/tmp/v43-nul', 'v43-short-pass\0');
+  let nulReceived;
+  const nul = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/v43-nul' }, async (event) => { nulReceived = event.command; return { text: 'v43-short-pass' }; });
+  if (nulReceived !== undefined || !/refused/i.test(nul?.deny ?? '')) failures.push('M5 a value holding a NUL byte was bound into a command');
+  // The same for a value the encoder would alter: an unpaired UTF-16 surrogate becomes U+FFFD.
+  testEnv.set('WT_V43_LONE', 'v43-lone-\uD800-surrogate');
+  let loneReceived;
+  const lone = await bash($, { tool: 'Bash', command: 'printf %s secret:env:WT_V43_LONE' }, async (event) => { loneReceived = event.command; return { text: 'x' }; });
+  if (loneReceived !== undefined || !/refused/i.test(lone?.deny ?? '')) failures.push('M5 a value holding an unpaired surrogate was bound into a command');
+  // H6: the value the guard prefetched and masks must be the value the command uses. A second `op read`
+  // at run time can return a rotated value no mask knows.
+  let directory;
+  try { directory = mkdtempSync(join(tmpdir(), 'wt-secret-guard-v43-')); } catch (error) {
+    if (['EACCES', 'EROFS', 'ENOENT'].includes(error?.code)) throw new SkipTest(`writable temporary directory unavailable (${error.code})`);
+    throw error;
+  }
+  try {
+    writeFileSync(join(directory, 'op'), '#!/bin/sh\nprintf "%s\\n" v43-new-rotated\n', { mode: 0o755 });
+    const runtime = { ...$, process: { run: async (argv, init) => (/^op(?:\.exe)?$/.test(argv[0]) ? { exitCode: 0, stdout: 'v43-old-rotated\n' } : $.process.run(argv, init)) } };
+    const execute = (command) => spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: `${directory}:/usr/bin:/bin` } }).stdout;
+    for (const [command, printed] of [
+      [`printf %s ${'op:/'}/vault/item/v43`, 'v43-old-rotated'],
+      [`op read '${'op:/'}/vault/item/v43b'`, 'v43-old-rotated\n'],
+      [`op read -n '${'op:/'}/vault/item/v43c'`, 'v43-old-rotated'],
+      [`printf '[%s]' "$(op read '${'op:/'}/vault/item/v43d')"`, '[v43-old-rotated]'],
+    ]) {
+      let rewritten;
+      const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { rewritten = event.command; const out = execute(event.command); return { result: { stdout: out, stderr: '' }, text: out }; });
+      if (result?.deny) { failures.push(`H6 refused: ${command} -> ${result.deny}`); continue; }
+      if (result.text.includes('v43-new-rotated')) failures.push(`H6 a rotated value the guard never prefetched reached the output: ${command}`);
+      if (result.text.includes('v43-old-rotated')) failures.push(`H6 the prefetched value reached the output raw: ${command}`);
+      if (execute(rewritten) !== printed) failures.push(`H6 the command did not use the prefetched value with op read's output contract: ${command} -> ${JSON.stringify(execute(rewritten))}`);
+    }
+    // Flags whose output the guard cannot reproduce are refused rather than run against a second read.
+    for (const command of [`op read -o /tmp/v43-out '${'op:/'}/vault/item/v43e'`, `op read --format json '${'op:/'}/vault/item/v43f'`, `op read --encoding base64 '${'op:/'}/vault/item/v43g'`]) {
+      const result = await bash(runtime, { tool: 'Bash', command }, async () => ({ text: 'ok' }));
+      if (!/refused/i.test(result?.deny ?? '')) failures.push(`H6 an op read flag the guard cannot reproduce was accepted: ${command}`);
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+  // M7: only `op read` is our form: `op inject` / `op run` without a reference pass untouched.
+  for (const command of ['for x in a; do echo op inject; done', 'if true; then op run -- true; fi', 'op run -- env | head -1']) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (result?.deny || received !== command) failures.push(`M7 a reference-free op inject/run was refused or rewritten: ${command} -> ${result?.deny}`);
+  }
+  assert.deepEqual(failures, [], 'verify10 findings remain');
+});
+await test('V44 beside our forms a word whose role or expansion is uncertain is refused', async () => {
+  const form = 'secret:env:GH_TOKEN';
+  const refused = [];
+  // Every word from a wrapper up to and including its command is literal, with no expansion at all.
+  for (const [before, words] of [
+    ['exec', ['-a "$N"', '-ca "$N"', '"$O"', '-cz']], ['command', ['"$O"', '-P']], ['env', ['A="$x"', '-u "$N"', '"$O"', 'A=~/x', 'A=*']],
+    ['timeout', ['"$T"', '-k "$K" 5', '~', '5*']], ['sudo', ['-u "$U"', '-u ~app', '-g "$G"']], ['nice', ['-n "$N"']], ['stdbuf', ['-o "$M"']],
+    ['xargs', ['-n "$N"', '-I "$R"']], ['chroot', ['"$ROOT"']], ['taskset', ['"$MASK"']], ['ionice', ['-c "$C"']],
+  ]) {
+    for (const word of words) refused.push(`${before === 'xargs' ? 'echo x | ' : ''}${before} ${word} ${before === 'timeout' && !/[0-9]\*?$/.test(word) ? '5 ' : ''}printf %s ${form}`);
+  }
+  // find: every word of the invocation.
+  refused.push(`find "$DIR" -exec grep -l x {} + ; printf %s ${form}`, `find . -name "$P" -exec grep -l x {} + ; printf %s ${form}`, `find ~ -exec grep -l x {} + ; printf %s ${form}`);
+  // Heredoc: an unquoted body holding any `$` or backtick.
+  refused.push(`cat <<EOF\n$HOME\nEOF\nprintf %s ${form}`, `cat <<EOF\ncost \\$5\nEOF\nprintf %s ${form}`, `cat <<-EOF\n\t\${X}\nEOF\nprintf %s ${form}`);
+  // An assignment is one only in the assignment-prefix position.
+  refused.push(`printf %s A=$(op read '${'op:/'}/vault/item/v44') ${form}`, `export A=$(op read '${'op:/'}/vault/item/v44b'); printf %s ${form}`);
+  // Our forms only as arguments; no tilde anywhere.
+  refused.push(`${form}`, `env ${form} x`, `exec ${form}`, `printf %s x 2> ${form}`, `printf %s ${form} a=~`, `A=~/x printf %s ${form}`, `printf %s ~/x ${form}`);
+  const ran = [];
+  for (const command of refused) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (received !== undefined || !/refused/i.test(result?.deny ?? '')) ran.push(JSON.stringify(command));
+  }
+  assert.deepEqual(ran, [], 'a word with an uncertain role or expansion was accepted beside our form');
+  const accepted = [
+    `exec -ca label printf %s ${form}`, `exec -a label printf %s ${form}`, `command -p printf %s ${form}`, `env -i A=1 printf %s ${form}`,
+    `timeout -k 1 5 printf %s ${form}`, `sudo -u app printf %s ${form}`, `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`,
+    `cat <<'EOF'\n$HOME $(date)\nEOF\nprintf %s ${form}`, `cat <<EOF\nplain body\nEOF\nprintf %s ${form}`, `A=$(op read '${'op:/'}/vault/item/v44c') printf %s ${form}`,
+    `printf %s "A=$(op read '${'op:/'}/vault/item/v44d')" ${form}`, `export A="$(op read '${'op:/'}/vault/item/v44e')"; printf %s ${form}`,
+    // (a `NAME_TOKEN=` prefix would trip the outbound environment-dump detector on the command text)
+    `V44_REF=${form} printf %s x`, `printf %s "$HOME" ${form}`,
+  ];
+  const wrong = [];
+  for (const command of accepted) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (result?.deny || received === undefined) wrong.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+  }
+  assert.deepEqual(wrong, [], 'a strict allow-list shape was refused');
 });
 // V34 runs late on purpose: it registers about 2,300 values in the vault, and every later Bash-hook
 // call walks the whole vault - run before V38 it made V38 7 s and pushed the shipped-plugins vitest

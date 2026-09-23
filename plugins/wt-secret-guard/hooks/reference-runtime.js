@@ -3,7 +3,7 @@
 // approved plan into shell-safe data bindings.
 import { config } from './config.js';
 import { opReadArgv, opValueFrom } from './op-resolve.js';
-import { opExpression, planReferences, renderReplacement } from './references.js';
+import { planReferences, renderReplacement } from './references.js';
 import { knownTokens, tokenize } from './token-vault.js';
 
 // A FAILED prefetch is remembered for a short window, keyed by account and reference.
@@ -109,7 +109,13 @@ async function envValue($, name) {
   }
 }
 
-const refused = (command, reason) => ({ command, count: 0, references: [], substituted: [], invalidReference: true, reason });
+const refused = (command, reason, extra = {}) => ({ command, count: 0, references: [], substituted: [], invalidReference: true, reason, ...extra });
+
+// A value bash cannot carry unchanged: a NUL byte (a command substitution drops it - Astra at
+// ca950a58: `short-13-pass` + NUL reached the output as `short-13-pass`, unmasked) or an unpaired
+// UTF-16 surrogate (the encoder replaces it). Binding either would put into the command a value the
+// vault does not hold, so the command is refused instead.
+const unrepresentable = (value) => value.includes('\0') || !value.isWellFormed();
 
 export async function rewriteReferences($, command) {
   const plan = planReferences(command, { tokens: knownTokens() });
@@ -117,42 +123,68 @@ export async function rewriteReferences($, command) {
   const account = config().opAccount;
   const bindings = [];
   const replacements = [];
-  const references = [...plan.invocations];
-  // The tokens whose values this rewrite puts into the command: masked in its output whatever their
-  // kind (op values join them once the caller has resolved them).
+  // The tokens whose values this rewrite puts into the command: masked in its output whatever their kind.
   const substituted = [];
+  let names = 0;
+  const bind = (value) => { const bound = binding(names, value); names += 1; bindings.push(bound.source); return bound.name; };
+  // Every 1Password value is prefetched ONCE, registered in the vault, and bound into the command as
+  // data - the command never reads 1Password itself. Astra H6 at ca950a58: a second read at run time
+  // returned a rotated value that no mask knew.
+  const prefetched = new Map();
+  const opValue = async (ref, refAccount) => {
+    const key = `${refAccount}:${ref}`;
+    if (!prefetched.has(key)) {
+      const resolved = await resolveReference($, ref, refAccount);
+      prefetched.set(key, resolved.token ? { token: resolved.token, value: knownTokens().get(resolved.token)?.value } : null);
+    }
+    return prefetched.get(key);
+  };
+  const prefetchFailed = () => refused(command, 'a 1Password reference that could not be prefetched', { prefetchFailed: true });
   for (const occurrence of plan.occurrences) {
-    let expression;
+    let value;
     if (occurrence.form === 'op') {
-      expression = opExpression(occurrence.path, account);
-      references.push({ ref: `op://${occurrence.path}`, account });
+      const resolved = await opValue(`op://${occurrence.path}`, account);
+      if (!resolved) return prefetchFailed();
+      value = resolved.value;
+      substituted.push(resolved.token);
     } else {
       // Every value WE substitute is bound as data and registered in the vault BEFORE the command
       // runs: a value no detector recognises can only be masked in the output because the vault knows
       // it. An env reference therefore binds the value the guard read from Claude Code's environment
       // (measured 2026-09-22: $.env.get returns an arbitrary variable of the claude process) instead
       // of letting the shell expand a variable the guard never saw.
-      const value = occurrence.form === 'file' ? await fileContent($, occurrence)
+      value = occurrence.form === 'file' ? await fileContent($, occurrence)
         : occurrence.form === 'env' ? await envValue($, occurrence.name)
           : knownTokens().get(occurrence.label)?.value;
       if (typeof value !== 'string') return refused(command, occurrence.form === 'env' ? 'an environment reference whose value this guard cannot read' : 'a reference whose value could not be read');
       if (occurrence.form === 'token') substituted.push(occurrence.label);
       else if (value) substituted.push(tokenize(occurrence.form === 'file' ? 'file' : 'environment', value));
-      const bound = binding(bindings.length, value);
-      bindings.push(bound.source);
-      expression = `\${${bound.name}}`;
     }
-    replacements.push({ start: occurrence.replaceStart, end: occurrence.replaceEnd, value: renderReplacement(occurrence, expression) });
+    if (unrepresentable(value)) return refused(command, 'a value holding a NUL byte or an unpaired surrogate, which bash cannot carry unchanged');
+    replacements.push({ start: occurrence.replaceStart, end: occurrence.replaceEnd, value: renderReplacement(occurrence, `\${${bind(value)}}`) });
   }
+  // The literal `op read <ref>` form: its `op` word becomes a function that prints the bound value with
+  // op read's own output contract - a trailing newline unless -n / --no-newline. Its flags, its
+  // redirections and its place in a pipeline or a "$( )" stay exactly as written.
+  for (const [index, invocation] of plan.invocations.entries()) {
+    const resolved = await opValue(invocation.ref, invocation.account);
+    if (!resolved) return prefetchFailed();
+    if (unrepresentable(resolved.value)) return refused(command, 'a value holding a NUL byte or an unpaired surrogate, which bash cannot carry unchanged');
+    substituted.push(resolved.token);
+    const name = bind(resolved.value);
+    const printer = `__wt_op_${index}`;
+    bindings.push(`${printer}() { printf '${invocation.noNewline ? '%s' : '%s\\n'}' "\${${name}}"; }; `);
+    replacements.push({ start: invocation.at, end: invocation.wordEnd, value: printer });
+  }
+  replacements.sort((left, right) => left.start - right.start);
   let rewritten = command;
   for (const replacement of [...replacements].reverse()) {
     rewritten = `${rewritten.slice(0, replacement.start)}${replacement.value}${rewritten.slice(replacement.end)}`;
   }
-  const unique = new Map(references.map((item) => [`${item.account}:${item.ref}`, item]));
   return {
     command: `${bindings.join('')}${rewritten}`,
     count: replacements.length,
-    references: [...unique.values()],
+    references: [...prefetched.keys()],
     substituted,
     invalidReference: false,
     reason: '',
