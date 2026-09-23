@@ -226,7 +226,7 @@ describe.skipIf(process.platform !== 'win32')('Windows native prompt-storage ran
     expect(after.subarray(offset, offset + Buffer.byteLength(raw)).toString()).not.toBe(raw)
     expect(finalIdentity.ino).toBe(identity.ino)
     await expect(access(join(config, 'injected'))).rejects.toThrow()
-  })
+  }, 60_000) // PowerShell opens and fsyncs the same 4 MiB proof as the POSIX helper above.
 
   it('refuses an expected-bytes mismatch without overwriting the changed bytes', async () => {
     const config = await fixture('windows-mismatch')

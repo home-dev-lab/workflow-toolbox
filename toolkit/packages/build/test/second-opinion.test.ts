@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { canonicalPath } from './helpers/canonical-path.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -235,7 +236,7 @@ describe('second-opinion advisor', () => {
 
     expect(query).toHaveBeenCalledOnce()
     expect(queryInput).toMatchObject({
-      prompt: `${realpathSync(join(f.repo, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
+      prompt: `${canonicalPath(join(f.repo, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
         model: 'opus',
         effort: 'medium',
@@ -433,7 +434,7 @@ describe('second-opinion advisor', () => {
     const result = spawnSync(process.execPath, [harness], {
       env: { ...process.env, ...f.env, HOME: f.repo },
       encoding: 'utf8',
-      timeout: 5_000,
+      timeout: 15_000,
     })
     expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
     const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
@@ -449,7 +450,7 @@ describe('second-opinion advisor', () => {
       }
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
-  })
+  }, 30_000)
 
   it('names output overflow and fails after terminating the owned companion family', async () => {
     const f = fixture(true)

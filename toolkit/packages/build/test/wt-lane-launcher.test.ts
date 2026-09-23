@@ -886,6 +886,17 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: { ...f.env, XDG_STATE_HOME: blocked, WT_LANE_ORPHAN_CLEANUP: 'enforce' }, timeout: 5000 })
     expect(watcher.stdout).toContain('kill journal failed')
   })
+  it('on Darwin, says once that watcher-orphan detection is unavailable and still completes the sweep', () => {
+    const f = fixture('sleep 0.2')
+    const preload = join(f.root, 'darwin.cjs')
+    writeFileSync(preload, "Object.defineProperty(process, 'platform', { value: 'darwin' })\n")
+    const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], {
+      encoding: 'utf8',
+      env: { ...f.env, NODE_OPTIONS: `--require=${preload}` },
+    })
+    expect(watcher.status, watcher.stderr).toBe(0)
+    expect(watcher.stdout.split('\n').filter((line) => line.includes('/proc required'))).toHaveLength(1)
+  })
   it('prints owner notices even when the journal is unavailable and reports that failure once', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'

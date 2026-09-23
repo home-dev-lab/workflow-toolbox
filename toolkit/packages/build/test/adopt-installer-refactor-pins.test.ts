@@ -5,8 +5,6 @@ import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
-// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { hostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = process.env.WT_ADOPT_PIN_SCRIPT ?? join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -199,9 +197,7 @@ describe('adopt installer refactor pins', () => {
     const cwd = tempDir()
     const result = run(['--unknown-token', '--check', '--dir'], { cwd })
     expect(result.status).toBe(0)
-    const canonical = hostAdapter.resolveCanonicalPath(cwd)
-    expect(canonical.status).toBe('resolved')
-    expect(result.stdout).toContain(`[rules] target=${join(canonical.path, '.claude/rules/wt')}`)
+    expect(result.stdout).toContain(`[rules] target=${join(cwd, '.claude/rules/wt')}`)
   })
 
   it.each(['toString', 'constructor', '__proto__'])('U4 ignores inherited object-property argv token %s', (token) => {

@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
+import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -262,7 +263,7 @@ describe('SDK pilot runner', () => {
     const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
     await runPilot({ card: '186', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
     expect(prompts[0]).toContain(`## The card, verbatim\n\n${card}`)
-    expect(prompts[0]).toContain(`${realpathSync(join(f.dir, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.`)
+    expect(prompts[0]).toContain(`${canonicalPath(join(f.dir, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.`)
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')

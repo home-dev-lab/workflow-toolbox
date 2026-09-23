@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { detections, optionalDetections } from './detector.js';
 import { configure, register, testState, tokenize } from './hooks.js';
@@ -27,6 +28,10 @@ const files = new Map([
   ['/tmp/wt-secret-guard-file', { text: "file-secret value with ' quote\nsecond-file-secret", mode: 0o600, inode: nextInode++ }],
 ]);
 const journalFiles = new Map();
+const bashEnvironment = (...prefixes) => ({
+  ...process.env,
+  PATH: [...prefixes, ...(process.platform === 'win32' ? [process.env.PATH] : ['/usr/bin:/bin'])].filter(Boolean).join(delimiter),
+});
 // Test values by NAME. secret:env is disabled (round 16: Claude Code refuses a hooks module whose
 // `$.env.get` takes a non-literal name), so the locks that used `secret:file:/tmp/wt-env/NAME` as their canonical
 // accepted form now use `secret:file:/tmp/wt-env/NAME`, which the mocked filesystem serves from here.
@@ -1965,9 +1970,10 @@ await test('V31 a command using our forms never runs a program whose name the gu
   try {
     writeFileSync(join(directory, 'mark'), '#!/bin/sh\nprintf MARK >&9\n', { mode: 0o755 });
     const notCommands = [];
+    const darwinUnsupported = /^(?:true \|&|time (?:-p )?--|coproc\b|case x in [^)]*\) :;&|case x in x\) :;;&|echo "\$\(case|\{fd\}>)/;
     for (const [before, after, sane = true] of positions) {
-      if (!sane) continue;
-      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { ...process.env, PATH: `${directory}:${process.env.PATH}` } });
+      if (!sane || (process.platform === 'darwin' && darwinUnsupported.test(before))) continue;
+      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: bashEnvironment(directory) });
       if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
     }
     assert.deepEqual(notCommands, [], 'bash did not read a command name at these positions');
@@ -2071,7 +2077,7 @@ await test('V33 the heredoc end matches bash exactly, and an uncertain heredoc r
   // lookups over WSL's /mnt/c entries took 8 s; 0.15 s here). Checked equal to 600 separate `bash -c`
   // runs: 0 disagreements over 600 shapes.
   const printer = 'c() { while IFS= read -r line || [ -n "$line" ]; do printf "%s\\n" "$line"; done; }\n';
-  const out = spawnSync('bash', ['-c', printer + scripts.map((script) => `{\n${script.replace(/^cat /, 'c ')}}\n`).join('')], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout;
+  const out = spawnSync('bash', ['-s'], { encoding: 'utf8', env: bashEnvironment(), input: printer + scripts.map((script) => `{\n${script.replace(/^cat /, 'c ')}}\n`).join('') }).stdout;
   scripts.forEach((script, index) => {
     const marker = `RAN-${index}-`;
     const bashBody = out.includes(`printf ${marker}`);
@@ -2202,7 +2208,7 @@ await test('V38 a command using our forms never runs, through a listed external 
       // These rows describe GNU utilities that macOS does not ship. Their guard parsing is still
       // exercised below; only the impossible real-command sanity probe is skipped.
       if (!sane || (process.platform === 'darwin' && darwinUnsupported.test(before))) continue;
-      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { ...process.env, PATH: `${directory}:/usr/bin:/bin` } });
+      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: bashEnvironment(directory) });
       if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
     }
     assert.deepEqual(notCommands, [], 'bash did not run the wrapped command at these positions');
@@ -2472,7 +2478,7 @@ await test('V43 the verify10 bypasses and masking failures are closed', async ()
   try {
     writeFileSync(join(directory, 'op'), '#!/bin/sh\nprintf "%s\\n" v43-new-rotated\n', { mode: 0o755 });
     const runtime = { ...$, process: { run: async (argv, init) => (/^op(?:\.exe)?$/.test(argv[0]) ? { exitCode: 0, stdout: 'v43-old-rotated\n' } : $.process.run(argv, init)) } };
-    const execute = (command) => spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: `${directory}:/usr/bin:/bin` } }).stdout;
+    const execute = (command) => spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment(directory) }).stdout;
     for (const [command, printed] of [
       [`printf %s ${'op:/'}/vault/item/v43`, 'v43-old-rotated'],
       [`op read '${'op:/'}/vault/item/v43b'`, 'v43-old-rotated\n'],
@@ -2846,7 +2852,7 @@ await test('V50 the verify13 findings are closed and the README describes what t
     const fresh = await import(`./token-vault.js?v50=${Date.now()}`);
     const issued = fresh.tokenize('file', selfAlias);
     if (issued === selfAlias) failures.push('1 a fresh vault issued a token equal to its own value');
-    const run = spawnSync(process.execPath, ['--input-type=module', '-e', V50_FRESH_VAULT, new URL('.', import.meta.url).pathname.replace(/\/$/, ''), selfAlias], { encoding: 'utf8' });
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', V50_FRESH_VAULT, fileURLToPath(new URL('.', import.meta.url)), selfAlias], { encoding: 'utf8' });
     let outcome = null;
     try { outcome = JSON.parse(run.stdout.trim().split('\n').at(-1)); } catch { failures.push(`1 the fresh-vault child did not report: ${run.stderr.slice(0, 200)}`); }
     if (outcome?.denied) failures.push('1 the fresh-vault hook refused the command');
@@ -2907,7 +2913,7 @@ await test('V51 the host loads the module: no dynamic $.env.get, secret:env refu
   // Static: Claude Code refuses the WHOLE hooks module when `$.env.get` takes a non-literal name (measured
   // on 2.1.280: the guard loaded nothing in every real session). Every call in the plugin's module files
   // takes a plain string literal.
-  const pluginRoot = new URL('..', import.meta.url).pathname;
+  const pluginRoot = fileURLToPath(new URL('..', import.meta.url));
   const sources = [];
   const walk = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); if (entry.isDirectory()) { if (entry.name !== 'fixtures' && entry.name !== 'node_modules') walk(path); } else if (/\.(?:m?js|cjs|ts)$/.test(entry.name) && !/\.selftest\.mjs$/.test(entry.name)) sources.push(path); } };
   walk(pluginRoot);
@@ -3059,7 +3065,7 @@ await test('V53 the verify15 findings: an issued token stays usable after its sp
   const { REDACTION_NOTE: note } = await import('./constants.js');
   if (/secret:env/.test(note)) failures.push('3 the redaction notice recommends secret:env');
   if (!/secret:file/.test(note)) failures.push('3 the redaction notice does not point to secret:file');
-  const pluginRoot = new URL('..', import.meta.url).pathname;
+  const pluginRoot = fileURLToPath(new URL('..', import.meta.url));
   const walk = (dir, out = []) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); if (entry.isDirectory()) { if (!['fixtures', 'node_modules'].includes(entry.name)) walk(path, out); } else if (/\.(?:m?js|cjs|json)$/.test(entry.name) && !/\.selftest\.mjs$/.test(entry.name)) out.push(path); } return out; };
   for (const path of walk(pluginRoot)) {
     readFileSync(path, 'utf8').split('\n').forEach((line, index) => {

@@ -75,8 +75,8 @@ describe('lane supervisor safety core', () => {
       })
       expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).not.toBeNull()
       expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).not.toBeNull()
-      // ps legitimately refreshes because the intervening lsof read exceeded its TTL.
-      expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(2)
+      // Both snapshots remain fresh when the provider duration is below the shared TTL.
+      expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(1)
       expect(execFile.mock.calls.filter(([program]) => program === 'lsof')).toHaveLength(1)
     } finally { vi.useRealTimers() }
   })
@@ -116,7 +116,7 @@ describe('lane supervisor safety core', () => {
     expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(1)
   })
 
-  it('bounds Darwin forks by the 100 ms snapshot TTL under a 10 ms identity poll', () => {
+  it('bounds Darwin forks by the 500 ms snapshot TTL under a 10 ms identity poll', () => {
     vi.useFakeTimers()
     try {
       const execFile = vi.fn((program: string) => program === 'ps'
@@ -126,8 +126,8 @@ describe('lane supervisor safety core', () => {
         expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).not.toBeNull()
         vi.advanceTimersByTime(10)
       }
-      expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(10)
-      expect(execFile.mock.calls.filter(([program]) => program === 'lsof')).toHaveLength(10)
+      expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(2)
+      expect(execFile.mock.calls.filter(([program]) => program === 'lsof')).toHaveLength(2)
     } finally { vi.useRealTimers() }
   })
 
@@ -157,7 +157,7 @@ describe('lane supervisor safety core', () => {
         expect(inspectProcess(999, { platform: 'darwin', spawnSync: execFile })).toBeNull()
         vi.advanceTimersByTime(10)
       }
-      expect(execFile).toHaveBeenCalledTimes(10)
+      expect(execFile).toHaveBeenCalledTimes(2)
     } finally { vi.useRealTimers() }
   })
 
@@ -180,7 +180,7 @@ describe('lane supervisor safety core', () => {
       : { status: 0, stdout: `p432\nfcwd\nn${cwds.shift()}\n` })
     try {
       const recorded = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })!
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 101)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 501)
       const actual = inspectProcess(432, { platform: 'darwin', spawnSync: execFile })!
       expect(recorded.cwd).not.toBe(actual.cwd)
       expect(sameIdentity(recorded, actual)).toBe(true)

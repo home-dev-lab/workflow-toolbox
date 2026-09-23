@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
+import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { BoardUnavailable, createBoardClient } from '../../../../plugin/bin/lib/board-http-client.mjs'
@@ -565,7 +566,7 @@ describe('SDK orchestrator judge', () => {
     expect(f.launches.every((launch) => JSON.stringify(launch).includes(JSON.stringify(plugins)))).toBe(true)
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
     expect(prompts).toEqual([
-      `${realpathSync(join(f.root, 'AGENTS.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nKNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
+      `${canonicalPath(join(f.root, 'AGENTS.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nKNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
       'Judge card 2: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
       'Every card is decided: write_judgment.',
     ])

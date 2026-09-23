@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
-const DARWIN_PROCESS_TABLE_TTL_MS = 100
+const DARWIN_PROCESS_TABLE_TTL_MS = 500
 const WINDOWS_PROCESS_READ_TTL_MS = 500
 const WINDOWS_PROCESS_READ_TIMEOUT_MS = 10_000
 const WINDOWS_PROCESS_READ_ATTEMPTS = 2

@@ -134,7 +134,9 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
       let state = currentOwnedProcess()
       if (state.status === 'gone') return [`broker/app-server process family pid ${identity.pid} already stopped`]
       if (state.status !== 'owned') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
-      const graceful = adapter.endProcessFamily(identity.pid)
+      const graceful = adapter.platform === 'win32'
+        ? adapter.forceEndProcessFamily(identity.pid)
+        : adapter.endProcessFamily(identity.pid)
       state = waitUntilGone()
       if (state.status === 'gone' || state.status === 'changed') return [`stopped broker/app-server process family pid ${identity.pid} started by this call`]
       if (state.status !== 'owned') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
