@@ -87,7 +87,8 @@ function main() {
     if (['terminal', 'gone'].includes(verdict.status)) {
       if (/^EXIT=(-?\d+)$/.test(marker ?? '')) {
         const exit = Number(/^EXIT=(-?\d+)$/.exec(marker)[1])
-        process.stdout.write(`LANE DONE exit=${exit} report=${reportSize(path.join(lane, 'report.md'))} log=${log}\n`)
+        const cause = record?.killedBy ? ` cause=${record.killedBy.cause} signal=${record.killedBy.signal}` : ''
+        process.stdout.write(`LANE DONE exit=${exit}${cause} report=${reportSize(path.join(lane, 'report.md'))} log=${log}\n`)
         return exit
       }
       process.stdout.write('LANE DIED exit=unknown\n')

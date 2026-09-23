@@ -1,0 +1,92 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "memory-available",
+    "capturedAt": "2026-09-22T23:06:42.851Z",
+    "command": "node memory-available.mjs D:\\a\\workflow-toolbox\\workflow-toolbox\\probes\\host-platform\\evidence\\windows-latest\\memory-available.json",
+    "runId": "35795762873",
+    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runnerImage": {
+      "label": "windows-latest",
+      "os": "win25-vs2026",
+      "version": "20260907.229.1"
+    },
+    "osRelease": {
+      "platform": "win32",
+      "release": "10.0.26100",
+      "version": "Windows Server 2025 Datacenter",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "status": "not_used",
+        "reason": "procps is not the process-table provider on this OS"
+      },
+      "powershell": {
+        "command": "pwsh -NoProfile -NonInteractive -Command $PSVersionTable.PSVersion.ToString()",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "7.6.5\r\n"
+      }
+    }
+  },
+  "osMemory": {
+    "status": "measured",
+    "freeBytes": 14364753920,
+    "totalBytes": 17174360064
+  },
+  "linux": {
+    "status": "not_applicable",
+    "reason": "This host is not Linux."
+  },
+  "macos": {
+    "status": "not_applicable",
+    "reason": "This host is not macOS."
+  },
+  "windows": {
+    "status": "attempted",
+    "timeoutMilliseconds": 3000,
+    "wtLaneEnvironment": {
+      "status": "measurement_failed",
+      "command": "powershell.exe -NoProfile -NonInteractive -Command (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
+      "exitCode": null,
+      "signal": "SIGTERM",
+      "durationMilliseconds": 3010.8523,
+      "error": {
+        "message": "spawnSync powershell.exe ETIMEDOUT",
+        "code": "ETIMEDOUT",
+        "errno": -4039,
+        "syscall": "spawnSync powershell.exe"
+      },
+      "stdout": "",
+      "stderr": ""
+    },
+    "inheritedEnvironment": {
+      "status": "measured",
+      "command": "powershell.exe -NoProfile -NonInteractive -Command (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
+      "exitCode": 0,
+      "signal": null,
+      "durationMilliseconds": 964.542,
+      "error": null,
+      "stdout": "13973712\r\n",
+      "stderr": ""
+    },
+    "windowsBootstrapEnvironment": {
+      "status": "measurement_failed",
+      "command": "powershell.exe -NoProfile -NonInteractive -Command (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
+      "exitCode": null,
+      "signal": "SIGTERM",
+      "durationMilliseconds": 3015.5488,
+      "error": {
+        "message": "spawnSync powershell.exe ETIMEDOUT",
+        "code": "ETIMEDOUT",
+        "errno": -4039,
+        "syscall": "spawnSync powershell.exe"
+      },
+      "stdout": "",
+      "stderr": ""
+    }
+  }
+}

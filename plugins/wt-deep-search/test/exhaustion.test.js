@@ -94,6 +94,14 @@ for (const [provider, search, bodies] of [
     assert.match(error.message, /API key was refused/i);
   });
 
+  test(`${provider} does not claim every 403 is an API-key refusal`, async () => {
+    const { error } = await failureFrom(search, 403, { error: 'forbidden by policy' });
+
+    assert.equal(error.classification, 'refused');
+    assert.match(error.message, /request was forbidden/i);
+    assert.doesNotMatch(error.message, /API key was refused/i);
+  });
+
   test(`${provider} retries a 5xx as transient without marking exhaustion`, async () => {
     let now = 10_000;
     const memory = createExhaustionMemory({ now: () => now, fallbackMs: 500 });

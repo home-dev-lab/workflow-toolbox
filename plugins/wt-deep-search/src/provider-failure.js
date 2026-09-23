@@ -89,7 +89,7 @@ function classify(provider, response, body, now) {
 
   return new ProviderFailure(
     classification === 'refused'
-      ? `${provider === 'brave' ? 'Brave' : 'Exa'} search failed with status ${status}: API key was refused`
+      ? `${provider === 'brave' ? 'Brave' : 'Exa'} search failed with status ${status}: ${status === 401 ? 'API key was refused' : 'request was forbidden'}`
       : `${provider === 'brave' ? 'Brave' : 'Exa'} search failed with status ${status ?? 'unknown'}`,
     {
       provider,
