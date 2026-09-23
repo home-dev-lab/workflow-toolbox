@@ -1680,7 +1680,8 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['bare', (reference) => `printf %s ${reference}`],
       ['single-quoted', (reference) => `printf %s '${reference}'`],
       ['double-quoted', (reference) => `printf %s "${reference}"`],
-      ['bare inside a substitution', (reference) => `printf %s "$(printf %s ${reference})"`],
+      // Round 11: a reference inside `$( )` is no longer a supported context - the allow-list accepts
+      // no command substitution beside our forms except the literal `op read` form (asserted below).
       ['bare before a redirection', (reference) => `printf %s ${reference} > ${directory}/redirected; cat ${directory}/redirected`],
       ['double-quoted after a redirection target', (reference) => `> ${directory}/redirected printf %s "${reference}"; cat ${directory}/redirected`],
     ];
@@ -1694,6 +1695,10 @@ await test('reference allow-list: every supported form expands byte-identically 
         assert.equal(execution.status, 0, `${form} in ${context}: ${execution.stderr?.toString()}`);
         assert.equal(execution.stdout.toString().replace(/\n$/, ''), value, `${form} in ${context} did not expand byte-identically`);
       }
+      let executed = false;
+      const inside = await bash($, { tool: 'Bash', command: `printf %s "$(printf %s ${reference})"` }, async () => { executed = true; return { text: 'ok' }; });
+      assert.equal(executed, false, `${form} inside a command substitution executed`);
+      assert.match(inside?.deny ?? '', /substitution/i, `${form} inside a command substitution was not refused as one`);
     }
     // A heredoc body is NOT a supported context (round 8 decision): every form, in every heredoc
     // quoting, passes through as the literal text it is - unrewritten, unprefetched, unrefused - and
@@ -1927,21 +1932,28 @@ await test('V31 a command using our forms never runs a program whose name the gu
     }
   }
   assert.deepEqual(ran, [], 'a non-literal command name beside our form was not refused');
+  // Round 11 allow-list: a LITERAL command name passes only where the command stays simple commands
+  // joined by ; && || | & or a newline (redirections, assignments, exec/command allowed). In every
+  // compound position - case, if, loops, functions, subshells, braces, $( ), coproc, time, !, |& - it
+  // is refused too: the guard no longer places command names inside grammar it does not accept.
+  const simple = new Set(['', 'true; ', 'true && ', 'false || ', 'true | ', 'true & ', 'true\n', '2>/dev/null ', '>/dev/null ', '</dev/null ', '2>&1 ', '&>/dev/null ',
+    '>|/dev/null ', '{fd}>/dev/null ', '3</dev/null ', 'A=1 ', 'A=1 B=2 ', 'A+=1 ', 'A=1 2>/dev/null ', '2>/dev/null A=1 ', 'exec ', 'command ', 'command -p ', 'exec -a name ']);
   const literal = ['printf', '"printf"', "pr'in'tf", '/usr/bin/printf'];
-  const refused = [];
+  const wrong = [];
   for (const [before, after] of positions) {
     for (const name of literal) {
       const command = `${before}${name} "$VERB" ${form}${after}`;
       const { result, received } = await run(command);
-      if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+      const passed = !result?.deny && received !== undefined;
+      if (passed !== simple.has(before)) wrong.push(`${JSON.stringify(command)} -> ${passed ? 'PASSED' : result?.deny}`);
     }
   }
-  assert.deepEqual(refused, [], 'a literal command name with a non-literal argument was refused');
+  assert.deepEqual(wrong, [], 'a literal command name passed outside the allow-list, or was refused inside it');
   // Where the model cannot place every command name, a command using our forms is refused, not guessed.
   for (const command of [`case x in x) printf %s ${form}`, `printf %s ${form};; true`, `case x y in x) printf %s ${form};; esac`, `function ; printf %s ${form}`]) {
     const { result, received } = await run(command);
     assert.equal(received, undefined, `syntax the guard cannot place ran beside our form: ${JSON.stringify(command)}`);
-    assert.match(result?.deny ?? '', /cannot place/i, command);
+    assert.match(result?.deny ?? '', /refused/i, command);
   }
 });
 await test('V32 a value the guard substituted is masked in that command output whatever its kind', async () => {
@@ -2056,14 +2068,11 @@ await test('V37 ordinary commands using our forms are not refused for the syntax
   // Eight of these were refused at d1814348: a `${NAME}` frame counted its own brace and never closed,
   // so everything after it read as unsupported, and a lone `[` or `[[` read as a glob command name.
   const form = 'secret:env:GH_TOKEN';
+  // Still inside the round 11 allow-list: must pass.
   const rows = [
-    `[ -n "$X" ] && printf %s ${form}`, `for f in *.txt; do printf %s ${form}; done`, `if [ "$a" = b ]; then printf %s ${form}; fi`,
-    `x=$(printf %s ${form}); echo "$x"`, `printf %s "\${HOME}" ${form}`, `printf '%s\\n' ${form} | grep -c . >/dev/null`,
-    `cat <<EOF | printf %s ${form}\nbody\nEOF`, `test -n "$Y" && curl -u ${form} "$URL"`, `echo "$(date +%s)" ${form}`,
-    `while read -r line; do printf %s ${form}; done < /tmp/in`, `[[ "$a" == b* ]] && printf %s ${form}`, `(( n > 1 )) || printf %s ${form}`,
-    `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`, `arr=(a "$b"); printf %s ${form} "\${arr[@]}"`, `echo \${#X} ${form}`,
-    `printf %s ${form} 2>&1 | tee /tmp/log`, `{ printf %s ${form}; } > /tmp/out`, `time printf %s ${form}`,
-    `echo "\${X:-default}" ${form}`, `echo "\${X#pre}" ${form}`, `echo "$(case x in x) echo y;; esac)" ${form}`,
+    `[ -n "$X" ] && printf %s ${form}`, `printf %s "\${HOME}" ${form}`, `printf '%s\\n' ${form} | grep -c . >/dev/null`,
+    `cat <<EOF | printf %s ${form}\nbody\nEOF`, `test -n "$Y" && curl -u ${form} "$URL"`,
+    `find . -name '*.js' -exec grep -l x {} + ; printf %s ${form}`, `printf %s ${form} 2>&1 | tee /tmp/log`,
     `command -v "$tool" >/dev/null && printf %s ${form}`, `command -V "$tool"; printf %s ${form}`,
   ];
   const refused = [];
@@ -2073,6 +2082,21 @@ await test('V37 ordinary commands using our forms are not refused for the syntax
     if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
   }
   assert.deepEqual(refused, [], 'an ordinary command using our forms was refused');
+  // Passed through round 10, refused by the round 11 allow-list - the trade the arbiter decided on,
+  // locked so it stays a decision and never drifts either way unnoticed.
+  const traded = [
+    `for f in *.txt; do printf %s ${form}; done`, `if [ "$a" = b ]; then printf %s ${form}; fi`, `x=$(printf %s ${form}); echo "$x"`,
+    `echo "$(date +%s)" ${form}`, `while read -r line; do printf %s ${form}; done < /tmp/in`, `[[ "$a" == b* ]] && printf %s ${form}`,
+    `(( n > 1 )) || printf %s ${form}`, `arr=(a "$b"); printf %s ${form} "\${arr[@]}"`, `echo \${#X} ${form}`, `{ printf %s ${form}; } > /tmp/out`,
+    `time printf %s ${form}`, `echo "\${X:-default}" ${form}`, `echo "\${X#pre}" ${form}`, `echo "$(case x in x) echo y;; esac)" ${form}`,
+  ];
+  const ran = [];
+  for (const command of traded) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    if (!result?.deny || received !== undefined) ran.push(JSON.stringify(command));
+  }
+  assert.deepEqual(ran, [], 'a command outside the allow-list ran beside our form');
 });
 await test('V38 a command using our forms never runs, through a listed external wrapper, a program whose name the guard cannot read literally', async () => {
   // Round 9 left external wrappers out of scope: `env "$CMD" "$VERB" secret:env:R` still ran $CMD. Each
@@ -2140,16 +2164,20 @@ await test('V38 a command using our forms never runs, through a listed external 
     }
   }
   assert.deepEqual(ran, [], 'a non-literal command behind a listed wrapper, beside our form, was not refused');
+  // Round 11 allow-list: behind a listed wrapper a literal command passes, except in the four compound
+  // positions of this table, which the allow-list refuses whatever the command.
+  const compound = new Set(['time -p nice -n 1 ', '( timeout 5 ', 'case x in x) nice ', 'f() { stdbuf -oL ']);
   const literal = ['printf', '"printf"', "pr'in'tf", '/usr/bin/printf'];
-  const refused = [];
+  const wrong = [];
   for (const [before, after] of positions) {
     for (const name of literal) {
       const command = `${before}${name} "$VERB" ${form}${after}`;
       const { result, received } = await run(command);
-      if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+      const passed = !result?.deny && received !== undefined;
+      if (passed === compound.has(before)) wrong.push(`${JSON.stringify(command)} -> ${passed ? 'PASSED' : result?.deny}`);
     }
   }
-  assert.deepEqual(refused, [], 'a literal command behind a listed wrapper was refused');
+  assert.deepEqual(wrong, [], 'a literal command behind a listed wrapper was refused, or passed in a compound position');
   // A command the wrapper takes from somewhere the guard cannot read, or a grammar it cannot place:
   // refused beside our forms.
   for (const command of [
@@ -2195,6 +2223,134 @@ await test('V39 ordinary commands through a listed wrapper pass, and the op read
   assert.equal(result?.deny, undefined, `the documented op read form behind a wrapper was refused: ${result?.deny}`);
   assert.equal(received, valid, 'the documented op read form behind a wrapper was rewritten');
   assert.equal(spawned.length, 1, 'the documented op read form behind a wrapper was not prefetched exactly once');
+});
+await test('V40 the verify9 bypasses never run a command using our forms', async () => {
+  // GPT-6 Astra at 5a2134a5, each a bash-grammar spelling the command-position model missed: nested
+  // heredocs delimited in the wrong order and an empty delimiter (the reference reached `cat > file`),
+  // a command substitution inside `${Y:-$(...)}`, an unquoted wrapper operand whose field splitting moves
+  // the command position, and a find -exec command built from `{}`.
+  testEnv.set('WT_V40_X', 'wt-v40-value');
+  const form = 'secret:env:WT_V40_X';
+  for (const command of [
+    `cat > /tmp/brief.md <<OUT $(true <<IN\nOUT\nIN\n)\n${form}\nOUT`,
+    `cat <<''\n${form}\n\n`,
+    `printf %s "\${Y:-$("$CMD" "$VERB" "$REF")}" ${form}`,
+    `timeout $T true; printf %s ${form}`,
+    `find /usr/bin -maxdepth 0 -exec '{}/printf' %s ${form} \\;`,
+  ]) {
+    let received;
+    const result = await bash($, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    assert.equal(received, undefined, `a verify9 bypass executed: ${JSON.stringify(command)}`);
+    assert.match(result?.deny ?? '', /refused/i, command);
+  }
+});
+await test('V41 a token identifies exactly one value: no collision overwrites a vault entry', async () => {
+  // Astra at 5a2134a5: in a fresh vault, environment values fixture-00001..fixture-03408 gave 01514 and
+  // 03408 the same 6-hex token. The token then expanded to 03408, and 01514 was no longer masked.
+  const vault = await import('./token-vault.js?v41-fresh');
+  const issued = new Map();
+  for (let at = 1; at <= 3408; at += 1) {
+    const value = `fixture-${String(at).padStart(5, '0')}`;
+    issued.set(value, vault.tokenize('environment', value));
+  }
+  const first = issued.get('fixture-01514'); const second = issued.get('fixture-03408');
+  assert.notEqual(first, second, `the named pair shares a token: ${first}`);
+  assert.equal(vault.knownTokens().get(first)?.value, 'fixture-01514', 'fixture-01514 no longer rehydrates from its token');
+  assert.equal(vault.knownTokens().get(second)?.value, 'fixture-03408', 'fixture-03408 no longer rehydrates from its token');
+  assert.equal(vault.substituteTokens(`a ${first} b ${second}`), 'a fixture-01514 b fixture-03408', 'rehydration mixed the pair up');
+  // Masking is the vault replacing every known value: both must still be known.
+  let text = 'fixture-01514 fixture-03408';
+  for (const [token, entry] of vault.knownTokens()) text = text.split(entry.value).join(token);
+  assert.equal(/fixture-0(?:1514|3408)/.test(text), false, `a member of the pair passes unmasked: ${text}`);
+  // Generated: 12,000 more values - every token distinct, every value rehydrates from its own token.
+  for (let at = 0; at < 12000; at += 1) issued.set(`v41-value-${at}`, vault.tokenize('environment', `v41-value-${at}`));
+  const tokens = new Set(issued.values());
+  assert.equal(tokens.size, issued.size, `${issued.size - tokens.size} values share a token`);
+  const wrong = [...issued].filter(([value, token]) => vault.knownTokens().get(token)?.value !== value);
+  assert.deepEqual(wrong.slice(0, 5), [], `${wrong.length} tokens do not rehydrate to their own value`);
+  for (const token of tokens) assert.match(token, /^secret:environment#[a-f0-9]{6}$/, 'a token left the documented shape');
+});
+// The allow-list (round 11): beside our forms, only simple commands with literal command names.
+const V42_REFUSED = [
+  'for i in 1; do printf %s FORM; done', 'while false; do :; done; printf %s FORM', 'until true; do :; done; printf %s FORM', 'if true; then printf %s FORM; fi',
+  'case x in x) printf %s FORM;; esac', 'select x in a; do printf %s FORM; done', 'f() { printf %s FORM; }; f', 'function f { printf %s FORM; }; f',
+  '( printf %s FORM )', '{ printf %s FORM; }', 'printf %s FORM |& cat', 'echo "$(date)" FORM', 'echo $(date) FORM', 'cat <(echo) FORM',
+  'echo "$((1+2))" FORM', '[[ -n x ]] && printf %s FORM', '(( 1 )) && printf %s FORM', 'a=(x y); printf %s FORM', 'declare -a a=(x y); printf %s FORM',
+  '[[\n -n "$HOME"\n]]; printf %s FORM', '((1<<2)); printf %s FORM', 'coproc printf %s FORM', 'time printf %s FORM', '! printf %s FORM',
+  'printf %s $HOME FORM', 'printf %s ${HOME} FORM', 'printf %s "${HOME:-x}" FORM', 'printf %s "${HOME#x}" FORM', 'printf %s "${HOME%x}" FORM',
+  'printf %s "${HOME/x/y}" FORM', 'printf %s "${HOME^}" FORM', 'printf %s "${HOME,}" FORM', 'printf %s "${!HOME}" FORM', 'printf %s "${HOME@Q}" FORM',
+  'printf %s "${#HOME}" FORM', 'printf %s "$1" FORM', 'printf %s "$@" FORM', 'printf %s *.md FORM', 'printf %s {a,b} FORM', 'printf %s FORM > "$OUT"',
+  'cat <<A <<B\nx\nA\ny\nB\nprintf %s FORM', 'cat <<"E F"\nx\nE F\nprintf %s FORM', 'eval printf %s FORM', 'source /dev/null; printf %s FORM',
+  '. /dev/null; printf %s FORM', 'printf %s FORM;; true', '"$CMD" FORM', 'timeout $T printf %s FORM', "find . -exec '{}/printf' %s FORM \\;",
+  'find . -maxdepth 0 -exec {} FORM \\;', 'echo x | xargs -I R R FORM', 'echo "$(op read \'op://vault/item/v42\') $(date)" FORM',
+  // The literal op read form unquoted, outside an assignment: its output splits into fields.
+  "printf %s $(op read 'op://vault/item/v42u') FORM", "timeout $(op read 'op://vault/item/v42t') printf %s FORM",
+  // An UNQUOTED heredoc body runs its substitutions: beside our forms that is a command position.
+  'cat <<EOF\n$("$CMD" "$VERB")\nEOF\nprintf %s FORM', 'cat <<EOF\n${Y:-$(date)}\nEOF\nprintf %s FORM', 'cat <<EOF\n$((1+2))\nEOF\nprintf %s FORM',
+];
+const V42_ALLOWED = [
+  'printf %s FORM', 'true; printf %s FORM', 'true && printf %s FORM', 'false || printf %s FORM', 'printf %s FORM | cat', 'printf %s FORM &',
+  'sleep 0 & printf %s FORM', 'true\nprintf %s FORM', 'printf %s FORM > /tmp/v42-out 2>&1', 'printf %s FORM 2>/dev/null >> /tmp/v42-log',
+  'printf %s FORM <<< literal', 'A=1 B="$x" printf %s FORM', 'printf %s "$HOME" "${HOME}" "a $HOME b" \'$HOME\' FORM', 'printf %s FORM # a note',
+  'cat > /tmp/v42 <<\'EOF\'\nbody $HOME\nEOF\nprintf %s FORM', 'cat <<EOF | printf %s FORM\nbody\nEOF', '[ -n "$X" ] && printf %s FORM',
+  'cat <<EOF\nhome ${HOME} and $USER\nEOF\nprintf %s FORM', 'cat <<\'EOF\'\n$(date) stays text in a quoted body\nEOF\nprintf %s FORM',
+  'test -n "$Y" && curl -u FORM "$URL"', 'command -v "$tool" >/dev/null && printf %s FORM', 'exec printf %s FORM', 'timeout 30 curl "$URL" -u FORM',
+  'env -i PATH=/usr/bin printf %s FORM', 'sudo -u app printf %s FORM', 'timeout "$T" printf %s FORM', "find . -name '*.js' -exec grep -l x {} + ; printf %s FORM",
+  'echo "$x" | xargs printf %s FORM', 'export V42=FORM', 'printf %s ~/v42 FORM', 'printf "%s\\n" "cost: \\$5" FORM',
+  // The documented literal form inside a substitution stays accepted: quoted, or as an assignment value.
+  "export V42B=$(op read 'op://vault/item/v42b'); printf %s FORM", "curl -H \"Authorization: Bearer $(op read 'op://vault/item/v42c')\" -u FORM \"$URL\"",
+];
+await test('V42 beside our forms only the allow-list grammar runs; without our forms every command passes byte-identical', async () => {
+  const run = async (command) => {
+    const spawned = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) spawned.push(argv); return $.process.run(argv, init); } } };
+    let received;
+    const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    return { result, received, spawned };
+  };
+  const ran = [];
+  for (const shape of V42_REFUSED) {
+    const command = shape.replaceAll('FORM', 'secret:env:GH_TOKEN');
+    const { result, received } = await run(command);
+    if (received !== undefined || !/refused/i.test(result?.deny ?? '')) ran.push(JSON.stringify(command));
+  }
+  assert.deepEqual(ran, [], 'a command outside the allow-list ran beside our form');
+  // A refusal says what to rewrite, by construct, and restates the grammar.
+  for (const [shape, named] of [
+    ['printf %s "${HOME:-x}" FORM', /\$\{\.\.\.\} expansion with an operator/], ['printf %s $HOME FORM', /unquoted parameter \(write "\$NAME"\)/],
+    ['for i in 1; do printf %s FORM; done', /shell keyword `for`/], ['echo "$(date)" FORM', /substitution/], ['printf %s *.md FORM', /unquoted glob/],
+    ['cat <<EOF\n$(date)\nEOF\nprintf %s FORM', /quote the delimiter/],
+  ]) {
+    const { result } = await run(shape.replaceAll('FORM', 'secret:env:GH_TOKEN'));
+    assert.match(result?.deny ?? '', named, `the refusal does not name the construct: ${shape}`);
+    assert.match(result?.deny ?? '', /simple commands with literal command names/, `the refusal does not state the grammar: ${shape}`);
+  }
+  const refused = [];
+  for (const shape of V42_ALLOWED) {
+    const command = shape.replaceAll('FORM', 'secret:env:GH_TOKEN');
+    const { result, received } = await run(command);
+    if (result?.deny || received === undefined) refused.push(`${JSON.stringify(command)} -> ${result?.deny}`);
+  }
+  assert.deepEqual(refused, [], 'a command inside the allow-list was refused');
+  // WITHOUT our forms: byte-identical, never refused, never an op call - the same shapes, the command
+  // positions of V31/V38 with a computed name, and ordinary shell of every kind.
+  const ordinary = [
+    // (a documented `op read` substitution IS one of our forms: it is replaced by ordinary text here)
+    ...[...V42_REFUSED, ...V42_ALLOWED].map((shape) => shape.replaceAll('FORM', 'plain-text').replace(/\$\(op read '[^']*'\)/g, '$(date)')),
+    'declare -a a=(x y); printf %s x', '[[\n -n "$HOME"\n]]; printf %s x', '((1<<2)); printf %s x', 'x=$((1<<3)); echo "$x"',
+    'for f in *.md; do wc -l "$f"; done', 'case "$1" in -h) usage;; *) run "$@";; esac', 'f() { local x=${1:-y}; echo "${x^^}"; }; f',
+    'while IFS= read -r line; do echo "${line#prefix}"; done < /tmp/in', 'coproc cat; echo hi >&"${COPROC[1]}"', 'select x in a b; do break; done',
+    'echo `date` $(date) $((1+1)) ${HOME} ${#PATH} ${!HOME} "$@" $*', 'cat <<A <<B\nx\nA\ny\nB', 'cat <<\'\'\nx\n\n', "cat <<$'E'\nx\nE",
+    'eval "$CMD"; source ./env.sh; . ./env.sh', 'exec 3>&1; exec >/dev/null', 'sudo "$CMD" read "$REF"', 'env "$C" "$@"', 'timeout $T "$CMD"',
+    "find . -exec '{}/printf' %s \\;", 'xargs -I{} {} < /tmp/in', 'echo op read foo', 'rg "$pattern" read', 'npm --prefix "$dir" run build',
+    "printf %s $'a\\tb'", 'ls {a,b}.txt *.md ~/x', 'a=(1 2 3); echo "${a[@]}" "${#a[@]}"', 'trap "echo done" EXIT; alias ll="ls -l"',
+  ];
+  const changed = [];
+  for (const command of ordinary) {
+    const { result, received, spawned } = await run(command);
+    if (result?.deny || received !== command || spawned.length) changed.push(`${JSON.stringify(command)} -> ${result?.deny ?? (spawned.length ? 'op spawned' : 'rewritten')}`);
+  }
+  assert.deepEqual(changed, [], 'a command without our forms was not passed through byte-identical');
 });
 // V34 runs late on purpose: it registers about 2,300 values in the vault, and every later Bash-hook
 // call walks the whole vault - run before V38 it made V38 7 s and pushed the shipped-plugins vitest

@@ -30,11 +30,13 @@ The Bash hook expands a small allow-list, and refuses the command outright — w
 
 Supported **contexts**, one of which every reference must sit in:
 
-- a bare shell word, including inside `$( )`;
+- a bare shell word;
 - the complete contents of a single-quoted word;
 - the complete contents of a double-quoted word.
 
-**A heredoc body is not a supported context — changed in this release.** A reference written inside any heredoc body, quoted (`<<'EOF'`) or not (`<<EOF`), stays **literal text** in what the command writes: it is not expanded, not prefetched, and does not refuse the command. The guard cannot tell "inject this secret into a file" from "write a document, a test or a brief that mentions a reference", and the first is exactly the path that puts a secret on disk. To inject secrets into a file, use 1Password's own `op inject`, outside the guard. Earlier releases expanded a reference on an unquoted heredoc line and refused one in a quoted heredoc; both now pass through as text.
+A reference inside a command substitution (`"$(printf %s secret:env:NAME)"`) is **no longer a supported context** (round 11, see "The allow-list" below): it is refused. The literal `op read` form inside one stays accepted.
+
+**A heredoc body is not a supported context.** A reference written inside any heredoc body, quoted (`<<'EOF'`) or not (`<<EOF`), stays **literal text** in what the command writes: it is not expanded, not prefetched, and does not refuse the command. The guard cannot tell "inject this secret into a file" from "write a document, a test or a brief that mentions a reference", and the first is exactly the path that puts a secret on disk. To inject secrets into a file, use 1Password's own `op inject`, outside the guard.
 
 The guard ends a heredoc body exactly where bash does, measured against bash 5.2: in an **unquoted** heredoc bash joins a line ending in an odd number of backslashes with the next one *before* comparing it with the delimiter (`text\` then `EOF` does not end the body; `EO\` then `F` does), a quoted delimiter joins nothing, and `<<-` strips leading tabs from the joined line. When it cannot place the end — an unterminated body, a delimiter spelled with `$` such as `<<$'EOF'` — a command that carries a reference anywhere, body included, is refused.
 
@@ -44,15 +46,22 @@ A `# comment` after a supported reference ends the line rather than opening unfi
 
 ### The guard acts on its own forms — and nothing else
 
-The guard acts on the reference forms above and on the one literal `op read` form. **A command that carries none of them runs untouched, whatever it mentions** — `op`, `read`, a parameter, a wrapper, ANSI-C quoting, backticks. It does not go looking for other ways a shell might end up running `op`.
+The guard acts on the reference forms above and on the literal `op read` words. **A command that carries none of them runs untouched, byte for byte, whatever it contains** — `op`, `read`, parameters, loops, functions, substitutions, ANSI-C quoting, backticks. It does not go looking for other ways a shell might end up running `op`.
 
-A command that **does** use one of these forms may only be written in text the guard reads literally. It is refused, with the construct named, if anywhere in it there is:
+### The allow-list — what a command using these forms may contain (changed in round 11)
 
-- ANSI-C quoting (`$'...'`), locale quoting (`$"..."`), a backtick substitution, or a NUL byte;
-- a command name the guard cannot read literally — a parameter (`$CMD`), a command substitution (`$(...)`), a glob, brace expansion, or a leading `~` — **wherever bash reads a command name**: the start of a command or pipeline stage, a subshell or `{ }` group, a `$( )` or `<( )`, after `!`, `time`, `time -p`, `coproc`, `if`/`then`/`else`/`elif`/`while`/`until`/`do`, after leading assignments and redirections (`2>/dev/null "$CMD"`), in a `case` body (after a pattern's `)` and after `;;`, `;&`, `;;&`), in a function body (`f() { … }`, `function f { … }`), as the argument of the builtins `exec`, `command` and `builtin`, and as the command of a **listed external wrapper** (below);
-- shell syntax in which the guard cannot place every command name (an unterminated `case`, a stray `;;`), or a heredoc whose end it cannot place (see below).
+A command that **does** use one of these forms must fit a small grammar. Anything outside it is refused, and the refusal names the construct and says what the grammar accepts. The grammar:
 
-The documented `op read` form written where the shell looks for a command name but without a literal reference (`op read "$REF"`, `op --account=team read "$REF"`) is refused too. The same words as arguments (`echo op read foo`) are text, not an invocation. Behind a builtin or listed wrapper (`timeout 5 op read secret:env:REF`), the same form is refused when the command carries one of the guard's reference forms: there it would run `op` on a value the guard bound and never prefetched.
+- **simple commands** joined by `;`, `&&`, `||`, `|`, `&` or a newline;
+- each **command name a literal word** — quoting allowed (`"printf"`, `/usr/bin/printf`) — or a listed wrapper followed, recursively, by a literal command name (below); `exec`, `command` and `builtin` count as wrappers;
+- every **word** literal (quoted or not), one of the guard's forms, or a **double-quoted** string holding only literal text and `$NAME` / `${NAME}` — one field whatever the value. An **unquoted** `$NAME` is refused (field splitting moves words, and with them the command position), and so is every other expansion: `${…}` with an operator (`:-`, `#`, `%`, `/`, `^`, `,`, `@`, `!`), `$1`/`$@`/`$?`, a glob, brace expansion;
+- **no command substitution** (`$( )`, backticks), process substitution or arithmetic — except the literal `op read` form in `$( )`, double-quoted or as an assignment value: `export TOKEN=$(op read 'op://…')`, `curl -H "Authorization: Bearer $(op read 'op://…')"`;
+- **redirections with a literal target**; **at most one heredoc**, with a plain delimiter (`EOF`, `'EOF'`, `"EOF"`); an unquoted heredoc body may hold `$NAME` and `${NAME}` but no substitution;
+- **no compound command**: no `if`, `case`, `for`, `while`, `until`, `select`, function, `coproc`, `time`, `!`, subshell `( )`, group `{ }`, array, `[[ ]]` or `(( ))`; no `eval`, `source`, `.`, `alias` or `trap`.
+
+Why: rounds 7 to 10 each closed spellings of "a command name the guard cannot read" (a `case` body, a function body, `time -p`, nested heredocs, `${Y:-$(…)}`, an unquoted wrapper operand), and each review found the next one. Bash has more grammar than a deny-list can enumerate, so the guard now accepts a grammar it reads completely and refuses the rest. **If you need anything outside it, write that command without a reference, or move the reference into a simple command of its own.**
+
+The documented `op read` form written where the shell runs it but without a literal reference (`op read "$REF"`, `op --account=team read "$REF"`) is refused too. The same words as arguments (`echo op read foo`) are text, not an invocation. Behind a builtin or listed wrapper (`timeout 5 op read secret:env:REF`), the same form is refused when the command carries one of the guard's reference forms: there it would run `op` on a value the guard bound and never prefetched.
 
 #### Listed external wrappers — a fixed list
 
@@ -78,13 +87,13 @@ Short options may be clustered (`-nu root`) and long options abbreviated (`--sig
 
 **Every other program that runs its arguments is out of scope, at the same weight as the rule above**: `strace`, `watch`, `flock`, `parallel`, `ssh`, `busybox`, `su -c`, a script of your own. A computed command name inside one of them, even beside the guard's forms, is not refused. The list is fixed on purpose: finding every program that runs its arguments cannot be won from the command text.
 
-If you need `$'\t'`, backticks or a computed command name in a command, write that command without a reference in it.
+If you need `$'\t'`, backticks, a loop or a computed command name in a command, write that command without a reference in it.
 
 #### Out of scope: computed, aliased, eval'd or wrapped `op` invocations
 
-**This is a stated limit, at the same weight as the rule above.** An `op` invocation the guard's own forms do not spell — `CMD=op; "$CMD" read "$REF"`, `eval 'op read "$REF"'`, an alias, a function, `$'op' read`, `/usr/bin/o? read`, or `exec`/`command`/`env` in front of `op read "$REF"` — is **not refused and not prefetched**. (`time op read "$REF"` is not in this list: `time` is a reserved word, bash reads the next word as a command name, and the documented form written there without a literal reference is refused.) A wrapper outside the listed ones is not examined even in a command that uses one of the guard's forms (see "Listed external wrappers"). Its output is protected only by the pattern detectors and by values already in the vault. A short credential that matches no pattern and was never resolved through a reference this session is not masked in that output.
+**This is a stated limit, at the same weight as the rule above.** An `op` invocation the guard's own forms do not spell — `CMD=op; "$CMD" read "$REF"`, `eval 'op read "$REF"'`, an alias, a function, `$'op' read`, `/usr/bin/o? read`, or `exec`/`command`/`env` in front of `op read "$REF"` — is **not refused and not prefetched**. (`time op read "$REF"` is not in this list: the literal `op read` words make it one of the guard's commands, and `time` is outside the allow-list.) A wrapper outside the listed ones is not examined even in a command that uses one of the guard's forms (see "Listed external wrappers"), and neither is a shell **function or alias** defined earlier under a literal command name: the allow-list reads names, not what the shell resolves them to. Its output is protected only by the pattern detectors and by values already in the vault. A short credential that matches no pattern and was never resolved through a reference this session is not masked in that output.
 
-Four rounds of review showed why the guard stops here: every attempt to find such invocations from the command text was bypassed by the next spelling, and the attempts refused ordinary work (`npm --prefix "$dir" run build`, `rg "$pattern" read`) along the way. A guard that is both bypassable and in the way gets switched off.
+Several rounds of review showed why the guard stops here: every attempt to find such invocations from the command text was bypassed by the next spelling, and the attempts refused ordinary work (`npm --prefix "$dir" run build`, `rg "$pattern" read`) along the way. A guard that is both bypassable and in the way gets switched off.
 
 ### What triggers a real `op` call
 
