@@ -36,6 +36,19 @@ function reportFinding(line) {
   return line.slice(2).trim()
 }
 
+function attackAccountSection(content) {
+  const lines = content.split(/\r?\n/)
+  const start = lines.findIndex((line) => /^## No-finding attack account\s*$/i.test(line))
+  if (start < 0) return null
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('## '))
+  return lines.slice(start, end < 0 ? lines.length : end).join('\n').trim()
+}
+
+function laneAttackAccount(report, index) {
+  const body = report.attackAccount.replace(/^## No-finding attack account\s*/i, '').trim()
+  return `### Lane ${index + 1}\n${body}`
+}
+
 function combinedCriticReport(reports) {
   const parsed = reports.map((content) => {
     const outcome = /^VERDICT:\s*(approved|changes-requested)\s*$/mi.exec(content)?.[1]
@@ -43,7 +56,7 @@ function combinedCriticReport(reports) {
     const lines = findingsText.split(/\r?\n/)
     const sectionEnd = lines.findIndex((line) => /^#/.test(line))
     const findings = (sectionEnd < 0 ? lines : lines.slice(0, sectionEnd)).map(reportFinding).filter(Boolean).filter((finding) => !/^(?:none\.?|no (?:issues?|findings?)(?: found)?\.?)$/i.test(finding))
-    const attackAccount = hasPerSectionAttackAccount(content) ? /(?:^|\n)## No-finding attack account\s*\r?\n[\s\S]*?(?=\r?\n## |$)/i.exec(content)?.[0].trim() ?? null : null
+    const attackAccount = hasPerSectionAttackAccount(content) ? attackAccountSection(content) : null
     return { outcome, findings, attackAccount }
   })
   if (parsed.some((report) => !report.outcome || report.outcome === 'changes-requested' && report.findings.length === 0 || report.outcome === 'approved' && report.findings.length === 0 && !report.attackAccount)) return null
@@ -52,7 +65,7 @@ function combinedCriticReport(reports) {
   const digest = reports.map((content) => /^plan sha256:\s*[a-f0-9]{64}\s*$/mi.exec(content)?.[0]).find(Boolean)
   const findingLines = findings.map((finding) => `- ${finding}`).join('\n')
   const attackAccount = outcome === 'approved' && parsed.every((report) => report.attackAccount)
-    ? `\n## No-finding attack account\n${parsed.map((report, index) => `### Lane ${index + 1}\n${report.attackAccount.replace(/^## No-finding attack account\s*/i, '').trim()}`).join('\n\n')}\n`
+    ? `\n## No-finding attack account\n${parsed.map(laneAttackAccount).join('\n\n')}\n`
     : ''
   return `VERDICT: ${outcome}\nFINDINGS:\n${findingLines}${findings.length ? '\n' : ''}${digest ?? ''}\n${attackAccount}`
 }

@@ -417,7 +417,7 @@ function snapshotWorkingTree(root, laneDir, git) {
     return tree
   } catch (error) {
     const detail = error?.stderr?.toString().trim() || (error instanceof Error ? error.message : String(error))
-    throw new Error(`review snapshot failed: ${detail}`)
+    throw new Error(`review snapshot failed: ${detail}`, { cause: error })
   } finally {
     removeFile(index)
     removeFile(`${index}.lock`)

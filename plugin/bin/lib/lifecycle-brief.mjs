@@ -28,14 +28,15 @@ Severity policy:
 - The anchor field is mandatory for every CRITICAL, HIGH, or MEDIUM finding. Omitting it makes the whole report invalid. Use \`[anchor: none]\` explicitly when no anchor resolves; that finding is routed instead of blocking.
 - Use \`[CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <finding>\`.
 `
-  let priorFindingNumber = 0
+  const priorFindingOffsets = priorRounds.map((_, index) => priorRounds.slice(0, index).reduce((total, prior) => total + prior.findings.length, 0))
+  const patchBaseLabel = phase === 'review' && priorRounds.length > 0 ? 'the fix since previously reviewed tree' : 'construction base'
   const priorRoundsSection = priorRounds.length > 0
     ? `
 ## Prior rounds (runner-owned, trusted)
 
 These findings come from prior ${phase} reports attested by the runner. You may not reopen a point a prior round demanded, or reverse a prior round's accepted position, unless you cite new evidence. A finding may use \`extends prior finding <n>\`; the runner counts that declaration as recurrence.
 
-${priorRounds.map(({ round, findings }) => `### Round ${round}\n${findings.map((finding) => `- Prior finding ${priorFindingNumber += 1}: ${finding}`).join('\n')}`).join('\n\n')}
+${priorRounds.map(({ round, findings }, roundIndex) => `### Round ${round}\n${findings.map((finding, index) => `- Prior finding ${priorFindingOffsets[roundIndex] + index + 1}: ${finding}`).join('\n')}`).join('\n\n')}
 `
     : ''
   const discoverySection = phase === 'critic' && discovery !== null
@@ -56,7 +57,7 @@ ${rules ? `\n## Rules that apply to this role (authoritative)\n\n${rules}\n` : '
 ## Artefacts to judge
 
 ${artifacts.map((artifact) => `- \`${artifact}\``).join('\n')}
-${constructionBase ? `\nThe prospective implementation patch is \`${artifacts[0]}\`, computed against ${phase === 'review' && priorRounds.length > 0 ? 'the fix since previously reviewed tree' : 'construction base'} \`${constructionBase}\`.` : ''}
+${constructionBase ? `\nThe prospective implementation patch is \`${artifacts[0]}\`, computed against ${patchBaseLabel} \`${constructionBase}\`.` : ''}
 ${snapshotDir ? `\nThese are read-only launch inputs in the runner-owned snapshot directory \`${snapshotDir}\`.` : ''}
 ${discoverySection}
 
