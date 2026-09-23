@@ -49,7 +49,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'wt-second-opinion-codex-'))
   const now = options.now ?? Date.now
   const wait = options.wait ?? pause
-  const stopTimeoutMs = options.stopTimeoutMs ?? 750
+  const remove = options.removeRoot ?? rmSync
+  const stopTimeoutMs = options.stopTimeoutMs ?? (adapter.platform === 'win32' ? 3_000 : 750)
   const pollMs = options.pollMs ?? 25
   let identity = null
   let claimedPid = null
@@ -57,7 +58,12 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   let stopped = false
 
   const removeRoot = () => {
-    try { rmSync(root, { recursive: true, force: true }) } catch { /* best-effort exit cleanup */ }
+    for (let attempt = 0; attempt <= 10; attempt += 1) {
+      try { remove(root, { recursive: true, force: true }); return } catch (error) {
+        if (!['EPERM', 'EBUSY'].includes(error?.code) || attempt === 10) return
+        wait(50)
+      }
+    }
   }
 
   function snapshot() {

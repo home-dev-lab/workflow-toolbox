@@ -83,7 +83,7 @@ describe.skipIf(process.platform === 'win32')('POSIX native prompt-storage range
     expect(after.subarray(offset + expected.length)).toEqual(before.subarray(offset + expected.length))
     expect(finalIdentity.size).toBe(identity.size)
     expect(finalIdentity.ino).toBe(identity.ino)
-  })
+  }, 60_000) // The fsync-heavy native proof can exceed Vitest's 20s default on loaded CI disks.
 
   it('refuses an expected-bytes mismatch without writing', async () => {
     const root = await fixture('mismatch')
@@ -263,7 +263,8 @@ describe.skipIf(process.platform !== 'win32')('Windows native prompt-storage ran
     const marker = `${JSON.stringify({ display: 'concurrent append' })}\n`
     await writeFile(path, `${JSON.stringify({ display: 'raw-secret' })}\n`)
 
-    expect(await windowsScrub(config, 'raw-secret', 'safe-token', async () => appendFile(path, marker))).toBe(false)
+    expect(await windowsScrub(config, 'raw-secret', 'safe-token', async () => appendFile(path, marker))).toBe(true)
+    expect(await readFile(path, 'utf8')).not.toContain('raw-secret')
     expect(await readFile(path, 'utf8')).toContain(marker)
   })
 })

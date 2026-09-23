@@ -1967,7 +1967,7 @@ await test('V31 a command using our forms never runs a program whose name the gu
     const notCommands = [];
     for (const [before, after, sane = true] of positions) {
       if (!sane) continue;
-      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { PATH: `${directory}:${process.env.PATH}` } });
+      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { ...process.env, PATH: `${directory}:${process.env.PATH}` } });
       if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
     }
     assert.deepEqual(notCommands, [], 'bash did not read a command name at these positions');
@@ -2197,9 +2197,12 @@ await test('V38 a command using our forms never runs, through a listed external 
   try {
     writeFileSync(join(directory, 'mark'), '#!/bin/sh\nprintf MARK >&9\n', { mode: 0o755 });
     const notCommands = [];
+    const darwinUnsupported = /^(?:env --(?:unset|uns=|chdir|ignore-signal)|timeout\b|nice --adjustment|stdbuf --output|setsid\b|ionice\b|taskset\b|echo x \| xargs -(?:l|e)\b|env A=1 timeout\b|nohup setsid\b|command timeout\b|echo x \| xargs timeout\b|\( timeout\b)/;
     for (const [before, after, sane = true] of positions) {
-      if (!sane) continue;
-      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { PATH: `${directory}:/usr/bin:/bin` } });
+      // These rows describe GNU utilities that macOS does not ship. Their guard parsing is still
+      // exercised below; only the impossible real-command sanity probe is skipped.
+      if (!sane || (process.platform === 'darwin' && darwinUnsupported.test(before))) continue;
+      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { ...process.env, PATH: `${directory}:/usr/bin:/bin` } });
       if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
     }
     assert.deepEqual(notCommands, [], 'bash did not run the wrapped command at these positions');

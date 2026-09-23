@@ -54,16 +54,31 @@ describe('lane supervisor safety core', () => {
     expect(classifyLane(record, { platform: 'darwin', inspect: () => null, processExists: () => null })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-ps', worker: 'unknown', child: 'unknown' })
   })
 
-  it('refreshes the Darwin process table when inspection switches to another pid', () => {
+  it('reuses one complete Darwin process table when inspection switches to another present pid', () => {
     const start = 'Wed Sep 16 12:34:56 2026'
     const execFile = vi.fn((command: string) => command === 'ps'
-      ? { status: 0, stdout: execFile.mock.calls.filter(([program]) => program === 'ps').length === 1
-        ? `  100 ${start}   100 S node launcher.mjs\n  432 ${start}   432 S node worker.mjs\n`
-        : `  100 ${start}   100 S node launcher.mjs\n  432 ${start}   432 Z node worker.mjs\n` }
+      ? { status: 0, stdout: `  100 ${start}   100 S node launcher.mjs\n  432 ${start}   432 S node worker.mjs\n` }
       : { status: 1, stdout: '' })
     expect(inspectProcess(100, { platform: 'darwin', spawnSync: execFile, captureCwd: false })).not.toBeNull()
-    expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile, captureCwd: false })).toBeNull()
-    expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(2)
+    expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile, captureCwd: false })).not.toBeNull()
+    expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(1)
+  })
+
+  it('ages a slow Darwin cwd snapshot from provider completion instead of invocation', () => {
+    vi.useFakeTimers()
+    try {
+      const execFile = vi.fn((program: string) => {
+        if (program === 'lsof') vi.advanceTimersByTime(150)
+        return program === 'ps'
+          ? { status: 0, stdout: '  432 Wed Sep 16 12:34:56 2026   431 S /usr/local/bin/node worker.mjs\n' }
+          : { status: 0, stdout: 'p432\nfcwd\nn/Users/runner/work/lane\n' }
+      })
+      expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).not.toBeNull()
+      expect(inspectProcess(432, { platform: 'darwin', spawnSync: execFile })).not.toBeNull()
+      // ps legitimately refreshes because the intervening lsof read exceeded its TTL.
+      expect(execFile.mock.calls.filter(([program]) => program === 'ps')).toHaveLength(2)
+      expect(execFile.mock.calls.filter(([program]) => program === 'lsof')).toHaveLength(1)
+    } finally { vi.useRealTimers() }
   })
 
   it('names the Windows evidence source when PowerShell cannot be read', () => {

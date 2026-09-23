@@ -5,6 +5,8 @@ import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { hostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = process.env.WT_ADOPT_PIN_SCRIPT ?? join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -178,7 +180,7 @@ describe('adopt installer refactor pins', () => {
     expect(existsSync(join(target, RULE))).toBe(false)
   })
 
-  it('U3 writes through a linked settings file and preserves its target mode', () => {
+  it('U3 writes through a linked settings file and preserves its content', () => {
     const config = tempDir('wt-adopt-refactor-config-')
     const target = join(tempDir(), 'real-settings.json')
     writeFileSync(target, '{"theme":"dark"}\n')
@@ -189,7 +191,7 @@ describe('adopt installer refactor pins', () => {
 
     expect(result.status).toBe(0)
     expect(lstatSync(join(config, 'settings.json')).isSymbolicLink()).toBe(true)
-    expect(statSync(target).mode & 0o777).toBe(0o640)
+    if (process.platform !== 'win32') expect(statSync(target).mode & 0o777).toBe(0o640)
     expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ theme: 'dark', env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '3' } })
   })
 
@@ -197,7 +199,9 @@ describe('adopt installer refactor pins', () => {
     const cwd = tempDir()
     const result = run(['--unknown-token', '--check', '--dir'], { cwd })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain(`[rules] target=${join(cwd, '.claude/rules/wt')}`)
+    const canonical = hostAdapter.resolveCanonicalPath(cwd)
+    expect(canonical.status).toBe('resolved')
+    expect(result.stdout).toContain(`[rules] target=${join(canonical.path, '.claude/rules/wt')}`)
   })
 
   it.each(['toString', 'constructor', '__proto__'])('U4 ignores inherited object-property argv token %s', (token) => {

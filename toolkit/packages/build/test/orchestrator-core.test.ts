@@ -565,7 +565,7 @@ describe('SDK orchestrator judge', () => {
     expect(f.launches.every((launch) => JSON.stringify(launch).includes(JSON.stringify(plugins)))).toBe(true)
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
     expect(prompts).toEqual([
-      `${join(f.root, 'AGENTS.md')} is the repository's contributor guide; read it before planning or changing code.\n\nKNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
+      `${realpathSync(join(f.root, 'AGENTS.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nKNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
       'Judge card 2: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
       'Every card is decided: write_judgment.',
     ])

@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -13,7 +13,7 @@ const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
 afterEach(() => {
   vi.restoreAllMocks()
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 function fixture(consented: boolean) {
@@ -235,7 +235,7 @@ describe('second-opinion advisor', () => {
 
     expect(query).toHaveBeenCalledOnce()
     expect(queryInput).toMatchObject({
-      prompt: `${join(f.repo, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
+      prompt: `${realpathSync(join(f.repo, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
         model: 'opus',
         effort: 'medium',
@@ -386,7 +386,10 @@ describe('second-opinion advisor', () => {
       expect(waitFor(() => lines(f.out).at(-1) === `EXIT=${expectedExit}`)).toBe(true)
     } finally {
       if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
-      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (brokerPid && processExists(brokerPid)) {
+        if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
+        else process.kill(-brokerPid, 'SIGKILL')
+      }
       if (otherBroker?.pid && processExists(otherBroker.pid)) process.kill(-otherBroker.pid, 'SIGKILL')
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
@@ -408,7 +411,10 @@ describe('second-opinion advisor', () => {
       expect(waitFor(() => !processExists(appPid))).toBe(true)
       expect(waitFor(() => !processExists(brokerPid))).toBe(true)
     } finally {
-      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (brokerPid && processExists(brokerPid)) {
+        if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
+        else process.kill(-brokerPid, 'SIGKILL')
+      }
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
   })
@@ -437,7 +443,10 @@ describe('second-opinion advisor', () => {
       expect(waitFor(() => !processExists(appPid))).toBe(true)
       expect(waitFor(() => !processExists(brokerPid))).toBe(true)
     } finally {
-      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (brokerPid && processExists(brokerPid)) {
+        if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
+        else process.kill(-brokerPid, 'SIGKILL')
+      }
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
   })

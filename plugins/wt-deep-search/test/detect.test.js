@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import { detectProviders } from '../src/detect.js';
 
+const detectPosixProviders = (env, fs) => detectProviders(env, fs, { platform: 'linux' });
+
 function fakeFs(existingPaths, overrides = {}) {
   const paths = new Set(existingPaths);
   const metadata = new Map(Object.entries(overrides));
@@ -40,7 +42,7 @@ test('detects every available provider', () => {
     '/usr/local/bin/opencode',
   ]);
 
-  assert.deepEqual(detectProviders(env, fs), {
+  assert.deepEqual(detectPosixProviders(env, fs), {
     mirror: { available: true, path: '/home/tester/.claude-code-docs' },
     brave: { available: true },
     exa: { available: true },
@@ -49,7 +51,7 @@ test('detects every available provider', () => {
 });
 
 test('accepts BRAVE_SEARCH_API_KEY when the primary key is absent', () => {
-  const providers = detectProviders(
+  const providers = detectPosixProviders(
     {
       HOME: '/home/tester',
       PATH: '',
@@ -62,7 +64,7 @@ test('accepts BRAVE_SEARCH_API_KEY when the primary key is absent', () => {
 });
 
 test('rejects a whitespace-only BRAVE_API_KEY', () => {
-  const providers = detectProviders(
+  const providers = detectPosixProviders(
     { HOME: '/home/tester', PATH: '', BRAVE_API_KEY: '   ' },
     fakeFs([]),
   );
@@ -74,7 +76,7 @@ test('rejects a whitespace-only BRAVE_API_KEY', () => {
 });
 
 test('reports every unavailable provider with a reason', () => {
-  const providers = detectProviders(
+  const providers = detectPosixProviders(
     { HOME: '/home/tester', PATH: '/usr/bin' },
     fakeFs(['/home/tester/.claude-code-docs']),
   );
@@ -100,7 +102,7 @@ test('reports every unavailable provider with a reason', () => {
 });
 
 test('requires both the mirror directory and manifest', () => {
-  const providers = detectProviders(
+  const providers = detectPosixProviders(
     { HOME: '/home/tester' },
     fakeFs(['/home/tester/.claude-code-docs/docs_manifest.json']),
   );
@@ -110,7 +112,7 @@ test('requires both the mirror directory and manifest', () => {
 });
 
 test('reports missing HOME and PATH without throwing', () => {
-  const providers = detectProviders({}, fakeFs([]));
+  const providers = detectPosixProviders({}, fakeFs([]));
 
   assert.deepEqual(providers.mirror, {
     available: false,
@@ -123,11 +125,11 @@ test('reports missing HOME and PATH without throwing', () => {
 });
 
 test('rejects an opencode directory and a non-executable binary', () => {
-  const directory = detectProviders(
+  const directory = detectPosixProviders(
     { PATH: '/bin' },
     fakeFs(['/bin/opencode'], { '/bin/opencode': { type: 'directory' } }),
   );
-  const nonExecutable = detectProviders(
+  const nonExecutable = detectPosixProviders(
     { PATH: '/bin' },
     fakeFs(['/bin/opencode'], { '/bin/opencode': { executable: false } }),
   );
@@ -141,13 +143,13 @@ test('rejects a mirror whose manifest is not a readable regular file', () => {
     '/home/tester/.claude-code-docs',
     '/home/tester/.claude-code-docs/docs_manifest.json',
   ];
-  const wrongType = detectProviders(
+  const wrongType = detectPosixProviders(
     { HOME: '/home/tester' },
     fakeFs(paths, {
       '/home/tester/.claude-code-docs/docs_manifest.json': { type: 'directory' },
     }),
   );
-  const unreadable = detectProviders(
+  const unreadable = detectPosixProviders(
     { HOME: '/home/tester' },
     fakeFs(paths, {
       '/home/tester/.claude-code-docs/docs_manifest.json': { readable: false },

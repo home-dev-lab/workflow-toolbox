@@ -3,7 +3,7 @@
 
 import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { classifyLane, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'
+import { classifyLane, laneHostPlatform, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'
 
 const DEFAULT_POLL = 30
 const DEFAULT_TIMEOUT = 5400
@@ -87,7 +87,9 @@ function main() {
     if (['terminal', 'gone'].includes(verdict.status)) {
       if (/^EXIT=(-?\d+)$/.test(marker ?? '')) {
         const exit = Number(/^EXIT=(-?\d+)$/.exec(marker)[1])
-        const cause = record?.killedBy ? ` cause=${record.killedBy.cause} signal=${record.killedBy.signal}` : ''
+        const cause = laneHostPlatform === 'win32' && exit === 137
+          ? ' cause=unavailable-on-this-platform signal=unavailable'
+          : record?.killedBy ? ` cause=${record.killedBy.cause} signal=${record.killedBy.signal}` : ''
         process.stdout.write(`LANE DONE exit=${exit}${cause} report=${reportSize(path.join(lane, 'report.md'))} log=${log}\n`)
         return exit
       }

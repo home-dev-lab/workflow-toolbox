@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { withRepositoryGuide } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { hostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const roots: string[] = []
 const guideLine = (path: string) => `${path} is the repository's contributor guide; read it before planning or changing code.`
@@ -29,7 +31,11 @@ describe('repository contributor-guide prompt', () => {
     ] as const
     for (const [name, setup, expectedPaths] of cases) {
       const root = fixture(setup)
-      const lines = expectedPaths(root).map((path) => guideLine(resolve(path)))
+      const lines = expectedPaths(root).map((path) => {
+        const canonical = hostAdapter.resolveCanonicalPath(resolve(path))
+        expect(canonical.status, `${name}: canonical path`).toBe('resolved')
+        return guideLine(canonical.path)
+      })
       expect(withRepositoryGuide(root, 'Task prompt'), name).toBe(lines.length ? `${lines.join('\n')}\n\nTask prompt` : 'Task prompt')
     }
   })

@@ -178,6 +178,27 @@ describe('second-opinion Codex broker ownership', () => {
     expect(existsSync(root)).toBe(false)
   })
 
+  it('retries a briefly held Windows temp directory without changing truthful cleanup output', () => {
+    let processes = [companion(2125), broker(2132, 2125)]
+    const removeRoot = vi.fn((root: string, options: { recursive: boolean, force: boolean }) => {
+      if (removeRoot.mock.calls.length < 3) throw Object.assign(new Error('held'), { code: 'EPERM' })
+      rmSync(root, options)
+    })
+    const ownership = createCodexBrokerOwnership({
+      platform: 'win32',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: () => { processes = []; return { status: 'ended' } },
+      forceEndProcessFamily: vi.fn(),
+    }, {}, { removeRoot, wait: vi.fn() })
+    const root = ownership.env.CLAUDE_PLUGIN_DATA
+    roots.push(root)
+    ownership.capture(2125)
+
+    expect(ownership.stop()).toEqual(['stopped broker/app-server process family pid 2132 started by this call'])
+    expect(removeRoot).toHaveBeenCalledTimes(3)
+    expect(existsSync(root)).toBe(false)
+  })
+
   it('names the degraded path when neither private state nor process discovery can identify the broker', () => {
     const ownership = createCodexBrokerOwnership({
       readProcessSnapshot: () => ({ supported: false, processes: [], reason: 'process discovery unavailable on this platform' }),

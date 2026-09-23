@@ -11,6 +11,7 @@ const WINDOWS_APPROXIMATE_START_SKEW_MS = 2_000
 const darwinProcessTableCache = new WeakMap()
 const darwinCwdCache = new WeakMap()
 const windowsProcessCache = new WeakMap()
+export const laneHostPlatform = process.platform
 
 export function sameIdentity(expected, actual) {
   let sameCwd = true
@@ -52,9 +53,10 @@ function runEvidence(command, args, execFile, timeoutMs) {
   } catch { return { status: 'unavailable' } }
 }
 
-function darwinProcessTable(execFile, pid, now = Date.now()) {
+function darwinProcessTable(execFile, pid, clock = Date.now) {
+  const now = clock()
   const cached = darwinProcessTableCache.get(execFile)
-  if (cached && cached.requestedPid === pid && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
+  if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
     const missReadAt = cached.missReadAt.get(pid)
     if (cached.result.status !== 0 || cached.result.value.has(pid) || (missReadAt !== undefined && now - missReadAt <= DARWIN_PROCESS_TABLE_TTL_MS)) return cached.result
   }
@@ -76,11 +78,13 @@ function darwinProcessTable(execFile, pid, now = Date.now()) {
     for (const presentPid of result.value.keys()) missReadAt.delete(presentPid)
     if (!result.value.has(pid)) missReadAt.set(pid, now)
   }
-  darwinProcessTableCache.set(execFile, { requestedPid: pid, readAt: now, result, missReadAt })
+  // A slow provider must not publish an entry whose TTL elapsed while the command ran.
+  darwinProcessTableCache.set(execFile, { readAt: clock(), result, missReadAt })
   return result
 }
 
-function darwinCwd(pid, execFile, now = Date.now()) {
+function darwinCwd(pid, execFile, clock = Date.now) {
+  const now = clock()
   const cached = darwinCwdCache.get(execFile)
   if (cached && now - cached.readAt <= DARWIN_PROCESS_TABLE_TTL_MS) {
     const missReadAt = cached.missReadAt.get(pid)
@@ -98,7 +102,8 @@ function darwinCwd(pid, execFile, now = Date.now()) {
   const missReadAt = new Map([...cached?.missReadAt ?? []].filter(([, readAt]) => now - readAt <= DARWIN_PROCESS_TABLE_TTL_MS))
   for (const presentPid of value.keys()) missReadAt.delete(presentPid)
   if (!value.has(pid)) missReadAt.set(pid, now)
-  darwinCwdCache.set(execFile, { readAt: now, value, missReadAt })
+  // lsof can be slow under CI load; age the snapshot from completion, not invocation.
+  darwinCwdCache.set(execFile, { readAt: clock(), value, missReadAt })
   return value.get(pid) ?? null
 }
 
@@ -135,7 +140,7 @@ function processStartSeconds(value) {
   return Math.floor(milliseconds / 1000)
 }
 
-function processExists(pid, { platform = process.platform, procRoot = '/proc', spawnSync: execFile = spawnSync, timeoutMs } = {}) {
+function processExists(pid, { platform = laneHostPlatform, procRoot = '/proc', spawnSync: execFile = spawnSync, timeoutMs } = {}) {
   if (platform === 'linux') return existsSync(path.join(procRoot, String(pid)))
   if (platform === 'darwin') {
     const result = darwinProcessTable(execFile, Number(pid))
