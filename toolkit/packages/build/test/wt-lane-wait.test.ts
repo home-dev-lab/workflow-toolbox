@@ -72,6 +72,13 @@ describe('wt-lane-wait', () => {
       : 'cause=kernel-oom signal=SIGKILL')
   })
 
+  it('waits for an exit marker published after the terminal supervision record', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 137 })); setTimeout(() => fs.appendFileSync('.lane/run.log', 'EXIT=137\\n'), 100); }, 80)")
+    const result = run(f.root)
+    expect(result.status).toBe(137)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=137/)
+  })
+
   it('returns 124 when the lane does not finish before timeout', () => {
     const f = fixture('setTimeout(() => {}, 30_000)')
     const result = run(f.root, '--timeout', '0.08')

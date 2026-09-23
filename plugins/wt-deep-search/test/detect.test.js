@@ -237,6 +237,40 @@ test('preserves the executable casing reported by the Windows filesystem', () =>
   });
 });
 
+test('uses the Windows directory entry when realpath preserves PATHEXT casing', () => {
+  const fs = fakeFs(['C:\\tools\\opencode.CMD']);
+  fs.realpathSync = (candidate) => candidate;
+  fs.readdirSync = () => ['opencode.cmd'];
+
+  const providers = detectProviders(
+    { PATH: 'C:\\tools', PATHEXT: '.CMD' },
+    fs,
+    { platform: 'win32' },
+  );
+
+  assert.deepEqual(providers.opencode, {
+    available: true,
+    path: 'C:\\tools\\opencode.cmd',
+  });
+});
+
+test('keeps the canonical Windows path when directory enumeration is unavailable', () => {
+  const fs = fakeFs(['C:\\TOOLS~1\\opencode.CMD']);
+  fs.realpathSync = () => 'C:\\Program Files\\opencode.CMD';
+  fs.readdirSync = () => { throw new Error('EACCES'); };
+
+  const providers = detectProviders(
+    { PATH: 'C:\\TOOLS~1', PATHEXT: '.CMD' },
+    fs,
+    { platform: 'win32' },
+  );
+
+  assert.deepEqual(providers.opencode, {
+    available: true,
+    path: 'C:\\Program Files\\opencode.CMD',
+  });
+});
+
 test('does not ask win32 for an executable access mode', () => {
   const fs = fakeFs([
     'C/opencode',

@@ -45,7 +45,8 @@ describe('shipped wt-deep-search', () => {
       existsSync: (path: string) => path === candidate,
       statSync: () => ({ isDirectory: () => false, isFile: () => true }),
       accessSync: () => {},
-      realpathSync: () => 'C:\\tools\\opencode.cmd',
+      realpathSync: (path: string) => path,
+      readdirSync: () => ['opencode.cmd'],
     }
 
     expect(detectProviders({ PATH: 'C:\\tools' }, fs, { platform: 'win32' }).opencode).toEqual({

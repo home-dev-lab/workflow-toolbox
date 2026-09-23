@@ -807,7 +807,10 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       if (sameIdentity({ pid: state.childPid, argv: state.childArgv, startTime: state.childStartTime }, originalChild)) {
         killIdentity({ pid: state.childPid, argv: state.childArgv, startTime: state.childStartTime, cwd: state.worktree }, 'SIGKILL')
       }
-    } else killIdentity(workerIdentity, 'SIGTERM')
+    } else {
+      const actualWorker = inspectProcess(workerIdentity.pid)
+      if (sameIdentity(workerIdentity, actualWorker)) killIdentity(workerIdentity, 'SIGTERM')
+    }
   }, 60_000)
   it('journals a stalled episode again after it clears and recurs for the same runId', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 120')

@@ -59,6 +59,7 @@ const pause = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffe
 export function createCodexBrokerOwnership(adapter, env, options = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'wt-second-opinion-codex-'))
   const now = options.now ?? Date.now
+  const ownershipStartedAt = now()
   const wait = options.wait ?? pause
   const remove = options.removeRoot ?? rmSync
   const stopTimeoutMs = options.stopTimeoutMs ?? (adapter.platform === 'win32' ? 3_000 : 750)
@@ -98,8 +99,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     if (!processes) return null
     if (!identity) {
       const companion = processes.find((item) => item.pid === companionPid)
-      const companionStartedAt = processStart(companion, observedAt)
-      if (companionStartedAt === null) return null
+      const companionStartedAt = processStart(companion, observedAt) ?? ownershipStartedAt
       const statePid = brokerFromState(root)
       if (statePid) claimedPid = statePid
       const family = descendants(processes, companionPid)

@@ -131,6 +131,25 @@ describe('second-opinion Codex broker ownership', () => {
     expect(endProcessFamily).toHaveBeenCalledWith(2132)
   })
 
+  it('captures a verified Windows broker family when the companion exits during the first snapshot', () => {
+    let processes = [
+      broker(984, 3500, 500),
+      { pid: 4000, ppid: 984, elapsedMs: 250, command: 'codex.exe app-server' },
+    ]
+    const forceEndProcessFamily = vi.fn(() => { processes = []; return { status: 'ended', kind: 'process_tree' } })
+    const ownership = createCodexBrokerOwnership({
+      platform: 'win32',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily,
+    }, {}, { now: () => 20_000, stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+
+    expect(ownership.capture(3500)).toBe(984)
+    expect(ownership.stop()).toEqual(['stopped broker/app-server process family pid 984 started by this call'])
+    expect(forceEndProcessFamily).toHaveBeenCalledWith(984)
+  })
+
   it('rejects a state-file broker PID whose process started before this companion launch', () => {
     const endProcessFamily = vi.fn()
     const ownership = createCodexBrokerOwnership({

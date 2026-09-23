@@ -93,8 +93,10 @@ function main() {
         process.stdout.write(`LANE DONE exit=${exit}${cause} report=${reportSize(path.join(lane, 'report.md'))} log=${log}\n`)
         return exit
       }
-      process.stdout.write('LANE DIED exit=unknown\n')
-      return 1
+      if (Date.now() + opts.poll * 1000 > deadline) {
+        process.stdout.write('LANE DIED exit=unknown\n')
+        return 1
+      }
     }
     if (Date.now() + opts.poll * 1000 > deadline) break
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, opts.poll * 1000)
