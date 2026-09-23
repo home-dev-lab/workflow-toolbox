@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Extend the shipped ground-truth and durable-fix rules with directives for alternating comparison arms, run-specific gate logs with terminal completion markers, and resolving distributed-rule status from source at a named revision
 - Disable `secret:env:NAME` in `wt-secret-guard`: Claude Code refuses a whole hooks module whose `$.env.get` takes a non-literal name, so the guard loaded nothing in any real session while it read arbitrary variables. A command carrying the form is now refused with that reason and a pointer to `secret:file` or a 1Password reference; the form returns only with a design that names its variables literally. The toolkit suite now runs `claude plugin validate --strict` on every shipped plugin where the binary is available
 - Refactor the adopt installer into bounded parsing, settings, audit, managed-item, migration, and command seams while preserving its standalone CLI transcripts and file effects; settings verification now also proves the exact prerequisite values before publication
 - SDK pilot review loops now require criterion/task anchors, block only anchored MEDIUM-or-higher findings, route LOW and unanchored findings, review only each later harden diff with prior findings, and stop after three rounds with an explicit question for the parent; critic extensions count as recurrence and empty critics must account for their attacks or retry once
