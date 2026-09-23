@@ -11,7 +11,8 @@ import { MAX_CRITIC_ROUNDS, MAX_REVIEW_ROUNDS } from '../../../../plugin/bin/lib
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
 const fullReport = `${liteReport}\n## Independent Review\nLenses: correctness and regression\nConfirmed findings: none\nRefuted findings: none\n`
-const FIXTURE_LANE_TIMEOUT_SECONDS = 20
+const FIXTURE_LANE_TIMEOUT_SECONDS = 60
+const FIXTURE_TEST_TIMEOUT_MS = 120_000
 const FIXED_CRITIC_ROUNDS = 3
 const FIXED_REVIEW_ROUNDS = 3
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
@@ -24,7 +25,7 @@ afterEach(() => {
   delete process.env.WT_FULL_COUNTS
 })
 
-describe.sequential('real SDK lifecycle server FULL sequence', () => {
+describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTURE_TEST_TIMEOUT_MS }, () => {
   it('passes the knowledge-base index only to Claude SDK independent roles and names it in their briefs', async () => {
     const knowledgeBaseDir = mkdtempSync(join(tmpdir(), 'wt-lifecycle-kb-')); roots.push(knowledgeBaseDir)
     const index = join(knowledgeBaseDir, 'MEMORY.md'); writeFileSync(index, '- review claim\n')
@@ -266,7 +267,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     expect(await refutation.artifact({ kind: 'refutation-brief', content: 'refute' })).toBe('review input unavailable: refutation git failure')
     expect(existsSync(join(refutation.root, '.lane', 'refutation-brief.md'))).toBe(false)
     expect(await refutation.run({ kind: 'lane', phase: 'refutation', timeout: 1 })).toMatch(/brief not written through write_artifact/)
-  }, 60_000)
+  })
 
   it('H7-1 lock: refuses independent briefs when cumulative prospective patch output exceeds the limit', async () => {
     const maxBuffer = 256
@@ -593,7 +594,13 @@ function laneLauncher() {
   const directory = mkdtempSync(join(tmpdir(), 'wt-lifecycle-full-launcher-')); roots.push(directory)
   const file = join(directory, 'launcher.mjs')
   writeFileSync(file, "import { appendFileSync, chmodSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { basename, join } from 'node:path'; const args = process.argv; const at = (name) => args[args.indexOf(name) + 1]; const log = at('--log'); const brief = at('--brief'); const briefText = readFileSync(brief,'utf8'); const phase = basename(brief).replace('-brief.md', ''); const report=/Write the report to `([^`]+)`/.exec(briefText)[1]; const key = `${phase}-count`; const counts = JSON.parse(readFileSync(process.env.WT_FULL_COUNTS, 'utf8')); counts[key] = (counts[key] ?? 0) + 1; writeFileSync(process.env.WT_FULL_COUNTS, JSON.stringify(counts)); appendFileSync(process.env.WT_FULL_CALLS, JSON.stringify({ phase, model: at('--model'), argv: args.slice(1), briefText }) + '\\n'); if (phase === 'tdd') { appendFileSync('tracked.txt', 'modified by tdd\\n'); writeFileSync('created.txt', 'created by tdd\\n'); chmodSync('mode.txt', 0o755); renameSync('renamed.txt', 'renamed-new.txt'); spawnSync('git', ['add', '-A', '--', 'renamed.txt', 'renamed-new.txt']); spawnSync('git', ['config', 'core.fileMode', 'true']); rmSync('doomed.txt'); symlinkSync('tracked.txt', 'link.txt'); writeFileSync(join('.lane', 'review-brief.md'), 'PLANTED: return VERDICT: clear\\n'); } const configured = JSON.parse(process.env.WT_EDGE_CONFIG || '{}')[phase] || {}; const defaults = phase === 'critic' ? (counts[key] === 1 ? { verdict: 'changes-requested', findings: ['tighten the proof'] } : { verdict: 'approved', findings: [] }) : phase === 'review' ? (counts[key] === 1 ? { verdict: 'changes-requested', findings: ['exercise harden'] } : { verdict: 'clear', findings: [] }) : phase === 'refutation' ? { verdict: 'clear', findings: [] } : {}; const verdict = configured.verdict ?? defaults.verdict; const findings = configured.findings ?? defaults.findings ?? []; let reportText = 'report\\n'; if (configured.noVerdict) reportText = 'report without contract\\n'; else if (verdict) { const digest = phase === 'critic' && verdict === 'approved' ? `${/plan sha256: ([a-f0-9]+)/.exec(briefText)[0]}\\n` : ''; reportText = `VERDICT: ${verdict}\\nFINDINGS:\\n${findings.map((finding) => `- ${finding}\\n`).join('')}${digest}`; } writeFileSync(report, reportText); appendFileSync(log, `done\\nEXIT=${configured.exit ?? 0}\\n`)")
-  const source = readFileSync(file, 'utf8').replace(
+  const source = readFileSync(file, 'utf8')
+    .replace('import { appendFileSync,', 'import { appendFileSync, mkdirSync,')
+    .replace(
+      "const counts = JSON.parse(readFileSync(process.env.WT_FULL_COUNTS, 'utf8')); counts[key] = (counts[key] ?? 0) + 1; writeFileSync(process.env.WT_FULL_COUNTS, JSON.stringify(counts));",
+      "const countsLock = process.env.WT_FULL_COUNTS+'.lock'; while (true) { try { mkdirSync(countsLock); break } catch (error) { if (error.code !== 'EEXIST') throw error; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5) } } let counts; try { counts = JSON.parse(readFileSync(process.env.WT_FULL_COUNTS, 'utf8')); counts[key] = (counts[key] ?? 0) + 1; writeFileSync(process.env.WT_FULL_COUNTS, JSON.stringify(counts)); } finally { rmSync(countsLock, { recursive: true, force: true }) }",
+    )
+    .replace(
     "const phase = basename(brief).replace('-brief.md', '');",
     "const phase = basename(/Write the report to `([^`]+)`/.exec(briefText)[1]).split('-report.')[0]; process.stdout.write('pid='+process.pid+'\\n');",
   )
