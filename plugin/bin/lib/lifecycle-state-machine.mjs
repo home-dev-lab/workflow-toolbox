@@ -12,27 +12,26 @@ import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
-import { adaptiveRoundDecision, hasPerSectionAttackAccount, verdictFromReport } from './lifecycle-review-policy.mjs'
+import { adaptiveRoundDecision, hasPerSectionAttackAccount, reviewConvergenceDecision, verdictFromReport } from './lifecycle-review-policy.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
 export const AWAITING_FIDELITY_RESULT = 'accepted phase=awaiting_fidelity'
 const FIXED_CRITIC_ROUNDS = 3
-const FIXED_REVIEW_ROUNDS = 3
 export const MAX_CRITIC_ROUNDS = 6
-export const MAX_REVIEW_ROUNDS = 3
+export const MAX_REVIEW_ROUNDS = null
 export const lifecycleToolName = (name) => `mcp__${LIFECYCLE_MCP_KEY}__${name}`
 
 function lifecycleRound(state, phase) {
   if (phase === 'plan' || phase === 'critic') return state.planRound + 1
   if (phase === 'review' || phase === 'refutation') return state.reviewRound + 1
-  if (phase === 'harden') return state.reviewRound
+  if (phase === 'tdd' && state.reviewRound > 0) return state.reviewRound
   return null
 }
 
-export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']
+export const PHASES = ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'report']
 export { PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
-const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation', 'harden'])
+const LANE_PHASES = new Set(['tdd', 'critic', 'review', 'refutation'])
 const GATES = new Set(['typecheck', 'lint', 'test'])
 const ARTIFACTS = {
   plan: ['plan', 'plan.md'],
@@ -40,7 +39,6 @@ const ARTIFACTS = {
   brief: ['tdd', 'tdd-brief.md'],
   'review-brief': ['review', 'review-brief.md'],
   'refutation-brief': ['refutation', 'refutation-brief.md'],
-  'harden-brief': ['harden', 'harden-brief.md'],
   'pilot-report': ['report', 'pilot-report.md'],
 }
 const INDEPENDENT_ROLES = new Set(['critic', 'review', 'refutation'])
@@ -295,7 +293,7 @@ function validFindingAnchors(dodBullets, planContent) {
 function findingPolicyOptions(phase, state, dodBullets, laneDir, readRegularFile) {
   return {
     validAnchors: validFindingAnchors(dodBullets, readRegularFile(path.join(laneDir, 'plan.md'))),
-    previousHardenPatch: phase === 'review' && state.reviewBase ? readRegularFile(path.join(laneDir, 'review-input.diff')) : null,
+    previousFixPatch: phase === 'review' && state.reviewBase ? readRegularFile(path.join(laneDir, 'review-input.diff')) : null,
   }
 }
 function refusal(edge, missing, file) {
@@ -368,13 +366,10 @@ function recordReviewDecision(state, phase, verdict, blockingFindings, routedFin
     state.reviewRound += 1
     state.priorReviewRounds.push({ round: state.reviewRound, findings: [...verdict.findings], blockingFindings, findingDetails: verdict.findingDetails })
   }
-  const decision = changesRequested
-    ? adaptiveRoundDecision(state.priorReviewRounds, FIXED_REVIEW_ROUNDS, MAX_REVIEW_ROUNDS, state.reviewPlateauUsed)
-    : null
-  if (decision) state.reviewPlateauUsed = decision.plateauUsed
+  const decision = changesRequested ? reviewConvergenceDecision(state.priorReviewRounds) : null
   if (!decision || decision.continue) return { changesRequested, reason: null }
-  const reason = `${phase} still requests changes after ${state.reviewRound - 1} harden rounds`
-  state.partial = { phase, round: state.reviewRound, reason, findings: blockingFindings, question: `Should the run parent accept or revise these open blocking findings: ${blockingFindings.join('; ')}?` }
+  const reason = `${phase} non-convergence: ${decision.signal}`
+  state.partial = { phase, round: state.reviewRound, reason, findings: blockingFindings, question: `The ${phase} loop stopped because ${decision.signal}. The unresolved findings are: ${blockingFindings.join('; ')}. How should the run parent resolve them?` }
   return { changesRequested, reason }
 }
 
@@ -390,15 +385,20 @@ function applyCriticEmptyPolicy(state, verdict, reportContent, root, audit) {
 }
 
 function reviewNextPhase(phase, changesRequested) {
-  if (changesRequested) return 'harden'
+  if (changesRequested) return 'tdd'
   return phase === 'review' ? 'refutation' : 'report'
+}
+
+function writeReviewFindings(laneDir, state, phase, verdict, writeRegularFile) {
+  const rows = verdict.findingDetails.filter((finding) => finding.blocks).map((finding) => `- ${finding.raw}`)
+  writeRegularFile(path.join(laneDir, 'review-findings.md'), `# Review findings for TDD fix round ${state.reviewRound}\n\nSource: ${phase}\n\n${rows.join('\n')}\n`)
 }
 
 function initialLifecycleState() {
   return {
     phase: 'discovery', partial: null, deferred: null, pilotReportDigest: null,
     planRound: 0, priorCriticRounds: [], criticPlateauUsed: false, nonBlockingFindings: [],
-    reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewPlateauUsed: false, reviewBase: null, pendingReviewBase: null, findingsToRoute: [], criticEmptyRetries: 0,
+    reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewBase: null, pendingReviewBase: null, findingsToRoute: [], criticEmptyRetries: 0,
     handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
     resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
     pendingStop: null, stopped: false,
@@ -639,8 +639,9 @@ export function createLifecycleStateMachine({
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
     const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
     if (!INDEPENDENT_ROLES.has(phase)) {
-      const changelogInstructions = ['tdd', 'harden'].includes(phase) ? changelogSkillBody(changelogSkillPath) : ''
-      const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
+      const changelogInstructions = phase === 'tdd' ? changelogSkillBody(changelogSkillPath) : ''
+      const fixInstructions = phase === 'tdd' && state.reviewRound > 0 ? `## Review fix round ${state.reviewRound} (authoritative)\n\nRead the exact runner-owned findings in \`.lane/review-findings.md\`. Fix every in-scope finding red-first; route only genuine L4 work. Run targeted tests, typecheck, and lint, and leave zero warnings in touched files. Do not run the full suite in this lane; the lifecycle runs it once in VERIFY after this fix round.\n\n` : ''
+      const authoritative = `${roleRules ? `## Rules that apply to this role (authoritative)\n\n${roleRules}\n\n` : ''}${fixInstructions}${changelogInstructions ? `## Changelog instructions (authoritative)\n\n${changelogInstructions}\n\n` : ''}`
       const content = `${authoritative}${authoritative ? '## Pilot instructions\n\n' : ''}${context.replace(/\s*$/, '')}\n\nWrite the report to \`${reportPath}\`.\n`
       return snapshotDir
         ? { canonical: content, launch: `${content}\nThis brief is the read-only launch snapshot at \`${snapshotDir}\`; if another lane is started after this one ends, resume from the existing worktree state and preserve the same report and receipt contract. Do not rely on other background processes surviving the lane.\n` }
@@ -705,7 +706,7 @@ export function createLifecycleStateMachine({
         }
       : independentBrief({ ...options, artifacts })
   }
-  const { audit, evidencePath, laneEvidence, run: lifecycleRun, snapshotEvidence, verifySnapshot } = createLifecycleLaunch({
+  const { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run: lifecycleRun, snapshotEvidence, verifySnapshot } = createLifecycleLaunch({
     root,
     laneDir,
     executor,
@@ -879,10 +880,10 @@ export function createLifecycleStateMachine({
       } else if (!next) {
         return refusal('critic->next', 'admissible outcome', path.join(laneDir, 'critic-report.md'))
       }
-    } else if (state.phase === 'tdd' || state.phase === 'harden') {
+    } else if (state.phase === 'tdd') {
       const receipt = laneEvidence(state.phase)
       if (receipt) return receipt
-      if (state.phase === 'tdd' && frozenRoute === 'FULL') {
+      if (state.reviewRound === 0 && frozenRoute === 'FULL') {
         const planTasks = tasksBlock(fs.readFileSync(path.join(laneDir, 'plan.md'), 'utf8'))
         const briefTasks = tasksBlock(fs.readFileSync(path.join(laneDir, 'tdd-brief.md'), 'utf8'))
         if (!planTasks || planTasks !== briefTasks) {
@@ -917,13 +918,14 @@ export function createLifecycleStateMachine({
       if (receipt) return receipt
       if (state.phase === 'review' && state.pendingReviewBase) state.reviewBase = state.pendingReviewBase
       if (verdict.outcome === 'changes-requested' && verdict.findings.length === 0) {
-        return refusal(`${state.phase}->harden`, 'findings', path.join(laneDir, `${state.phase}-report.md`))
+        return refusal(`${state.phase}->tdd`, 'findings', path.join(laneDir, `${state.phase}-report.md`))
       }
       const reviewDecision = recordReviewDecision(state, state.phase, verdict, blockingFindings, routedFindings)
       if (reviewDecision.reason) {
         next = 'report'
-        resultDetail = ` (round bound reached: partial run, ${reviewDecision.reason})`
+        resultDetail = ` (non-convergence: partial run, ${reviewDecision.reason})`
       }
+      if (reviewDecision.changesRequested && !reviewDecision.reason) writeReviewFindings(laneDir, state, state.phase, verdict, writeRegularFile)
       if (!next) next = reviewNextPhase(state.phase, reviewDecision.changesRequested)
     } else if (state.phase === 'report') {
       const pilotReportPath = path.join(laneDir, 'pilot-report.md')
@@ -1005,7 +1007,7 @@ export function createLifecycleStateMachine({
     if (kind === 'critic-brief' && !readRegularFile(path.join(laneDir, 'plan.md'))) {
       return refusal('critic->next', 'plan artifact', path.join(laneDir, 'plan.md'))
     }
-    if (kind === 'brief' && frozenRoute === 'FULL') {
+    if (kind === 'brief' && frozenRoute === 'FULL' && state.reviewRound === 0) {
       const planTasks = tasksBlock(readRegularFile(path.join(laneDir, 'plan.md')))
       if (!planTasks || tasksBlock(content) !== planTasks) {
         return refusal('critic->tdd', 'byte-identical plan Tasks block', path.join(laneDir, spec[1]))
@@ -1046,7 +1048,7 @@ export function createLifecycleStateMachine({
       path.join(laneDir, spec[1]),
       artifactContent,
     )
-    if (LANE_PHASES.has(briefPhase)) laneBriefContexts.set(briefPhase, laneContext)
+    if (LANE_PHASES.has(briefPhase)) { invalidateLaneEvidence(briefPhase); laneBriefContexts.set(briefPhase, laneContext) }
     if (kind === 'pilot-report') state.pilotReportDigest = sha256(artifactContent)
     return `wrote ${kind}`
   }

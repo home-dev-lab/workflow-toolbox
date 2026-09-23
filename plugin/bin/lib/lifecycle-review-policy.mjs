@@ -61,7 +61,7 @@ function routedBecause(phase, severity, severityBlocks, anchorMatch, suppliedAnc
   return `explicit anchor ${suppliedAnchor}${suffix}`
 }
 
-function findingDetail(phase, finding, { legacy = false, validAnchors = [], previousHardenPatch = null } = {}) {
+function findingDetail(phase, finding, { legacy = false, validAnchors = [], previousFixPatch = null } = {}) {
   const severityToken = severityAtStart(phase, finding, legacy)
   if (!severityToken) return { problem: 'has no recognized severity in its severity field' }
   // eslint-disable-next-line sonarjs/super-linear-regex
@@ -79,14 +79,14 @@ function findingDetail(phase, finding, { legacy = false, validAnchors = [], prev
   let location = /\[location:\s*([^\]]+)\]/i.exec(finding)?.[1]?.trim() ?? null
   // eslint-disable-next-line sonarjs/super-linear-regex
   if (!location) location = /(?:`)?((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+:\d+(?:-\d+)?)(?:`)?/.exec(finding)?.[1] ?? null
-  const hardensOwnCode = anchor?.toLowerCase().startsWith('plan task ') && locationIsAddedByPatch(location, previousHardenPatch)
+  const fixesOwnCode = anchor?.toLowerCase().startsWith('plan task ') && locationIsAddedByPatch(location, previousFixPatch)
   const extendsPrior = Number(/\bextends prior finding\s+(\d+)\b/i.exec(finding)?.[1]) || null
   const metadataEnd = [...finding.matchAll(/\[(?:anchor|location):[^\]]*\]/gi)].reduce((end, match) => Math.max(end, (match.index ?? 0) + match[0].length), severityToken.end)
   const text = finding.slice(metadataEnd).trim() || finding
   return {
     raw: finding, text, severity: severityToken.severity, anchor, location, extendsPrior,
-    blocks: severityBlocks && anchor !== null && !hardensOwnCode,
-    routeReason: hardensOwnCode ? 'located only in previous harden code and anchored to no card criterion' : routeReason,
+    blocks: severityBlocks && anchor !== null && !fixesOwnCode,
+    routeReason: fixesOwnCode ? 'located only in previous fix code and anchored to no card criterion' : routeReason,
     missingRequiredAnchor,
   }
 }
@@ -134,6 +134,33 @@ export function adaptiveRoundDecision(rounds, fixedRounds, maxRounds, plateauUse
   if (latestCount < previousCount) return { continue: true, plateauUsed }
   if (latestCount === previousCount && !plateauUsed) return { continue: true, plateauUsed: true }
   return { continue: false, plateauUsed }
+}
+
+export function reviewConvergenceDecision(rounds) {
+  const latest = rounds.at(-1)
+  if (!latest) return { continue: true, signal: null }
+  const extended = latest.findingDetails?.find((finding) => finding.blocks && finding.extendsPrior !== null)
+  if (extended) return { continue: false, signal: `finding extends prior finding ${extended.extendsPrior}` }
+
+  const earlier = new Map()
+  for (const round of rounds.slice(0, -1)) {
+    for (const finding of round.findingDetails ?? []) {
+      if (finding.blocks) earlier.set(`${normalizedAnchor(finding.anchor)}\0${normalizedFinding(finding.text)}`, finding)
+    }
+  }
+  for (const finding of latest.findingDetails ?? []) {
+    if (!finding.blocks) continue
+    const prior = earlier.get(`${normalizedAnchor(finding.anchor)}\0${normalizedFinding(finding.text)}`)
+    if (prior) return { continue: false, signal: `same finding returned: ${prior.anchor} — ${finding.text.replace(/\s+/g, ' ').trim()}` }
+  }
+
+  if (rounds.length >= 3) {
+    const counts = rounds.slice(-3).map((round) => round.blockingFindings.length)
+    if (counts[1] >= counts[0] && counts[2] >= counts[1]) {
+      return { continue: false, signal: `blocking count did not drop for two consecutive rounds: ${counts.join(' -> ')}` }
+    }
+  }
+  return { continue: true, signal: null }
 }
 
 export function hasPerSectionAttackAccount(content, sections = ['ADR', 'Tasks', 'Gates']) {

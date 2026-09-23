@@ -17,7 +17,7 @@ const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
 const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
 
 function launchVariant(phase, model, env) {
-  const role = ['tdd', 'harden'].includes(phase) ? 'code' : phase
+  const role = phase === 'tdd' ? 'code' : phase
   return { role, ...resolveRoleVariant(role, model, { env }) }
 }
 
@@ -168,6 +168,12 @@ export function createLifecycleLaunch({
       : null
   }
 
+  function invalidateLaneEvidence(phase) {
+    attestations.delete(path.join(laneDir, `${phase}-run.log`))
+    attestations.delete(path.join(laneDir, `${phase}-report.md`))
+    audit()
+  }
+
   function laneEvidence(phase, allowFailed = false) {
     assertLaneDir()
     const log = path.join(laneDir, `${phase}-run.log`)
@@ -289,7 +295,7 @@ export function createLifecycleLaunch({
         const snapshotBrief = path.join(snapshot, 'brief.md')
         fs.writeFileSync(snapshotBrief, launchBriefs.launch, { flag: 'wx', mode: 0o400 })
         fs.writeFileSync(log, `LANE_NONCE=${nonce}\n`, { flag: 'wx' })
-        const model = phase === 'tdd' || phase === 'harden'
+        const model = phase === 'tdd'
           ? frozenModels.code
           : phase === 'refutation'
             ? frozenModels.refutation
@@ -531,5 +537,5 @@ export function createLifecycleLaunch({
     return parallelCritic ? runParallelCritics(args) : runSingle(args)
   }
 
-  return { audit, evidencePath, laneEvidence, run, snapshotEvidence, verifySnapshot }
+  return { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifySnapshot }
 }

@@ -146,7 +146,7 @@ const clockTicksAvailability = clockTicks === null
   : { status: 'available' };
 let procUptime = null;
 const PHASES = ${JSON.stringify([...LIFECYCLE_PHASES, 'awaiting_fidelity'])};
-const LITE_SKIPS = new Set(['plan', 'critic', 'review', 'refutation', 'harden']);
+const LITE_SKIPS = new Set(['plan', 'critic', 'review', 'refutation']);
 const DIR_SCAN_CAP = Number.isSafeInteger(config.scanEntryCap) && config.scanEntryCap > 0 ? config.scanEntryCap : 1000;
 const WORKTREE_DETAIL_CAP = Number.isSafeInteger(config.worktreeDetailCap) && config.worktreeDetailCap > 0 ? config.worktreeDetailCap : 48;
 const cappedScans = [];
@@ -476,7 +476,7 @@ function inspectors(worktree, route, runnerLog) {
     ['critic', critics.slice(0, 1), selected => criticSummary(slice(selected[0], REPORT_TAIL_BYTES))],
     ['tdd', [tddReport, tddRun, tddBrief].filter(Boolean), () => tddSummary(tddReport, tddRun, tddBrief)],
     ['verify', gateFiles.map(item => item.file), () => verifySummary],
-    ...['review', 'refutation', 'harden'].map(phase => {
+    ...['review', 'refutation'].map(phase => {
       const evidence = phaseEvidence(phase);
       const selected = [evidence.report, evidence.run, evidence.brief, ...laneEvidence(phase)].filter((file, index, all) => file && all.indexOf(file) === index);
       return [phase, selected, () => phaseReportSummary(evidence.report, evidence.brief, evidence.run)];
@@ -1011,7 +1011,7 @@ function roleLabel(value, inferred = false) {
     : /^(?:astra|consult)/.test(role) ? 'Astra consultation'
     : /^fix/.test(role) ? 'Fix lane'
     : role === 'tdd' ? 'TDD lane'
-    : ['discovery', 'plan', 'critic', 'verify', 'harden', 'report'].includes(role) ? role[0].toUpperCase() + role.slice(1) + ' lane'
+    : ['discovery', 'plan', 'critic', 'verify', 'report'].includes(role) ? role[0].toUpperCase() + role.slice(1) + ' lane'
     : role === 'implementation' ? 'Lane' : null;
   return label ? label + (inferred && label !== 'Lane' ? ' (inferred)' : '') : null;
 }
@@ -1026,10 +1026,10 @@ function structuredLaneRole(worktree, launchedBrief = null) {
   const accepted = [...runnerLog.matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)].at(-1)?.[1];
   if (roleLabel(accepted)) return roleLabel(accepted);
   const phaseRun = list(lanePath(worktree)).map(name => ({ name, stat: info(lanePath(worktree, name)) }))
-    .filter(item => item.stat?.isFile() && /^(?:discovery|plan|critic|tdd|verify|review|refutation|harden|report|implementation|fix)-run\.[^.]+\.log$/i.test(item.name))
+    .filter(item => item.stat?.isFile() && /^(?:discovery|plan|critic|tdd|verify|review|refutation|report|implementation|fix)-run\.[^.]+\.log$/i.test(item.name))
     .sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs || right.name.localeCompare(left.name))[0]?.name.match(/^([^-]+)/)?.[1];
   if (roleLabel(phaseRun)) return roleLabel(phaseRun);
-  const launchedPhase = launchedBrief && path.basename(launchedBrief).match(/^(discovery|plan|critic|tdd|verify|review|refutation|harden|report|implementation|fix)-brief(?:[.-]|$)/i)?.[1];
+  const launchedPhase = launchedBrief && path.basename(launchedBrief).match(/^(discovery|plan|critic|tdd|verify|review|refutation|report|implementation|fix)-brief(?:[.-]|$)/i)?.[1];
   if (roleLabel(launchedPhase)) return roleLabel(launchedPhase);
   for (const name of ['WT_LANE_ROLE', 'LANE_ROLE']) {
     const label = roleLabel(envField(lanePath(worktree, 'env.log'), name)); if (label) return label;
@@ -1367,7 +1367,7 @@ function deepActors(actors) {
 function sdkImplementationState(actors) {
   const pilots = deepActors(actors).filter(actor => actor.kind === 'pilot');
   if (pilots.some(actor => ['done', 'waiting for arbiter review'].includes(actor.phaseStates?.verify)
-    || ['review', 'refutation', 'harden', 'report', 'awaiting_fidelity'].some(phase => !['not started', 'skipped', undefined].includes(actor.phaseStates?.[phase])))) return 'done';
+    || ['review', 'refutation', 'report', 'awaiting_fidelity'].some(phase => !['not started', 'skipped', undefined].includes(actor.phaseStates?.[phase])))) return 'done';
   if (pilots.some(actor => ['running', 'done'].includes(actor.phaseStates?.tdd) || actor.phaseStates?.verify === 'running')) return 'running';
   return null;
 }

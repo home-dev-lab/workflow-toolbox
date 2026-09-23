@@ -93,7 +93,7 @@ writeFileSync(join(sdkRunning, '.lane', 'runner-stdout.log'), [
   'lifecycle: accepted phase=verify',
   'lifecycle: accepted phase=review',
   'lifecycle: accepted phase=refutation',
-  'lifecycle: accepted phase=harden',
+  'lifecycle: accepted phase=tdd',
   'lifecycle: accepted phase=verify',
   'lifecycle: accepted phase=review',
   'lifecycle: accepted phase=refutation',
@@ -347,7 +347,6 @@ await test('[changed Round 3 terminal state][A-2][incorrect completion] accepted
   const snapshot = await readSnapshot({ process: processCapability }, paths);
   const loop = snapshot.rows.find((row) => row.id === '1862698281071544190');
   assert.equal(loop.phaseStates.critic, 'done');
-  assert.equal(loop.phaseStates.harden, 'done');
   assert.equal(loop.phaseStates.awaiting_fidelity, 'waiting for arbiter review');
   const skipped = snapshot.rows.find((row) => row.id === '1862698281071544175');
   assert.equal(skipped.phaseStates.plan, 'done');
@@ -512,7 +511,7 @@ await test('[Missed A] lifecycle-only current phase is running with remaining ph
   writeFileSync(join(storeDir, 'wt-lifecycle-hooks_phase.json'), JSON.stringify({ 'card.1862698281071544105': { phase: 'verify', at: '2026-09-12T12:25:00Z' } }));
   const row = (await readSnapshot({ process: processCapability }, isolatedPaths)).rows.find((item) => item.id === '1862698281071544105');
   assert.equal(row.phaseStates.verify, 'running');
-  assert.equal(Object.values(row.phaseStates).filter((state) => state === 'not started').length, 5);
+  assert.equal(Object.values(row.phaseStates).filter((state) => state === 'not started').length, 4);
 });
 
 await test('[DoD 1] each current activity signal admits a row and each stale counterpart does not', async () => {
@@ -1461,7 +1460,7 @@ await test('[critic lanes] two round-1 critic records render as indented stage c
   }));
   const pilot = {
     id: '1862698281071544151', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', phase: 'critic', phaseSource: 'lifecycle', route: 'FULL',
-    phaseStates: { discovery: 'done', plan: 'done', critic: 'running', tdd: 'not started', verify: 'not started', review: 'not started', refutation: 'not started', harden: 'not started', report: 'not started' },
+    phaseStates: { discovery: 'done', plan: 'done', critic: 'running', tdd: 'not started', verify: 'not started', review: 'not started', refutation: 'not started', report: 'not started' },
     phaseRounds: { plan: 1, critic: 1 }, phaseCosts: { critic: { usd: 0.5, priceLabel: 'API price' } }, outcome: 'running', gates: {}, review: {}, inspectors: {}, lanes: criticLanes, sources: {},
   };
   const snapshot = { discovery: 'available', rows: [pilot], sessions: [{ id: 'session:critic', project: 'critic', cards: [{ id: pilot.id, title: 'Parallel critics', actors: [pilot] }], actors: [] }], services: { count: 0, items: [] }, helpers: { count: 0, items: [] }, collectedAt: paths.now };
@@ -1691,7 +1690,7 @@ await test('[R1] every Button in the whole rendered tree has only string childre
 await test('[changed Step 8 content gating][Missed A] lifecycle-only phases without evidence render as plain state text', async () => {
   const snapshot = { discovery: 'available', rows: [{
     id: 'lifecycle-only', kind: 'pilot', title: 'lifecycle-only', phase: 'verify', outcome: 'unknown',
-    phaseStates: { discovery: 'skipped', plan: 'skipped', critic: 'skipped', tdd: 'skipped', verify: 'running', review: 'not started', refutation: 'not started', harden: 'not started', report: 'not started', awaiting_fidelity: 'not started' },
+    phaseStates: { discovery: 'skipped', plan: 'skipped', critic: 'skipped', tdd: 'skipped', verify: 'running', review: 'not started', refutation: 'not started', report: 'not started', awaiting_fidelity: 'not started' },
     gates: {}, review: {}, inspectors: {}, lanes: [], sources: {},
   }], collectedAt: paths.now };
   const { tree } = await renderSnapshot(snapshot);
@@ -2410,14 +2409,11 @@ await test('[changed Step 7 unknown omission][changed Round 3 report-first phase
     'review-report.md': 'VERDICT: clear\nFINDINGS:\n- REVIEW REPORT EVIDENCE\n',
     'refutation-brief.md': '# Refutation\nREFUTATION BRIEF EVIDENCE\n',
     'refutation-report.md': 'VERDICT: clear\nFINDINGS:\n- REFUTATION REPORT EVIDENCE\n',
-    'harden-brief.md': '# Harden\nHARDEN BRIEF EVIDENCE\n',
-    'harden-run.log': 'HARDEN RUN EVIDENCE\nEXIT=0\n',
-    'harden-report.md': '# Harden report\nHARDEN REPORT EVIDENCE\n',
     'pilot-report.md': 'Deferred: Host verification (card 42)\n# Pilot report\n## Implemented\nREPORT EVIDENCE\n## Verification\nSHOULD NOT LEAD\n## Remaining Risks\nRISK EVIDENCE\n',
   };
   for (const [name, content] of Object.entries(artifacts)) writeFileSync(join(lane, name), content);
   const row = (await readSnapshot({ process: processCapability }, isolatedPaths)).rows.find((item) => item.id === cardId);
-  for (const phase of ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report']) {
+  for (const phase of ['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'report']) {
     assert(row.inspectors[phase]?.summary, phase);
   }
   assert.match(row.inspectors.discovery.summary, /FULL.*fixture route/s);
@@ -2428,9 +2424,8 @@ await test('[changed Step 7 unknown omission][changed Round 3 report-first phase
   assert.match(row.inspectors.verify.summary, /typecheck: pass.*lint: fail \(2\).*test: pass/s);
   assert.match(row.inspectors.review.summary, /^verdict: clear\nfindings: 1\nREVIEW REPORT EVIDENCE\nbrief: Review/s);
   assert.match(row.inspectors.refutation.summary, /^verdict: clear\nfindings: 1\nREFUTATION REPORT EVIDENCE\nbrief: Refutation/s);
-  assert.equal(row.inspectors.harden.summary, 'HARDEN REPORT EVIDENCE\nbrief: Harden');
   assert.match(row.inspectors.report.summary, /^Deferred: Host verification \(card 42\)\nImplemented\nREPORT EVIDENCE\nRemaining Risks\nRISK EVIDENCE$/);
-  assert.equal(new Set(Object.values(row.inspectors).map((item) => item.summary)).size, 9);
+  assert.equal(new Set(Object.values(row.inspectors).map((item) => item.summary)).size, 8);
 });
 
 await test('[Round 3 terminal runner] exited awaiting-fidelity runner is waiting and keeps its bounded report', async () => {
@@ -3072,7 +3067,7 @@ const step8Fixture = () => {
       ], rounds: 1, fixRounds: 0 },
       actors: [{
         id: 'pilot:step8', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', title: 'One interaction model', phase: 'awaiting_fidelity', outcome: 'waiting for arbiter review', activity: 'active', models: { review: 'sol', refutation: 'astra' },
-        phaseStates: { discovery: 'done', plan: 'skipped', critic: 'skipped', tdd: 'done', verify: 'done', review: 'skipped', refutation: 'skipped', harden: 'skipped', report: 'done', awaiting_fidelity: 'waiting for arbiter review' },
+        phaseStates: { discovery: 'done', plan: 'skipped', critic: 'skipped', tdd: 'done', verify: 'done', review: 'skipped', refutation: 'skipped', report: 'done', awaiting_fidelity: 'waiting for arbiter review' },
         inspectors: { discovery: { summary: 'Route selected.' }, tdd: { summary: Array.from({ length: 12 }, (_, index) => `evidence ${index + 1}`).join('\n'), href: 'https://artifacts.example.test/tdd.html', artifact: 'tdd-report.md' }, verify: { summary: 'All gates passed.' }, report: { summary: 'Implementation reported.' } },
         lanes: [], gates: { test: 'pass' }, review: {}, sources: {},
       }],
@@ -3096,7 +3091,7 @@ await test('[Step 8 rule 1] each card has one chronologically ordered, non-contr
   assert.equal((labels.match(/drives the stages below/g) || []).length, 1);
   assert(!labels.includes('Card cycle:'));
   assert(!labels.includes('Pilot phases:'));
-  const ordered = ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Independent review (sol)', 'Independent refutation (astra)', 'Harden', 'Report'];
+  const ordered = ['Discovery', 'Plan', 'Critic', 'TDD', 'Verify', 'Independent review (sol)', 'Independent refutation (astra)', 'Report'];
   let previous = -1;
   for (const label of ordered) {
     const next = visible.findIndex((text, index) => index > previous && (text.startsWith(`${label} `) || text.includes(` ${label} `)));
@@ -3120,7 +3115,7 @@ await test('[SDK lifecycle row] Report is last and legacy Merge is absent', asyn
   assert(labels.includes('Report'));
   assert.equal(labels.includes('Merge'), false);
   assert.equal(descendants(tree, (item) => item.name === 'Text').flatMap((item) => item.props.children).join(' ').includes('review rounds:'), false);
-  assert(labels.lastIndexOf('Report') > labels.lastIndexOf('Harden'));
+  assert(labels.lastIndexOf('Report') > labels.lastIndexOf('Independent refutation'));
 });
 
 await test('[legacy cycle row] legacy evidence remains the source when no SDK lifecycle exists', async () => {
@@ -3168,7 +3163,7 @@ await test('[Step 8 rule 3] every lifecycle stage state is neutral text', async 
   const rendered = await renderSnapshot(snapshot);
   findButton(rendered.tree, 'SDK pilot').props.onPress();
   const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
-  for (const label of ['Plan', 'Critic', 'Independent review', 'Independent refutation', 'Harden']) {
+  for (const label of ['Plan', 'Critic', 'Independent review', 'Independent refutation']) {
     assert(!findButton(tree, label), `${label} should not be clickable`);
     assert(hasDescendant(tree, (item) => item.name === 'Text' && !item.props.color && item.props.children.some((child) => String(child).includes(label))), `${label} should have neutral text`);
   }

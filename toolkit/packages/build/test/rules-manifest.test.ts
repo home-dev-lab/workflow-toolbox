@@ -63,8 +63,8 @@ describe('SDK role rules manifest', () => {
   it('measures the composed standing system prompt before and after exact shipped sections', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
-    expect(Buffer.byteLength(contract)).toBe(6138)
-    expect(Buffer.byteLength(composed)).toBe(8370)
+    expect(Buffer.byteLength(contract)).toBe(6101)
+    expect(Buffer.byteLength(composed)).toBe(8333)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 
@@ -112,7 +112,7 @@ describe('SDK role rules manifest', () => {
 
   it('maps every shipped lane trigger to exact authoritative content', () => {
     const rules = loadRules({ shippedRoot: PLUGIN_ROOT })
-    for (const role of ['critic', 'tdd', 'review', 'refutation', 'harden']) {
+    for (const role of ['critic', 'tdd', 'review', 'refutation']) {
       const content = composeRules(rules, { recipient: role, trigger: `lane:${role}` })
       expect(content, role).toContain('BEGIN authoritative rule')
       for (const entry of rules.filter((candidate: { recipients: string[], triggers: string[] }) => candidate.recipients.includes(role) && candidate.triggers.includes(`lane:${role}`))) {
@@ -121,10 +121,10 @@ describe('SDK role rules manifest', () => {
     }
   })
 
-  it('keeps the architectural step-back rule in the harden lane', () => {
-    const harden = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: 'harden', trigger: 'lane:harden' })
-    expect(harden).toContain('# Step back to the architectural root')
-    expect(harden).toContain('Stop, question the shape.')
+  it('keeps the architectural step-back rule in the TDD implementer lane', () => {
+    const tdd = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: 'tdd', trigger: 'lane:tdd' })
+    expect(tdd).toContain('# Step back to the architectural root')
+    expect(tdd).toContain('Stop, question the shape.')
   })
 })
 

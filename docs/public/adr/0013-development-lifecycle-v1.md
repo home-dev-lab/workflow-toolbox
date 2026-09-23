@@ -59,12 +59,14 @@ straight to the test-first loop; FULL runs the whole cycle. A model never decide
 because the failure is asymmetric: a LITE card that deserved FULL ships unreviewed, while a FULL
 card that deserved LITE costs only time.
 
-**3. Every loop is bounded and its exit condition is written.** Plan and critique run at most three
-cycles, exiting when no blocking finding remains. Test, verify by exit code, review and harden run
-at most three cycles, returning to the test step while any finding is open. Every review finding
-carries a disposition before the card can close — fixed with a lock proven red, routed to a card
-that exists and is named, or rejected with evidence. A loop that reaches its bound escalates; it
-never loops silently, and a bare deferral is not a disposition.
+**3. Every loop has a mechanical exit condition.** Plan and critique use their bounded policy,
+exiting when no blocking finding remains. Review returns blocking findings to the same TDD
+implementer, which fixes red-first with targeted tests, typecheck, and lint before one full suite at
+VERIFY. Review has no fixed round cap: it continues while blockers fall, and escalates when the same
+anchored finding returns or the blocking count fails to drop for two consecutive rounds. Every review
+finding carries a disposition before the card can close — fixed with a lock proven red, routed to a
+card that exists and is named, or rejected with evidence. Non-convergence names every unresolved
+finding and the fired signal; it never silently delivers, and a bare deferral is not a disposition.
 
 **4. The dividing line to a full multi-agent workflow is the proportionate-verification ladder,
 not a preference.** A feature, production logic, or anything touching money, security, data loss,

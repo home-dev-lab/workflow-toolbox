@@ -161,7 +161,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     }])
   })
 
-  it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'harden-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
+  it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
     const lifecycle = testLifecycle('LITE')
     expect(await text(lifecycle.artifact({ kind, content: 'content' }))).toMatch(/^edge refused: discovery->next; missing .*: /)
   })

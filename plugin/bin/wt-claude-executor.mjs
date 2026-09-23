@@ -9,7 +9,7 @@ import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
 
-const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
+const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
 function finish(log, code) {
   try {
@@ -41,7 +41,7 @@ async function worker(options) {
   let servedModel = options.model
   const effort = options.variant
     ? { value: options.variant, origin: options.variantOrigin ?? 'override' }
-    : resolveRoleVariant(['tdd', 'harden'].includes(options.role) ? 'code' : options.role, options.model)
+    : resolveRoleVariant(options.role === 'tdd' ? 'code' : options.role, options.model)
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   appendFileSync(options.log, `variant=${effort.value} origin=${effort.origin} forced=false\n`)
   try {

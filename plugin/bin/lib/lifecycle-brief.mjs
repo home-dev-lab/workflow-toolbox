@@ -29,7 +29,7 @@ Severity policy:
 - Use \`[CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <finding>\`.
 `
   const priorFindingOffsets = priorRounds.map((_, index) => priorRounds.slice(0, index).reduce((total, prior) => total + prior.findings.length, 0))
-  const patchBaseLabel = phase === 'review' && priorRounds.length > 0 ? 'the fix since previously reviewed tree' : 'construction base'
+  const patchBaseLabel = phase === 'review' && priorRounds.length > 0 ? 'the TDD fix since previously reviewed tree' : 'construction base'
   const priorRoundsSection = priorRounds.length > 0
     ? `
 ## Prior rounds (runner-owned, trusted)

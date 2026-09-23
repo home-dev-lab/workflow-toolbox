@@ -155,7 +155,7 @@ export function writeWorktreeRetentionMarker({ root, cardId, partial, boardId = 
   const spentBound = partial && (
     partial.reason === 'timeout' ||
     (partial.phase === 'critic' && /^plan not approved after \d+ critic rounds$/.test(partial.reason)) ||
-    (['review', 'refutation'].includes(partial.phase) && new RegExp(`^${partial.phase} still requests changes after \\d+ harden rounds$`).test(partial.reason))
+    (['review', 'refutation'].includes(partial.phase) && partial.reason.startsWith(`${partial.phase} non-convergence:`))
   )
   if (!spentBound) return false
   const resolvedRoot = fs.realpathSync(root)

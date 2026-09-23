@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { adaptiveRoundDecision, verdictFromReport } from '../../../../plugin/bin/lib/lifecycle-review-policy.mjs'
+import { adaptiveRoundDecision, reviewConvergenceDecision, verdictFromReport } from '../../../../plugin/bin/lib/lifecycle-review-policy.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { independentBrief } from '../../../../plugin/bin/lib/lifecycle-brief.mjs'
 
@@ -102,24 +102,24 @@ FINDINGS:
     expect(verdict.findingDetails[0]).toMatchObject({ blocks: false, routeReason })
   })
 
-  it('routes a plan-task finding located only in the previous harden addition', () => {
+  it('routes a plan-task finding located only in the previous fix addition', () => {
     const patch = `diff --git a/src/a.ts b/src/a.ts
 --- a/src/a.ts
 +++ b/src/a.ts
 @@ -8,2 +8,3 @@
  existing
-+added by harden
++added by fix
  existing
 `
     const ownCode = verdictFromReport('review', `VERDICT: changes-requested
 FINDINGS:
-- [HIGH][anchor: plan task T2][location: src/a.ts:9] harden-created defect
-`, { validAnchors: ['plan task T2'], previousHardenPatch: patch })
+- [HIGH][anchor: plan task T2][location: src/a.ts:9] fix-created defect
+`, { validAnchors: ['plan task T2'], previousFixPatch: patch })
     const cardCriterion = verdictFromReport('review', `VERDICT: changes-requested
 FINDINGS:
 - [HIGH][anchor: DoD 1][location: src/a.ts:9] card defect
-`, { validAnchors: ['DoD 1'], previousHardenPatch: patch })
-    expect(ownCode.findingDetails[0]).toMatchObject({ blocks: false, routeReason: 'located only in previous harden code and anchored to no card criterion' })
+`, { validAnchors: ['DoD 1'], previousFixPatch: patch })
+    expect(ownCode.findingDetails[0]).toMatchObject({ blocks: false, routeReason: 'located only in previous fix code and anchored to no card criterion' })
     expect(cardCriterion.findingDetails[0]).toMatchObject({ blocks: true })
   })
 
@@ -182,6 +182,34 @@ FINDINGS:
     ]
     expect(adaptiveRoundDecision(loose, 1, 3, false)).toEqual({ continue: true, plateauUsed: true })
     expect(adaptiveRoundDecision(explicit, 1, 3, false)).toEqual({ continue: false, plateauUsed: false })
+  })
+
+  it('identifies a recurring review finding by anchor plus normalized claim', () => {
+    const rounds = [
+      { blockingFindings: ['Original text'], findingDetails: [{ blocks: true, anchor: 'DoD 1', text: 'Original text', extendsPrior: null }] },
+      { blockingFindings: ['  original   TEXT '], findingDetails: [{ blocks: true, anchor: 'dod criterion #1', text: '  original   TEXT ', extendsPrior: null }] },
+    ]
+    expect(reviewConvergenceDecision(rounds)).toEqual({ continue: false, signal: 'same finding returned: DoD 1 — original TEXT' })
+    rounds[1]!.findingDetails[0]!.anchor = 'DoD 2'
+    expect(reviewConvergenceDecision(rounds)).toEqual({ continue: true, signal: null })
+  })
+
+  it('stops review after two consecutive rounds without a blocking-count drop, with no fixed ceiling', () => {
+    const round = (prefix: string, count: number) => ({
+      blockingFindings: Array.from({ length: count }, (_, index) => `${prefix}-${index}`),
+      findingDetails: Array.from({ length: count }, (_, index) => ({ blocks: true, anchor: `DoD ${index + 1}`, text: `${prefix}-${index}`, extendsPrior: null })),
+    })
+    expect(reviewConvergenceDecision([round('a', 3), round('b', 3)])).toEqual({ continue: true, signal: null })
+    expect(reviewConvergenceDecision([round('a', 3), round('b', 3), round('c', 3)])).toEqual({ continue: false, signal: 'blocking count did not drop for two consecutive rounds: 3 -> 3 -> 3' })
+    expect(reviewConvergenceDecision([round('a', 9), round('b', 8), round('c', 7), round('d', 6), round('e', 5), round('f', 4), round('g', 3)])).toEqual({ continue: true, signal: null })
+  })
+
+  it('treats an explicit prior-finding extension as immediate review non-convergence', () => {
+    const rounds = [
+      { blockingFindings: ['first'], findingDetails: [{ blocks: true, anchor: 'DoD 1', text: 'first', extendsPrior: null }] },
+      { blockingFindings: ['narrower'], findingDetails: [{ blocks: true, anchor: 'DoD 1', text: 'narrower', extendsPrior: 1 }] },
+    ]
+    expect(reviewConvergenceDecision(rounds)).toEqual({ continue: false, signal: 'finding extends prior finding 1' })
   })
 
   it('does not parse loose round prose as an extension declaration', () => {
