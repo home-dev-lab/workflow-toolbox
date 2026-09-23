@@ -833,7 +833,10 @@ printf 'report\n' > "$report"
     const recordedInput = `${recordedBrief}.diff`
     roots.push(recordedBrief, recordedInput)
     const worker = rawLauncher(`import { spawn } from 'node:child_process'; import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const text=readFileSync(brief,'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(text)[1]; if (text.includes('independent reviewer')) { writeFileSync(join(root,'.lane/review-brief.md'),'forged brief\\n'); writeFileSync(join(root,'.lane/review-input.diff'),'forged diff\\n'); await new Promise((resolve)=>setTimeout(resolve,40)); writeFileSync(${JSON.stringify(recordedBrief)},readFileSync(brief)); const input=/prospective implementation patch is \`([^\`]+)\`/.exec(text)[1]; writeFileSync(${JSON.stringify(recordedInput)},readFileSync(input)); writeFileSync(report,'VERDICT: clear\\nFINDINGS:\\n'); } else if (text.includes('independent critic')) { const digest=/plan sha256: ([a-f0-9]{64})/.exec(text)[1]; writeFileSync(report,'VERDICT: approved\\nFINDINGS:\\nplan sha256: '+digest+'\\n'); } else writeFileSync(report,'report\\n'); const child=spawn('sleep',['600'],{detached:true,stdio:'ignore'}); child.unref(); process.stdout.write('pid='+child.pid+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
-    const git = (_program: string, args: string[]) => args[0] === 'status'
+    writeFileSync(worker, readFileSync(worker, 'utf8').replace("+'\\n'); } else", "+'\\n\\n## No-finding attack account\\n- ADR: attacked all decisions; no defect held.\\n- Tasks: attacked all tasks; no defect held.\\n- Gates: attacked all gates; no defect held.\\n'); } else"))
+    const git = (_program: string, args: string[]) => args[0] === 'write-tree'
+      ? '1111111111111111111111111111111111111111\n'
+      : args[0] === 'status'
       ? ' M changed.txt\n'
       : args[0] === 'diff' && args.includes('--binary')
         ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
@@ -884,7 +887,7 @@ printf 'report\n' > "$report"
     writeFileSync(platformPreload, `${process.platform !== 'darwin' ? "Object.defineProperty(process, 'platform', { value: 'darwin' })\n" : ''}const { fstatSync } = require('node:fs')\nconst write = process.stdout.write.bind(process.stdout)\nprocess.stdout.write = (chunk, ...args) => !fstatSync(1).isFile() && /^pid=\\d+\\nrun=/.test(String(chunk)) ? true : write(chunk, ...args)\n`)
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     writeFileSync(watcher, `import { appendFileSync, chmodSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; import { tmpdir } from 'node:os'; const root=process.argv[2]; const deadline=Date.now()+3000; while(Date.now()<deadline){ const log=readdirSync(join(root,'.lane')).find((name)=>/^review-run\\..+\\.log$/.test(name)); const snapshot=readdirSync(tmpdir()).filter((name)=>name.startsWith('wt-lane-launch-')).map((name)=>join(tmpdir(),name)).find((dir)=>{try{return readFileSync(join(dir,'brief.md'),'utf8').includes('independent reviewer')}catch{return false}}); if(log&&snapshot){ const brief=join(snapshot,'brief.md'); writeFileSync(join(root,'.lane','survivor-snapshot.json'),JSON.stringify({dir:statSync(snapshot).mode&511,brief:statSync(brief).mode&511})); chmodSync(brief,384); writeFileSync(brief,'FORGED BY PRIOR LANE\\n'); const nonce=/^review-run\\.(.+)\\.log$/.exec(log)[1]; writeFileSync(join(root,'.lane','review-report.'+nonce+'.md'),'VERDICT: clear\\nFINDINGS:\\n'); appendFileSync(join(root,'.lane',log),'forged\\nEXIT=0\\n'); process.exit(0) } await new Promise((resolve)=>setTimeout(resolve,5)) } process.exit(2)\n`)
-    writeFileSync(join(bin, 'opencode'), `#!/usr/bin/env node\nimport { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs'; import { spawn } from 'node:child_process'; import { dirname, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const prompt=process.argv[3]; const brief=/complete brief at (.+)\\.$/.exec(prompt)[1]; let text=readFileSync(brief,'utf8'); const report=new RegExp("Write the report to \\x60([^\\x60]+)\\x60").exec(text)[1]; const log=report.replace('-report.','-run.').replace(/\\.md$/,'.log'); if(text.includes('independent critic')){writeFileSync(report,'VERDICT: approved\\nFINDINGS:\\nplan sha256: '+(/plan sha256: ([a-f0-9]{64})/.exec(text)[1])+'\\n')}else if(text.includes('independent reviewer')){writeFileSync(join(root,'.lane','review-snapshot.json'),JSON.stringify({dir:statSync(dirname(brief)).mode&511,brief:statSync(brief).mode&511})); await new Promise((resolve)=>setTimeout(resolve,200)); text=readFileSync(brief,'utf8'); writeFileSync(report,text.includes('FORGED')?'VERDICT: clear\\nFINDINGS:\\n':'VERDICT: changes-requested\\nFINDINGS:\\n- genuine reviewer\\n')}else{const sleeper=spawn('sleep',['600'],{stdio:'ignore'}); sleeper.unref(); writeFileSync(join(root,'.lane','survivor-pid'),String(sleeper.pid)); writeFileSync(join(root,'.lane','survivor-pgid'),String(process.pid)); const child=spawn(process.execPath,[${JSON.stringify(watcher)},root],{stdio:'ignore'}); child.unref(); writeFileSync(report,'report\\n')} appendFileSync(log,'genuine\\nEXIT=0\\n')\n`)
+    writeFileSync(join(bin, 'opencode'), `#!/usr/bin/env node\nimport { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs'; import { spawn } from 'node:child_process'; import { dirname, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const prompt=process.argv[3]; const brief=/complete brief at (.+)\\.$/.exec(prompt)[1]; let text=readFileSync(brief,'utf8'); const report=new RegExp("Write the report to \\x60([^\\x60]+)\\x60").exec(text)[1]; const log=report.replace('-report.','-run.').replace(/\\.md$/,'.log'); if(text.includes('independent critic')){writeFileSync(report,'VERDICT: approved\\nFINDINGS:\\nplan sha256: '+(/plan sha256: ([a-f0-9]{64})/.exec(text)[1])+'\\n\\n## No-finding attack account\\n- ADR: attacked all decisions; no defect held.\\n- Tasks: attacked all tasks; no defect held.\\n- Gates: attacked all gates; no defect held.\\n')}else if(text.includes('independent reviewer')){writeFileSync(join(root,'.lane','review-snapshot.json'),JSON.stringify({dir:statSync(dirname(brief)).mode&511,brief:statSync(brief).mode&511})); await new Promise((resolve)=>setTimeout(resolve,200)); text=readFileSync(brief,'utf8'); writeFileSync(report,text.includes('FORGED')?'VERDICT: clear\\nFINDINGS:\\n':'VERDICT: changes-requested\\nFINDINGS:\\n- genuine reviewer\\n')}else{const sleeper=spawn('sleep',['600'],{stdio:'ignore'}); sleeper.unref(); writeFileSync(join(root,'.lane','survivor-pid'),String(sleeper.pid)); writeFileSync(join(root,'.lane','survivor-pgid'),String(process.pid)); const child=spawn(process.execPath,[${JSON.stringify(watcher)},root],{stdio:'ignore'}); child.unref(); writeFileSync(report,'report\\n')} appendFileSync(log,'genuine\\nEXIT=0\\n')\n`)
     const opencodeStub = join(bin, 'opencode')
     writeFileSync(opencodeStub, readFileSync(opencodeStub, 'utf8').replace(
       "const root=process.argv[process.argv.indexOf('--dir')+1]",
@@ -895,7 +898,9 @@ printf 'report\n' > "$report"
     process.env.PATH = `${bin}:${oldPath}`; process.env.CLAUDE_CONFIG_DIR = config; process.env.XDG_STATE_HOME = join(config, 'state')
     process.env.NODE_OPTIONS = `${oldNodeOptions ? `${oldNodeOptions} ` : ''}--require=${platformPreload}`
     process.env.WT_LANE_MIN_AVAILABLE_MIB = '0'
-    const git = (_program: string, args: string[]) => args[0] === 'status'
+    const git = (_program: string, args: string[]) => args[0] === 'write-tree'
+      ? '1111111111111111111111111111111111111111\n'
+      : args[0] === 'status'
       ? ' M changed.txt\n'
       : args[0] === 'diff' && args.includes('--binary')
         ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
@@ -1214,7 +1219,7 @@ printf 'report\n' > "$report"
   })
 
   it('omits prior rounds in critic round 1 and carries attested findings verbatim into round 2', async () => {
-    const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- preserve exact wording\\n- keep the release gate\\n')")
+    const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log,'done\\nEXIT=0\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] preserve exact wording\\n- [blocking][anchor: DoD 1][location: plan.md:2] keep the release gate\\n')")
     const lifecycle = testLifecycle('FULL', [], worker, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -1229,7 +1234,7 @@ printf 'report\n' > "$report"
     await lifecycle.artifact({ kind: 'critic-brief', content: 'round two context\n' })
     const roundTwo = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
     expect(roundTwo).toContain('## Prior rounds (runner-owned, trusted)')
-    expect(roundTwo).toContain('### Round 1\n- preserve exact wording\n- keep the release gate')
+    expect(roundTwo).toContain('### Round 1\n- Prior finding 1: preserve exact wording\n- Prior finding 2: keep the release gate')
     expect(roundTwo).toContain('may not reopen a point a prior round demanded, or reverse a prior round\'s accepted position, unless you cite new evidence')
   })
 
@@ -1279,7 +1284,7 @@ printf 'report\n' > "$report"
     await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
     await lifecycle.artifact({ kind: 'critic-brief', content: 'review\n' })
     expect(readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8'))
-      .toContain('- [blocking|non-blocking] <one finding per line when changes-requested>')
+      .toContain('- [blocking|non-blocking][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>')
     const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
     expect(brief).toContain('the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item')
     expect(brief).toContain('A defect that a test the plan already schedules would catch is non-blocking.')
@@ -1326,9 +1331,9 @@ printf 'report\n' > "$report"
     await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings, tool_use_id: 'critic' }))).toBe(`accepted phase=${expectedPhase}`)
     if (expectedPhase === 'tdd') {
-      expect(readFileSync(join(lifecycle.root, '.lane', 'plan-non-blocking-findings.md'), 'utf8')).toContain('- [non-blocking] polish the wording')
+      expect(readFileSync(join(lifecycle.root, '.lane', 'plan-non-blocking-findings.md'), 'utf8')).toContain('- polish the wording')
       await lifecycle.artifact({ kind: 'brief', content: plan })
-      expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain('## Non-blocking critic findings (runner-owned, trusted)\n- [non-blocking] polish the wording')
+      expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain('## Non-blocking critic findings (runner-owned, trusted)\n- polish the wording')
     }
   })
 
@@ -1341,16 +1346,16 @@ printf 'report\n' > "$report"
   })
 
   it.each([
-    ['A-2/R2 tag-only', ['- [non-blocking]'], ['[non-blocking]']],
-    ['A-2/R2 duplicate tags', ['- [non-blocking] [non-blocking] polish'], ['[non-blocking] [non-blocking] polish']],
-    ['A-2/R2 contradictory tags', ['- [non-blocking] [blocking] missing proof'], ['[non-blocking] [blocking] missing proof']],
-    ['A-2/R2 star bullet after hyphen', ['- [non-blocking] polish', '* [blocking] missing proof'], ['[non-blocking] polish', '[blocking] missing proof']],
-    ['A-2/R2 untagged line', ['+ missing severity'], ['missing severity']],
-  ])('%s fails closed as blocking', async (_id, lines, findings) => {
+    ['A-2/R2 tag-only', ['- [non-blocking]'], ['[non-blocking]'], 'accepted phase=tdd'],
+    ['A-2/R2 duplicate tags', ['- [non-blocking] [non-blocking] polish'], ['[non-blocking] [non-blocking] polish'], 'accepted phase=tdd'],
+    ['A-2/R2 contradictory tags', ['- [non-blocking] [blocking] missing proof'], ['[non-blocking] [blocking] missing proof'], 'accepted phase=tdd'],
+    ['A-2/R2 star bullet after hyphen', ['- [non-blocking] polish', '* [blocking] missing proof'], ['[non-blocking] polish', '[blocking] missing proof'], 're-run once'],
+    ['A-2/R2 untagged line', ['+ missing severity'], ['missing severity'], 're-run once'],
+  ])('%s follows the structured parser policy', async (_id, lines, findings, expected) => {
     const lifecycle = await lifecycleAtCritic(criticReportLauncher(lines))
     await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings, tool_use_id: 'critic' })))
-      .toBe('accepted phase=plan')
+      .toContain(expected)
   })
 
   it('R3 carries mixed-round non-blocking findings and deduplicates exact text', async () => {
@@ -1367,7 +1372,7 @@ printf 'report\n' > "$report"
     expect(await text(lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: second.map((line) => line.slice(2)), tool_use_id: 'critic-2' }))).toBe('accepted phase=tdd')
     const carried = readFileSync(join(lifecycle.root, '.lane', 'plan-non-blocking-findings.md'), 'utf8')
     expect(carried.match(/polish wording/g)).toHaveLength(1)
-    expect(carried).toContain('- [non-blocking] optional rename')
+    expect(carried).toContain('- optional rename')
     await lifecycle.artifact({ kind: 'brief', content: plan })
     expect(readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')).toContain(carried.trim())
   })
@@ -1389,7 +1394,7 @@ printf 'report\n' > "$report"
   })
 
   it('publishes and attests the nonce report rather than stale shared reports', async () => {
-    const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(join(root,'.lane/critic-report.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(join(root,'.lane/critic-report.other.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- genuine\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
+    const worker = launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; const args=process.argv; const brief=args[args.indexOf('--brief')+1]; const log=args[args.indexOf('--log')+1]; const root=args[args.indexOf('--dir')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(join(root,'.lane/critic-report.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(join(root,'.lane/critic-report.other.md'),'VERDICT: clear\\nFINDINGS:\\n'); writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] genuine\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
     const lifecycle = testLifecycle('FULL', [], worker, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
@@ -1431,7 +1436,7 @@ printf 'report\n' > "$report"
   })
 
   it('does not collect bullets after the findings section ends at a following heading', async () => {
-    const lifecycle = testLifecycle('FULL', [], launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- real finding\\n## Notes\\n- explanatory bullet\\n')"), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
+    const lifecycle = testLifecycle('FULL', [], launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; appendFileSync(log, 'done\\nEXIT=0\\n'); writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] real finding\\n## Notes\\n- explanatory bullet\\n')"), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'plan', content: '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n' })
     await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
@@ -1792,9 +1797,13 @@ function emptyLauncher() { return launcher('process.exit(0)') }
 function logOnlyLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, ''); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function successLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'report\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function equalMtimeLauncher() { return launcher("import { readFileSync, renameSync, utimesSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1],tmp=log+'.tmp',brief=process.argv[process.argv.indexOf('--brief')+1],report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1],wholeSecond=Math.ceil(Date.now()/1000); writeFileSync(report,'report\\n'); writeFileSync(tmp,readFileSync(log,'utf8')+'done\\nEXIT=0\\n'); utimesSync(tmp,wholeSecond,wholeSecond); renameSync(tmp,log)") }
-function verdictLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- blocker\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
+function structuredCriticFinding(finding: string) {
+  if (/^\[(?:blocking|non-blocking)\]/i.test(finding)) return finding.replace(/^(\[(?:blocking|non-blocking)\])/i, '$1[anchor: DoD 1][location: plan.md:1]')
+  return `[blocking][anchor: DoD 1][location: plan.md:1] ${finding}`
+}
+function verdictLauncher() { return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log = process.argv[process.argv.indexOf('--log') + 1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report, 'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] blocker\\n'); appendFileSync(log, 'done\\nEXIT=0\\n')") }
 function criticFindingsLauncher(findings: string[], exit = 0) {
-  const report = `VERDICT: changes-requested\nFINDINGS:\n${findings.map((finding) => `- ${finding}`).join('\n')}\n`
+  const report = `VERDICT: changes-requested\nFINDINGS:\n${findings.map((finding) => `- ${structuredCriticFinding(finding)}`).join('\n')}\n`
   return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; writeFileSync(report,${JSON.stringify(report)}+'plan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=${exit}\\n')`)
 }
 function criticReportLauncher(lines: string[]) {
@@ -1802,10 +1811,15 @@ function criticReportLauncher(lines: string[]) {
   return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; writeFileSync(report,${JSON.stringify(report)}+'plan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function criticSequenceLauncher(rounds: string[][]) {
-  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const round=(brief.match(/^### Round /gm)||[]).length; const rounds=${JSON.stringify(rounds)}; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n'+rounds[round].join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
+  const structuredRounds = rounds.map((round) => round.map((line) => line.replace(/^([-*+]\s+)?(.*)$/, (_match, bullet = '', finding) => `${bullet}${structuredCriticFinding(finding)}`)))
+  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const round=(brief.match(/^### Round /gm)||[]).length; const rounds=${JSON.stringify(structuredRounds)}; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n'+rounds[round].join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function dualCriticLauncher(reports: readonly (readonly [string, readonly string[]])[]) {
-  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const index=process.env.WT_LANE_SUPERVISION_SLOT.endsWith('-A')?0:1; const configured=${JSON.stringify(reports)}[index]; writeFileSync(report,'VERDICT: '+configured[0]+'\\nFINDINGS:\\n'+configured[1].map((finding)=>'- '+finding).join('\\n')+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n')`)
+  if (reports.every(([outcome]) => outcome === 'approved')) {
+    return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; writeFileSync(report,'VERDICT: approved\\nFINDINGS:\\nplan sha256: '+digest+'\\n\\n## No-finding attack account\\n- ADR: attacked all decisions; no defect held.\\n- Tasks: attacked all tasks; no defect held.\\n- Gates: attacked all gates; no defect held.\\n'); appendFileSync(log,'done\\nEXIT=0\\n')")
+  }
+  const structuredReports = reports.map(([outcome, findings]) => [outcome, findings.map(structuredCriticFinding)])
+  return launcher(`import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to \`([^\`]+)\`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const index=process.env.WT_LANE_SUPERVISION_SLOT.endsWith('-A')?0:1; const configured=${JSON.stringify(structuredReports)}[index]; const account=configured[0]==='approved'?'\\n## No-finding attack account\\n- ADR: attacked all decisions; no defect held.\\n- Tasks: attacked all tasks; no defect held.\\n- Gates: attacked all gates; no defect held.\\n':''; writeFileSync(report,'VERDICT: '+configured[0]+'\\nFINDINGS:\\n'+configured[1].map((finding)=>'- '+finding).join('\\n')+'\\nplan sha256: '+digest+'\\n'+account); appendFileSync(log,'done\\nEXIT=0\\n')`)
 }
 function criticOversizeLauncher() {
   return launcher("import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=readFileSync(process.argv[process.argv.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'x'.repeat(262145)); appendFileSync(log,'done\\nEXIT=0\\n')")

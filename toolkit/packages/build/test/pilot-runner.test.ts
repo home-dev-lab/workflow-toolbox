@@ -733,7 +733,7 @@ describe('SDK pilot runner', () => {
     const reason = `plan not approved after ${FIXED_CRITIC_ROUNDS} critic rounds`
     writeFileSync(f.cardFile, 'Route: FULL\n## Definition of done\n- exercise partial completion\n')
     const launcher = join(f.root, 'launcher.mjs')
-    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
     const continuations: string[] = []
     type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
     const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'

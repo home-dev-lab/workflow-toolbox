@@ -2,8 +2,10 @@
 const INDEPENDENT_ROLES = { critic: 'critic', review: 'reviewer', refutation: 'refuter' }
 const PLAN_STAGE_SEVERITY_POLICY = `
 Severity policy:
-- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking] The plan omits the required rollback test.\`
+- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking][anchor: DoD 1][location: plan.md:20] The plan omits the required rollback test.\`
 - A defect that a test the plan already schedules would catch is non-blocking. Use \`[non-blocking]\` for it and for optional wording, style, or polish that changes nothing the DoD checks. Non-blocking example: \`[non-blocking] Rephrase the introduction for brevity.\`
+- The anchor field is mandatory for every \`[blocking]\` finding. Omitting it makes the whole report invalid. Use \`[anchor: none]\` explicitly when no anchor resolves; that finding is routed instead of blocking.
+- You MUST find issues. If one plan section yields no finding, account for what you attacked and why nothing holds under \`## No-finding attack account\`, with one non-empty bullet named \`ADR\`, \`Tasks\`, and \`Gates\`. A zero-finding approval requires that account from every critic lane; otherwise it is a failed critic round and is re-run once.
 
 ## Coverage checklist
 
@@ -20,14 +22,21 @@ function fenced(content) {
 
 export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none' }) {
   const verdict = phase === 'critic' ? 'approved|changes-requested' : 'clear|changes-requested'
-  const severityPolicy = phase === 'critic' ? PLAN_STAGE_SEVERITY_POLICY : ''
-  const priorRoundsSection = phase === 'critic' && priorRounds.length > 0
+  const severityPolicy = phase === 'critic' ? PLAN_STAGE_SEVERITY_POLICY : `
+Severity policy:
+- CRITICAL, HIGH, and MEDIUM block only when the finding names the DoD criterion or plan task it serves. LOW never blocks and may omit the anchor field.
+- The anchor field is mandatory for every CRITICAL, HIGH, or MEDIUM finding. Omitting it makes the whole report invalid. Use \`[anchor: none]\` explicitly when no anchor resolves; that finding is routed instead of blocking.
+- Use \`[CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <finding>\`.
+`
+  const priorFindingOffsets = priorRounds.map((_, index) => priorRounds.slice(0, index).reduce((total, prior) => total + prior.findings.length, 0))
+  const patchBaseLabel = phase === 'review' && priorRounds.length > 0 ? 'the fix since previously reviewed tree' : 'construction base'
+  const priorRoundsSection = priorRounds.length > 0
     ? `
 ## Prior rounds (runner-owned, trusted)
 
-These findings come from prior critic reports attested by the runner. You may not reopen a point a prior round demanded, or reverse a prior round's accepted position, unless you cite new evidence.
+These findings come from prior ${phase} reports attested by the runner. You may not reopen a point a prior round demanded, or reverse a prior round's accepted position, unless you cite new evidence. A finding may use \`extends prior finding <n>\`; the runner counts that declaration as recurrence.
 
-${priorRounds.map(({ round, findings }) => `### Round ${round}\n${findings.map((finding) => `- ${finding}`).join('\n')}`).join('\n\n')}
+${priorRounds.map(({ round, findings }, roundIndex) => `### Round ${round}\n${findings.map((finding, index) => `- Prior finding ${priorFindingOffsets[roundIndex] + index + 1}: ${finding}`).join('\n')}`).join('\n\n')}
 `
     : ''
   const discoverySection = phase === 'critic' && discovery !== null
@@ -48,7 +57,7 @@ ${rules ? `\n## Rules that apply to this role (authoritative)\n\n${rules}\n` : '
 ## Artefacts to judge
 
 ${artifacts.map((artifact) => `- \`${artifact}\``).join('\n')}
-${constructionBase ? `\nThe prospective implementation patch is \`${artifacts[0]}\`, computed against construction base \`${constructionBase}\`.` : ''}
+${constructionBase ? `\nThe prospective implementation patch is \`${artifacts[0]}\`, computed against ${patchBaseLabel} \`${constructionBase}\`.` : ''}
 ${snapshotDir ? `\nThese are read-only launch inputs in the runner-owned snapshot directory \`${snapshotDir}\`.` : ''}
 ${discoverySection}
 
@@ -63,7 +72,7 @@ ${severityPolicy}
 
 VERDICT: <${verdict}>
 FINDINGS:
-${phase === 'critic' ? '- [blocking|non-blocking] <one finding per line when changes-requested>' : '- <one finding per line when changes-requested>'}
+${phase === 'critic' ? '- [blocking|non-blocking][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>' : '- [CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>'}
 ${planDigest ? `\nThe critic report must include this line verbatim: plan sha256: ${planDigest}\n` : ''}`
 }
 
@@ -91,5 +100,15 @@ export function prospectivePatch(root, constructionBase, git, maxBuffer) {
   const patch = parts.join('')
   const dirty = run(['status', '--porcelain=v1', '-z', '--untracked-files=all']).length > 0
   if (dirty && !/^diff --git /m.test(patch)) throw new Error('dirty tree produced no substantive patch')
+  return patch
+}
+
+export function snapshotPatch(root, previousTree, currentTree, git, maxBuffer) {
+  const run = (args) => git('git', args, { cwd: root, encoding: 'utf8', maxBuffer })
+  const deleted = run(['diff', '--name-only', '--diff-filter=D', '-z', previousTree, currentTree, '--']).split('\0').filter(Boolean)
+  const diff = run(['diff', '--binary', '--find-renames', previousTree, currentTree, '--'])
+  const header = ['# Review snapshot delta', `# Previous reviewed tree: ${previousTree}`, `# Current reviewed tree: ${currentTree}`, '# Deleted paths:', ...(deleted.length > 0 ? deleted.map((name) => `# - ${JSON.stringify(name)}`) : ['# - (none)']), ...(diff ? [''] : ['', '# No changes since previous review snapshot', ''])].join('\n')
+  const patch = `${header}${diff}`
+  if (Buffer.byteLength(patch) > maxBuffer) throw new Error(`prospective patch exceeds ${maxBuffer}-byte limit`)
   return patch
 }
