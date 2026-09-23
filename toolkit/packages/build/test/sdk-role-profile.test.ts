@@ -84,9 +84,14 @@ describe('SDK role profiles', () => {
 
   it('composes query options from the supplied profile rather than a site-local tool list', () => {
     const profile = { ...roleProfile('review'), tools: ['Read', 'changed-tool'] }
-    expect(composeSdkRoleQueryOptions({ model: 'opus' }, { profile, plugins: [], hooks: {} })).toMatchObject({
-      model: 'opus', tools: ['Read', 'changed-tool'], plugins: [], hooks: {}, pluginDelivery: 'initialize',
+    expect(composeSdkRoleQueryOptions({ model: 'opus', effort: 'medium' }, { profile, plugins: [], hooks: {} })).toMatchObject({
+      model: 'opus', effort: 'medium', tools: ['Read', 'changed-tool'], plugins: [], hooks: {}, pluginDelivery: 'initialize',
     })
+  })
+
+  it.each(roles)('refuses to launch the %s SDK role without a declared effort', (role) => {
+    expect(() => composeSdkRoleQueryOptions({ model: 'opus' }, { profile: roleProfile(role), plugins: [], hooks: {} }))
+      .toThrow('SDK role launch requires explicit effort')
   })
 
   it('fails closed with the missing guard or context-mode path named', () => {

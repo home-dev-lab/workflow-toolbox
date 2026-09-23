@@ -298,6 +298,7 @@ export function skillIsUnlistedByInit(skillMarkdown) {
 }
 
 export function composeSdkRoleQueryOptions(base, prepared) {
+  if (typeof base.effort !== 'string' || !base.effort) throw new Error('SDK role launch requires explicit effort')
   const disallowedTools = prepared.profile.readOnly
     ? Object.values(CONTEXT_MODE_TOOLS).filter((tool) => tool !== CONTEXT_MODE_TOOLS.search)
     : []

@@ -39,7 +39,7 @@ const text = (server: RegisteredServer, name: string, input: Record<string, unkn
 function fakeSdk(root: string) {
   const packageDir = join(root, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
   mkdirSync(packageDir, { recursive: true })
-  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', main: 'index.cjs' }))
   writeFileSync(join(packageDir, 'index.cjs'), 'module.exports = { query() {} }\n')
 }
 
@@ -511,7 +511,7 @@ describe('orchestrator driver', () => {
     delete env.CLAUDE_PLUGIN_DATA
     const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...env, NODE_NO_WARNINGS: '1' } })
     expect(result.status).toBe(1)
-    expect(result.stderr.trim().split(/\r?\n/)).toEqual(['wt-run-orchestrator: @anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk'])
+    expect(result.stderr.trim().split(/\r?\n/)).toEqual(["wt-run-orchestrator: @anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'"])
     expect(result.stdout).toBe('')
   })
 

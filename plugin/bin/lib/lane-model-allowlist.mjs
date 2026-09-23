@@ -8,17 +8,17 @@ export const DEFAULT_LANE_MODELS = Object.freeze([
 ])
 
 // Aide-memoire kept up to date with variants we have verified; never an authority on what providers expose.
-const KNOWN_VARIANTS = Object.freeze(['low', 'medium', 'high', 'max'])
+const KNOWN_VARIANTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
 
 const VARIANT_ROLES = Object.freeze({
-  pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'medium'],
+  pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'high'],
   pilotHard: ['pilot_hard_variant', 'WT_PILOT_HARD_VARIANT', 'high'],
-  orchestrator: ['orchestrator_variant', 'WT_ORCHESTRATOR_VARIANT', 'medium'],
-  sdkPilot: ['sdk_pilot_variant', 'WT_SDK_PILOT_VARIANT', 'medium'],
+  orchestrator: ['orchestrator_variant', 'WT_ORCHESTRATOR_VARIANT', 'high'],
+  sdkPilot: ['sdk_pilot_variant', 'WT_SDK_PILOT_VARIANT', 'high'],
   sdkPilotHard: ['sdk_pilot_hard_variant', 'WT_SDK_PILOT_HARD_VARIANT', 'high'],
-  sdkOrchestrator: ['sdk_orchestrator_variant', 'WT_SDK_ORCHESTRATOR_VARIANT', 'medium'],
+  sdkOrchestrator: ['sdk_orchestrator_variant', 'WT_SDK_ORCHESTRATOR_VARIANT', 'high'],
   critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'high'],
-  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'medium'],
+  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'high'],
   review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'high'],
   refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'high'],
 })
@@ -33,7 +33,7 @@ export function resolveRoleVariant(role, model, { env = process.env, settingsEnv
   if (!definition) throw new Error(`unknown variant role: ${String(role)}`)
   const [option, envKey, base] = definition
   const plugin = readPluginOption(option, { env })
-  for (const [bag, source] of [[plugin.present ? { [envKey]: plugin.value } : {}, 'plugin option'], [env, 'env'], [settingsEnv, 'settings']]) {
+  for (const [bag, source] of [[plugin.present && plugin.value ? { [envKey]: plugin.value } : {}, 'plugin option'], [env, 'env'], [settingsEnv, 'settings']]) {
     if (!Object.prototype.hasOwnProperty.call(bag, envKey)) continue
     const value = bag[envKey]
     if (typeof value !== 'string' || !value.trim()) throw new Error(`${envKey} must be a non-empty variant name`)
@@ -42,7 +42,7 @@ export function resolveRoleVariant(role, model, { env = process.env, settingsEnv
     if (refusal) throw new Error(refusal)
     return { value: variant, origin: 'override', source, forced: false }
   }
-  if (base === 'high' && /(?:gpt-6-astra|fable)/i.test(model)) return { value: 'medium', origin: 'model cap', source: 'profile', forced: false }
+  if (role === 'code' && /gpt-5\.6-sol/i.test(model)) return { value: 'xhigh', origin: 'model profile', source: 'profile', forced: false }
   return { value: base, origin: 'role base', source: 'profile', forced: false }
 }
 
