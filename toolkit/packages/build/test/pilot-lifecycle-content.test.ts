@@ -32,12 +32,23 @@ describe('pilot lifecycle template', () => {
   })
 
   it('writes loop bounds, exits, dispositions, and escalation', () => {
-    expect(PILOT).toContain('≤ 3 cycles')
+    expect(PILOT).toMatch(/Plan ↔ critic[\s\S]{0,120}≤ 3\s+cycles/)
     expect(PILOT).toContain('no blocking finding')
-    expect(PILOT).toContain('no open finding')
+    expect(PILOT).toContain('while blocking findings remain')
     expect(PILOT).toMatch(/fixed\s+with red lock/)
     expect(PILOT).toMatch(/out-of-scope card #/)
     expect(PILOT).toMatch(/rejected\s+with evidence/)
     expect(PILOT).toContain('escalate, never loop silently')
+  })
+
+  it('returns review fixes to TDD until mechanical non-convergence', () => {
+    expect(PILOT).toContain('review → TDD fix → verify → review')
+    expect(PILOT).toMatch(/same finding returns \(anchor plus\s+file plus normalized claim/)
+    expect(PILOT).toMatch(/two\s+consecutive blocking passes fail to set a new minimum/)
+    expect(PILOT).toContain('Clear passes remain recorded but do not set')
+    expect(PILOT).toContain('a red suite returns its failing test names as another TDD')
+    expect(PILOT).toContain('There is no fixed round cap')
+    expect(PILOT).toContain('targeted tests, typecheck, and lint')
+    expect(PILOT).not.toContain('review → harden')
   })
 })

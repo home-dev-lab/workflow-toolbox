@@ -21,7 +21,7 @@
             "type": "array",
             "minItems": 1,
             "uniqueItems": true,
-            "items": { "enum": ["pilot", "orchestrator", "critic", "tdd", "review", "refutation", "harden"] }
+            "items": { "enum": ["pilot", "orchestrator", "critic", "tdd", "review", "refutation"] }
           },
           "triggers": {
             "type": "array",
@@ -30,8 +30,8 @@
             "items": {
               "enum": [
                 "standing",
-                "phase:discovery", "phase:plan", "phase:critic", "phase:tdd", "phase:verify", "phase:review", "phase:refutation", "phase:harden", "phase:report",
-                "lane:critic", "lane:tdd", "lane:review", "lane:refutation", "lane:harden",
+                "phase:discovery", "phase:plan", "phase:critic", "phase:tdd", "phase:verify", "phase:review", "phase:refutation", "phase:report",
+                "lane:critic", "lane:tdd", "lane:review", "lane:refutation",
                 "critic->plan"
               ]
             }

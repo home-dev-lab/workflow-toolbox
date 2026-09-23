@@ -14,9 +14,9 @@ hop from changed files; another subsystem; separate planning/unavailable depende
 Immediately call `route_finding { title, l4Reason, risk: 'P0'|'P1'|'P2', effort: 'S'|'M'|'L', type?:
 'bug'|'chore'|'feature'|'research' }`. Without `--board-contract` the runner refuses it. Never call raw `create_card`.
 
-`write_artifact` accepts `plan`, `critic-brief`, `brief` (tdd), `review-brief`, `refutation-brief`, `harden-brief`,
+`write_artifact` accepts `plan`, `critic-brief`, `brief` (tdd), `review-brief`, `refutation-brief`,
 and `pilot-report`, only in its named phase. Use `run { kind: 'lane', phase, timeout }` only for tdd, critic,
-review, refutation, or harden; maximum timeout is 5400 seconds. Gate runs accept only `typecheck`, `lint`, or
+review, or refutation; maximum timeout is 5400 seconds. Gate runs accept only `typecheck`, `lint`, or
 `test`; inspect runs accept only `diff`, `status`, or allow-listed receipts/logs. On lane `TIMEOUT`, use its
 `run { kind: 'control', decision: 'abandon'|'extend' }` remedy; the runner supplies the owner token.
 
@@ -45,17 +45,16 @@ pair. Critic reports quote the plan SHA-256. On FULL, the tdd brief carries the 
 | discovery | Inspect intake and relevant worktree sources, then transition with `record` of that discovery and the runner's frozen route; LITE reaches tdd, FULL plan. |
 | plan | Write a plan with ADR decision/rejected, top-level task DoDs, Gates, and `## Acceptance`. Quote every folded card Definition-of-done criterion exactly and follow each with `Proof:` naming a task, test, e2e, test file, or gate; then transition. |
 | critic | Write/run the brief; round 1 runs critics A and B together and unions exact-deduplicated findings. Then transition: approved -> tdd; changes-requested -> plan. |
-| tdd or harden | Write the brief, run the lane, then transition to verify. |
-| verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
-| review | Write the brief, run the lane, then follow its report: clear -> refutation; changes-requested -> harden. |
-| refutation | Write the brief, run the lane, then follow its report: clear -> report; changes-requested -> harden. |
+| tdd | Write/run the brief, then verify. Fix rounds consume `.lane/review-findings.md` and run targeted tests, typecheck, and lint (zero touched-file warnings), never the full suite. |
+| verify | Run all gates. Green reaches report/review; a red full suite transitions `failed` with test names and returns to tdd. |
+| review | Write/run the brief; clear -> refutation, blocking changes-requested -> tdd fix. |
+| refutation | Write/run the brief; clear -> report, blocking changes-requested -> tdd fix. |
 | report | Write/transition it; non-proven DoD or unrun E2E makes archive partial. |
 
-Outcomes/findings come from the lane report and declarations must match it. Review/refutation
-changes-requested outcomes need findings. Both loops have three fixed passes, then continue while blockers
-decrease, allowing one plateau, stopping on recurrence or at six. Recurrence is mechanically limited to
-case/whitespace-insensitive exact text; narrowed wording is not recurrence. State that limit in a partial
-report. Produce evidence named by a refusal; do not retry the denied call.
+Outcomes/findings must match the lane report. Review/refutation changes need findings. Review has no fixed
+cap. Stop if anchor + file + normalized claim recurs, a valid `extends prior finding <n>` appears, or two
+blocking passes set no new strict blocker minimum. Clear passes stay recorded but do not set it. The partial names unresolved findings and the
+signal for the parent. Produce evidence named by a refusal; do not retry the denied call.
 The critic accepts routed L4, not bare deferral. One blocking `CONTEST routed card <id>:` gets one plan
 round. Do it (runner closes the card) or maintain cited L4; then report disagreement to the order-giver, never loop.
 

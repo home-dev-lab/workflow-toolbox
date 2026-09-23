@@ -31,9 +31,8 @@ const NEXT_BY_PHASE = {
   critic: `write the critic brief, run the critic lane, then transition critic; if critic round ${MAX_CRITIC_ROUNDS} requests blocking changes, transition with outcome changes-requested; the server routes a spent bound to report`,
   tdd: 'write the tdd brief, run the tdd lane, then transition tdd',
   verify: 'run the three gates, then transition verify',
-  review: 'write the review brief, run the review lane, then transition review; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',
-  refutation: 'write the refutation brief, run the refutation lane, then transition refutation; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',
-  harden: 'write the harden brief, run the harden lane, then transition harden',
+  review: 'write the review brief, run the review lane, then transition review; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
+  refutation: 'write the refutation brief, run the refutation lane, then transition refutation; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
   report: 'write the pilot report, then transition report',
 }
 const PLANKA_TOOLS = new Set([

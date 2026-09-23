@@ -30,7 +30,7 @@ symlink target once.
 | Role | Tools | LSP | Selected workflow-toolbox skills | Shipped command guards |
 | --- | --- | --- | --- | --- |
 | pilot | Read, Glob, Grep, LSP, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | optional, visible | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |
-| tdd, harden | Read, Glob, Grep, LSP, Edit, Write, Bash, all ten context-mode MCP tools | optional, visible | changelog | writer set |
+| tdd | Read, Glob, Grep, LSP, Edit, Write, Bash, all ten context-mode MCP tools | optional, visible | changelog | writer set |
 | judge, critic, review, refutation | Read, Glob, Grep, LSP, `ctx_search` only | optional, visible | none | none; no Bash |
 
 The initial implementation detects TypeScript and JavaScript from a root `tsconfig.json` or
@@ -107,10 +107,10 @@ form and Node path APIs for resolution and real-path containment on each host.
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
 | plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing/reworded criterion is refused with an example. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. `CONTEST routed card <id>:` gets exactly one plan round; a repeated maintained scope disagreement proceeds and is reported. A fourth other changes-requested verdict after three plan rounds reaches a partial report. |
-| tdd or harden -> verify | Attested lane receipt and non-empty report. On FULL, `tdd-brief.md` has the plan `## Tasks` block byte-identically. |
+| tdd -> verify | Attested lane receipt and non-empty report. The initial FULL `tdd-brief.md` has the plan `## Tasks` block byte-identically; later TDD fix briefs carry runner-owned review findings and focused-gate instructions. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
-| review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
-| refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
+| review -> refutation, tdd, or report | Attested lane receipt and report verdict. `clear` reaches refutation; blocking `changes-requested` writes `review-findings.md` and reaches a TDD fix. Mechanical non-convergence reaches a partial report. |
+| refutation -> report, tdd, or partial report | Attested lane receipt and report verdict. `clear` reaches report; blocking `changes-requested` reaches a TDD fix unless non-convergence fires. |
 | report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
@@ -142,7 +142,7 @@ patterns with separators are confined by real-path checking their non-glob prefi
 relative symlinks. The `measures wildcard-first Glob and Grep matches through an in-worktree symlink with a real SDK query` lock (`WT_REAL_SDK_LOCKS=1`) measured wildcard-first matches not to escape the worktree through an in-worktree symlink. Lifecycle implementation, receipts/launch, and report-edge transaction code live
 in separate modules behind the unchanged public server export.
 
-TDD and harden briefs, and independent critic/review/refutation briefs, put mapped exact rule sections
+TDD and independent critic/review/refutation briefs put mapped exact rule sections
 under `## Rules that apply to this role (authoritative)`. Both executor families receive a
 runner-owned snapshot brief; its knowledge-base availability line reflects the selected launcher.
 The independent brief names the runner's once-resolved knowledge-base index and states that fiches are
@@ -152,14 +152,14 @@ the index and real-path-contained regular Markdown fiches while Glob/Grep remain
 OpenCode runs with `--dir` and `cwd` set to the worktree and `--auto` in `wt-lane.mjs`; `--auto` approves an
 `external_directory` read the user's OpenCode config leaves on `ask`, so the brief names the index and tells
 the lane to report a refused read (a config that denies it wins) rather than rely on the knowledge base.
-TDD and harden briefs also carry the frontmatter-stripped body of the shipped changelog skill in a
+TDD briefs also carry the frontmatter-stripped body of the shipped changelog skill in a
 server-written authoritative section; a missing skill source refuses brief composition.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or
 rename does not change it; recorded v2 signatures do not compare.
 
-TDD and harden lanes use `openai/gpt-5.6-terra`; critic, review, and refutation use
+TDD lanes use `openai/gpt-5.6-terra`; critic, review, and refutation use
 `openai/gpt-5.6-sol`. Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
 toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
 A lane must not rely on background processes surviving its receipt: the reported process group contains

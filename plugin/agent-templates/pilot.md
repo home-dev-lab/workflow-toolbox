@@ -81,11 +81,11 @@ Operating shape:
    Risk: <none | money | security | data loss | public surface | guard | availability>
    Proof expected: <gates and e2e>
    Language: <language or pack>
-   Phase: <discovery|plan|tdd|verify|review|harden|report>
+   Phase: <discovery|plan|tdd|verify|review|report>
    Next: <next concrete action>
    ```
 
-   In `sr-meta`, write `Phase: <discovery|plan|tdd|verify|review|harden|report>` beside
+   In `sr-meta`, write `Phase: <discovery|plan|tdd|verify|review|report>` beside
    `Last-worked:` and `Next:`. Decide LITE or FULL mechanically from the discovery block and
    card labels before any judgment:
 
@@ -114,10 +114,17 @@ Operating shape:
 5. **TDD** — red → code → green per increment. "No test seam" is a DESIGN decision to
    surface, never debt or a fabricated abstraction. A red test that falsifies the plan
    routes back to planning, not to re-coding.
-6. **Gates ↔ review** — the TDD → verify → review → harden loop is ≤ 3 cycles; exit when
-   there is no open finding. Every review finding carries a disposition before close: `fixed
-   with red lock`, `out-of-scope card #`, or `rejected with evidence`. At the bound, escalate,
-   never loop silently. Gates are by EXIT CODE (redirect to file, echo `$?`, read the file —
+6. **Gates ↔ review** — run TDD → verify → review, then review → TDD fix → verify → review
+   while blocking findings remain. The same implementer receives the findings file and fixes them
+   red-first. A fix round runs targeted tests, typecheck, and lint to zero warnings in touched files;
+    VERIFY runs one full suite afterward; a red suite returns its failing test names as another TDD
+    fix round. There is no fixed round cap. Continue while the blocking
+   count sets new strict minima; stop for non-convergence when the same finding returns (anchor plus
+   file plus normalized claim, or `extends prior finding <n>` naming an existing prior finding) or two
+    consecutive blocking passes fail to set a new minimum. Clear passes remain recorded but do not set
+    the minimum. Decide or escalate with every unresolved finding and the signal that fired;
+   never silently deliver a residual MEDIUM+. Every review finding carries a disposition before close:
+   `fixed with red lock`, `out-of-scope card #`, or `rejected with evidence`. Gates are by EXIT CODE (redirect to file, echo `$?`, read the file —
    never pipe a gate); prefer `node plugin/bin/wt-run-gate.mjs --name <gate> --out-dir <dir>
    -- <cmd>` over a hand-typed redirect where available — it structurally prevents a later
    command's exit code from being misread as the gate's own (see the script's own header);

@@ -74,7 +74,7 @@ export function parseExecutorArgs(argv) {
   }
   if (!options.dir || !options.model || !options.brief) return { error: 'missing required --dir, --model, or --brief' }
   if (!Number.isFinite(options.timeout) || options.timeout <= 0) return { error: '--timeout must be a positive number of seconds' }
-  if (!['tdd', 'harden', 'critic', 'review', 'refutation'].includes(options.role)) return { error: '--role must be tdd, harden, critic, review, or refutation' }
+  if (!['tdd', 'critic', 'review', 'refutation'].includes(options.role)) return { error: '--role must be tdd, critic, review, or refutation' }
   if (options.variantOrigin && !['role base', 'model cap', 'override'].includes(options.variantOrigin)) return { error: '--variant-origin is invalid' }
   options.dir = path.resolve(options.dir); options.brief = path.resolve(options.brief)
   options.log = path.resolve(options.log ?? path.join(options.dir, '.lane', 'run.log'))

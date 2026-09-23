@@ -1,9 +1,20 @@
 const MAX_REPORT_FINDINGS = 50
 const MAX_FINDING_CHARACTERS = 2000
-const DIFF_FILE_PREFIX = `+++ b${String.fromCharCode(47)}`
-const DIFF_NO_NEWLINE_PREFIX = String.fromCharCode(92)
-
+const FORWARD_SLASH = String.fromCharCode(47)
+const BACKWARD_SLASH = String.fromCharCode(92)
 const normalizedFinding = (finding) => finding.toLowerCase().replace(/\s+/g, ' ').trim()
+const withoutLineSuffix = (value) => value.replace(/(\.[A-Za-z0-9]+):\d+(?::\d+)?(?:-\d+)?(?=`|[\])]|\s|$)/g, (match, extension, offset, source) => {
+  const before = source.slice(0, offset)
+  const tokenStart = Math.max(before.lastIndexOf(' '), before.lastIndexOf('('), before.lastIndexOf('['), before.lastIndexOf('`')) + 1
+  const token = before.slice(tokenStart)
+  return /[A-Za-z0-9_.-]$/.test(token) && !token.includes('://') ? extension : match
+})
+const normalizedClaim = (finding) => normalizedFinding(withoutLineSuffix(finding))
+const normalizedLocationFile = (location) => {
+  let normalized = String(location ?? '').trim().replace(/^`|`$/g, '').replaceAll(BACKWARD_SLASH, FORWARD_SLASH)
+  if (normalized.startsWith(`.${FORWARD_SLASH}`)) normalized = normalized.slice(2)
+  return normalized.replace(/:\d+(?::\d+)?(?:-\d+)?$/, '')
+}
 const normalizedAnchor = (anchor) => {
   const dod = /^dod(?:\s+(?:criterion|item))?\s*#?(\d+)$/i.exec(anchor)
   if (dod) return `dod ${dod[1]}`
@@ -24,31 +35,6 @@ function severityAtStart(phase, finding, legacy) {
   return { severity: (legacyMatch?.slice(1).find(Boolean) ?? 'high').toLowerCase(), end: legacyMatch?.[0].length ?? 0 }
 }
 
-function locationIsAddedByPatch(location, patch) {
-  if (!location || !patch) return false
-  const locationMatch = /^(.*):(\d+)(?:-(\d+))?$/.exec(location)
-  if (!locationMatch) return false
-  const target = locationMatch[1]
-  const first = Number(locationMatch[2])
-  const last = Number(locationMatch[3] ?? locationMatch[2])
-  const added = new Set()
-  let file = null
-  let line = 0
-  for (const patchLine of patch.split(/\r?\n/)) {
-    if (patchLine.startsWith(DIFF_FILE_PREFIX)) { file = patchLine.slice(DIFF_FILE_PREFIX.length); continue }
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(patchLine)
-    if (hunk) { line = Number(hunk[1]); continue }
-    if (!file || line === 0 || patchLine.startsWith(DIFF_NO_NEWLINE_PREFIX)) continue
-    if (patchLine.startsWith('+')) {
-      if (file === target) added.add(line)
-      line += 1
-    }
-    else if (!patchLine.startsWith('-')) line += 1
-  }
-  for (let candidate = first; candidate <= last; candidate += 1) if (!added.has(candidate)) return false
-  return true
-}
-
 function routedBecause(phase, severity, severityBlocks, anchorMatch, suppliedAnchor, validAnchor, nullAnchor) {
   if (!severityBlocks) {
     if (phase === 'critic') return 'critic marked non-blocking'
@@ -61,7 +47,7 @@ function routedBecause(phase, severity, severityBlocks, anchorMatch, suppliedAnc
   return `explicit anchor ${suppliedAnchor}${suffix}`
 }
 
-function findingDetail(phase, finding, { legacy = false, validAnchors = [], previousHardenPatch = null } = {}) {
+function findingDetail(phase, finding, { legacy = false, validAnchors = [], priorFindingCount = 0 } = {}) {
   const severityToken = severityAtStart(phase, finding, legacy)
   if (!severityToken) return { problem: 'has no recognized severity in its severity field' }
   // eslint-disable-next-line sonarjs/super-linear-regex
@@ -79,14 +65,17 @@ function findingDetail(phase, finding, { legacy = false, validAnchors = [], prev
   let location = /\[location:\s*([^\]]+)\]/i.exec(finding)?.[1]?.trim() ?? null
   // eslint-disable-next-line sonarjs/super-linear-regex
   if (!location) location = /(?:`)?((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+:\d+(?:-\d+)?)(?:`)?/.exec(finding)?.[1] ?? null
-  const hardensOwnCode = anchor?.toLowerCase().startsWith('plan task ') && locationIsAddedByPatch(location, previousHardenPatch)
-  const extendsPrior = Number(/\bextends prior finding\s+(\d+)\b/i.exec(finding)?.[1]) || null
   const metadataEnd = [...finding.matchAll(/\[(?:anchor|location):[^\]]*\]/gi)].reduce((end, match) => Math.max(end, (match.index ?? 0) + match[0].length), severityToken.end)
   const text = finding.slice(metadataEnd).trim() || finding
+  const extendsPrior = Number(/\bextends prior finding\s+(\d+)\b/i.exec(finding)?.[1]) || null
+  if (extendsPrior !== null && extendsPrior > priorFindingCount) {
+    if (!severityBlocks) return { dropped: true, raw: finding, text, severity: severityToken.severity, warning: `extends nonexistent prior finding ${extendsPrior}` }
+    return { problem: `extends nonexistent prior finding ${extendsPrior}` }
+  }
   return {
     raw: finding, text, severity: severityToken.severity, anchor, location, extendsPrior,
-    blocks: severityBlocks && anchor !== null && !hardensOwnCode,
-    routeReason: hardensOwnCode ? 'located only in previous harden code and anchored to no card criterion' : routeReason,
+    blocks: severityBlocks && anchor !== null,
+    routeReason,
     missingRequiredAnchor,
   }
 }
@@ -107,9 +96,11 @@ export function verdictFromReport(phase, content, options = {}) {
   if (rawFindings.length > MAX_REPORT_FINDINGS) return { problem: `finding count exceeds ${MAX_REPORT_FINDINGS}` }
   if (rawFindings.some((finding) => [...finding].length > MAX_FINDING_CHARACTERS)) return { problem: `finding exceeds ${MAX_FINDING_CHARACTERS}-character limit` }
   if (match[1] === 'changes-requested' && rawFindings.length === 0) return null
-  const findingDetails = rawFindings.map((finding) => findingDetail(phase, finding, options))
-  const malformed = findingDetails.findIndex((finding) => finding.problem)
-  if (malformed >= 0) return { problem: `finding ${malformed + 1} ${findingDetails[malformed].problem}` }
+  const parsedFindings = rawFindings.map((finding) => findingDetail(phase, finding, options))
+  const malformed = parsedFindings.findIndex((finding) => finding.problem)
+  if (malformed >= 0) return { problem: `finding ${malformed + 1} ${parsedFindings[malformed].problem}` }
+  const droppedFindings = parsedFindings.flatMap((finding, index) => finding.dropped ? [{ ...finding, index: index + 1 }] : [])
+  const findingDetails = parsedFindings.filter((finding) => !finding.dropped)
   const missingAnchors = findingDetails.flatMap((finding, index) => finding.missingRequiredAnchor ? [index + 1] : [])
   if (missingAnchors.length > 0) return { problem: `finding${missingAnchors.length === 1 ? '' : 's'} ${missingAnchors.join(', ')} ${missingAnchors.length === 1 ? 'has' : 'have'} no anchor field` }
   const blockingCount = findingDetails.filter((finding) => finding.blocks).length
@@ -119,6 +110,8 @@ export function verdictFromReport(phase, content, options = {}) {
     findings: findingDetails.map((finding) => finding.text),
     severities: phase === 'critic' ? findingDetails.map((finding) => finding.severity) : [],
     findingDetails,
+    droppedFindings,
+    warnings: droppedFindings.map((finding) => `dropped ${finding.severity.toUpperCase()} finding ${finding.index}: ${finding.warning}`),
   }
 }
 
@@ -134,6 +127,35 @@ export function adaptiveRoundDecision(rounds, fixedRounds, maxRounds, plateauUse
   if (latestCount < previousCount) return { continue: true, plateauUsed }
   if (latestCount === previousCount && !plateauUsed) return { continue: true, plateauUsed: true }
   return { continue: false, plateauUsed }
+}
+
+export function reviewConvergenceDecision(rounds) {
+  const blockingRounds = rounds.filter((round) => round.blockingFindings.length > 0)
+  const latest = blockingRounds.at(-1)
+  if (!latest) return { continue: true, signal: null }
+  const extended = latest.findingDetails?.find((finding) => finding.blocks && finding.extendsPrior !== null)
+  if (extended) return { continue: false, signal: `finding extends prior finding ${extended.extendsPrior}` }
+
+  const earlier = new Map()
+  for (const round of blockingRounds.slice(0, -1)) {
+    for (const finding of round.findingDetails ?? []) {
+      if (finding.blocks) earlier.set(`${normalizedAnchor(finding.anchor)}\0${normalizedLocationFile(finding.location)}\0${normalizedClaim(finding.text)}`, finding)
+    }
+  }
+  for (const finding of latest.findingDetails ?? []) {
+    if (!finding.blocks) continue
+    const prior = earlier.get(`${normalizedAnchor(finding.anchor)}\0${normalizedLocationFile(finding.location)}\0${normalizedClaim(finding.text)}`)
+    if (prior) return { continue: false, signal: `same finding returned: ${prior.anchor} — ${finding.text.replace(/\s+/g, ' ').trim()}` }
+  }
+
+  const counts = blockingRounds.map((round) => round.blockingFindings.length)
+  let bestRound = 0
+  for (let index = 1; index < counts.length; index += 1) if (counts[index] < counts[bestRound]) bestRound = index
+  if (counts.length - bestRound > 2) {
+    const failures = counts.slice(-2)
+    return { continue: false, signal: `blocking count failed to set a new minimum for two consecutive rounds: best ${counts[bestRound]}; ${failures.join(' -> ')}` }
+  }
+  return { continue: true, signal: null }
 }
 
 export function hasPerSectionAttackAccount(content, sections = ['ADR', 'Tasks', 'Gates']) {

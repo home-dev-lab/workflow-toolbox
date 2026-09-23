@@ -45,7 +45,7 @@ if (!['available', 'partial'].includes(snapshot.discovery)) {
     console.log(`Toggle: this project · ${currentProject}`);
     snapshot.sessions = visible;
   }
-  const phaseNames = { discovery: 'Discovery', plan: 'Plan', critic: 'Critic', tdd: 'TDD', verify: 'Verify', review: 'Independent review', refutation: 'Independent refutation', harden: 'Harden', report: 'Report' };
+  const phaseNames = { discovery: 'Discovery', plan: 'Plan', critic: 'Critic', tdd: 'TDD', verify: 'Verify', review: 'Independent review', refutation: 'Independent refutation', report: 'Report' };
   const cycleNames = { implementation: 'Implementation', review: 'Sol review', refutation: 'Astra refutation', arbiter: 'Decision', fix: 'Fix', merge: 'Merge' };
   const evidenceLines = (summary) => {
     const lines = String(summary || '').replace(/\r\n?/g, '\n').split('\n').map((line) => line.trim().replace(/^#{1,6}\s+/, '').replace(/^[-*]\s+/, '').replace(/\*\*|__|`/g, '').trim()).filter((line) => line && !/^[A-Za-z][A-Za-z ]*:$/.test(line));

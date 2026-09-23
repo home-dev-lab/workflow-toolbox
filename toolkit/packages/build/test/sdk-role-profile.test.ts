@@ -24,13 +24,13 @@ const guardHook = (adapterOptions: Record<string, unknown>) => {
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-const roles = ['pilot', 'judge', 'tdd', 'harden', 'critic', 'review', 'refutation'] as const
+const roles = ['pilot', 'judge', 'tdd', 'critic', 'review', 'refutation'] as const
 const roleProfile = (role: string) => {
   const root = mkdtempSync(join(tmpdir(), 'wt-role-profile-')); roots.push(root)
   return prepareSdkRole(role, { worktree: root, exists: () => true }).profile
 }
 const readers = ['judge', 'critic', 'review', 'refutation'] as const
-const writers = ['tdd', 'harden'] as const
+const writers = ['tdd'] as const
 const requiredGuards = [
   'wt-unquoted-tool-glob-guard-hook.mjs', 'wt-merge-chain-guard-hook.mjs',
   'wt-concurrent-test-guard-hook.mjs', 'wt-piped-gate-exit-code-guard-hook.mjs',
@@ -79,7 +79,6 @@ describe('SDK role profiles', () => {
     for (const tool of ['Edit', 'Write', 'Bash']) expect(pilot.tools).not.toContain(tool)
     expect(pilot.guards).toEqual([])
     expect(roleProfile('tdd').skills).toEqual(['changelog'])
-    expect(roleProfile('harden').skills).toEqual(['changelog'])
   })
 
   it('composes query options from the supplied profile rather than a site-local tool list', () => {

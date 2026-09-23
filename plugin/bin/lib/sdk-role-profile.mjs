@@ -88,7 +88,6 @@ const PROFILES = Object.freeze({
   pilot: analyst(['stale-card-sweep', 'lesson-harvest', 'deep-grounding']),
   judge: reader,
   tdd: writer(['changelog']),
-  harden: writer(['changelog']),
   critic: reader,
   review: reader,
   refutation: reader,
