@@ -78,6 +78,7 @@ describe('shipped private plugins', () => {
       'V47 the verify12 bypasses and failures are closed',
       'V48 beside our forms every byte outside printable ASCII, space, tab and newline is refused, in every position',
       'V49 no lookup in the guard answers for an inherited property name',
+      'V50 the verify13 findings are closed and the README describes what the code does',
       'op reference in a sed search pattern is left literal',
       'op reference inside a larger quoted string is left literal',
       'already substituted op reference is not rewritten again',

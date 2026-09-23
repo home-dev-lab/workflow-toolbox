@@ -1,7 +1,7 @@
 // Functional core: recursively mask values without performing host I/O.
 import { detections, entropyCandidates, optionalDetections } from './detector.js';
 import { config } from './config.js';
-import { knownTokens, tokenize } from './token-vault.js';
+import { isIssuedToken, knownTokens, tokenize } from './token-vault.js';
 
 const GENERIC_KINDS = new Set(['assignment', 'op-output', 'key-value', 'environment-dump']);
 
@@ -46,8 +46,8 @@ function replaceKnown(text, command, includeOptional, substituted) {
   // Only a token this vault ISSUED is exempt: a token-SHAPED string never issued is ordinary text, masked
   // when it is a known value (Astra at 2618aa81: an environment value spelled `secret:environment#abcdef`
   // reached the output unmasked because its shape alone exempted it).
-  const issued = knownTokens();
-  const tokenRanges = [...text.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)].filter((match) => issued.has(match[0])).map((match) => [match.index, match.index + match[0].length]);
+  // isIssuedToken also refuses a spelling that a held value shares (verify13 finding 1).
+  const tokenRanges = [...text.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)].filter((match) => isIssuedToken(match[0])).map((match) => [match.index, match.index + match[0].length]);
   for (let at = spans.length - 1; at >= 0; at -= 1) {
     const span = spans[at];
     const inside = tokenRanges.filter(([from, to]) => span.from < to && span.to > from);

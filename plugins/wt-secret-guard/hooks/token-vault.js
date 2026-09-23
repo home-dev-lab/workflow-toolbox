@@ -1,5 +1,7 @@
 // Information hiding: raw values stay in this registry and callers operate on stable tokens.
 const tokens = new Map();
+// Every value the vault holds, so a token is never minted equal to one (verify13 finding 1).
+const values = new Set();
 let serial = 0;
 let pending = [];
 
@@ -19,8 +21,9 @@ export function tokenize(kind, value) {
   // and was no longer masked), so a taken token is never reused: the serial moves on and the next
   // candidate is drawn. The shape stays `secret:<kind>#<6 hex>`, which every consumer matches.
   let token;
-  do { serial += 1; token = `secret:${kind}#${shortHash(`${serial}:${value}`)}`; } while (tokens.has(token));
+  do { serial += 1; token = `secret:${kind}#${shortHash(`${serial}:${value}`)}`; } while (tokens.has(token) || token === value || values.has(token));
   tokens.set(token, { kind, value });
+  values.add(value);
   pending.push({ token, kind, value });
   return token;
 }
@@ -31,6 +34,11 @@ export function substituteTokens(command) {
 }
 
 export function knownTokens() { return tokens; }
+// A token-shaped text is an ISSUED token - exempt from scrubbing and outbound findings - only when this
+// vault minted it AND no value it holds is spelled that way. A value registered after a token of the same
+// spelling was issued (a crafted value, or one that happens to be a token) makes that spelling ambiguous,
+// and an ambiguous spelling is masked: a secret shown is worse than a token that rehydrates to the wrong value.
+export function isIssuedToken(text) { return tokens.has(text) && !values.has(text); }
 export function takePending() { const result = pending; pending = []; return result; }
 export function restorePending(entries) { pending = [...entries, ...pending]; }
 export function testState() { return new Map(tokens); }

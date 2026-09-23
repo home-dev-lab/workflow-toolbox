@@ -1,7 +1,7 @@
 // Last-responsible-moment policy: identify raw outbound values without rewriting destinations.
 import { detections, optionalDetections } from './detector.js';
 import { config } from './config.js';
-import { knownTokens } from './token-vault.js';
+import { isIssuedToken, knownTokens } from './token-vault.js';
 
 const REFERENCE = /(?:op:\/\/[^\s"']+|secret:(?:env|file|1p):[^\s"']+|\$\{[A-Za-z_][A-Za-z0-9_]*\}|secret:[a-z-]+#[a-f0-9]{6})/gi;
 const SURFACE = {
@@ -44,8 +44,8 @@ function pushStringFindings(found, value, key, path, options) {
   // a raw value wrapped in an `op://...`-looking string stays refused (V1).
   // Only a token this vault ISSUED is exempt; a token-shaped string never issued is raw text (Astra at
   // 2618aa81: a Write carrying a known value spelled like a token produced no finding).
-  const issued = knownTokens();
-  const tokenRanges = [...value.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)].filter((match) => issued.has(match[0])).map((match) => [match.index, match.index + match[0].length]);
+  // isIssuedToken also refuses a spelling that a held value shares (verify13 finding 1).
+  const tokenRanges = [...value.matchAll(/secret:[a-z-]+#[a-f0-9]{6}/g)].filter((match) => isIssuedToken(match[0])).map((match) => [match.index, match.index + match[0].length]);
   const outsideTokens = (needle) => {
     for (let at = value.indexOf(needle); at >= 0; at = value.indexOf(needle, at + 1)) {
       if (!tokenRanges.some(([from, to]) => at >= from && at + needle.length <= to)) return true;

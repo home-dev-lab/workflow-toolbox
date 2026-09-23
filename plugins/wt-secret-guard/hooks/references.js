@@ -379,7 +379,10 @@ function validateOpRead(words) {
     if (word.text.startsWith('--') && assigned > 2) {
       const name = word.text.slice(0, assigned);
       const value = word.text.slice(assigned + 1);
-      if (!VALUE_FLAGS.has(name) || !value) return { valid: false };
+      // The glued value is checked exactly like a spaced one: no reference form, issued token or not
+      // (Astra at d9b197c7: `op --account=secret:fixture#abcdef read …` reached the prefetch, because the
+      // invocation's consumed range is exempt from the reference scan that refuses unissued tokens).
+      if (!VALUE_FLAGS.has(name) || !value || value.startsWith('-') || /^(?:op:\/\/|secret:)/i.test(value)) return { valid: false };
       if (name === '--account') account = value;
       if (OUTPUT_FLAGS.has(name)) reproducible = false;
       if (RESOLUTION_FLAGS.has(name)) carried = false;
@@ -699,14 +702,26 @@ function allowList(command, lexed, tokens, referenceStarts) {
   const simple = [[]];
   let heredocs = 0;
   let target = null;
+  // Whether the current command has a word or a redirection yet, and the last operator that ended one.
+  let content = false;
+  let lastOperator = null;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (token.type === 'op') {
       if (target) return { refuse: 'a redirection without a target' };
       if (!ALLOWED_OPERATORS.has(token.op)) return { refuse: `the operator \`${token.op === '\n' ? 'newline' : token.op}\`` };
+      // A command list bash would reject is refused, not left to bash (Astra at d9b197c7: `… &&` at the end,
+      // `; ;`). Every operator but a newline needs a command before it; a newline ends a command when
+      // there is one, and is only a line break after `&&`, `||` or `|`, where bash reads on.
+      if (token.op === '\n') { if (content) lastOperator = '\n'; } else {
+        if (!content) return { refuse: `an incomplete or malformed command list (\`${token.op}\` with no command before it)` };
+        lastOperator = token.op;
+      }
+      content = false;
       simple.push([]);
       continue;
     }
+    content = true;
     if (token.type === 'redirect') {
       if (target) return { refuse: 'a redirection without a target' };
       if (token.op === '<<' || token.op === '<<-') { heredocs += 1; if (heredocs > 1) return { refuse: 'more than one heredoc' }; target = 'heredoc'; } else target = 'file';
@@ -762,6 +777,7 @@ function allowList(command, lexed, tokens, referenceStarts) {
     simple.at(-1).push({ start: from, end: to, raw, text: opener < 0 ? token.text : raw, kind: checked.kind, assignment, reference });
   }
   if (target) return { refuse: 'a redirection without a target' };
+  if (!content && (lastOperator === '&&' || lastOperator === '||' || lastOperator === '|')) return { refuse: `an incomplete command list (it ends with \`${lastOperator}\`)` };
   for (const words of simple) {
     const refusal = commandHead(words, 0, positions, 'command', null);
     if (refusal) return { refuse: refusal };
@@ -879,7 +895,10 @@ export function planReferences(command, options = {}) {
     const parsed = invocationTokens(command, lexed.context, entry.after);
     const validated = validateOpRead(parsed.words);
     if (validated.valid) {
-      consumed.push([entry.at, parsed.end]);
+      // Only the invocation's own `op://` reference word is consumed; every other reference-shaped text
+      // inside the invocation is scanned like anywhere else (Astra at d9b197c7).
+      const refWord = parsed.words.find((word) => !word.operator && word.text === validated.ref);
+      if (refWord) consumed.push([refWord.start, refWord.end]);
       // The guard binds the value it prefetched and masks, and the invocation prints exactly that value
       // (Astra H6 at ca950a58: a second `op read` returned a rotated value no mask knew). So the form
       // must stand where the guard can replace `op` - a command position - and ask only for output

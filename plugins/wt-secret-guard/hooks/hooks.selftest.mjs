@@ -2801,6 +2801,104 @@ await test('V49 no lookup in the guard answers for an inherited property name', 
   }
   assert.deepEqual(failures, [], 'a lookup answered for an inherited property name');
 });
+// A fresh-vault run of the full Bash hook, in a child process: the self-alias of verify13 finding 1
+// needs a vault whose serial starts at 0, which this process's vault no longer is.
+const V50_FRESH_VAULT = `
+import { spawnSync } from 'node:child_process';
+const { register, configure } = await import(process.argv[1] + '/hooks.js');
+const { classifyOutbound } = await import(process.argv[1] + '/outbound-tools.js');
+const hooks = [];
+register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }));
+configure({});
+const bash = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Bash').hook;
+const value = process.argv[2];
+const $ = {
+  ui: { log: async () => {} },
+  fs: { read: async () => { throw new Error('ENOENT'); }, write: async () => {}, stat: async () => { const error = new Error('ENOENT'); error.code = 'ENOENT'; throw error; } },
+  store: { get: async () => ({}), set: async () => {} },
+  process: { run: async () => ({ exitCode: 0, stdout: '' }) },
+  env: { get: async (name) => (name === 'X' ? value : name === 'HOME' ? '/tmp/v50-home' : undefined) },
+  session: { cwd: async () => '/tmp', id: async () => 'v50' },
+  clock: { sleep: async () => {}, now: () => 0 },
+  plugin: { root: process.argv[1] },
+};
+const result = await bash($, { tool: 'Bash', command: 'printf %s secret:env:X' }, async (event) => {
+  const out = spawnSync('bash', ['-c', event.command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout;
+  return { result: { stdout: out, stderr: '' }, text: out };
+});
+const outbound = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v50.txt', content: 'note ' + value });
+console.log(JSON.stringify({ leaked: JSON.stringify(result).includes(value), denied: Boolean(result?.deny), flagged: outbound.findings.some((finding) => finding.secret === value) }));
+`;
+await test('V50 the verify13 findings are closed and the README describes what the code does', async () => {
+  const failures = [];
+  const hook = async (command, runtime = $) => {
+    let received;
+    const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
+    return { result, received };
+  };
+  // 1: a token never equals the value it stands for (Astra's exact value: in a fresh vault, the first
+  // token issued for it is its own spelling), nor any other known value.
+  {
+    const selfAlias = 'secret:environment#466fe8';
+    const fresh = await import(`./token-vault.js?v50=${Date.now()}`);
+    const issued = fresh.tokenize('environment', selfAlias);
+    if (issued === selfAlias) failures.push('1 a fresh vault issued a token equal to its own value');
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', V50_FRESH_VAULT, new URL('.', import.meta.url).pathname.replace(/\/$/, ''), selfAlias], { encoding: 'utf8' });
+    let outcome = null;
+    try { outcome = JSON.parse(run.stdout.trim().split('\n').at(-1)); } catch { failures.push(`1 the fresh-vault child did not report: ${run.stderr.slice(0, 200)}`); }
+    if (outcome?.denied) failures.push('1 the fresh-vault hook refused the command');
+    if (outcome?.leaked) failures.push('1 a value equal to its own token reached the output unmasked (fresh vault, full hook)');
+    if (outcome && !outcome.flagged) failures.push('1 a value equal to its own token was not flagged outbound (fresh vault)');
+    // Another HELD value: register first the exact spelling the NEXT mint would draw for a second value
+    // (the vault's FNV-1a over `serial:value`, serial 2 in a fresh vault), then mint that second value.
+    const fnv = (text) => { let state = 0x811c9dc5; for (let at = 0; at < text.length; at += 1) { state ^= text.charCodeAt(at); state = Math.imul(state, 0x01000193); } return (state >>> 0).toString(16).padStart(8, '0').slice(0, 6); };
+    const second = await import(`./token-vault.js?v50b=${Date.now()}`);
+    const held = `secret:environment#${fnv('2:v50-second-value')}`;
+    second.tokenize('environment', held);
+    const minted = second.tokenize('environment', 'v50-second-value');
+    if (minted === held) failures.push('1 a token was minted equal to another value the vault holds');
+    if (fnv(`1:${held}`) === held.slice(-6)) failures.push('1 the held-value probe collided with itself; pick another name');
+    // The reverse order, in the shared vault: a value that equals a token already issued for ANOTHER value.
+    const earlier = tokenize('vfifty', 'v50-earlier-value');
+    testEnv.set('WT_V50_ALIAS', earlier);
+    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+    let received;
+    const result = await bash($, { tool: 'Bash', command: 'printf %s secret:env:WT_V50_ALIAS' }, async (event) => { received = event.command; return execute(event.command); });
+    if (result?.deny) failures.push(`1 the alias command was refused: ${result.deny}`);
+    else if (JSON.stringify(result).includes(earlier)) failures.push('1 a value equal to another value\'s issued token reached the output unmasked');
+    const outbound = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v50-alias.txt', content: `note ${earlier}` });
+    if (!outbound.findings.some((finding) => finding.secret === earlier)) failures.push('1 a value equal to another value\'s issued token was not flagged outbound');
+  }
+  // 2: token and reference validation covers the words of a consumed `op read` invocation too.
+  for (const command of [`op --account=secret:fixture#abcdef read '${V45_REF('v50-account-a')}'`, `op read --account=secret:fixture#abcdef '${V45_REF('v50-account-b')}'`, `op --account secret:fixture#abcdef read '${V45_REF('v50-account-c')}'`, `op --account=secret:env:GH_TOKEN read '${V45_REF('v50-account-d')}'`]) {
+    const argvs = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) argvs.push(argv); return $.process.run(argv, init); } } };
+    const { result, received } = await hook(command, runtime);
+    if (received !== undefined || !result?.deny) failures.push(`2 a reference form inside an op read flag was accepted: ${command}`);
+    if (argvs.length) failures.push(`2 op was prefetched for ${command}: ${JSON.stringify(argvs[0])}`);
+  }
+  // 3: beside our forms, an incomplete or malformed command list refuses; a complete one does not.
+  const form = 'secret:env:GH_TOKEN';
+  for (const command of [`printf %s ${form} &&`, `printf %s ${form}; ; true`, `&& printf %s ${form}`, `; printf %s ${form}`, `| printf %s ${form}`, `printf %s ${form} |`, `printf %s ${form} ||`, `printf %s ${form} & & true`, `printf %s ${form} &&\n`, `printf %s ${form} && ; true`, `printf %s ${form} | | cat`]) {
+    const { result, received } = await hook(command);
+    if (received !== undefined || !/beside a secret reference/.test(result?.deny ?? '')) failures.push(`3 an incomplete command list was accepted: ${JSON.stringify(command)}`);
+  }
+  for (const command of [`printf %s ${form};`, `printf %s ${form} &`, `printf %s ${form} &&\ntrue`, `printf %s ${form}\n\ntrue`, `\nprintf %s ${form}`, `printf %s ${form} |\ncat`, `printf %s ${form} ||\n\ntrue`, `> /tmp/v50-empty; printf %s ${form}`, `printf %s ${form}; true;`]) {
+    const { result, received } = await hook(command);
+    if (result?.deny || received === undefined) failures.push(`3 a complete command list was refused: ${JSON.stringify(command)} -> ${result?.deny}`);
+  }
+  // 4: the README's scope, as the code applies it. A reference-free `op read` the allow-list can read is
+  // refused; one it cannot read (an unquoted parameter, a keyword in front) is out of scope and passes.
+  {
+    const { result } = await hook('op read "$REF"');
+    if (!/refused/i.test(result?.deny ?? '')) failures.push('4 `op read "$REF"` was not refused');
+  }
+  for (const command of ['op read $REF', 'time op read "$REF"']) {
+    const { result, received } = await hook(command);
+    if (result?.deny || received !== command) failures.push(`4 ${command} was not passed untouched: ${result?.deny}`);
+  }
+  assert.deepEqual(failures, [], 'verify13 findings remain');
+});
 // V34 runs late on purpose: it registers about 2,300 values in the vault, and every later Bash-hook
 // call walks the whole vault - run before V38 it made V38 7 s and pushed the shipped-plugins vitest
 // file past its 15 s beforeAll.
