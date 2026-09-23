@@ -60,9 +60,8 @@ function dependencies(overrides: Record<string, unknown> = {}) {
   return {
     resolveCodexCompanion: vi.fn(() => '/fake/codex-companion.mjs'),
     runCodex: vi.fn(() => ({ status: 0, stdout: 'astra answer\n', stderr: '' })),
-    probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Claude Fable', percent: 12 }] })),
     resolveSdkQuery: vi.fn(() => async function* () {
-      yield { type: 'result', subtype: 'success', is_error: false, result: 'fable answer' }
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'opus answer' }
     }),
     listBrokers: vi.fn(() => ({ supported: true, pids: [] })),
     stopBroker: vi.fn(),
@@ -107,12 +106,12 @@ describe('second-opinion advisor', () => {
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
   })
 
-  it('uses Fable when that route is forced despite active lane consent', async () => {
+  it('uses a fresh Opus consult when that route is forced despite active lane consent', async () => {
     const f = fixture(true)
     const deps = dependencies()
-    expect(await runSecondOpinion({ ...f.options, route: 'fable' }, deps, f.env)).toBe(0)
+    expect(await runSecondOpinion({ ...f.options, route: 'opus' }, deps, f.env)).toBe(0)
 
-    expect(lines(f.out)[0]).toBe('ROUTE=claude-fable')
+    expect(lines(f.out)[0]).toBe('ROUTE=claude-opus')
     expect(deps.resolveSdkQuery).toHaveBeenCalledOnce()
     expect(deps.runCodex).not.toHaveBeenCalled()
   })
@@ -130,13 +129,13 @@ describe('second-opinion advisor', () => {
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
   })
 
-  it('refuses a route outside auto, astra and fable instead of running Fable', async () => {
+  it('refuses a route outside auto, astra and opus instead of running Opus', async () => {
     const f = fixture(true)
     const deps = dependencies()
     expect(await runSecondOpinion({ ...f.options, route: 'Astra' }, deps, f.env)).toBe(2)
 
     expect(lines(f.out)).toEqual([
-      'REFUSED: unknown route "Astra"; use auto, astra, or fable.',
+      'REFUSED: unknown route "Astra"; use auto, astra, or opus.',
       'EXIT=2',
     ])
     expect(deps.runCodex).not.toHaveBeenCalled()
@@ -160,44 +159,15 @@ describe('second-opinion advisor', () => {
     const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'fabel'], { encoding: 'utf8', env: { ...process.env, ...f.env } })
 
     expect(result.status).toBe(2)
-    expect(lines(f.out)).toEqual(['REFUSED: --route must be auto, astra, or fable', 'EXIT=2'])
+    expect(lines(f.out)).toEqual(['REFUSED: --route must be auto, astra, or opus', 'EXIT=2'])
   })
 
   it('accepts --route as a CLI flag rather than reporting an unknown argument', () => {
     const f = fixture(true)
-    const result = spawnSync(process.execPath, [CLI, '--out', f.out, '--route', 'fable'], { encoding: 'utf8', env: { ...process.env, ...f.env } })
+    const result = spawnSync(process.execPath, [CLI, '--out', f.out, '--route', 'opus'], { encoding: 'utf8', env: { ...process.env, ...f.env } })
 
     expect(result.status).toBe(2)
     expect(lines(f.out)).toEqual(['REFUSED: --request is required', 'EXIT=2'])
-  })
-
-  it('refuses Fable when the quota probe reports no Fable scope, instead of reading silence as headroom', async () => {
-    const f = fixture(false)
-    const deps = dependencies({ probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Opus', percent: 3 }] })) })
-    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
-
-    expect(lines(f.out)).toEqual([
-      'ROUTE=claude-fable',
-      'REFUSED: the quota probe reported no Claude Fable weekly scope, so the Fable quota guard cannot be applied.',
-      'EXIT=1',
-    ])
-    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
-  })
-
-  it('applies the Fable quota guard when Fable is forced despite active lane consent', async () => {
-    const f = fixture(true)
-    const deps = dependencies({
-      probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Fable', percent: 90 }] })),
-    })
-    expect(await runSecondOpinion({ ...f.options, route: 'fable' }, deps, f.env)).toBe(1)
-
-    expect(lines(f.out)).toEqual([
-      'ROUTE=claude-fable',
-      'REFUSED: Claude Fable weekly scoped quota is 90%, at or above the 90% limit.',
-      'EXIT=1',
-    ])
-    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
-    expect(deps.runCodex).not.toHaveBeenCalled()
   })
 
   it('uses Astra exactly once when lane consent and the Codex runtime are present', async () => {
@@ -222,7 +192,7 @@ describe('second-opinion advisor', () => {
     expect(lines(f.out).at(-1)).toBe('EXIT=0')
   })
 
-  it('uses one read-only Fable SDK query when lane consent is not given', async () => {
+  it('uses one fresh read-only Opus SDK query when lane consent is not given', async () => {
     const f = fixture(false)
     writeFileSync(join(f.repo, 'CLAUDE.md'), '# Guide\n')
     let queryInput: unknown
@@ -235,45 +205,22 @@ describe('second-opinion advisor', () => {
     const deps = dependencies({ resolveSdkQuery: vi.fn(() => query) })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(0)
 
-    expect(deps.probeQuota).toHaveBeenCalledOnce()
     expect(query).toHaveBeenCalledOnce()
     expect(queryInput).toMatchObject({
       prompt: `${join(f.repo, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
-        model: 'fable',
+        model: 'opus',
+        effort: 'medium',
         cwd: f.repo,
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],
       },
     })
-    expect(lines(f.out)).toEqual(['ROUTE=claude-fable', 'independent answer', 'EXIT=0'])
+    expect(lines(f.out)).toEqual(['ROUTE=claude-opus', 'independent answer', 'EXIT=0'])
     expect(deps.runCodex).not.toHaveBeenCalled()
   })
 
-  it.each([90, 97])('refuses Fable at or above the default quota threshold (%s%%)', async (percent) => {
-    const f = fixture(false)
-    const deps = dependencies({
-      probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Fable', percent }] })),
-    })
-    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
-    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
-    expect(lines(f.out)).toEqual([
-      'ROUTE=claude-fable',
-      `REFUSED: Claude Fable weekly scoped quota is ${percent}%, at or above the 90% limit.`,
-      'EXIT=1',
-    ])
-  })
-
-  it('honors WT_SECOND_OPINION_FABLE_MAX_PCT', async () => {
-    const f = fixture(false)
-    const deps = dependencies({
-      probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Fable', percent: 74 }] })),
-    })
-    expect(await runSecondOpinion(f.options, deps, { ...f.env, WT_SECOND_OPINION_FABLE_MAX_PCT: '70' })).toBe(1)
-    expect(lines(f.out)[1]).toContain('74%, at or above the 70% limit')
-  })
-
-  it('refuses rather than falling back to Fable when consent is given but Codex is missing', async () => {
+  it('refuses rather than falling back to Opus when consent is given but Codex is missing', async () => {
     const f = fixture(true)
     const deps = dependencies({ resolveCodexCompanion: vi.fn(() => null) })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
@@ -287,12 +234,12 @@ describe('second-opinion advisor', () => {
   it('refuses with the SDK resolver fix when consent is absent and the SDK is missing', async () => {
     const f = fixture(false)
     const deps = dependencies({
-      resolveSdkQuery: vi.fn(() => { throw new Error('@anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk') }),
+      resolveSdkQuery: vi.fn(() => { throw new Error("@anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'") }),
     })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
     expect(lines(f.out)).toEqual([
-      'ROUTE=claude-fable',
-      'REFUSED: Claude Agent SDK unavailable; run: npm install -g @anthropic-ai/claude-agent-sdk',
+      'ROUTE=claude-opus',
+      "REFUSED: Claude Agent SDK unavailable; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'",
       'EXIT=1',
     ])
   })

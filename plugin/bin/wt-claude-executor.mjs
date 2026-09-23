@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
+import { resolveRoleVariant } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
@@ -38,12 +39,15 @@ async function worker(options) {
   let initReceiptSeen = false
   let readOnlyReport = ''
   let servedModel = options.model
+  const effort = options.variant
+    ? { value: options.variant, origin: options.variantOrigin ?? 'override' }
+    : resolveRoleVariant(['tdd', 'harden'].includes(options.role) ? 'code' : options.role, options.model)
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
-  if (options.variant) appendFileSync(options.log, `variant=${options.variant} origin=${options.variantOrigin ?? 'override'} forced=false\n`)
+  appendFileSync(options.log, `variant=${effort.value} origin=${effort.origin} forced=false\n`)
   try {
     const queryOptions = composeSdkRoleQueryOptions({
       model: options.model,
-      ...(options.variant ? { effort: options.variant } : {}),
+      effort: effort.value,
       cwd: options.dir,
       settingSources: [],
       canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex, profile: sdkRole.profile }),
@@ -73,7 +77,7 @@ async function worker(options) {
     }
     if (!initReceiptSeen) throw new Error('SDK executor run ended without an initialization receipt')
     if (launch.readOnly && !existsSync(launch.report) && readOnlyReport) writeFileSync(launch.report, `${readOnlyReport.trim()}\n`)
-    if (existsSync(launch.report) && options.variant) appendFileSync(launch.report, `\nvariant=${options.variant} origin=${options.variantOrigin ?? 'override'} forced=false\n`)
+    if (existsSync(launch.report)) appendFileSync(launch.report, `\nvariant=${effort.value} origin=${effort.origin} forced=false\n`)
   } catch (error) {
     if (!timedOut) { failed = true; appendFileSync(options.log, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`) }
   } finally {

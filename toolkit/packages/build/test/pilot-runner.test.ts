@@ -72,10 +72,10 @@ function freshFixture() {
   spawnSync('git', ['add', 'toolkit/package.json'], { cwd: f.dir })
   return f
 }
-function fakeSdk(root: string, marker: string) {
+function fakeSdk(root: string, marker: string, version = '0.3.280') {
   const packageDir = join(root, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
   mkdirSync(packageDir, { recursive: true })
-  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version, main: 'index.cjs' }))
   writeFileSync(join(packageDir, 'index.cjs'), `module.exports = { marker: ${JSON.stringify(marker)} }\n`)
 }
 function resolveSdkInChild(options: Record<string, unknown>) {
@@ -370,6 +370,13 @@ describe('SDK pilot runner', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ marker: 'global', path: expect.stringContaining(join(globalPrefix, 'node_modules')) })
   })
 
+  it('refuses an SDK below 0.3.280 and gives a floor-bearing install remedy', () => {
+    const f = fixture(); fakeSdk(f.dir, 'old-project', '0.3.279')
+    const result = resolveSdkInChild({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: {}, npmRoot: null })
+    expect(result.stdout).toContain('found 0.3.279, require >=0.3.280')
+    expect(result.stdout).toContain("npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'")
+  })
+
   it('keeps the development toolkit install ahead of project dependencies', () => {
     const f = fixture(); fakeSdk(f.dir, 'project')
     const result = resolveSdkInChild({ projectDir: f.dir, env: {}, npmRoot: null })
@@ -382,21 +389,21 @@ describe('SDK pilot runner', () => {
     const f = fixture(); const foreign = join(f.root, 'codex-openai-codex'); fakeSdk(foreign, 'foreign')
     const common = { ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, npmRoot: null }
     const result = resolveSdkInChild({ ...common, env: { CLAUDE_PLUGIN_DATA: foreign } })
-    expect(result.stdout).toBe('@anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk')
+    expect(result.stdout).toBe("@anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'")
   })
 
   it('refuses unresolved SDK installs with the exact global or plugin-data one-line remedy', () => {
     const f = fixture(); const pluginData = join(f.root, 'workflow-toolbox-test data')
     const common = { ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, npmRoot: null }
     const global = resolveSdkInChild({ ...common, env: {} })
-    expect(global.stdout).toBe('@anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk')
+    expect(global.stdout).toBe("@anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'")
     expect(global.stdout).not.toContain('\n')
     const local = resolveSdkInChild({ ...common, env: { CLAUDE_PLUGIN_DATA: pluginData } })
     // The literal path, never "$CLAUDE_PLUGIN_DATA": that variable is not set in the terminal where the remedy is pasted.
-    expect(local.stdout).toBe(`@anthropic-ai/claude-agent-sdk is not installed; run: npm install --prefix "${pluginData}" @anthropic-ai/claude-agent-sdk`)
+    expect(local.stdout).toBe(`@anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install --prefix "${pluginData}" '@anthropic-ai/claude-agent-sdk@>=0.3.280'`)
     expect(local.stdout).not.toContain('\n')
     const windows = resolveSdkInChild({ ...common, env: { CLAUDE_PLUGIN_DATA: pluginData }, platform: 'win32' })
-    expect(windows.stdout).toBe(`@anthropic-ai/claude-agent-sdk is not installed; run: npm install --prefix "${pluginData}" @anthropic-ai/claude-agent-sdk`)
+    expect(windows.stdout).toBe(`@anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install --prefix "${pluginData}" '@anthropic-ai/claude-agent-sdk@>=0.3.280'`)
   })
 
   // Measured 2026-09-17 on the first real LITE run: after a refused receipt the summary and archive were written and
@@ -406,7 +413,7 @@ describe('SDK pilot runner', () => {
     const f = fixture()
     const packageDir = join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
     symlinkSync(ZOD_ROOT, join(f.dir, 'node_modules', 'zod'), 'dir')
-    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', type: 'module', main: 'index.mjs' }))
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', main: 'index.mjs' }))
     const init = { ...initMessage('sonnet'), skills: [] }
     writeFileSync(join(packageDir, 'index.mjs'), [
       `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(join(f.root, 'loaded-sdk.txt'))}, 'fixture-sdk')`,
@@ -1129,7 +1136,7 @@ describe('SDK pilot runner', () => {
       yield initMessage()
     })()
     await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, boardMoves: false }, { query, resolvePilotModels: models, resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }), log: (line: string) => logged.push(line) })
-    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet variant=medium variant_origin=role base executor=gpt-lane')
+    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet variant=high variant_origin=role base executor=gpt-lane')
     expect(permission).toEqual({ behavior: 'deny', message: "board moves are the orchestrator's" })
     expect(lifecycleCanUseTool(f.dir, 'mcp__planka__move_card', {}, { boardMoves: true }).behavior).toBe('allow')
   })

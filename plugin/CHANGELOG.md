@@ -7,6 +7,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 - Refactor the adopt installer into bounded parsing, settings, audit, managed-item, migration, and command seams while preserving its standalone CLI transcripts and file effects; settings verification now also proves the exact prerequisite values before publication
+- Require Claude Agent SDK 0.3.280 or newer so the `opus` alias resolves to Opus 5.5; SDK and OpenCode launches now declare role effort explicitly, with high for Opus roles and xhigh for GPT Sol implementation.
+- Route hard pilots plus Claude SDK hard critics/refutations to Opus, and replace second-opinion's Fable fallback with a fresh-context Opus consult while retaining Astra as the decorrelated route.
 
 ### Fixed
 - `wt-deep-search` (EXPERIMENTAL): a deep search started with no Exa key and no opencode on PATH is refused at once, naming both remedies and saying ordinary web search still works, instead of returning a handle that fails nine seconds later with a bare exit status; a missing Exa key is recorded as missing, a refused key as refused, and an opencode not-found failure names the program to install

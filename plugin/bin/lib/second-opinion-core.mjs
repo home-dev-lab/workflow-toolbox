@@ -1,14 +1,11 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
-import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { withRepositoryGuide } from './sdk-role-profile.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
-const QUOTA_PROBE = fileURLToPath(new URL('../wt-quota-probe.mjs', import.meta.url))
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
@@ -112,23 +109,9 @@ export function listBrokers(adapter) {
   return { supported: true, pids: table.processes.filter((process) => /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(process.command)).map((process) => process.pid) }
 }
 
-function probeQuota(env) {
-  const result = spawnSync(process.execPath, [QUOTA_PROBE], { env, encoding: 'utf8', input: '' })
-  if (result.status !== 0) throw new Error((result.stderr || result.stdout || `probe exited ${result.status}`).trim())
-  return JSON.parse(result.stdout)
-}
-
 function resolveSdkQuery(repo, env) {
   const require = resolveAgentSdkRequire({ projectDir: repo, env })
   return require('@anthropic-ai/claude-agent-sdk').query
-}
-
-function fableThreshold(env) {
-  const configured = resolveWorkflowToolboxOption('second_opinion_fable_max_pct', { env }).value
-  if (!Number.isFinite(configured) || configured < 0 || configured > 100) {
-    throw new Error('WT_SECOND_OPINION_FABLE_MAX_PCT must be a number from 0 to 100')
-  }
-  return configured
 }
 
 function sdkRemedy(error) {
@@ -140,7 +123,6 @@ function sdkRemedy(error) {
 export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveCodexCompanion: codexCompanion,
   runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes }),
-  probeQuota,
   resolveSdkQuery,
   listBrokers: () => listBrokers(adapter),
   stopBroker: (pid) => process.kill(pid, 'SIGTERM'),
@@ -151,9 +133,9 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
   const consent = resolveConsent(options.repo, env)
   const route = options.route ?? 'auto'
 
-  // The CLI validates the value; a direct caller gets the same refusal rather than a silent Fable run.
-  if (!['auto', 'astra', 'fable'].includes(route)) {
-    writeFileSync(options.out, `REFUSED: unknown route ${JSON.stringify(route)}; use auto, astra, or fable.\n`)
+  // The CLI validates the value; a direct caller gets the same refusal rather than a silent Opus run.
+  if (!['auto', 'astra', 'opus'].includes(route)) {
+    writeFileSync(options.out, `REFUSED: unknown route ${JSON.stringify(route)}; use auto, astra, or opus.\n`)
     appendLine(options.out, 'EXIT=2')
     return 2
   }
@@ -211,32 +193,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     return result.status
   }
 
-  writeFileSync(options.out, 'ROUTE=claude-fable\n')
-  let threshold
-  let quota
-  try {
-    threshold = fableThreshold(env)
-    quota = dependencies.probeQuota(env)
-  } catch (error) {
-    appendLine(options.out, `REFUSED: could not read the active account Fable quota: ${error instanceof Error ? error.message : String(error)}.`)
-    appendLine(options.out, 'EXIT=1')
-    return 1
-  }
-  const fableScopes = Array.isArray(quota.weekly_scoped)
-    ? quota.weekly_scoped.filter((item) => /fable/i.test(String(item?.scope)) && Number.isFinite(item?.percent))
-    : []
-  // No Fable scope means the guard has nothing to measure; silence is not headroom.
-  if (fableScopes.length === 0) {
-    appendLine(options.out, 'REFUSED: the quota probe reported no Claude Fable weekly scope, so the Fable quota guard cannot be applied.')
-    appendLine(options.out, 'EXIT=1')
-    return 1
-  }
-  const percent = fableScopes.reduce((maximum, item) => Math.max(maximum, item.percent), -Infinity)
-  if (percent >= threshold) {
-    appendLine(options.out, `REFUSED: Claude Fable weekly scoped quota is ${percent}%, at or above the ${threshold}% limit.`)
-    appendLine(options.out, 'EXIT=1')
-    return 1
-  }
+  writeFileSync(options.out, 'ROUTE=claude-opus\n')
 
   let query
   try {
@@ -253,7 +210,8 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     const stream = query({
       prompt: withRepositoryGuide(options.repo, request),
       options: {
-        model: 'fable',
+        model: 'opus',
+        effort: options.effort,
         cwd: options.repo,
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],
@@ -276,7 +234,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
   }
   if (!answer.trim()) {
     failed = true
-    answer = 'Claude Fable returned no answer.'
+    answer = 'Claude Opus returned no answer.'
   }
   appendOutput(options.out, answer)
   const code = failed ? 1 : 0

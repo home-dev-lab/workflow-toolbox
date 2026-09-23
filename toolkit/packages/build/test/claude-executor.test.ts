@@ -42,7 +42,7 @@ function fixture() {
   cpSync(join(ROOT, 'plugin', 'hooks-modules'), join(installed, 'hooks-modules'), { recursive: true })
   cpSync(join(ROOT, 'plugin', 'skills'), join(installed, 'skills'), { recursive: true })
   const sdk = join(worktree, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(sdk, { recursive: true })
-  writeFileSync(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+  writeFileSync(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', main: 'index.cjs' }))
   writeFileSync(join(sdk, 'index.cjs'), `
 const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
@@ -162,8 +162,9 @@ describe('Claude SDK executor', () => {
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: outside } })
     expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+\nlog=.+\n$/); expect(result.stderr).toBe('')
     waitFor(report); waitFor(receipt)
-    expect(readFileSync(report, 'utf8')).toBe('executor report\n')
+    // The executor appends its variant line to the report after the SDK wrote it, before EXIT: read after EXIT.
     expect(waitForExit(log, 3000)).toBe('EXIT=0')
+    expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=high origin=role base forced=false\n')
     waitFor(`${log}.usage.json`)
     expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
     expect(existsSync(outside)).toBe(false)
@@ -222,13 +223,13 @@ describe('Claude SDK executor', () => {
   it('item 11: writes a read-only report from terminal result text when absent', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.generated.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'generated.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'no-write' } })
-    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); expect(readFileSync(report, 'utf8')).toBe('generated review\n')
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); expect(readFileSync(report, 'utf8')).toBe('generated review\n\nvariant=high origin=role base forced=false\n')
   })
 
   it('item 12: exits 1 when the terminal result is_error despite a written report', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.error.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'error.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'error' } })
-    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(report, 'utf8')).toBe('executor report\n')
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=high origin=role base forced=false\n')
   })
 
   it('item 13: accumulates usage across multiple result messages', () => {
