@@ -41,6 +41,12 @@ function run(
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 
+function childProcessCwd(cwd: string): string {
+  const result = spawnSync(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { cwd, encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout
+}
+
 function fixturePlugin(): { root: string; script: string } {
   const root = tempDir('wt-adopt-refactor-plugin-')
   mkdirSync(join(root, '.claude-plugin'), { recursive: true })
@@ -197,7 +203,7 @@ describe('adopt installer refactor pins', () => {
     const cwd = tempDir()
     const result = run(['--unknown-token', '--check', '--dir'], { cwd })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain(`[rules] target=${join(cwd, '.claude/rules/wt')}`)
+    expect(result.stdout).toContain(`[rules] target=${join(childProcessCwd(cwd), '.claude/rules/wt')}`)
   })
 
   it.each(['toString', 'constructor', '__proto__'])('U4 ignores inherited object-property argv token %s', (token) => {

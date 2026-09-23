@@ -77,6 +77,17 @@ describe('host adapter evidence contract', () => {
       .toEqual({ mib: 2048, source: 'free memory from os.freemem() on freebsd' })
   })
 
+  it('bounds Windows process-table reads', () => {
+    const run = vi.fn((command: string, args: string[], options?: { timeout: number }) => {
+      void command; void args; void options
+      return { status: 1, stdout: '', stderr: '', error: null }
+    })
+    const host = createHostAdapter({ platform: 'win32', invoke: { run } })
+    host.readProcessRelationships()
+    host.readProcessSnapshot()
+    expect(run.mock.calls.map((call) => call[2])).toEqual([{ timeout: 5_000 }, { timeout: 5_000 }])
+  })
+
   contract('answers pid to parent-pid from the captured process table', platforms, (platform) => {
     const result = contractHost(platform).readProcessRelationships()
     if (platform === 'win32') {

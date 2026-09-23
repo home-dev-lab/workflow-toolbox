@@ -27,7 +27,7 @@ describe('shipped wt-deep-search', () => {
   // gate runs them where they are rather than porting them into vitest and adding a dependency.
   it('its own test suite passes', () => {
     const run = spawnSync(process.execPath, ['--test'], { cwd: PLUGIN, encoding: 'utf8' })
-    expect(run.status, run.stdout.slice(-4000) || run.stderr).toBe(0)
+    expect(run.status, `${run.stdout}\n${run.stderr}`.slice(-12_000)).toBe(0)
   })
 
   it('declares no dependency, at build time or at run time', () => {

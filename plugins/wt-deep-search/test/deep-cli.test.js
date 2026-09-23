@@ -53,9 +53,9 @@ test('CLI refuses immediately without a deep provider and emits no handle', asyn
 
 test('CLI starts without an Exa key when opencode is resolvable', async (t) => {
   const f = await fixture(t);
-  const opencode = join(f.directory, 'opencode');
-  await writeFile(opencode, '#!/bin/sh\nexit 0\n');
-  await chmod(opencode, 0o755);
+  const opencode = join(f.directory, process.platform === 'win32' ? 'opencode.cmd' : 'opencode');
+  await writeFile(opencode, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
+  if (process.platform !== 'win32') await chmod(opencode, 0o755);
   delete f.env.EXA_API_KEY;
   f.env.PATH = f.directory;
   f.env.DEEP_SEARCH_NO_WORKER = '1';
@@ -69,9 +69,9 @@ test('CLI starts without an Exa key when opencode is resolvable', async (t) => {
 
 test('worker records a missing Exa key as missing before falling back', async (t) => {
   const f = await fixture(t);
-  const opencode = join(f.directory, 'opencode');
-  await writeFile(opencode, '#!/bin/sh\nexit 0\n');
-  await chmod(opencode, 0o755);
+  const opencode = join(f.directory, process.platform === 'win32' ? 'opencode.cmd' : 'opencode');
+  await writeFile(opencode, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
+  if (process.platform !== 'win32') await chmod(opencode, 0o755);
   await f.write({
     handle: 'deep-one',
     status: 'running',

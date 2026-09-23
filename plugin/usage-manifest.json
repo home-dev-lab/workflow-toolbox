@@ -116,7 +116,7 @@
     { "name": "WT_QUOTA_WATCH_TEST_SLEEP_BARRIER", "where": "plugin/bin/wt-quota-watch.mjs (test-only bounded sleep barrier)" },
     { "name": "WT_QUOTA_WATCH_TEST_MAX_CYCLES", "where": "plugin/bin/wt-quota-watch.mjs (test-only cycle bound)" },
     { "name": "WT_LANE_WATCH_TEST_SWEEP_LOG", "where": "plugin/bin/wt-lane-orphan-watch.mjs (test-only sweep receipt)" },
-    { "name": "WT_LANE_WATCH_TEST_HELPERS", "where": "plugin/bin/wt-lane-orphan-watch.mjs (test-only helper process fixture)" },
+    { "name": "WT_LANE_WATCH_TEST_HELPERS", "where": "plugin/bin/wt-lane-orphan-watch.mjs (test-only process/helper snapshot fixture)" },
     { "name": "WT_LANE_SATURATION_TEST_MODE", "where": "plugin/bin/lib/wt-lane-saturation-core.mjs (master owned-process test gate)" },
     { "name": "WT_LANE_SATURATION_TEST_PIDS", "where": "plugin/bin/lib/wt-lane-saturation-core.mjs (test-only owned-process filter)" },
     { "name": "WT_MAIN_GUARD_TEST_AFTER_READ_MS", "where": "plugin/bin/lib/main-guard-allow-once.mjs (test-only cross-process race barrier)" },

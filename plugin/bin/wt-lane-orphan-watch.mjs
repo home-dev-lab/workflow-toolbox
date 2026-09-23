@@ -165,12 +165,25 @@ async function main() {
       }
     }
     const staging = stagingLaneDirs(options.project)
-    const table = listProcessTable(hostAdapter)
+    let helperFixture = null
+    if (process.env.WT_LANE_WATCH_TEST_HELPERS) {
+      try {
+        const parsed = JSON.parse(readFileSync(process.env.WT_LANE_WATCH_TEST_HELPERS, 'utf8'))
+        helperFixture = Array.isArray(parsed) ? parsed : []
+      } catch { helperFixture = [] }
+    }
+    const table = helperFixture === null
+      ? listProcessTable(hostAdapter)
+      : {
+          supported: true,
+          processes: helperFixture.map((item) => ({
+            ...item,
+            command: typeof item.command === 'string' ? item.command : Array.isArray(item.argv) ? item.argv.join(' ') : '',
+          })),
+        }
     let helperRows = table.supported ? table.processes : []
     let helperAges = new Map()
-    if (process.env.WT_LANE_WATCH_TEST_HELPERS) {
-      try { helperRows = JSON.parse(readFileSync(process.env.WT_LANE_WATCH_TEST_HELPERS, 'utf8')) } catch { helperRows = [] }
-    } else {
+    if (helperFixture === null) {
       const relationships = listProcessRelationships(hostAdapter)
       if (relationships.status === 'known') helperAges = new Map(relationships.processes.map((item) => [item.pid, item.elapsedSeconds]))
     }
@@ -248,7 +261,7 @@ async function main() {
       journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
       notice(`unknown:${item.pid}`, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
     }
-    const brokers = listBrokers(hostAdapter)
+    const brokers = listBrokers(hostAdapter, table)
     if (brokers.supported) for (const pid of brokers.pids) {
       if (notified.has(`broker:${pid}`)) continue
       const broker = inspectProcess(pid)

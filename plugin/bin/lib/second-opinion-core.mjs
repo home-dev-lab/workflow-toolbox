@@ -133,8 +133,7 @@ export function listProcessRelationships(adapter) {
   }
 }
 
-export function listBrokers(adapter) {
-  const table = listProcessTable(adapter)
+export function listBrokers(adapter, table = listProcessTable(adapter)) {
   if (!table.supported) return { supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' }
   return { supported: true, pids: table.processes.filter((process) => /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(process.command)).map((process) => process.pid) }
 }
