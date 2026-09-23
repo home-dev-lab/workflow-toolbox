@@ -67,6 +67,23 @@ function reportSize(file) {
   try { return `${statSync(file).size}` } catch { return 'none' }
 }
 
+function terminalRecord(record) {
+  return ['launch-failed', 'exited', 'abandoned'].includes(record?.state)
+}
+
+function publishedExit(marker) {
+  const match = /^EXIT=(-?\d+)$/.exec(marker ?? '')
+  return match ? Number(match[1]) : null
+}
+
+function printDone(exit, record, lane, log) {
+  const cause = laneHostPlatform === 'win32' && exit === 137
+    ? ' cause=unavailable-on-this-platform signal=unavailable'
+    : record?.killedBy ? ` cause=${record.killedBy.cause} signal=${record.killedBy.signal}` : ''
+  process.stdout.write(`LANE DONE exit=${exit}${cause} report=${reportSize(path.join(lane, 'report.md'))} log=${log}\n`)
+  return exit
+}
+
 function main() {
   const opts = parse(process.argv.slice(2))
   if (opts.help) { process.stdout.write(`${usage()}\n`); return 0 }
@@ -80,26 +97,26 @@ function main() {
   if (!pid) { process.stderr.write('wt-lane-wait: no valid lane pid; pass --pid or provide .lane/pid\n'); return 2 }
   const log = path.join(lane, 'run.log')
   const deadline = Date.now() + opts.timeout * 1000
-  while (Date.now() <= deadline) {
-    const marker = lastLine(log)
+  while (true) {
     const record = readCurrentSupervisions(opts.dir).map((item) => item.record).find((item) => item.workerPid === pid) ?? null
-    const verdict = classifyLane(record)
-    if (['terminal', 'gone'].includes(verdict.status)) {
-      if (/^EXIT=(-?\d+)$/.test(marker ?? '')) {
-        const exit = Number(/^EXIT=(-?\d+)$/.exec(marker)[1])
-        const cause = laneHostPlatform === 'win32' && exit === 137
-          ? ' cause=unavailable-on-this-platform signal=unavailable'
-          : record?.killedBy ? ` cause=${record.killedBy.cause} signal=${record.killedBy.signal}` : ''
-        process.stdout.write(`LANE DONE exit=${exit}${cause} report=${reportSize(path.join(lane, 'report.md'))} log=${log}\n`)
-        return exit
-      }
-      if (Date.now() + opts.poll * 1000 > deadline) {
+    if (terminalRecord(record)) {
+      const exit = publishedExit(lastLine(log))
+      if (exit !== null) return printDone(exit, record, lane, log)
+      if (Date.now() >= deadline) {
         process.stdout.write('LANE DIED exit=unknown\n')
         return 1
       }
+    } else {
+      const verdict = classifyLane(record)
+      if (verdict.status === 'gone') {
+        const exit = publishedExit(lastLine(log))
+        if (exit !== null) return printDone(exit, record, lane, log)
+        process.stdout.write('LANE DIED exit=unknown\n')
+        return 1
+      }
+      if (Date.now() >= deadline) break
     }
-    if (Date.now() + opts.poll * 1000 > deadline) break
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, opts.poll * 1000)
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(opts.poll * 1000, Math.max(1, deadline - Date.now())))
   }
   process.stdout.write('LANE TIMEOUT exit=124\n')
   return 124

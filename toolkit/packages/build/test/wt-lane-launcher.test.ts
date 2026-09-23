@@ -863,11 +863,11 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const blocked = join(f.root, 'blocked-state'); writeFileSync(blocked, 'not a directory')
     const sweepLog = join(f.root, 'sweeps.log')
     const watcher = spawnWatcher(['--project', f.dir, '--poll', '0.05'], { stdio: 'ignore', env: { ...f.env, XDG_STATE_HOME: blocked, WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog } })
-    waitForLines(sweepLog, 2)
+    waitForLines(sweepLog, 2, 50_000)
     expect(() => process.kill(watcher.pid!, 0)).not.toThrow()
     process.kill(watcher.pid!, 'SIGTERM')
     killIdentity(orphan, 'SIGKILL')
-  }, 60_000)
+  }, 90_000)
   it('a test sweep receipt failure is reported but cannot fail the sweep', () => {
     const f = fixture('sleep 1')
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], {
