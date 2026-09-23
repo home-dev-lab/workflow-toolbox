@@ -11,7 +11,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Route hard pilots plus Claude SDK hard critics/refutations to Opus, and replace second-opinion's Fable fallback with a fresh-context Opus consult while retaining Astra as the decorrelated route.
 
 ### Fixed
-- `wt-second-opinion` gives each Astra call private Codex broker state and stops that exact broker/app-server family on completion, error, signal, or process exit; detached brokers are reached without a before/after PID race that could stop another session's server, and unavailable host cleanup is reported.
+- `wt-second-opinion` gives each Astra call private Codex broker state, captures its detached broker while the companion is alive, revalidates process identity before cleanup, and confirms or force-escalates termination on completion, error, supported signals, or process exit; unavailable host cleanup is reported.
 - `wt-deep-search` (EXPERIMENTAL): a deep search started with no Exa key and no opencode on PATH is refused at once, naming both remedies and saying ordinary web search still works, instead of returning a handle that fails nine seconds later with a bare exit status; a missing Exa key is recorded as missing, a refused key as refused, and an opencode not-found failure names the program to install
 - External lanes refuse to launch below a configurable available-memory floor, and signal-killed children now retain a numeric exit while naming earlyoom, kernel OOM, or an unknown signal cause instead of masquerading as timeout exit 124
 

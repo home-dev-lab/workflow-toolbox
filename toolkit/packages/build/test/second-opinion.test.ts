@@ -63,8 +63,7 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang') {
     'child.unref()',
     "writeFileSync(join(process.cwd(), 'broker.pid'), String(child.pid))",
     "const stateDir = join(process.env.CLAUDE_PLUGIN_DATA, 'state', 'fixture')",
-    'mkdirSync(stateDir, { recursive: true })',
-    "writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid }))",
+    "setTimeout(() => { mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })) }, 1500)",
     mode === 'hang' ? 'setInterval(() => {}, 1000)' : `setTimeout(() => process.exit(${mode === 'normal' ? 0 : 7}), 100)`,
   ].join('\n'))
   return { ...f, companionDir, appPidFile, brokerPidFile }
@@ -94,8 +93,6 @@ function dependencies(overrides: Record<string, unknown> = {}) {
     resolveSdkQuery: vi.fn(() => async function* () {
       yield { type: 'result', subtype: 'success', is_error: false, result: 'opus answer' }
     }),
-    listBrokers: vi.fn(() => ({ supported: true, pids: [] })),
-    stopBroker: vi.fn(),
     ...overrides,
   }
 }
@@ -289,15 +286,36 @@ describe('second-opinion advisor', () => {
     ])
   })
 
-  it('does not use a process-list diff to claim ownership of brokers', async () => {
+  it('writes unavailable cleanup diagnostics before the exit marker', async () => {
     const f = fixture(true)
-    const listBrokers = vi.fn()
-      .mockReturnValueOnce({ supported: true, pids: [11, 12] })
-      .mockReturnValueOnce({ supported: true, pids: [11, 12, 21] })
-    const deps = dependencies({ listBrokers })
-    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(0)
-    expect(listBrokers).not.toHaveBeenCalled()
-    expect(deps.stopBroker).not.toHaveBeenCalled()
+    const deps = dependencies({
+      runCodex: vi.fn(() => ({
+        status: 1,
+        stdout: '',
+        stderr: '',
+        cleanup: ['app-server cleanup unavailable: broker not captured; process discovery unavailable on this platform'],
+      })),
+    })
+
+    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
+    expect(lines(f.out)).toEqual([
+      'ROUTE=gpt-astra',
+      'app-server cleanup unavailable: broker not captured; process discovery unavailable on this platform',
+      'EXIT=1',
+    ])
+  })
+
+  it('does not rewrite a completed result because the signal is aborted afterwards', async () => {
+    const f = fixture(true)
+    const controller = new AbortController()
+    const deps = dependencies({
+      runCodex: vi.fn(() => {
+        controller.abort('SIGTERM')
+        return { status: 0, stdout: 'complete\n', stderr: '', interrupted: false }
+      }),
+    })
+
+    expect(await runSecondOpinion({ ...f.options, signal: controller.signal }, deps, f.env)).toBe(0)
     expect(lines(f.out).at(-1)).toBe('EXIT=0')
   })
 
@@ -339,7 +357,9 @@ describe('second-opinion advisor', () => {
     expect(lines(f.out)).toEqual(['ROUTE=claude-opus', 'query aborted', 'EXIT=1'])
   })
 
-  it.each(['SIGTERM', 'SIGINT'] as const)('stops the Codex app-server behind the detached broker on %s without stopping another session', (signal) => {
+  it.skipIf(process.platform === 'win32').each([['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]] as const)(
+    'stops the Codex app-server behind the detached broker on %s without stopping another session (Windows skipped: Node terminates before JS signal cleanup)',
+    (signal, expectedExit) => {
     const f = detachedBrokerFixture()
     const wrapper = spawn(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
       env: { ...process.env, ...f.env, HOME: f.repo },
@@ -363,14 +383,15 @@ describe('second-opinion advisor', () => {
       process.kill(wrapper.pid!, signal)
       expect(waitFor(() => !processExists(appPid))).toBe(true)
       expect(processExists(otherBroker.pid!)).toBe(true)
-      expect(waitFor(() => lines(f.out).at(-1) === `EXIT=${signal === 'SIGINT' ? 130 : 143}`)).toBe(true)
+      expect(waitFor(() => lines(f.out).at(-1) === `EXIT=${expectedExit}`)).toBe(true)
     } finally {
       if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
       if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
       if (otherBroker?.pid && processExists(otherBroker.pid)) process.kill(-otherBroker.pid, 'SIGKILL')
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
-  })
+    },
+  )
 
   it.each([['normal', 0], ['error', 7]] as const)('stops the detached broker app-server after a %s companion end', (mode, expectedStatus) => {
     const f = detachedBrokerFixture(mode)
@@ -425,13 +446,13 @@ describe('second-opinion advisor', () => {
     const f = fixture(true)
     const companion = join(f.repo, 'overflow-companion.mjs')
     writeFileSync(companion, "process.stdout.write('x'.repeat(1024))\n")
-    const endProcessFamily = vi.fn()
+    const stop = vi.fn(() => [])
     const adapter = {
       platform: process.platform,
-      endProcessFamily,
+      endProcessFamily: vi.fn(),
       readProcessSnapshot: () => ({ supported: true, processes: [] }),
       readProcessRelationships: () => ({ status: 'known', processes: [] }),
-      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop }),
     }
     const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64 })
     deps.resolveCodexCompanion = () => companion
@@ -442,6 +463,28 @@ describe('second-opinion advisor', () => {
       'REFUSED: Codex companion output exceeded 64 bytes.',
       'EXIT=1',
     ])
-    expect(endProcessFamily).toHaveBeenCalled()
+    expect(stop).toHaveBeenCalled()
+    expect(adapter.endProcessFamily).not.toHaveBeenCalled()
+  })
+
+  it('removes process-exit and abort listeners when companion spawning errors', async () => {
+    const f = fixture(true)
+    const baselineExitListeners = process.listenerCount('exit')
+    const signal = {
+      aborted: false,
+      reason: undefined,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }
+    const adapter = {
+      platform: process.platform,
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
+    }
+    const deps = createSecondOpinionDependencies(adapter)
+    deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra', signal }, deps, f.env)).toBe(1)
+    expect(process.listenerCount('exit')).toBe(baselineExitListeners)
+    expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
   })
 })

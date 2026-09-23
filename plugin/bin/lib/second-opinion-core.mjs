@@ -7,7 +7,12 @@ import { withRepositoryGuide } from './sdk-role-profile.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
-const signalExitCode = (signal) => signal?.aborted && signal.reason === 'SIGINT' ? 130 : signal?.aborted && signal.reason === 'SIGTERM' ? 143 : null
+function signalExitCode(reason) {
+  if (reason === 'SIGHUP') return 129
+  if (reason === 'SIGINT') return 130
+  if (reason === 'SIGTERM') return 143
+  return null
+}
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
@@ -36,7 +41,7 @@ function codexCompanion(env) {
 }
 
 function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES }) {
-  if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [] })
+  if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
   const ownership = adapter.createCodexBrokerOwnership(env)
   const child = spawn(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
     cwd,
@@ -49,14 +54,25 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   let outputBytes = 0
   let overflow = false
   let cleanup = null
-  const stopOwnedFamily = () => {
-    if (child.pid) adapter.endProcessFamily(child.pid)
+  let companionAlive = true
+  let interrupted = null
+  const captureBroker = () => {
+    if (companionAlive && child.pid) ownership.capture(child.pid)
   }
-  const stopEverything = () => {
+  captureBroker()
+  const captureTimer = setInterval(captureBroker, 25)
+  captureTimer.unref()
+  child.once('exit', () => {
+    companionAlive = false
+    clearInterval(captureTimer)
+  })
+  const stopEverything = (reason = null) => {
     if (cleanup) return cleanup
-    ownership.capture(child.pid)
-    stopOwnedFamily()
-    cleanup = ownership.stop(child.pid)
+    if (reason) interrupted ??= reason
+    clearInterval(captureTimer)
+    captureBroker()
+    if (companionAlive) child.kill('SIGTERM')
+    cleanup = ownership.stop()
     return cleanup
   }
   const collect = (stream, chunk) => {
@@ -73,37 +89,35 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   }
   child.stdout.on('data', (chunk) => collect('stdout', chunk))
   child.stderr.on('data', (chunk) => collect('stderr', chunk))
-  const onAbort = () => stopEverything()
+  const onAbort = () => stopEverything(signal?.reason)
   const onExit = () => { stopEverything() }
   process.once('exit', onExit)
   signal?.addEventListener('abort', onAbort, { once: true })
   if (signal?.aborted) onAbort()
   return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearInterval(captureTimer)
+      process.removeListener('exit', onExit)
+      signal?.removeEventListener('abort', onAbort)
+      resolve({ ...result, interrupted })
+    }
     child.once('error', (error) => {
       stopEverything()
-      resolve(overflow
+      finish(overflow
         ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
         : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n`, cleanup })
     })
     child.once('close', (code, childSignal) => {
+      companionAlive = false
       stopEverything()
-      process.removeListener('exit', onExit)
-      signal?.removeEventListener('abort', onAbort)
-      resolve(overflow
+      finish(overflow
         ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
         : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString(), cleanup })
     })
   })
-}
-
-export function parseProcessLines(stdout) {
-  const pids = []
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!/openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(line)) continue
-    const match = /^\s*(\d+)\s+/.exec(line)
-    if (match) pids.push(Number(match[1]))
-  }
-  return pids
 }
 
 export function listProcessTable(adapter) {
@@ -140,8 +154,6 @@ export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveCodexCompanion: codexCompanion,
   runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes }),
   resolveSdkQuery,
-  listBrokers: () => listBrokers(adapter),
-  stopBroker: (pid) => process.kill(pid, 'SIGTERM'),
 })
 
 export async function runSecondOpinion(options, dependencies, env = process.env) {
@@ -191,7 +203,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
       appendLine(options.out, error instanceof Error ? error.message : String(error))
     }
 
-    const code = signalExitCode(options.signal) ?? result.status
+    const code = signalExitCode(result.interrupted) ?? result.status
     appendLine(options.out, `EXIT=${code}`)
     return code
   }
@@ -241,7 +253,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     answer = 'Claude Opus returned no answer.'
   }
   appendOutput(options.out, answer)
-  const code = signalExitCode(options.signal) ?? (failed ? 1 : 0)
+  const code = signalExitCode(options.signal?.aborted ? options.signal.reason : null) ?? (failed ? 1 : 0)
   appendLine(options.out, `EXIT=${code}`)
   return code
 }
