@@ -30,13 +30,15 @@ function parseArgs(argv) {
 
 let outputPath
 const abortController = new AbortController()
-let terminationSignal = null
 const requestTermination = (signal) => {
-  terminationSignal = signal
-  abortController.abort()
+  abortController.abort(signal)
 }
-process.once('SIGTERM', requestTermination)
-process.once('SIGINT', requestTermination)
+const signalListeners = new Map(['SIGHUP', 'SIGTERM', 'SIGINT'].map((signal) => [signal, () => requestTermination(signal)]))
+for (const [signal, listener] of signalListeners) process.once(signal, listener)
+
+function removeSignalListeners() {
+  for (const [signal, listener] of signalListeners) process.removeListener(signal, listener)
+}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
@@ -50,14 +52,12 @@ async function main() {
     return 2
   }
   outputPath = options.out
-  return runSecondOpinion({ ...options, signal: abortController.signal }, createSecondOpinionDependencies(hostAdapter))
+  return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter))
 }
 
 function finish(code) {
-  if (!terminationSignal) { process.exitCode = code; return }
-  process.removeListener('SIGTERM', requestTermination)
-  process.removeListener('SIGINT', requestTermination)
-  process.exitCode = terminationSignal === 'SIGINT' ? 130 : 143
+  removeSignalListeners()
+  process.exitCode = code
 }
 
 main().then(finish).catch((error) => {

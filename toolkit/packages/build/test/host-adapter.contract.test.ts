@@ -16,7 +16,7 @@ const activePlatforms = useRealHost ? platforms.filter((platform) => platform ==
 const snapshotSamples = {
   linux: { pid: 1, ppid: 0, elapsedMs: 46_000, command: '/sbin/init' },
   darwin: { pid: 1, ppid: 0, elapsedMs: 346_000, command: '/sbin/launchd' },
-  win32: { pid: 4, ppid: 0, elapsedMs: null, command: 'System' },
+  win32: { pid: 4, ppid: 0, elapsedMs: 46_000, command: 'System' },
 } as const
 
 function evidenceHost(platform: typeof platforms[number]) {
@@ -93,14 +93,18 @@ describe('host adapter evidence contract', () => {
     const outputs = {
       linux: '1 0 46 /sbin/init\n',
       darwin: '1 0 346 /sbin/launchd\n',
-      win32: '4 0 System\r\n',
+      win32: '4 0 46000 System\r\n',
     }
+    const run = vi.fn(() => ({ status: 0, stdout: outputs[platform], stderr: '', error: null }))
     const host = createHostAdapter({
       platform,
-      invoke: { run: vi.fn(() => ({ status: 0, stdout: outputs[platform], stderr: '', error: null })) },
+      invoke: { run },
     })
 
     expect(host.readProcessSnapshot()).toEqual({ supported: true, processes: [snapshotSamples[platform]] })
+    if (platform === 'darwin') {
+      expect(run).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,etime=,command='])
+    }
   })
 
   it.each(['aix', 'freebsd', 'sunos'] as const)('keeps process discovery supported on %s', (platform) => {
@@ -116,8 +120,10 @@ describe('host adapter evidence contract', () => {
 
   contract('refuses process snapshot replay when public evidence has no captured operation', platforms, (platform) => {
     const expected = platform === 'win32'
-      ? 'captured host evidence has no invocation for powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process'
-      : 'captured host evidence has no invocation for ps -eo pid=,ppid=,etimes=,args='
+      ? 'captured host evidence has no invocation for powershell.exe -NoProfile -NonInteractive -Command $now = Get-Date'
+      : platform === 'darwin'
+        ? 'captured host evidence has no invocation for ps -axo pid=,ppid=,etime=,command='
+        : 'captured host evidence has no invocation for ps -eo pid=,ppid=,etimes=,args='
     expect(() => evidenceHost(platform).readProcessSnapshot()).toThrow(expected)
   })
 

@@ -7,6 +7,12 @@ import { withRepositoryGuide } from './sdk-role-profile.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
+function signalExitCode(reason) {
+  if (reason === 'SIGHUP') return 129
+  if (reason === 'SIGINT') return 130
+  if (reason === 'SIGTERM') return 143
+  return null
+}
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
@@ -35,9 +41,11 @@ function codexCompanion(env) {
 }
 
 function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES }) {
+  if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
+  const ownership = adapter.createCodexBrokerOwnership(env)
   const child = spawn(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
     cwd,
-    env,
+    env: ownership.env,
     detached: adapter.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -45,8 +53,27 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   const chunks = { stdout: [], stderr: [] }
   let outputBytes = 0
   let overflow = false
-  const stopOwnedFamily = () => {
-    if (child.pid) adapter.endProcessFamily(child.pid)
+  let cleanup = null
+  let companionAlive = true
+  let interrupted = null
+  const captureBroker = () => {
+    if (companionAlive && child.pid) ownership.capture(child.pid)
+  }
+  captureBroker()
+  const captureTimer = setInterval(captureBroker, 25)
+  captureTimer.unref()
+  child.once('exit', () => {
+    companionAlive = false
+    clearInterval(captureTimer)
+  })
+  const stopEverything = (reason = null) => {
+    if (cleanup) return cleanup
+    if (reason) interrupted ??= reason
+    clearInterval(captureTimer)
+    captureBroker()
+    if (companionAlive) child.kill('SIGTERM')
+    cleanup = ownership.stop()
+    return cleanup
   }
   const collect = (stream, chunk) => {
     if (overflow) return
@@ -55,39 +82,42 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
       overflow = true
       chunks.stdout.length = 0
       chunks.stderr.length = 0
-      stopOwnedFamily()
+      stopEverything()
       return
     }
     chunks[stream].push(chunk)
   }
   child.stdout.on('data', (chunk) => collect('stdout', chunk))
   child.stderr.on('data', (chunk) => collect('stderr', chunk))
-  signal?.addEventListener('abort', stopOwnedFamily, { once: true })
+  const onAbort = () => stopEverything(signal?.reason)
+  const onExit = () => { stopEverything() }
+  process.once('exit', onExit)
+  signal?.addEventListener('abort', onAbort, { once: true })
+  if (signal?.aborted) onAbort()
   return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearInterval(captureTimer)
+      process.removeListener('exit', onExit)
+      signal?.removeEventListener('abort', onAbort)
+      resolve({ ...result, interrupted })
+    }
     child.once('error', (error) => {
-      stopOwnedFamily()
-      resolve(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
-        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n` })
+      stopEverything()
+      finish(overflow
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
+        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n`, cleanup })
     })
     child.once('close', (code, childSignal) => {
-      stopOwnedFamily()
-      signal?.removeEventListener('abort', stopOwnedFamily)
-      resolve(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
-        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString() })
+      companionAlive = false
+      stopEverything()
+      finish(overflow
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
+        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString(), cleanup })
     })
   })
-}
-
-export function parseProcessLines(stdout) {
-  const pids = []
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!/openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(line)) continue
-    const match = /^\s*(\d+)\s+/.exec(line)
-    if (match) pids.push(Number(match[1]))
-  }
-  return pids
 }
 
 export function listProcessTable(adapter) {
@@ -124,8 +154,6 @@ export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveCodexCompanion: codexCompanion,
   runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes }),
   resolveSdkQuery,
-  listBrokers: () => listBrokers(adapter),
-  stopBroker: (pid) => process.kill(pid, 'SIGTERM'),
 })
 
 export async function runSecondOpinion(options, dependencies, env = process.env) {
@@ -157,7 +185,6 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     }
 
     writeFileSync(options.out, 'ROUTE=gpt-astra\n')
-    const before = dependencies.listBrokers()
     let result
     try {
       result = await dependencies.runCodex({
@@ -170,27 +197,15 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
       })
       appendOutput(options.out, result.stdout)
       appendOutput(options.out, result.stderr)
+      for (const line of result.cleanup ?? []) appendLine(options.out, line)
     } catch (error) {
       result = { status: 1 }
       appendLine(options.out, error instanceof Error ? error.message : String(error))
     }
 
-    if (!before.supported) {
-      appendLine(options.out, before.reason)
-    } else {
-      const after = dependencies.listBrokers()
-      if (!after.supported) appendLine(options.out, after.reason)
-      else for (const pid of after.pids.filter((pid) => !before.pids.includes(pid))) {
-        try {
-          dependencies.stopBroker(pid)
-          appendLine(options.out, `stopped broker pid ${pid} started by this call`)
-        } catch (error) {
-          appendLine(options.out, `could not stop broker pid ${pid}: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-    }
-    appendLine(options.out, `EXIT=${result.status}`)
-    return result.status
+    const code = signalExitCode(result.interrupted) ?? result.status
+    appendLine(options.out, `EXIT=${code}`)
+    return code
   }
 
   writeFileSync(options.out, 'ROUTE=claude-opus\n')
@@ -216,6 +231,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],
         permissionMode: 'default',
+        abortController: options.abortController,
         canUseTool: async (toolName) => ['Read', 'Glob', 'Grep'].includes(toolName)
           ? { behavior: 'allow' }
           : { behavior: 'deny', message: 'second-opinion is read-only' },
@@ -237,7 +253,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     answer = 'Claude Opus returned no answer.'
   }
   appendOutput(options.out, answer)
-  const code = failed ? 1 : 0
+  const code = signalExitCode(options.signal?.aborted ? options.signal.reason : null) ?? (failed ? 1 : 0)
   appendLine(options.out, `EXIT=${code}`)
   return code
 }

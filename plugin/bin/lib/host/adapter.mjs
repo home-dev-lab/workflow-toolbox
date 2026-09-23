@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
+import { createCodexBrokerOwnership } from './codex-broker-ownership.mjs'
 import { freemem } from 'node:os'
 import * as darwin from './darwin.mjs'
 import * as linux from './linux.mjs'
@@ -23,6 +24,8 @@ export function createHostAdapter({ platform = process.platform, invoke, evidenc
     readAvailableMemory: () => readAvailableMemory(platform, invocation),
     resolveCanonicalPath: (input) => implementation.resolveCanonicalPath(invocation, input),
     endProcessFamily: (pid) => implementation.endProcessFamily(invocation, pid),
+    forceEndProcessFamily: (pid) => implementation.forceEndProcessFamily(invocation, pid),
+    createCodexBrokerOwnership: (env) => createCodexBrokerOwnership(adapter, env),
   }
   if (!captured) return adapter
   return { ...adapter, evidence: () => evidenceSummary(platform, captured) }
@@ -45,11 +48,12 @@ function realInvocation() {
     realpath(input) {
       try { return { status: 'resolved', path: realpathSync.native(input) } } catch (error) { return { status: 'unavailable', path: null, reason: error?.code ?? String(error) } }
     },
-    killGroup(pid) {
-      try { process.kill(-Number(pid), 'SIGTERM'); return { status: 'ended', kind: 'posix_process_group' } } catch (error) { return { status: 'unavailable', kind: 'posix_process_group', reason: error?.code ?? String(error) } }
+    killGroup(pid, signal = 'SIGTERM') {
+      try { process.kill(-Number(pid), signal); return { status: 'ended', kind: 'posix_process_group' } } catch (error) { return { status: 'unavailable', kind: 'posix_process_group', reason: error?.code ?? String(error) } }
     },
-    killTree(pid) {
-      const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8', windowsHide: true })
+    killTree(pid, force = false) {
+      const args = ['/PID', String(pid), '/T', ...(force ? ['/F'] : [])]
+      const result = spawnSync('taskkill', args, { encoding: 'utf8', windowsHide: true })
       return result.status === 0 ? { status: 'ended', kind: 'process_tree' } : { status: 'unavailable', kind: 'process_tree', reason: `taskkill exited ${String(result.status)}` }
     },
   }
@@ -59,7 +63,8 @@ function realInvocation() {
 // every consumer already turns a throwing read into a legible "unavailable on this platform".
 function unavailableAdapter(platform, reason) {
   const unavailable = () => { throw new Error(reason) }
-  return { available: false, platform, reason, readAvailableMemory: () => ({ mib: null, source: `available memory on ${platform}`, reason: 'unsupported platform' }), readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason }) }
+  const adapter = { available: false, platform, reason, readAvailableMemory: () => ({ mib: null, source: `available memory on ${platform}`, reason: 'unsupported platform' }), readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason }), forceEndProcessFamily: () => ({ status: 'unavailable', reason }) }
+  return { ...adapter, createCodexBrokerOwnership: (env) => createCodexBrokerOwnership(adapter, env) }
 }
 
 export const hostAdapter = createHostAdapter({ unavailableFallback: true })
