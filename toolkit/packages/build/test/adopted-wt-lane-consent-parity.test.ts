@@ -84,6 +84,7 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
   for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'resolved-binary.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
+  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', 'host'), join(pluginRoot, 'bin', 'lib', 'host'), { recursive: true })
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
   writeFileSync(join(pluginRoot, 'bin', 'wt-lane.mjs'), transformSource ? transformSource(launcher) : launcher)
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane-wait.mjs'), join(pluginRoot, 'bin', 'wt-lane-wait.mjs'))
@@ -165,6 +166,8 @@ describe('adopted wt-lane consent resolver', () => {
     expect(adopted).toContain("const supervisor = path.join(root, 'bin', 'lib', 'lane-supervisor-core.mjs')")
     expect(adopted).toContain('supervisorModule.inspectProcess')
     expect(adopted).toContain("const launcher = path.join(root, 'bin', 'wt-lane.mjs')")
+    expect(adopted).toContain("const host = path.join(root, 'bin', 'lib', 'host', 'adapter.mjs')")
+    expect(adopted).toContain('hostAdapter: hostModule.hostAdapter')
     expect(adopted).toContain('launcherModule.inspectStartedProcess')
     expect(adopted).not.toContain("from './lib/lane-supervisor-core.mjs'")
   })

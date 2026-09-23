@@ -41,12 +41,27 @@ function processFamilyExists(pid, platform = process.platform, kill = process.ki
   }
 }
 
+function spawnCommand(spawn, executable, args, options, platform, env) {
+  if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(executable)) return spawn(executable, args, options);
+  const metacharacters = /([()\][%!^"`<>&|;, *?])/g;
+  const escapeArgument = (value) => {
+    let escaped = String(value).replace(/(?=(\\+?)?)\1"/g, '$1$1\\"').replace(/(?=(\\+?)?)\1$/g, '$1$1');
+    escaped = `"${escaped}"`.replace(metacharacters, '^$1');
+    return escaped.replace(metacharacters, '^$1');
+  };
+  const command = [String(executable).replace(metacharacters, '^$1'), ...args.map(escapeArgument)].join(' ');
+  return spawn(env.COMSPEC || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], {
+    ...options,
+    windowsVerbatimArguments: true,
+  });
+}
+
 // ⚠ The child carries DEEP_SEARCH_WORKER=1 so that a deep-search run cannot start another one.
 // Measured 2026-09-21: an agentic run pointed at the plugin's own directory read the CLI it found
 // there and re-ran it, and each child did the same — seven runs in two minutes. The marker is what
 // `bin/deep.mjs start` refuses on; the neutral working directory is the other half.
 export function startOpencode(options, deps = {}) {
-  const { prompt, dir, logPath, timeoutMs = 30 * 60_000 } = options;
+  const { prompt, dir, logPath, executable = 'opencode', timeoutMs = 30 * 60_000 } = options;
   if (typeof deps.spawn !== 'function') throw new TypeError('opencode requires an injected spawner');
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('opencode requires a full brief');
   if (!absolutePath(dir)) throw new TypeError('opencode requires an absolute --dir');
@@ -61,6 +76,7 @@ export function startOpencode(options, deps = {}) {
   const scheduleTimeout = deps.setTimeout ?? setTimeout;
   const cancelTimeout = deps.clearTimeout ?? clearTimeout;
   const platform = deps.platform ?? process.platform;
+  const environment = childEnvironment(deps.env ?? process.env);
   const graceMs = deps.terminationGraceMs ?? TERMINATION_GRACE_MS;
   const signalFamily = deps.signalProcessFamily ?? ((pid, signal) => signalProcessFamily(pid, signal, platform));
   const familyExists = deps.processFamilyExists ?? ((pid) => processFamilyExists(pid, platform));
@@ -68,17 +84,17 @@ export function startOpencode(options, deps = {}) {
   let child;
   try {
     try {
-      child = deps.spawn('opencode', ['run', '--auto', '--dir', dir, prompt], {
+      child = spawnCommand(deps.spawn, executable, ['run', '--auto', '--dir', dir, prompt], {
         detached: true,
         shell: false,
         stdio: ['ignore', log, log],
-        env: childEnvironment(deps.env ?? process.env),
-      });
+        env: environment,
+      }, platform, environment);
     } catch (error) {
       if (error?.code === 'ENOENT') {
         throw new Error('opencode was not found; install opencode and ensure it is on PATH');
       }
-      throw error;
+      throw new Error(`opencode failed to start: ${error?.code ?? error?.message ?? String(error)}`, { cause: error });
     }
   } finally {
     close(log);
@@ -120,9 +136,13 @@ export function startOpencode(options, deps = {}) {
     if (!timedOut) finish(Number.isInteger(code) ? code : 1);
     else finishTimeoutIfTerminated();
   });
-  child.once?.('error', () => {
+  child.once?.('error', (error) => {
     childExited = true;
-    if (!timedOut) finish(127);
+    if (!timedOut) {
+      const code = error?.code === 'ENOENT' ? 127 : 126;
+      append(logPath, `\nSPAWN_ERROR=${error?.code ?? 'unknown'}`);
+      finish(code);
+    }
     else finishTimeoutIfTerminated();
   });
   timeout = scheduleTimeout(() => {

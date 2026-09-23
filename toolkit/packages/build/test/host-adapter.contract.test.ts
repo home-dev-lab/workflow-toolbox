@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
-const EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
+const EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../.lane/evidence')
 const platforms = ['linux', 'darwin', 'win32'] as const
 const labels = { linux: 'ubuntu-latest', darwin: 'macos-latest', win32: 'windows-latest' } as const
 const seedWrongFake = process.env.WT_SEED_WRONG_HOST_FAKE === '1'
@@ -45,7 +45,22 @@ describe('host adapter evidence contract', () => {
   contract('reports evidence provenance for every question', platforms, (platform) => {
     const host = contractHost(platform)
     if (useRealHost) expect(host.platform).toBe(platform)
-    else expect(host.evidence()).toMatchObject({ platform, runnerLabel: labels[platform], runId: '35501457364' })
+    else expect(host.evidence()).toMatchObject({ platform, runnerLabel: labels[platform], runId: '35795762873' })
+  })
+
+  it.each([
+    ['linux', { mib: 14609, source: 'MemAvailable from /proc/meminfo' }],
+    ['darwin', { mib: 3099, source: 'free, inactive, and speculative pages from vm_stat' }],
+    ['win32', { mib: 13699, source: 'free memory from os.freemem()' }],
+  ] as const)('reads recorded available memory on %s', (platform, expected) => {
+    expect(evidenceHost(platform).readAvailableMemory()).toEqual(expected)
+  })
+
+  it('reads positive available memory from the production host with a named source', () => {
+    const memory = createHostAdapter().readAvailableMemory()
+    expect(memory.mib).toBeGreaterThan(0)
+    expect(memory.source).toBeTruthy()
+    process.stdout.write(`production host memory: platform=${process.platform} mib=${memory.mib} source=${memory.source}\n`)
   })
 
   contract('answers pid to parent-pid from the captured process table', platforms, (platform) => {

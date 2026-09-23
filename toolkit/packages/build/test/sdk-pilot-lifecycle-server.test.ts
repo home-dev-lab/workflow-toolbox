@@ -891,9 +891,10 @@ printf 'report\n' > "$report"
       "if(process.argv[2]==='--version'){console.log('fixture-1');process.exit(0)} if(process.argv[2]==='--pure'){console.log('[]');process.exit(0)} if(process.argv[2]==='debug'&&process.argv[3]==='skill'){console.log('[]');process.exit(0)} const root=process.argv[process.argv.indexOf('--dir')+1]",
     ))
     fs.chmodSync(opencodeStub, 0o755)
-    const oldPath = process.env.PATH; const oldConfig = process.env.CLAUDE_CONFIG_DIR; const oldState = process.env.XDG_STATE_HOME; const oldNodeOptions = process.env.NODE_OPTIONS
+    const oldPath = process.env.PATH; const oldConfig = process.env.CLAUDE_CONFIG_DIR; const oldState = process.env.XDG_STATE_HOME; const oldNodeOptions = process.env.NODE_OPTIONS; const oldMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
     process.env.PATH = `${bin}:${oldPath}`; process.env.CLAUDE_CONFIG_DIR = config; process.env.XDG_STATE_HOME = join(config, 'state')
     process.env.NODE_OPTIONS = `${oldNodeOptions ? `${oldNodeOptions} ` : ''}--require=${platformPreload}`
+    process.env.WT_LANE_MIN_AVAILABLE_MIB = '0'
     const git = (_program: string, args: string[]) => args[0] === 'status'
       ? ' M changed.txt\n'
       : args[0] === 'diff' && args.includes('--binary')
@@ -932,6 +933,8 @@ printf 'report\n' > "$report"
       else process.env.XDG_STATE_HOME = oldState
       if (oldNodeOptions === undefined) delete process.env.NODE_OPTIONS
       else process.env.NODE_OPTIONS = oldNodeOptions
+      if (oldMinimum === undefined) delete process.env.WT_LANE_MIN_AVAILABLE_MIB
+      else process.env.WT_LANE_MIN_AVAILABLE_MIB = oldMinimum
       const pgidFile = join(lifecycle.root, '.lane', 'survivor-pgid')
       if (fs.existsSync(pgidFile)) { try { process.kill(-Number(readFileSync(pgidFile, 'utf8')), 'SIGKILL') } catch {} }
     }
