@@ -83,10 +83,41 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     const brief = readFileSync(join(lifecycle.root, '.lane', 'review-brief.md'), 'utf8')
     expect(diff).toContain('+modified by harden')
     expect(diff).not.toContain('+modified by tdd')
-    expect(brief).toContain('### Round 1\n- first defect')
+    expect(brief).toContain('### Round 1\n- Prior finding 1: first defect')
   })
 
-  it('routes an unanchored finding in prior harden code instead of hardening it again', async () => {
+  it('admits an empty round-two snapshot delta and asks the parent about the open finding', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review one' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-one' })
+    edgeConfig(lifecycle, { harden: { noTreeChange: true } })
+    await lifecycle.artifact({ kind: 'harden-brief', content: 'could not change it' }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 })
+    await lifecycle.transition({ phase: 'harden', tool_use_id: 'harden-one' }); await gates(lifecycle)
+    await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify-two' })
+    expect(await lifecycle.artifact({ kind: 'review-brief', content: 'review two' })).toBe('wrote review-brief')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'review-input.diff'), 'utf8')).toContain('# No changes since previous review snapshot')
+  })
+
+  it('shows only the harden delta for an untracked file without a false deletion', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: created.txt:1] defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review one' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-one' })
+    edgeConfig(lifecycle, { harden: { untrackedChange: true } })
+    await lifecycle.artifact({ kind: 'harden-brief', content: 'fix created file' }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 })
+    await lifecycle.transition({ phase: 'harden', tool_use_id: 'harden-one' }); await gates(lifecycle)
+    await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify-two' })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review two' })
+    const diff = readFileSync(join(lifecycle.root, '.lane', 'review-input.diff'), 'utf8')
+    expect(diff).toContain('+modified untracked by harden')
+    expect(diff).not.toContain('deleted file mode')
+    expect(diff).not.toContain('+created by tdd')
+  })
+
+  it('routes a plan-task finding in prior harden code instead of hardening it again', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: ['anchored first-round defect'] } })
     await lifecycle.artifact({ kind: 'review-brief', content: 'review one' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
@@ -94,7 +125,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     await lifecycle.artifact({ kind: 'harden-brief', content: 'fix it' }); await lifecycle.run({ kind: 'lane', phase: 'harden', timeout: 1 })
     await lifecycle.transition({ phase: 'harden', tool_use_id: 'harden-one' }); await gates(lifecycle)
     await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify-two' })
-    const finding = '[HIGH][location: tracked.txt:3] defect only in the previous harden addition'
+    const finding = '[HIGH][anchor: plan task A1][location: tracked.txt:3] defect only in the previous harden addition'
     edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
     await lifecycle.artifact({ kind: 'review-brief', content: 'review two' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
     expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'route-own-code' })).toBe('accepted phase=refutation')
@@ -102,7 +133,77 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     await lifecycle.artifact({ kind: 'refutation-brief', content: 'refute' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
     await lifecycle.transition({ phase: 'refutation', outcome: 'clear', tool_use_id: 'refutation-clear' })
     await lifecycle.artifact({ kind: 'pilot-report', content: fullReport })
-    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain(`## Findings to route\n- ${finding} — tracked.txt:3`)
+    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Findings to route\n- defect only in the previous harden addition — tracked.txt:3 — located only in previous harden code and anchored to no card criterion')
+  })
+
+  it('re-asks missing MEDIUM+ anchors once with every finding named, then ends partial', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const missing = ['[HIGH][location: tracked.txt:2] first defect', '[MEDIUM][location: created.txt:1] second defect']
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: missing } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: missing, tool_use_id: 'missing-anchor-review' })).toContain('findings 1, 2 have no anchor field; re-run once')
+    expect(lifecycle.state().phase).toBe('review')
+    await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: missing, tool_use_id: 'missing-anchor-review' })).toContain('accepted phase=report')
+    expect(lifecycle.state()).toMatchObject({ phase: 'report', partial: { question: expect.stringContaining('findings 1, 2 have no anchor field') } })
+  })
+
+  it('re-asks one malformed structured review then ends partial with a parent question', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const malformed = '[urgent][anchor: DoD 1][location: tracked.txt:2] defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [malformed] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [malformed], tool_use_id: 'malformed-review' })).toContain('finding 1 has no recognized severity in its severity field; re-run once')
+    expect(lifecycle.state().phase).toBe('review')
+    await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [malformed], tool_use_id: 'malformed-review' })).toContain('accepted phase=report')
+    expect(lifecycle.state()).toMatchObject({ phase: 'report', partial: { question: expect.stringContaining('repeated review report parse failure') } })
+  })
+
+  it('routes a LOW finding carried by clear', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const finding = '[LOW][anchor: DoD 1][location: tracked.txt:2] typo'
+    edgeConfig(lifecycle, { review: { verdict: 'clear', findings: [finding] }, refutation: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'clear', findings: [finding], tool_use_id: 'review-low' })).toBe('accepted phase=refutation')
+    await lifecycle.artifact({ kind: 'refutation-brief', content: 'refute' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
+    await lifecycle.transition({ phase: 'refutation', outcome: 'clear', tool_use_id: 'refutation-clear' })
+    await lifecycle.artifact({ kind: 'pilot-report', content: fullReport })
+    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('- typo — tracked.txt:2 — LOW severity never blocks')
+  })
+
+  it('does not count a routed-only review as a harden round', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const low = '[LOW][anchor: DoD 1][location: tracked.txt:2] route this'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [low] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [low], tool_use_id: 'review-low' })).toBe('accepted phase=refutation')
+    const blocking = '[HIGH][anchor: DoD 1][location: tracked.txt:2] refuted defect'
+    edgeConfig(lifecycle, { refutation: { verdict: 'changes-requested', findings: [blocking] } })
+    await lifecycle.artifact({ kind: 'refutation-brief', content: 'refute' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'refutation', outcome: 'changes-requested', findings: [blocking], tool_use_id: 'refutation-blocking' })).toBe('accepted phase=harden')
+    const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
+    expect(timeline.phases.at(-1)).toMatchObject({ phase: 'harden', round: 1 })
+  })
+
+  it('keeps pilot-authored routing text and includes routed findings in a boundary stop', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const low = '[LOW][anchor: DoD 1][location: tracked.txt:2] route at boundary'
+    edgeConfig(lifecycle, { review: { verdict: 'clear', findings: [low] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(lifecycle.requestStop('owner stop')).toBe(true)
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'clear', findings: [low], tool_use_id: 'stop-with-finding' })).toContain('stopped phase=review')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('- route at boundary — tracked.txt:2')
+  })
+
+  it('names git stderr when a review snapshot fails', async () => {
+    const realGit = (program: string, args: string[], options: Record<string, unknown>) => execFileSync(program, args, options as Parameters<typeof execFileSync>[2])
+    const git = (program: string, args: string[], options: Record<string, unknown>) => {
+      if (args[0] === 'write-tree') throw Object.assign(new Error('snapshot failed'), { stderr: Buffer.from('fatal: injected snapshot stderr') })
+      return realGit(program, args, options)
+    }
+    const lifecycle = fullLifecycle({ git }); await reachReview(lifecycle)
+    expect(await lifecycle.artifact({ kind: 'review-brief', content: 'review' })).toContain('fatal: injected snapshot stderr')
   })
 
   it('H8-1 lock: refuses a review brief planted by the tdd worker without write_artifact', async () => {
@@ -154,7 +255,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     }
     let substantivePatches = 0
     const failRefutationGit = (program: string, args: string[], options: Record<string, unknown>) => {
-      if (args[0] === 'diff' && args[1] === '--binary' && ++substantivePatches === 3) throw new Error('refutation git failure')
+      if (args[0] === 'diff' && args[1] === '--binary' && ++substantivePatches === 2) throw new Error('refutation git failure')
       return realGit(program, args, options)
     }
     const refutation = fullLifecycle({ git: failRefutationGit }); await reachReview(refutation)
@@ -256,6 +357,32 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
     edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
     await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     expect(await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic-two' })).toBe('accepted phase=tdd')
+  })
+
+  it.each([
+    ['a no-issues bullet', '- No issues found'],
+    ['an empty account before another heading', '## No-finding attack account\n\n## Notes\ntext'],
+    ['an account missing plan sections', '## No-finding attack account\n- Tasks: attacked tasks; no defect held.'],
+  ])('re-runs zero-finding approval with %s', async (_name, attackAccount) => {
+    const lifecycle = fullLifecycle()
+    edgeConfig(lifecycle, { critic: { verdict: 'changes-requested', findings: ['first defect'] } })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'critic' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['first defect'], tool_use_id: 'critic-one' })
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-two' })
+    edgeConfig(lifecycle, { critic: { verdict: 'approved', findings: [], attackAccount } })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'critic two' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic-empty' })).toContain('failed critic round')
+  })
+
+  it('requires a per-section account from each lane in the first dual-critic round', async () => {
+    const lifecycle = fullLifecycle()
+    edgeConfig(lifecycle, { critic: { verdict: 'approved', findings: [], missingAccountLane: 'B' } })
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' })
+    await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'critic' })
+    expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toContain('valid verdict blocks from both critic lanes')
   })
 
   it('continues a converging critic past round three and approves', async () => {
@@ -381,6 +508,13 @@ describe.sequential('real SDK lifecycle server FULL sequence', () => {
       ['review', 1], ['harden', 1], ['review', 2], ['harden', 2], ['review', 3],
     ])
     expect(lifecycle.state()).toEqual({ phase: 'report', partial: { phase: 'review', round: FIXED_REVIEW_ROUNDS, reason, findings: ['finding'], question: 'Should the run parent accept or revise these open blocking findings: finding?' }, deferred: null })
+    const authored = `${fullReport}Partial: ${reason}\n\n## Findings to route\n- pilot-authored note\n\n## Question for parent\nPilot-authored context.\n`
+    expect(await lifecycle.artifact({ kind: 'pilot-report', content: authored })).toBe('wrote pilot-report')
+    const saved = readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')
+    expect(saved).toContain('- pilot-authored note')
+    expect(saved.match(/^## Question for parent$/gm)).toHaveLength(1)
+    expect(saved).toContain('Pilot-authored context.')
+    expect(saved).toContain('Should the run parent accept or revise')
   })
 
   it.each([
@@ -444,10 +578,13 @@ function root() {
   spawnSync('git', ['config', 'user.email', 't@t'], { cwd: value }); spawnSync('git', ['config', 'user.name', 't'], { cwd: value })
   return value
 }
+function findingBody(finding: string) { return finding.replace(/^\[(?:blocking|non-blocking|critical|high|medium|low)\]\s*/i, '').replace(/^(?:\[(?:anchor|location):[^\]]*\]\s*)+/i, '') }
 function handlers(server: { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }) {
   const tools = server.instance._registeredTools
   return {
-    transition: (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args).then((result) => result.content[0]!.text),
+    transition: (args: Record<string, unknown>) => tools.transition!.handler(args.phase === 'discovery' && !args.record
+      ? { ...args, record: DISCOVERY_RECORD }
+      : Array.isArray(args.findings) ? { ...args, findings: args.findings.map((finding) => findingBody(String(finding))) } : args).then((result) => result.content[0]!.text),
     artifact: (args: Record<string, unknown>) => tools.write_artifact!.handler(args).then((result) => result.content[0]!.text),
     run: (args: Record<string, unknown>) => tools.run!.handler(args.timeout === 1 ? { ...args, timeout: FIXTURE_LANE_TIMEOUT_SECONDS } : args).then((result) => result.content[0]!.text),
   }
@@ -463,8 +600,9 @@ function laneLauncher() {
     .replaceAll('process.env.WT_FULL_COUNTS', "join('.lane', 'counts.json')")
     .replaceAll('process.env.WT_FULL_CALLS', "join('.lane', 'calls.jsonl')")
     .replace("process.env.WT_EDGE_CONFIG || '{}'", "readFileSync(join('.lane', 'edge-config.json'), 'utf8')")
-    .replace("if (phase === 'tdd') {", "if (phase === 'harden') appendFileSync('tracked.txt', 'modified by harden\\n'); if (phase === 'tdd') {")
-    .replace(/writeFileSync\(report,\s*reportText\)/, "if (phase === 'critic' && verdict === 'approved' && !configured.noAttackAccount) reportText += '\\n## No-finding attack account\\n- Tasks: attacked every task; no defect held.\\n'; writeFileSync(report, reportText)")
+    .replace("const defaults =", "if (phase === 'harden' && !configured.noTreeChange) appendFileSync('tracked.txt', 'modified by harden\\n'); if (phase === 'harden' && configured.untrackedChange) appendFileSync('created.txt', 'modified untracked by harden\\n'); const defaults =")
+    .replace("const findings = configured.findings ?? defaults.findings ?? [];", "const findings = (configured.findings ?? (configured.verdict ? [] : defaults.findings) ?? []).map((finding) => /^\\[/.test(finding) ? finding : phase === 'critic' ? '[blocking][anchor: DoD 1][location: plan.md:1] '+finding : '[HIGH][anchor: DoD 1][location: tracked.txt:1] '+finding);")
+    .replace(/writeFileSync\(report,\s*reportText\)/, "if (phase === 'critic' && verdict === 'approved' && !configured.noAttackAccount && !(configured.missingAccountLane && report.includes('.'+configured.missingAccountLane+'.'))) reportText += configured.attackAccount ? '\\n'+configured.attackAccount+'\\n' : '\\n## No-finding attack account\\n- ADR: attacked every decision; no defect held.\\n- Tasks: attacked every task; no defect held.\\n- Gates: attacked every gate; no defect held.\\n'; writeFileSync(report, reportText)")
   writeFileSync(file, source)
   return file
 }
@@ -474,7 +612,7 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
   const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, rules: [], ...options })
-  return { ...handlers(server), calls, base, root: worktree, state: server.state }
+  return { ...handlers(server), calls, base, root: worktree, state: server.state, requestStop: server.requestStop }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')

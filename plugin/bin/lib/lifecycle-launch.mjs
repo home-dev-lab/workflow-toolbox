@@ -9,6 +9,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './lifecycle-receipts.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { classifyLane, shellQuote, supervisionPaths } from './lane-supervisor-core.mjs'
+import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
@@ -41,11 +42,11 @@ function combinedCriticReport(reports) {
     const findingsText = /^FINDINGS:\s*$([\s\S]*)/mi.exec(content)?.[1] ?? ''
     const lines = findingsText.split(/\r?\n/)
     const sectionEnd = lines.findIndex((line) => /^#/.test(line))
-    const findings = (sectionEnd < 0 ? lines : lines.slice(0, sectionEnd)).map(reportFinding).filter(Boolean)
-    const attackAccount = /(?:^|\n)## No-finding attack account\s*\r?\n\s*\S[\s\S]*?(?=\r?\n## |$)/i.exec(content)?.[0].trim() ?? null
+    const findings = (sectionEnd < 0 ? lines : lines.slice(0, sectionEnd)).map(reportFinding).filter(Boolean).filter((finding) => !/^(?:none\.?|no (?:issues?|findings?)(?: found)?\.?)$/i.test(finding))
+    const attackAccount = hasPerSectionAttackAccount(content) ? /(?:^|\n)## No-finding attack account\s*\r?\n[\s\S]*?(?=\r?\n## |$)/i.exec(content)?.[0].trim() ?? null : null
     return { outcome, findings, attackAccount }
   })
-  if (parsed.some((report) => !report.outcome || report.outcome === 'changes-requested' && report.findings.length === 0)) return null
+  if (parsed.some((report) => !report.outcome || report.outcome === 'changes-requested' && report.findings.length === 0 || report.outcome === 'approved' && report.findings.length === 0 && !report.attackAccount)) return null
   const findings = [...new Set(parsed.flatMap((report) => report.findings))]
   const outcome = parsed.every((report) => report.outcome === 'approved') ? 'approved' : 'changes-requested'
   const digest = reports.map((content) => /^plan sha256:\s*[a-f0-9]{64}\s*$/mi.exec(content)?.[0]).find(Boolean)

@@ -5,13 +5,14 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
-import { independentBrief, prospectivePatch } from './lifecycle-brief.mjs'
+import { independentBrief, prospectivePatch, snapshotPatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
 import { acceptanceSection, containsPlanShape, PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
 import { archiveLifecycle, assertArchiveOutsideWorktree, completeLifecycleReport } from './lifecycle-report-edge.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
+import { adaptiveRoundDecision, hasPerSectionAttackAccount, verdictFromReport } from './lifecycle-review-policy.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -43,8 +44,6 @@ const ARTIFACTS = {
   'pilot-report': ['report', 'pilot-report.md'],
 }
 const INDEPENDENT_ROLES = new Set(['critic', 'review', 'refutation'])
-const MAX_REPORT_FINDINGS = 50
-const MAX_FINDING_CHARACTERS = 2000
 const removeFile = (file) => fs.rmSync(file, { force: true })
 const NO_BOARD_CONTRACT_REASON = 'route_finding refused: no board contract; relaunch with --board-contract <json file>'
 const ROUTING_IMPOSSIBLE_INSTRUCTION = (reason) =>
@@ -189,10 +188,30 @@ function withRoutedCardsSection(content, cards) {
   const rows = cards.map((card) => `- card ${card.id} — ${card.title} — ${card.l4Reason}${card.contested ? ` — critic position: in scope; pilot position: maintains L4 (${card.l4Reason}); order-giver decides` : ''}`)
   return `${without}\n\n## Routed cards\n${rows.join('\n')}\n`
 }
+const routedFindingRow = (finding) => `- ${finding.text} — ${finding.location ?? 'location not supplied'} — ${finding.routeReason}`
 function withFindingsToRouteSection(content, findings) {
-  const without = content.replace(/(?:^|\n)## Findings to route\s*\r?\n[\s\S]*?(?=\r?\n## |$)/i, '').replace(/\s*$/, '')
-  if (findings.length === 0) return `${without}\n`
-  return `${without}\n\n## Findings to route\n${findings.map((finding) => `- ${finding.text} — ${finding.location ?? 'location not supplied'}`).join('\n')}\n`
+  if (findings.length === 0) return content.endsWith('\n') ? content : `${content}\n`
+  const rows = findings.map(routedFindingRow)
+  // Bounded pilot reports make these section-preserving scans safe.
+  // eslint-disable-next-line sonarjs/super-linear-regex
+  const match = /(?:^|\n)## Findings to route\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)
+  // eslint-disable-next-line sonarjs/super-linear-regex
+  if (!match) return `${content.replace(/\s*$/, '')}\n\n## Findings to route\n${rows.join('\n')}\n`
+  const additions = rows.filter((row) => !match[1].split(/\r?\n/).includes(row))
+  if (additions.length === 0) return content.endsWith('\n') ? content : `${content}\n`
+  const insertAt = match.index + match[0].length
+  // eslint-disable-next-line sonarjs/super-linear-regex
+  return `${content.slice(0, insertAt).replace(/\s*$/, '')}\n${additions.join('\n')}\n${content.slice(insertAt).replace(/^\s*/, '')}`
+}
+function withQuestionForParent(content, question) {
+  // eslint-disable-next-line sonarjs/super-linear-regex
+  const match = /(?:^|\n)## Question for parent\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)
+  // eslint-disable-next-line sonarjs/super-linear-regex
+  if (!match) return `${content.replace(/\s*$/, '')}\n\n## Question for parent\n${question}\n`
+  if (match[1].split(/\r?\n/).includes(question)) return content
+  const insertAt = match.index + match[0].length
+  // eslint-disable-next-line sonarjs/super-linear-regex
+  return `${content.slice(0, insertAt).replace(/\s*$/, '')}\n${question}\n${content.slice(insertAt).replace(/^\s*/, '')}`
 }
 function planCoverageCitationResult(content, root) {
   const sentences = []
@@ -266,6 +285,19 @@ function changelogSkillBody(file) {
 function tasksBlock(content) {
   return /(?:^|\n)## Tasks\b[\s\S]*?(?=\n## |$)/i.exec(content)?.[0] ?? null
 }
+function validFindingAnchors(dodBullets, planContent) {
+  const planDodCount = [...(tasksBlock(planContent ?? '') ?? '').matchAll(/\bDoD:\s*\S/gi)].length
+  const criterionCount = dodBullets?.length ?? planDodCount
+  const anchors = Array.from({ length: criterionCount }, (_unused, index) => `DoD ${index + 1}`)
+  for (const match of (tasksBlock(planContent ?? '') ?? '').matchAll(/^\s*-\s+([A-Za-z]+\d+)\b/gm)) anchors.push(`plan task ${match[1]}`)
+  return anchors
+}
+function findingPolicyOptions(phase, state, dodBullets, laneDir, readRegularFile) {
+  return {
+    validAnchors: validFindingAnchors(dodBullets, readRegularFile(path.join(laneDir, 'plan.md'))),
+    previousHardenPatch: phase === 'review' && state.reviewBase ? readRegularFile(path.join(laneDir, 'review-input.diff')) : null,
+  }
+}
 function refusal(edge, missing, file) {
   return `edge refused: ${edge}; missing ${missing}: ${file}`
 }
@@ -309,86 +341,33 @@ function discoveryGroundingProblem(content) {
   if (route !== 'proceed') return `grounding route ${route} does not proceed to planning`
   return null
 }
-function findingDetail(phase, finding) {
-  // Findings are capped at 2,000 characters before this bounded metadata parse.
-  // eslint-disable-next-line sonarjs/super-linear-regex
-  const criticTag = /^\[(blocking|non-blocking)\]\s+(.+)$/i.exec(finding)
-  const criticTagCount = [...finding.matchAll(/\[(?:blocking|non-blocking)\]/gi)].length
-  let severity = (/\[(critical|high|medium|low)\]/i.exec(finding)?.[1] ?? 'high').toLowerCase()
-  if (phase === 'critic') severity = criticTag && criticTagCount === 1 ? criticTag[1].toLowerCase() : 'blocking'
-  // eslint-disable-next-line sonarjs/super-linear-regex
-  const explicitAnchor = /\[anchor:\s*([^\]]+)\]/i.exec(finding)?.[1]?.trim() ?? null
-  const taskAnchor = /\b(?:plan task\s+)?(T\d+)\b/i.exec(finding)?.[1]?.toUpperCase() ?? null
-  const dodAnchor = /\bDoD(?:\s+(?:criterion|item))?\s*(?:#?\d+)?\b/i.exec(finding)?.[0] ?? null
-  const gateAnchor = /\b(?:gates?|lint|validations?)\b/i.test(finding) ? 'plan Gates' : null
-  const legacyFormat = phase === 'critic'
-    ? !/\[(?:anchor|location):/i.test(finding)
-    : !/^\[(?:critical|high|medium|low)\]/i.test(finding)
-  const anchor = explicitAnchor ?? taskAnchor ?? dodAnchor ?? gateAnchor
-  // eslint-disable-next-line sonarjs/super-linear-regex
-  let location = /\[location:\s*([^\]]+)\]/i.exec(finding)?.[1]?.trim() ?? null
-  // eslint-disable-next-line sonarjs/super-linear-regex
-  if (!location) location = /(?:`)?((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+:\d+(?:-\d+)?)(?:`)?/.exec(finding)?.[1] ?? null
-  const extendsPrior = Number(/\bextends prior finding\s+(\d+)\b/i.exec(finding)?.[1]
-    ?? /\b(?:trusted\s+)?round-(\d+)\s+finding\b/i.exec(finding)?.[1]) || null
-  const severityBlocks = phase === 'critic' ? severity === 'blocking' : ['critical', 'high', 'medium'].includes(severity)
-  return { text: finding, severity, anchor, location, extendsPrior, blocks: severityBlocks && (anchor !== null || legacyFormat) }
-}
-function verdictFromReport(phase, content) {
-  const expected = phase === 'critic' ? ['approved', 'changes-requested'] : ['clear', 'changes-requested']
-  const match = new RegExp(`^VERDICT:\\s*(${expected.join('|')})\\s*$`, 'mi').exec(content)
-  if (!match) return null
-  const findingsStart = content.slice(match.index + match[0].length).match(/^FINDINGS:\s*$/im)
-  if (!findingsStart) return null
-  const afterFindings = content.slice(match.index + match[0].length + findingsStart.index + findingsStart[0].length)
-  const lines = afterFindings.split(/\r?\n/)
-  const sectionEnd = lines.findIndex((line, index) => index > 0 && (/^#/.test(line) || (line === '' && /^## /.test(lines[index + 1] ?? ''))))
-  const findings = (sectionEnd < 0 ? lines : lines.slice(0, sectionEnd))
-    .filter((line) => /^[-*+]\s+\S/.test(line))
-    .map((line) => line.replace(/^[-*+]\s+/, '').trim())
-    .filter((finding) => !/^none\.?$/i.test(finding))
-  if (findings.length > MAX_REPORT_FINDINGS) return { problem: `finding count exceeds ${MAX_REPORT_FINDINGS}` }
-  if (findings.some((finding) => [...finding].length > MAX_FINDING_CHARACTERS)) {
-    return { problem: `finding exceeds ${MAX_FINDING_CHARACTERS}-character limit` }
-  }
-  if (match[1] === 'changes-requested' && findings.length === 0) return null
-  const findingDetails = findings.map((finding) => findingDetail(phase, finding))
-  const severities = phase === 'critic' ? findingDetails.map((finding) => finding.severity) : []
-  return { outcome: match[1], findings, severities, findingDetails }
-}
-
-const normalizedFinding = (finding) => finding.toLowerCase().replace(/\s+/g, ' ').trim()
-function adaptiveRoundDecision(rounds, fixedRounds, maxRounds, plateauUsed) {
-  const latest = rounds.at(-1)
-  if (rounds.length < fixedRounds) return { continue: true, plateauUsed }
-  if (rounds.length >= maxRounds) return { continue: false, plateauUsed }
-  const earlier = new Set(rounds.slice(0, -1).flatMap((round) => round.findings.map(normalizedFinding)))
-  // Only a blocking finding can recur: a restated nit changes nothing the DoD checks.
-  if (latest.blockingFindings.some((finding) => earlier.has(normalizedFinding(finding)))) return { continue: false, plateauUsed }
-  if (latest.findingDetails?.some((finding) => finding.blocks && finding.extendsPrior !== null)) return { continue: false, plateauUsed }
-  const previousCount = rounds.at(-2).blockingFindings.length
-  const latestCount = latest.blockingFindings.length
-  if (latestCount < previousCount) return { continue: true, plateauUsed }
-  if (latestCount === previousCount && !plateauUsed) return { continue: true, plateauUsed: true }
-  return { continue: false, plateauUsed }
-}
-
 function reviewFindingGroups(verdict) {
   return {
     blocking: verdict.findingDetails.filter((finding) => finding.blocks).map((finding) => finding.text),
     routed: verdict.findingDetails.filter((finding) => !finding.blocks),
   }
 }
+function findingsMatchReport(declared, verdict) {
+  if (!declared) return true
+  if (declared.length !== verdict.findingDetails.length) return false
+  return declared.every((finding, index) => {
+    const detail = verdict.findingDetails[index]
+    const withoutMetadata = detail.raw.replace(/\[(?:anchor|location):[^\]]*\]\s*/gi, '').trim()
+    const severityText = `[${detail.severity}] ${detail.text}`
+    return [detail.raw, detail.text, withoutMetadata, severityText].includes(finding)
+  })
+}
 
 function recordReviewDecision(state, phase, verdict, blockingFindings, routedFindings) {
-  if (verdict.outcome === 'changes-requested') {
-    for (const finding of routedFindings) {
-      if (!state.findingsToRoute.some((item) => item.text === finding.text)) state.findingsToRoute.push(finding)
-    }
+  for (const finding of routedFindings) {
+    if (!state.findingsToRoute.some((item) => item.text === finding.text)) state.findingsToRoute.push(finding)
+  }
+  if (verdict.findings.length > 0) state.priorReviewReports.push({ round: state.priorReviewReports.length + 1, findings: [...verdict.findings] })
+  const changesRequested = verdict.outcome === 'changes-requested' && blockingFindings.length > 0
+  if (changesRequested) {
     state.reviewRound += 1
     state.priorReviewRounds.push({ round: state.reviewRound, findings: [...verdict.findings], blockingFindings, findingDetails: verdict.findingDetails })
   }
-  const changesRequested = verdict.outcome === 'changes-requested' && blockingFindings.length > 0
   const decision = changesRequested
     ? adaptiveRoundDecision(state.priorReviewRounds, FIXED_REVIEW_ROUNDS, MAX_REVIEW_ROUNDS, state.reviewPlateauUsed)
     : null
@@ -400,8 +379,7 @@ function recordReviewDecision(state, phase, verdict, blockingFindings, routedFin
 }
 
 function applyCriticEmptyPolicy(state, verdict, reportContent, root, audit) {
-  const account = reportContent.split(/(?:^|\n)## No-finding attack account\s*\r?\n/i)[1]?.split(/\r?\n## /)[0]
-  const hasAccount = Boolean(account?.trim())
+  const hasAccount = hasPerSectionAttackAccount(reportContent)
   if (verdict.findings.length > 0 || hasAccount) { state.criticEmptyRetries = 0; return null }
   if (state.criticEmptyRetries === 0) { state.criticEmptyRetries = 1; return { retry: true } }
   const reason = 'critic failed twice with zero findings and no per-section attack account'
@@ -420,8 +398,8 @@ function initialLifecycleState() {
   return {
     phase: 'discovery', partial: null, deferred: null, pilotReportDigest: null,
     planRound: 0, priorCriticRounds: [], criticPlateauUsed: false, nonBlockingFindings: [],
-    reviewRound: 0, priorReviewRounds: [], reviewPlateauUsed: false, reviewBase: null, pendingReviewBase: null, findingsToRoute: [], criticEmptyRetries: 0,
-    handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null,
+    reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewPlateauUsed: false, reviewBase: null, pendingReviewBase: null, findingsToRoute: [], criticEmptyRetries: 0,
+    handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
     resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
     pendingStop: null, stopped: false,
   }
@@ -429,16 +407,58 @@ function initialLifecycleState() {
 
 function snapshotWorkingTree(root, laneDir, git) {
   const index = path.join(laneDir, 'review-base.index')
-  const options = { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_INDEX_FILE: index } }
+  const options = { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_INDEX_FILE: index } }
   try {
     removeFile(index)
     git('git', ['read-tree', 'HEAD'], options)
     git('git', ['add', '-A', '--', '.'], options)
-    return git('git', ['write-tree'], options).trim() || null
+    const tree = git('git', ['write-tree'], options).trim()
+    if (!tree) throw new Error('git write-tree returned an empty tree id')
+    return tree
+  } catch (error) {
+    const detail = error?.stderr?.toString().trim() || (error instanceof Error ? error.message : String(error))
+    throw new Error(`review snapshot failed: ${detail}`)
   } finally {
     removeFile(index)
     removeFile(`${index}.lock`)
   }
+}
+
+function reviewInputDiff({ phase, snapshotDir, inputPath, patchBase, constructionBase, state, root, laneDir, git, maxBuffer }) {
+  if (snapshotDir) {
+    const saved = readRegularFile(inputPath)
+    if (saved === null) throw new Error(`${path.basename(inputPath)} unavailable`)
+    return saved
+  }
+  if (phase === 'review' && state.reviewBase) {
+    state.pendingReviewBase = snapshotWorkingTree(root, laneDir, git)
+    return snapshotPatch(root, state.reviewBase, state.pendingReviewBase, git, maxBuffer)
+  }
+  const diff = prospectivePatch(root, patchBase ?? constructionBase, git, maxBuffer)
+  if (phase === 'review') state.pendingReviewBase = snapshotWorkingTree(root, laneDir, git)
+  return diff
+}
+
+function handleReportProblem({ phase, problem, report, state, refusal, root, audit, now, event, shape, timeline, persistTimeline }) {
+  const retries = state.reportParseRetries[phase] ?? 0
+  if (retries === 0) {
+    state.reportParseRetries[phase] = 1
+    return refusal(`${phase}->next`, `failed ${phase} report: ${problem}; re-run once`, report)
+  }
+  const reason = `${phase} report failed twice: ${problem}`
+  state.partial = { phase, round: lifecycleRound(state, phase), reason, findings: [], question: `How should the run parent resolve this repeated ${phase} report parse failure: ${problem}?` }
+  state.verifySnapshot = { tree: treeSignature(root), gates: {} }
+  audit()
+  const result = `accepted phase=report (failed report retry: partial run, ${reason})`
+  const transitionedAt = now()
+  state.phase = 'report'
+  state.handled.set(event.tool_use_id, { shape, result })
+  const currentPhase = timeline.phases.at(-1)
+  currentPhase.exited_at = transitionedAt
+  currentPhase.transition_id = event.tool_use_id
+  timeline.phases.push({ phase: 'report', round: null, entered_at: transitionedAt, exited_at: null, transition_id: null })
+  persistTimeline()
+  return result
 }
 
 function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop }) {
@@ -455,7 +475,8 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
     currentPhase.exited_at ??= endedAt
     currentPhase.transition_id ??= event.tool_use_id
     timeline.ended_at = endedAt
-    const report = `# SDK pilot partial report\n\nPartial: ${reason}\nPhase reached: ${phase}\nReason: ${reason}\n`
+    const routed = state.findingsToRoute.length > 0 ? `\n## Findings to route\n${state.findingsToRoute.map(routedFindingRow).join('\n')}\n` : ''
+    const report = `# SDK pilot partial report\n\nPartial: ${reason}\nPhase reached: ${phase}\nReason: ${reason}\n${routed}`
     writeRegularFile(path.join(laneDir, 'pilot-report.md'), report)
     state.pilotReportDigest = sha256(report)
     persistTimeline()
@@ -648,9 +669,8 @@ export function createLifecycleStateMachine({
       const inputName = `.lane/${phase}-input.diff`
       const inputPath = path.join(root, inputName)
       const patchBase = phase === 'review' && state.reviewBase ? state.reviewBase : constructionBase
-      const diff = prospectivePatch(root, patchBase, git, prospectivePatchMaxBuffer)
+      const diff = reviewInputDiff({ phase, snapshotDir, inputPath, patchBase, constructionBase, state, root, laneDir, git, maxBuffer: prospectivePatchMaxBuffer })
       writeRegularFile(inputPath, diff)
-      if (phase === 'review' && !snapshotDir) state.pendingReviewBase = snapshotWorkingTree(root, laneDir, git) ?? state.pendingReviewBase
       canonicalArtifacts.push(inputName)
       artifacts.push(snapshotDir ? snapshotFile(`${phase}-input.diff`, diff) : inputName)
       for (const gate of GATES) {
@@ -675,8 +695,8 @@ export function createLifecycleStateMachine({
         // wins, so the lane must report a refused read instead of claiming it read the fiches.
         : `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`
       : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
-    const priorRounds = phase === 'critic' ? state.priorCriticRounds : phase === 'review' ? state.priorReviewRounds : []
-    const briefBase = phase === 'review' && state.priorReviewRounds.length > 0 && state.reviewBase ? 'previous reviewed working tree' : constructionBase
+    const priorRounds = phase === 'critic' ? state.priorCriticRounds : phase === 'review' ? state.priorReviewReports : []
+    const briefBase = phase === 'review' && state.priorReviewReports.length > 0 && state.reviewBase ? state.reviewBase : constructionBase
     const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine }
     return snapshotDir
       ? {
@@ -780,13 +800,14 @@ export function createLifecycleStateMachine({
         return refusal('critic->next', `lane report exceeds ${MAX_LANE_REPORT_BYTES}-byte limit`, report)
       }
       const reportContent = readRegularFile(report) ?? ''
-      const verdict = verdictFromReport('critic', reportContent)
+      const verdict = verdictFromReport('critic', reportContent, findingPolicyOptions('critic', state, dodBullets, laneDir, readRegularFile))
       if (!verdict) return refusal('critic->next', 'VERDICT block', report)
-      if (verdict.problem) return refusal('critic->next', verdict.problem, report)
+      if (verdict.problem) return handleReportProblem({ phase: 'critic', problem: verdict.problem, report, state, refusal, root, audit, now, event, shape, timeline, persistTimeline })
+      state.reportParseRetries.critic = 0
       if (event.outcome && event.outcome !== verdict.outcome) {
         return refusal('critic->next', 'outcome does not match the lane report', report)
       }
-      if (event.findings && JSON.stringify(event.findings) !== JSON.stringify(verdict.findings)) {
+      if (!findingsMatchReport(event.findings, verdict)) {
         return refusal('critic->next', 'findings do not match the lane report', report)
       }
       const contestedThisRound = new Set()
@@ -881,13 +902,14 @@ export function createLifecycleStateMachine({
       if ((regularFile(report)?.size ?? 0) > MAX_LANE_REPORT_BYTES) {
         return refusal(`${state.phase}->next`, `lane report exceeds ${MAX_LANE_REPORT_BYTES}-byte limit`, report)
       }
-      const verdict = verdictFromReport(state.phase, readRegularFile(report) ?? '')
+      const verdict = verdictFromReport(state.phase, readRegularFile(report) ?? '', findingPolicyOptions(state.phase, state, dodBullets, laneDir, readRegularFile))
       if (!verdict) return refusal(`${state.phase}->next`, 'VERDICT block', report)
-      if (verdict.problem) return refusal(`${state.phase}->next`, verdict.problem, report)
+      if (verdict.problem) return handleReportProblem({ phase: state.phase, problem: verdict.problem, report, state, refusal, root, audit, now, event, shape, timeline, persistTimeline })
+      state.reportParseRetries[state.phase] = 0
       if (event.outcome && event.outcome !== verdict.outcome) {
         return refusal(`${state.phase}->next`, 'outcome does not match the lane report', report)
       }
-      if (event.findings && JSON.stringify(event.findings) !== JSON.stringify(verdict.findings)) {
+      if (!findingsMatchReport(event.findings, verdict)) {
         return refusal(`${state.phase}->next`, 'findings do not match the lane report', report)
       }
       const { blocking: blockingFindings, routed: routedFindings } = reviewFindingGroups(verdict)
@@ -1002,7 +1024,7 @@ export function createLifecycleStateMachine({
       }
       content = withRoutedCardsSection(content, timeline.routed_cards)
       content = withFindingsToRouteSection(content, state.findingsToRoute)
-      if (state.partial?.question) content = `${content.replace(/\s*$/, '')}\n\n## Question for parent\n${state.partial.question}\n`
+      if (state.partial?.question) content = withQuestionForParent(content, state.partial.question)
     }
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let laneContext = content
@@ -1207,4 +1229,3 @@ export function createLifecycleStateMachine({
   Object.defineProperty(server, 'requestStop', { value: requestStop })
   return server
 }
-Object.defineProperty(createLifecycleStateMachine, 'reviewPolicy', { value: Object.freeze({ verdictFromReport, adaptiveRoundDecision }) })
