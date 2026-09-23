@@ -81,6 +81,7 @@ describe('shipped private plugins', () => {
       'V50 the verify13 findings are closed and the README describes what the code does',
       'V51 the host loads the module: no dynamic $.env.get, secret:env refuses with its reason, a compound keyword is named',
       'V52 the verify14 findings: no replacement is spelled like a held value; op is placed through redirections',
+      'V53 the verify15 findings: an issued token stays usable after its spelling becomes a value; a comment ends op read; no message recommends secret:env',
       'op reference in a sed search pattern is left literal',
       'op reference inside a larger quoted string is left literal',
       'already substituted op reference is not rewritten again',

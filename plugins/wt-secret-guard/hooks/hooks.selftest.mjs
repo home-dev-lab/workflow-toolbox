@@ -3012,6 +3012,61 @@ await test('V52 the verify14 findings: no replacement is spelled like a held val
   }
   assert.deepEqual(failures, [], 'verify14 findings remain');
 });
+await test('V53 the verify15 findings: an issued token stays usable after its spelling becomes a value; a comment ends op read; no message recommends secret:env', async () => {
+  // GPT-6 Astra at fff75e45. Every input collected, so one red shows them all.
+  const failures = [];
+  const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+  // 1: A's token T, whose spelling then becomes another held value, still rehydrates to A through Bash.
+  {
+    const first = 'v53-first-value';
+    const token = tokenize('vfiftythree', first);
+    tokenize('vfiftythree', token);
+    let received;
+    const result = await bash($, { tool: 'Bash', command: `printf %s ${token}` }, async (event) => { received = event.command; return execute(event.command); });
+    if (result?.deny || received === undefined) failures.push(`1 the issued token was refused after its spelling became a value: ${result?.deny?.slice(0, 120)}`);
+    else {
+      if (spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout !== first) failures.push('1 the token did not rehydrate to the value it was issued for');
+      const shown = JSON.stringify(result);
+      if (shown.includes(first)) failures.push('1 the rehydrated value reached the output raw');
+      if (shown.includes(token)) failures.push('1 the output showed the ambiguous spelling, which is also a held value');
+    }
+    // Where the spelling is written AS-IS - a quoted heredoc body, a Write - it is the other held value, and
+    // stays refused.
+    let bodyRan = false;
+    const body = await bash($, { tool: 'Bash', command: `cat > /tmp/v53-body.txt <<'EOF'\n${token}\nEOF` }, async () => { bodyRan = true; return { text: 'ok' }; });
+    if (bodyRan || !body?.deny) failures.push('1 the ambiguous spelling was written as-is through a heredoc body');
+    const write = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v53.txt', content: `note ${token}` });
+    if (!write.findings.length) failures.push('1 the ambiguous spelling was not flagged in a Write');
+  }
+  // 2: a trailing comment ends the literal op read invocation's arguments.
+  for (const command of [`op read '${V45_REF('v53-comment-a')}' # comment`, `op read '${V45_REF('v53-comment-b')}' #tight`, `op read '${V45_REF('v53-comment-c')}'; # after`]) {
+    const argvs = [];
+    const runtime = { ...$, process: { run: async (argv, init) => { if (/^op(?:\.exe)?$/.test(argv[0])) { argvs.push(argv); return { exitCode: 0, stdout: 'v53-comment-value\n' }; } return $.process.run(argv, init); } } };
+    let received;
+    const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return execute(event.command); });
+    if (result?.deny) failures.push(`2 refused: ${command} -> ${result.deny.slice(0, 120)}`);
+    else {
+      if (argvs.length !== 1) failures.push(`2 not prefetched exactly once: ${command}`);
+      if (!/__wt_op_\d+ /.test(received ?? '')) failures.push(`2 op was not replaced by the printer: ${command}`);
+      if (JSON.stringify(result).includes('v53-comment-value')) failures.push(`2 the value reached the output raw: ${command}`);
+    }
+  }
+  // 3: no user-facing text recommends the disabled secret:env form. Every non-comment source line naming it
+  // must be the disabled-form refusal or the parser that recognises the form in order to refuse it.
+  const { REDACTION_NOTE: note } = await import('./constants.js');
+  if (/secret:env/.test(note)) failures.push('3 the redaction notice recommends secret:env');
+  if (!/secret:file/.test(note)) failures.push('3 the redaction notice does not point to secret:file');
+  const pluginRoot = new URL('..', import.meta.url).pathname;
+  const walk = (dir, out = []) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); if (entry.isDirectory()) { if (!['fixtures', 'node_modules'].includes(entry.name)) walk(path, out); } else if (/\.(?:m?js|cjs|json)$/.test(entry.name) && !/\.selftest\.mjs$/.test(entry.name)) out.push(path); } return out; };
+  for (const path of walk(pluginRoot)) {
+    readFileSync(path, 'utf8').split('\n').forEach((line, index) => {
+      if (!/secret:env/.test(line) || /^\s*(?:\/\/|\*)/.test(line)) return;
+      if (/export const ENV_DISABLED = 'secret:env is disabled/.test(line) || /body\.startsWith\('secret:env:'\)|'secret:env:'\.length/.test(line)) return;
+      failures.push(`3 ${path.slice(pluginRoot.length)}:${index + 1} names secret:env outside the refusal and its parser`);
+    });
+  }
+  assert.deepEqual(failures, [], 'verify15 findings remain');
+});
 // V34 runs late on purpose: it registers about 2,300 values in the vault, and every later Bash-hook
 // call walks the whole vault - run before V38 it made V38 7 s and pushed the shipped-plugins vitest
 // file past its 15 s beforeAll.

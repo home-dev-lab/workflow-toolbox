@@ -5,6 +5,7 @@ import { detections } from './detector.js';
 import { appendEvent, publish } from './journal.js';
 import { scrubPromptStorage, scrubToolUseStorage } from './prompt-storage-host.js';
 import { resolveReference as resolveRuntimeReference, rewriteReferences } from './reference-runtime.js';
+import { planReferences } from './references.js';
 import { scrub } from './scrub.js';
 import { applySecretReadGuard } from './secret-read-guard.js';
 import { verdictForBash, verdictForPath } from './secret-read-policy.js';
@@ -126,7 +127,16 @@ export const register = (on, options) => {
     const audit = journalHost($);
     const references = referenceHost($);
     const originalCommand = typeof event.command === 'string' ? event.command : '';
-    const refusal = await refuseRawOutbound($, event);
+    // The raw-input check does not see the token spans the rewrite CONSUMES: each is replaced by the value it
+    // was issued for before bash runs, so its spelling never reaches bash - even when a held value later took
+    // that spelling (Astra at fff75e45: such a token was refused as raw input although it rehydrates). A token
+    // anywhere else (a heredoc body, a comment) is written as-is, and is checked exactly as before.
+    const plan = originalCommand ? planReferences(originalCommand, { tokens: knownTokens() }) : null;
+    let checked = originalCommand;
+    for (const occurrence of plan?.ok ? plan.occurrences.filter((entry) => entry.form === 'token') : []) {
+      checked = `${checked.slice(0, occurrence.start)}${' '.repeat(occurrence.end - occurrence.start)}${checked.slice(occurrence.end)}`;
+    }
+    const refusal = await refuseRawOutbound($, checked === originalCommand ? event : { ...event, command: checked });
     if (refusal) return refusal;
     const execute = async (originalEvent) => {
       // The rewrite prefetches every 1Password value and binds it into the command as data.

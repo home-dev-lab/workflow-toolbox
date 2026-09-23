@@ -334,6 +334,8 @@ function invocationTokens(command, context, from) {
   while (index < command.length) {
     const kind = context[index];
     const character = command[index];
+    // A comment ends the command's words (Astra at fff75e45: `op read <ref> # note` read the note as an argument).
+    if (kind === 'comment') break;
     if (kind !== 'bare') { const word = readWord(command, context, index); if (word.end <= index) { index += 1; continue; } words.push({ ...word, operator: false }); index = word.end; continue; }
     if (character === '\\' && command[index + 1] === '\n') { index += 2; continue; }
     if (/[ \t]/.test(character)) { index += 1; continue; }
