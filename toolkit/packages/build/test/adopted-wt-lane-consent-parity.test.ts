@@ -99,7 +99,7 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
     const result = runChild('adopt installer', [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], env)
     expect(result.status, result.stderr).toBe(0)
   }
-  return { root, config, project, installed, env, installer: join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs') }
+  return { root, config, project, pluginRoot, installed, env, installer: join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs') }
 }
 
 function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna', extra: string[] = []) {
@@ -180,6 +180,21 @@ describe('adopted wt-lane consent resolver', () => {
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const started = launch(f)
     expect(started.status, started.stderr).toBe(0)
+  })
+
+  it.each([
+    ['hostAdapter export', 'export const unrelated = {}\n'],
+    ['readAvailableMemory capability', 'export const hostAdapter = {}\n'],
+  ])('refuses an installed host adapter without the required %s', (_name, source) => {
+    const f = fixture()
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    writeFileSync(join(f.pluginRoot, 'bin', 'lib', 'host', 'adapter.mjs'), source)
+
+    const result = launch(f)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toMatch(/installed workflow-toolbox plugin is (?:too old for this adopted launcher|older or incompatible)/)
+    expect(result.stderr).not.toContain('is not a function')
   })
 
   it('preserves stale-brief refusal and acknowledgement evidence in the adopted launcher', () => {

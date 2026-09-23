@@ -135,7 +135,7 @@ function readAvailableMemory(platform, invoke) {
       : { mib: null, source: 'MemAvailable from /proc/meminfo', reason: result.status === 'read' ? 'field missing' : 'unreadable' }
   }
   if (platform === 'darwin') {
-    const result = invoke.run('vm_stat', [])
+    const result = invoke.run('vm_stat', [], { timeout: 3_000 })
     const pageSize = /page size of (\d+) bytes/.exec(result.stdout)
     const pages = [...String(result.stdout).matchAll(/^Pages (?:free|inactive|speculative):\s+(\d+)\./gm)].reduce((sum, match) => sum + Number(match[1]), 0)
     return result.status === 0 && pageSize && pages > 0
@@ -150,5 +150,10 @@ function readAvailableMemory(platform, invoke) {
         : { mib: null, source: 'free memory from os.freemem()', reason: 'invalid value' }
     } catch { return { mib: null, source: 'free memory from os.freemem()', reason: 'unreadable' } }
   }
-  return { mib: null, source: `available memory on ${platform}`, reason: 'unsupported platform' }
+  try {
+    const bytes = invoke.freeMemory()
+    return Number.isFinite(bytes) && bytes > 0
+      ? { mib: Math.floor(bytes / 1024 / 1024), source: `free memory from os.freemem() on ${platform}` }
+      : { mib: null, source: `free memory from os.freemem() on ${platform}`, reason: 'invalid value' }
+  } catch { return { mib: null, source: `free memory from os.freemem() on ${platform}`, reason: 'unreadable' } }
 }

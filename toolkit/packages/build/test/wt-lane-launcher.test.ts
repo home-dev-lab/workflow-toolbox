@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
-import { assertLaunchMemory, identifySignalCause, inspectStartedProcess } from '../../../../plugin/bin/wt-lane.mjs'
+import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, parse } from '../../../../plugin/bin/wt-lane.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
@@ -175,6 +175,17 @@ function currentDecisionFile(dir: string) {
 }
 
 describe('wt-lane memory and termination evidence seams', () => {
+  it('treats a blank memory-floor environment value as the default', () => {
+    const previous = process.env.WT_LANE_MIN_AVAILABLE_MIB
+    process.env.WT_LANE_MIN_AVAILABLE_MIB = '  \t '
+    try {
+      expect(parse(['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']).minAvailableMib).toBe(1024)
+    } finally {
+      if (previous === undefined) delete process.env.WT_LANE_MIN_AVAILABLE_MIB
+      else process.env.WT_LANE_MIN_AVAILABLE_MIB = previous
+    }
+  })
+
   it('permits an unavailable memory source only when the configured floor is zero', () => {
     const unavailable = () => ({ mib: null, source: 'available memory on aix', reason: 'unsupported platform' })
     expect(() => assertLaunchMemory(false, 0, unavailable)).not.toThrow()

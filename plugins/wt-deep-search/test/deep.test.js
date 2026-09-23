@@ -8,7 +8,7 @@ import test from 'node:test';
 import { buildExaSearchRequest, runExaDeepSearch } from '../src/deep/exa-search.js';
 import { formatResult } from '../src/deep/format.js';
 import { createHandleStore, resolveStateDirectory } from '../src/deep/handle.js';
-import { startOpencode } from '../src/deep/opencode.js';
+import { resolveWindowsCommandShim, startOpencode } from '../src/deep/opencode.js';
 import { buildDeepPrompt } from '../src/deep/prompt.js';
 import { startDeepResearch } from '../src/deep/runner.js';
 import { ProviderFailure } from '../src/provider-failure.js';
@@ -204,6 +204,19 @@ test('the difficulty door is recorded for caller-selected agentic mode', async (
   assert.match(prompt, /inline citation/i);
 });
 
+test('the resolved opencode path reaches the launch seam', async () => {
+  const { store } = memoryStore();
+  let executable;
+  await startDeepResearch(
+    { mode: 'agentic', question, shape: 'prose', opencodePath: '/resolved/opencode' },
+    { store, opencode: { start: async (options) => {
+      executable = options.executable;
+      return { logPath: '/state/run.log', pid: 12 };
+    } } },
+  );
+  assert.equal(executable, '/resolved/opencode');
+});
+
 test('the availability door is recorded when exhausted Exa switches to opencode', async () => {
   const { store, records } = memoryStore();
   await startDeepResearch(
@@ -368,25 +381,65 @@ test('opencode does not label a synchronous Windows EFTYPE as not found', () => 
   ), /opencode failed to start: EFTYPE/);
 });
 
-test('Windows launches a resolved cmd shim through cmd.exe with escaped arguments', () => {
+test('Windows resolves an npm cmd shim to Node and round-trips free text without cmd.exe', () => {
   let launch;
+  const prompt = String.raw`line one
+line "two" \\" tail\\
+%PATH:x=y% ! ^`;
   startOpencode(
-    { prompt: 'question & more', dir: String.raw`C:\work`, logPath: String.raw`C:\state\deep.log`, executable: String.raw`C:\Program Files\OpenCode\opencode.cmd` },
+    { prompt, dir: String.raw`C:\work`, logPath: String.raw`C:\state\deep.log`, executable: String.raw`C:\Program Files\OpenCode\opencode.cmd` },
     {
       closeSync() {},
-      env: { COMSPEC: String.raw`C:\Windows\System32\cmd.exe` },
+      env: { COMSPEC: String.raw`Z:\missing\cmd.exe` },
       openSync: () => 8,
       platform: 'win32',
+      resolveCommandShim: () => ({ executable: process.execPath, args: ['/resolved/opencode.js'] }),
       setTimeout: () => 7,
       spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
     },
   );
-  assert.equal(launch[0], String.raw`C:\Windows\System32\cmd.exe`);
-  assert.deepEqual(launch[1].slice(0, 3), ['/d', '/s', '/c']);
+  assert.equal(launch[0], process.execPath);
+  assert.deepEqual(launch[1], ['/resolved/opencode.js', 'run', '--auto', '--dir', String.raw`C:\work`, prompt]);
   assert.equal(launch[2].shell, false);
-  assert.equal(launch[2].windowsVerbatimArguments, true);
-  assert.match(launch[1][3], /opencode\.cmd/);
-  assert.doesNotMatch(launch[1][3], /question & more/);
+  assert.equal(launch[2].windowsVerbatimArguments, undefined);
+});
+
+test('npm cmd shim resolution selects its Node script without invoking COMSPEC', () => {
+  const executable = String.raw`C:\tools\opencode.cmd`;
+  const shim = '@ECHO off\r\n"%_prog%" "%dp0%\\..\\opencode-ai\\bin\\opencode" %*\r\n';
+  assert.deepEqual(
+    resolveWindowsCommandShim(executable, () => shim, String.raw`C:\nodejs\node.exe`),
+    {
+      executable: String.raw`C:\nodejs\node.exe`,
+      args: [String.raw`C:\opencode-ai\bin\opencode`],
+    },
+  );
+});
+
+test('a spawn error arriving after exit cannot append after the terminal marker', () => {
+  let onExit;
+  let onError;
+  const writes = [];
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },
+    {
+      appendFileSync: (_path, value) => writes.push(value),
+      closeSync() {},
+      openSync: () => 8,
+      setTimeout: () => 7,
+      spawn: () => ({
+        pid: 44,
+        once(event, callback) {
+          if (event === 'exit') onExit = callback;
+          if (event === 'error') onError = callback;
+        },
+        unref() {},
+      }),
+    },
+  );
+  onExit(0);
+  onError(Object.assign(new Error('late'), { code: 'EACCES' }));
+  assert.deepEqual(writes, ['\nEXIT=0\n']);
 });
 
 test('opencode timeout is owned by Node, kills the child, and records the timeout', () => {

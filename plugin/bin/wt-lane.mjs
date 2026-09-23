@@ -41,7 +41,7 @@ function usage() {
   return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
 
-function parse(argv) {
+export function parse(argv) {
   const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
   const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null }
   for (let i = 0; i < argv.length; i += 1) {
@@ -94,12 +94,20 @@ function commandOutput(command, args, run) {
   } catch { return null }
 }
 
-export function assertLaunchMemory(worker, minimumMib, readMemory = () => hostAdapter.readAvailableMemory()) {
+export function assertLaunchMemory(worker, minimumMib, readMemory) {
   if (worker) return
   if (minimumMib === 0) return
   const memory = readMemory()
   if (memory.mib === null) throw new Error(`Refused: available memory is unknown (${memory.source}: ${memory.reason}); refusing to launch until the source is readable.`)
   if (memory.mib < minimumMib) throw new Error(`Refused: available memory ${memory.mib} MiB is below the required ${minimumMib} MiB; lower WT_LANE_MIN_AVAILABLE_MIB only after freeing or deliberately budgeting memory.`)
+}
+
+function installedLauncherCapabilitiesAvailable(modules) {
+  return typeof modules.hostAdapter?.readAvailableMemory === 'function'
+    && typeof modules.writeJsonAtomic === 'function'
+    && typeof modules.claimCurrentSupervision === 'function'
+    && typeof modules.classifyLane === 'function'
+    && typeof modules.terminateLane === 'function'
 }
 
 function signalExit(signal) {
@@ -393,11 +401,11 @@ async function main() {
     process.stderr.write(`wt-lane: Refused: ${error instanceof Error ? error.message : String(error)}; refusing to launch.\n`)
     return 1
   }
-  assertLaunchMemory(worker, opts.minAvailableMib, () => consentModules.hostAdapter.readAvailableMemory())
-  if (typeof consentModules.writeJsonAtomic !== 'function' || typeof consentModules.claimCurrentSupervision !== 'function' || typeof consentModules.classifyLane !== 'function' || typeof consentModules.terminateLane !== 'function') {
+  if (!installedLauncherCapabilitiesAvailable(consentModules)) {
     process.stderr.write('wt-lane: Refused: the installed workflow-toolbox plugin is too old for this adopted launcher; update the plugin and re-adopt wt-lane.mjs.\n')
     return 1
   }
+  assertLaunchMemory(worker, opts.minAvailableMib, () => consentModules.hostAdapter.readAvailableMemory())
   let launchLock = null
   let releaseLaunchLock = () => {}
   if (!worker) {

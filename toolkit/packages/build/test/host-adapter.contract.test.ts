@@ -6,7 +6,8 @@ import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
-const EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../.lane/evidence')
+const EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
+const COMMITTED_EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
 const platforms = ['linux', 'darwin', 'win32'] as const
 const labels = { linux: 'ubuntu-latest', darwin: 'macos-latest', win32: 'windows-latest' } as const
 const seedWrongFake = process.env.WT_SEED_WRONG_HOST_FAKE === '1'
@@ -42,10 +43,14 @@ describe('host adapter evidence contract', () => {
     })
   }
 
+  it('replays only committed host evidence', () => {
+    expect(EVIDENCE_ROOT).toBe(COMMITTED_EVIDENCE_ROOT)
+  })
+
   contract('reports evidence provenance for every question', platforms, (platform) => {
     const host = contractHost(platform)
     if (useRealHost) expect(host.platform).toBe(platform)
-    else expect(host.evidence()).toMatchObject({ platform, runnerLabel: labels[platform], runId: '35795762873' })
+    else expect(host.evidence()).toMatchObject({ platform, runnerLabel: labels[platform], runId: '35501457364' })
   })
 
   it.each([
@@ -61,6 +66,15 @@ describe('host adapter evidence contract', () => {
     expect(memory.mib).toBeGreaterThan(0)
     expect(memory.source).toBeTruthy()
     process.stdout.write(`production host memory: platform=${process.platform} mib=${memory.mib} source=${memory.source}\n`)
+  })
+
+  it('bounds vm_stat and falls back to os.freemem on other supported hosts', () => {
+    const run = vi.fn(() => ({ status: 1, stdout: '', stderr: '', error: null }))
+    createHostAdapter({ platform: 'darwin', invoke: { run } }).readAvailableMemory()
+    expect(run).toHaveBeenCalledWith('vm_stat', [], { timeout: 3_000 })
+
+    expect(createHostAdapter({ platform: 'freebsd', invoke: { freeMemory: () => 2 * 1024 * 1024 * 1024 } }).readAvailableMemory())
+      .toEqual({ mib: 2048, source: 'free memory from os.freemem() on freebsd' })
   })
 
   contract('answers pid to parent-pid from the captured process table', platforms, (platform) => {

@@ -1,6 +1,6 @@
-import { appendFileSync, closeSync, openSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { isAbsolute, win32 } from 'node:path';
+import { dirname, isAbsolute, resolve, win32 } from 'node:path';
 
 const TERMINATION_GRACE_MS = 1_000;
 
@@ -41,19 +41,23 @@ function processFamilyExists(pid, platform = process.platform, kill = process.ki
   }
 }
 
-function spawnCommand(spawn, executable, args, options, platform, env) {
+export function resolveWindowsCommandShim(executable, read = readFileSync, nodeExecutable = process.execPath) {
+  const source = read(executable, 'utf8');
+  const invocation = source.split(/\r?\n/).find((line) => /%\*/.test(line) && /(?:%~dp0|%dp0%)/i.test(line));
+  const candidates = [...String(invocation ?? '').matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  const script = candidates.find((value) => /^(?:%~dp0|%dp0%)/i.test(value));
+  if (!script) throw new Error('opencode command shim is not a supported npm Node shim');
+  const relative = script.replace(/^%~dp0/i, '').replace(/^%dp0%[\\/]?/i, '');
+  const scriptPath = /^[A-Za-z]:[\\/]/.test(executable)
+    ? win32.resolve(win32.dirname(executable), relative)
+    : resolve(dirname(executable), relative.replaceAll('\\', '/'));
+  return { executable: nodeExecutable, args: [scriptPath] };
+}
+
+function spawnCommand(spawn, executable, args, options, platform, resolveCommandShim) {
   if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(executable)) return spawn(executable, args, options);
-  const metacharacters = /([()\][%!^"`<>&|;, *?])/g;
-  const escapeArgument = (value) => {
-    let escaped = String(value).replace(/(?=(\\+?)?)\1"/g, '$1$1\\"').replace(/(?=(\\+?)?)\1$/g, '$1$1');
-    escaped = `"${escaped}"`.replace(metacharacters, '^$1');
-    return escaped.replace(metacharacters, '^$1');
-  };
-  const command = [String(executable).replace(metacharacters, '^$1'), ...args.map(escapeArgument)].join(' ');
-  return spawn(env.COMSPEC || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], {
-    ...options,
-    windowsVerbatimArguments: true,
-  });
+  const resolved = resolveCommandShim(executable);
+  return spawn(resolved.executable, [...resolved.args, ...args], options);
 }
 
 // ⚠ The child carries DEEP_SEARCH_WORKER=1 so that a deep-search run cannot start another one.
@@ -77,6 +81,7 @@ export function startOpencode(options, deps = {}) {
   const cancelTimeout = deps.clearTimeout ?? clearTimeout;
   const platform = deps.platform ?? process.platform;
   const environment = childEnvironment(deps.env ?? process.env);
+  const resolveCommandShim = deps.resolveCommandShim ?? resolveWindowsCommandShim;
   const graceMs = deps.terminationGraceMs ?? TERMINATION_GRACE_MS;
   const signalFamily = deps.signalProcessFamily ?? ((pid, signal) => signalProcessFamily(pid, signal, platform));
   const familyExists = deps.processFamilyExists ?? ((pid) => processFamilyExists(pid, platform));
@@ -89,7 +94,7 @@ export function startOpencode(options, deps = {}) {
         shell: false,
         stdio: ['ignore', log, log],
         env: environment,
-      }, platform, environment);
+      }, platform, resolveCommandShim);
     } catch (error) {
       if (error?.code === 'ENOENT') {
         throw new Error('opencode was not found; install opencode and ensure it is on PATH');
@@ -138,6 +143,7 @@ export function startOpencode(options, deps = {}) {
   });
   child.once?.('error', (error) => {
     childExited = true;
+    if (finished) return;
     if (!timedOut) {
       const code = error?.code === 'ENOENT' ? 127 : 126;
       append(logPath, `\nSPAWN_ERROR=${error?.code ?? 'unknown'}`);
