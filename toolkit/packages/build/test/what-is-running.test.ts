@@ -621,6 +621,36 @@ describe('What is running collector seam', () => {
     expect(text).not.toContain('Harden')
   })
 
+  it('accepts and labels a legacy lifecycle timeline containing harden', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-legacy-harden-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1868819337624683548'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'legacy-harden')
+      const lane = join(worktree, '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Legacy harden\n`)
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [
+        { phase: 'review', round: 1, entered_at: 1, exited_at: 2 },
+        { phase: 'harden', round: 1, entered_at: 2, exited_at: null },
+      ], lanes: [] }))
+      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ phases: [
+        { phase: 'tdd', models: { opus: { input: 10, output: 1, cache_read: 2, cache_write: 3 } }, unknown: [] },
+        { phase: 'harden', models: { opus: { input: 20, output: 4, cache_read: 5, cache_write: 6 } }, unknown: [] },
+      ] }))
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row).toMatchObject({ phase: 'tdd', legacyHarden: true, phaseRounds: { review: 1, tdd: 1 } })
+      expect(row.phaseCosts.tdd).toMatchObject({ input: 30, output: 5, cacheRead: 7, cacheWrite: 9 })
+      expect(row.runCost).toMatchObject({ input: 30, output: 5, cacheRead: 7, cacheWrite: 9 })
+      expect(row.phaseElapsed).toMatchObject({ tdd: expect.any(String) })
+      expect(row.phaseCosts.harden).toBeUndefined()
+      const text = await renderedText({ ...snapshot, sessions: undefined, rows: [{ ...row, project: 'wt-suite' }] })
+      expect(text).toContain('Harden (legacy) · round 1')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
   it('does not treat a historical worktree without lane metadata as unreadable running work', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-no-lane-'))
     try {

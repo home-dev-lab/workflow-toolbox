@@ -12,7 +12,7 @@ import { deriveRoute } from '../../../../plugin/bin/lib/route-from-card.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { archiveLifecycle, removeLifecycleWorktree } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
+import { archiveLifecycle, removeLifecycleWorktree, writeWorktreeRetentionMarker } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -29,6 +29,30 @@ const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: 
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it('retains a timeout finalized on top of an earlier partial reason', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-finalized-timeout-retention-')); roots.push(root); mkdirSync(join(root, '.lane'))
+    expect(writeWorktreeRetentionMarker({
+      root,
+      cardId: '1870027112165935025',
+      partial: { phase: 'review', reason: 'review report failed twice', finalizationReason: 'timeout' },
+      retainedAt: '2026-09-23T00:00:00.000Z',
+    })).toBe(true)
+    expect(JSON.parse(readFileSync(join(root, '.lane', 'worktree-retention.json'), 'utf8'))).toMatchObject({
+      reason: 'bounded lifecycle spent: review report failed twice',
+      phase: 'review',
+    })
+  })
+
+  it('retains a VERIFY-driven non-convergence partial', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-verify-retention-')); roots.push(root); mkdirSync(join(root, '.lane'))
+    expect(writeWorktreeRetentionMarker({
+      root,
+      cardId: '1870027112165935025',
+      partial: { phase: 'verify', reason: 'verify non-convergence: same finding returned: verify - suite > regression' },
+      retainedAt: '2026-09-23T00:00:00.000Z',
+    })).toBe(true)
+  })
+
   it.each([
     ['human lite wins', 'Route: LITE\nType: feature\nRisk: guard', 'LITE'],
     ['human full wins', 'Route: FULL\nType: chore\nDoD: green', 'FULL'],

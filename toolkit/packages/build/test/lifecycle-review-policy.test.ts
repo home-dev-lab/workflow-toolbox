@@ -102,7 +102,7 @@ FINDINGS:
     expect(verdict.findingDetails[0]).toMatchObject({ blocks: false, routeReason })
   })
 
-  it('routes a plan-task finding located only in the previous fix addition', () => {
+  it('keeps a plan-task finding in the previous fix addition blocking', () => {
     const patch = `diff --git a/src/a.ts b/src/a.ts
 --- a/src/a.ts
 +++ b/src/a.ts
@@ -119,7 +119,7 @@ FINDINGS:
 FINDINGS:
 - [HIGH][anchor: DoD 1][location: src/a.ts:9] card defect
 `, { validAnchors: ['DoD 1'], previousFixPatch: patch })
-    expect(ownCode.findingDetails[0]).toMatchObject({ blocks: false, routeReason: 'located only in previous fix code and anchored to no card criterion' })
+    expect(ownCode.findingDetails[0]).toMatchObject({ blocks: true })
     expect(cardCriterion.findingDetails[0]).toMatchObject({ blocks: true })
   })
 
@@ -184,14 +184,44 @@ FINDINGS:
     expect(adaptiveRoundDecision(explicit, 1, 3, false)).toEqual({ continue: false, plateauUsed: false })
   })
 
-  it('identifies a recurring review finding by anchor plus normalized claim', () => {
+  it('identifies a recurring review finding by anchor, file, and normalized claim', () => {
     const rounds = [
-      { blockingFindings: ['Original text'], findingDetails: [{ blocks: true, anchor: 'DoD 1', text: 'Original text', extendsPrior: null }] },
-      { blockingFindings: ['  original   TEXT '], findingDetails: [{ blocks: true, anchor: 'dod criterion #1', text: '  original   TEXT ', extendsPrior: null }] },
+      { blockingFindings: ['Original text'], findingDetails: [{ blocks: true, anchor: 'DoD 1', location: 'src/a.ts:1', text: 'Original text', extendsPrior: null }] },
+      { blockingFindings: ['  original   TEXT '], findingDetails: [{ blocks: true, anchor: 'dod criterion #1', location: 'src/a.ts:9', text: '  original   TEXT ', extendsPrior: null }] },
     ]
     expect(reviewConvergenceDecision(rounds)).toEqual({ continue: false, signal: 'same finding returned: DoD 1 — original TEXT' })
+    rounds[1]!.findingDetails[0]!.location = 'src/b.ts:9'
+    expect(reviewConvergenceDecision(rounds)).toEqual({ continue: true, signal: null })
+    rounds[1]!.findingDetails[0]!.location = 'src/a.ts:9'
     rounds[1]!.findingDetails[0]!.anchor = 'DoD 2'
     expect(reviewConvergenceDecision(rounds)).toEqual({ continue: true, signal: null })
+  })
+
+  it('preserves path case while normalizing separators and line-column suffixes for recurrence', () => {
+    const round = (location: string, text: string) => ({
+      blockingFindings: [text],
+      findingDetails: [{ blocks: true, anchor: 'DoD 1', location, text, extendsPrior: null }],
+    })
+    expect(reviewConvergenceDecision([
+      round('./src/Foo.ts:9:4', 'Missing check at `src/Foo.ts:9:4`'),
+      round('src\\Foo.ts:20', 'missing check at `src/Foo.ts:20`'),
+    ])).toEqual({ continue: false, signal: 'same finding returned: DoD 1 — missing check at `src/Foo.ts:20`' })
+    expect(reviewConvergenceDecision([
+      round('src/Foo.ts:9', 'missing check'),
+      round('src/foo.ts:9', 'missing check'),
+    ])).toEqual({ continue: true, signal: null })
+    expect(reviewConvergenceDecision([
+      round('src/a.ts:9', 'missing check (src/a.ts:9)'),
+      round('src/a.ts:20', 'missing check (src/a.ts:20)'),
+    ])).toEqual({ continue: false, signal: 'same finding returned: DoD 1 — missing check (src/a.ts:20)' })
+    expect(reviewConvergenceDecision([
+      round('src/a.ts:9', 'missing check [src/a.ts:9:4]'),
+      round('src/a.ts:20', 'missing check [src/a.ts:20:8]'),
+    ])).toEqual({ continue: false, signal: 'same finding returned: DoD 1 — missing check [src/a.ts:20:8]' })
+    expect(reviewConvergenceDecision([
+      round('src/a.ts:9', 'rejects valid URL (http://localhost:8080)'),
+      round('src/a.ts:20', 'rejects valid URL (http://localhost:9090)'),
+    ])).toEqual({ continue: true, signal: null })
   })
 
   it('stops review after two consecutive rounds without a blocking-count drop, with no fixed ceiling', () => {
@@ -200,8 +230,26 @@ FINDINGS:
       findingDetails: Array.from({ length: count }, (_, index) => ({ blocks: true, anchor: `DoD ${index + 1}`, text: `${prefix}-${index}`, extendsPrior: null })),
     })
     expect(reviewConvergenceDecision([round('a', 3), round('b', 3)])).toEqual({ continue: true, signal: null })
-    expect(reviewConvergenceDecision([round('a', 3), round('b', 3), round('c', 3)])).toEqual({ continue: false, signal: 'blocking count did not drop for two consecutive rounds: 3 -> 3 -> 3' })
+    expect(reviewConvergenceDecision([round('a', 3), round('b', 3), round('c', 3)])).toEqual({ continue: false, signal: 'blocking count failed to set a new minimum for two consecutive rounds: best 3; 3 -> 3' })
     expect(reviewConvergenceDecision([round('a', 9), round('b', 8), round('c', 7), round('d', 6), round('e', 5), round('f', 4), round('g', 3)])).toEqual({ continue: true, signal: null })
+    expect(reviewConvergenceDecision([round('a', 3), round('b', 2), round('c', 3)])).toEqual({ continue: true, signal: null })
+    expect(reviewConvergenceDecision([round('a', 3), round('b', 2), round('c', 3), round('d', 2)])).toEqual({
+      continue: false,
+      signal: 'blocking count failed to set a new minimum for two consecutive rounds: best 2; 3 -> 2',
+    })
+  })
+
+  it('computes the running minimum over blocking passes while retaining clear passes', () => {
+    const round = (prefix: string, count: number) => ({
+      blockingFindings: Array.from({ length: count }, (_, index) => `${prefix}-${index}`),
+      findingDetails: Array.from({ length: count }, (_, index) => ({ blocks: true, anchor: `DoD ${index + 1}`, text: `${prefix}-${index}`, extendsPrior: null })),
+    })
+    expect(reviewConvergenceDecision([round('clear', 0), round('a', 3), round('b', 1)])).toEqual({ continue: true, signal: null })
+    expect(reviewConvergenceDecision([round('clear', 0), round('a', 2), round('clear', 0), round('clear', 0)])).toEqual({ continue: true, signal: null })
+    expect(reviewConvergenceDecision([round('a', 3), round('b', 2), round('c', 3), round('d', 2)])).toEqual({
+      continue: false,
+      signal: 'blocking count failed to set a new minimum for two consecutive rounds: best 2; 3 -> 2',
+    })
   })
 
   it('treats an explicit prior-finding extension as immediate review non-convergence', () => {
@@ -220,6 +268,27 @@ FINDINGS:
     expect(verdict.findingDetails[0].extendsPrior).toBeNull()
   })
 
+  it('rejects an extension that does not name an existing prior finding', () => {
+    const verdict = verdictFromReport('review', `VERDICT: changes-requested
+FINDINGS:
+- [HIGH][anchor: DoD 1][location: src/a.ts:1] extends prior finding 999: defect
+`, { validAnchors: ['DoD 1'], priorFindingCount: 2 })
+    expect(verdict).toEqual({ problem: 'finding 1 extends nonexistent prior finding 999' })
+  })
+
+  it('drops a LOW invalid extension with a warning but keeps the report admissible', () => {
+    const verdict = verdictFromReport('refutation', `VERDICT: changes-requested
+FINDINGS:
+- [LOW][location: src/a.ts:1] extends prior finding 999: typo
+- [MEDIUM][anchor: DoD 1][location: src/b.ts:2] real defect
+`, { validAnchors: ['DoD 1'], priorFindingCount: 2 })
+    expect(verdict).toMatchObject({
+      outcome: 'changes-requested',
+      findings: ['real defect'],
+      warnings: ['dropped LOW finding 1: extends nonexistent prior finding 999'],
+    })
+  })
+
   it('asks every independent lane for severity and an anchor and gives later reviews prior findings', () => {
     const brief = independentBrief({
       phase: 'review', context: 'review this', artifacts: ['fix.diff'], reportPath: 'report.md', constructionBase: 'previous-reviewed-tree',
@@ -230,6 +299,14 @@ FINDINGS:
     expect(brief).toContain('Use `[anchor: none]` explicitly when no anchor resolves')
     expect(brief).toContain('### Round 1\n- Prior finding 1: first finding')
     expect(brief).toContain('fix since previously reviewed tree')
+  })
+
+  it('lists prior findings in a refutation brief so extensions have named targets', () => {
+    const brief = independentBrief({
+      phase: 'refutation', context: 'refute this', artifacts: ['fix.diff'], reportPath: 'report.md', constructionBase: 'tree',
+      priorRounds: [{ round: 1, findings: ['review finding'] }],
+    })
+    expect(brief).toContain('### Round 1\n- Prior finding 1: review finding')
   })
 
   it('requires a per-section attack account when a critic has no findings', () => {

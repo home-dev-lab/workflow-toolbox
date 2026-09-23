@@ -154,8 +154,9 @@ export function readWorktreeRetentionMarker(root) {
 export function writeWorktreeRetentionMarker({ root, cardId, partial, boardId = null, retainedAt }) {
   const spentBound = partial && (
     partial.reason === 'timeout' ||
+    partial.finalizationReason === 'timeout' ||
     (partial.phase === 'critic' && /^plan not approved after \d+ critic rounds$/.test(partial.reason)) ||
-    (['review', 'refutation'].includes(partial.phase) && partial.reason.startsWith(`${partial.phase} non-convergence:`))
+    (['review', 'refutation', 'verify'].includes(partial.phase) && partial.reason.startsWith(`${partial.phase} non-convergence:`))
   )
   if (!spentBound) return false
   const resolvedRoot = fs.realpathSync(root)

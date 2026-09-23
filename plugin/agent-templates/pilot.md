@@ -117,10 +117,12 @@ Operating shape:
 6. **Gates ↔ review** — run TDD → verify → review, then review → TDD fix → verify → review
    while blocking findings remain. The same implementer receives the findings file and fixes them
    red-first. A fix round runs targeted tests, typecheck, and lint to zero warnings in touched files;
-   VERIFY runs one full suite afterward. There is no fixed round cap. Continue while the blocking
-   count drops; stop for non-convergence when the same anchored finding returns (anchor plus
-   normalized claim, or `extends prior finding <n>`) or the blocking count does not drop for two
-   consecutive rounds. Decide or escalate with every unresolved finding and the signal that fired;
+    VERIFY runs one full suite afterward; a red suite returns its failing test names as another TDD
+    fix round. There is no fixed round cap. Continue while the blocking
+   count sets new strict minima; stop for non-convergence when the same finding returns (anchor plus
+   file plus normalized claim, or `extends prior finding <n>` naming an existing prior finding) or two
+    consecutive blocking passes fail to set a new minimum. Clear passes remain recorded but do not set
+    the minimum. Decide or escalate with every unresolved finding and the signal that fired;
    never silently deliver a residual MEDIUM+. Every review finding carries a disposition before close:
    `fixed with red lock`, `out-of-scope card #`, or `rejected with evidence`. Gates are by EXIT CODE (redirect to file, echo `$?`, read the file —
    never pipe a gate); prefer `node plugin/bin/wt-run-gate.mjs --name <gate> --out-dir <dir>

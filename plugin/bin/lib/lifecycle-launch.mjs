@@ -28,7 +28,52 @@ function launchVariantArgs(executor, variant) {
 }
 
 function terminalExit(content) {
-  return /(?:^|\n)EXIT=([^\s\n]+)\s*$/.exec(content)?.[1] ?? null
+  return /(?:^|\n)EXIT=([^\s]+)\s*$/.exec(content)?.[1] ?? null
+}
+
+function withoutAnsi(value) {
+  let result = ''
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 27 || value[index + 1] !== '[') { result += value[index]; continue }
+    index += 2
+    while (index < value.length && (value.charCodeAt(index) < 64 || value.charCodeAt(index) > 126)) index += 1
+  }
+  return result
+}
+
+function failedRowName(line) {
+  const trimmed = line.trim()
+  if (!['×', '✗'].includes(trimmed[0])) return null
+  const name = trimmed.slice(1).trim()
+  const separator = name.lastIndexOf(' ')
+  const duration = name.slice(separator + 1)
+  let unit = null
+  if (duration.endsWith('ms')) unit = 'ms'
+  else if (duration.endsWith('s')) unit = 's'
+  return unit && Number.isFinite(Number(duration.slice(0, -unit.length))) ? name.slice(0, separator) : name
+}
+
+function failedTestNames(content) {
+  const names = new Set()
+  for (const rawLine of content.split(/\r?\n/)) {
+    let line = withoutAnsi(rawLine).trim()
+    if (line.startsWith('FAIL ')) {
+      line = line.slice(5).trim()
+      if (line.startsWith('|')) line = line.slice(line.indexOf('|', 1) + 1).trim()
+      const separator = line.indexOf(' > ')
+      const source = line.slice(0, separator)
+      if (separator > 0 && /\.[cm]?[jt]sx?$/.test(source)) names.add(line.slice(separator + 3).trim())
+    }
+    const row = failedRowName(line)
+    if (row) names.add(row)
+  }
+  return names
+}
+
+function gateReceiptProblem(name, phase, log, regularFile) {
+  if (fs.existsSync(log) && !regularFile(log)) return 'regular gate receipt'
+  if (name === 'test' && phase !== 'verify') return 'full test suite runs only in verify'
+  return null
 }
 
 function reportFinding(line) {
@@ -190,14 +235,15 @@ export function createLifecycleLaunch({
     return null
   }
 
-  function gatesEvidence(edge) {
+  function gatesEvidence(edge, failedTest = false) {
     assertLaneDir()
     const currentTree = treeSignature(root)
     for (const name of gates) {
       const file = path.join(laneDir, `${name}.log`)
       const item = verified(file)
       if (!item) return refusal(edge, 'unchanged gate receipt', file)
-      if (item.exit !== '0') return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
+      const acceptedExit = failedTest && name === 'test' ? item.exit !== '0' && item.exit !== null : item.exit === '0'
+      if (!acceptedExit) return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
       if (item.tree !== currentTree) return refusal(edge, 'current tree signature', file)
       if (item.mtime <= state.lastLaneMtime) return refusal(edge, 'gate newer than lane receipt', file)
     }
@@ -207,6 +253,24 @@ export function createLifecycleLaunch({
   function verifySnapshot(edge) {
     const receipt = gatesEvidence(edge)
     if (receipt) return receipt
+    const gateSnapshot = {}
+    for (const name of gates) {
+      const item = attestations.get(path.join(laneDir, `${name}.log`))
+      gateSnapshot[name] = { path: item.path, sha256: item.sha256 }
+    }
+    state.verifySnapshot = { tree: treeSignature(root), gates: gateSnapshot }
+    audit()
+    return null
+  }
+
+  function verifyFailedSnapshot(edge, findings) {
+    const receipt = gatesEvidence(edge, true)
+    if (receipt) return receipt
+    const testLog = path.join(laneDir, 'test.log')
+    const content = readRegularFile(testLog) ?? ''
+    const failures = failedTestNames(content)
+    const missing = findings.filter((finding) => !failures.has(finding.trim()))
+    if (missing.length > 0) return refusal(edge, `failing test names found in the red full-suite receipt (${missing.join('; ')})`, testLog)
     const gateSnapshot = {}
     for (const name of gates) {
       const item = attestations.get(path.join(laneDir, `${name}.log`))
@@ -472,7 +536,8 @@ export function createLifecycleLaunch({
         return refusal(`${state.phase}->next`, 'gate typecheck|lint|test', path.join(laneDir, `${args.name ?? 'unknown'}.log`))
       }
       const log = path.join(laneDir, `${args.name}.log`)
-      if (fs.existsSync(log) && !regularFile(log)) return refusal(`${state.phase}->next`, 'regular gate receipt', log)
+      const gateProblem = gateReceiptProblem(args.name, state.phase, log, regularFile)
+      if (gateProblem) return refusal(`${state.phase}->next`, gateProblem, log)
       fs.rmSync(log, { force: true })
       fs.writeFileSync(log, '', { flag: 'wx' })
       let code
@@ -537,5 +602,5 @@ export function createLifecycleLaunch({
     return parallelCritic ? runParallelCritics(args) : runSingle(args)
   }
 
-  return { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifySnapshot }
+  return { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run, snapshotEvidence, verifyFailedSnapshot, verifySnapshot }
 }

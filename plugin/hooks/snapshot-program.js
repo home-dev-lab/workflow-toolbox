@@ -266,14 +266,15 @@ function lifecycleTimeline(worktree) {
   if (!value || !Array.isArray(value.phases) || value.phases.length === 0) return null;
   const validTime = item => item === null || Number.isFinite(item);
   const validRound = item => item === null || (Number.isSafeInteger(item) && item > 0);
-  if (!value.phases.every(item => item && typeof item === 'object' && PHASES.includes(item.phase) && item.phase !== 'awaiting_fidelity'
+  if (!value.phases.every(item => item && typeof item === 'object' && (PHASES.includes(item.phase) || item.phase === 'harden') && item.phase !== 'awaiting_fidelity'
     && validRound(item.round) && Number.isFinite(item.entered_at) && validTime(item.exited_at))) return null;
-  const phaseHistory = value.phases.map(item => item.phase);
+  const legacyHarden = value.phases.some(item => item.phase === 'harden');
+  const phaseHistory = value.phases.map(item => item.phase === 'harden' ? 'tdd' : item.phase);
   if (Number.isFinite(value.ended_at) && phaseHistory.at(-1) === 'report') phaseHistory.push('awaiting_fidelity');
   const phaseRounds = {};
-  for (const item of value.phases) if (item.round !== null) phaseRounds[item.phase] = item.round;
+  for (const item of value.phases) if (item.round !== null) phaseRounds[item.phase === 'harden' ? 'tdd' : item.phase] = item.round;
   const criticRounds = phaseRounds.critic || 0;
-  return { source, phaseHistory, phaseRounds, criticRounds, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
+  return { source, phaseHistory, phaseRounds, criticRounds, legacyHarden, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
 }
 function currentSupervisions(worktree) {
   const records = [];
@@ -330,6 +331,7 @@ function minutes(iso) { const at = Date.parse(iso || ''); return Number.isFinite
 function freshTime(at) { return Number.isFinite(at) && now - at <= ACTIVE_WINDOW_MS; }
 function phaseOf(value) {
   const phase = String(value || '').trim().toLowerCase().replace(/[ -]+/g, '_');
+  if (phase === 'harden') return 'tdd';
   return PHASES.includes(phase) ? phase : UNKNOWN;
 }
 function statesOf(history, route) {
@@ -826,7 +828,7 @@ function phaseCosts(worktree, timeline) {
 }
 function phaseElapsed(timeline) {
   const result = {};
-  for (const phase of timeline?.phases ?? []) if (phase.exited_at === null) result[phase.phase] = formatAge((now - phase.entered_at) / 1000);
+  for (const phase of timeline?.phases ?? []) if (phase.exited_at === null) result[phaseOf(phase.phase)] = formatAge((now - phase.entered_at) / 1000);
   return result;
 }
 
@@ -1088,6 +1090,7 @@ for (const worktree of scannedWorktrees) {
         phaseSource: timeline ? 'lifecycle' : 'log',
         lifecycleSource: timeline?.source || null,
         phaseRounds: timeline?.phaseRounds || {},
+        legacyHarden: timeline?.legacyHarden || false,
         criticRounds,
         runnerLogTruncated: (info(runnerLogFile)?.size || 0) > LOG_TAIL_BYTES,
         outcome: 'running',
@@ -1228,6 +1231,7 @@ for (const id of ids) {
     model: lane?.model || workers[0]?.model || UNKNOWN,
     models: frozenRoute?.models || {},
     phaseRounds: lane?.phaseRounds || {},
+    legacyHarden: lane?.legacyHarden || false,
     criticRounds: lane?.criticRounds,
     runnerLogTruncated: lane?.runnerLogTruncated || false,
     who,

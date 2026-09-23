@@ -196,7 +196,9 @@ export const PANE_PHASES = Object.freeze(PHASES.map((phase) => Object.freeze([ph
 
 function phaseLabelFor(row, phase) {
   const round = row.phaseRounds?.[phase];
-  const label = phase === 'tdd' && Number.isSafeInteger(round) && round > 0 ? 'TDD fix' : PHASE_LABELS[phase] || phase;
+  let label = PHASE_LABELS[phase] || phase;
+  if (phase === 'tdd' && Number.isSafeInteger(round) && round > 0) label = 'TDD fix';
+  if (phase === 'tdd' && row.legacyHarden) label = 'Harden (legacy)';
   const model = phase === 'review' ? row.models?.review : phase === 'refutation' ? row.models?.refutation : null;
   const withModel = model && model !== 'unknown' ? `${label} (${model})` : label;
   if (!Number.isSafeInteger(round) || round <= 0) return withModel;

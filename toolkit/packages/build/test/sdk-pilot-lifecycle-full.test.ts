@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -77,13 +77,64 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     await lifecycle.artifact({ kind: 'review-brief', content: 'review one' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
     expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-to-implementer' })).toBe('accepted phase=tdd')
     expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain(finding)
+    expect(await lifecycle.run({ kind: 'gate', name: 'test' })).toContain('full test suite runs only in verify')
     expect(await lifecycle.artifact({ kind: 'brief', content: 'fix the review findings' })).toBe('wrote brief')
     const brief = readFileSync(join(lifecycle.root, '.lane', 'tdd-brief.md'), 'utf8')
-    expect(brief).toContain('Review fix round 1')
-    expect(brief).toContain('`.lane/review-findings.md`')
-    expect(brief).toContain('targeted tests, typecheck, and lint')
-    expect(brief).toContain('zero warnings in touched files')
-    expect(brief).toContain('Do not run the full suite in this lane')
+    expect(brief).toContain('Read the exact runner-owned findings in `.lane/review-findings.md`. Fix every in-scope finding red-first')
+    expect(brief).toContain('Run targeted tests, typecheck, and lint, and leave zero warnings in touched files. Do not run the full suite in this lane; the lifecycle runs it once in VERIFY after this fix round.')
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+    await lifecycle.transition({ phase: 'tdd', tool_use_id: 'focused-fix' })
+    expect(await lifecycle.run({ kind: 'gate', name: 'test' })).toBe('gate test EXIT=0')
+  })
+
+  it('refuses a review fix round that skips the new brief and reuses the original TDD receipt', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] needs a fresh fix run'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-change' })).toBe('accepted phase=tdd')
+    expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'skip-fix-brief' })).toMatch(/lane receipt unchanged/)
+  })
+
+  it('requires fresh review and refutation receipts after a fix loop-back', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const reviewFinding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [reviewFinding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review before fix' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [reviewFinding], tool_use_id: 'review-finding' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix review defect' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'review-fix' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'review-fix-verify' })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [reviewFinding], tool_use_id: 'stale-review' })).toMatch(/lane receipt unchanged/)
+
+    edgeConfig(lifecycle, { review: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'fresh review after fix' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'fresh-review' })
+    const refutationFinding = '[HIGH][anchor: DoD 1][location: tracked.txt:3] refutation defect'
+    edgeConfig(lifecycle, { refutation: { verdict: 'changes-requested', findings: [refutationFinding] } })
+    await lifecycle.artifact({ kind: 'refutation-brief', content: 'refutation before fix' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 }); await lifecycle.transition({ phase: 'refutation', outcome: 'changes-requested', findings: [refutationFinding], tool_use_id: 'refutation-finding' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix refutation defect' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'refutation-fix' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'refutation-fix-verify' })
+    edgeConfig(lifecycle, { review: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review after refutation fix' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'post-refutation-review' })
+    expect(await lifecycle.transition({ phase: 'refutation', outcome: 'changes-requested', findings: [refutationFinding], tool_use_id: 'stale-refutation' })).toMatch(/lane receipt unchanged/)
+  })
+
+  it('keeps successful lane evidence when an identical brief is resubmitted', async () => {
+    const lifecycle = fullLifecycle()
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'critic' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }); await lifecycle.transition({ phase: 'critic', outcome: 'approved', tool_use_id: 'critic' })
+    expect(await lifecycle.artifact({ kind: 'brief', content: plan })).toBe('wrote brief')
+    await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 })
+    expect(await lifecycle.artifact({ kind: 'brief', content: plan })).toBe('wrote brief')
+    expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'same-brief' })).toBe('accepted phase=verify')
+  })
+
+  it('invalidates critic evidence when a covered plan changes under an identical context', async () => {
+    const lifecycle = fullLifecycle()
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' })
+    edgeConfig(lifecycle, { critic: { verdict: 'changes-requested', findings: ['stale plan finding'] } })
+    await lifecycle.artifact({ kind: 'critic-brief', content: 'same critic context' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
+    writeFileSync(join(lifecycle.root, '.lane', 'plan.md'), `${plan}\nchanged after critic receipt\n`)
+    expect(await lifecycle.artifact({ kind: 'critic-brief', content: 'same critic context' })).toBe('wrote critic-brief')
+    expect(await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['stale plan finding'], tool_use_id: 'stale-critic-after-plan-change' })).toMatch(/lane receipt unchanged/)
   })
 
   it('replays the archived four review-to-harden transitions as review-to-TDD fix loops', async () => {
@@ -156,7 +207,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(diff).not.toContain('+created by tdd')
   })
 
-  it('routes a plan-task finding in prior TDD fix code instead of fixing it again', async () => {
+  it('returns a plan-task finding in prior TDD fix code for another fix', async () => {
     const lifecycle = fullLifecycle(); await reachReview(lifecycle)
     edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: ['anchored first-round defect'] } })
     await lifecycle.artifact({ kind: 'review-brief', content: 'review one' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
@@ -167,12 +218,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     const finding = '[HIGH][anchor: plan task A1][location: tracked.txt:3] defect only in the previous fix addition'
     edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
     await lifecycle.artifact({ kind: 'review-brief', content: 'review two' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
-    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'route-own-code' })).toBe('accepted phase=refutation')
-    edgeConfig(lifecycle, { refutation: { verdict: 'clear' } })
-    await lifecycle.artifact({ kind: 'refutation-brief', content: 'refute' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
-    await lifecycle.transition({ phase: 'refutation', outcome: 'clear', tool_use_id: 'refutation-clear' })
-    await lifecycle.artifact({ kind: 'pilot-report', content: fullReport })
-    expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')).toContain('## Findings to route\n- defect only in the previous fix addition — tracked.txt:3 — located only in previous fix code and anchored to no card criterion')
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'fix-own-code' })).toBe('accepted phase=tdd')
   })
 
   it('re-asks missing MEDIUM+ anchors once with every finding named, then ends partial', async () => {
@@ -197,6 +243,20 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
     expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [malformed], tool_use_id: 'malformed-review' })).toContain('accepted phase=report')
     expect(lifecycle.state()).toMatchObject({ phase: 'report', partial: { question: expect.stringContaining('repeated review report parse failure') } })
+  })
+
+  it('re-asks an extension to a nonexistent prior finding once, then ends partial', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const first = '[HIGH][anchor: DoD 1][location: tracked.txt:2] first defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [first] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review one' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [first], tool_use_id: 'valid-first' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'valid-fix' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'valid-verify' })
+    const malformed = '[HIGH][anchor: DoD 1][location: tracked.txt:3] extends prior finding 999: defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [malformed] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review malformed extension' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [malformed], tool_use_id: 'bad-extension' })).toContain('finding 1 extends nonexistent prior finding 999; re-run once')
+    await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [malformed], tool_use_id: 'bad-extension' })).toContain('accepted phase=report')
   })
 
   it('routes a LOW finding carried by clear', async () => {
@@ -549,6 +609,167 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(saved.match(/^## Question for parent$/gm)).toHaveLength(1)
     expect(saved).toContain('Pilot-authored context.')
     expect(saved).toContain('How should the run parent resolve them?')
+    const summary = lifecycle.finalizePartial('timeout')
+    expect(summary.partial).toMatchObject({ reason, findings: ['finding'], finalizationReason: 'timeout' })
+  })
+
+  it('keeps non-convergence findings and signal when a timeout fires at the transition boundary', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] recurring boundary defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    for (let round = 1; round <= 2; round += 1) {
+      await lifecycle.artifact({ kind: 'review-brief', content: `review ${round}` }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+      if (round === 2) lifecycle.requestStop('timeout')
+      const result = await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: `boundary-review-${round}` })
+      if (round === 2) expect(result).toBe('stopped phase=review reason=timeout')
+      else {
+        await lifecycle.artifact({ kind: 'brief', content: 'fix' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'boundary-fix' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'boundary-verify' })
+      }
+    }
+    expect(lifecycle.state().partial).toMatchObject({ reason: expect.stringContaining('same finding returned'), findings: ['recurring boundary defect'], finalizationReason: 'timeout' })
+    const report = readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')
+    expect(report).toContain('same finding returned')
+    expect(report).toContain('recurring boundary defect')
+    expect(report).toContain('Finalization: timeout')
+  })
+
+  it('keeps the latest unresolved findings when timeout finalizes before non-convergence', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] unresolved timeout defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review timeout' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-timeout' })
+    expect(lifecycle.finalizePartial('timeout').partial).toMatchObject({ reason: 'timeout', findings: ['unresolved timeout defect'] })
+  })
+
+  it('keeps unresolved findings when a parse-failure partial precedes timeout finalization', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] unresolved before malformed reviews'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'blocking review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'blocking-review' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix before malformed review' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fix-before-malformed' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'verify-before-malformed' })
+    const malformed = '[MEDIUM][anchor: DoD 1][location: tracked.txt:2] extends prior finding 999: malformed extension'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [malformed] } })
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await lifecycle.artifact({ kind: 'review-brief', content: `malformed review ${attempt}` }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: ['extends prior finding 999: malformed extension'], tool_use_id: `malformed-review-${attempt}` })
+    }
+    expect(lifecycle.state().phase).toBe('report')
+    expect(lifecycle.finalizePartial('timeout').partial).toMatchObject({ findings: ['unresolved before malformed reviews'] })
+  })
+
+  it('keeps newly reported unresolved findings when timeout stops at the transition boundary', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] unresolved boundary defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review boundary timeout' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    lifecycle.requestStop('timeout')
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-boundary-timeout' })).toBe('stopped phase=review reason=timeout')
+    expect(lifecycle.state().partial).toMatchObject({ reason: 'timeout', findings: ['unresolved boundary defect'] })
+  })
+
+  it('routes a red full suite in VERIFY back to TDD with failing tests as a counted fix round', async () => {
+    let testRuns = 0
+    const gateRunner = async (args: { name: string; log: string; root: string }) => {
+      const code = await writePassingGate(args)
+      if (args.name === 'test' && ++testRuns === 2) { appendFileSync(args.log, ' FAIL  tests/example.test.ts > suite > regression case\n'); return 1 }
+      return code
+    }
+    const lifecycle = fullLifecycle({ gateRunner }); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] initial review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review before red verify' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-before-red-verify' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix before red verify' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fix-before-red-verify' })
+    expect(await lifecycle.run({ kind: 'gate', name: 'typecheck' })).toBe('gate typecheck EXIT=0')
+    expect(await lifecycle.run({ kind: 'gate', name: 'lint' })).toBe('gate lint EXIT=0')
+    expect(await lifecycle.run({ kind: 'gate', name: 'test' })).toBe('gate test EXIT=1')
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > regression case'], tool_use_id: 'red-verify' })).toBe('accepted phase=tdd')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'review-findings.md'), 'utf8')).toContain('suite > regression case')
+    expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'skip-red-verify-fix' })).toMatch(/lane receipt unchanged/)
+  })
+
+  it('refuses invented failing test names absent from the red full-suite receipt', async () => {
+    let testRuns = 0
+    const gateRunner = async (args: { name: string; log: string; root: string }) => {
+      const code = await writePassingGate(args)
+      if (args.name === 'test' && ++testRuns === 2) { appendFileSync(args.log, ' FAIL  tests/example.test.ts > suite > actual regression\n'); return 1 }
+      return code
+    }
+    const lifecycle = fullLifecycle({ gateRunner }); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] initial review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review before invented failures' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-before-invented' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix before invented failures' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fix-before-invented' })
+    await lifecycle.run({ kind: 'gate', name: 'typecheck' }); await lifecycle.run({ kind: 'gate', name: 'lint' }); await lifecycle.run({ kind: 'gate', name: 'test' })
+    for (const [attempt, invented] of [['one', ['invented a', 'invented b', 'invented c']], ['two', ['invented d', 'invented e']], ['three', ['invented f']]] as const) {
+      expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: invented, tool_use_id: `invented-${attempt}` })).toMatch(/failing test names found in the red full-suite receipt/)
+    }
+  })
+
+  it('refuses passing test names that merely occur in a red full-suite receipt', async () => {
+    let testRuns = 0
+    const gateRunner = async (args: { name: string; log: string; root: string }) => {
+      const code = await writePassingGate(args)
+      if (args.name === 'test' && ++testRuns === 2) {
+        appendFileSync(args.log, ' ✓ suite > A\n ✓ suite > B\n ✓ suite > C\n ✓ suite > D\n ✓ suite > E\n × suite > F 1ms\n FAIL  tests/example.test.ts > suite > F\n')
+        return 1
+      }
+      return code
+    }
+    const lifecycle = fullLifecycle({ gateRunner }); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] initial review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review before passing names' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-before-passing-names' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix before passing names' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'fix-before-passing-names' })
+    await lifecycle.run({ kind: 'gate', name: 'typecheck' }); await lifecycle.run({ kind: 'gate', name: 'lint' }); await lifecycle.run({ kind: 'gate', name: 'test' })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > A', 'suite > B', 'suite > C'], tool_use_id: 'passing-names' })).toMatch(/failing test names found in the red full-suite receipt/)
+  })
+
+  it('reports recurring red VERIFY failures from their current red evidence', async () => {
+    let testRuns = 0
+    const gateRunner = async (args: { name: string; log: string; root: string }) => {
+      const code = await writePassingGate(args)
+      if (args.name === 'test' && ++testRuns >= 2) { appendFileSync(args.log, ' FAIL  tests/example.test.ts > suite > recurring regression\n'); return 1 }
+      return code
+    }
+    const lifecycle = fullLifecycle({ gateRunner }); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] initial review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review before recurring red' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'review-before-recurring-red' })
+    for (let round = 1; round <= 2; round += 1) {
+      await lifecycle.artifact({ kind: 'brief', content: `fix recurring red ${round}` }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: `fix-recurring-red-${round}` })
+      await lifecycle.run({ kind: 'gate', name: 'typecheck' }); await lifecycle.run({ kind: 'gate', name: 'lint' }); await lifecycle.run({ kind: 'gate', name: 'test' })
+      const result = await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['suite > recurring regression'], tool_use_id: `recurring-red-${round}` })
+      expect(result).toBe(round === 1 ? 'accepted phase=tdd' : 'accepted phase=report (non-convergence: partial run, verify non-convergence: same finding returned: verify — suite > recurring regression)')
+    }
+    const reason = 'verify non-convergence: same finding returned: verify — suite > recurring regression'
+    expect(await lifecycle.artifact({ kind: 'pilot-report', content: `${fullReport}Partial: ${reason}\n` })).toBe('wrote pilot-report')
+    expect(await lifecycle.transition({ phase: 'report', tool_use_id: 'red-evidence-report' })).toBe('accepted phase=awaiting_fidelity')
+  })
+
+  it('records all-LOW invalid-extension warnings and treats the review as clear', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    const low = '[LOW][location: tracked.txt:2] extends prior finding 999: typo'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [low] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'all low invalid extensions' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [], tool_use_id: 'all-low-invalid' })).toBe('accepted phase=refutation')
+    expect(readFileSync(join(lifecycle.root, '.lane', 'review-warnings.md'), 'utf8')).toContain('dropped LOW finding 1: extends nonexistent prior finding 999')
+  })
+
+  it('records 0,2,0,0 and reaches report without including clear passes in the running minimum', async () => {
+    const lifecycle = fullLifecycle(); await reachReview(lifecycle)
+    edgeConfig(lifecycle, { review: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'clear review 1' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'clear-review-1' })).toBe('accepted phase=refutation')
+    const defects = findings('fresh-refutation', 2)
+    edgeConfig(lifecycle, { refutation: { verdict: 'changes-requested', findings: defects } })
+    await lifecycle.artifact({ kind: 'refutation-brief', content: 'blocking refutation' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'refutation', outcome: 'changes-requested', findings: defects, tool_use_id: 'blocking-refutation' })).toBe('accepted phase=tdd')
+    await lifecycle.artifact({ kind: 'brief', content: 'fix refutation' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'clear-fix' }); await gates(lifecycle); await lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'clear-verify' })
+    edgeConfig(lifecycle, { review: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'clear review 2' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'clear-review-2' })).toBe('accepted phase=refutation')
+    edgeConfig(lifecycle, { refutation: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'refutation-brief', content: 'clear refutation' }); await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })
+    expect(await lifecycle.transition({ phase: 'refutation', outcome: 'clear', tool_use_id: 'clear-refutation' })).toBe('accepted phase=report')
   })
 
   it.each([
@@ -653,7 +874,7 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
   const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, rules: [], ...options })
-  return { ...handlers(server), calls, base, root: worktree, state: server.state, requestStop: server.requestStop }
+  return { ...handlers(server), calls, base, root: worktree, state: server.state, requestStop: server.requestStop, finalizePartial: server.finalizePartial }
 }
 function liteLifecycle() {
   const worktree = root(); const calls = join(worktree, '.lane', 'calls.jsonl'); const counts = join(worktree, '.lane', 'counts.json')

@@ -46,15 +46,15 @@ pair. Critic reports quote the plan SHA-256. On FULL, the tdd brief carries the 
 | plan | Write a plan with ADR decision/rejected, top-level task DoDs, Gates, and `## Acceptance`. Quote every folded card Definition-of-done criterion exactly and follow each with `Proof:` naming a task, test, e2e, test file, or gate; then transition. |
 | critic | Write/run the brief; round 1 runs critics A and B together and unions exact-deduplicated findings. Then transition: approved -> tdd; changes-requested -> plan. |
 | tdd | Write/run the brief, then verify. Fix rounds consume `.lane/review-findings.md` and run targeted tests, typecheck, and lint (zero touched-file warnings), never the full suite. |
-| verify | Run all three gates. Transition `outcome: passed` only after their green receipts; LITE reaches report, FULL review. |
+| verify | Run all gates. Green reaches report/review; a red full suite transitions `failed` with test names and returns to tdd. |
 | review | Write/run the brief; clear -> refutation, blocking changes-requested -> tdd fix. |
 | refutation | Write/run the brief; clear -> report, blocking changes-requested -> tdd fix. |
 | report | Write/transition it; non-proven DoD or unrun E2E makes archive partial. |
 
 Outcomes/findings must match the lane report. Review/refutation changes need findings. Review has no fixed
-cap: continue while blockers fall; stop if an anchor + normalized claim recurs, a finding says
-`extends prior finding <n>`, or blocking count does not fall twice. The partial report names unresolved
-findings and the signal for the parent. Produce evidence named by a refusal; do not retry the denied call.
+cap. Stop if anchor + file + normalized claim recurs, a valid `extends prior finding <n>` appears, or two
+blocking passes set no new strict blocker minimum. Clear passes stay recorded but do not set it. The partial names unresolved findings and the
+signal for the parent. Produce evidence named by a refusal; do not retry the denied call.
 The critic accepts routed L4, not bare deferral. One blocking `CONTEST routed card <id>:` gets one plan
 round. Do it (runner closes the card) or maintain cited L4; then report disagreement to the order-giver, never loop.
 

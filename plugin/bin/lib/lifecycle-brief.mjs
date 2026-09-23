@@ -34,7 +34,7 @@ Severity policy:
     ? `
 ## Prior rounds (runner-owned, trusted)
 
-These findings come from prior ${phase} reports attested by the runner. You may not reopen a point a prior round demanded, or reverse a prior round's accepted position, unless you cite new evidence. A finding may use \`extends prior finding <n>\`; the runner counts that declaration as recurrence.
+These findings come from prior ${phase} reports attested by the runner. You may not reopen a point a prior round demanded, or reverse a prior round's accepted position, unless you cite new evidence. A finding may use \`extends prior finding <n>\`; the runner counts it as recurrence only when <n> names a prior finding listed below.
 
 ${priorRounds.map(({ round, findings }, roundIndex) => `### Round ${round}\n${findings.map((finding, index) => `- Prior finding ${priorFindingOffsets[roundIndex] + index + 1}: ${finding}`).join('\n')}`).join('\n\n')}
 `

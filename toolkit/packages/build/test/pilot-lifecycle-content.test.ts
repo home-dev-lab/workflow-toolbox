@@ -43,8 +43,10 @@ describe('pilot lifecycle template', () => {
 
   it('returns review fixes to TDD until mechanical non-convergence', () => {
     expect(PILOT).toContain('review → TDD fix → verify → review')
-    expect(PILOT).toContain('same anchored finding returns')
-    expect(PILOT).toMatch(/blocking count does not drop for two\s+consecutive rounds/)
+    expect(PILOT).toMatch(/same finding returns \(anchor plus\s+file plus normalized claim/)
+    expect(PILOT).toMatch(/two\s+consecutive blocking passes fail to set a new minimum/)
+    expect(PILOT).toContain('Clear passes remain recorded but do not set')
+    expect(PILOT).toContain('a red suite returns its failing test names as another TDD')
     expect(PILOT).toContain('There is no fixed round cap')
     expect(PILOT).toContain('targeted tests, typecheck, and lint')
     expect(PILOT).not.toContain('review → harden')

@@ -291,9 +291,10 @@ function validFindingAnchors(dodBullets, planContent) {
   return anchors
 }
 function findingPolicyOptions(phase, state, dodBullets, laneDir, readRegularFile) {
+  const priorRounds = phase === 'critic' ? state.priorCriticRounds : state.priorReviewReports
   return {
     validAnchors: validFindingAnchors(dodBullets, readRegularFile(path.join(laneDir, 'plan.md'))),
-    previousFixPatch: phase === 'review' && state.reviewBase ? readRegularFile(path.join(laneDir, 'review-input.diff')) : null,
+    priorFindingCount: priorRounds.reduce((total, round) => total + round.findings.length, 0),
   }
 }
 function refusal(edge, missing, file) {
@@ -347,8 +348,13 @@ function reviewFindingGroups(verdict) {
 }
 function findingsMatchReport(declared, verdict) {
   if (!declared) return true
-  if (declared.length !== verdict.findingDetails.length) return false
-  return declared.every((finding, index) => {
+  const dropped = verdict.droppedFindings ?? []
+  const retained = declared.filter((finding) => !dropped.some((detail) => {
+    const withoutMetadata = detail.raw.replace(/\[(?:anchor|location):[^\]]*\]\s*/gi, '').trim()
+    return [detail.raw, detail.text, withoutMetadata, `[${detail.severity}] ${detail.text}`].includes(finding)
+  }))
+  if (retained.length !== verdict.findingDetails.length) return false
+  return retained.every((finding, index) => {
     const detail = verdict.findingDetails[index]
     const withoutMetadata = detail.raw.replace(/\[(?:anchor|location):[^\]]*\]\s*/gi, '').trim()
     const severityText = `[${detail.severity}] ${detail.text}`
@@ -362,10 +368,11 @@ function recordReviewDecision(state, phase, verdict, blockingFindings, routedFin
   }
   if (verdict.findings.length > 0) state.priorReviewReports.push({ round: state.priorReviewReports.length + 1, findings: [...verdict.findings] })
   const changesRequested = verdict.outcome === 'changes-requested' && blockingFindings.length > 0
+  state.unresolvedFindings = changesRequested ? [...blockingFindings] : []
   if (changesRequested) {
     state.reviewRound += 1
-    state.priorReviewRounds.push({ round: state.reviewRound, findings: [...verdict.findings], blockingFindings, findingDetails: verdict.findingDetails })
   }
+  state.priorReviewRounds.push({ round: state.priorReviewRounds.length + 1, findings: [...verdict.findings], blockingFindings, findingDetails: verdict.findingDetails })
   const decision = changesRequested ? reviewConvergenceDecision(state.priorReviewRounds) : null
   if (!decision || decision.continue) return { changesRequested, reason: null }
   const reason = `${phase} non-convergence: ${decision.signal}`
@@ -394,11 +401,61 @@ function writeReviewFindings(laneDir, state, phase, verdict, writeRegularFile) {
   writeRegularFile(path.join(laneDir, 'review-findings.md'), `# Review findings for TDD fix round ${state.reviewRound}\n\nSource: ${phase}\n\n${rows.join('\n')}\n`)
 }
 
+function prepareReviewFix(laneDir, state, phase, verdict, writeRegularFile, invalidateLaneEvidence, laneBriefContexts) {
+  writeReviewFindings(laneDir, state, phase, verdict, writeRegularFile)
+  for (const invalidated of ['tdd', 'review', 'refutation']) {
+    invalidateLaneEvidence(invalidated)
+    laneBriefContexts.delete(invalidated)
+  }
+}
+
+function finalizedPartial(state, phase, reason) {
+  return state.partial
+    ? { ...state.partial, findings: state.unresolvedFindings.length > 0 ? [...state.unresolvedFindings] : state.partial.findings, finalizationReason: reason }
+    : { phase, reason, findings: [...state.unresolvedFindings] }
+}
+
+function verifyTransition({ event, state, laneDir, frozenRoute, refusal, verifyFailedSnapshot, verifySnapshot, writeRegularFile, invalidateLaneEvidence, laneBriefContexts }) {
+  if (event.outcome === 'failed') {
+    if (!Array.isArray(event.findings) || event.findings.length === 0 || event.findings.some((finding) => typeof finding !== 'string' || !finding.trim())) {
+      return { refused: refusal('verify->tdd', 'failing test names in findings', laneDir) }
+    }
+    const receipt = verifyFailedSnapshot('verify->tdd', event.findings)
+    if (receipt) return { refused: receipt }
+    const findingDetails = event.findings.map((finding) => ({ raw: finding, text: finding, severity: 'high', anchor: 'verify', location: 'test', extendsPrior: null, blocks: true }))
+    const verdict = { outcome: 'changes-requested', findings: [...event.findings], findingDetails }
+    const decision = recordReviewDecision(state, 'verify', verdict, event.findings, [])
+    if (decision.reason) return { next: 'report', resultDetail: ` (non-convergence: partial run, ${decision.reason})` }
+    prepareReviewFix(laneDir, state, 'verify', verdict, writeRegularFile, invalidateLaneEvidence, laneBriefContexts)
+    return { next: 'tdd', resultDetail: '' }
+  }
+  if (event.outcome !== 'passed') return { refused: refusal('verify->next', 'outcome passed', laneDir) }
+  const receipt = verifySnapshot('verify->next')
+  return receipt ? { refused: receipt } : { next: frozenRoute === 'LITE' ? 'report' : 'review', resultDetail: '' }
+}
+
+function recordReviewWarnings(state, verdict, laneDir, writeRegularFile) {
+  if (verdict.warnings.length === 0) return
+  state.reviewWarnings.push(...verdict.warnings)
+  writeRegularFile(path.join(laneDir, 'review-warnings.md'), `${state.reviewWarnings.map((warning) => `- ${warning}`).join('\n')}\n`)
+}
+
+function laneBriefIdentity(phase, content, artifactContent, laneDir, readRegularFile, sha256) {
+  let inputs = [`${phase}-input.diff`, 'typecheck.log', 'lint.log', 'test.log', 'review-findings.md']
+  if (phase === 'critic') inputs = ['plan.md', 'card.md', 'discovery.md']
+  if (phase === 'tdd') inputs = ['plan.md', 'review-findings.md']
+  return sha256(JSON.stringify([content, artifactContent, ...inputs.map((name) => readRegularFile(path.join(laneDir, name)))]))
+}
+
+function sameLaneBrief(laneBriefContexts, laneBriefIdentities, phase, identity) {
+  return laneBriefContexts.has(phase) && laneBriefIdentities.get(phase) === identity
+}
+
 function initialLifecycleState() {
   return {
     phase: 'discovery', partial: null, deferred: null, pilotReportDigest: null,
     planRound: 0, priorCriticRounds: [], criticPlateauUsed: false, nonBlockingFindings: [],
-    reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewBase: null, pendingReviewBase: null, findingsToRoute: [], criticEmptyRetries: 0,
+    reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewBase: null, pendingReviewBase: null, findingsToRoute: [], reviewWarnings: [], unresolvedFindings: [], criticEmptyRetries: 0,
     handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
     resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
     pendingStop: null, stopped: false,
@@ -467,7 +524,7 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
     const reason = state.pendingStop
     const phase = state.phase
     const result = `stopped phase=${phase} reason=${reason}`
-    state.partial = { phase, reason, findings: [] }
+    state.partial = finalizedPartial(state, phase, reason)
     state.stopped = true
     state.handled.set(event.tool_use_id, { shape: JSON.stringify(event), result })
     const endedAt = now()
@@ -476,7 +533,8 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
     currentPhase.transition_id ??= event.tool_use_id
     timeline.ended_at = endedAt
     const routed = state.findingsToRoute.length > 0 ? `\n## Findings to route\n${state.findingsToRoute.map(routedFindingRow).join('\n')}\n` : ''
-    const report = `# SDK pilot partial report\n\nPartial: ${reason}\nPhase reached: ${phase}\nReason: ${reason}\n${routed}`
+    const unresolved = state.partial.findings.length > 0 ? `Unresolved findings: ${state.partial.findings.join('; ')}\n` : ''
+    const report = `# SDK pilot partial report\n\nPartial: ${state.partial.reason}\nPhase reached: ${phase}\nReason: ${state.partial.reason}\nFinalization: ${reason}\n${unresolved}${routed}`
     writeRegularFile(path.join(laneDir, 'pilot-report.md'), report)
     state.pilotReportDigest = sha256(report)
     persistTimeline()
@@ -494,7 +552,7 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
 function createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile }) {
   return (reason) => {
     if (state.phase === 'awaiting_fidelity') return JSON.parse(readRegularFile(path.join(laneDir, 'summary.json')) ?? '{}')
-    state.partial = { phase: state.phase, reason, findings: [] }
+    state.partial = finalizedPartial(state, state.phase, reason)
     const endedAt = now()
     timeline.phases.at(-1).exited_at ??= endedAt
     timeline.ended_at = endedAt
@@ -635,6 +693,7 @@ export function createLifecycleStateMachine({
   }
   persistTimeline()
   const laneBriefContexts = new Map()
+  const laneBriefIdentities = new Map()
   let serial = Promise.resolve()
   function prepareLaneBrief(phase, context, reportPath, snapshotDir = null) {
     const roleRules = composeRules(activeRules, { recipient: phase, trigger: `lane:${phase}` })
@@ -696,7 +755,7 @@ export function createLifecycleStateMachine({
         // wins, so the lane must report a refused read instead of claiming it read the fiches.
         : `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path} (outside the OpenCode working directory: read it with your read tool; if the read is refused, say so in your report and do not rely on the knowledge base)`
       : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
-    const priorRounds = phase === 'critic' ? state.priorCriticRounds : phase === 'review' ? state.priorReviewReports : []
+    const priorRounds = phase === 'critic' ? state.priorCriticRounds : state.priorReviewReports
     const briefBase = phase === 'review' && state.priorReviewReports.length > 0 && state.reviewBase ? state.reviewBase : constructionBase
     const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine }
     return snapshotDir
@@ -706,7 +765,7 @@ export function createLifecycleStateMachine({
         }
       : independentBrief({ ...options, artifacts })
   }
-  const { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run: lifecycleRun, snapshotEvidence, verifySnapshot } = createLifecycleLaunch({
+  const { audit, evidencePath, invalidateLaneEvidence, laneEvidence, run: lifecycleRun, snapshotEvidence, verifyFailedSnapshot, verifySnapshot } = createLifecycleLaunch({
     root,
     laneDir,
     executor,
@@ -892,12 +951,10 @@ export function createLifecycleStateMachine({
       }
       next = 'verify'
     } else if (state.phase === 'verify') {
-      if (event.outcome !== 'passed') {
-        return refusal('verify->next', 'outcome passed', laneDir)
-      }
-      const receipt = verifySnapshot('verify->next')
-      if (receipt) return receipt
-      next = frozenRoute === 'LITE' ? 'report' : 'review'
+      const verification = verifyTransition({ event, state, laneDir, frozenRoute, refusal, verifyFailedSnapshot, verifySnapshot, writeRegularFile, invalidateLaneEvidence, laneBriefContexts })
+      if (verification.refused) return verification.refused
+      next = verification.next
+      resultDetail = verification.resultDetail
     } else if (state.phase === 'review' || state.phase === 'refutation') {
       const report = path.join(laneDir, `${state.phase}-report.md`)
       if ((regularFile(report)?.size ?? 0) > MAX_LANE_REPORT_BYTES) {
@@ -916,16 +973,14 @@ export function createLifecycleStateMachine({
       const { blocking: blockingFindings, routed: routedFindings } = reviewFindingGroups(verdict)
       const receipt = laneEvidence(state.phase, verdict.outcome === 'changes-requested' && blockingFindings.length > 0)
       if (receipt) return receipt
+      recordReviewWarnings(state, verdict, laneDir, writeRegularFile)
       if (state.phase === 'review' && state.pendingReviewBase) state.reviewBase = state.pendingReviewBase
-      if (verdict.outcome === 'changes-requested' && verdict.findings.length === 0) {
-        return refusal(`${state.phase}->tdd`, 'findings', path.join(laneDir, `${state.phase}-report.md`))
-      }
       const reviewDecision = recordReviewDecision(state, state.phase, verdict, blockingFindings, routedFindings)
       if (reviewDecision.reason) {
         next = 'report'
         resultDetail = ` (non-convergence: partial run, ${reviewDecision.reason})`
       }
-      if (reviewDecision.changesRequested && !reviewDecision.reason) writeReviewFindings(laneDir, state, state.phase, verdict, writeRegularFile)
+      if (reviewDecision.changesRequested && !reviewDecision.reason) prepareReviewFix(laneDir, state, state.phase, verdict, writeRegularFile, invalidateLaneEvidence, laneBriefContexts)
       if (!next) next = reviewNextPhase(state.phase, reviewDecision.changesRequested)
     } else if (state.phase === 'report') {
       const pilotReportPath = path.join(laneDir, 'pilot-report.md')
@@ -1035,7 +1090,6 @@ export function createLifecycleStateMachine({
     }
     let artifactContent = laneContext
     if (LANE_PHASES.has(briefPhase)) {
-      laneBriefContexts.delete(briefPhase)
       try {
         artifactContent = prepareLaneBrief(briefPhase, laneContext, `.lane/${briefPhase}-report.<launch-nonce>.md`)
       } catch (error) {
@@ -1043,6 +1097,10 @@ export function createLifecycleStateMachine({
         fs.rmSync(path.join(laneDir, spec[1]), { force: true })
         return `review input unavailable: ${error instanceof Error ? error.message : String(error)}`
       }
+      const identity = laneBriefIdentity(briefPhase, laneContext, artifactContent, laneDir, readRegularFile, sha256)
+      if (sameLaneBrief(laneBriefContexts, laneBriefIdentities, briefPhase, identity)) return `wrote ${kind}`
+      laneBriefContexts.delete(briefPhase)
+      laneBriefIdentities.set(briefPhase, identity)
     }
     writeRegularFile(
       path.join(laneDir, spec[1]),
