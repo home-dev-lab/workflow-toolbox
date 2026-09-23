@@ -377,7 +377,7 @@ export function costReportSection(cost) {
 export function appendCostReport(report, cost) {
   const block = costReportSection(cost).trimEnd()
   const pattern = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/
-  if (pattern.test(report)) return `${report.replace(pattern, block).replace(/\s*$/, '')}\n`
+  if (pattern.test(report)) return `${report.replace(pattern, () => block).replace(/\s*$/, '')}\n`
   return `${report.replace(/\s*$/, '')}\n\n${block}\n`
 }
 

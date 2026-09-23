@@ -1,0 +1,1 @@
+let prompt = brief.replace(/## Artefacts to judge[\s\S]*?(?=\n## )/, `## Artefacts to judge\n\n${inlined}\n`)

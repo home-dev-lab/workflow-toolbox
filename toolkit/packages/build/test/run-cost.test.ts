@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { aggregateRunCosts, appendCostReport, attributePilotTurns, computeRunCost, formatAggregate, matchLaneSessions } from '../../../../plugin/bin/lib/run-cost-core.mjs'
+import { aggregateRunCosts, appendCostReport, attributePilotTurns, computeRunCost, costReportSection, formatAggregate, matchLaneSessions } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { priceRunCost } from '../../../../plugin/bin/lib/model-prices.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -518,6 +518,21 @@ describe('run cost', () => {
     expect(updated).toContain('## Closing\nkeep me')
     expect(updated.match(/<!-- run-cost -->/g)).toHaveLength(1)
     expect(updated).not.toContain('old generated text')
+  })
+
+  it('preserves replacement metacharacters in a generated cost block', () => {
+    const marker = "before $` whole $& after $' dollar $$"
+    const cost = {
+      route: 'LITE',
+      outcome: { status: 'partial', reason: marker },
+      unknown: [marker],
+      totals: 'unknown',
+    }
+    const original = '# Pilot\n\n<!-- run-cost -->\nold generated text\n<!-- /run-cost -->\n\n## Closing\nkeep me\n'
+
+    expect(appendCostReport(original, cost)).toBe(
+      `# Pilot\n\n${costReportSection(cost).trimEnd()}\n\n## Closing\nkeep me\n`,
+    )
   })
 
   it('reports a deferred summary distinctly from partial cost outcomes', () => {
