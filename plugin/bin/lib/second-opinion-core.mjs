@@ -7,6 +7,7 @@ import { withRepositoryGuide } from './sdk-role-profile.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
+const signalExitCode = (signal) => signal?.aborted && signal.reason === 'SIGINT' ? 130 : signal?.aborted && signal.reason === 'SIGTERM' ? 143 : null
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
@@ -35,9 +36,11 @@ function codexCompanion(env) {
 }
 
 function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES }) {
+  if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [] })
+  const ownership = adapter.createCodexBrokerOwnership(env)
   const child = spawn(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
     cwd,
-    env,
+    env: ownership.env,
     detached: adapter.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -45,8 +48,16 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   const chunks = { stdout: [], stderr: [] }
   let outputBytes = 0
   let overflow = false
+  let cleanup = null
   const stopOwnedFamily = () => {
     if (child.pid) adapter.endProcessFamily(child.pid)
+  }
+  const stopEverything = () => {
+    if (cleanup) return cleanup
+    ownership.capture(child.pid)
+    stopOwnedFamily()
+    cleanup = ownership.stop(child.pid)
+    return cleanup
   }
   const collect = (stream, chunk) => {
     if (overflow) return
@@ -55,27 +66,32 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
       overflow = true
       chunks.stdout.length = 0
       chunks.stderr.length = 0
-      stopOwnedFamily()
+      stopEverything()
       return
     }
     chunks[stream].push(chunk)
   }
   child.stdout.on('data', (chunk) => collect('stdout', chunk))
   child.stderr.on('data', (chunk) => collect('stderr', chunk))
-  signal?.addEventListener('abort', stopOwnedFamily, { once: true })
+  const onAbort = () => stopEverything()
+  const onExit = () => { stopEverything() }
+  process.once('exit', onExit)
+  signal?.addEventListener('abort', onAbort, { once: true })
+  if (signal?.aborted) onAbort()
   return new Promise((resolve) => {
     child.once('error', (error) => {
-      stopOwnedFamily()
+      stopEverything()
       resolve(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
-        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n` })
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
+        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n`, cleanup })
     })
     child.once('close', (code, childSignal) => {
-      stopOwnedFamily()
-      signal?.removeEventListener('abort', stopOwnedFamily)
+      stopEverything()
+      process.removeListener('exit', onExit)
+      signal?.removeEventListener('abort', onAbort)
       resolve(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
-        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString() })
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
+        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString(), cleanup })
     })
   })
 }
@@ -157,7 +173,6 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     }
 
     writeFileSync(options.out, 'ROUTE=gpt-astra\n')
-    const before = dependencies.listBrokers()
     let result
     try {
       result = await dependencies.runCodex({
@@ -170,27 +185,15 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
       })
       appendOutput(options.out, result.stdout)
       appendOutput(options.out, result.stderr)
+      for (const line of result.cleanup ?? []) appendLine(options.out, line)
     } catch (error) {
       result = { status: 1 }
       appendLine(options.out, error instanceof Error ? error.message : String(error))
     }
 
-    if (!before.supported) {
-      appendLine(options.out, before.reason)
-    } else {
-      const after = dependencies.listBrokers()
-      if (!after.supported) appendLine(options.out, after.reason)
-      else for (const pid of after.pids.filter((pid) => !before.pids.includes(pid))) {
-        try {
-          dependencies.stopBroker(pid)
-          appendLine(options.out, `stopped broker pid ${pid} started by this call`)
-        } catch (error) {
-          appendLine(options.out, `could not stop broker pid ${pid}: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-    }
-    appendLine(options.out, `EXIT=${result.status}`)
-    return result.status
+    const code = signalExitCode(options.signal) ?? result.status
+    appendLine(options.out, `EXIT=${code}`)
+    return code
   }
 
   writeFileSync(options.out, 'ROUTE=claude-opus\n')
@@ -216,6 +219,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],
         permissionMode: 'default',
+        abortController: options.abortController,
         canUseTool: async (toolName) => ['Read', 'Glob', 'Grep'].includes(toolName)
           ? { behavior: 'allow' }
           : { behavior: 'deny', message: 'second-opinion is read-only' },
@@ -237,7 +241,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     answer = 'Claude Opus returned no answer.'
   }
   appendOutput(options.out, answer)
-  const code = failed ? 1 : 0
+  const code = signalExitCode(options.signal) ?? (failed ? 1 : 0)
   appendLine(options.out, `EXIT=${code}`)
   return code
 }

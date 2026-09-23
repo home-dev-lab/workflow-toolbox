@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
+import { createCodexBrokerOwnership } from './codex-broker-ownership.mjs'
 import * as darwin from './darwin.mjs'
 import * as linux from './linux.mjs'
 import * as posix from './posix.mjs'
@@ -21,6 +22,7 @@ export function createHostAdapter({ platform = process.platform, invoke, evidenc
     readProcessSnapshot: () => implementation.readProcessSnapshot(invocation),
     resolveCanonicalPath: (input) => implementation.resolveCanonicalPath(invocation, input),
     endProcessFamily: (pid) => implementation.endProcessFamily(invocation, pid),
+    createCodexBrokerOwnership: (env) => createCodexBrokerOwnership(adapter, env),
   }
   if (!captured) return adapter
   return { ...adapter, evidence: () => evidenceSummary(platform, captured) }
@@ -53,7 +55,8 @@ function realInvocation() {
 // every consumer already turns a throwing read into a legible "unavailable on this platform".
 function unavailableAdapter(platform, reason) {
   const unavailable = () => { throw new Error(reason) }
-  return { available: false, platform, reason, readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason }) }
+  const adapter = { available: false, platform, reason, readProcessRelationships: unavailable, readProcessSnapshot: unavailable, endProcessFamily: () => ({ status: 'unavailable', reason }) }
+  return { ...adapter, createCodexBrokerOwnership: (env) => createCodexBrokerOwnership(adapter, env) }
 }
 
 export const hostAdapter = createHostAdapter({ unavailableFallback: true })

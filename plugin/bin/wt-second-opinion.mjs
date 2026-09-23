@@ -33,7 +33,7 @@ const abortController = new AbortController()
 let terminationSignal = null
 const requestTermination = (signal) => {
   terminationSignal = signal
-  abortController.abort()
+  abortController.abort(signal)
 }
 process.once('SIGTERM', requestTermination)
 process.once('SIGINT', requestTermination)
@@ -50,7 +50,7 @@ async function main() {
     return 2
   }
   outputPath = options.out
-  return runSecondOpinion({ ...options, signal: abortController.signal }, createSecondOpinionDependencies(hostAdapter))
+  return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter))
 }
 
 function finish(code) {

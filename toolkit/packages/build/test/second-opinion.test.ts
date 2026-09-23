@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
@@ -37,6 +38,36 @@ function fixture(consented: boolean) {
     env: { CLAUDE_CONFIG_DIR: config },
     options: { request, out, repo, effort: 'medium' },
   }
+}
+
+function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang') {
+  const f = fixture(true)
+  const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
+  const appPidFile = join(f.repo, 'app-server.pid')
+  const brokerPidFile = join(f.repo, 'broker.pid')
+  mkdirSync(companionDir, { recursive: true })
+  writeFileSync(join(companionDir, 'app-server-broker.mjs'), [
+    "import { spawn } from 'node:child_process'",
+    "import { writeFileSync } from 'node:fs'",
+    "import { join } from 'node:path'",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'app-server'], { stdio: 'ignore' })",
+    "writeFileSync(join(process.cwd(), 'app-server.pid'), String(child.pid))",
+    "process.on('SIGTERM', () => { child.kill('SIGTERM'); process.exit(0) })",
+    'setInterval(() => {}, 1000)',
+  ].join('\n'))
+  writeFileSync(join(companionDir, 'codex-companion.mjs'), [
+    "import { spawn } from 'node:child_process'",
+    "import { mkdirSync, writeFileSync } from 'node:fs'",
+    "import { join } from 'node:path'",
+    "const child = spawn(process.execPath, [join(import.meta.dirname, 'app-server-broker.mjs')], { detached: true, stdio: 'ignore' })",
+    'child.unref()',
+    "writeFileSync(join(process.cwd(), 'broker.pid'), String(child.pid))",
+    "const stateDir = join(process.env.CLAUDE_PLUGIN_DATA, 'state', 'fixture')",
+    'mkdirSync(stateDir, { recursive: true })',
+    "writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid }))",
+    mode === 'hang' ? 'setInterval(() => {}, 1000)' : `setTimeout(() => process.exit(${mode === 'normal' ? 0 : 7}), 100)`,
+  ].join('\n'))
+  return { ...f, companionDir, appPidFile, brokerPidFile }
 }
 
 function lines(file: string) {
@@ -248,57 +279,144 @@ describe('second-opinion advisor', () => {
     const f = fixture(true)
     const deps = dependencies({
       runCodex: vi.fn(() => ({ status: 7, stdout: 'partial answer\n', stderr: 'companion failed\n' })),
-      listBrokers: vi.fn(() => ({ supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' })),
     })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(7)
     expect(lines(f.out)).toEqual([
       'ROUTE=gpt-astra',
       'partial answer',
       'companion failed',
-      'broker cleanup unavailable on this platform',
       'EXIT=7',
     ])
   })
 
-  it('stops only brokers that appeared during its own Astra call', async () => {
+  it('does not use a process-list diff to claim ownership of brokers', async () => {
     const f = fixture(true)
     const listBrokers = vi.fn()
       .mockReturnValueOnce({ supported: true, pids: [11, 12] })
       .mockReturnValueOnce({ supported: true, pids: [11, 12, 21] })
     const deps = dependencies({ listBrokers })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(0)
-    expect(deps.stopBroker).toHaveBeenCalledOnce()
-    expect(deps.stopBroker).toHaveBeenCalledWith(21)
-    expect(lines(f.out)).toContain('stopped broker pid 21 started by this call')
+    expect(listBrokers).not.toHaveBeenCalled()
+    expect(deps.stopBroker).not.toHaveBeenCalled()
     expect(lines(f.out).at(-1)).toBe('EXIT=0')
   })
 
-  it('stops the Codex app-server process family when the wrapper receives SIGTERM', () => {
+  it('does not spawn a companion when the call was aborted before spawn', async () => {
     const f = fixture(true)
-    const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
-    const appPidFile = join(f.repo, 'app-server.pid')
-    mkdirSync(companionDir, { recursive: true })
-    writeFileSync(join(companionDir, 'codex-companion.mjs'), [
-      "import { spawn } from 'node:child_process'",
-      "import { writeFileSync } from 'node:fs'",
-      "import { join } from 'node:path'",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'app-server'], { stdio: 'ignore' })",
-      "writeFileSync(join(process.cwd(), 'app-server.pid'), String(child.pid))",
-      'setInterval(() => {}, 1000)',
-    ].join('\n'))
+    const controller = new AbortController()
+    controller.abort()
+    const endProcessFamily = vi.fn()
+    const deps = createSecondOpinionDependencies({
+      platform: process.platform,
+      endProcessFamily,
+      readProcessSnapshot: vi.fn(),
+    })
+    deps.resolveCodexCompanion = () => '/this/path/must/not/spawn.mjs'
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra', signal: controller.signal }, deps, f.env)).toBe(1)
+    expect(lines(f.out)).toContain('Codex companion launch aborted before spawn.')
+    expect(endProcessFamily).not.toHaveBeenCalled()
+  })
+
+  it('passes cancellation into the Opus SDK query instead of swallowing it', async () => {
+    const f = fixture(false)
+    const controller = new AbortController()
+    let receivedController: AbortController | undefined
+    const deps = dependencies({
+      resolveSdkQuery: vi.fn(() => ({ options }: { options: { abortController?: AbortController } }) => {
+        receivedController = options.abortController
+        return (async function* () {
+          await new Promise((resolve) => options.abortController?.signal.addEventListener('abort', resolve, { once: true }))
+          throw new Error('query aborted')
+        })()
+      }),
+    })
+    const running = runSecondOpinion({ ...f.options, route: 'opus', abortController: controller }, deps, f.env)
+    setTimeout(() => controller.abort(), 10)
+
+    expect(await running).toBe(1)
+    expect(receivedController).toBe(controller)
+    expect(lines(f.out)).toEqual(['ROUTE=claude-opus', 'query aborted', 'EXIT=1'])
+  })
+
+  it.each(['SIGTERM', 'SIGINT'] as const)('stops the Codex app-server behind the detached broker on %s without stopping another session', (signal) => {
+    const f = detachedBrokerFixture()
     const wrapper = spawn(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
       env: { ...process.env, ...f.env, HOME: f.repo },
       stdio: 'ignore',
     })
     let appPid = 0
+    let brokerPid = 0
+    let otherBroker: ReturnType<typeof spawn> | null = null
     try {
-      expect(waitFor(() => existsSync(appPidFile))).toBe(true)
-      appPid = Number(readFileSync(appPidFile, 'utf8'))
+      expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
+      appPid = Number(readFileSync(f.appPidFile, 'utf8'))
+      brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
       expect(processExists(appPid)).toBe(true)
-      process.kill(wrapper.pid!, 'SIGTERM')
+      otherBroker = spawn(process.execPath, [join(f.companionDir, 'app-server-broker.mjs')], {
+        cwd: f.repo,
+        detached: true,
+        stdio: 'ignore',
+      })
+      otherBroker.unref()
+      expect(processExists(otherBroker.pid!)).toBe(true)
+      process.kill(wrapper.pid!, signal)
       expect(waitFor(() => !processExists(appPid))).toBe(true)
+      expect(processExists(otherBroker.pid!)).toBe(true)
+      expect(waitFor(() => lines(f.out).at(-1) === `EXIT=${signal === 'SIGINT' ? 130 : 143}`)).toBe(true)
     } finally {
       if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
+      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (otherBroker?.pid && processExists(otherBroker.pid)) process.kill(-otherBroker.pid, 'SIGKILL')
+      if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
+    }
+  })
+
+  it.each([['normal', 0], ['error', 7]] as const)('stops the detached broker app-server after a %s companion end', (mode, expectedStatus) => {
+    const f = detachedBrokerFixture(mode)
+    const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
+      env: { ...process.env, ...f.env, HOME: f.repo },
+      encoding: 'utf8',
+      timeout: 5_000,
+    })
+    expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
+    const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
+    const brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
+    try {
+      expect(result.status).toBe(expectedStatus)
+      expect(waitFor(() => !processExists(appPid))).toBe(true)
+      expect(waitFor(() => !processExists(brokerPid))).toBe(true)
+    } finally {
+      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
+    }
+  })
+
+  it('stops the detached broker app-server from the process exit hook', () => {
+    const f = detachedBrokerFixture()
+    const harness = join(f.repo, 'exit-harness.mjs')
+    const coreUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/second-opinion-core.mjs')).href
+    const adapterUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/adapter.mjs')).href
+    writeFileSync(harness, [
+      `import { createSecondOpinionDependencies, runSecondOpinion } from ${JSON.stringify(coreUrl)}`,
+      `import { hostAdapter } from ${JSON.stringify(adapterUrl)}`,
+      `runSecondOpinion(${JSON.stringify({ ...f.options, route: 'astra' })}, createSecondOpinionDependencies(hostAdapter), process.env)`,
+      'setTimeout(() => process.exit(19), 300)',
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [harness], {
+      env: { ...process.env, ...f.env, HOME: f.repo },
+      encoding: 'utf8',
+      timeout: 5_000,
+    })
+    expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
+    const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
+    const brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
+    try {
+      expect(result.status).toBe(19)
+      expect(waitFor(() => !processExists(appPid))).toBe(true)
+      expect(waitFor(() => !processExists(brokerPid))).toBe(true)
+    } finally {
+      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
   })
@@ -313,6 +431,7 @@ describe('second-opinion advisor', () => {
       endProcessFamily,
       readProcessSnapshot: () => ({ supported: true, processes: [] }),
       readProcessRelationships: () => ({ status: 'known', processes: [] }),
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
     }
     const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64 })
     deps.resolveCodexCompanion = () => companion
