@@ -323,4 +323,24 @@ describe('adopt installer refactor pins', () => {
     expect(readFileSync(trace)).toEqual(traceBefore)
     expect(readdirSync(config).filter((file) => file.startsWith('settings.json.workflow-toolbox.bak.'))).toEqual(backupsBefore)
   })
+
+  it('preserves replacement metacharacters in an adopted script transformation', () => {
+    const fixture = fixturePlugin()
+    cpSync(join(PLUGIN, 'bin'), join(fixture.root, 'bin'), { recursive: true })
+    const marker = "replacement tokens: $` $& $' $$"
+    const generatedImport = "import os from 'node:os'\nimport { pathToFileURL } from 'node:url'"
+    const source = readFileSync(fixture.script, 'utf8')
+    expect(source).toContain(generatedImport)
+    const markerInTemplateSource = marker.split('`').join('\\`')
+    writeFileSync(fixture.script, source.replace(generatedImport, () => `${generatedImport}\n// ${markerInTemplateSource}`))
+    const target = tempDir()
+
+    const result = run(['--set', 'scripts', '--install', '--file', 'wt-lane-wait.mjs', '--dir', target], {
+      plugin: fixture.root,
+      script: fixture.script,
+    })
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0)
+    expect(readFileSync(join(target, 'wt-lane-wait.mjs'), 'utf8')).toContain(`// ${marker}`)
+  })
 })

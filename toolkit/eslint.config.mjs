@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import sonarjs from 'eslint-plugin-sonarjs'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
+import { noDynamicReplace } from './eslint-rules/no-dynamic-replace.mjs'
 
 const qualityFiles = [
   'packages/*/src/**/*.ts',
@@ -10,6 +11,11 @@ const qualityFiles = [
   'toolkit/packages/*/src/**/*.ts',
   'plugin/**/*.mjs',
   'plugin/**/*.js',
+]
+const replacementRuleFiles = [
+  ...qualityFiles,
+  'plugin/**/*.{ts,mts,cts}',
+  '../plugin/**/*.{ts,mts,cts}',
 ]
 const sonarRules = Object.fromEntries(
   Object.entries(sonarjs.configs.recommended.rules)
@@ -44,6 +50,15 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-expressions': 'off',
       '@typescript-eslint/no-unused-vars': 'off',
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    },
+  },
+  {
+    files: replacementRuleFiles,
+    plugins: {
+      'workflow-toolbox': { rules: { 'no-dynamic-replace': noDynamicReplace } },
+    },
+    rules: {
+      'workflow-toolbox/no-dynamic-replace': 'error',
     },
   },
   {

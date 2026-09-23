@@ -19,16 +19,17 @@
 
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import os, { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // @ts-expect-error runtime .mjs hook under plugin/bin/ — no bundler, no TS, per its own header.
-import { manifestPathFromOutput, phaseIndexForAgentInRunDir, handlePostToolUse } from '../../../../plugin/bin/wt-verifier-cli-guard-hook.mjs'
+import { manifestPathFromOutput, phaseIndexForAgentInRunDir, handlePostToolUse, streamFilePathFromCommand } from '../../../../plugin/bin/wt-verifier-cli-guard-hook.mjs'
 
 const roots: string[] = []
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true })
 })
 
@@ -45,6 +46,20 @@ const PARENT_AGENT_ID = 'parentagentid1234'
 describe('manifestPathFromOutput', () => {
   it('stops the manifest path before an ANSWER suffix', () => {
     expect(manifestPathFromOutput('MANIFEST: /tmp/envelope.manifest.json ANSWER: "answer"\n')).toBe('/tmp/envelope.manifest.json')
+  })
+})
+
+describe('streamFilePathFromCommand', () => {
+  it('preserves replacement metacharacters in the home path', () => {
+    const home = "/tmp/before-$`-$&-$'-$$-after"
+    const command = 'STREAMFILE="$HOME/stream.jsonl"\nopencode run > "$STREAMFILE"'
+    expect(streamFilePathFromCommand(command, home)).toBe(`${home}/stream.jsonl`)
+  })
+
+  it('does not read the home directory before validating the command', () => {
+    vi.spyOn(os, 'homedir').mockImplementation(() => { throw new Error('homedir unavailable') })
+    expect(streamFilePathFromCommand(null)).toBeNull()
+    expect(streamFilePathFromCommand('')).toBeNull()
   })
 })
 

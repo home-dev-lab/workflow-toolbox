@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
-    "quality:lint": "cd .. && node toolkit/node_modules/eslint/bin/eslint.js --config toolkit/eslint.config.mjs \"toolkit/packages/*/src/**/*.ts\" \"plugin/**/*.mjs\" \"plugin/**/*.js\" --max-warnings 687",
+    "quality:lint": "cd .. && node toolkit/node_modules/eslint/bin/eslint.js --config toolkit/eslint.config.mjs \"toolkit/packages/*/src/**/*.ts\" \"plugin/**/*.mjs\" \"plugin/**/*.js\" \"plugin/**/*.{ts,mts,cts}\" --max-warnings 687",
     "quality:host": "node scripts/host-primitive-census.mjs",
     "quality:dup": "jscpd packages/runtime/src packages/patterns/src packages/build/src packages/std/src packages/pipeline-spec/src packages/comm/src packages/debugger/src packages/scaffold/src packages/smoke/src ../plugin --config .jscpd.json",
     "quality:dead": "cd .. && node toolkit/node_modules/knip/bin/knip.js --config knip.json --max-issues 221",

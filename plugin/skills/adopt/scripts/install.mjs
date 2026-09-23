@@ -632,7 +632,7 @@ function itemContent(set, item, root) {
   const replaceExactlyOnce = (body, fragment, replacement) => {
     const count = body.split(fragment).length - 1
     if (count !== 1) fail(`${item.file === 'wt-lane-wait.mjs' ? 'waiter' : 'launcher'} transformation expected exactly one occurrence in ${src}: ${fragment.slice(0, 60)}`)
-    return body.replace(fragment, replacement)
+    return body.replace(fragment, () => replacement)
   }
   if (item.file === 'wt-lane-wait.mjs') {
     return replaceExactlyOnce(content, "import { classifyLane, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
