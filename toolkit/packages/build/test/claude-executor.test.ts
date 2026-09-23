@@ -162,8 +162,9 @@ describe('Claude SDK executor', () => {
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: outside } })
     expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+\nlog=.+\n$/); expect(result.stderr).toBe('')
     waitFor(report); waitFor(receipt)
-    expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=high origin=role base forced=false\n')
+    // The executor appends its variant line to the report after the SDK wrote it, before EXIT: read after EXIT.
     expect(waitForExit(log, 3000)).toBe('EXIT=0')
+    expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=high origin=role base forced=false\n')
     waitFor(`${log}.usage.json`)
     expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
     expect(existsSync(outside)).toBe(false)
