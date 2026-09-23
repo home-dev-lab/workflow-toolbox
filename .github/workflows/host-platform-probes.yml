@@ -35,6 +35,12 @@ jobs:
         run: node probes/host-platform/process-group-terminate.mjs probes/host-platform/evidence/${{ matrix.os }}/process-group-terminate.json
       - name: Capture path resolution
         run: node probes/host-platform/path-resolve.mjs probes/host-platform/evidence/${{ matrix.os }}/path-resolve.json
+      - name: Capture available memory
+        run: node probes/host-platform/memory-available.mjs probes/host-platform/evidence/${{ matrix.os }}/memory-available.json
+      - name: Capture spawn shim behavior
+        run: node probes/host-platform/spawn-shims.mjs probes/host-platform/evidence/${{ matrix.os }}/spawn-shims.json
+      - name: Capture detached grandchild behavior
+        run: node probes/host-platform/detached-grandchild.mjs probes/host-platform/evidence/${{ matrix.os }}/detached-grandchild.json
       - name: Upload evidence
         uses: actions/upload-artifact@v4
         with:

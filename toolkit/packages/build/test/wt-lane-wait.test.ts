@@ -63,6 +63,13 @@ describe('wt-lane-wait', () => {
     expect(result.status).toBe(exit)
   })
 
+  it('prints a recorded OOM cause with the lane exit', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { fs.appendFileSync('.lane/run.log', 'KILLED_BY=kernel-oom signal SIGKILL\\nEXIT=137\\n'); const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 137, killedBy: { signal: 'SIGKILL', cause: 'kernel-oom' } })); }, 80)")
+    const result = run(f.root)
+    expect(result.status).toBe(137)
+    expect(result.stdout.trim()).toContain('cause=kernel-oom signal=SIGKILL')
+  })
+
   it('returns 124 when the lane does not finish before timeout', () => {
     const f = fixture('setTimeout(() => {}, 30_000)')
     const result = run(f.root, '--timeout', '0.08')

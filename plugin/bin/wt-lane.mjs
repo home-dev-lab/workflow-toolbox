@@ -15,6 +15,7 @@ import { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'
 import { laneModelRefusal, resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
+import { hostAdapter } from './lib/host/adapter.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
@@ -29,7 +30,7 @@ const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000
 const PLATFORM = process.platform
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter }
 }
 
 async function loadIntegrationModule() {
@@ -40,8 +41,9 @@ function usage() {
   return 'Usage: node wt-lane.mjs --dir <project-root>/.claude/worktrees/<name> --model <provider/model> --brief <file> [--max-brief-age 600] [--acknowledge-stale-brief] [--timeout 5400] [--decision-grace 300] [--max-extensions 3] [--min-available-mib 1024] [--owner session|pilot] [--owner-token <token>] [--log <path>] [--role <role>] [--variant <name>] [--allow-unknown-variant] [--allow-no-git]\n       node wt-lane.mjs integrate --dir <lane-worktree> --into <integration-worktree> --message <file> [--merge-subject <subject>] [--archive-root <dir>] [--pre-remove-check <command...>] [--keep-worktree] [--ci-branch <name> [--remote public] [--authorize-file <path>] [--dispatch <workflow> [--wait]]] [--dry-run] [--force]'
 }
 
-function parse(argv) {
-  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(process.env.WT_LANE_MIN_AVAILABLE_MIB ?? DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null }
+export function parse(argv) {
+  const configuredMinimum = process.env.WT_LANE_MIN_AVAILABLE_MIB
+  const out = { dir: null, model: null, brief: null, maxBriefAge: DEFAULT_MAX_BRIEF_AGE, acknowledgeStaleBrief: false, briefReceipt: null, timeout: DEFAULT_TIMEOUT, decisionGrace: DEFAULT_DECISION_GRACE, maxExtensions: DEFAULT_MAX_EXTENSIONS, minAvailableMib: Number(configuredMinimum?.trim() ? configuredMinimum : DEFAULT_MIN_AVAILABLE_MIB), owner: 'session', ownerToken: null, briefCleanupDir: null, log: null, role: null, variantExplicit: false, allowUnknownVariant: false, allowNoGit: false, runId: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') out.dir = argv[++i] ?? null
@@ -92,37 +94,20 @@ function commandOutput(command, args, run) {
   } catch { return null }
 }
 
-export function readAvailableMemory({ platform = process.platform, readFile = readFileSync, run = spawnSync } = {}) {
-  if (platform === 'linux') {
-    try {
-      const match = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(readFile('/proc/meminfo', 'utf8'))
-      return match ? { mib: Math.floor(Number(match[1]) / 1024), source: 'MemAvailable from /proc/meminfo' } : { mib: null, source: 'MemAvailable from /proc/meminfo', reason: 'field missing' }
-    } catch { return { mib: null, source: 'MemAvailable from /proc/meminfo', reason: 'unreadable' } }
-  }
-  if (platform === 'darwin') {
-    const output = commandOutput('vm_stat', [], run)
-    if (output === null) return { mib: null, source: 'available pages from vm_stat', reason: 'unreadable' }
-    const pageSize = /page size of (\d+) bytes/.exec(output)
-    const available = [...output.matchAll(/^Pages (?:free|inactive|speculative|purgeable):\s+(\d+)\./gm)].reduce((sum, match) => sum + Number(match[1]), 0)
-    return pageSize && available > 0
-      ? { mib: Math.floor(available * Number(pageSize[1]) / 1024 / 1024), source: 'available pages from vm_stat' }
-      : { mib: null, source: 'available pages from vm_stat', reason: 'fields missing' }
-  }
-  if (platform === 'win32') {
-    const output = commandOutput('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory'], run)
-    const kib = output === null ? NaN : Number(output.trim())
-    return Number.isFinite(kib) && kib >= 0
-      ? { mib: Math.floor(kib / 1024), source: 'FreePhysicalMemory from Win32_OperatingSystem' }
-      : { mib: null, source: 'FreePhysicalMemory from Win32_OperatingSystem', reason: output === null ? 'unreadable' : 'invalid value' }
-  }
-  return { mib: null, source: `available memory on ${platform}`, reason: 'unsupported platform' }
-}
-
-function assertLaunchMemory(worker, minimumMib) {
+export function assertLaunchMemory(worker, minimumMib, readMemory) {
   if (worker) return
-  const memory = readAvailableMemory()
+  if (minimumMib === 0) return
+  const memory = readMemory()
   if (memory.mib === null) throw new Error(`Refused: available memory is unknown (${memory.source}: ${memory.reason}); refusing to launch until the source is readable.`)
   if (memory.mib < minimumMib) throw new Error(`Refused: available memory ${memory.mib} MiB is below the required ${minimumMib} MiB; lower WT_LANE_MIN_AVAILABLE_MIB only after freeing or deliberately budgeting memory.`)
+}
+
+function installedLauncherCapabilitiesAvailable(modules) {
+  return typeof modules.hostAdapter?.readAvailableMemory === 'function'
+    && typeof modules.writeJsonAtomic === 'function'
+    && typeof modules.claimCurrentSupervision === 'function'
+    && typeof modules.classifyLane === 'function'
+    && typeof modules.terminateLane === 'function'
 }
 
 function signalExit(signal) {
@@ -133,7 +118,7 @@ function signalExit(signal) {
 function journalEvidence(commandArgs, pid, pattern, run) {
   const output = commandOutput('journalctl', commandArgs, run)
   if (output === null) return null
-  const exactPid = new RegExp(`(?:^|\\D)${pid}(?:\\D|$)`)
+  const exactPid = new RegExp(`(?:\\bprocess\\s+|\\bpid[=:]\\s*)${pid}\\b`, 'i')
   return output.split(/\r?\n/).map((line) => line.replace(/[^\t\x20-\x7e]/g, '').trim()).find((line) => exactPid.test(line) && pattern.test(line))?.slice(0, 1000) ?? null
 }
 
@@ -406,7 +391,6 @@ async function main() {
     }
   }
   if (!opts.allowNoGit && !checkGitWorktree(opts.dir)) return 2
-  assertLaunchMemory(worker, opts.minAvailableMib)
 
   // Invoke the same consent resolver and wording as the PreToolUse gate before a node wrapper
   // can bypass its text matcher.
@@ -417,10 +401,11 @@ async function main() {
     process.stderr.write(`wt-lane: Refused: ${error instanceof Error ? error.message : String(error)}; refusing to launch.\n`)
     return 1
   }
-  if (typeof consentModules.writeJsonAtomic !== 'function' || typeof consentModules.claimCurrentSupervision !== 'function' || typeof consentModules.classifyLane !== 'function' || typeof consentModules.terminateLane !== 'function') {
+  if (!installedLauncherCapabilitiesAvailable(consentModules)) {
     process.stderr.write('wt-lane: Refused: the installed workflow-toolbox plugin is too old for this adopted launcher; update the plugin and re-adopt wt-lane.mjs.\n')
     return 1
   }
+  assertLaunchMemory(worker, opts.minAvailableMib, () => consentModules.hostAdapter.readAvailableMemory())
   let launchLock = null
   let releaseLaunchLock = () => {}
   if (!worker) {

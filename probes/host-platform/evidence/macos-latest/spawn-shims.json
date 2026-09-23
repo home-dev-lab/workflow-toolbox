@@ -1,0 +1,98 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "spawn-shims",
+    "capturedAt": "2026-09-22T23:06:41.798Z",
+    "command": "node spawn-shims.mjs /Users/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/macos-latest/spawn-shims.json",
+    "runId": "35795762873",
+    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runnerImage": {
+      "label": "macos-latest",
+      "os": "macos26",
+      "version": "20260907.0351.1"
+    },
+    "osRelease": {
+      "platform": "darwin",
+      "release": "25.6.0",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:16:43 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_VMAPPLE",
+      "arch": "arm64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "status": "not_used",
+        "reason": "procps is not the process-table provider on this OS"
+      },
+      "powershell": {
+        "status": "not_used",
+        "reason": "PowerShell is not used by these probes on this OS"
+      }
+    }
+  },
+  "measurements": {
+    "missingCommand": {
+      "name": "missing command, shell false",
+      "command": "wt-probe-command-that-does-not-exist-4753",
+      "options": {
+        "shell": false
+      },
+      "spawnReturned": true,
+      "pid": null,
+      "synchronousError": null,
+      "events": [
+        {
+          "event": "error",
+          "error": {
+            "message": "spawn wt-probe-command-that-does-not-exist-4753 ENOENT",
+            "code": "ENOENT",
+            "errno": -2,
+            "syscall": "spawn wt-probe-command-that-does-not-exist-4753"
+          }
+        },
+        {
+          "event": "close",
+          "code": -2,
+          "signal": null
+        }
+      ],
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "durationMilliseconds": 5.661625
+    },
+    "existingNonExecutable": {
+      "name": "existing non-executable file, shell false",
+      "command": "/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-9jegAH/not-executable",
+      "options": {
+        "shell": false
+      },
+      "spawnReturned": true,
+      "pid": null,
+      "synchronousError": null,
+      "events": [
+        {
+          "event": "error",
+          "error": {
+            "message": "spawn /var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-9jegAH/not-executable EACCES",
+            "code": "EACCES",
+            "errno": -13,
+            "syscall": "spawn /var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-host-spawn-probe-9jegAH/not-executable"
+          }
+        },
+        {
+          "event": "close",
+          "code": -13,
+          "signal": null
+        }
+      ],
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "durationMilliseconds": 1.124292
+    },
+    "windowsCommandShim": {
+      "status": "not_applicable",
+      "reason": "cmd shims are a Windows host behavior."
+    }
+  }
+}

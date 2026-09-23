@@ -1,0 +1,165 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "spawn-shims",
+    "capturedAt": "2026-09-22T23:06:50.676Z",
+    "command": "node spawn-shims.mjs D:\\a\\workflow-toolbox\\workflow-toolbox\\probes\\host-platform\\evidence\\windows-latest\\spawn-shims.json",
+    "runId": "35795762873",
+    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runnerImage": {
+      "label": "windows-latest",
+      "os": "win25-vs2026",
+      "version": "20260907.229.1"
+    },
+    "osRelease": {
+      "platform": "win32",
+      "release": "10.0.26100",
+      "version": "Windows Server 2025 Datacenter",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "status": "not_used",
+        "reason": "procps is not the process-table provider on this OS"
+      },
+      "powershell": {
+        "command": "pwsh -NoProfile -NonInteractive -Command $PSVersionTable.PSVersion.ToString()",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "7.6.5\r\n"
+      }
+    }
+  },
+  "measurements": {
+    "missingCommand": {
+      "name": "missing command, shell false",
+      "command": "wt-probe-command-that-does-not-exist-4396",
+      "options": {
+        "shell": false
+      },
+      "spawnReturned": true,
+      "pid": null,
+      "synchronousError": null,
+      "events": [
+        {
+          "event": "error",
+          "error": {
+            "message": "spawn wt-probe-command-that-does-not-exist-4396 ENOENT",
+            "code": "ENOENT",
+            "errno": -4058,
+            "syscall": "spawn wt-probe-command-that-does-not-exist-4396"
+          }
+        },
+        {
+          "event": "close",
+          "code": -4058,
+          "signal": null
+        }
+      ],
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "durationMilliseconds": 10.2299
+    },
+    "existingNonExecutable": {
+      "name": "existing non-executable file, shell false",
+      "command": "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\wt-host-spawn-probe-jbOvVZ\\not-executable.txt",
+      "options": {
+        "shell": false
+      },
+      "spawnReturned": false,
+      "pid": null,
+      "synchronousError": {
+        "message": "spawn EFTYPE",
+        "code": "EFTYPE",
+        "errno": -4028,
+        "syscall": "spawn"
+      },
+      "events": [],
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "durationMilliseconds": 1.3807
+    },
+    "windowsCommandShim": {
+      "bareShellFalse": {
+        "name": "probe-shim, shell false",
+        "command": "probe-shim",
+        "options": {
+          "shell": false
+        },
+        "spawnReturned": true,
+        "pid": null,
+        "synchronousError": null,
+        "events": [
+          {
+            "event": "error",
+            "error": {
+              "message": "spawn probe-shim ENOENT",
+              "code": "ENOENT",
+              "errno": -4058,
+              "syscall": "spawn probe-shim"
+            }
+          },
+          {
+            "event": "close",
+            "code": -4058,
+            "signal": null
+          }
+        ],
+        "stdout": "",
+        "stderr": "",
+        "timedOut": false,
+        "durationMilliseconds": 2.9444
+      },
+      "extensionShellFalse": {
+        "name": "probe-shim.cmd, shell false",
+        "command": "probe-shim.cmd",
+        "options": {
+          "shell": false
+        },
+        "spawnReturned": false,
+        "pid": null,
+        "synchronousError": {
+          "message": "spawn EINVAL",
+          "code": "EINVAL",
+          "errno": -4071,
+          "syscall": "spawn"
+        },
+        "events": [],
+        "stdout": "",
+        "stderr": "",
+        "timedOut": false,
+        "durationMilliseconds": 0.328
+      },
+      "bareShellTrue": {
+        "name": "probe-shim, shell true",
+        "command": "probe-shim",
+        "options": {
+          "shell": true
+        },
+        "spawnReturned": true,
+        "pid": 7092,
+        "synchronousError": null,
+        "events": [
+          {
+            "event": "exit",
+            "code": 0,
+            "signal": null
+          },
+          {
+            "event": "close",
+            "code": 0,
+            "signal": null
+          }
+        ],
+        "stdout": "probe-shim-ran\r\n",
+        "stderr": "",
+        "timedOut": false,
+        "durationMilliseconds": 25.7517
+      }
+    }
+  }
+}

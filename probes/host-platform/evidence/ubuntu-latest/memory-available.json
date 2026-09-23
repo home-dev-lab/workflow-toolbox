@@ -1,0 +1,53 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "memory-available",
+    "capturedAt": "2026-09-22T23:06:31.027Z",
+    "command": "node memory-available.mjs /home/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/ubuntu-latest/memory-available.json",
+    "runId": "35795762873",
+    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runnerImage": {
+      "label": "ubuntu-latest",
+      "os": "ubuntu24",
+      "version": "20260907.300.1"
+    },
+    "osRelease": {
+      "platform": "linux",
+      "release": "6.17.0-1022-azure",
+      "version": "#22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "command": "ps --version",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "ps from procps-ng 4.0.4\n"
+      },
+      "powershell": {
+        "status": "not_used",
+        "reason": "PowerShell is not used by these probes on this OS"
+      }
+    }
+  },
+  "osMemory": {
+    "status": "measured",
+    "freeBytes": 15319212032,
+    "totalBytes": 16766418944
+  },
+  "linux": {
+    "status": "measured",
+    "source": "/proc/meminfo",
+    "raw": "MemAvailable:   14960168 kB"
+  },
+  "macos": {
+    "status": "not_applicable",
+    "reason": "This host is not macOS."
+  },
+  "windows": {
+    "status": "not_applicable",
+    "reason": "This host is not Windows."
+  }
+}

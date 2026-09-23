@@ -1,0 +1,101 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "spawn-shims",
+    "capturedAt": "2026-09-22T23:06:31.071Z",
+    "command": "node spawn-shims.mjs /home/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/ubuntu-latest/spawn-shims.json",
+    "runId": "35795762873",
+    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runnerImage": {
+      "label": "ubuntu-latest",
+      "os": "ubuntu24",
+      "version": "20260907.300.1"
+    },
+    "osRelease": {
+      "platform": "linux",
+      "release": "6.17.0-1022-azure",
+      "version": "#22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "command": "ps --version",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "ps from procps-ng 4.0.4\n"
+      },
+      "powershell": {
+        "status": "not_used",
+        "reason": "PowerShell is not used by these probes on this OS"
+      }
+    }
+  },
+  "measurements": {
+    "missingCommand": {
+      "name": "missing command, shell false",
+      "command": "wt-probe-command-that-does-not-exist-2107",
+      "options": {
+        "shell": false
+      },
+      "spawnReturned": true,
+      "pid": null,
+      "synchronousError": null,
+      "events": [
+        {
+          "event": "error",
+          "error": {
+            "message": "spawn wt-probe-command-that-does-not-exist-2107 ENOENT",
+            "code": "ENOENT",
+            "errno": -2,
+            "syscall": "spawn wt-probe-command-that-does-not-exist-2107"
+          }
+        },
+        {
+          "event": "close",
+          "code": -2,
+          "signal": null
+        }
+      ],
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "durationMilliseconds": 3.794142
+    },
+    "existingNonExecutable": {
+      "name": "existing non-executable file, shell false",
+      "command": "/tmp/wt-host-spawn-probe-JMkQVY/not-executable",
+      "options": {
+        "shell": false
+      },
+      "spawnReturned": true,
+      "pid": null,
+      "synchronousError": null,
+      "events": [
+        {
+          "event": "error",
+          "error": {
+            "message": "spawn /tmp/wt-host-spawn-probe-JMkQVY/not-executable EACCES",
+            "code": "EACCES",
+            "errno": -13,
+            "syscall": "spawn /tmp/wt-host-spawn-probe-JMkQVY/not-executable"
+          }
+        },
+        {
+          "event": "close",
+          "code": -13,
+          "signal": null
+        }
+      ],
+      "stdout": "",
+      "stderr": "",
+      "timedOut": false,
+      "durationMilliseconds": 1.638057
+    },
+    "windowsCommandShim": {
+      "status": "not_applicable",
+      "reason": "cmd shims are a Windows host behavior."
+    }
+  }
+}
