@@ -15,7 +15,11 @@ function shortHash(value) {
 }
 
 export function tokenize(kind, value) {
-  for (const [token, entry] of tokens) if (entry.value === value) return token;
+  // The token for a value is one no held value is spelled like: a value registered AFTER its token was
+  // issued can share that spelling, and emitting it then prints that other value verbatim (Astra at
+  // 7323b6d2: A's token reused as A's replacement printed B, whose value was that spelling). Such a
+  // token keeps rehydrating to its value, but a fresh one is issued to REPLACE the value from then on.
+  for (const [token, entry] of tokens) if (entry.value === value && !values.has(token)) return token;
   // A token names exactly one value. Six hex digits collide (measured by Astra at 5a2134a5: 3,408
   // values gave two of them the same token, the second overwrote the first, which then expanded wrong
   // and was no longer masked), so a taken token is never reused: the serial moves on and the next
@@ -39,6 +43,14 @@ export function knownTokens() { return tokens; }
 // spelling was issued (a crafted value, or one that happens to be a token) makes that spelling ambiguous,
 // and an ambiguous spelling is masked: a secret shown is worse than a token that rehydrates to the wrong value.
 export function isIssuedToken(text) { return tokens.has(text) && !values.has(text); }
+// The text that REPLACES the value an issued token stands for. Every emitter goes through here, so no
+// replacement is ever spelled like a held value: an ambiguous token is replaced by the fresh token
+// tokenize issues for the same value (Astra at 7323b6d2).
+export function replacementFor(token) {
+  if (isIssuedToken(token)) return token;
+  const entry = tokens.get(token);
+  return entry ? tokenize(entry.kind, entry.value) : token;
+}
 export function takePending() { const result = pending; pending = []; return result; }
 export function restorePending(entries) { pending = [...entries, ...pending]; }
 export function testState() { return new Map(tokens); }

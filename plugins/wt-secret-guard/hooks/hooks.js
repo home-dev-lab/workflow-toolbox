@@ -8,7 +8,7 @@ import { resolveReference as resolveRuntimeReference, rewriteReferences } from '
 import { scrub } from './scrub.js';
 import { applySecretReadGuard } from './secret-read-guard.js';
 import { verdictForBash, verdictForPath } from './secret-read-policy.js';
-import { knownTokens, testState, tokenize } from './token-vault.js';
+import { knownTokens, replacementFor, testState, tokenize } from './token-vault.js';
 import { classifyOutbound } from './outbound-tools.js';
 import { maskAssistantRender, maskTurnStep } from './assistant-stream.js';
 import { REDACTION_NOTE } from './constants.js';
@@ -22,7 +22,7 @@ const journalHost = ($) => ({
   fsRead: (path) => $.fs.read(path), fsWrite: (path, text) => $.fs.write(path, text), fsStat: (path) => $.fs.stat(path), processRun: (argv, init) => $.process.run(argv, init), pluginRoot: () => $.plugin.root, configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'),
   sessionId: () => $.session.id(), sessionCwd: () => $.session.cwd(), uiLog: (text) => $.ui.log(text),
 });
-const referenceHost = ($) => ({ processRun: (argv, init) => $.process.run(argv, init), fsRead: (path) => $.fs.read(path), envGet: (name) => $.env.get(name), uiLog: (text) => $.ui.log(text) });
+const referenceHost = ($) => ({ processRun: (argv, init) => $.process.run(argv, init), fsRead: (path) => $.fs.read(path), uiLog: (text) => $.ui.log(text) });
 const storageHost = ($) => ({
   configDir: () => $.env.get('CLAUDE_CONFIG_DIR'), home: () => $.env.get('HOME'), sessionId: () => $.session.id(), sessionCwd: () => $.session.cwd(),
   fsRead: (path) => $.fs.read(path), fsStat: (path) => $.fs.stat(path), processRun: (argv, init) => $.process.run(argv, init), pluginRoot: () => $.plugin.root,
@@ -133,7 +133,7 @@ export const register = (on, options) => {
       const rewrite = await rewriteReferences(references, originalCommand);
       if (rewrite.prefetchFailed) return { deny: 'wt-secret-guard refused Bash execution because a 1Password reference could not be prefetched.' };
       if (rewrite.invalidReference) {
-        return { deny: `wt-secret-guard refused Bash execution: the command carries ${rewrite.reason || 'a reference it does not support'}. Supported forms are op://vault/item/field, op read with one literal op:// reference and documented flags, secret:env:NAME, secret:file:/absolute/path[#line], and a redaction token this session issued - as a bare shell word or as the whole contents of a quoted word. A reference inside a heredoc body is left as text.` };
+        return { deny: `wt-secret-guard refused Bash execution: the command carries ${rewrite.reason || 'a reference it does not support'}. Supported forms are op://vault/item/field, op read with one literal op:// reference and documented flags, secret:file:/absolute/path[#line], and a redaction token this session issued - as a bare shell word or as the whole contents of a quoted word. A reference inside a heredoc body is left as text.` };
       }
       // Every value the guard puts into this command is masked in its output, whatever its kind.
       const substituted = new Set(rewrite.substituted);
@@ -174,7 +174,7 @@ export const register = (on, options) => {
   on('prompt.submit', async ($, event, next) => {
     const cleaned = scrub(event, '');
     const replacements = typeof event.text === 'string'
-      ? [...knownTokens()].filter(([, entry]) => event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token }))
+      ? [...knownTokens()].filter(([, entry]) => event.text.includes(entry.value)).map(([token, entry]) => ({ raw: entry.value, token: replacementFor(token) }))
       : [];
     await publish(journalHost($));
     if (cleaned.changed) await $.ui.log(`wt-secret-guard: scrubbed ${knownTokens().size} tokenised value(s)`);

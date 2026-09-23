@@ -1,7 +1,7 @@
 // Functional core: recursively mask values without performing host I/O.
 import { detections, entropyCandidates, optionalDetections } from './detector.js';
 import { config } from './config.js';
-import { isIssuedToken, knownTokens, tokenize } from './token-vault.js';
+import { isIssuedToken, knownTokens, replacementFor, tokenize } from './token-vault.js';
 
 const GENERIC_KINDS = new Set(['assignment', 'op-output', 'key-value', 'environment-dump']);
 
@@ -66,7 +66,9 @@ function replaceKnown(text, command, includeOptional, substituted) {
     const last = groups.at(-1);
     if (last && span.from < last.to) { last.to = Math.max(last.to, span.to); last.parts.push(span); } else groups.push({ from: span.from, to: span.to, parts: [span] });
   }
-  const tokenFor = (part) => part.token ?? tokenize(part.detection.kind, part.detection.secret ?? part.detection.value);
+  // No replacement emits text equal to a held value: a known part's own token is reused only while it is
+  // still an unambiguous issued token; otherwise the vault issues the value a fresh one.
+  const tokenFor = (part) => (part.token ? replacementFor(part.token) : tokenize(part.detection.kind, part.detection.secret ?? part.detection.value));
   let scrubbed = '';
   let cursor = 0;
   for (const group of groups) {

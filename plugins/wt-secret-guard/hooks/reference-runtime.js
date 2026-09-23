@@ -100,14 +100,12 @@ async function fileContent($, occurrence) {
   }
 }
 
-async function envValue($, name) {
-  try {
-    const value = await $.envGet?.(name);
-    return typeof value === 'string' ? value : null;
-  } catch {
-    return null;
-  }
-}
+// secret:env is DISABLED. Claude Code (measured on 2.1.280) refuses a whole hooks module whose `$.env.get`
+// takes a non-literal name, so that the variables a module reads can be listed; an arbitrary
+// `secret:env:NAME` cannot honour that, and the guard loaded nothing in any real session while it tried.
+// The reference is refused with its reason until a design that declares its names literally exists; the
+// host rule is not routed around (no printenv, no other process reading the environment for it).
+export const ENV_DISABLED = 'secret:env is disabled: Claude Code only lets a plugin read environment variables it names literally; use secret:file or a 1Password reference';
 
 const refused = (command, reason, extra = {}) => ({ command, count: 0, references: [], substituted: [], invalidReference: true, reason, ...extra });
 
@@ -148,6 +146,8 @@ export async function rewriteReferences($, command) {
     return prefetched.get(key);
   };
   const prefetchFailed = () => refused(command, 'a 1Password reference that could not be prefetched', { prefetchFailed: true });
+  // Before any prefetch: a disabled form refuses the whole command, and nothing is read for it.
+  if (plan.occurrences.some((occurrence) => occurrence.form === 'env')) return refused(command, ENV_DISABLED);
   for (const occurrence of plan.occurrences) {
     let value;
     if (occurrence.form === 'op') {
@@ -157,19 +157,14 @@ export async function rewriteReferences($, command) {
       substituted.push(resolved.token);
     } else {
       // Every value WE substitute is bound as data and registered in the vault BEFORE the command
-      // runs: a value no detector recognises can only be masked in the output because the vault knows
-      // it. An env reference therefore binds the value the guard read from Claude Code's environment
-      // (measured 2026-09-22: $.env.get returns an arbitrary variable of the claude process) instead
-      // of letting the shell expand a variable the guard never saw.
-      value = occurrence.form === 'file' ? await fileContent($, occurrence)
-        : occurrence.form === 'env' ? await envValue($, occurrence.name)
-          : knownTokens().get(occurrence.label)?.value;
-      if (typeof value !== 'string') return refused(command, occurrence.form === 'env' ? 'an environment reference whose value this guard cannot read' : 'a reference whose value could not be read');
+      // runs: a value no detector recognises can only be masked in the output because the vault knows it.
+      value = occurrence.form === 'file' ? await fileContent($, occurrence) : knownTokens().get(occurrence.label)?.value;
+      if (typeof value !== 'string') return refused(command, 'a reference whose value could not be read');
       if (occurrence.form === 'token') substituted.push(occurrence.label);
-      else if (value) substituted.push(tokenize(occurrence.form === 'file' ? 'file' : 'environment', value));
+      else if (value) substituted.push(tokenize('file', value));
     }
     if (unrepresentable(value)) return refused(command, 'a value holding a NUL byte or an unpaired surrogate, which bash cannot carry unchanged');
-    const kind = occurrence.form === 'op' ? 'onepassword' : occurrence.form === 'file' ? 'file' : occurrence.form === 'env' ? 'environment' : knownTokens().get(occurrence.label)?.kind ?? 'token';
+    const kind = occurrence.form === 'op' ? 'onepassword' : occurrence.form === 'file' ? 'file' : knownTokens().get(occurrence.label)?.kind ?? 'token';
     if (value) substituted.push(...substitutionVariants(kind, value));
     replacements.push({ start: occurrence.replaceStart, end: occurrence.replaceEnd, value: renderReplacement(occurrence, `\${${bind(value)}}`) });
   }

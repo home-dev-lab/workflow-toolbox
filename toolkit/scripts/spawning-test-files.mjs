@@ -102,6 +102,7 @@ export const spawningTestFiles = [
   'packages/build/test/plugin-hook-paths.test.ts',
   'packages/build/test/plugin-hook-registration-drift.test.ts',
   'packages/build/test/plugin-hooks.test.ts',
+  'packages/build/test/plugin-host-validate.test.ts',
   'packages/build/test/plugin-integration.test.ts',
   'packages/build/test/plugin-release-record-guard-hook.test.ts',
   'packages/build/test/plugin-version-alignment.test.ts',

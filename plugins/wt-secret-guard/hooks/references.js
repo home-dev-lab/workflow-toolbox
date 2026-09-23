@@ -472,7 +472,11 @@ function opSequences(tokens) {
     const word = tokens[at];
     if (word.type !== 'word' || !word.literal || !OP_COMMAND.test(word.text)) continue;
     let cursor = at + 1;
-    for (let width = globalFlag(tokens[cursor]?.type === 'word' ? tokens[cursor] : null); width > 0; width = globalFlag(tokens[cursor]?.type === 'word' ? tokens[cursor] : null)) cursor += width;
+    // Global flags AND redirections may stand between `op` and its verb, as bash allows: a redirection
+    // with its target is skipped (Astra at 7323b6d2: `op 2>/dev/null read …` hid the literal form, so the
+    // value was never bound and `op` itself ran).
+    const skip = (token, next) => (token?.type === 'redirect' ? (next?.type === 'word' ? 2 : 1) : globalFlag(token?.type === 'word' ? token : null));
+    for (let width = skip(tokens[cursor], tokens[cursor + 1]); width > 0; width = skip(tokens[cursor], tokens[cursor + 1])) cursor += width;
     const verb = tokens[cursor];
     if (verb?.type !== 'word' || !verb.literal || !OP_VERBS.has(verb.text)) continue;
     found.push({ at: word.start, verb: verb.text, after: word.end });
@@ -727,7 +731,13 @@ function allowList(command, lexed, tokens, referenceStarts) {
       if (token.op === '<<' || token.op === '<<-') { heredocs += 1; if (heredocs > 1) return { refuse: 'more than one heredoc' }; target = 'heredoc'; } else target = 'file';
       continue;
     }
-    if (token.type === '(' || token.type === ')') return { refuse: 'a subshell, function definition, array or arithmetic command' };
+    if (token.type === '(' || token.type === ')') {
+      // Named by its keyword when one opens the command (`case x in x)`, `function f()`): the real-host
+      // matrix showed `case` refused as "a subshell", which does not say what to rewrite.
+      const head = simple.at(-1).find((word) => !word.assignment);
+      if (head?.kind === 'literal' && RESERVED.has(head.text)) return { refuse: `the shell keyword \`${head.text}\` (in any spelling)` };
+      return { refuse: 'a subshell, function definition, array or arithmetic command' };
+    }
     // One shell word: a word token, possibly glued to a `$( )` and to the rest of the word after it.
     const opener = token.type === 'open' ? index : tokens[index + 1]?.type === 'open' && tokens[index + 1].start === token.end ? index + 1 : -1;
     const from = token.start;
@@ -913,6 +923,17 @@ export function planReferences(command, options = {}) {
       // (`exec op read "$REF"`); beside one, it would run op on a value the guard bound and never
       // prefetched, so there it is refused.
       refusals.push('`op read` without a single literal `op://` reference and documented flags');
+    }
+  }
+  // Beside a reference, an `op` the shell runs as a command must be one the guard recognised (its verb
+  // placed through flags and redirections). One it cannot place would run `op` itself, on values the guard
+  // bound and never prefetched - it refuses instead (Astra at 7323b6d2).
+  if (byReference && allowed.positions) {
+    const recognised = new Set(sequences.map((entry) => entry.at));
+    for (const token of tokens) {
+      if (token.type === 'word' && token.literal && OP_COMMAND.test(token.text) && allowed.positions.has(token.start) && !recognised.has(token.start)) {
+        refusals.push('an `op` invocation whose verb this guard cannot place (write it as `op [flags] read \'op://vault/item/field\'`)');
+      }
     }
   }
   for (const match of matches) {

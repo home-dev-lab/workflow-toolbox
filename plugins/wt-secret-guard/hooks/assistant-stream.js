@@ -12,7 +12,7 @@
 import { config } from './config.js';
 import { detections, optionalDetections } from './detector.js';
 import { scrub } from './scrub.js';
-import { knownTokens, tokenize } from './token-vault.js';
+import { knownTokens, replacementFor, tokenize } from './token-vault.js';
 
 const FRAGMENT = 8;
 const HOLD = 512;
@@ -179,7 +179,8 @@ function cutPoint(raw, spans, offset) {
   return Math.max(0, Math.min(cut, raw.length));
 }
 
-function labelFor(span) { return span.label ?? tokenize(span.kind, span.hidden); }
+// A held value is never emitted as another held value's spelling (see replacementFor).
+function labelFor(span) { return span.label ? replacementFor(span.label) : tokenize(span.kind, span.hidden); }
 
 function render(text, from, to, spans) {
   const ranges = [];
