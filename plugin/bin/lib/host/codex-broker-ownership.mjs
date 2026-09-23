@@ -49,7 +49,9 @@ function sameIdentity(item, identity, observedAt) {
 }
 
 function sameProcess(item, identity, observedAt) {
-  return BROKER_PATTERN.test(String(item?.command ?? '')) && sameIdentity(item, identity, observedAt)
+  if (!item || item.pid !== identity.pid || !BROKER_PATTERN.test(String(item.command ?? ''))) return false
+  const startedAt = processStart(item, observedAt)
+  return startedAt !== null && Math.abs(startedAt - identity.startedAt) <= START_TIME_TOLERANCE_MS
 }
 
 const pause = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
@@ -90,6 +92,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   // This is called only while the spawned companion is known to be alive.
   function capture(companionPid) {
     if (!companionPid) return identity?.pid ?? null
+    if (identity && adapter.platform !== 'win32') return identity.pid
     const observedAt = now()
     const processes = snapshot()
     if (!processes) return null
@@ -110,6 +113,9 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
       claimedPid = candidate.pid
       identity = captured
     }
+    if (adapter.platform !== 'win32') return identity.pid
+    const currentBroker = processes.find((item) => item.pid === identity.pid)
+    if (!sameIdentity(currentBroker, identity, observedAt)) return identity.pid
     const family = descendants(processes, identity.pid)
     for (const item of processes) {
       if (item.pid === identity.pid || !family.has(item.pid) || capturedDescendants.has(item.pid)) continue
@@ -125,7 +131,10 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     if (!processes) return { status: 'unavailable', processes: [] }
     const item = processes.find((process) => process.pid === identity?.pid)
     if (!item) return { status: 'gone', processes }
-    return sameProcess(item, identity, observedAt)
+    const owned = adapter.platform === 'win32'
+      ? BROKER_PATTERN.test(String(item.command ?? '')) && sameIdentity(item, identity, observedAt)
+      : sameProcess(item, identity, observedAt)
+    return owned
       ? { status: 'owned', processes }
       : { status: 'changed', processes }
   }
@@ -143,29 +152,43 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   function currentOwnedDescendants() {
     const observedAt = now()
     const processes = snapshot()
-    if (!processes) return null
-    return [...capturedDescendants.values()].filter((captured) => {
+    if (!processes) return { status: 'unavailable', identities: [], reason: discoveryFailure }
+    const identities = [...capturedDescendants.values()].filter((captured) => {
       const item = processes.find((process) => process.pid === captured.pid)
       return sameIdentity(item, captured, observedAt)
     })
+    return { status: 'known', identities }
+  }
+
+  function forceEndVerifiedWindowsProcess(captured) {
+    const observedAt = now()
+    const processes = snapshot()
+    if (!processes) return { status: 'unavailable', reason: discoveryFailure }
+    const item = processes.find((process) => process.pid === captured.pid)
+    if (!item) return { status: 'gone' }
+    if (!sameIdentity(item, captured, observedAt)) return { status: 'changed' }
+    const result = adapter.forceEndProcessFamily(captured.pid)
+    return result?.status === 'ended'
+      ? { status: 'signalled' }
+      : { status: 'unavailable', reason: result?.reason ?? 'process termination unavailable on this platform' }
   }
 
   function stopCapturedWindowsDescendants() {
     for (const captured of capturedDescendants.values()) {
-      const observedAt = now()
-      const processes = snapshot()
-      if (!processes) return false
-      const item = processes.find((process) => process.pid === captured.pid)
-      if (sameIdentity(item, captured, observedAt)) adapter.forceEndProcessFamily(captured.pid)
+      const result = forceEndVerifiedWindowsProcess(captured)
+      if (result.status === 'unavailable') return result
     }
-    return true
+    return { status: 'complete' }
   }
 
   function waitUntilWindowsFamilyGone() {
     const deadline = now() + stopTimeoutMs
     let state = currentOwnedProcess()
     let ownedDescendants = currentOwnedDescendants()
-    while ((state.status === 'owned' || ownedDescendants?.length) && now() < deadline) {
+    while ((state.status === 'owned' || state.status === 'gone')
+      && ownedDescendants.status === 'known'
+      && (state.status === 'owned' || ownedDescendants.identities.length)
+      && now() < deadline) {
       wait(pollMs)
       state = currentOwnedProcess()
       ownedDescendants = currentOwnedDescendants()
@@ -184,18 +207,33 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
       }
       let state = currentOwnedProcess()
       if (adapter.platform === 'win32') {
+        if (state.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${discoveryFailure}`]
         if (state.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
         const descendantsBefore = currentOwnedDescendants()
-        if (descendantsBefore === null) return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: process discovery unavailable on this platform`]
-        if (state.status === 'gone' && descendantsBefore.length === 0) return [`broker/app-server process family pid ${identity.pid} already stopped`]
-        if (state.status === 'owned') adapter.forceEndProcessFamily(identity.pid)
-        if (!stopCapturedWindowsDescendants()) return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: process discovery unavailable on this platform`]
+        if (descendantsBefore.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${descendantsBefore.reason}`]
+        if (state.status === 'gone' && descendantsBefore.identities.length === 0) return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker exited before cleanup; descendants cannot be safely discovered`]
+        if (state.status === 'owned') {
+          const rootResult = forceEndVerifiedWindowsProcess(identity)
+          if (rootResult.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
+          if (rootResult.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${rootResult.reason}`]
+        }
+        const descendantResult = stopCapturedWindowsDescendants()
+        if (descendantResult.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${descendantResult.reason}`]
         let family = waitUntilWindowsFamilyGone()
-        if (family.state.status !== 'owned' && !family.ownedDescendants?.length) return [`stopped broker/app-server process family pid ${identity.pid} started by this call`]
-        adapter.forceEndProcessFamily(identity.pid)
-        stopCapturedWindowsDescendants()
+        if (family.state.status === 'unavailable' || family.ownedDescendants.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${family.ownedDescendants.reason ?? discoveryFailure}`]
+        if (family.state.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed during cleanup`]
+        if (family.state.status === 'gone' && family.ownedDescendants.identities.length === 0) return [`stopped broker/app-server process family pid ${identity.pid} started by this call`]
+        if (family.state.status === 'owned') {
+          const rootResult = forceEndVerifiedWindowsProcess(identity)
+          if (rootResult.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed during cleanup`]
+          if (rootResult.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${rootResult.reason}`]
+        }
+        const retryResult = stopCapturedWindowsDescendants()
+        if (retryResult.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${retryResult.reason}`]
         family = waitUntilWindowsFamilyGone()
-        if (family.state.status !== 'owned' && !family.ownedDescendants?.length) return [`force-stopped broker/app-server process family pid ${identity.pid} started by this call`]
+        if (family.state.status === 'unavailable' || family.ownedDescendants.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${family.ownedDescendants.reason ?? discoveryFailure}`]
+        if (family.state.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed during cleanup`]
+        if (family.state.status === 'gone' && family.ownedDescendants.identities.length === 0) return [`force-stopped broker/app-server process family pid ${identity.pid} started by this call`]
         return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: process family remained alive after forced termination`]
       }
       if (state.status === 'gone') return [`broker/app-server process family pid ${identity.pid} already stopped`]

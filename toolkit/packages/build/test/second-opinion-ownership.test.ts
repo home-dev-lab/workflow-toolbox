@@ -164,6 +164,23 @@ describe('second-opinion Codex broker ownership', () => {
     expect(forceEndProcessFamily).toHaveBeenCalledWith(2132)
   })
 
+  it('preserves POSIX cleanup when the broker command changes but still matches the broker pattern', () => {
+    let processes = [companion(2125), broker(2132, 2125)]
+    const endProcessFamily = vi.fn(() => { processes = []; return { status: 'ended' } })
+    const ownership = createCodexBrokerOwnership({
+      platform: 'linux',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily,
+      forceEndProcessFamily: vi.fn(),
+    }, {}, { stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(2125)
+    processes[1] = { ...processes[1]!, command: `${processes[1]!.command} --updated` }
+
+    expect(ownership.stop()).toEqual(['stopped broker/app-server process family pid 2132 started by this call'])
+    expect(endProcessFamily).toHaveBeenCalledWith(2132)
+  })
+
   it('force-ends the verified Windows tree before its broker can exit ahead of descendants', () => {
     let processes = [companion(3500), broker(984, 3500), { pid: 4000, ppid: 984, elapsedMs: 3_000, command: 'codex.exe app-server' }]
     const endProcessFamily = vi.fn()
@@ -215,6 +232,83 @@ describe('second-opinion Codex broker ownership', () => {
     expect(endProcessFamily).not.toHaveBeenCalled()
   })
 
+  it('does not capture descendants after the Windows broker identity has changed', () => {
+    let processes = [companion(3500), broker(984, 3500)]
+    const forceEndProcessFamily = vi.fn()
+    const ownership = createCodexBrokerOwnership({
+      platform: 'win32',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily,
+    }, {}, { stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(3500)
+    processes = [
+      { pid: 984, ppid: 1, elapsedMs: 100, command: 'unrelated process' },
+      { pid: 4000, ppid: 984, elapsedMs: 50, command: 'unrelated child' },
+    ]
+    ownership.capture(3500)
+    processes = [processes[1]!]
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 984: broker exited before cleanup; descendants cannot be safely discovered'])
+    expect(forceEndProcessFamily).not.toHaveBeenCalled()
+  })
+
+  it('does not retry a Windows broker PID after its identity changes', () => {
+    let processes = [companion(3500), broker(984, 3500), { pid: 4000, ppid: 984, elapsedMs: 3_000, command: 'codex.exe app-server' }]
+    const forceEndProcessFamily = vi.fn((pid: number) => {
+      if (pid === 984) processes = processes.map((item) => item.pid === 984
+        ? { pid: 984, ppid: 1, elapsedMs: 100, command: 'unrelated process' }
+        : item)
+      return { status: 'ended', kind: 'process_tree' }
+    })
+    const ownership = createCodexBrokerOwnership({
+      platform: 'win32',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily,
+    }, {}, { stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(3500)
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 984: broker identity changed during cleanup'])
+    expect(forceEndProcessFamily.mock.calls.filter(([pid]) => pid === 984)).toHaveLength(1)
+  })
+
+  it('reports Windows process discovery failure during cleanup as unavailable', () => {
+    let reads = 0
+    const ownership = createCodexBrokerOwnership({
+      platform: 'win32',
+      readProcessSnapshot: () => {
+        reads += 1
+        return reads < 4
+          ? { supported: true, processes: [companion(3500), broker(984, 3500)] }
+          : { supported: false, processes: [], reason: 'CIM read failed' }
+      },
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily: vi.fn(() => ({ status: 'ended', kind: 'process_tree' })),
+    }, {}, { stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(3500)
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 984: CIM read failed'])
+  })
+
+  it('reports a failed Windows termination call instead of claiming cleanup succeeded', () => {
+    const forceEndProcessFamily = vi.fn(() => ({ status: 'unavailable', kind: 'process_tree', reason: 'taskkill exited 1' }))
+    const ownership = createCodexBrokerOwnership({
+      platform: 'win32',
+      readProcessSnapshot: () => ({ supported: true, processes: [companion(3500), broker(984, 3500)] }),
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily,
+    }, {}, { stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(3500)
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 984: taskkill exited 1'])
+    expect(forceEndProcessFamily).toHaveBeenCalledOnce()
+  })
+
   it('removes its private temp directory even when host termination throws', () => {
     const ownership = createCodexBrokerOwnership({
       readProcessSnapshot: () => ({ supported: true, processes: [companion(2125), broker(2132, 2125)] }),
@@ -238,8 +332,8 @@ describe('second-opinion Codex broker ownership', () => {
     const ownership = createCodexBrokerOwnership({
       platform: 'win32',
       readProcessSnapshot: () => ({ supported: true, processes }),
-      endProcessFamily: () => { processes = []; return { status: 'ended' } },
-      forceEndProcessFamily: vi.fn(),
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily: () => { processes = []; return { status: 'ended' } },
     }, {}, { removeRoot, wait: vi.fn() })
     const root = ownership.env.CLAUDE_PLUGIN_DATA
     roots.push(root)
