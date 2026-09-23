@@ -1,7 +1,7 @@
 // Functional core: recursively mask values without performing host I/O.
 import { detections, entropyCandidates, optionalDetections } from './detector.js';
 import { config } from './config.js';
-import { isIssuedToken, knownTokens, replacementFor, tokenize } from './token-vault.js';
+import { isIssuedToken, knownTokens, knownValueOccurrences, replacementFor, tokenize } from './token-vault.js';
 
 const GENERIC_KINDS = new Set(['assignment', 'op-output', 'key-value', 'environment-dump']);
 
@@ -22,15 +22,22 @@ function occurrences(text, value) {
 // Such a value is masked in that output whatever its kind: a credential UUID or an address is kept
 // out of unconditional masking because it is ordinary elsewhere, never in the output of a command the
 // guard handed it to.
-function replaceKnown(text, command, includeOptional, substituted) {
+function replaceKnown(text, command, includeOptional, substituted, vaultOccurrences = knownValueOccurrences) {
   const options = config();
   const spans = [];
-  for (const [token, entry] of knownTokens()) {
-    const optionalEnabled = includeOptional && ((entry.kind === 'email' && options.maskEmails) || (entry.kind === 'ip-address' && options.maskIpAddresses));
-    const contextSensitive = entry.kind === 'credential-uuid';
-    const unconditional = !contextSensitive && ((entry.kind !== 'email' && entry.kind !== 'ip-address') || optionalEnabled);
-    if (!unconditional && !substituted.has(token)) continue;
-    for (const [from, to] of occurrences(text, entry.value)) spans.push({ from, to, token });
+  const eligible = (match) => {
+    const optionalEnabled = includeOptional && ((match.kind === 'email' && options.maskEmails) || (match.kind === 'ip-address' && options.maskIpAddresses));
+    const contextSensitive = match.kind === 'credential-uuid';
+    const unconditional = !contextSensitive && ((match.kind !== 'email' && match.kind !== 'ip-address') || optionalEnabled);
+    return unconditional || substituted.has(match.token);
+  };
+  const activeCategories = new Set(['unconditional']);
+  if (includeOptional && options.maskEmails) activeCategories.add('email');
+  if (includeOptional && options.maskIpAddresses) activeCategories.add('ipAddress');
+  for (const match of vaultOccurrences(text, eligible, activeCategories)) {
+    const { token } = match;
+    if (!eligible(match)) continue;
+    spans.push({ from: match.from, to: match.to, token });
   }
   const found = [
     ...detections(text, command),
@@ -103,4 +110,8 @@ export function scrub(value, command, includeOptional = true, substituted = new 
     return { value: result, changed, entropy };
   }
   return { value, changed: false, entropy: 0 };
+}
+
+export function testScrubWithVaultOccurrences(value, command, includeOptional, vaultOccurrences, substituted = new Set()) {
+  return replaceKnown(value, command, includeOptional, substituted, vaultOccurrences);
 }

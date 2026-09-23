@@ -3067,9 +3067,105 @@ await test('V53 the verify15 findings: an issued token stays usable after its sp
   }
   assert.deepEqual(failures, [], 'verify15 findings remain');
 });
-// V34 runs late on purpose: it registers about 2,300 values in the vault, and every later Bash-hook
-// call walks the whole vault - run before V38 it made V38 7 s and pushed the shipped-plugins vitest
-// file past its 15 s beforeAll.
+await test('V55 indexed scrubbing is byte-identical to the old algorithm over generated vault states', async () => {
+  const { testScrubWithVaultOccurrences, scrub } = await import('./scrub.js');
+  const { knownTokens, testResetVaultWork, testRestoreVault, testVaultSnapshot, testVaultWork } = await import('./token-vault.js');
+  const legacyOccurrences = (text) => {
+    const matches = [];
+    for (const [token, entry] of knownTokens()) {
+      for (let at = text.indexOf(entry.value); entry.value && at >= 0; at = text.indexOf(entry.value, at + 1)) matches.push({ from: at, to: at + entry.value.length, token, kind: entry.kind });
+    }
+    return matches;
+  };
+  let random = 0x18700549;
+  const next = () => { random = (Math.imul(random, 1664525) + 1013904223) >>> 0; return random; };
+  const baseline = testVaultSnapshot();
+  const run = (definition, legacy) => {
+    testRestoreVault(baseline);
+    configure(definition.options);
+    const substituted = new Set();
+    const issued = [];
+    for (const [kind, value, mark] of definition.entries) {
+      const token = tokenize(kind, value === '$issued' ? issued[0] : value);
+      issued.push(token);
+      if (mark) substituted.add(token);
+      if (definition.buildAfter === issued.length) scrub('matcher warmup', '', false);
+    }
+    const text = definition.text.replaceAll('$issued', issued[0] ?? '');
+    testResetVaultWork();
+    const value = (legacy ? testScrubWithVaultOccurrences(text, '', definition.includeOptional, legacyOccurrences, substituted) : scrub(text, '', definition.includeOptional, substituted)).value;
+    return { value, work: testVaultWork() };
+  };
+  let prefixCases = 0;
+  let postAdditionCases = 0;
+  for (let index = 0; index < 320; index += 1) {
+    const stem = `v55_${next().toString(36)}_${index}`;
+    const prefix = `${stem}_prefix`;
+    const longer = `${prefix}_longer`;
+    const suffix = `suffix_${stem}`;
+    const left = `${stem}_left_bridge`;
+    const right = `bridge_right_${stem}`;
+    const metacharacters = `${stem}_[.*+?]`;
+    const surrogatePair = `${stem}_\uD83D\uDD10`;
+    const scenarios = [
+      { entries: [['assignment', prefix], ['credential-uuid', longer]], text: `${longer}_${suffix}`, includeOptional: false },
+      { entries: [['assignment', prefix], ['assignment', longer], ['assignment', suffix]], text: `${longer}_${suffix}`, includeOptional: false },
+      { entries: [['assignment', left], ['assignment', right]], text: `${left}${right.slice('bridge'.length)}`, includeOptional: false },
+      { entries: [['email', prefix]], text: prefix, includeOptional: true, options: { maskEmails: true } },
+      { entries: [['ip-address', prefix]], text: prefix, includeOptional: false, options: { maskIpAddresses: true } },
+      { entries: [['credential-uuid', prefix, true]], text: prefix, includeOptional: false },
+      { entries: [['assignment', metacharacters], ['assignment', surrogatePair]], text: `${metacharacters}:${surrogatePair}`, includeOptional: false },
+      { entries: [['assignment', prefix], ['assignment', `${prefix}_post_addition`]], text: `${prefix}_post_addition`, includeOptional: false, buildAfter: 1, postAddition: true },
+      { entries: [['assignment', ''], ['assignment', prefix]], text: prefix, includeOptional: false },
+      { entries: [['credential-uuid', prefix], ['assignment', '$issued'], ['assignment', prefix, true]], text: prefix, includeOptional: false },
+      { entries: [['assignment', prefix]], text: `${prefix}:${prefix}`, includeOptional: false },
+      { entries: [['credential-uuid', 'a']], text: 'a'.repeat(100), includeOptional: false },
+      { entries: Array.from({ length: 20 }, (_, candidate) => ['assignment', `${'a'.repeat(86)}b${candidate.toString().padStart(9, '0')}`]), text: 'a'.repeat(200), includeOptional: false },
+    ];
+    const definition = scenarios[index % scenarios.length];
+    const indexed = run(definition, false);
+    const legacy = run(definition, true);
+    assert.equal(indexed.value, legacy.value, `generated case ${index} changed output`);
+    if (indexed.work.prefixLookups > 0) prefixCases += 1;
+    if (definition.postAddition && indexed.work.prefixCandidateChecks > 0) postAdditionCases += 1;
+  }
+  assert(prefixCases > 0, 'generated differential cases never exercised the prefix matcher');
+  assert(postAdditionCases > 0, 'generated differential cases never matched a bounded value added after warmup');
+  testRestoreVault(baseline);
+  configure({});
+});
+await test('V56 an excluded longer value does not hide an eligible prefix', async () => {
+  const { scrub, testScrubWithVaultOccurrences } = await import('./scrub.js');
+  const { knownTokens } = await import('./token-vault.js');
+  const prefix = 'v56_prefix'; const longer = `${prefix}_excluded`;
+  tokenize('assignment', prefix); tokenize('credential-uuid', longer);
+  for (let index = 0; index < 126; index += 1) tokenize('assignment', `v56_filler_${index}`);
+  const legacy = (text) => [...knownTokens()].flatMap(([token, entry]) => { const matches = []; for (let at = text.indexOf(entry.value); entry.value && at >= 0; at = text.indexOf(entry.value, at + 1)) matches.push({ from: at, to: at + entry.value.length, token, kind: entry.kind }); return matches; });
+  assert.equal(scrub(longer, '', false).value, testScrubWithVaultOccurrences(longer, '', false, legacy).value, 'excluded longer value hid eligible prefix');
+});
+await test('V57 every replacement token for a duplicate value retains eligibility', async () => {
+  const { scrub, testScrubWithVaultOccurrences } = await import('./scrub.js');
+  const { knownTokens } = await import('./token-vault.js');
+  const value = 'v57_duplicate';
+  const first = tokenize('credential-uuid', value);
+  tokenize('assignment', first);
+  const replacement = tokenize('credential-uuid', value);
+  const substituted = new Set([replacement]);
+  const legacy = (text) => [...knownTokens()].flatMap(([token, entry]) => { const matches = []; for (let at = text.indexOf(entry.value); entry.value && at >= 0; at = text.indexOf(entry.value, at + 1)) matches.push({ from: at, to: at + entry.value.length, token, kind: entry.kind }); return matches; });
+  assert.equal(scrub(value, '', false, substituted).value, testScrubWithVaultOccurrences(value, '', false, legacy, substituted).value, 'replacement entry lost substituted eligibility');
+});
+await test('V58 same-start alternatives preserve clipped merged-span token selection', async () => {
+  const { knownValueOccurrences } = await import('./token-vault.js');
+  const marker = tokenize('assignment', 'v58_marker');
+  const shorter = `v58_${marker}`; const longer = `${shorter}_tail`;
+  const shortToken = tokenize('brave-api-key', shorter);
+  const longToken = tokenize('assignment', longer);
+  for (let index = 0; index < 126; index += 1) tokenize('assignment', `v58_filler_${index}`);
+  const matches = knownValueOccurrences(longer).filter((match) => match.from === 0 && (match.token === shortToken || match.token === longToken));
+  assert.deepEqual(matches.map((match) => match.token), [shortToken, longToken], 'same-start shorter alternative was discarded');
+});
+// V34 runs late on purpose: it registers about 2,300 values in the vault. Tests that do not need that
+// accumulated state stay ahead of it so their own work remains isolated.
 await test('V34 overlapping detections are merged before replacement: no pattern unmasks what another masked', async () => {
   // Reviewer at d1814348: `SERVICE_SECRET={"password":"alpha","client_secret":"..."}` was fully masked
   // at 28501c1f. Round 8 added the quoted key-value pattern; its replacement ran first, the whole-line
@@ -3078,6 +3174,7 @@ await test('V34 overlapping detections are merged before replacement: no pattern
   // masked by the full scrub. Checked over every pair of patterns and several overlapping layouts.
   const detector = await import('./detector.js');
   const { scrub } = await import('./scrub.js');
+  const { testResetVaultWork, testVaultWork } = await import('./token-vault.js');
   const kinds = ['github-classic', 'github-fine-grained', 'aws-access-key', 'openai-api-key', 'slack-token', 'brave-api-key', 'jwt', 'private-key', 'assignment', 'op-output', 'key-value', 'environment-dump'];
   if (detector.PATTERN_KINDS) assert.deepEqual([...detector.PATTERN_KINDS], kinds, 'a detector pattern was added without joining this property');
   const W = 'word'; const S = '_SECRET'; const K = '_KEY';
@@ -3110,6 +3207,7 @@ await test('V34 overlapping detections are merged before replacement: no pattern
   for (const first of kinds) for (const second of kinds) for (const layout of layouts) texts.push(layout(sample(first, n += 1), sample(second, n += 1)));
   const occurrences = (text, value) => { const spans = []; for (let at = text.indexOf(value); value && at >= 0; at = text.indexOf(value, at + 1)) spans.push([at, at + value.length]); return spans; };
   const failures = [];
+  testResetVaultWork();
   for (const text of texts) {
     const output = scrub(text, '', false).value;
     // Expand every issued token back to its value, recording which characters came from a token.
@@ -3134,6 +3232,7 @@ await test('V34 overlapping detections are merged before replacement: no pattern
       }
     }
   }
+  assert(testVaultWork().prefixLookups > 0, 'V34 never exercised the real vault prefix path');
   assert.deepEqual(failures.slice(0, 5), [], `${failures.length} texts are masked less than by one of their patterns alone`);
 });
 await test('V29 the failure memory has an absolute bound: size, concurrency and expiry', async () => {
@@ -3191,6 +3290,144 @@ await test('V36 the failure memory never exceeds its bound, in-flight resolution
   const realNow = Date.now;
   Date.now = () => realNow() + 480_000;
   try { await resolveReference(failing, 'op://vault/v36-cleanup/password', ''); } finally { Date.now = realNow; }
+});
+await test('V54 5,000 vault entries do not cause per-call vault scans', async () => {
+  const { scrub } = await import('./scrub.js');
+  const { testResetVaultWork, testVaultWork } = await import('./token-vault.js');
+  const values = Array.from({ length: 5000 }, (_, index) => `v54-synthetic-value-${index.toString().padStart(4, '0')}`);
+  for (const value of values) tokenize('assignment', value);
+  testResetVaultWork();
+  for (const value of values) tokenize('assignment', value);
+  const started = Date.now();
+  for (let callIndex = 0; callIndex < 1000; callIndex += 1) scrub(`ordinary output ${callIndex}`, '', false);
+  const elapsed = Date.now() - started;
+  const work = testVaultWork();
+  assert(work.valueLookupSteps <= 5000, `5,000 existing-value lookups inspected ${work.valueLookupSteps} vault entries`);
+  assert.equal(work.scrubEntryScans, 0, `1,000 scrub calls scanned ${work.scrubEntryScans} vault entries`);
+  assert(work.prefixLookups <= 25_000, `1,000 short outputs caused ${work.prefixLookups} prefix lookups`);
+  assert(elapsed < 5_000, `5,000 entries and 1,000 scrub calls exceeded 5,000 ms: ${elapsed} ms`);
+});
+await test('V59 empty values are never indexed and cannot hang scrubbing', async () => {
+  const scrubUrl = new URL('./scrub.js', import.meta.url).href;
+  const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
+  const source = `import { scrub } from ${JSON.stringify(scrubUrl)}; import { tokenize } from ${JSON.stringify(vaultUrl)}; scrub('warmup', '', false); tokenize('assignment', ''); scrub('ordinary', '', false);`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 1000, encoding: 'utf8' });
+  assert.equal(child.error?.code, undefined, 'empty pending value made scrub exceed 1,000 ms');
+  assert.equal(child.status, 0, 'empty pending value made scrub fail');
+});
+await test('V60 oversized values use bounded matching and never escape in an exception', async () => {
+  const { scrub } = await import('./scrub.js');
+  const { testResetVaultWork, testVaultWork } = await import('./token-vault.js');
+  const value = `${'v60_'.repeat(10000)}end`;
+  const before = testVaultWork();
+  tokenize('assignment', value);
+  const indexed = testVaultWork();
+  assert.equal(indexed.prefixEntries, before.prefixEntries + 1, 'oversized value did not enter the prefix index');
+  assert.equal(indexed.oversizedValues, before.oversizedValues + 1, 'oversized value did not enter the fallback index');
+  for (let index = 0; index < 127; index += 1) tokenize('assignment', `v60_filler_${index}`);
+  testResetVaultWork();
+  let failure;
+  try { scrub('ordinary unrelated output', '', false); } catch (error) { failure = error; }
+  assert(!failure?.message.includes(value), 'matcher exception contained the oversized value');
+  assert(!failure, 'oversized value made scrub throw');
+  assert(testVaultWork().scrubEntryScans <= 32, `oversized fallback exceeded 32 candidate checks: ${testVaultWork().scrubEntryScans}`);
+  assert.notEqual(scrub(value, '', false).value, value, 'oversized fallback did not scrub the value itself');
+});
+await test('V61 excluded values allocate no occurrences before eligibility filtering', async () => {
+  const scrubUrl = new URL('./scrub.js', import.meta.url).href;
+  const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
+  const source = `import { scrub } from ${JSON.stringify(scrubUrl)}; import { tokenize } from ${JSON.stringify(vaultUrl)}; tokenize('credential-uuid', 'a'); const text = 'a'.repeat(1000000); if (scrub(text, '', false).value !== text) process.exit(2);`;
+  const child = spawnSync(process.execPath, ['--max-old-space-size=64', '--input-type=module', '-e', source], { timeout: 10_000, encoding: 'utf8' });
+  assert.equal(child.error?.code, undefined, 'excluded one-character value exceeded 10,000 ms');
+  assert.equal(child.status, 0, `excluded one-character value failed under a 64 MB heap (status ${child.status})`);
+});
+await test('V62 prefix matching stays within the old per-entry bound for shared prefixes', async () => {
+  const { scrub } = await import('./scrub.js');
+  const { testResetVaultWork, testVaultWork } = await import('./token-vault.js');
+  const shared = 'a'.repeat(4086);
+  for (let index = 0; index < 20; index += 1) tokenize('assignment', `${shared}b${index.toString().padStart(9, '0')}`);
+  const text = 'a'.repeat(10_000);
+  testResetVaultWork();
+  const started = Date.now();
+  assert.equal(scrub(text, '', false).value, text, 'non-matching shared-prefix values changed output');
+  const elapsed = Date.now() - started;
+  assert(testVaultWork().prefixCandidateChecks <= text.length * 20, `shared-prefix matcher tried ${testVaultWork().prefixCandidateChecks} candidates for ${text.length} text positions`);
+  assert(testVaultWork().prefixCandidateSearches <= 20, `shared-prefix matcher made ${testVaultWork().prefixCandidateSearches} verification searches for 20 candidate values`);
+  assert(elapsed < 10_000, `shared-prefix scrub exceeded 10,000 ms: ${elapsed} ms`);
+});
+await test('V68 long shared prefixes use one forward search per candidate value', async () => {
+  const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
+  const source = `import { knownValueOccurrences, testResetVaultWork, testVaultWork, tokenize } from ${JSON.stringify(vaultUrl)}; const value = 'a'.repeat(32767) + 'b'; const text = 'a'.repeat(65536); tokenize('assignment', value); const oldStarted = performance.now(); for (let at = text.indexOf(value); at >= 0; at = text.indexOf(value, at + 1)) {} const oldElapsed = performance.now() - oldStarted; testResetVaultWork(); const started = performance.now(); const matches = knownValueOccurrences(text); const elapsed = performance.now() - started; console.log(JSON.stringify({ elapsed, matches: matches.length, oldElapsed, work: testVaultWork() }));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 15_000, encoding: 'utf8' });
+  assert.equal(child.error?.code, undefined, 'long shared-prefix reproduction exceeded 15,000 ms');
+  assert.equal(child.status, 0, child.stderr.trim() || `long shared-prefix reproduction failed (status ${child.status})`);
+  const { elapsed, matches, oldElapsed, work } = JSON.parse(child.stdout.trim());
+  const regressions = [];
+  if (matches !== 0) regressions.push(`non-matching candidate emitted ${matches} matches`);
+  if (work.prefixCandidateChecks > 1) regressions.push(`one candidate caused ${work.prefixCandidateChecks} verification checks`);
+  if (elapsed > Math.max(250, oldElapsed * 50)) regressions.push(`indexed verification took ${elapsed.toFixed(1)} ms versus ${oldElapsed.toFixed(1)} ms for the old indexOf scan`);
+  assert.deepEqual(regressions, [], `long shared-prefix verification regressions: ${regressions.join('; ')}`);
+});
+await test('V69 impossible-length candidates are rejected before prefix traversal', async () => {
+  const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
+  const source = `import { knownValueOccurrences, testResetVaultWork, testVaultWork, tokenize } from ${JSON.stringify(vaultUrl)}; const text = 'a'.repeat(16000); for (let index = 0; index < 1000; index += 1) tokenize('assignment', text + 'b' + String(index)); testResetVaultWork(); const matches = knownValueOccurrences(text); const work = testVaultWork(); tokenize('assignment', 'aaaaaaaaZ'); testResetVaultWork(); const mixedMatches = knownValueOccurrences(text); console.log(JSON.stringify({ matches: matches.length, mixedMatches: mixedMatches.length, mixedWork: testVaultWork(), work }));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 5_000, encoding: 'utf8' });
+  assert.equal(child.error?.code, undefined, 'impossible-length reproduction exceeded 5,000 ms');
+  assert.equal(child.status, 0, child.stderr.trim() || `impossible-length reproduction failed (status ${child.status})`);
+  const { matches, mixedMatches, mixedWork, work } = JSON.parse(child.stdout.trim());
+  assert.equal(matches, 0, 'impossible-length candidates emitted matches');
+  assert.equal(work.prefixCandidateChecks, 0, `${work.prefixCandidateChecks} impossible-length candidates reached verification`);
+  assert.equal(work.prefixLookups, 0, `all-impossible buckets caused ${work.prefixLookups} prefix lookups`);
+  assert.equal(mixedMatches, 0, 'mixed-length non-matching candidates emitted matches');
+  assert(mixedWork.prefixLengthRejections >= 1000, `only ${mixedWork.prefixLengthRejections} impossible candidates were rejected before comparison`);
+  assert.equal(mixedWork.prefixCandidateChecks, 1, `${mixedWork.prefixCandidateChecks} candidates reached verification after length filtering`);
+});
+await test('V63 excluded 4 KiB values complete under a 64 MB heap', async () => {
+  const scrubUrl = new URL('./scrub.js', import.meta.url).href;
+  const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
+  const source = `import { scrub } from ${JSON.stringify(scrubUrl)}; import { tokenize } from ${JSON.stringify(vaultUrl)}; for (let index = 0; index < 1000; index += 1) tokenize('credential-uuid', String(index).padStart(4, '0') + 'a'.repeat(4092)); if (scrub('x', '', false).value !== 'x') process.exit(2);`;
+  const child = spawnSync(process.execPath, ['--max-old-space-size=64', '--input-type=module', '-e', source], { timeout: 20_000, encoding: 'utf8' });
+  assert.equal(child.error?.code, undefined, '1,000 excluded 4 KiB values exceeded 20,000 ms under a 64 MB heap');
+  assert.equal(child.status, 0, `1,000 excluded 4 KiB values failed under a 64 MB heap (status ${child.status})`);
+});
+await test('V64 duplicate values are filtered once before occurrence scanning', async () => {
+  const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
+  const source = `import { knownTokens, knownValueOccurrences, tokenize } from ${JSON.stringify(vaultUrl)}; let latest; for (let index = 0; index < 2048; index += 1) { if (latest) tokenize('credential-uuid', latest); latest = tokenize('credential-uuid', 'a'); } let eligibilityChecks = 0; const text = 'a'.repeat(10000); const started = Date.now(); knownValueOccurrences(text, (entry) => { eligibilityChecks += 1; return entry.token === latest; }, new Set()); const elapsed = Date.now() - started; const oldStarted = Date.now(); const eligible = [...knownTokens()].filter(([token]) => token === latest); for (const [, entry] of eligible) for (let at = text.indexOf(entry.value); at >= 0; at = text.indexOf(entry.value, at + 1)) {} const oldElapsed = Date.now() - oldStarted; console.log(JSON.stringify({ eligibilityChecks, elapsed, oldElapsed }));`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 10_000, encoding: 'utf8' });
+  assert.equal(child.error?.code, undefined, 'duplicate-value reproduction exceeded 10,000 ms');
+  assert.equal(child.status, 0, child.stderr.trim() || `duplicate-value reproduction failed (status ${child.status})`);
+  const { eligibilityChecks, elapsed, oldElapsed } = JSON.parse(child.stdout.trim());
+  assert(eligibilityChecks <= 4096, `2,048 duplicate values caused ${eligibilityChecks} eligibility checks`);
+  assert(elapsed <= oldElapsed * 10 + 100, `duplicate scrub took ${elapsed} ms versus ${oldElapsed} ms for the old scan`);
+});
+await test('V65 excluded absent prefixes do not scan a 16 million character output', async () => {
+  const vaultUrl = new URL('./token-vault.js', import.meta.url).href;
+  const source = `import { knownValueOccurrences, tokenize } from ${JSON.stringify(vaultUrl)}; for (let index = 0; index < 1024; index += 1) tokenize('credential-uuid', 'Z' + String(index).padStart(7, '0') + 'b'.repeat(4089)); const text = 'a'.repeat(16000000); const oldStarted = Date.now(); for (let index = 0; index < 1024; index += 1) void index; const oldElapsed = Date.now() - oldStarted; const started = Date.now(); if (knownValueOccurrences(text, () => false, new Set(['unconditional'])).length) process.exit(2); const elapsed = Date.now() - started; if (elapsed > Math.max(250, oldElapsed * 20)) { console.error('excluded prefix scrub took ' + elapsed + ' ms versus ' + oldElapsed + ' ms for the old eligibility pass'); process.exit(3); }`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { timeout: 5_000, encoding: 'utf8' });
+  assert.equal(child.error?.code, undefined, 'excluded absent-prefix reproduction exceeded 5,000 ms');
+  assert.equal(child.status, 0, child.stderr.trim() || `excluded absent-prefix reproduction failed (status ${child.status})`);
+});
+await test('V66 the prefix index retains one entry reference and no per-character nodes', async () => {
+  const { testRestoreVault, testVaultSnapshot, testVaultWork } = await import('./token-vault.js');
+  const baseline = testVaultSnapshot();
+  const before = testVaultWork();
+  for (let index = 0; index < 1000; index += 1) tokenize('assignment', `v66_${index.toString().padStart(4, '0')}_${'x'.repeat(1000)}`);
+  const after = testVaultWork();
+  assert.equal(after.prefixEntries - before.prefixEntries, 1000, 'prefix index did not retain exactly one entry reference per added value');
+  assert(after.prefixKeys - before.prefixKeys <= 1000, 'prefix index retained more than one map key per added value');
+  assert(after.prefixKeyCharacters - before.prefixKeyCharacters <= 8_000, 'prefix index allocated more than eight key characters per added value');
+  testRestoreVault(baseline);
+});
+await test('V67 value-map lookup agrees with the old vault scan', async () => {
+  const { knownTokens, testRestoreVault, testVaultSnapshot } = await import('./token-vault.js');
+  const baseline = testVaultSnapshot();
+  const value = 'v67_lookup_value';
+  tokenize('assignment', value);
+  const heldValues = new Set([...knownTokens()].map(([, entry]) => entry.value));
+  const oldToken = [...knownTokens()].find(([token, entry]) => entry.value === value && !heldValues.has(token))?.[0];
+  assert(oldToken, 'old vault scan fixture found no reusable token');
+  assert.equal(tokenize('assignment', value), oldToken, 'value-map lookup chose a different token than the old vault scan');
+  testRestoreVault(baseline);
 });
 console.log(`hooks registered: ${hooks.length}`);
 process.exit(failures ? 1 : 0);
