@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
-import { identifySignalCause, inspectStartedProcess, readAvailableMemory } from '../../../../plugin/bin/wt-lane.mjs'
+import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, parse } from '../../../../plugin/bin/wt-lane.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
@@ -47,7 +47,7 @@ function fixture(script: string) {
   chmodSync(join(bin, 'opencode'), 0o755)
   chmodSync(join(bin, 'vm_stat'), 0o755)
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script }
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_LANE_MIN_AVAILABLE_MIB: '0' }
   return { root, dir, config, env }
 }
 function run(f: ReturnType<typeof fixture>, extra: string[] = [], model = 'openai/gpt-5.6-luna') {
@@ -175,22 +175,21 @@ function currentDecisionFile(dir: string) {
 }
 
 describe('wt-lane memory and termination evidence seams', () => {
-  it('reads Linux MemAvailable as MiB', () => {
-    expect(readAvailableMemory({ platform: 'linux', readFile: (() => 'MemTotal: 999999 kB\nMemAvailable: 1572864 kB\n') as unknown as typeof readFileSync }))
-      .toEqual({ mib: 1536, source: 'MemAvailable from /proc/meminfo' })
+  it('treats a blank memory-floor environment value as the default', () => {
+    const previous = process.env.WT_LANE_MIN_AVAILABLE_MIB
+    process.env.WT_LANE_MIN_AVAILABLE_MIB = '  \t '
+    try {
+      expect(parse(['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']).minAvailableMib).toBe(1024)
+    } finally {
+      if (previous === undefined) delete process.env.WT_LANE_MIN_AVAILABLE_MIB
+      else process.env.WT_LANE_MIN_AVAILABLE_MIB = previous
+    }
   })
 
-  it('names an unreadable Linux memory source as unknown', () => {
-    expect(readAvailableMemory({ platform: 'linux', readFile: (() => { throw new Error('denied') }) as unknown as typeof readFileSync }))
-      .toEqual({ mib: null, source: 'MemAvailable from /proc/meminfo', reason: 'unreadable' })
-  })
-
-  it('uses named macOS available-page and Windows free-memory sources', () => {
-    const run = ((command: string) => command === 'vm_stat'
-      ? { status: 0, stdout: 'Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 100000.\nPages inactive: 200000.\nPages speculative: 10000.\nPages purgeable: 10000.\n' }
-      : { status: 0, stdout: '2097152\n' }) as unknown as typeof spawnSync
-    expect(readAvailableMemory({ platform: 'darwin', run })).toEqual({ mib: 1250, source: 'available pages from vm_stat' })
-    expect(readAvailableMemory({ platform: 'win32', run })).toEqual({ mib: 2048, source: 'FreePhysicalMemory from Win32_OperatingSystem' })
+  it('permits an unavailable memory source only when the configured floor is zero', () => {
+    const unavailable = () => ({ mib: null, source: 'available memory on aix', reason: 'unsupported platform' })
+    expect(() => assertLaunchMemory(false, 0, unavailable)).not.toThrow()
+    expect(() => assertLaunchMemory(false, 1, unavailable)).toThrow('available memory is unknown')
   })
 
   it('classifies a captured earlyoom journal line for the exact child pid', () => {
@@ -208,6 +207,14 @@ describe('wt-lane memory and termination evidence seams', () => {
 
     expect(identifySignalCause(4242, 'SIGKILL', { platform: 'linux', run }))
       .toEqual({ signal: 'SIGKILL', cause: 'kernel-oom', evidence: line })
+  })
+
+  it('does not blame a lane when its pid is only another number on an OOM journal line', () => {
+    const line = '2026-09-22T11:52:43+0100 host earlyoom[4242]: sending SIGTERM to process 9999 uid 1000 "other": badness 974, VmRSS 4242 MiB'
+    const run = (() => ({ status: 0, stdout: `${line}\n` })) as unknown as typeof spawnSync
+
+    expect(identifySignalCause(4242, 'SIGTERM', { platform: 'linux', run }))
+      .toEqual({ signal: 'SIGTERM', cause: 'unknown' })
   })
 
   it('reports unknown when journalctl is unavailable or the platform has no journal', () => {

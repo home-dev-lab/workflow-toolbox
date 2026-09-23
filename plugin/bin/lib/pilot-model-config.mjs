@@ -2,12 +2,11 @@ import { resolveConsent } from './lane-consent-check-core.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { hasModelPluginValue, readWorkflowToolboxPluginOption } from './plugin-options.mjs'
 
-// Owner decisions 2026-09-14: the harness pilot and orchestrator (agents spawned by a session, no
-// enforced lifecycle) run on Opus, Fable for hard cards; the SDK runner's pilot and orchestrator run on
-// Opus in every cell, because the lifecycle server and stronger critic/refutation executors carry the rigour.
+// Owner decision 2026-09-22: every harness and SDK pilot/orchestrator cell runs on Opus. The 0.3.280
+// SDK floor makes the alias resolve to Opus 5.5, so hard cards no longer need a separate Fable route.
 const DEFAULT_MODELS = {
   pilot: 'opus',
-  pilotHard: 'fable',
+  pilotHard: 'opus',
   orchestrator: 'opus',
   sdkPilot: 'opus',
   sdkPilotHard: 'opus',
@@ -98,7 +97,7 @@ const EXECUTOR_DEFAULTS = {
   },
   'claude-sdk': {
     standard: { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' },
-    hard: { critic: 'fable', code: 'opus', review: 'opus', refutation: 'fable' },
+    hard: { critic: 'opus', code: 'opus', review: 'opus', refutation: 'opus' },
   },
 }
 

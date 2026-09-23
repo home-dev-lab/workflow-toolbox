@@ -6,8 +6,13 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Disable `secret:env:NAME` in `wt-secret-guard`: Claude Code refuses a whole hooks module whose `$.env.get` takes a non-literal name, so the guard loaded nothing in any real session while it read arbitrary variables. A command carrying the form is now refused with that reason and a pointer to `secret:file` or a 1Password reference; the form returns only with a design that names its variables literally. The toolkit suite now runs `claude plugin validate --strict` on every shipped plugin where the binary is available
 - Refactor the adopt installer into bounded parsing, settings, audit, managed-item, migration, and command seams while preserving its standalone CLI transcripts and file effects; settings verification now also proves the exact prerequisite values before publication
 - SDK pilot review loops now require criterion/task anchors, block only anchored MEDIUM-or-higher findings, route LOW and unanchored findings, review only each later harden diff with prior findings, and stop after three rounds with an explicit question for the parent; critic extensions count as recurrence and empty critics must account for their attacks or retry once
+- Require Claude Agent SDK 0.3.280 or newer so the `opus` alias resolves to Opus 5.5; SDK and OpenCode launches now declare role effort explicitly, with high for Opus roles and xhigh for GPT Sol implementation.
+- Route hard pilots plus Claude SDK hard critics/refutations to Opus, and replace second-opinion's Fable fallback with a fresh-context Opus consult while retaining Astra as the decorrelated route.
+- Split Secret Guard hooks by responsibility and add warn-only secret-file read measurement for original Bash input, Read, and NotebookRead with value-free per-session journals
+- Refuse raw secret-bearing MCP, Bash, Write, Edit, and NotebookEdit inputs; repair denied transcript inputs in place by tool-use identifier; mask visible assistant streams; warn on SessionStart replay; and preserve journal records across module reloads
 
 ### Fixed
 - `wt-deep-search` (EXPERIMENTAL): a deep search started with no Exa key and no opencode on PATH is refused at once, naming both remedies and saying ordinary web search still works, instead of returning a handle that fails nine seconds later with a bare exit status; a missing Exa key is recorded as missing, a refused key as refused, and an opencode not-found failure names the program to install
@@ -15,6 +20,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 - Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
+
+### Fixed
+- Close Secret Guard bypasses around reference-wrapped vault values and alternate `op read` arguments; preserve reference value bytes across shell quoting contexts and UTF-8 transcript offsets; authenticate the target JSONL `tool_use` record before repair writes; retain every built-in and known secret across stream boundaries; and reuse the active journal rotation segment
 
 ## [0.186.0] - 2026-09-22
 

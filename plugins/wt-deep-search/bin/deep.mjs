@@ -50,13 +50,16 @@ async function reconcile(record) {
   const output = log.slice(0, marker.index).trim();
   if (marker[1] !== '0') {
     const timeout = output.match(/(?:^|\n)TIMEOUT=(\d+)\s*$/);
+    const spawnError = output.match(/(?:^|\n)SPAWN_ERROR=([^\s]+)\s*$/);
     return store.update(record.handle, {
       status: 'failed',
       error: timeout
         ? `opencode timed out after ${timeout[1]}ms`
         : marker[1] === '127'
           ? 'opencode was not found; install opencode and ensure it is on PATH'
-          : `opencode exited with status ${marker[1]}`,
+          : spawnError
+            ? `opencode failed to start: ${spawnError[1]}`
+            : `opencode exited with status ${marker[1]}`,
     });
   }
   let result = output;
@@ -81,6 +84,7 @@ async function worker(handle) {
     shape: record.shape,
     dir: record.dir,
     timeoutMs: record.timeoutMs,
+    opencodePath: record.opencodePath,
   };
   const exa = {
     run: async (runOptions) => {
@@ -134,6 +138,7 @@ async function start(args) {
     shape,
     dir: workDir,
     timeoutMs: 30 * 60_000,
+    opencodePath: providers.opencode.available ? providers.opencode.path : undefined,
   };
   const answer = await startDeepResearch(options, {
     store,

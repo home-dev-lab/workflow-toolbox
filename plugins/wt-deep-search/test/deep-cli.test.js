@@ -61,6 +61,9 @@ test('CLI starts without an Exa key when opencode is resolvable', async (t) => {
   const result = f.run('start', '--mode', 'deep-lite', '--question', 'question');
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^deep-[a-f0-9-]+\n$/);
+  const handle = result.stdout.trim();
+  const record = JSON.parse(await readFile(join(f.directory, `${handle}.json`), 'utf8'));
+  assert.equal(record.opencodePath, opencode);
 });
 
 test('worker records a missing Exa key as missing before falling back', async (t) => {
@@ -87,6 +90,42 @@ test('worker records a missing Exa key as missing before falling back', async (t
   const record = JSON.parse(await readFile(join(f.directory, 'deep-one.json'), 'utf8'));
   assert.equal(record.exaClassification, 'missing');
   assert.match(record.exaError, /EXA_API_KEY.*not set/i);
+});
+
+test('worker launches the exact persisted opencode path', async (t) => {
+  const f = await fixture(t);
+  const question = String.raw`line one
+line "two" \\" tail\\
+%PATH:x=y% ! ^`;
+  const capture = join(f.directory, 'opencode-args.json');
+  const script = join(f.directory, 'opencode-fixture.mjs');
+  const executable = process.platform === 'win32' ? join(f.directory, 'opencode.cmd') : join(f.directory, 'opencode');
+  await writeFile(script, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)))\n`);
+  if (process.platform === 'win32') await writeFile(executable, `@echo off\r\n"${process.execPath}" "%~dp0opencode-fixture.mjs" %*\r\n`);
+  else {
+    await writeFile(executable, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`);
+    await chmod(executable, 0o755);
+  }
+  await f.write({
+    handle: 'deep-path',
+    status: 'running',
+    engine: 'opencode',
+    mode: 'agentic',
+    shape: 'prose',
+    question,
+    dir: f.directory,
+    timeoutMs: 5_000,
+    opencodePath: executable,
+    createdAt: 10,
+    updatedAt: 10,
+  });
+
+  const result = f.run('__worker', 'deep-path');
+
+  assert.equal(result.status, 0, result.stderr);
+  const args = JSON.parse(await readFile(capture, 'utf8'));
+  assert.deepEqual(args.slice(0, 4), ['run', '--auto', '--dir', f.directory]);
+  assert.ok(args[4].includes(question));
 });
 
 test('CLI rejects an unknown handle with a sentence naming it', async (t) => {
@@ -180,4 +219,23 @@ test('CLI explains how to repair an opencode not-found exit', async (t) => {
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /opencode was not found/i);
   assert.match(result.stderr, /install opencode/i);
+});
+
+test('CLI does not label a non-executable opencode as not found', async (t) => {
+  const f = await fixture(t);
+  const logPath = join(f.directory, 'deep-one.log');
+  await writeFile(logPath, '\nSPAWN_ERROR=EACCES\nEXIT=126\n');
+  await f.write({
+    handle: 'deep-one',
+    status: 'running',
+    engine: 'opencode',
+    shape: 'prose',
+    logPath,
+    createdAt: 10,
+    updatedAt: 25,
+  });
+  const status = f.run('status', 'deep-one');
+  assert.equal(status.status, 0, status.stderr);
+  assert.match(status.stdout, /failed to start: EACCES/i);
+  assert.doesNotMatch(status.stdout, /not found|install opencode/i);
 });

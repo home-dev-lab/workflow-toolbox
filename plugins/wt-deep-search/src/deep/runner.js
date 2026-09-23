@@ -36,6 +36,7 @@ export async function continueDeepResearch(handle, options, deps) {
       dir: options.dir,
       logPath: options.logPath ?? `${deps.store.directory}/${handle}.log`,
       timeoutMs: options.timeoutMs,
+      executable: options.opencodePath,
     });
     await deps.store.update(handle, {
       status: 'running',
@@ -109,6 +110,7 @@ export async function startDeepResearch(options, deps) {
     effort: options.effort,
     dir: options.dir,
     timeoutMs: options.timeoutMs,
+    opencodePath: options.opencodePath,
   });
 
   if (deps.schedule) {
