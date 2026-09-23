@@ -221,6 +221,22 @@ test('uses the standard win32 PATHEXT when PATHEXT is unset', () => {
   });
 });
 
+test('preserves the executable casing reported by the Windows filesystem', () => {
+  const fs = fakeFs(['C:\\tools\\opencode.CMD']);
+  fs.realpathSync = () => 'C:\\tools\\opencode.cmd';
+
+  const providers = detectProviders(
+    { PATH: 'C:\\tools' },
+    fs,
+    { platform: 'win32' },
+  );
+
+  assert.deepEqual(providers.opencode, {
+    available: true,
+    path: 'C:\\tools\\opencode.cmd',
+  });
+});
+
 test('does not ask win32 for an executable access mode', () => {
   const fs = fakeFs([
     'C/opencode',

@@ -1726,7 +1726,7 @@ await test('reference allow-list: every supported form expands byte-identically 
     setFile('/tmp/matrix-secret', value);
     testEnv.set('MATRIX_SECRET', value);
     const path = `${directory}:${process.env.PATH}`;
-    const run = (command) => spawnSync('bash', ['-c', command], { encoding: 'buffer', env: { ...process.env, PATH: path, MATRIX_SECRET: value } });
+    const run = (command) => spawnSync('bash', ['-c', command], { encoding: 'buffer', cwd: directory, env: { ...process.env, PATH: path, MATRIX_SECRET: value } });
     const forms = [
       ['vault token', vaultToken],
       ['file reference', 'secret:file:/tmp/matrix-secret'],
@@ -1739,8 +1739,8 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['double-quoted', (reference) => `printf %s "${reference}"`],
       // Round 11: a reference inside `$( )` is no longer a supported context - the allow-list accepts
       // no command substitution beside our forms except the literal `op read` form (asserted below).
-      ['bare before a redirection', (reference) => `printf %s ${reference} > ${directory}/redirected; cat ${directory}/redirected`],
-      ['double-quoted after a redirection target', (reference) => `> ${directory}/redirected printf %s "${reference}"; cat ${directory}/redirected`],
+      ['bare before a redirection', (reference) => `printf %s ${reference} > redirected; cat redirected`],
+      ['double-quoted after a redirection target', (reference) => `> redirected printf %s "${reference}"; cat redirected`],
     ];
     for (const [form, reference] of forms) {
       for (const [context, build] of contexts) {
@@ -2204,10 +2204,12 @@ await test('V38 a command using our forms never runs, through a listed external 
     writeFileSync(join(directory, 'mark'), '#!/bin/sh\nprintf MARK >&9\n', { mode: 0o755 });
     const notCommands = [];
     const darwinUnsupported = /^(?:env --(?:unset|uns=|chdir|ignore-signal)|timeout\b|nice --adjustment|stdbuf --output|setsid\b|ionice\b|taskset\b|echo x \| xargs -(?:l|e)\b|env A=1 timeout\b|nohup setsid\b|command timeout\b|echo x \| xargs timeout\b|\( timeout\b)/;
+    const wrapperUtilities = ['timeout', 'nice', 'nohup', 'stdbuf', 'setsid', 'ionice', 'taskset', 'xargs', 'find'];
+    const unavailableUtilities = new Set(wrapperUtilities.filter((utility) => spawnSync('bash', ['-c', `command -v ${utility}`], { env: bashEnvironment() }).status !== 0));
     for (const [before, after, sane = true] of positions) {
       // These rows describe GNU utilities that macOS does not ship. Their guard parsing is still
       // exercised below; only the impossible real-command sanity probe is skipped.
-      if (!sane || (process.platform === 'darwin' && darwinUnsupported.test(before))) continue;
+      if (!sane || (process.platform === 'darwin' && darwinUnsupported.test(before)) || wrapperUtilities.some((utility) => unavailableUtilities.has(utility) && new RegExp(`\\b${utility}\\b`).test(before))) continue;
       const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: bashEnvironment(directory) });
       if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
     }
@@ -2923,7 +2925,7 @@ await test('V51 the host loads the module: no dynamic $.env.get, secret:env refu
       if (!/^(['"])[^'"\\$`]*\1$|^`[^`$\\]*`$/.test(match[1].trim())) failures.push(`${path.slice(pluginRoot.length)}: $.env.get(${match[1].trim()}) takes a non-literal name`);
     }
   }
-  if (!sources.some((path) => path.endsWith('hooks/hooks.js'))) failures.push('the static scan did not reach hooks/hooks.js');
+  if (!sources.some((path) => path.replaceAll('\\', '/').endsWith('/hooks/hooks.js'))) failures.push('the static scan did not reach hooks/hooks.js');
   // secret:env is disabled until names are declared literally: a clear refusal, and no environment read.
   const envReads = [];
   const runtime = { ...$, env: { get: async (name) => { envReads.push(name); return $.env.get(name); } } };

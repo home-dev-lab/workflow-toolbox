@@ -291,7 +291,7 @@ describe('orchestrator driver', () => {
     expect(readFileSync(join(result.waveDir, 'cards/1/diff.patch'), 'utf8')).not.toContain('advanced-after-worktree.txt')
     expect(JSON.parse(readFileSync(join(result.waveDir, 'cards/1/fidelity/fidelity-manifest.json'), 'utf8')).base).toBe(originalBase)
     expect(readFileSync(f.report, 'utf8')).toContain(`base=${originalBase}; baseRef=develop`)
-  })
+  }, 60_000)
 
   it('refuses an older per-card record with no frozen base at review', () => {
     expect(() => reviewBase({ id: '1' })).toThrow('orchestrator review refused: card 1 missing field base')

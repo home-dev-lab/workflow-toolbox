@@ -18,6 +18,15 @@ function isUsablePath(fs, path, type, mode) {
   }
 }
 
+function canonicalWindowsPath(fs, path) {
+  if (typeof fs.realpathSync !== 'function') return path;
+  try {
+    return fs.realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
 export function detectProviders(env, fs, options = {}) {
   const platform = options.platform ?? process.platform;
   const isWindows = platform === 'win32';
@@ -101,7 +110,7 @@ export function detectProviders(env, fs, options = {}) {
         && isUsablePath(fs, candidate, 'file', isWindows ? null : (fs.constants?.X_OK ?? 1)));
 
     opencode = binaryPath
-      ? { available: true, path: binaryPath }
+      ? { available: true, path: isWindows ? canonicalWindowsPath(fs, binaryPath) : binaryPath }
       : {
           available: false,
           reason: 'opencode was not found on PATH',
