@@ -60,6 +60,7 @@ const CONTEXT_MODE_TOOLS = Object.freeze({
 
 const WRITER_GUARDS = Object.freeze([
   { script: 'wt-unquoted-tool-glob-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'refuse shell-expanded tool-option globs' },
+  { script: 'wt-zsh-word-split-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'warn on implicit scalar word splitting under zsh' },
   { script: 'wt-merge-chain-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'warn before a stale tree is certified after merge' },
   { script: 'wt-concurrent-test-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'prevent load-induced concurrent suite failures' },
   { script: 'wt-piped-gate-exit-code-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'preserve the gate process exit code' },
