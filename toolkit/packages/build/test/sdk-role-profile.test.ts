@@ -1,4 +1,5 @@
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -160,6 +161,32 @@ describe('SDK role profiles', () => {
     expect(options.sandbox.filesystem.denyWrite).toEqual(expect.arrayContaining(prepared.protectedWritePaths))
     await expect(options.canUseTool('Write', { file_path: guardedScript, content: 'process.exit(0)' })).resolves.toEqual({
       behavior: 'deny', message: expect.stringContaining('host-executed path'),
+    })
+  })
+
+  it('denies writes to the SDK executable resolved from this checkout', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-sdk-loaded-code-')); roots.push(root)
+    const require = createRequire(join(process.cwd(), 'package.json'))
+    const sdkExecutable = require.resolve('@anthropic-ai/claude-agent-sdk')
+    const prepared = prepareSdkRole('review', { worktree: root, loadedCodePaths: [sdkExecutable] })
+    const options = composeSdkRoleQueryOptions({
+      model: 'opus', effort: 'medium', canUseTool: async () => ({ behavior: 'allow' }),
+    }, prepared)
+
+    expect(options.sandbox.filesystem.denyWrite).toContain(sdkExecutable)
+    await expect(options.canUseTool('Write', { file_path: sdkExecutable, content: 'throw new Error("owned")' })).resolves.toEqual({
+      behavior: 'deny', message: expect.stringContaining('host-executed path'),
+    })
+  })
+
+  it('turns a thrown caller authorization into an explicit denial', async () => {
+    const { prepared } = preparedRole('review')
+    const options = composeSdkRoleQueryOptions({
+      model: 'opus', effort: 'medium', canUseTool: async () => { throw new Error('EIO') },
+    }, prepared)
+
+    await expect(options.canUseTool('Read', { file_path: 'README.md' })).resolves.toEqual({
+      behavior: 'deny', message: 'tool authorization callback failed: EIO',
     })
   })
 

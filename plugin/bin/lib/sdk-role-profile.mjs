@@ -189,7 +189,7 @@ function guardHooks(profile, guardPaths, adapterOptions) {
   return hooks
 }
 
-export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot = DEFAULT_PLUGIN_ROOT, exists = existsSync, adapterOptions } = {}) {
+export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot = DEFAULT_PLUGIN_ROOT, exists = existsSync, adapterOptions, loadedCodePaths = [] } = {}) {
   const profile = roleProfile(role)
   const pilotGuard = path.join(pluginRoot, 'hooks-modules', 'pilot-guard')
   const required = [path.join(pilotGuard, 'hooks', 'hooks.json'), path.join(pilotGuard, 'hooks', 'hooks.js')]
@@ -222,7 +222,7 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
   }
 
   const pluginPaths = [pilotGuard, contextMode, ...(skillPlugin ? [skillPlugin] : [])]
-  const protectedWritePaths = [...new Set([pluginRoot, ...pluginPaths, ...guardPaths])]
+  const protectedWritePaths = [...new Set([pluginRoot, ...pluginPaths, ...guardPaths, ...loadedCodePaths])]
   const log = adapterOptions?.log ?? ((line) => process.stderr.write(`${line}\n`))
   log(`SDK role ${role}: LSP absent: ${LSP_DISABLED.reason}`)
   if (unlistedSkills.length > 0) log(`SDK role ${role}: skills loaded through the role plugin but never listed by the initialization receipt (user-invocable: false): ${unlistedSkills.join(', ')}`)
@@ -249,7 +249,11 @@ export function composeSdkRoleQueryOptions(base, prepared) {
       return { behavior: 'deny', message: `write to host-executed path refused: ${String(input?.file_path ?? input?.path)}` }
     }
     if (typeof base.canUseTool !== 'function') return { behavior: 'deny', message: 'tool authorization callback absent' }
-    return base.canUseTool(toolName, input, options)
+    try {
+      return await base.canUseTool(toolName, input, options)
+    } catch (error) {
+      return { behavior: 'deny', message: `tool authorization callback failed: ${error instanceof Error ? error.message : String(error)}` }
+    }
   }
   return {
     ...base,

@@ -16,7 +16,7 @@ import { parseOrchestratorArgs, runOrchestrator } from './lib/orchestrator-runne
 import { loadProfileEnv, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
 import { randomUUID } from 'node:crypto'
-import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
+import { resolveAgentSdkRequire, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
 import path from 'node:path'
 
 async function main() {
@@ -26,13 +26,14 @@ async function main() {
   try {
     const require = resolveAgentSdkRequire({ projectDir: process.cwd() })
     const sdk = require('@anthropic-ai/claude-agent-sdk')
+    const loadedCodePaths = resolvedAgentSdkCodePaths(require)
     const profileEnv = loadProfileEnv(options.profileEnv)
     const models = resolvePilotModels({ env: process.env, settingsEnv: profileEnv })
     options.waveId = randomUUID().slice(0, 8)
     process.stdout.write(`wave=${options.waveId} report=${path.resolve(options.report)}\n`)
     const contract = readFileSync(new URL('../autonomy/ORCHESTRATOR-CONTRACT.md', import.meta.url), 'utf8')
     const lifecycleOptions = { sdk, sdkRequire: require }
-    const result = await runOrchestrator(options, { board: createBoardClient({ url: options.boardUrl, boardId: options.boardId ?? resolveBoardId(process.cwd()) }), runPilot, pilotDependencies: { query: sdk.query, resolvePilotModels, lifecycleOptions }, query: sdk.query, sdk, sdkRequire: require, models, contract, env: { ...process.env, ...profileEnv } })
+    const result = await runOrchestrator(options, { board: createBoardClient({ url: options.boardUrl, boardId: options.boardId ?? resolveBoardId(process.cwd()) }), runPilot, pilotDependencies: { query: sdk.query, resolvePilotModels, loadedCodePaths, lifecycleOptions }, query: sdk.query, sdk, sdkRequire: require, loadedCodePaths, models, contract, env: { ...process.env, ...profileEnv } })
     return result.exitCode
   } catch (error) {
     process.stderr.write(`wt-run-orchestrator: ${error instanceof Error ? error.message : String(error)}\n`)

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { parsePilotRunnerArgs, runPilot } from './lib/pilot-runner-core.mjs'
 import { resolvePilotModels } from './lib/pilot-model-config.mjs'
-import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
+import { resolveAgentSdkRequire, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
 import { recordSessionEnvLog } from './lib/session-env-log.mjs'
 import { pilotAdmission } from './lib/pilot-admission.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
@@ -28,7 +28,7 @@ async function main() {
     const testManifest = process.env.NODE_ENV === 'test' ? process.env.WT_PILOT_TEST_SDK_MANIFEST : null
     const require = resolveAgentSdkRequire({ projectDir: options.dir, ...(testManifest ? { ownToolkitManifest: testManifest } : {}) })
     const sdk = await import(pathToFileURL(require.resolve('@anthropic-ai/claude-agent-sdk')).href)
-    const result = await runPilot(options, { query: sdk.query, resolvePilotModels, lifecycleOptions: { sdk, sdkRequire: require } })
+    const result = await runPilot(options, { query: sdk.query, resolvePilotModels, loadedCodePaths: resolvedAgentSdkCodePaths(require), lifecycleOptions: { sdk, sdkRequire: require } })
     process.stdout.write(`fresh=${result.summary.fresh_tokens} turns=${result.summary.turns} report=${result.summary.report_exists} requested_model=${result.summary.requested_model} served_model=${result.summary.served_model ?? 'unknown'} served_model_first_turn=${result.summary.served_model_first_turn ?? 'unknown'} served_model_agreement=${result.summary.served_model_agreement}\n`)
     return result.exitCode ?? 0
   } catch (error) {

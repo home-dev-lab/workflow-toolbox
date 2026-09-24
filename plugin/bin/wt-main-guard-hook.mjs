@@ -68,6 +68,19 @@ const STATE_DIR = mainGuardStateDir()
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
 const ALLOW_ONCE_PATH = path.join(STATE_DIR, 'allow-once.json')
 
+function inspectGit(args, cwd) {
+  const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: os.devNull }
+  for (const key of Object.keys(env)) {
+    if (/^GIT_CONFIG_(?:COUNT|KEY_|VALUE_)/.test(key)) delete env[key]
+  }
+  return execFileSync('git', ['-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false', ...args], {
+    cwd,
+    env,
+    timeout: 2000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+}
+
 // Per-class blocking posture, decided by measurement (see the report this port shipped with,
 // and docs/public/known-issues.md).
 // true  = ships DENY (blocking) for this class.
@@ -276,11 +289,7 @@ function isMainMasterRef(r) {
 
 function currentBranch(cwd) {
   try {
-    return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd,
-      timeout: 2000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
+    return inspectGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
       .toString()
       .trim()
   } catch {
@@ -330,11 +339,7 @@ function resetHardViolation(seg, cwd) {
   const worktree = resetHardWorktree(seg, cwd)
   if (!worktree) return null
   try {
-    const porcelain = execFileSync('git', ['status', '--porcelain'], {
-      cwd: worktree,
-      timeout: 2000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
+    const porcelain = inspectGit(['status', '--porcelain'], worktree)
       .toString()
       .trim()
     if (!porcelain) return null

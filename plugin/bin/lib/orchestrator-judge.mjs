@@ -48,10 +48,10 @@ function messageQueue() {
   }
 }
 
-export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir, pluginDirs = [], prepareRole = prepareSdkRole }) {
+export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir, pluginDirs = [], loadedCodePaths = [], prepareRole = prepareSdkRole }) {
   const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: knowledgeBaseIndex, env, projectRoot })
   const repositoryGuides = repositoryGuidePaths(projectRoot)
-  const sdkRole = prepareRole('judge', { worktree: waveDir, env })
+  const sdkRole = prepareRole('judge', { worktree: waveDir, env, loadedCodePaths })
   sdkRole.pluginPaths.push(...pluginDirs)
   let knowledgeBaseSent = false
   const withKnowledgeBase = (content) => {

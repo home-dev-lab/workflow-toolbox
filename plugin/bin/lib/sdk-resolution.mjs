@@ -101,3 +101,7 @@ export function resolveAgentSdkRequire(options = {}) {
     : `is not installed; require >=${MIN_AGENT_SDK_VERSION}`
   throw new Error(`${SDK} ${reason}; run: ${install}`)
 }
+
+export function resolvedAgentSdkCodePaths(require) {
+  return [require.resolve(SDK)]
+}

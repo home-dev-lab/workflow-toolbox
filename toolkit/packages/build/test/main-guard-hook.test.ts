@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -256,6 +256,23 @@ describe('wt-main-guard-hook — reset-hard is journal-only on dirty worktrees',
     expect(r.denied).toBe(false)
     expect(r.stdout).toBe('')
     expect(journalLines().some((l) => l.class === 'reset-hard' && l.decision === 'allowed-journaled')).toBe(true)
+  })
+
+  it('does not execute repository fsmonitor configuration while inspecting a dirty worktree', () => {
+    const repo = join(sandboxHome, 'fsmonitor-reset-repo')
+    const marker = join(sandboxHome, 'fsmonitor-ran')
+    const monitor = join(repo, 'fsmonitor.sh')
+    initGitRepo(repo)
+    writeFileSync(monitor, `#!/bin/sh\n: > "${marker}"\n`)
+    chmodSync(monitor, 0o755)
+    spawnSync('git', ['-C', repo, 'config', 'core.fsmonitor', monitor])
+    writeFileSync(join(repo, 'f.txt'), 'dirty')
+
+    const r = run('git reset --hard HEAD', { cwd: repo })
+
+    expect(r.status).toBe(0)
+    expect(existsSync(marker)).toBe(false)
+    expect(journalLines().some((line) => line.class === 'reset-hard')).toBe(true)
   })
 
   it('stays silent for git reset --hard on a clean worktree', () => {

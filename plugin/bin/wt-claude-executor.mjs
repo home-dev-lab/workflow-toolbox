@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
 import { resolveRoleVariant } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
-import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
+import { resolveAgentSdkRequire, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
 
 const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
@@ -23,8 +23,8 @@ async function worker(options) {
   mkdirSync(path.dirname(options.log), { recursive: true })
   const launch = executorBrief(options)
   const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-  const sdkRole = prepareSdkRole(options.role, { worktree: options.dir, env: process.env, pluginRoot, adapterOptions: { log: (line) => appendFileSync(options.log, `${line}\n`) } })
   const require = resolveAgentSdkRequire({ projectDir: options.dir })
+  const sdkRole = prepareSdkRole(options.role, { worktree: options.dir, env: process.env, pluginRoot, loadedCodePaths: resolvedAgentSdkCodePaths(require), adapterOptions: { log: (line) => appendFileSync(options.log, `${line}\n`) } })
   const { query } = require('@anthropic-ai/claude-agent-sdk')
   const abortController = new AbortController()
   let timedOut = false
