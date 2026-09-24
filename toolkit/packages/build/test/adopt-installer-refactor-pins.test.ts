@@ -171,6 +171,34 @@ describe('adopt installer refactor pins', () => {
     expect(readdirSync(targetDir)).toEqual(['pilot.md'])
   })
 
+  it('P2 does not remove an existing temporary sibling when exclusive creation fails', () => {
+    const fixture = fixturePlugin()
+    const sourceDir = join(fixture.root, 'agent-templates')
+    mkdirSync(sourceDir)
+    cpSync(join(PLUGIN, 'agent-templates/pilot.md'), join(sourceDir, 'pilot.md'))
+    const targetDir = tempDir()
+    const linkTarget = join(targetDir, '.pilot.md.workflow-toolbox-occupied.tmp')
+    const targetBytes = 'existing temporary file stays intact\n'
+    writeFileSync(linkTarget, targetBytes)
+    symlinkSync(linkTarget, join(targetDir, 'pilot.md'))
+    const source = readFileSync(fixture.script, 'utf8')
+    const tempDeclaration = 'const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}.tmp`)'
+    expect(source).toContain(tempDeclaration)
+    writeFileSync(fixture.script, source.replace(tempDeclaration, `const temp = ${JSON.stringify(linkTarget)}`))
+
+    const result = run(
+      ['--set', 'agents', '--install', '--replace-symlinks', '--file', 'pilot.md', '--dir', targetDir],
+      { plugin: fixture.root, script: fixture.script },
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('EEXIST')
+    expect(lstatSync(join(targetDir, 'pilot.md')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(targetDir, 'pilot.md'))).toBe(linkTarget)
+    expect(existsSync(linkTarget)).toBe(true)
+    expect(readFileSync(linkTarget, 'utf8')).toBe(targetBytes)
+  })
+
   it('P3 does not let a shipped-fingerprint catch swallow a one-shot fatal error', () => {
     const fixture = fixturePlugin()
     cpSync(join(PLUGIN, 'bin'), join(fixture.root, 'bin'), { recursive: true })

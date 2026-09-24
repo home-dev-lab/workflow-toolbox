@@ -1936,11 +1936,13 @@ function writeManagedFile(target, text, exclusive = false) {
 
 function replaceSymlinkAtomically(target, text) {
   const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}.tmp`)
+  let ownsTemp = false
   try {
     writeManagedFile(temp, text, true)
+    ownsTemp = true
     moveFileVerified(temp, target)
   } finally {
-    fs.rmSync(temp, { force: true })
+    if (ownsTemp) fs.rmSync(temp, { force: true })
   }
 }
 
