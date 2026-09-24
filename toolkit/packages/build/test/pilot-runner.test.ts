@@ -1050,7 +1050,7 @@ describe('SDK pilot runner', () => {
       yield initMessage()})() }
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
     expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot'))])
-    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...ROLE_CONTEXT_TOOLS])
+    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', ...ROLE_CONTEXT_TOOLS])
     expect(options!.disallowedTools).toEqual(DISALLOWED_CONTEXT_TOOLS)
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(options!.permissionMode).toBe('default')
@@ -1106,7 +1106,7 @@ describe('SDK pilot runner', () => {
     const f = fixture()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models })
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: expect.stringContaining('without awaiting_fidelity') } })
-    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8')).lsp).toEqual({ available: false, reason: 'typescript-language-server not found on PATH' })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8')).lsp).toEqual({ available: false, reason: 'disabled for SDK roles: workspace language servers can execute workspace code' })
   })
 
   it('confines real Read, Glob, and Grep authorization inputs', () => {

@@ -19,8 +19,7 @@ through the runner mailbox and owner-facing output only through the pilot report
 ## What an SDK session receives
 
 Every Claude SDK query uses the table in `plugin/bin/lib/sdk-role-profile.mjs`; GPT lanes and
-`lane_skills` are unchanged. `LSP` is listed for every role and becomes available only when the
-generated role plugin has a resolved language server. Context-mode 1.0.177 is loaded from the active
+`lane_skills` are unchanged. `LSP` is absent from every SDK role. Context-mode is loaded from the active
 profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
 other nine MCP tools do not enter their receipt.
 
@@ -31,23 +30,18 @@ symlink target once.
 
 | Role | Tools | LSP | Selected workflow-toolbox skills | Shipped command guards |
 | --- | --- | --- | --- | --- |
-| pilot | Read, Glob, Grep, LSP, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` — no Edit, Write, Bash, diagnostics, deletion, or `ctx_execute` family: every increment goes through the lifecycle `run` tool | optional, visible | stale-card-sweep, lesson-harvest, deep-grounding | none; this role has no model-authored command path |
-| tdd | Read, Glob, Grep, LSP, Edit, Write, guarded Bash, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` | optional, visible | changelog | writer set; model-authored commands run only through guarded, mandatory-sandbox Bash |
-| judge, critic, review, refutation | Read, Glob, Grep, LSP, `ctx_search` only | optional, visible | none | none; no Bash |
+| pilot | Read, Glob, Grep, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` — no Edit, Write, Bash, diagnostics, deletion, LSP, or `ctx_execute` family: every increment goes through the lifecycle `run` tool | disabled | stale-card-sweep, lesson-harvest, deep-grounding | none; this role has no model-authored command path |
+| tdd | Read, Glob, Grep, Edit, Write, guarded Bash, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` | disabled | changelog | writer set; model-authored commands run only through guarded, mandatory-sandbox Bash |
+| judge, critic, review, refutation | Read, Glob, Grep, `ctx_search` only | disabled | none | none; no Bash |
 
-The initial implementation detects TypeScript and JavaScript from a root `tsconfig.json` or
-`package.json`, or a `.ts`, `.js`, `.mjs`, or `.cjs` file in the worktree. It resolves
-`typescript-language-server` on `PATH`; an absolute `WT_LSP_TYPESCRIPT_SERVER` overrides PATH only
-when set. The generated `.lsp.json` carries the resolved absolute command and only the detected
-language mappings. Missing binaries never refuse a session: the init log and `lifecycle.json` state
-`LSP absent: typescript-language-server not found on PATH`, and the closing report states
-`LSP navigation: absent (...)`; availability is stated with the command and the report says
-`LSP navigation: available`. When available, omission of `LSP` from the SDK init receipt refuses the
-incomplete receipt; when absent, the SDK is expected to omit it.
+SDK roles do not receive LSP. Pinning the `typescript-language-server` launcher is insufficient:
+that server can select and fork a workspace `node_modules/typescript/lib/tsserver.js`, turning
+workspace content into host-executed code. The init log and `lifecycle.json` record this explicit
+disabled state, and an initialization receipt that exposes `LSP` is refused.
 
 Context-mode's fetch/index/search service processes are run by the plugin, not from model-authored
 source. Their library-controlled persistent context storage outside the worktree is a known exception
-to worktree confinement. LSP likewise launches only the runner-resolved configured language server.
+to worktree confinement.
 The writer's model-authored shell work gets done through `Bash`, where sandbox availability is
 mandatory, per-command sandbox escape is disabled and denied by authorization, and the writer guards
 apply. The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
@@ -55,8 +49,12 @@ unquoted globs, merge chains, concurrent tests, piped gate status, process-envir
 commit backticks, zsh colon modifiers, `find -newermt`, `PIPESTATUS`, and absent package scripts;
 plus main, gate-evidence, stale-date, rule-convention, and shipped-twin checks. Each SDK callback
 spawns the original shipped script with the native hook payload unchanged and returns its JSON
-decision unchanged. A guard launch failure, non-zero exit, or invalid JSON is logged and returns an
-explicit denial. The `pilot-guard` function plugin matches `Bash` only, so it never protects the
+decision unchanged. A role-launched guard forces its otherwise fail-open wrapper to exit non-zero on
+an internal crash; a launch failure, non-zero exit, or invalid JSON is logged and returns an explicit
+denial. Ordinary host hook callers retain the documented fail-open default. The active plugin roots,
+generated role plugin, and selected guard scripts are derived from the prepared role and supplied to
+both the authorization callback and sandbox `denyWrite`, so Write, Edit, and Bash cannot replace code
+the host will execute. The `pilot-guard` function plugin matches `Bash` only, so it never protects the
 pilot role, which has no Bash tool; process execution is instead absent from that role. Context-mode
 supplies the read bound. Spawn guards are excluded because these sessions have no
 Agent tool; Stop and SessionStart workflow-toolbox hooks are excluded because lifecycle servers own
