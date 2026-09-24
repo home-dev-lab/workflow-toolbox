@@ -17,8 +17,8 @@ const useRealHost = process.env.WT_HOST_CONTRACT_REAL === '1'
 const activePlatforms = useRealHost ? platforms.filter((platform) => platform === process.platform) : platforms
 const snapshotSamples = {
   linux: { pid: 1, ppid: 0, elapsedMs: 46_000, command: '/sbin/init' },
-  darwin: { pid: 1, ppid: 0, elapsedMs: 346_000, command: '/sbin/launchd' },
-  win32: { pid: 4, ppid: 0, elapsedMs: 46_000, command: 'System' },
+  darwin: { pid: 1, ppid: 0, elapsedMs: 346_000, startTime: Date.parse('Tue Nov 14 22:13:20 2023'), startIdentity: Date.parse('Tue Nov 14 22:13:20 2023'), command: '/sbin/launchd' },
+  win32: { pid: 4, ppid: 0, elapsedMs: 46_000, startTime: 1_700_000_000_000, startIdentity: 1_700_000_000_000, command: 'System' },
 } as const
 const procStat = (pid: number, command: string, startTicks: number) => `${pid} (${command}) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 ${startTicks} 20\n`
 
@@ -95,8 +95,8 @@ describe('host adapter evidence contract', () => {
   it.each(platforms)('parses process discovery from an injected %s invocation', (platform) => {
     const outputs = {
       linux: '1 0 46 /sbin/init\n',
-      darwin: '1 0 346 /sbin/launchd\n',
-      win32: '4 0 46000 System\r\n',
+      darwin: '1 0 Tue Nov 14 22:13:20 2023 05:46 /sbin/launchd\n',
+      win32: '4 0 46000 1700000000000 System\r\n',
     }
     const run = vi.fn(() => ({ status: 0, stdout: outputs[platform], stderr: '', error: null }))
     const host = createHostAdapter({
@@ -106,7 +106,7 @@ describe('host adapter evidence contract', () => {
 
     expect(host.readProcessSnapshot()).toEqual({ supported: true, processes: [snapshotSamples[platform]] })
     if (platform === 'darwin') {
-      expect(run).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,etime=,command='])
+      expect(run).toHaveBeenCalledWith('ps', ['-axo', 'pid=,ppid=,lstart=,etime=,command='])
     }
   })
 
@@ -167,7 +167,7 @@ describe('host adapter evidence contract', () => {
     const expected = platform === 'win32'
       ? 'captured host evidence has no invocation for powershell.exe -NoProfile -NonInteractive -Command $now = Get-Date'
       : platform === 'darwin'
-        ? 'captured host evidence has no invocation for ps -axo pid=,ppid=,etime=,command='
+        ? 'captured host evidence has no invocation for ps -axo pid=,ppid=,lstart=,etime=,command='
         : 'captured host evidence has no invocation for ps -eo pid=,ppid=,etimes=,args='
     expect(() => evidenceHost(platform).readProcessSnapshot()).toThrow(expected)
   })

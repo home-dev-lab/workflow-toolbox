@@ -3,10 +3,13 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-opencode-envelope.mjs')
+const IDENTITY_MODULE = new URL('../../../../plugin/bin/lib/lane-supervisor-core.mjs', import.meta.url).href
 const roots: string[] = []
 
 // ⚠ The stub starts real background processes. If a run is interrupted between spawning them and
@@ -19,27 +22,45 @@ function parseFixturePids(value: string, protectedPids = [process.pid, process.p
     .filter((pid) => Number.isSafeInteger(pid) && pid > 1 && !protectedPids.includes(pid))
 }
 
-function fixturePids() {
+type FixtureIdentity = { pid: number, argv: string[], startTime: number, cwd?: string | null }
+
+function fixtureIdentities() {
   return fixturePidFiles.flatMap((file) => {
-    try { return parseFixturePids(readFileSync(file, 'utf8')) } catch { return [] }
+    try {
+      return readFileSync(file, 'utf8').trim().split(/\r?\n/).flatMap((line) => {
+        try {
+          const identity = JSON.parse(line)
+          return Number.isSafeInteger(identity?.pid) && identity.pid > 1 && Array.isArray(identity.argv) && Number.isFinite(identity.startTime)
+            ? [identity as FixtureIdentity]
+            : []
+        } catch { return [] }
+      })
+    } catch { return [] }
   })
 }
 
-function processExists(pid: number) {
-  try { process.kill(pid, 0); return true } catch { return false }
+function signalFixtureIdentity(identity: FixtureIdentity, inspect: (pid: number) => FixtureIdentity | null, signal: (pid: number, signal: NodeJS.Signals) => void) {
+  const actual = inspect(identity.pid)
+  if (!actual) return 'identity unknown'
+  if (!sameIdentity(identity, actual)) return 'identity changed'
+  signal(identity.pid, 'SIGKILL')
+  return 'signalled'
 }
 
 afterEach(async () => {
-  for (const pid of fixturePids()) try { process.kill(pid, 'SIGKILL') } catch {}
+  const identities = fixtureIdentities()
+  for (const identity of identities) {
+    try { signalFixtureIdentity(identity, (pid) => inspectProcess(pid, { recordedArgv: identity.argv }), process.kill) } catch {}
+  }
   const deadline = Date.now() + 5_000
-  let survivors = fixturePids().filter(processExists)
+  let survivors = identities.filter((identity) => sameIdentity(identity, inspectProcess(identity.pid, { recordedArgv: identity.argv })))
   while (survivors.length && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 25))
-    survivors = survivors.filter(processExists)
+    survivors = survivors.filter((identity) => sameIdentity(identity, inspectProcess(identity.pid, { recordedArgv: identity.argv })))
   }
   fixturePidFiles.length = 0
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
-  if (survivors.length) throw new Error(`envelope fixture leaked child pids: ${survivors.join(', ')}`)
+  if (survivors.length) throw new Error(`envelope fixture leaked child pids: ${survivors.map(({ pid }) => pid).join(', ')}`)
 })
 
 /** A stub `opencode` whose `run` subcommand starts a background child that INHERITS the caller's
@@ -50,9 +71,11 @@ function makeStubRoot() {
   roots.push(root)
   const bin = join(root, 'bin')
   const pidFile = join(root, 'fixture.pids')
+  const recorder = join(root, 'record-identity.mjs')
   fixturePidFiles.push(pidFile)
   spawnSync('mkdir', ['-p', bin])
   const stub = join(bin, 'opencode')
+  writeFileSync(recorder, `import { appendFileSync } from 'node:fs'; import { inspectProcess } from ${JSON.stringify(IDENTITY_MODULE)}; const pid=Number(process.argv[2]); const identity=inspectProcess(pid); if(identity) appendFileSync(${JSON.stringify(pidFile)},JSON.stringify(identity)+'\\n')\n`)
   writeFileSync(
     stub,
     [
@@ -62,9 +85,9 @@ function makeStubRoot() {
       'if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then echo "[]"; exit 0; fi',
       'if [ "$1" != "run" ]; then echo "openai/gpt-5.4"; exit 0; fi',
       // Inherits stdout — this is what used to keep node's `close` from ever firing.
-      `echo $$ > ${JSON.stringify(pidFile)}`,
+      `${JSON.stringify(process.execPath)} ${JSON.stringify(recorder)} $$`,
       'sleep 120 &',
-      `echo $! >> ${JSON.stringify(pidFile)}`,
+      `${JSON.stringify(process.execPath)} ${JSON.stringify(recorder)} $!`,
       'echo "child started"',
       'exec sleep 120',
     ].join('\n'),
@@ -78,6 +101,14 @@ function makeStubRoot() {
 describe('wt-opencode-envelope reaps the process group of a stopped call', () => {
   it('never treats receipt whitespace, process groups, or the test runner as fixture PIDs', () => {
     expect(parseFixturePids(`12345\n0\n-123\n${process.pid}\n${process.ppid}\n`)).toEqual([12345])
+  })
+
+  it('never signals a stale fixture receipt whose PID has a different identity', () => {
+    const signal = vi.fn()
+    const captured = { pid: 12345, startTime: 100, argv: ['fixture'] }
+
+    expect(signalFixtureIdentity(captured, () => ({ ...captured, startTime: 101 }), signal)).toBe('identity changed')
+    expect(signal).not.toHaveBeenCalled()
   })
 
   // ⚠ THE LOCK. Reverting `detached: true` / the group signal in wt-opencode-envelope.mjs makes

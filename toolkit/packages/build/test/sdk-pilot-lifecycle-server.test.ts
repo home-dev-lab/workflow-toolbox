@@ -28,7 +28,16 @@ const PLUGIN_ROOT = fileURLToPath(new URL('../../../../plugin', import.meta.url)
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
+function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, signal = process.kill) {
+  if (inspect(pid) !== null) return true
+  try { signal(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null }
+}
+
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it('does not report a live native process absent when platform inspection is unavailable', () => {
+    expect(nativeProcessExists(42, () => null, () => true)).not.toBe(false)
+  })
+
   it('retains a timeout finalized on top of an earlier partial reason', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-finalized-timeout-retention-')); roots.push(root); mkdirSync(join(root, '.lane'))
     expect(writeWorktreeRetentionMarker({
@@ -933,9 +942,9 @@ printf 'report\n' > "$report"
       git,
       lanePlatform: 'darwin',
       laneProcessReader: {
-        inspect: (pid: number) => inspectProcess(pid, { platform: 'linux' }),
-        processExists: (pid: number) => inspectProcess(pid, { platform: 'linux' }) !== null,
-        processState: (pid: number) => inspectProcess(pid, { platform: 'linux' })?.state ?? null,
+        inspect: (pid: number) => inspectProcess(pid, { platform: process.platform }),
+        processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
+        processState: (pid: number) => inspectProcess(pid, { platform: process.platform })?.state ?? null,
       },
       models: { lane: 'openai/gpt-5.6-luna', review: 'openai/gpt-5.6-luna' },
     })

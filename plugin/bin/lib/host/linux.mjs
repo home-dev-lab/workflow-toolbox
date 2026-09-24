@@ -30,7 +30,7 @@ export function readLinuxProcProcesses({ readFile, readDirectory, observedAt }) 
       }
       const command = commandLine || firstStat.slice(firstStat.indexOf('(') + 1, firstStat.lastIndexOf(')'))
       const startedAt = observedAt - Math.max(0, uptime - startTicks / 100) * 1000
-      processes.push({ pid, ppid: Number(firstFields[1]), elapsedMs: Math.max(0, observedAt - startedAt), command })
+      processes.push({ pid, ppid: Number(firstFields[1]), elapsedMs: Math.max(0, observedAt - startedAt), startTime: startedAt, startIdentity: startTicks, command })
     } catch (error) {
       if (error?.code !== 'ENOENT' && error?.code !== 'ESRCH') unknownPids.push(pid)
     }

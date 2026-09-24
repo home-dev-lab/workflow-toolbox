@@ -9,17 +9,19 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-const broker = (pid: number, ppid: number, elapsedMs = 4_000) => ({
+const broker = (pid: number, ppid: number, elapsedMs = 4_000, startTime = 101_000) => ({
   pid,
   ppid,
   elapsedMs,
+  startTime,
   command: `/home/test/.claude/plugins/cache/openai-codex/codex/1.0.5/scripts/app-server-broker.mjs`,
 })
 
-const companion = (pid: number, elapsedMs = 5_000) => ({
+const companion = (pid: number, elapsedMs = 5_000, startTime = 100_000) => ({
   pid,
   ppid: 1,
   elapsedMs,
+  startTime,
   command: '/home/test/.claude/plugins/cache/openai-codex/codex/1.0.5/scripts/codex-companion.mjs task',
 })
 
@@ -110,10 +112,28 @@ describe('second-opinion Codex broker ownership', () => {
     }, {}, { now: () => 20_000, stopTimeoutMs: 0 })
     roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
     ownership.capture(2125)
-    processes = [broker(2132, 1, 100)]
+    processes = [broker(2132, 1, 100, 101_001)]
 
     expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 2132: broker identity changed before cleanup'])
     expect(endProcessFamily).not.toHaveBeenCalled()
+  })
+
+  it('rejects a replacement broker within the elapsed-time tolerance', () => {
+    let processes = [companion(2125, 10_000), broker(2132, 2125, 9_000)]
+    const endProcessFamily = vi.fn()
+    const forceEndProcessFamily = vi.fn()
+    const ownership = createCodexBrokerOwnership({
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily,
+      forceEndProcessFamily,
+    }, {}, { now: () => 20_000, stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(2125)
+    processes = [broker(2132, 1, 8_100, 101_900)]
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 2132: broker identity changed before cleanup'])
+    expect(endProcessFamily).not.toHaveBeenCalled()
+    expect(forceEndProcessFamily).not.toHaveBeenCalled()
   })
 
   it('does not signal a captured broker while its live PID is unreadable', () => {
@@ -154,7 +174,7 @@ describe('second-opinion Codex broker ownership', () => {
   it('rejects a state-file broker PID whose process started before this companion launch', () => {
     const endProcessFamily = vi.fn()
     const ownership = createCodexBrokerOwnership({
-      readProcessSnapshot: () => ({ supported: true, processes: [companion(2125, 5_000), broker(2132, 1, 60_000)] }),
+      readProcessSnapshot: () => ({ supported: true, processes: [companion(2125, 5_000), broker(2132, 1, 60_000, 40_000)] }),
       endProcessFamily,
       forceEndProcessFamily: vi.fn(),
     }, {}, { now: () => 20_000 })
@@ -181,6 +201,27 @@ describe('second-opinion Codex broker ownership', () => {
 
     expect(ownership.stop()).toEqual(['force-stopped broker/app-server process family pid 2132 started by this call'])
     expect(endProcessFamily).toHaveBeenCalledWith(2132)
+    expect(forceEndProcessFamily).toHaveBeenCalledWith(2132)
+  })
+
+  it('preserves an unknown identity diagnostic after forced termination', () => {
+    let reads = 0
+    const endProcessFamily = vi.fn(() => ({ status: 'ended' }))
+    const forceEndProcessFamily = vi.fn(() => ({ status: 'ended' }))
+    const ownership = createCodexBrokerOwnership({
+      readProcessSnapshot: () => {
+        reads += 1
+        return reads < 4
+          ? { supported: true, processes: [companion(2125), broker(2132, 2125)] }
+          : { supported: true, processes: [], unknownPids: [2132] }
+      },
+      endProcessFamily,
+      forceEndProcessFamily,
+    }, {}, { stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(2125)
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 2132: broker identity unknown during cleanup'])
     expect(forceEndProcessFamily).toHaveBeenCalledWith(2132)
   })
 

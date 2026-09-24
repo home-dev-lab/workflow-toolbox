@@ -33,14 +33,17 @@ function descendants(processes, rootPid) {
   return pids
 }
 
-function processStart(item, observedAt) {
-  return Number.isFinite(item?.elapsedMs) ? observedAt - item.elapsedMs : null
+function processStart(item) {
+  return Number.isFinite(item?.startTime) ? item.startTime : null
 }
 
-function sameProcess(item, identity, observedAt) {
+function processIdentity(item) {
+  return Number.isFinite(item?.startIdentity) ? item.startIdentity : processStart(item)
+}
+
+function sameProcess(item, identity) {
   if (!item || item.pid !== identity.pid || !BROKER_PATTERN.test(String(item.command ?? ''))) return false
-  const startedAt = processStart(item, observedAt)
-  return startedAt !== null && Math.abs(startedAt - identity.startedAt) <= START_TIME_TOLERANCE_MS
+  return processIdentity(item) === identity.startIdentity
 }
 
 const pause = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
@@ -74,12 +77,11 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   // This is called only while the spawned companion is known to be alive.
   function capture(companionPid) {
     if (identity || !companionPid) return identity?.pid ?? null
-    const observedAt = now()
     const result = snapshot()
     if (!result) return null
     const { processes } = result
     const companion = processes.find((item) => item.pid === companionPid)
-    const companionStartedAt = processStart(companion, observedAt)
+    const companionStartedAt = processStart(companion)
     if (companionStartedAt === null) return null
     const statePid = brokerFromState(root)
     if (statePid) claimedPid = statePid
@@ -88,23 +90,24 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
       ? processes.find((item) => item.pid === statePid)
       : processes.find((item) => item.pid !== companionPid && family.has(item.pid) && BROKER_PATTERN.test(String(item.command ?? '')))
     if (!candidate || !BROKER_PATTERN.test(String(candidate.command ?? ''))) return null
-    const startedAt = processStart(candidate, observedAt)
+    const startedAt = processStart(candidate)
     // A broker started before this companion cannot be ours; one started after it may lag by seconds under load.
     if (startedAt === null || startedAt < companionStartedAt - START_TIME_TOLERANCE_MS) return null
     claimedPid = candidate.pid
-    identity = { pid: candidate.pid, startedAt }
+    const startIdentity = processIdentity(candidate)
+    if (startIdentity === null) return null
+    identity = { pid: candidate.pid, startIdentity }
     return candidate.pid
   }
 
   function currentOwnedProcess() {
-    const observedAt = now()
     const result = snapshot()
     if (!result) return { status: 'unavailable', processes: [] }
     const { processes, unknownPids } = result
     if (unknownPids.includes(identity?.pid)) return { status: 'unknown', processes }
     const item = processes.find((process) => process.pid === identity?.pid)
     if (!item) return { status: 'gone', processes }
-    return sameProcess(item, identity, observedAt)
+    return sameProcess(item, identity)
       ? { status: 'owned', processes }
       : { status: 'changed', processes }
   }
@@ -140,6 +143,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
       const forced = adapter.forceEndProcessFamily(identity.pid)
       state = waitUntilGone()
       if (state.status === 'gone' || state.status === 'changed') return [`force-stopped broker/app-server process family pid ${identity.pid} started by this call`]
+      if (state.status === 'unknown') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity unknown during cleanup`]
       const reason = forced?.reason ?? graceful?.reason ?? 'process family remained alive after SIGKILL'
       return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${reason}`]
     } catch (error) {
