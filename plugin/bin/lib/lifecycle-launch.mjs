@@ -41,7 +41,7 @@ function withoutAnsi(value) {
   return result
 }
 
-function failedRowName(line) {
+function vitestRowName(line) {
   const trimmed = line.trim()
   if (!['×', '✗'].includes(trimmed[0])) return null
   const name = trimmed.slice(1).trim()
@@ -53,21 +53,34 @@ function failedRowName(line) {
   return unit && Number.isFinite(Number(duration.slice(0, -unit.length))) ? name.slice(0, separator) : name
 }
 
-function failedTestNames(content) {
+function vitestName(line) {
+  if (!line.startsWith('FAIL ')) return vitestRowName(line)
+  let rest = line.slice(5).trim()
+  if (rest.startsWith('|')) rest = rest.slice(rest.indexOf('|', 1) + 1).trim()
+  const separator = rest.indexOf(' > ')
+  const source = rest.slice(0, separator)
+  return separator > 0 && /\.[cm]?[jt]sx?$/.test(source) ? rest.slice(separator + 3).trim() : null
+}
+
+const failedTestAdapters = new Map([
+  ['vitest', { name: vitestName, shape: 'Vitest suite > test name' }],
+  ['pytest', { name: (line) => /^FAILED\s+(.+?)(?:\s+-\s+.*)?$/.exec(line)?.[1] ?? null, shape: 'pytest node id path::Class::test' }],
+  ['junit-gradle', { name: (line) => /^(.+ > .+) FAILED$/.exec(line)?.[1] ?? null, shape: 'Gradle/JUnit Class > method' }],
+])
+
+export function failedTestNames(content, framework) {
+  const adapter = failedTestAdapters.get(framework)
+  if (!adapter) return null
   const names = new Set()
   for (const rawLine of content.split(/\r?\n/)) {
-    let line = withoutAnsi(rawLine).trim()
-    if (line.startsWith('FAIL ')) {
-      line = line.slice(5).trim()
-      if (line.startsWith('|')) line = line.slice(line.indexOf('|', 1) + 1).trim()
-      const separator = line.indexOf(' > ')
-      const source = line.slice(0, separator)
-      if (separator > 0 && /\.[cm]?[jt]sx?$/.test(source)) names.add(line.slice(separator + 3).trim())
-    }
-    const row = failedRowName(line)
-    if (row) names.add(row)
+    const name = adapter.name(withoutAnsi(rawLine).trim())
+    if (name) names.add(name)
   }
   return names
+}
+
+function failedTestNameShape(framework) {
+  return failedTestAdapters.get(framework)?.shape ?? null
 }
 
 function gateReceiptProblem(name, phase, log, regularFile) {
@@ -173,6 +186,7 @@ export function createLifecycleLaunch({
   laneWaitMs,
   lanePlatform,
   gateRunner,
+  testFramework,
   now = () => Date.now(),
   recordLaneStart = () => null,
   recordLaneEnd = () => {},
@@ -268,9 +282,10 @@ export function createLifecycleLaunch({
     if (receipt) return receipt
     const testLog = path.join(laneDir, 'test.log')
     const content = readRegularFile(testLog) ?? ''
-    const failures = failedTestNames(content)
+    const failures = failedTestNames(content, testFramework)
+    if (!failures) return refusal(edge, `missing failed-test adapter "${testFramework}"; escalate to add an adapter before retrying red VERIFY`, testLog)
     const missing = findings.filter((finding) => !failures.has(finding.trim()))
-    if (missing.length > 0) return refusal(edge, `failing test names found in the red full-suite receipt (${missing.join('; ')})`, testLog)
+    if (missing.length > 0) return refusal(edge, `failing test names found in the red full-suite receipt as ${failedTestNameShape(testFramework)} (${missing.join('; ')})`, testLog)
     const gateSnapshot = {}
     for (const name of gates) {
       const item = attestations.get(path.join(laneDir, `${name}.log`))

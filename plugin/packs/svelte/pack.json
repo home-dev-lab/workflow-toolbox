@@ -1,5 +1,6 @@
 {
   "language": "svelte",
+  "testFramework": "vitest",
   "triggers": {
     "extensions": [".svelte"],
     "files": ["svelte.config.js"]
