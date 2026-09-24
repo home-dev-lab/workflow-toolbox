@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -125,7 +125,7 @@ describe('adopt installer refactor pins', () => {
     expect(existsSync(join(flat, files[2]!))).toBe(true)
   })
 
-  it('P2 pins unlink-before-render behavior for an opted-in symlink replacement', () => {
+  it('P2 preserves an opted-in symlink replacement when rendering fails', () => {
     const fixture = fixturePlugin()
     const targetDir = tempDir()
     const linkTarget = join(tempDir(), 'pilot.md')
@@ -139,8 +139,36 @@ describe('adopt installer refactor pins', () => {
 
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('agents source not found:')
-    expect(existsSync(join(targetDir, 'pilot.md'))).toBe(false)
+    expect(lstatSync(join(targetDir, 'pilot.md')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(targetDir, 'pilot.md'))).toBe(linkTarget)
     expect(readFileSync(linkTarget, 'utf8')).toBe('target stays intact\n')
+  })
+
+  it('P2 preserves an opted-in symlink replacement when atomic publication fails', () => {
+    const fixture = fixturePlugin()
+    const sourceDir = join(fixture.root, 'agent-templates')
+    mkdirSync(sourceDir)
+    cpSync(join(PLUGIN, 'agent-templates/pilot.md'), join(sourceDir, 'pilot.md'))
+    const source = readFileSync(fixture.script, 'utf8')
+    expect(source).toContain('moveFileVerified(temp, target)')
+    writeFileSync(fixture.script, source.replace('moveFileVerified(temp, target)', "throw new Error('PINNED RENAME FAILURE')"))
+    const targetDir = tempDir()
+    const linkTarget = join(tempDir(), 'pilot.md')
+    const targetBytes = 'target stays intact\n'
+    writeFileSync(linkTarget, targetBytes)
+    symlinkSync(linkTarget, join(targetDir, 'pilot.md'))
+
+    const result = run(
+      ['--set', 'agents', '--install', '--replace-symlinks', '--file', 'pilot.md', '--dir', targetDir],
+      { plugin: fixture.root, script: fixture.script },
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('PINNED RENAME FAILURE')
+    expect(lstatSync(join(targetDir, 'pilot.md')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(targetDir, 'pilot.md'))).toBe(linkTarget)
+    expect(readFileSync(linkTarget, 'utf8')).toBe(targetBytes)
+    expect(readdirSync(targetDir)).toEqual(['pilot.md'])
   })
 
   it('P3 does not let a shipped-fingerprint catch swallow a one-shot fatal error', () => {

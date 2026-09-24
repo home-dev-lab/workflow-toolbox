@@ -11,7 +11,7 @@ const withoutLineSuffix = (value) => value.replace(/(\.[A-Za-z0-9]+):\d+(?::\d+)
 })
 const normalizedClaim = (finding) => normalizedFinding(withoutLineSuffix(finding))
 const normalizedLocationFile = (location) => {
-  let normalized = String(location ?? '').trim().replace(/^`|`$/g, '').replaceAll(BACKWARD_SLASH, FORWARD_SLASH)
+  let normalized = String(location ?? '').trim().replace(/^`|`$/g, '').replaceAll(BACKWARD_SLASH, () => FORWARD_SLASH)
   if (normalized.startsWith(`.${FORWARD_SLASH}`)) normalized = normalized.slice(2)
   return normalized.replace(/:\d+(?::\d+)?(?:-\d+)?$/, '')
 }
