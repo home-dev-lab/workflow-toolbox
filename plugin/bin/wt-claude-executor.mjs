@@ -52,7 +52,7 @@ async function worker(options) {
       settingSources: [],
       canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex, profile: sdkRole.profile }),
       permissionMode: 'default',
-      sandbox: { enabled: true, autoAllowBashIfSandboxed: false },
+      sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true },
       settings: { permissions: { blockReadsOutsideWorkingDirectories: true, disableBypassPermissionsMode: 'disable' } },
       abortController,
       env: { ...process.env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },

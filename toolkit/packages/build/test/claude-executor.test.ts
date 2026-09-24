@@ -46,7 +46,7 @@ function fixture() {
   writeFileSync(join(sdk, 'index.cjs'), `
 const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
-  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE})}));
+  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,sandbox:options.sandbox,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE}),unsandboxed:await options.canUseTool('Bash',{command:'true',dangerouslyDisableSandbox:true})}));
   const mode=process.env.FAKE_MODE;
   if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
   else if(mode==='first-result') yield {type:'result',subtype:'success',is_error:false,result:'too early'};
@@ -119,6 +119,17 @@ describe('Claude SDK executor', () => {
     expect(executorCanUseTool(root, report, false, 'Bash', { command: 'pnpm test' }).behavior).toBe('allow')
     const outside = mkdtempSync(join(tmpdir(), 'wt-executor-outside-')); roots.push(outside); symlinkSync(outside, join(root, 'link'))
     expect(executorCanUseTool(root, report, false, 'Write', { file_path: join(root, 'link', 'escaped') }).behavior).toBe('deny')
+  })
+
+  it('launches the writer with mandatory sandboxing and denies per-command escape', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.sandbox.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'sandbox.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside') } })
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0')
+    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({
+      sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true },
+      unsandboxed: { behavior: 'deny', message: 'unsandboxed Bash refused' },
+    })
   })
 
   it.runIf(process.env.WT_CLAUDE_EXECUTOR_REAL_E2E === 'true')('keeps real SDK Bash writes inside the worktree', () => {

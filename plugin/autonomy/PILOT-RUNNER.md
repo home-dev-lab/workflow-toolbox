@@ -5,7 +5,9 @@
 `node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <card.md>` runs the pilot with `query()`,
 `permissionMode: 'default'`, and `settingSources: []`. The SDK routes every tool request through
 `canUseTool`, which applies real-path confinement to filesystem tools and denies tools outside the
-pilot role profile. Supplying the callback makes the SDK use its stdio permission-prompt transport,
+pilot role profile. Every role excludes and explicitly disallows context-mode tools outside its
+declared subset, including `ctx_doctor`, `ctx_purge`, and the `ctx_execute` family. The invariant is:
+no role runs model-authored code or commands outside its declared, guarded path. Supplying the callback makes the SDK use its stdio permission-prompt transport,
 so the callback response resolves requests headlessly rather than opening an interactive prompt.
 The lifecycle surface is the Planka HTTP MCP and the in-process `sdk-pilot-lifecycle` MCP server. The lifecycle server exposes `transition`,
 `write_artifact`, `route_finding`, and `run`; it owns phases, artifacts, lanes, gates, and the report-edge commit.
@@ -29,8 +31,8 @@ symlink target once.
 
 | Role | Tools | LSP | Selected workflow-toolbox skills | Shipped command guards |
 | --- | --- | --- | --- | --- |
-| pilot | Read, Glob, Grep, LSP, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | optional, visible | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |
-| tdd | Read, Glob, Grep, LSP, Edit, Write, Bash, all ten context-mode MCP tools | optional, visible | changelog | writer set |
+| pilot | Read, Glob, Grep, LSP, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` — no Edit, Write, Bash, diagnostics, deletion, or `ctx_execute` family: every increment goes through the lifecycle `run` tool | optional, visible | stale-card-sweep, lesson-harvest, deep-grounding | none; this role has no model-authored command path |
+| tdd | Read, Glob, Grep, LSP, Edit, Write, guarded Bash, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` | optional, visible | changelog | writer set; model-authored commands run only through guarded, mandatory-sandbox Bash |
 | judge, critic, review, refutation | Read, Glob, Grep, LSP, `ctx_search` only | optional, visible | none | none; no Bash |
 
 The initial implementation detects TypeScript and JavaScript from a root `tsconfig.json` or
@@ -43,21 +45,28 @@ language mappings. Missing binaries never refuse a session: the init log and `li
 `LSP navigation: available`. When available, omission of `LSP` from the SDK init receipt refuses the
 incomplete receipt; when absent, the SDK is expected to omit it.
 
-The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
+Context-mode's fetch/index/search service processes are run by the plugin, not from model-authored
+source. Their library-controlled persistent context storage outside the worktree is a known exception
+to worktree confinement. LSP likewise launches only the runner-resolved configured language server.
+The writer's model-authored shell work gets done through `Bash`, where sandbox availability is
+mandatory, per-command sandbox escape is disabled and denied by authorization, and the writer guards
+apply. The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
 unquoted globs, merge chains, concurrent tests, piped gate status, process-environment dumps,
 commit backticks, zsh colon modifiers, `find -newermt`, `PIPESTATUS`, and absent package scripts;
 plus main, gate-evidence, stale-date, rule-convention, and shipped-twin checks. Each SDK callback
 spawns the original shipped script with the native hook payload unchanged and returns its JSON
-decision unchanged. A non-zero exit or invalid JSON is logged and produces no decision, never an
-unreported allow. The `pilot-guard` function plugin remains loaded for confinement, and
-context-mode supplies the read bound. Spawn guards are excluded because these sessions have no
+decision unchanged. A guard launch failure, non-zero exit, or invalid JSON is logged and returns an
+explicit denial. The `pilot-guard` function plugin matches `Bash` only, so it never protects the
+pilot role, which has no Bash tool; process execution is instead absent from that role. Context-mode
+supplies the read bound. Spawn guards are excluded because these sessions have no
 Agent tool; Stop and SessionStart workflow-toolbox hooks are excluded because lifecycle servers own
 transitions; Planka producers are excluded because executors do not write the board.
 
 Only selected skills are copied into generated `.lane/sdk-plugins/<role>/` directories; the full
 workflow-toolbox plugin, its workflows, monitors, statusline, and unrelated skills are never loaded.
 The initialization receipt must contain the confinement plugin, context-mode plugin, generated skill
-plugin where applicable, every role tool, and every selected skill. Callback registration is not a
+plugin where applicable, every role tool, and every selected skill. Any receipt tool outside the role
+profile and the role's exact lifecycle tools refuses startup. Callback registration is not a
 receipt field, so startup proves every script exists and registers one callback per selected table
 entry; the refusal probe proves that callback execution works. A missing guard, skill, confinement
 plugin, or context-mode 1.0.177 path refuses startup and names the path.

@@ -57,6 +57,9 @@ const CONTEXT_MODE_TOOLS = Object.freeze({
   search: `${CONTEXT_PREFIX}ctx_search`,
   stats: `${CONTEXT_PREFIX}ctx_stats`,
 })
+// Roles may use the plugin's own fetch/index/search services, whose library-controlled context
+// storage lives outside the worktree, but may not run model-authored code or commands through it.
+const ROLE_CONTEXT_TOOLS = Object.freeze([CONTEXT_MODE_TOOLS.fetchAndIndex, CONTEXT_MODE_TOOLS.index, CONTEXT_MODE_TOOLS.search])
 
 const WRITER_GUARDS = Object.freeze([
   { script: 'wt-unquoted-tool-glob-guard-hook.mjs', event: 'PreToolUse', matcher: 'Bash', reason: 'refuse shell-expanded tool-option globs' },
@@ -77,12 +80,12 @@ const WRITER_GUARDS = Object.freeze([
 ])
 
 const READ_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'LSP', CONTEXT_MODE_TOOLS.search])
-const WRITE_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'LSP', 'Edit', 'Write', 'Bash', ...Object.values(CONTEXT_MODE_TOOLS)])
+const WRITE_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'LSP', 'Edit', 'Write', 'Bash', ...ROLE_CONTEXT_TOOLS])
 const writer = (skills) => Object.freeze({ tools: WRITE_TOOLS, guards: WRITER_GUARDS, skills: Object.freeze(skills), mcpServers: Object.freeze(['context-mode']), readOnly: false })
 const reader = Object.freeze({ tools: READ_TOOLS, guards: Object.freeze([]), skills: Object.freeze([]), mcpServers: Object.freeze(['context-mode']), readOnly: true })
 // The pilot arbitrates and delegates every increment through the lifecycle `run` tool: it reads, analyses
-// (all context-mode tools, bounded reads) and invokes its skills, but never edits, writes or runs a shell.
-const ANALYST_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'LSP', ...Object.values(CONTEXT_MODE_TOOLS)])
+// (library-controlled context services, bounded reads) and invokes its skills, but never edits, writes or runs a shell.
+const ANALYST_TOOLS = Object.freeze(['Read', 'Glob', 'Grep', 'LSP', ...ROLE_CONTEXT_TOOLS])
 const analyst = (skills) => Object.freeze({ tools: ANALYST_TOOLS, guards: Object.freeze([]), skills: Object.freeze(skills), mcpServers: Object.freeze(['context-mode']), readOnly: false })
 const PROFILES = Object.freeze({
   pilot: analyst(['stale-card-sweep', 'lesson-harvest', 'deep-grounding']),
@@ -213,23 +216,30 @@ function defaultRunScript(script, input, { signal, env = process.env } = {}) {
 
 function createGuardHook(script, { runScript = defaultRunScript, log = (line) => process.stderr.write(`${line}\n`), env = process.env } = {}) {
   return async (input, _toolUseId, options = {}) => {
+    const deny = (line) => ({
+      hookSpecificOutput: {
+        hookEventName: input?.hook_event_name ?? 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: line,
+      },
+    })
     let result
     try { result = await runScript(script, input, { ...options, env }) } catch (error) {
       const line = `SDK guard ${script} failed to launch: ${error instanceof Error ? error.message : String(error)}`
       log(line)
-      return { systemMessage: line }
+      return deny(line)
     }
     const detail = result.stderr.trim()
     if (result.code !== 0) {
       const line = `SDK guard ${script} exited ${String(result.code)}` + (detail ? `: ${detail}` : '')
       log(line)
-      return { systemMessage: line }
+      return deny(line)
     }
     if (!result.stdout.trim()) return {}
     try { return JSON.parse(result.stdout) } catch (error) {
       const line = `SDK guard ${script} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`
       log(line)
-      return { systemMessage: line }
+      return deny(line)
     }
   }
 }
@@ -298,18 +308,32 @@ export function skillIsUnlistedByInit(skillMarkdown) {
 
 export function composeSdkRoleQueryOptions(base, prepared) {
   if (typeof base.effort !== 'string' || !base.effort) throw new Error('SDK role launch requires explicit effort')
-  const disallowedTools = prepared.profile.readOnly
-    ? Object.values(CONTEXT_MODE_TOOLS).filter((tool) => tool !== CONTEXT_MODE_TOOLS.search)
-    : []
+  const roleDisallowedTools = Object.values(CONTEXT_MODE_TOOLS).filter((tool) => !prepared.profile.tools.includes(tool))
+  const disallowedTools = [...new Set([...(base.disallowedTools ?? []), ...roleDisallowedTools])]
+  const canUseTool = typeof base.canUseTool === 'function'
+    ? async (toolName, input, options) => {
+        if (toolName === 'Bash' && input?.dangerouslyDisableSandbox === true) return { behavior: 'deny', message: 'unsandboxed Bash refused' }
+        return base.canUseTool(toolName, input, options)
+      }
+    : base.canUseTool
   return {
     ...base,
     plugins: prepared.plugins ?? prepared.pluginPaths.map((pluginPath) => ({ type: 'local', path: pluginPath })),
     pluginDelivery: 'initialize',
     tools: [...prepared.profile.tools],
-    ...(disallowedTools.length ? { disallowedTools } : {}),
+    disallowedTools: [...disallowedTools],
+    ...(canUseTool ? { canUseTool } : {}),
     hooks: prepared.hooks,
   }
 }
+
+const LIFECYCLE_TOOLS = Object.freeze({
+  pilot: Object.freeze([
+    ...['transition', 'write_artifact', 'route_finding', 'run'].map((name) => `mcp__sdk-pilot-lifecycle__${name}`),
+    ...['get_card', 'get_comments', 'add_comment', 'update_card', 'move_card', 'add_label_to_card'].map((name) => `mcp__planka__${name}`),
+  ]),
+  judge: Object.freeze(['wave_state', 'read_card', 'read_card_report', 'read_diff', 'decide', 'write_judgment'].map((name) => `mcp__sdk-wave-lifecycle__${name}`)),
+})
 
 export function assertSdkRoleReceipt(role, message, prepared) {
   const tools = Array.isArray(message.tools) ? message.tools : []
@@ -320,12 +344,11 @@ export function assertSdkRoleReceipt(role, message, prepared) {
   if (prepared.skillPlugin && !plugins.some((plugin) => plugin?.name === `wt-sdk-${role}` || plugin?.path === prepared.skillPlugin)) absentPlugins.push(prepared.skillPlugin)
   const requiredTools = prepared.lsp?.available ? prepared.profile.tools : prepared.profile.tools.filter((tool) => tool !== 'LSP')
   const missingTools = requiredTools.filter((tool) => !tools.includes(tool))
-  const forbiddenTools = prepared.profile.readOnly
-    ? Object.values(CONTEXT_MODE_TOOLS).filter((tool) => tool !== CONTEXT_MODE_TOOLS.search && tools.includes(tool))
-    : []
+  const allowedTools = new Set([...prepared.profile.tools, ...(LIFECYCLE_TOOLS[role] ?? [])])
+  const unexpectedTools = tools.filter((tool) => !allowedTools.has(tool))
   const unlistedSkills = Array.isArray(prepared.unlistedSkills) ? prepared.unlistedSkills : []
   const missingSkills = prepared.profile.skills.filter((skill) => !unlistedSkills.includes(skill) && !skills.some((loaded) => loaded === skill || loaded.endsWith(`:${skill}`)))
-  if (absentPlugins.length || missingTools.length || forbiddenTools.length || missingSkills.length) {
-    throw new Error(`SDK role ${role} initialization receipt is incomplete: ${JSON.stringify({ absentPlugins, missingTools, forbiddenTools, missingSkills, unlistedSkills, tools, plugins, skills })}`)
+  if (absentPlugins.length || missingTools.length || unexpectedTools.length || missingSkills.length) {
+    throw new Error(`SDK role ${role} initialization receipt is incomplete: ${JSON.stringify({ absentPlugins, missingTools, unexpectedTools, missingSkills, unlistedSkills, tools, plugins, skills })}`)
   }
 }

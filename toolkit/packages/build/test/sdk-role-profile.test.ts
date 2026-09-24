@@ -5,6 +5,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { resolveContextModeRoot, assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, skillIsUnlistedByInit } from '../../../../plugin/bin/lib/sdk-role-profile.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { lifecycleCanUseTool } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { executorCanUseTool } from '../../../../plugin/bin/lib/claude-executor-core.mjs'
 
 prepareContextModeFixture()
 
@@ -25,9 +29,14 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const roles = ['pilot', 'judge', 'tdd', 'critic', 'review', 'refutation'] as const
-const roleProfile = (role: string) => {
+const processStartingContextTools = [CONTEXT_MODE_TOOLS.batchExecute, CONTEXT_MODE_TOOLS.execute, CONTEXT_MODE_TOOLS.executeFile]
+const roleContextTools = [CONTEXT_MODE_TOOLS.fetchAndIndex, CONTEXT_MODE_TOOLS.index, CONTEXT_MODE_TOOLS.search]
+const preparedRole = (role: string) => {
   const root = mkdtempSync(join(tmpdir(), 'wt-role-profile-')); roots.push(root)
-  return prepareSdkRole(role, { worktree: root, exists: () => true }).profile
+  return { root, prepared: prepareSdkRole(role, { worktree: root, exists: () => true }) }
+}
+const roleProfile = (role: string) => {
+  return preparedRole(role).prepared.profile
 }
 const readers = ['judge', 'critic', 'review', 'refutation'] as const
 const writers = ['tdd'] as const
@@ -64,18 +73,19 @@ describe('SDK role profiles', () => {
     }
   })
 
-  it('gives writers every required guard and role-specific skills', () => {
+  it('gives writers guarded Bash, library-controlled context services, and role-specific skills', () => {
     for (const role of writers) {
       const profile = roleProfile(role)
       expect(profile.readOnly).toBe(false)
-      expect(profile.tools).toEqual(expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash', CONTEXT_MODE_TOOLS.search, CONTEXT_MODE_TOOLS.execute]))
+      expect(profile.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', 'Edit', 'Write', 'Bash', ...roleContextTools])
+      for (const tool of [CONTEXT_MODE_TOOLS.doctor, CONTEXT_MODE_TOOLS.purge]) expect(profile.tools).not.toContain(tool)
       expect(profile.guards.map((guard: { script: string }) => guard.script)).toEqual(expect.arrayContaining(requiredGuards))
       expect(profile.guards.every((guard: { reason: string }) => guard.reason.length > 0)).toBe(true)
     }
     expect(roleProfile('pilot').skills).toEqual(['stale-card-sweep', 'lesson-harvest', 'deep-grounding'])
     const pilot = roleProfile('pilot')
     expect(pilot.readOnly).toBe(false)
-    expect(pilot.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...Object.values(CONTEXT_MODE_TOOLS)])
+    expect(pilot.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...roleContextTools])
     for (const tool of ['Edit', 'Write', 'Bash']) expect(pilot.tools).not.toContain(tool)
     expect(pilot.guards).toEqual([])
     expect(roleProfile('tdd').skills).toEqual(['changelog'])
@@ -91,6 +101,52 @@ describe('SDK role profiles', () => {
   it.each(roles)('refuses to launch the %s SDK role without a declared effort', (role) => {
     expect(() => composeSdkRoleQueryOptions({ model: 'opus' }, { profile: roleProfile(role), plugins: [], hooks: {} }))
       .toThrow('SDK role launch requires explicit effort')
+  })
+
+  it.each(roles)('keeps process-starting context tools outside the %s SDK role', (role) => {
+    const { root, prepared } = preparedRole(role)
+    const options = composeSdkRoleQueryOptions({ model: 'opus', effort: 'medium' }, prepared)
+    for (const tool of processStartingContextTools) {
+      expect(options.tools).not.toContain(tool)
+      expect(options.disallowedTools).toContain(tool)
+      const permission = role === 'pilot'
+        ? lifecycleCanUseTool(root, tool, {}, { profile: prepared.profile })
+        : executorCanUseTool(root, join(root, 'report.md'), prepared.profile.readOnly, tool, {}, { profile: prepared.profile })
+      expect(permission).toEqual({ behavior: 'deny', message: `tool refused: ${tool}` })
+    }
+    const receipt = {
+      tools: [...prepared.profile.tools.filter((tool: string) => tool !== 'LSP'), CONTEXT_MODE_TOOLS.execute],
+      plugins: prepared.pluginPaths.map((pluginPath: string) => ({ path: pluginPath })),
+      skills: [...prepared.profile.skills],
+    }
+    expect(() => assertSdkRoleReceipt(role, receipt, prepared)).toThrow(/unexpectedTools.*ctx_execute/)
+  })
+
+  it('merges caller and role deny lists without duplicates', () => {
+    const { prepared } = preparedRole('tdd')
+    const options = composeSdkRoleQueryOptions({ model: 'opus', effort: 'medium', disallowedTools: ['Agent', CONTEXT_MODE_TOOLS.doctor] }, prepared)
+    expect(options.disallowedTools).toEqual(['Agent', CONTEXT_MODE_TOOLS.doctor, ...Object.values(CONTEXT_MODE_TOOLS).filter((tool) => !roleContextTools.includes(tool) && tool !== CONTEXT_MODE_TOOLS.doctor)])
+  })
+
+  it.each(['Bash', 'Agent', 'mcp__other__ctx_execute'])('rejects unexpected initialization capability %s', (unexpected) => {
+    const { prepared } = preparedRole('pilot')
+    const receipt = {
+      tools: [...prepared.profile.tools.filter((tool: string) => tool !== 'LSP'), 'mcp__sdk-pilot-lifecycle__run', unexpected],
+      plugins: prepared.pluginPaths.map((pluginPath: string) => ({ path: pluginPath })),
+      skills: [...prepared.profile.skills],
+    }
+    expect(() => assertSdkRoleReceipt('pilot', receipt, prepared)).toThrow(new RegExp(`unexpectedTools.*${unexpected}`))
+  })
+
+  it('denies Bash requests that ask to disable the sandbox before the caller callback', async () => {
+    const { prepared } = preparedRole('tdd')
+    let called = false
+    const options = composeSdkRoleQueryOptions({
+      model: 'opus', effort: 'medium',
+      canUseTool: async () => { called = true; return { behavior: 'allow' } },
+    }, prepared)
+    await expect(options.canUseTool('Bash', { command: 'true', dangerouslyDisableSandbox: true })).resolves.toEqual({ behavior: 'deny', message: 'unsandboxed Bash refused' })
+    expect(called).toBe(false)
   })
 
   it('fails closed with the missing guard or context-mode path named', () => {
@@ -198,16 +254,16 @@ describe('SDK command-guard callback adapter', () => {
     expect(received).toBe(payload)
   })
 
-  it('returns no decision and logs when a guard exits non-zero', async () => {
+  it.each([
+    ['fails to launch', async () => { throw new Error('spawn failed') }, 'failed to launch: spawn failed'],
+    ['exits non-zero', async () => ({ code: 7, stdout: '', stderr: 'boom' }), 'exited 7: boom'],
+    ['returns invalid JSON', async () => ({ code: 0, stdout: '{', stderr: '' }), 'returned invalid JSON'],
+  ])('denies and logs when a guard %s', async (_shape, runScript, detail) => {
     const lines: string[] = []
-    const hook = guardHook({ runScript: async () => ({ code: 7, stdout: '', stderr: 'boom' }), log: (line: string) => lines.push(line) })
+    const hook = guardHook({ runScript, log: (line: string) => lines.push(line) })
     const result = await hook({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'true' } })
-    expect(result).not.toHaveProperty('hookSpecificOutput')
-    expect(result).not.toHaveProperty('continue')
-    expect(lines).toEqual([
-      'SDK role tdd: LSP absent: typescript-language-server not found on PATH',
-      expect.stringContaining('wt-unquoted-tool-glob-guard-hook.mjs exited 7: boom'),
-    ])
+    expect(result).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining(detail) } })
+    expect(lines).toEqual(['SDK role tdd: LSP absent: typescript-language-server not found on PATH', expect.stringContaining(detail)])
   })
 })
 

@@ -26,6 +26,8 @@ const CONTEXT_MODE_TOOLS = {
   executeFile: `${CONTEXT_PREFIX}ctx_execute_file`, fetchAndIndex: `${CONTEXT_PREFIX}ctx_fetch_and_index`, index: `${CONTEXT_PREFIX}ctx_index`,
   insight: `${CONTEXT_PREFIX}ctx_insight`, purge: `${CONTEXT_PREFIX}ctx_purge`, search: `${CONTEXT_PREFIX}ctx_search`, stats: `${CONTEXT_PREFIX}ctx_stats`,
 }
+const ROLE_CONTEXT_TOOLS = [CONTEXT_MODE_TOOLS.fetchAndIndex, CONTEXT_MODE_TOOLS.index, CONTEXT_MODE_TOOLS.search]
+const DISALLOWED_CONTEXT_TOOLS = Object.values(CONTEXT_MODE_TOOLS).filter((tool) => !ROLE_CONTEXT_TOOLS.includes(tool))
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const FIXED_CRITIC_ROUNDS = 3
 prepareContextModeFixture()
@@ -44,7 +46,7 @@ const initMessage = (model?: string) => ({
   type: 'system',
   subtype: 'init',
   ...(model === undefined ? {} : { model }),
-  tools: ['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS), lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
+  tools: ['Read', 'Glob', 'Grep', ...ROLE_CONTEXT_TOOLS, lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }, { path: resolveContextModeRoot(process.env) }, { name: 'wt-sdk-pilot' }],
   // `lesson-harvest` is declared `user-invocable: false`, and the real receipt never lists such a skill (measured
   // 2026-09-17): a fake listing it would pass a check the harness cannot satisfy.
@@ -1042,13 +1044,14 @@ describe('SDK pilot runner', () => {
   })
 
   it('registers the runner-hosted lifecycle server and composes the pilot role profile', async () => {
-    type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], mcpServers: Record<string, unknown>, permissionMode?: string, allowDangerouslySkipPermissions?: boolean }
+    type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], disallowedTools: string[], mcpServers: Record<string, unknown>, permissionMode?: string, allowDangerouslySkipPermissions?: boolean }
     const f = fixture(); let options: QueryOptions | undefined
     const query = ({ options: received }: { options: QueryOptions }) => { options = received; return (async function* () {
       yield initMessage()})() }
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
     expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot'))])
-    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...Object.values(CONTEXT_MODE_TOOLS)])
+    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...ROLE_CONTEXT_TOOLS])
+    expect(options!.disallowedTools).toEqual(DISALLOWED_CONTEXT_TOOLS)
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(options!.permissionMode).toBe('default')
     expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
