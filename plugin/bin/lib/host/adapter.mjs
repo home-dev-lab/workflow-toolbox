@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { createCodexBrokerOwnership } from './codex-broker-ownership.mjs'
 import { freemem } from 'node:os'
@@ -43,6 +43,9 @@ function realInvocation() {
     },
     read(file) {
       try { return { status: 'read', value: readFileSync(file, 'utf8') } } catch (error) { return { status: 'unavailable', value: '', reason: error?.code ?? String(error) } }
+    },
+    listProcesses() {
+      return linux.readLinuxProcProcesses({ readFile: readFileSync, readDirectory: readdirSync, observedAt: Date.now() })
     },
     freeMemory: () => freemem(),
     realpath(input) {

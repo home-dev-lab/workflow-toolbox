@@ -198,6 +198,7 @@ export function createLifecycleLaunch({
   lanePollMs,
   laneWaitMs,
   lanePlatform,
+  laneProcessReader,
   gateRunner,
   testFramework,
   now = () => Date.now(),
@@ -212,6 +213,10 @@ export function createLifecycleLaunch({
     state.pendingControl = { phase, token }
     return `lane ${phase} TIMEOUT: ${detail}; ${controlRemedy(token)}; after abandon completes, re-run this lifecycle lane phase to launch a fresh owner-bound lane and brief`
   }
+  const classify = (record) => classifyLane(record, {
+    platform: lanePlatform,
+    ...(laneProcessReader ? { inspect: laneProcessReader.inspect, processExists: laneProcessReader.processExists, processState: laneProcessReader.processState } : {}),
+  })
 
   function audit() {
     assertLaneDir()
@@ -460,7 +465,7 @@ export function createLifecycleLaunch({
           let parsed = null
           try {
             parsed = JSON.parse(status)
-            let verdict = classifyLane(parsed, { platform: lanePlatform })
+            let verdict = classify(parsed)
             if (parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'running') {
               const transitionDueAt = Date.parse(parsed.decisionTransitionDueAt)
               while (!logEntry && verdict.status === 'running' && parsed.workerPid === workerPid && Date.now() <= transitionDueAt) {
@@ -475,10 +480,10 @@ export function createLifecycleLaunch({
                 })
                 status = readRegularFile(supervisionFile)
                 parsed = JSON.parse(status)
-                verdict = classifyLane(parsed, { platform: lanePlatform })
+                verdict = classify(parsed)
               }
             }
-            verdict = classifyLane(parsed, { platform: lanePlatform })
+            verdict = classify(parsed)
             if (!logEntry && parsed.workerPid === workerPid && parsed.owner === 'pilot' && verdict.status === 'decision-needed') {
               const detail = `owner=${parsed.owner} decision required; lane remains live; last write ${parsed.evidence?.lastWriteAt ?? 'unknown'}; process ${parsed.evidence?.process ?? 'unknown'}; log tail ${JSON.stringify(parsed.evidence?.logTail ?? '')}; default=${parsed.defaultDecision} at ${parsed.decisionDueAt}`
               snapshot = null
@@ -513,12 +518,12 @@ export function createLifecycleLaunch({
           if (runId) {
             let record = null
             try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId, identity.slot).record)) } catch {}
-            let verdict = classifyLane(record, { platform: lanePlatform })
+            let verdict = classify(record)
             const settleDeadline = Date.now() + 1_000
             while (!['terminal', 'gone'].includes(verdict.status) && Date.now() < settleDeadline) {
               await new Promise((resolve) => setTimeout(resolve, lanePollMs))
               try { record = JSON.parse(readRegularFile(supervisionPaths(root, runId, identity.slot).record)) } catch {}
-              verdict = classifyLane(record, { platform: lanePlatform })
+              verdict = classify(record)
             }
             if (!['terminal', 'gone'].includes(verdict.status)) {
               snapshot = null
