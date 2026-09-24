@@ -22,12 +22,14 @@ const CACHE_STORE_MARKER_CONTENT = 'workflow-toolbox opencode skill-fence cache 
 // OPENCODE_CONFIG skills.paths exposes a materialised skill while
 // OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true excludes the external Claude skill.
 
-export function opencodeChildEnv(env = process.env, extraNames = []) {
-  const childEnv = externalModelEnv(env, extraNames)
+export function opencodeChildEnv(env = process.env, extraNames = [], platform) {
+  const childEnv = platform === undefined ? externalModelEnv(env, extraNames) : externalModelEnv(env, extraNames, platform)
   childEnv.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'true'
   // An inherited config can add arbitrary skill paths. Launchers may add their own
   // validated OPENCODE_CONFIG after this function returns, but never inherit one silently.
-  delete childEnv.OPENCODE_CONFIG
+  for (const name of Object.keys(childEnv)) {
+    if (name.toUpperCase() === 'OPENCODE_CONFIG') delete childEnv[name]
+  }
   return childEnv
 }
 
@@ -47,8 +49,8 @@ export function spawnCommand(spawnFn, bin, args, options, platform) {
   return spawnFn(bin, args, options)
 }
 
-export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform) {
-  const childOptions = { ...options, env: externalModelEnv(options.env ?? process.env) }
+export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform, extraNames = []) {
+  const childOptions = { ...options, env: externalModelEnv(options.env ?? process.env, extraNames, platform) }
   return spawnCommand(spawnFn, bin, args, childOptions, platform)
 }
 

@@ -635,6 +635,12 @@ test('opencode receives only the environment it needs, never provider or unrelat
     EXA_API_KEY: 'sentinel-exa-secret',
     BRAVE_API_KEY: 'sentinel-brave-secret',
     UNRELATED_CREDENTIAL: 'sentinel-unrelated-secret',
+    MYSQL_PWD: 'owner-password',
+    GIT_CONFIG_PARAMETERS: "'http.extraheader'='Authorization: Bearer owner-token'",
+    NODE_OPTIONS: '--require /tmp/hook.cjs',
+    AWS_CONFIG_FILE: '/owner/aws.conf',
+    opencode_config: 'C:\\owner\\injected.json',
+    OPENAI_API_KEY: 'provider-key',
   };
   startOpencode(
     { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },

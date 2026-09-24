@@ -138,25 +138,57 @@ describe('OpenCode Claude-skill fence', () => {
     expect(opencodeChildEnv({ PATH: '/bin', LANE_DATABASE_URL: 'needed', LANE_OTHER_SECRET: 'blocked' }, ['LANE_DATABASE_URL'])).toEqual({
       LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin',
     })
-    expect(opencodeChildEnv({ PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'LANE_DATABASE_URL', LANE_DATABASE_URL: 'needed' })).toEqual({
-      LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'LANE_DATABASE_URL',
+    expect(opencodeChildEnv({ PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_LANE_DATABASE_URL', WT_LANE_DATABASE_URL: 'needed' })).toEqual({
+      WT_LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_LANE_DATABASE_URL',
     })
   })
 
   it('reserves credential-shaped extras for explicit code call sites', () => {
     const env = {
-      WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,SAFE_MARKER',
+      WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,WT_SAFE_MARKER',
       GITHUB_TOKEN: 'configured credential',
       NODE_OPTIONS: '--require /tmp/hook.cjs',
-      SAFE_MARKER: 'configured safe value',
+      WT_SAFE_MARKER: 'configured safe value',
       OPENAI_API_KEY: 'explicit provider credential',
       CLAUDE_CODE_OAUTH_TOKEN: 'absolute exclusion',
       ANTHROPIC_API_KEY: 'absolute api exclusion',
       ANTHROPIC_AUTH_TOKEN: 'absolute auth exclusion',
     }
-    expect(externalModelEnv(env)).toEqual({ NODE_OPTIONS: '--require /tmp/hook.cjs', SAFE_MARKER: 'configured safe value', WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,SAFE_MARKER' })
+    expect(externalModelEnv(env)).toEqual({ WT_SAFE_MARKER: 'configured safe value', WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,WT_SAFE_MARKER' })
     expect(externalModelEnv(env, ['OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'])).toEqual({
-      NODE_OPTIONS: '--require /tmp/hook.cjs', OPENAI_API_KEY: 'explicit provider credential', SAFE_MARKER: 'configured safe value', WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,SAFE_MARKER',
+      OPENAI_API_KEY: 'explicit provider credential', WT_SAFE_MARKER: 'configured safe value', WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,WT_SAFE_MARKER',
+    })
+  })
+
+  it('does not let configured extras carry credentials into the child', () => {
+    const env = {
+      WT_EXTERNAL_MODEL_ENV_ALLOW: 'MYSQL_PWD,GIT_CONFIG_PARAMETERS',
+      MYSQL_PWD: 'owner-password',
+      GIT_CONFIG_PARAMETERS: "'http.extraheader'='Authorization: Bearer owner-token'",
+    }
+    expect(externalModelEnv(env)).toEqual({ WT_EXTERNAL_MODEL_ENV_ALLOW: 'MYSQL_PWD,GIT_CONFIG_PARAMETERS' })
+  })
+
+  it('does not let a configured execution hook mint an excluded credential', () => {
+    const env = externalModelEnv({
+      WT_EXTERNAL_MODEL_ENV_ALLOW: 'NODE_OPTIONS',
+      NODE_OPTIONS: '--import=data:text/javascript,process.env.CLAUDE_CODE_OAUTH_TOKEN=%22synthetic%22',
+    })
+    const result = spawnSync(process.execPath, ['-e', "process.stdout.write(process.env.CLAUDE_CODE_OAUTH_TOKEN ?? 'absent')"], { encoding: 'utf8', env })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('absent')
+  })
+
+  it('treats configured credential-file selectors as credentials', () => {
+    expect(externalModelEnv({
+      WT_EXTERNAL_MODEL_ENV_ALLOW: 'AWS_CONFIG_FILE',
+      AWS_CONFIG_FILE: '/owner/aws.conf',
+    })).toEqual({ WT_EXTERNAL_MODEL_ENV_ALLOW: 'AWS_CONFIG_FILE' })
+  })
+
+  it('removes inherited OpenCode config case-insensitively on Windows', () => {
+    expect(opencodeChildEnv({ PATH: 'C:\\bin', appdata: 'C:\\appdata', opencode_config: 'C:\\owner\\injected.json' }, [], 'win32')).toEqual({
+      PATH: 'C:\\bin', appdata: 'C:\\appdata', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true',
     })
   })
 

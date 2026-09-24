@@ -22,9 +22,9 @@ function fixture() {
 const args = process.argv.slice(2)
 if (args[0] === '--version') { console.log('fixture-1'); process.exit(0) }
 if (args[0] === '--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }
-if (args[0] === 'debug' && args[1] === 'skill') { appendFileSync(process.env.RECORD, 'probe|' + process.cwd() + '|' + process.env.IDENTITY_MARKER + '|' + (process.env.OPENCODE_CONFIG ?? 'unset') + '\\n'); console.log('[]'); process.exit(0) }
+if (args[0] === 'debug' && args[1] === 'skill') { appendFileSync(process.env.WT_RECORD, 'probe|' + process.cwd() + '|' + process.env.WT_IDENTITY_MARKER + '|' + (process.env.OPENCODE_CONFIG ?? 'unset') + '\\n'); console.log('[]'); process.exit(0) }
 if (args[0] === 'providers') process.exit(0)
-appendFileSync(process.env.RECORD, 'run|' + process.cwd() + '|' + process.env.IDENTITY_MARKER + '|' + (process.env.OPENCODE_CONFIG ?? 'unset') + '\\n')
+appendFileSync(process.env.WT_RECORD, 'run|' + process.cwd() + '|' + process.env.WT_IDENTITY_MARKER + '|' + (process.env.OPENCODE_CONFIG ?? 'unset') + '\\n')
 console.log('{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}')
 `)
     writeFileSync(bin, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`)
@@ -32,9 +32,9 @@ console.log('{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}')
     writeFileSync(bin, `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
 if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\n'; exit 0; fi
-if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf 'probe|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$RECORD"; printf '[]\n'; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf 'probe|%s|%s|%s\n' "$PWD" "$WT_IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$WT_RECORD"; printf '[]\n'; exit 0; fi
 if [ "$1" = "providers" ]; then exit 0; fi
-printf 'run|%s|%s|%s\n' "$PWD" "$IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$RECORD"
+printf 'run|%s|%s|%s\n' "$PWD" "$WT_IDENTITY_MARKER" "\${OPENCODE_CONFIG-unset}" >> "$WT_RECORD"
 printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'
 `)
     chmodSync(bin, 0o755)
@@ -42,7 +42,7 @@ printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'
   const home = path.join(root, 'home')
   mkdirSync(home)
   writeFileSync(path.join(home, '.zprofile'), `export OPENCODE_CONFIG=${path.join(root, 'shell-startup-unsafe.json')}\n`)
-  const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${binDir}${delimiter}${process.env.PATH}`, RECORD: record, IDENTITY_MARKER: 'same', WT_EXTERNAL_MODEL_ENV_ALLOW: 'RECORD,IDENTITY_MARKER', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
+  const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${binDir}${delimiter}${process.env.PATH}`, WT_RECORD: record, WT_IDENTITY_MARKER: 'same', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_RECORD,WT_IDENTITY_MARKER', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
   return { root, bin, record, env }
 }
 
@@ -71,7 +71,7 @@ describe('all toolbox-owned OpenCode launch paths', () => {
 
   it.skipIf(process.platform === 'win32')('uses one sanitized cwd/environment/config context for observer probe and direct spawn [POSIX JSON-stream fixture]', () => {
     const f = fixture()
-    const keys = ['PATH', 'RECORD', 'IDENTITY_MARKER', 'WT_EXTERNAL_MODEL_ENV_ALLOW', 'OPENCODE_CONFIG', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
+    const keys = ['PATH', 'WT_RECORD', 'WT_IDENTITY_MARKER', 'WT_EXTERNAL_MODEL_ENV_ALLOW', 'OPENCODE_CONFIG', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     for (const key of keys) process.env[key] = f.env[key]
     try {

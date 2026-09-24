@@ -34,10 +34,10 @@ describe('wt-opencode-verify', () => {
     writeFileSync(source, 'review this')
     try {
       mkdirSync(binDir)
-      writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst fs=require('node:fs'); const args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }; if(args[0]==='debug' && args[1]==='skill') { console.log('[]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); fs.writeFileSync(process.env.CALLS, JSON.stringify(args)); fs.writeFileSync(process.env.FENCE, process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS); process.stdout.write('{"part":{"type":"text","text":"VERDICT"}}\\n')\n`)
+      writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst fs=require('node:fs'); const args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }; if(args[0]==='debug' && args[1]==='skill') { console.log('[]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); fs.writeFileSync(process.env.WT_CALLS, JSON.stringify(args)); fs.writeFileSync(process.env.WT_FENCE, process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS); process.stdout.write('{"part":{"type":"text","text":"VERDICT"}}\\n')\n`)
       writeFileSync(path.join(binDir, 'opencode.cmd'), '@node "%~dp0opencode" %*\r\n')
       chmodSync(path.join(binDir, 'opencode'), 0o755)
-      const result = spawnSync('node', [ENTRY, '--dir', dir, '--id', 'vote-123', '-m', 'openai/gpt-5.6-terra', '--fallback-model', 'openai/gpt-5.6-luna', '--variant', 'max', '--task-file', source], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}`, CALLS: calls, FENCE: path.join(dir, 'fence'), WT_EXTERNAL_MODEL_ENV_ALLOW: 'CALLS,FENCE', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }) })
+      const result = spawnSync('node', [ENTRY, '--dir', dir, '--id', 'vote-123', '-m', 'openai/gpt-5.6-terra', '--fallback-model', 'openai/gpt-5.6-luna', '--variant', 'max', '--task-file', source], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}`, WT_CALLS: calls, WT_FENCE: path.join(dir, 'fence'), WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_CALLS,WT_FENCE', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }) })
       expect(result.status).toBe(0)
       expect(result.stdout).toBe('VERDICT')
       expect(readFileSync(path.join(dir, 'fence'), 'utf8')).toBe('true')
@@ -99,6 +99,30 @@ describe('wt-opencode-verify', () => {
       expect(spawnOptions.env).toEqual(discoveryOptions?.env)
       expect(spawnOptions.env).toMatchObject({ OPENCODE_TEST_MARKER: 'same', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true' })
       expect(spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('passes only the selected provider credential to an external-model run', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-provider-'))
+    const env = { OPENAI_API_KEY: 'openai-provider-key', GOOGLE_GENERATIVE_AI_API_KEY: 'google-provider-key', ANTHROPIC_API_KEY: 'absolute-exclusion' }
+    const common = {
+      binary: 'opencode', providerAuthenticated: () => true, skillFenceVerifier: () => ({ ok: true }), skillDiscoveryVerifier: () => ({ ok: true }), readStdin: () => 'review', env,
+    }
+    try {
+      const openaiSpawn = vi.fn(() => childResult({ stdout: '{"part":{"type":"text","text":"OPENAI"}}\n' }))
+      await runVerifier({ dir, id: 'openai', stdin: true, taskFile: null, model: 'openai/gpt-5.6-terra', fallbackModel: null, variant: null }, { ...common, spawnFn: openaiSpawn })
+      const openaiEnv = (openaiSpawn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2].env
+      expect(openaiEnv).toMatchObject({ OPENAI_API_KEY: 'openai-provider-key' })
+      expect(openaiEnv).not.toHaveProperty('GOOGLE_GENERATIVE_AI_API_KEY')
+      expect(openaiEnv).not.toHaveProperty('ANTHROPIC_API_KEY')
+
+      const anthropicSpawn = vi.fn(() => childResult({ stdout: '{"part":{"type":"text","text":"ANTHROPIC"}}\n' }))
+      await runVerifier({ dir, id: 'anthropic', stdin: true, taskFile: null, model: 'anthropic/claude-sonnet-4-5', fallbackModel: null, variant: null }, { ...common, spawnFn: anthropicSpawn })
+      const anthropicEnv = (anthropicSpawn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2].env
+      expect(anthropicEnv).not.toHaveProperty('OPENAI_API_KEY')
+      expect(anthropicEnv).not.toHaveProperty('ANTHROPIC_API_KEY')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

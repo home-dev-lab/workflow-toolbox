@@ -9,8 +9,8 @@ const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 const write = (name, value = '') => writeFileSync(path.join(cwd, name), value)
 
 function skills() {
-  if (process.env.IGNORE_FENCE === '1') return [{ name: 'workflow-toolbox-fence-sentinel' }]
-  if (process.env.INVISIBLE_ALLOW === '1') return []
+  if (process.env.WT_IGNORE_FENCE === '1') return [{ name: 'workflow-toolbox-fence-sentinel' }]
+  if (process.env.WT_INVISIBLE_ALLOW === '1') return []
   return [{ name: 'workflow-toolbox-allowed-sentinel' }]
 }
 
@@ -59,7 +59,7 @@ async function runAction() {
     return
   }
   if (action.includes('IDENTITY_RECORD')) {
-    if (process.env.IDENTITY_RECORD) appendFileSync(process.env.IDENTITY_RECORD, `run|${cwd}|${process.env.IDENTITY_MARKER || ''}|${process.env.OPENCODE_CONFIG || 'unset'}\n`)
+    if (process.env.WT_IDENTITY_RECORD) appendFileSync(process.env.WT_IDENTITY_RECORD, `run|${cwd}|${process.env.WT_IDENTITY_MARKER || ''}|${process.env.OPENCODE_CONFIG || 'unset'}\n`)
     write('spawned', 'spawned')
     return
   }
@@ -95,11 +95,11 @@ async function runAction() {
 if (argv[0] === '--version') process.stdout.write('fixture-1\n')
 else if (argv[0] === '--pure') process.stdout.write(`${JSON.stringify(skills())}\n`)
 else if (argv[0] === 'debug' && argv[1] === 'skill') {
-  if (process.env.IDENTITY_RECORD) appendFileSync(process.env.IDENTITY_RECORD, `probe|${cwd}|${process.env.IDENTITY_MARKER || ''}|${process.env.OPENCODE_CONFIG || 'unset'}\n`)
+  if (process.env.WT_IDENTITY_RECORD) appendFileSync(process.env.WT_IDENTITY_RECORD, `probe|${cwd}|${process.env.WT_IDENTITY_MARKER || ''}|${process.env.OPENCODE_CONFIG || 'unset'}\n`)
   const countFile = path.join(cwd, '.lane', 'preflight-count')
   const count = (existsSync(countFile) ? Number(readFileSync(countFile, 'utf8')) : 0) + 1
-  if (process.env.SLOW_PREFLIGHT_AT_COUNT || process.env.FAIL_PREFLIGHT_AT_COUNT) writeFileSync(countFile, String(count))
-  if (String(count) === process.env.SLOW_PREFLIGHT_AT_COUNT) await sleep(6000)
-  if (String(count) === process.env.FAIL_PREFLIGHT_AT_COUNT) process.exitCode = 7
-  else process.stdout.write(`${process.env.EFFECTIVE_SKILLS || '[]'}\n`)
+  if (process.env.WT_SLOW_PREFLIGHT_AT_COUNT || process.env.WT_FAIL_PREFLIGHT_AT_COUNT) writeFileSync(countFile, String(count))
+  if (String(count) === process.env.WT_SLOW_PREFLIGHT_AT_COUNT) await sleep(6000)
+  if (String(count) === process.env.WT_FAIL_PREFLIGHT_AT_COUNT) process.exitCode = 7
+  else process.stdout.write(`${process.env.WT_EFFECTIVE_SKILLS || '[]'}\n`)
 } else await runAction()
