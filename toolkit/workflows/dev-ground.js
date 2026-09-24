@@ -1,6 +1,7 @@
 export const meta = {
   "name": "dev-ground",
   "description": "Grounding-first stage 1 of the dev loop: checks a card's premises against reality (external research ∥ internal code analysis → PoC canary for what sources cannot settle → refute-first verification) before any code is written, and recommends cancel / reframe / proceed with a corrective path.",
+  "whenToUse": "Use before planning when a card rests on assumptions that should be checked against sources or code. Agent routing accepts perAgent.agentType and agentTypes.{groundExternalTask,groundExternalSynthesis,groundInternalTask,groundInternalSynthesis,poc,verify,reframe,predict}; per-role values win. agentTypes.ground remains a fallback for all four grounding roles.",
   "phases": [
     {
       "title": "Fence"
@@ -2381,6 +2382,7 @@ ${request.renderClaim(request.claim)}`;
     meta: {
       name: "dev-ground",
       description: "Grounding-first stage 1 of the dev loop: checks a card's premises against reality (external research \u2225 internal code analysis \u2192 PoC canary for what sources cannot settle \u2192 refute-first verification) before any code is written, and recommends cancel / reframe / proceed with a corrective path.",
+      whenToUse: "Use before planning when a card rests on assumptions that should be checked against sources or code. Agent routing accepts perAgent.agentType and agentTypes.{groundExternalTask,groundExternalSynthesis,groundInternalTask,groundInternalSynthesis,poc,verify,reframe,predict}; per-role values win. agentTypes.ground remains a fallback for all four grounding roles.",
       // Eight DISTINCT titles are LOAD-BEARING: emitDigest attribution DROPS
       // BOTH digests when one pattern is invoked twice under one phase title
       // (envelope.ts ATTRIBUTION note) — every stage below gets its own title.
@@ -2418,6 +2420,8 @@ ${request.renderClaim(request.claim)}`;
       const effort = cfg.effort ?? null;
       const verifierType = cfg.agentTypes?.["verify"];
       const groundingType = cfg.agentTypes?.["ground"];
+      const agentTypes = cfg.agentTypes ?? null;
+      const defaultAgentType = cfg.perAgent?.agentType;
       const messaging = cfg.messaging ?? null;
       return {
         premises,
@@ -2429,7 +2433,9 @@ ${request.renderClaim(request.claim)}`;
         groundingType,
         verifierModel,
         effort,
-        messaging
+        messaging,
+        agentTypes,
+        defaultAgentType
       };
     },
     run: async (rt0, input) => {
@@ -2465,6 +2471,17 @@ ${request.renderClaim(request.claim)}`;
         resolvedVerifierType = probe.agentType;
         verifyProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason };
       }
+      const agentType = (role, current) => input.agentTypes?.[role] ?? input.defaultAgentType ?? current;
+      const roleTypes = {
+        groundExternalTask: agentType("groundExternalTask", resolvedGroundingType),
+        groundExternalSynthesis: agentType("groundExternalSynthesis", resolvedGroundingType),
+        groundInternalTask: agentType("groundInternalTask", resolvedGroundingType),
+        groundInternalSynthesis: agentType("groundInternalSynthesis", resolvedGroundingType),
+        poc: agentType("poc"),
+        verify: agentType("verify", resolvedVerifierType),
+        reframe: agentType("reframe"),
+        predict: agentType("predict")
+      };
       const externalPremises = input.premises.filter((p) => p.target === "external");
       const internalPremises = input.premises.filter((p) => p.target === "internal");
       const contextBlock = input.context.trim().length > 0 ? untrusted("CONTEXT", input.context) : "(no extra context)";
@@ -2502,7 +2519,7 @@ Return the premise-result shape: { premiseId: "${premise.id}", verdict, evidence
             taskSchema: PREMISE_RESULT_SCHEMA,
             taskModel: resolved.groundExternalTask.model,
             taskEffort: resolved.groundExternalTask.effort,
-            ...resolvedGroundingType !== void 0 ? { taskType: resolvedGroundingType, synthesisType: resolvedGroundingType } : {},
+            ...roleTypes.groundExternalTask !== void 0 ? { taskType: roleTypes.groundExternalTask } : {},
             synthesisPrompt: (parts) => `You are the external grounding synthesis agent. Below are per-premise research reports from ${parts.length} independent external probers (JSON). Reconcile them into ONE results array, one entry per premise you were given \u2014 do not drop or merge distinct premise ids.
 
 RAW REPORTS (JSON):
@@ -2512,6 +2529,7 @@ Return { results: [...] }.`,
             synthesisSchema: ARM_SCHEMA,
             synthesisModel: resolved.groundExternalSynthesis.model,
             synthesisEffort: resolved.groundExternalSynthesis.effort,
+            ...roleTypes.groundExternalSynthesis !== void 0 ? { synthesisType: roleTypes.groundExternalSynthesis } : {},
             phase: "Ground External"
           })
         }));
@@ -2529,7 +2547,7 @@ Return { results: [...] }.`,
             taskSchema: PREMISE_RESULT_SCHEMA,
             taskModel: resolved.groundInternalTask.model,
             taskEffort: resolved.groundInternalTask.effort,
-            ...resolvedGroundingType !== void 0 ? { taskType: resolvedGroundingType, synthesisType: resolvedGroundingType } : {},
+            ...roleTypes.groundInternalTask !== void 0 ? { taskType: roleTypes.groundInternalTask } : {},
             synthesisPrompt: (parts) => `You are the internal grounding synthesis agent. Below are per-premise code-analysis reports from ${parts.length} independent internal analysts (JSON). Reconcile them into ONE results array, one entry per premise you were given \u2014 do not drop or merge distinct premise ids.
 
 RAW REPORTS (JSON):
@@ -2539,6 +2557,7 @@ Return { results: [...] }.`,
             synthesisSchema: ARM_SCHEMA,
             synthesisModel: resolved.groundInternalSynthesis.model,
             synthesisEffort: resolved.groundInternalSynthesis.effort,
+            ...roleTypes.groundInternalSynthesis !== void 0 ? { synthesisType: roleTypes.groundInternalSynthesis } : {},
             phase: "Ground Internal"
           })
         }));
@@ -2617,7 +2636,8 @@ Return { outcome, premiseId: "${p.id}", probe, observation, denialQuote, rationa
                 label: `dev-ground:poc:${p.id}`,
                 phase: "PoC",
                 model: resolved.poc.model,
-                effort: resolved.poc.effort
+                effort: resolved.poc.effort,
+                ...roleTypes.poc !== void 0 ? { agentType: roleTypes.poc } : {}
               }
             );
             return { premiseId: p.id, report };
@@ -2696,7 +2716,7 @@ ${pocBlock}`;
         lenses: GROUNDING_LENSES,
         effort: resolved.verify.effort,
         ...input.verifierModel !== void 0 ? { model: input.verifierModel } : {},
-        ...resolvedVerifierType !== void 0 ? { verifierType: resolvedVerifierType } : {},
+        ...roleTypes.verify !== void 0 ? { verifierType: roleTypes.verify } : {},
         phase: "Verify"
       });
       const verifiedById = new Map(
@@ -2746,7 +2766,14 @@ ${untrusted(
           )}
 
 Return { text }.`,
-          { schema: REFRAME_SCHEMA, label: "dev-ground:reframe", phase: "Reframe", model: resolved.reframe.model, effort: resolved.reframe.effort }
+          {
+            schema: REFRAME_SCHEMA,
+            label: "dev-ground:reframe",
+            phase: "Reframe",
+            model: resolved.reframe.model,
+            effort: resolved.reframe.effort,
+            ...roleTypes.reframe !== void 0 ? { agentType: roleTypes.reframe } : {}
+          }
         );
         if (sketch === null) {
           warn(rt, warnings, "dev-ground: reframe sketch agent returned null \u2014 degrading to sketch-unavailable");
@@ -2769,7 +2796,14 @@ ${untrusted(
         )}
 
 Return { items: [{ item, outcome }] }.`,
-        { schema: PREDICT_SCHEMA, label: "dev-ground:predict", phase: "Predict", model: resolved.predict.model, effort: resolved.predict.effort }
+        {
+          schema: PREDICT_SCHEMA,
+          label: "dev-ground:predict",
+          phase: "Predict",
+          model: resolved.predict.model,
+          effort: resolved.predict.effort,
+          ...roleTypes.predict !== void 0 ? { agentType: roleTypes.predict } : {}
+        }
       );
       let predictionCheck;
       if (predictReport === null || predictReport.items.length === 0) {

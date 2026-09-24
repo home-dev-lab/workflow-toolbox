@@ -1,7 +1,7 @@
 export const meta = {
   "name": "dev-implement",
   "description": "Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. The test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) that end the task as a routable \"blocked\" outcome instead of a silent retry-until-failed. MECHANICAL test seams (parameter extraction, default injection) the test-writer creates ITSELF in-band under hard bounds — at most 4 files touched, every caller enumerated and updated — and declares structurally: the report carries per-task \"seams\" plus a \"seamsCreated\" tally and a REVIEW warning per creating task; a seam beyond the bounds falls back to the classic no-test-seam verdict. Three mutation modes: \"sequential\" (default — one task at a time in dependency order, no git required), \"worktree\" (git required — independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics), and \"auto\" (routes PER connected component of the dependsOn graph: qualifying components become parallel lanes, each an isolated worktree, while tasks within a lane still run sequentially; a single component runs on the plain sequential engine with no worktree tax; the routing decision is always reported in the output).",
-  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path — ABSOLUTE recommended — to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree/auto mode optional worktreeSetupCommand/worktreeRoot/signCommits (plus autoLaneMinTasks for \"auto\"), as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
+  "whenToUse": "Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path — ABSOLUTE recommended — to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, perAgent.agentType, and agentTypes.{load,red,green,check,mechanical,integration}, and for worktree/auto mode optional worktreeSetupCommand/worktreeRoot/signCommits (plus autoLaneMinTasks for \"auto\"), as the workflow args. implementerModel tiers the per-iteration implementer (default \"sonnet\"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.",
   "phases": [
     {
       "title": "Load",
@@ -77,6 +77,20 @@ var __wt = (() => {
       body.counts = sorted;
     }
     return `${DIGEST_PREFIX} ${JSON.stringify(body)}`;
+  }
+
+  // ../packages/runtime/src/with-agent-defaults.ts
+  function withAgentDefaults(rt, defaults) {
+    const agent = (prompt, opts) => rt.agent(prompt, { ...defaults, ...opts });
+    return {
+      agent,
+      parallel: rt.parallel,
+      pipeline: rt.pipeline,
+      phase: (title) => rt.phase(title),
+      log: (message) => rt.log(message),
+      budget: rt.budget,
+      workflow: rt.workflow
+    };
   }
 
   // ../packages/runtime/src/prompt-tag.ts
@@ -1122,6 +1136,13 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
   var CHECK_EFFORT_DEFAULT = "high";
   var MECHANICAL_EFFORT = "low";
   var INTEGRATION_EFFORT_DEFAULT = "high";
+  function resolveAgentType(input, role, current) {
+    return input.agentTypes?.[role] ?? input.defaultAgentType ?? current ?? void 0;
+  }
+  function agentTypeOption(input, role, current) {
+    const agentType = resolveAgentType(input, role, current);
+    return agentType === void 0 ? {} : { agentType };
+  }
   var SEAM_FILES_CAP = 4;
   var RED_RESULT_SCHEMA = {
     type: "object",
@@ -1588,7 +1609,10 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       }
       implementerType = obj["implementerType"];
     }
-    const effort = parseConfig(obj).effort ?? null;
+    const cfg = parseConfig(obj);
+    const effort = cfg.effort ?? null;
+    const agentTypes = cfg.agentTypes ?? null;
+    const defaultAgentType = cfg.perAgent?.agentType;
     return {
       artifact,
       artifactPath,
@@ -1602,7 +1626,9 @@ Return { "scores": [ { "id": "<id>", "score": <1-5>, "reason": "<short>" }, ... 
       pluginRoot,
       autoLaneMinTasks,
       effort,
-      pathWarnings
+      pathWarnings,
+      agentTypes,
+      defaultAgentType
     };
   }
   function topologicalOrder(tasks) {
@@ -1763,7 +1789,8 @@ Done criteria: ${JSON.stringify(task.doneCriteria)}
     `Do NOT run git commit (or any other history-mutating git command) \u2014 committing is another agent's job, not yours.
 `;
   }
-  async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, implementerModel, implementerType, effort, warnings, stats) {
+  async function runTaskTddLoop(rt, artifact, task, workdir, maxIterationsPerTask, implementerModel, implementerType, agentTypes, defaultAgentType, effort, warnings, stats) {
+    const routing = { agentTypes, defaultAgentType };
     const ctx = artifact.context;
     const taskBlock = buildTaskBlock(artifact, task, workdir, true);
     const checkTaskBlock = buildTaskBlock(artifact, task, workdir, false);
@@ -1789,7 +1816,8 @@ Return { "written": true|false, "testFiles": ["<path>"], "note": "<what was writ
               schema: RED_RESULT_SCHEMA,
               label: `dev-implement:red:${task.id}`,
               phase: "Implement",
-              effort: effort.red
+              effort: effort.red,
+              ...agentTypeOption(routing, "red")
             }
           );
           if (red === null) {
@@ -1850,7 +1878,7 @@ Return { "done": true|false, "filesTouched": ["<path>"], "note": "<what changed>
             // Optional specialist subagent type (implementerType knob). Omitted
             // when null → standard subagent (default). Routes the implementer
             // ONLY; the runtime fails fast on an unknown type.
-            ...implementerType !== null ? { agentType: implementerType } : {}
+            ...agentTypeOption(routing, "green", implementerType)
           }
         );
         if (green === null) {
@@ -1870,7 +1898,8 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
             // stays strong independent of the session model precisely because
             // the implementer above may be tiered down.
             model: BEST_MODEL,
-            effort: effort.check
+            effort: effort.check,
+            ...agentTypeOption(routing, "check")
           }
         );
         if (check === null) {
@@ -1981,7 +2010,8 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
         schema: READ_RESULT_SCHEMA,
         label: "dev-implement:load-artifact",
         phase: "Load",
-        effort: resolveEffort(input.effort?.["load"], LOAD_EFFORT)
+        effort: resolveEffort(input.effort?.["load"], LOAD_EFFORT),
+        ...agentTypeOption(input, "load")
       }
     );
     if (read === null || !read.found || read.content.trim().length === 0) {
@@ -2010,8 +2040,9 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
     const greenAuto = input.effort?.["green"] === "auto";
     if (!redAuto && !greenAuto) return () => staticEffort;
     const tasks = input.artifact.tasks;
+    const loadType = resolveAgentType(input, "load");
     const selection = await autoSelectEffort(
-      rt,
+      loadType !== void 0 ? withAgentDefaults(rt, { agentType: loadType }) : rt,
       tasks.map((t) => ({
         id: t.id,
         brief: `${t.title} \u2014 ${t.intent}`,
@@ -2090,6 +2121,8 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
         maxIterationsPerTask,
         input.implementerModel,
         input.implementerType,
+        input.agentTypes,
+        input.defaultAgentType,
         taskEffortOf(task),
         warnings,
         stats
@@ -2161,14 +2194,21 @@ Return { "found": true|false, "content": "<the exact file contents, or empty str
       statusById,
       reportTasks,
       warnings,
-      merged
+      merged,
+      routing
     } = options;
     const { id: labelKey, branch, workdir, rows: pendingRows, keptFields, cleanupEligible } = candidate;
     const merge = await rt.agent(
       `You are the ${noun === "task" ? "merge" : "lane merge"} agent \u2014 from ${ctx.projectDir} (the MAIN tree), merge the ${noun} branch ${branch} into the current branch: FIRST capture the pre-merge HEAD (\`git rev-parse HEAD\`), then run \`git ${signFlag}merge --no-ff ${branch}\`.
 On CONFLICT: run \`git merge --abort\` and report conflict: true \u2014 NEVER resolve conflicts yourself. Evidence required: the pre-merge sha and the resulting sha (or '' if aborted).
 Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", "mergeSha": "<sha or empty>", "note": "<what git actually said>" }`,
-      { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${labelKey}`, phase: "Merge", effort: mechanicalEffort }
+      {
+        schema: MERGE_RESULT_SCHEMA,
+        label: `dev-implement:merge:${labelKey}`,
+        phase: "Merge",
+        effort: mechanicalEffort,
+        ...agentTypeOption(routing, "mechanical")
+      }
     );
     if (merge === null || merge.conflict || !merge.merged) {
       for (const p of pendingRows) {
@@ -2207,7 +2247,13 @@ Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", "
       const integ = await rt.agent(
         `You are the independent integration checker \u2014 verify the integrated main tree: run ${ctx.testCommand} from ${ctx.projectDir} and read the ACTUAL output (the per-task checker saw an isolated ${noun === "task" ? "" : "lane "}worktree; you are checking that the MERGED whole still passes).
 Return { "green": true|false, "evidence": "<what the run actually showed>", "failureSummary": "<empty string if green, else the failures>" }`,
-        { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${labelKey}`, phase: "Merge", effort: integrationEffort }
+        {
+          schema: CHECK_RESULT_SCHEMA,
+          label: `dev-implement:integration:${labelKey}`,
+          phase: "Merge",
+          effort: integrationEffort,
+          ...agentTypeOption(routing, "integration")
+        }
       );
       if (integ === null || !integ.green) {
         if (integ === null) {
@@ -2216,7 +2262,13 @@ Return { "green": true|false, "evidence": "<what the run actually showed>", "fai
         const revert = await rt.agent(
           `You are the merge revert agent \u2014 revert the failed merge: from ${ctx.projectDir} run \`git reset --hard ${merge.preMergeSha}\` and confirm with \`git rev-parse HEAD\`.
 Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
-          { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${labelKey}`, phase: "Merge", effort: mechanicalEffort }
+          {
+            schema: REVERT_RESULT_SCHEMA,
+            label: `dev-implement:revert:${labelKey}`,
+            phase: "Merge",
+            effort: mechanicalEffort,
+            ...agentTypeOption(routing, "mechanical")
+          }
         );
         if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
           const how = revert === null ? "agent died" : !revert.reverted ? "failed" : `reported HEAD ${revert.headSha} instead of the pre-merge sha`;
@@ -2245,7 +2297,7 @@ Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }
     }
   }
   async function cleanupMergedWorktrees(options) {
-    const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort, pluginRoot } = options;
+    const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort, pluginRoot, routing } = options;
     if (merged.length === 0) return;
     const nounWord = noun === "task" ? "" : "lane ";
     const idLabel = noun === "task" ? "taskId" : "laneKey";
@@ -2263,7 +2315,8 @@ ${returnShape}`;
       schema: CLEANUP_RESULT_SCHEMA,
       label: "dev-implement:cleanup",
       phase: "Merge",
-      effort: mechanicalEffort
+      effort: mechanicalEffort,
+      ...agentTypeOption(routing, "mechanical")
     });
     const remover = pluginRoot !== null ? `node "${pluginRoot}/bin/wt-worktree-remove.mjs" --dir <path>` : `node "${PLUGIN_ROOT_RESOLUTION_EXPR}/bin/wt-worktree-remove.mjs" --dir <path>`;
     if (cleanupResult === null) {
@@ -2296,7 +2349,13 @@ ${returnShape}`;
     const setup = await rt.agent(
       `You are the environment setup agent for a worktree-mode dev-implement run. First verify this is a git repository: from ${ctx.projectDir} run \`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with \`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.
 Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
-      { schema: SETUP_RESULT_SCHEMA, label: "dev-implement:setup", phase: "Setup", effort: mechanicalEffort }
+      {
+        schema: SETUP_RESULT_SCHEMA,
+        label: "dev-implement:setup",
+        phase: "Setup",
+        effort: mechanicalEffort,
+        ...agentTypeOption(input, "mechanical")
+      }
     );
     if (setup === null || !setup.isGitRepo) {
       warn(
@@ -2362,7 +2421,13 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
 ` + eligible.map((t) => `git worktree add ${wtPath(t.id)} -b ${wtBranch(t.id)}`).join("\n") + `
 If a path already exists, do NOT force or remove it \u2014 report that task in "failures" (a stale worktree from a previous run is the operator's call to delete).
 Return { "created": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>"}], "note": "<summary>" }`,
-        { schema: WT_CREATE_SCHEMA, label: `dev-implement:worktrees:wave${w}`, phase: "Setup", effort: mechanicalEffort }
+        {
+          schema: WT_CREATE_SCHEMA,
+          label: `dev-implement:worktrees:wave${w}`,
+          phase: "Setup",
+          effort: mechanicalEffort,
+          ...agentTypeOption(input, "mechanical")
+        }
       );
       if (create === null) {
         warn(rt, warnings, `dev-implement: worktree provisioning agent died for wave ${w} \u2014 the whole wave fails`);
@@ -2407,7 +2472,13 @@ Return { "created": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>
               `You are the worktree preparation agent \u2014 prepare the task worktree for ${task.id}: run this VERBATIM setup command with ${taskWorkdir(task.id)} as the working directory (fresh worktrees lack installed dependencies; this makes the test command runnable):
 ${worktreeSetupCommand}
 Return { "ok": true|false, "note": "<what happened>" }`,
-              { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: "Setup", effort: mechanicalEffort }
+              {
+                schema: PREPARE_RESULT_SCHEMA,
+                label: `dev-implement:prepare:${task.id}`,
+                phase: "Setup",
+                effort: mechanicalEffort,
+                ...agentTypeOption(input, "mechanical")
+              }
             );
             if (prep === null || !prep.ok) {
               return { kind: "prepare-failed", note: prep === null ? "preparation agent died" : prep.note };
@@ -2421,6 +2492,8 @@ Return { "ok": true|false, "note": "<what happened>" }`,
             maxIterationsPerTask,
             input.implementerModel,
             input.implementerType,
+            input.agentTypes,
+            input.defaultAgentType,
             taskEffortOf(task),
             warnings,
             stats
@@ -2434,7 +2507,13 @@ The commit message is the LITERAL line between the markers below \u2014 quote/es
 ${wtBranch(task.id)}: ${safeTitle}
 MESSAGE>>>
 Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
-            { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: "Implement", effort: mechanicalEffort }
+            {
+              schema: FINALIZE_RESULT_SCHEMA,
+              label: `dev-implement:finalize:${task.id}`,
+              phase: "Implement",
+              effort: mechanicalEffort,
+              ...agentTypeOption(input, "mechanical")
+            }
           );
           if (fin === null || !fin.committed) {
             return { kind: "finalize-failed", outcome, note: fin === null ? "finalize agent died" : fin.note };
@@ -2524,11 +2603,12 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
           statusById,
           reportTasks,
           warnings,
-          merged
+          merged,
+          routing: input
         });
       }
     }
-    await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: "task", mechanicalEffort, pluginRoot });
+    await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: "task", mechanicalEffort, pluginRoot, routing: input });
     rt.phase("Report");
     const tallies = tally(reportTasks);
     const keptWorktrees = reportTasks.filter((t) => t.worktreePath !== void 0);
@@ -2573,7 +2653,13 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
     const setup = await rt.agent(
       `You are the environment setup agent for a lane-mode (mutation "auto", resolved to parallel lanes) dev-implement run. First verify this is a git repository: from ${ctx.projectDir} run \`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with \`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.
 Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
-      { schema: SETUP_RESULT_SCHEMA, label: "dev-implement:setup", phase: "Setup", effort: mechanicalEffort }
+      {
+        schema: SETUP_RESULT_SCHEMA,
+        label: "dev-implement:setup",
+        phase: "Setup",
+        effort: mechanicalEffort,
+        ...agentTypeOption(input, "mechanical")
+      }
     );
     if (setup === null || !setup.isGitRepo) {
       warn(
@@ -2625,7 +2711,13 @@ Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<abso
 ` + lanes.map((l) => `git worktree add ${lanePath(l.key)} -b ${laneBranch(l.key)}`).join("\n") + `
 If a path already exists, do NOT force or remove it \u2014 report that lane in "failures" (a stale worktree from a previous run is the operator's call to delete).
 Return { "created": ["<laneKey>"], "failures": [{"id": "<laneKey>", "note": "<why>"}], "note": "<summary>" }`,
-      { schema: WT_CREATE_SCHEMA, label: "dev-implement:lanes:create", phase: "Setup", effort: mechanicalEffort }
+      {
+        schema: WT_CREATE_SCHEMA,
+        label: "dev-implement:lanes:create",
+        phase: "Setup",
+        effort: mechanicalEffort,
+        ...agentTypeOption(input, "mechanical")
+      }
     );
     if (create === null) {
       warn(rt, warnings, `dev-implement: lane worktree provisioning agent died \u2014 every lane fails`);
@@ -2652,7 +2744,13 @@ Return { "created": ["<laneKey>"], "failures": [{"id": "<laneKey>", "note": "<wh
             `You are the lane worktree preparation agent \u2014 prepare the lane worktree for ${lane.key}: run this VERBATIM setup command with ${laneWorkdir(lane.key)} as the working directory (fresh worktrees lack installed dependencies; this makes the test command runnable):
 ${worktreeSetupCommand}
 Return { "ok": true|false, "note": "<what happened>" }`,
-            { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${lane.key}`, phase: "Setup", effort: mechanicalEffort }
+            {
+              schema: PREPARE_RESULT_SCHEMA,
+              label: `dev-implement:prepare:${lane.key}`,
+              phase: "Setup",
+              effort: mechanicalEffort,
+              ...agentTypeOption(input, "mechanical")
+            }
           );
           if (prep === null || !prep.ok) {
             const note = `failed \u2014 lane worktree setup command: ${prep === null ? "preparation agent died" : prep.note}`;
@@ -2675,6 +2773,8 @@ Return { "ok": true|false, "note": "<what happened>" }`,
             maxIterationsPerTask,
             input.implementerModel,
             input.implementerType,
+            input.agentTypes,
+            input.defaultAgentType,
             taskEffortOf(task),
             warnings,
             stats
@@ -2697,7 +2797,13 @@ The commit message is the LITERAL line between the markers below \u2014 quote/es
 ${laneBranch(lane.key)}: ${safeTitle}
 MESSAGE>>>
 Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
-            { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: "Implement", effort: mechanicalEffort }
+            {
+              schema: FINALIZE_RESULT_SCHEMA,
+              label: `dev-implement:finalize:${task.id}`,
+              phase: "Implement",
+              effort: mechanicalEffort,
+              ...agentTypeOption(input, "mechanical")
+            }
           );
           if (fin === null || !fin.committed) {
             abandoned = true;
@@ -2800,10 +2906,11 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
         statusById,
         reportTasks,
         warnings,
-        merged
+        merged,
+        routing: input
       });
     }
-    await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: "lane", mechanicalEffort, pluginRoot });
+    await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: "lane", mechanicalEffort, pluginRoot, routing: input });
     rt.phase("Report");
     const tallies = tally(reportTasks);
     const keptWorktrees = reportTasks.filter((t) => t.worktreePath !== void 0);
@@ -2837,7 +2944,7 @@ Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happen
     meta: {
       name: "dev-implement",
       description: 'Execution half of the dev-workflow family: re-validates the approved PlanArtifact from dev-plan (the human may have edited it), runs each task through a bounded TDD loop (failing tests first, implement against the contracts, then an independent checker reads the real test output), and reports a deterministic per-task tally with evidence. The test-writer has three NAMED blocking verdicts (no-test-seam, premise-falsified, repro-hard) that end the task as a routable "blocked" outcome instead of a silent retry-until-failed. MECHANICAL test seams (parameter extraction, default injection) the test-writer creates ITSELF in-band under hard bounds \u2014 at most 4 files touched, every caller enumerated and updated \u2014 and declares structurally: the report carries per-task "seams" plus a "seamsCreated" tally and a REVIEW warning per creating task; a seam beyond the bounds falls back to the classic no-test-seam verdict. Three mutation modes: "sequential" (default \u2014 one task at a time in dependency order, no git required), "worktree" (git required \u2014 independent tasks run in parallel waves, each in an isolated git worktree, then merge sequentially with an integration check after every merge; conflicts abort conservatively and failure worktrees are kept for forensics), and "auto" (routes PER connected component of the dependsOn graph: qualifying components become parallel lanes, each an isolated worktree, while tasks within a lane still run sequentially; a single component runs on the plain sequential engine with no worktree tax; the routing decision is always reported in the output).',
-      whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path \u2014 ABSOLUTE recommended \u2014 to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, and for worktree/auto mode optional worktreeSetupCommand/worktreeRoot/signCommits (plus autoLaneMinTasks for "auto"), as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
+      whenToUse: 'Use after a human has reviewed and approved the PlanArtifact from dev-plan. Pass either { artifact } (the inline PlanArtifact) OR { artifactPath } (a path \u2014 ABSOLUTE recommended \u2014 to a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional mutation/maxIterationsPerTask/implementerModel/implementerType, perAgent.agentType, and agentTypes.{load,red,green,check,mechanical,integration}, and for worktree/auto mode optional worktreeSetupCommand/worktreeRoot/signCommits (plus autoLaneMinTasks for "auto"), as the workflow args. implementerModel tiers the per-iteration implementer (default "sonnet"); the independent checker stays on the strongest tier regardless. implementerType (optional) routes the implementer to a SPECIALIST subagent type that must exist in your session registry (the runtime throws on an unknown type); omit it for the standard subagent. Sequential mode works without git; worktree mode requires a git repository and machine commits are unsigned unless signCommits is true. Task file paths must be RELATIVE to projectDir: absolute paths under an absolute projectDir are auto-relativized (with a warning); any other absolute path is rejected at parse time in both modes.',
       phases: [
         { title: "Load", detail: "artifactPath mode: read the PlanArtifact JSON from disk via an agent (no-op when artifact is inline)" },
         { title: "Setup", detail: "Worktree mode: git check, per-wave worktree provisioning, setup command" },

@@ -42,6 +42,27 @@ describe('dev-plan PLAN_ARTIFACT_SCHEMA bounds', () => {
   })
 })
 
+describe('dev-plan agentType routing', () => {
+  it('keeps defaults, applies perAgent.agentType to every role, and lets a role override win', async () => {
+    const runs = [
+      { args: {}, expected: undefined },
+      { args: { perAgent: { agentType: 'blanket' } }, expected: 'blanket' },
+      { args: { perAgent: { agentType: 'blanket' }, agentTypes: { synthesize: 'specialist' } }, expected: 'blanket' },
+    ]
+    for (const run of runs) {
+      const rt = makeRuntime()
+      await wf.run(rt, JSON.stringify({ goal: HAPPY_ARTIFACT.goal, ...run.args }))
+      expect(rt.calls.length).toBeGreaterThan(0)
+      for (const call of rt.calls) {
+        const expected = call.opts?.label === 'dev-plan:synthesize' && 'agentTypes' in run.args
+          ? 'specialist'
+          : run.expected
+        expect(call.opts?.agentType).toBe(expected)
+      }
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
