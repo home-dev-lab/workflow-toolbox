@@ -238,13 +238,31 @@ describe('second-opinion advisor', () => {
       prompt: `${join(f.repo, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
         model: 'opus',
-        effort: 'medium',
+        effort: 'xhigh',
         cwd: f.repo,
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],
       },
     })
     expect(lines(f.out)).toEqual(['ROUTE=claude-opus', 'independent answer', 'EXIT=0'])
+    expect(deps.runCodex).not.toHaveBeenCalled()
+  })
+
+  it('runs the Opus fallback at xhigh effort whatever effort the caller passed', async () => {
+    const f = fixture(false)
+    let sdkEffort: unknown
+    const query = vi.fn((input: { options: { effort?: unknown } }) => {
+      sdkEffort = input.options.effort
+      return (async function* () {
+        yield { type: 'result', subtype: 'success', is_error: false, result: 'opus answer' }
+      })()
+    })
+    const deps = dependencies({ resolveSdkQuery: vi.fn(() => query) })
+    expect(await runSecondOpinion({ ...f.options, effort: 'low', route: 'auto' }, deps, f.env)).toBe(0)
+
+    expect(query).toHaveBeenCalledOnce()
+    expect(sdkEffort).toBe('xhigh')
+    expect(lines(f.out)[0]).toBe('ROUTE=claude-opus')
     expect(deps.runCodex).not.toHaveBeenCalled()
   })
 

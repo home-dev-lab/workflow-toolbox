@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Changed
+- Run second-opinion's Claude Opus route at `xhigh` effort whatever `--effort` the caller passes; `--effort` now drives only the GPT-6 Astra route.
 - Pin the shipped `pilot` and `pilot-orchestrator` agent templates to `effort: medium` (was `high`): pilots arbitrate and implement, while critics keep a higher pinned effort. Re-adopt the agents set to pick it up; a project copy already edited to `medium` is now merely behind, not diverged.
 - Extend the shipped ground-truth and durable-fix rules with directives for alternating comparison arms, run-specific gate logs with terminal completion markers, and resolving distributed-rule status from source at a named revision
 - Return blocking SDK review/refutation findings and red VERIFY test names to the original TDD implementer through a runner-owned findings file; every fix re-entry requires fresh TDD, review, and refutation evidence, while byte-identical briefs preserve valid receipts. Fix lanes run focused tests, typecheck, and lint before one full VERIFY suite. Review has no fixed cap and escalates on recurrence or two blocking passes without a strict new minimum; clear passes remain recorded. Timeout/error finalization preserves unresolved findings and timed-out worktrees. What is running attributes legacy Harden time and cost to TDD.
