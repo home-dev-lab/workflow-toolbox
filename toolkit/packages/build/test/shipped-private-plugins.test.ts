@@ -27,7 +27,7 @@ describe('shipped private plugins', () => {
         cwd: REPO_ROOT,
         encoding: 'utf8',
       })
-    }, 45_000) // Measured locally at 9.2s; allow 5x for loaded cross-OS runners.
+    }, process.platform === 'win32' ? 90_000 : 45_000) // Windows CI exceeded 45s under the full process-spawning shard.
 
     it(`${plugin} selftest exits successfully`, () => {
       expect(selftest.status, selftest.stderr || selftest.stdout).toBe(0)

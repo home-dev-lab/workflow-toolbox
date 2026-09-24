@@ -582,15 +582,17 @@ test('opencode timeout keeps a worker that returns immediately alive until the r
   const worker = join(root, 'worker.mjs');
   const pidFile = join(root, 'pid');
   const logPath = join(root, 'opencode.log');
-  await writeFile(fixture, "import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[2], String(process.pid)); setInterval(() => {}, 1000);");
+  await writeFile(fixture, 'setInterval(() => {}, 1000);');
   const moduleUrl = new URL('../src/deep/opencode.js', import.meta.url).href;
   await writeFile(worker, [
     "import { spawn } from 'node:child_process';",
+    "import { writeFileSync } from 'node:fs';",
     `import { startOpencode } from ${JSON.stringify(moduleUrl)};`,
-    `startOpencode({ prompt: 'p', dir: ${JSON.stringify(root)}, logPath: ${JSON.stringify(logPath)}, timeoutMs: 200 }, {`,
-    `  spawn: (_c, _a, options) => spawn(process.execPath, [${JSON.stringify(fixture)}, ${JSON.stringify(pidFile)}], options),`,
+    `const result = startOpencode({ prompt: 'p', dir: ${JSON.stringify(root)}, logPath: ${JSON.stringify(logPath)}, timeoutMs: 200 }, {`,
+    `  spawn: (_c, _a, options) => spawn(process.execPath, [${JSON.stringify(fixture)}], options),`,
     '  terminationGraceMs: 100,',
     '});',
+    `writeFileSync(${JSON.stringify(pidFile)}, String(result.pid));`,
   ].join('\n'));
   const workerProcess = spawn(process.execPath, [worker], { stdio: 'ignore' });
   await new Promise((resolveExit) => workerProcess.once('exit', resolveExit));

@@ -1142,14 +1142,19 @@ describe('owner decision 2: discovery and one instance', () => {
     })
     const address = foreign.address()
     if (!address || typeof address === 'string') throw new Error('listener has no TCP port')
+    let monitor: ChildProcess | null = null
     try {
-      const monitor = spawnEnsure(project, baseEnv(stateHome, {
+      monitor = spawnEnsure(project, baseEnv(stateHome, {
         WT_ARTIFACT_SERVER_PORT: String(address.port), WT_ARTIFACT_SERVER_TEST_PORT_ATTEMPTS: '1',
       }))
       const output = childOutput(monitor)
       await waitFor(() => /no available port/i.test(output.stdout()) ? true : null, 3_000)
       expect(output.stdout()).not.toMatch(/startup claim holder did not finish/i)
     } finally {
+      if (monitor) {
+        children.delete(monitor)
+        await stopChild(monitor)
+      }
       await closeServer(foreign)
     }
   })

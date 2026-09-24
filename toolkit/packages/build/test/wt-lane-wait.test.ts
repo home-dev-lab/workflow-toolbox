@@ -21,7 +21,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
-function fixture(script: string) {
+function fixture(script: string, { inspectionDelayMs = 0 } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-wait-')))
   roots.push(root)
   const lane = join(root, '.lane')
@@ -30,11 +30,13 @@ function fixture(script: string) {
   writeFileSync(join(lane, 'run.log'), `LANE_RUN_ID=${runId}\n`)
   const fixtureStderr = join(lane, 'fixture.stderr.log')
   const fixtureStderrFd = openSync(fixtureStderr, 'w')
-  const worker = spawn(process.execPath, ['-e', script], { cwd: root, detached: true, stdio: ['ignore', 'ignore', fixtureStderrFd] })
+  const gatedScript = `while (!require('node:fs').existsSync('.lane/start')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); ${script}`
+  const worker = spawn(process.execPath, ['-e', gatedScript], { cwd: root, detached: true, stdio: ['ignore', 'ignore', fixtureStderrFd] })
   closeSync(fixtureStderrFd)
   workers.push(worker)
   worker.unref()
   writeFileSync(join(lane, 'pid'), String(worker.pid))
+  if (inspectionDelayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, inspectionDelayMs)
   const identity = inspectProcess(worker.pid!) ?? {
     pid: worker.pid!, argv: [process.execPath, '-e', script], startTime: Date.now(), startTimeApproximate: true,
   }
@@ -42,6 +44,7 @@ function fixture(script: string) {
   mkdirSync(supervision)
   writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: worker.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, workerStartTimeApproximate: identity.startTimeApproximate, childPid: worker.pid, childArgv: identity.argv, childStartTime: identity.startTime, childStartTimeApproximate: identity.startTimeApproximate, worktree: root }))
   writeFileSync(join(supervision, 'current.json'), JSON.stringify({ runId }))
+  writeFileSync(join(lane, 'start'), '')
   return { root, lane, pid: worker.pid!, fixtureStderr }
 }
 
@@ -74,6 +77,12 @@ function failureDiagnostic(f: ReturnType<typeof fixture>, result: ReturnType<typ
 const terminalUpdate = "const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 137 }));"
 
 describe('wt-lane-wait', () => {
+  it('does not run fixture steps before slow process inspection publishes supervision', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 7 })); fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'); }, 40)", { inspectionDelayMs: 120 })
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(7)
+  })
+
   it('waits for the pid and accepts EXIT only on the last log line', () => {
     const f = fixture("const fs = require('node:fs'); fs.appendFileSync('.lane/run.log', 'echo EXIT=$? >> .lane/test.log\\n'); setTimeout(() => { fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'); setTimeout(() => {}, 80) }, 120)")
     const result = run(f.root)

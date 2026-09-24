@@ -110,7 +110,8 @@ function main() {
   if (!pid) { process.stderr.write('wt-lane-wait: no valid lane pid; pass --pid or provide .lane/pid\n'); return 2 }
   const log = path.join(lane, 'run.log')
   const deadline = Date.now() + opts.timeout * 1000
-  let seenRecord = null
+  const launchRunId = logReceipt(log).runId
+  let seenRecord = launchRunId ? { runId: launchRunId } : null
   while (true) {
     const currentRecord = readCurrentSupervisions(opts.dir).map((item) => item.record).find((item) => item.workerPid === pid) ?? null
     if (currentRecord) seenRecord = currentRecord
