@@ -515,12 +515,12 @@ describe('orchestrator driver', () => {
     expect(result.stdout).toBe('')
   })
 
-  it('resolves the SDK from the orchestrator process cwd in an installed plugin tree', () => {
-    const f = repoFixture(); fakeSdk(f.root)
+  it('resolves an external operator-selected SDK in an installed plugin tree', () => {
+    const f = repoFixture(); const sdkRoot = mkdtempSync(join(tmpdir(), 'wt-orch-sdk-')); roots.push(sdkRoot); fakeSdk(sdkRoot)
     const installed = join(f.root, 'installed-plugin'); cpSync(join(ROOT, 'plugin'), installed, { recursive: true })
     const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const profile = join(f.root, 'bad-profile.json'); writeFileSync(profile, '{bad')
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report, '--profile-env', profile], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') } })
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report, '--profile-env', profile], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global'), WT_AGENT_SDK_PATH: join(sdkRoot, 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'index.cjs') } })
     expect(result.status).toBe(1)
     expect(result.stderr.trim().split(/\r?\n/)).toEqual([expect.stringContaining('wt-run-orchestrator: cannot read --profile-env')])
     expect(result.stderr).not.toContain('@anthropic-ai/claude-agent-sdk is not installed')

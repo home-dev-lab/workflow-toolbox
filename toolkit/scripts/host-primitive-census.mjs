@@ -11,7 +11,7 @@ const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 
 // Ratchet reseeded 2026-09-21 after adding .js/.cjs plus complete child-process,
 // filesystem and OS module calls. It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1935
+export const HOST_PRIMITIVE_CEILING = 1927
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

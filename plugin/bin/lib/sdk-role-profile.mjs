@@ -222,7 +222,7 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
   }
 
   const pluginPaths = [pilotGuard, contextMode, ...(skillPlugin ? [skillPlugin] : [])]
-  const protectedWritePaths = [...new Set([pluginRoot, ...pluginPaths, ...guardPaths, ...loadedCodePaths])]
+  const protectedWritePaths = [...new Set([...pluginPaths, ...guardPaths, ...loadedCodePaths])]
   const log = adapterOptions?.log ?? ((line) => process.stderr.write(`${line}\n`))
   log(`SDK role ${role}: LSP absent: ${LSP_DISABLED.reason}`)
   if (unlistedSkills.length > 0) log(`SDK role ${role}: skills loaded through the role plugin but never listed by the initialization receipt (user-invocable: false): ${unlistedSkills.join(', ')}`)

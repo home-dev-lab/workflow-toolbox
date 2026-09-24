@@ -41,7 +41,8 @@ function fixture() {
   cpSync(join(ROOT, 'plugin', 'bin'), join(installed, 'bin'), { recursive: true })
   cpSync(join(ROOT, 'plugin', 'hooks-modules'), join(installed, 'hooks-modules'), { recursive: true })
   cpSync(join(ROOT, 'plugin', 'skills'), join(installed, 'skills'), { recursive: true })
-  const sdk = join(worktree, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(sdk, { recursive: true })
+  const pluginData = join(root, 'workflow-toolbox-test')
+  const sdk = join(pluginData, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(sdk, { recursive: true })
   writeFileSync(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', main: 'index.cjs' }))
   writeFileSync(join(sdk, 'index.cjs'), `
 const fs=require('node:fs');
@@ -52,9 +53,7 @@ exports.query=({prompt,options})=>(async function*(){
   else if(mode==='first-result') yield {type:'result',subtype:'success',is_error:false,result:'too early'};
   else if(mode!=='empty') { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; if(mode!=='no-write') fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; if(mode==='multiple') { yield {type:'result',is_error:false,usage:{input_tokens:2,cache_creation_input_tokens:3,cache_read_input_tokens:5,output_tokens:7}}; yield {type:'result',is_error:false,usage:{input_tokens:11,cache_creation_input_tokens:13,cache_read_input_tokens:17,output_tokens:19}}; } else yield {type:'result',subtype:'success',is_error:mode==='error',usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:mode==='no-write'?' generated review ': 'executor report'}; }
 })()`)
-  const preload = join(root, 'sdk-preload.cjs')
-  writeFileSync(preload, `const Module=require('node:module');const load=Module._load;Module._load=function(request,parent,isMain){if(request==='@anthropic-ai/claude-agent-sdk')return require(${JSON.stringify(join(sdk, 'index.cjs'))});return load.call(this,request,parent,isMain)}\n`)
-  return { root, worktree, cli: join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: state, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${preload}`.trim() } }
+  return { root, worktree, cli: join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: pluginData, WT_AGENT_SDK_PATH: join(sdk, 'index.cjs'), XDG_STATE_HOME: state } }
 }
 
 describe('Claude SDK executor', () => {
@@ -117,6 +116,8 @@ describe('Claude SDK executor', () => {
     expect(executorCanUseTool(root, report, false, 'Bash', { command: `node -e "require('fs').writeFileSync(Buffer.from('2e2e2f65736361706564','hex').toString(),'x')"` }).behavior).toBe('allow')
     expect(executorCanUseTool(root, report, false, 'Bash', { command: `p=$(printf '\\056\\056\\057escaped'); : > "$p"` }).behavior).toBe('allow')
     expect(executorCanUseTool(root, report, false, 'Bash', { command: 'pnpm test' }).behavior).toBe('allow')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: 'git diff -- plugin/CHANGELOG.md' }).behavior).toBe('allow')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: 'git show HEAD:plugin/CHANGELOG.md' }).behavior).toBe('allow')
     const outside = mkdtempSync(join(tmpdir(), 'wt-executor-outside-')); roots.push(outside); symlinkSync(outside, join(root, 'link'))
     expect(executorCanUseTool(root, report, false, 'Write', { file_path: join(root, 'link', 'escaped') }).behavior).toBe('deny')
   })

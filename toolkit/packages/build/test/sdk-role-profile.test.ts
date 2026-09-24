@@ -179,6 +179,17 @@ describe('SDK role profiles', () => {
     })
   })
 
+  it('protects loaded plugin code without blocking unrelated plugin development files', async () => {
+    const { root, prepared } = preparedRole('tdd')
+    const changelog = join(root, 'plugin', 'CHANGELOG.md')
+    const options = composeSdkRoleQueryOptions({
+      model: 'opus', effort: 'medium', canUseTool: async () => ({ behavior: 'allow' }),
+    }, prepared)
+
+    expect(prepared.protectedWritePaths).not.toContain(join(root, 'plugin'))
+    await expect(options.canUseTool('Write', { file_path: changelog, content: 'change' })).resolves.toEqual({ behavior: 'allow' })
+  })
+
   it('turns a thrown caller authorization into an explicit denial', async () => {
     const { prepared } = preparedRole('review')
     const options = composeSdkRoleQueryOptions({

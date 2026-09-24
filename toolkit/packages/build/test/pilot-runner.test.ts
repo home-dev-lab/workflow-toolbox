@@ -11,7 +11,7 @@ import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { resolveAgentSdkRequire } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
+import { resolveAgentSdk, resolveAgentSdkRequire, resolvedAgentSdkCodePaths } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -365,6 +365,33 @@ describe('SDK pilot runner', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ marker: 'plugin-data', path: expect.stringContaining(join(pluginData, 'node_modules')) })
   })
 
+  it('freezes an external SDK entry and enumerates every package file its fixture loads', () => {
+    const f = fixture(); const pluginData = join(f.root, 'workflow-toolbox-test data')
+    const packageDir = join(pluginData, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
+    mkdirSync(packageDir, { recursive: true })
+    const manifest = join(packageDir, 'package.json'); const entry = join(packageDir, 'index.mjs'); const helper = join(packageDir, 'helper.mjs')
+    writeFileSync(manifest, JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', exports: { '.': './index.mjs' } }))
+    writeFileSync(entry, "export { marker } from './helper.mjs'\n")
+    writeFileSync(helper, "export const marker = 'safe'\n")
+    fakeSdk(f.dir, 'writer-owned')
+
+    const resolution = resolveAgentSdk({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: { CLAUDE_PLUGIN_DATA: pluginData }, npmRoot: null, writableRoots: [f.dir] })
+    const paths = resolvedAgentSdkCodePaths(resolution)
+    expect(resolution.entryPath).toBe(realpathSync(entry))
+    expect(paths).toEqual(expect.arrayContaining([realpathSync(manifest), realpathSync(entry), realpathSync(helper)]))
+    expect(paths.every((loaded: string) => !loaded.startsWith(`${realpathSync(f.dir)}/`))).toBe(true)
+
+    writeFileSync(manifest, JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', exports: { '.': './owned.mjs' } }))
+    writeFileSync(join(packageDir, 'owned.mjs'), "export const marker = 'owned'\n")
+    expect(resolution.entryPath).toBe(realpathSync(entry))
+  })
+
+  it('refuses to start when the only SDK install is inside the writer worktree', () => {
+    const f = fixture(); fakeSdk(f.dir, 'writer-owned')
+    expect(() => resolveAgentSdk({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: {}, npmRoot: null, writableRoots: [f.dir] }))
+      .toThrow(`refuses writer-influenceable install: ${join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')} is inside writer-writable root ${f.dir}`)
+  })
+
   it('resolves the SDK from the global npm root after local candidates', () => {
     const f = fixture(); const globalPrefix = join(f.root, 'global'); fakeSdk(globalPrefix, 'global')
     const result = resolveSdkInChild({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: {}, npmRoot: join(globalPrefix, 'node_modules') })
@@ -413,8 +440,9 @@ describe('SDK pilot runner', () => {
   // timer alive reproduces that shape; without the forced exit this spawn ends by the test timeout, not by code 1.
   it('exits with code 1 after a refused initialization receipt even when the SDK leaves a handle alive', () => {
     const f = fixture()
-    const packageDir = join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
-    symlinkSync(ZOD_ROOT, join(f.dir, 'node_modules', 'zod'), 'dir')
+    const install = join(f.root, 'safe-sdk')
+    const packageDir = join(install, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
+    symlinkSync(ZOD_ROOT, join(install, 'node_modules', 'zod'), 'dir')
     writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', main: 'index.mjs' }))
     const init = { ...initMessage('sonnet'), skills: [] }
     writeFileSync(join(packageDir, 'index.mjs'), [
@@ -425,7 +453,7 @@ describe('SDK pilot runner', () => {
       'export const tool = (name, description, schema, handler) => ({ name, description, schema, handler })',
     ].join('\n'))
     const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
-      encoding: 'utf8', timeout: 20_000, env: deterministicAdmissionEnv(f.root, sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_PILOT_TEST_SDK_MANIFEST: join(f.dir, 'package.json'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') })),
+      encoding: 'utf8', timeout: 20_000, env: deterministicAdmissionEnv(f.root, sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_AGENT_SDK_PATH: join(packageDir, 'index.mjs'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') })),
     })
     expect(result.signal).toBeNull()
     expect(result.status).toBe(1)
@@ -433,12 +461,12 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(f.root, 'loaded-sdk.txt'), 'utf8')).toBe('fixture-sdk')
   })
 
-  it('starts SDK resolution from an installed plugin using the target project', () => {
-    const f = fixture(); fakeSdk(f.dir, 'project')
+  it('starts SDK resolution from an installed plugin using an external operator-selected SDK', () => {
+    const f = fixture(); const sdkRoot = join(f.root, 'safe-sdk'); fakeSdk(sdkRoot, 'operator')
     const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
     const configDir = join(f.root, 'config'); mkdirSync(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
     const profile = join(f.root, 'bad-profile.json'); writeFileSync(profile, '{bad')
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-pilot-runner.mjs'), '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract, '--profile-env', profile], { encoding: 'utf8', env: deterministicAdmissionEnv(f.root, { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') }) })
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-pilot-runner.mjs'), '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract, '--profile-env', profile], { encoding: 'utf8', env: deterministicAdmissionEnv(f.root, { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global'), WT_AGENT_SDK_PATH: join(sdkRoot, 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'index.cjs') }) })
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('cannot read --profile-env')
     expect(result.stderr).not.toContain('@anthropic-ai/claude-agent-sdk is not installed')
