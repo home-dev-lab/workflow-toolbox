@@ -63,7 +63,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   function snapshot() {
     try {
       const table = adapter.readProcessSnapshot()
-      if (table.supported) return table.processes
+      if (table.supported) return { processes: table.processes, unknownPids: table.unknownPids ?? [] }
       discoveryFailure = table.reason ?? 'process discovery unavailable on this platform'
     } catch {
       discoveryFailure = 'process discovery unavailable on this platform'
@@ -75,8 +75,9 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   function capture(companionPid) {
     if (identity || !companionPid) return identity?.pid ?? null
     const observedAt = now()
-    const processes = snapshot()
-    if (!processes) return null
+    const result = snapshot()
+    if (!result) return null
+    const { processes } = result
     const companion = processes.find((item) => item.pid === companionPid)
     const companionStartedAt = processStart(companion, observedAt)
     if (companionStartedAt === null) return null
@@ -97,8 +98,10 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
 
   function currentOwnedProcess() {
     const observedAt = now()
-    const processes = snapshot()
-    if (!processes) return { status: 'unavailable', processes: [] }
+    const result = snapshot()
+    if (!result) return { status: 'unavailable', processes: [] }
+    const { processes, unknownPids } = result
+    if (unknownPids.includes(identity?.pid)) return { status: 'unknown', processes }
     const item = processes.find((process) => process.pid === identity?.pid)
     if (!item) return { status: 'gone', processes }
     return sameProcess(item, identity, observedAt)
@@ -127,10 +130,12 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
       }
       let state = currentOwnedProcess()
       if (state.status === 'gone') return [`broker/app-server process family pid ${identity.pid} already stopped`]
+      if (state.status === 'unknown') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity unknown during cleanup`]
       if (state.status !== 'owned') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
       const graceful = adapter.endProcessFamily(identity.pid)
       state = waitUntilGone()
       if (state.status === 'gone' || state.status === 'changed') return [`stopped broker/app-server process family pid ${identity.pid} started by this call`]
+      if (state.status === 'unknown') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity unknown during cleanup`]
       if (state.status !== 'owned') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
       const forced = adapter.forceEndProcessFamily(identity.pid)
       state = waitUntilGone()

@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { readLinuxProcProcesses } from '../../../../plugin/bin/lib/host/linux.mjs'
 
 const EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
 const COMMITTED_EVIDENCE_ROOT = resolve(import.meta.dirname, '../../../../probes/host-platform/evidence')
@@ -18,6 +20,7 @@ const snapshotSamples = {
   darwin: { pid: 1, ppid: 0, elapsedMs: 346_000, command: '/sbin/launchd' },
   win32: { pid: 4, ppid: 0, elapsedMs: 46_000, command: 'System' },
 } as const
+const procStat = (pid: number, command: string, startTicks: number) => `${pid} (${command}) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 ${startTicks} 20\n`
 
 function evidenceHost(platform: typeof platforms[number]) {
   return createHostAdapter({
@@ -115,6 +118,38 @@ describe('host adapter evidence contract', () => {
     expect(host.readProcessSnapshot()).toEqual({ supported: true, processes: [snapshotSamples.linux] })
     expect(listProcesses).toHaveBeenCalledOnce()
     expect(run).not.toHaveBeenCalled()
+  })
+
+  it('never combines a Linux PID identity with a reused process command', () => {
+    const stats = [
+      procStat(42, 'broker-a', 100),
+      procStat(42, 'broker-b', 200),
+    ]
+    const readFile = vi.fn((file: string) => {
+      if (file === '/proc/uptime') return '10 1\n'
+      if (file.endsWith('/stat')) return stats.shift()!
+      return '/plugins/openai-codex/codex/scripts/app-server-broker.mjs\0'
+    })
+
+    expect(readLinuxProcProcesses({
+      readFile,
+      readDirectory: () => [{ name: '42', isDirectory: () => true }],
+      observedAt: 20_000,
+    })).toEqual({ processes: [], unknownPids: [42] })
+  })
+
+  it('reports a live but unreadable Linux PID as unknown', () => {
+    const readFile = vi.fn((file: string) => {
+      if (file === '/proc/uptime') return '10 1\n'
+      if (file.endsWith('/stat')) return procStat(42, 'broker', 100)
+      throw Object.assign(new Error('denied'), { code: 'EACCES' })
+    })
+
+    expect(readLinuxProcProcesses({
+      readFile,
+      readDirectory: () => [{ name: '42', isDirectory: () => true }],
+      observedAt: 20_000,
+    })).toEqual({ processes: [], unknownPids: [42] })
   })
 
   it.each(['aix', 'freebsd', 'sunos'] as const)('keeps process discovery supported on %s', (platform) => {

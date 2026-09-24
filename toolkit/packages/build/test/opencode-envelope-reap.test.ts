@@ -14,9 +14,14 @@ const roots: string[] = []
 // the cleanup is bounded HERE at teardown rather than trusted to the thing being tested.
 const fixturePidFiles: string[] = []
 
+function parseFixturePids(value: string, protectedPids = [process.pid, process.ppid]) {
+  return value.split(/\s+/).filter(Boolean).map(Number)
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 1 && !protectedPids.includes(pid))
+}
+
 function fixturePids() {
   return fixturePidFiles.flatMap((file) => {
-    try { return readFileSync(file, 'utf8').split(/\s+/).map(Number).filter(Number.isSafeInteger) } catch { return [] }
+    try { return parseFixturePids(readFileSync(file, 'utf8')) } catch { return [] }
   })
 }
 
@@ -71,6 +76,10 @@ function makeStubRoot() {
 }
 
 describe('wt-opencode-envelope reaps the process group of a stopped call', () => {
+  it('never treats receipt whitespace, process groups, or the test runner as fixture PIDs', () => {
+    expect(parseFixturePids(`12345\n0\n-123\n${process.pid}\n${process.ppid}\n`)).toEqual([12345])
+  })
+
   // ⚠ THE LOCK. Reverting `detached: true` / the group signal in wt-opencode-envelope.mjs makes
   // this test HANG rather than fail an assertion, which the harness surfaces as a timeout — the
   // measured pre-fix behaviour was "alive past 45s on a 5s timeout, zero bytes of output".

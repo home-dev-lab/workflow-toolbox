@@ -116,6 +116,26 @@ describe('second-opinion Codex broker ownership', () => {
     expect(endProcessFamily).not.toHaveBeenCalled()
   })
 
+  it('does not signal a captured broker while its live PID is unreadable', () => {
+    let snapshot = { supported: true, processes: [companion(2125), broker(2132, 2125)] } as {
+      supported: boolean
+      processes: ReturnType<typeof broker>[]
+      unknownPids?: number[]
+    }
+    const endProcessFamily = vi.fn()
+    const ownership = createCodexBrokerOwnership({
+      readProcessSnapshot: () => snapshot,
+      endProcessFamily,
+      forceEndProcessFamily: vi.fn(),
+    }, {}, { stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    ownership.capture(2125)
+    snapshot = { supported: true, processes: [], unknownPids: [2132] }
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 2132: broker identity unknown during cleanup'])
+    expect(endProcessFamily).not.toHaveBeenCalled()
+  })
+
   it('captures a broker descendant spawned seconds after a slow companion start', () => {
     let alive = true
     const endProcessFamily = vi.fn(() => { alive = false; return { status: 'ended' } })
