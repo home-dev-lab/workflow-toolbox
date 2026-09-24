@@ -170,6 +170,10 @@ export interface DevReviewFixInput {
    *  'verify'/'check' are additionally clamped to a 'high' floor via
    *  resolveVerifierEffort. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  /** Per-role routing keys: review, consolidate, verify, fix, check. */
+  agentTypes: Readonly<Record<string, string>> | null
+  /** Blanket fallback parsed from `perAgent.agentType`. */
+  defaultAgentType: string | undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -525,7 +529,10 @@ function parseInput(raw: unknown): DevReviewFixInput {
   // Optional Class B/C per-role effort overrides, validated by the shared
   // parseConfig helper. It reads only the recognized `effort` slice and
   // IGNORES dev-review-fix's bespoke projectDir/testCommand/fixer*/etc. keys.
-  const effort = parseConfig(obj).effort ?? null
+  const cfg = parseConfig(obj)
+  const effort = cfg.effort ?? null
+  const agentTypes = cfg.agentTypes ?? null
+  const defaultAgentType = cfg.perAgent?.agentType
 
   return {
     projectDir,
@@ -544,6 +551,8 @@ function parseInput(raw: unknown): DevReviewFixInput {
     reviewerType,
     effort,
     verifierType,
+    agentTypes,
+    defaultAgentType,
   }
 }
 
@@ -637,6 +646,15 @@ function renderSnippet(snippet: unknown): string {
 }
 
 async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevReviewFixOutput> {
+  const agentType = (role: string, current?: string | null): string | undefined =>
+    input.agentTypes?.[role] ?? input.defaultAgentType ?? current ?? undefined
+  const roleTypes = {
+    review: agentType('review', input.reviewerType),
+    consolidate: agentType('consolidate'),
+    verify: agentType('verify', input.verifierType),
+    fix: agentType('fix', input.fixerType),
+    check: agentType('check'),
+  }
   const warnings: string[] = []
   const stats: Record<string, PatternStats> = {}
 
@@ -703,7 +721,9 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
           // null → standard subagent (default). Routes the dimension reviewers
           // ONLY; verifiers/fixer/checker stay generic. Runtime fails fast on an
           // unknown type.
-          ...(input.reviewerType !== null ? { agentType: input.reviewerType } : {}),
+          ...(roleTypes.review !== undefined
+            ? { agentType: roleTypes.review }
+            : {}),
         },
       ),
     ),
@@ -794,6 +814,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
       phase: 'Review',
       model: MERGE_MODEL,
       effort: consolidateEffort,
+      ...(roleTypes.consolidate !== undefined ? { agentType: roleTypes.consolidate } : {}),
     },
   )
   reviewStats.agentsSpawned += 1
@@ -880,7 +901,9 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
     votesPerClaim: (f) => (f.severity === 'low' ? 1 : 3),
     maxVerifyClaims: 12,
     effort: verifyEffort,
-    ...(input.verifierType !== null ? { verifierType: input.verifierType } : {}),
+    ...(roleTypes.verify !== undefined
+      ? { verifierType: roleTypes.verify }
+      : {}),
     phase: 'Verify',
   })
 
@@ -1045,7 +1068,9 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
             // Optional specialist subagent type (fixerType knob). Omitted when
             // null → standard subagent (default). Routes the fixer ONLY; the
             // runtime fails fast on an unknown type.
-            ...(input.fixerType !== null ? { agentType: input.fixerType } : {}),
+            ...(roleTypes.fix !== undefined
+              ? { agentType: roleTypes.fix }
+              : {}),
           },
         )
         if (fix === null) {
@@ -1084,6 +1109,7 @@ async function run(rt: WorkflowRuntime, input: DevReviewFixInput): Promise<DevRe
             // because the fixer above may be tiered down.
             model: BEST_MODEL,
             effort: checkEffort,
+            ...(roleTypes.check !== undefined ? { agentType: roleTypes.check } : {}),
           },
         )
         if (check === null) {
@@ -1241,7 +1267,8 @@ export default defineWorkflow({
       'Use after dev-implement (or any change set) to catch what per-task checks missed. ' +
       'Pass projectDir, a verbatim testCommand, and EXACTLY ONE diff source: diffCommand ' +
       '(git projects) or changedFiles (no-git projects). Refuted and unverified findings ' +
-      'are never fixed — only reported.',
+      'are never fixed — only reported. Agent routing accepts perAgent.agentType and ' +
+      'agentTypes.{review,consolidate,verify,fix,check}; a per-role value wins over the blanket fallback.',
     phases: [
       { title: 'Review', detail: 'Parallel per-dimension reviewers + consolidation (in-code fallback)' },
       { title: 'Verify', detail: 'Adversarially re-derive each finding from the current tree' },

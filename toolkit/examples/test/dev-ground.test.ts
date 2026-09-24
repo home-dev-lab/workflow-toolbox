@@ -568,6 +568,32 @@ function makeRuntime(opts: RuntimeOpts): FakeRuntime {
 const baseArgs = (premises: Premise[], extra: Record<string, unknown> = {}) =>
   JSON.stringify({ premises, prediction: 'X will hold', ...extra })
 
+describe('dev-ground agentType routing', () => {
+  it('keeps the leaf fence, applies perAgent.agentType to every role, and lets a role override win', async () => {
+    const premises: Premise[] = [
+      { id: 'P1', statement: 'external premise', target: 'external' },
+      { id: 'P2', statement: 'internal premise', target: 'internal' },
+    ]
+    const runs = [
+      { args: {}, expected: LEAF_AGENT_TYPE },
+      { args: { perAgent: { agentType: 'blanket' } }, expected: 'blanket' },
+      { args: { perAgent: { agentType: 'blanket' }, agentTypes: { predict: 'specialist' } }, expected: 'blanket' },
+    ]
+    for (const run of runs) {
+      const rt = makeRuntime({ premises, armVerdict: 'refuted', armAlternatives: ['narrower route'], verifierVerdict: 'refuted' })
+      await wf.run(rt, baseArgs(premises, run.args))
+      const calls = rt.calls.filter((call) => call.opts?.label !== 'probeAgentType:probe')
+      expect(calls.length).toBeGreaterThan(0)
+      for (const call of calls) {
+        const expected = call.opts?.label === 'dev-ground:predict' && 'agentTypes' in run.args
+          ? 'specialist'
+          : run.expected
+        expect(call.opts?.agentType).toBe(expected)
+      }
+    }
+  })
+})
+
 describe('dev-ground fence + probes', () => {
   it('every non-probe call carries the leaf fence by default', async () => {
     const rt = makeRuntime({ premises: onePremise, verifierVerdict: 'confirmed' })

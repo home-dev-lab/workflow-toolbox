@@ -65,7 +65,7 @@
 
 import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { emitDigest, relativizeUnder, warn } from '@workflow-toolbox/patterns'
-import type { WorkflowRuntime, EffortAlias } from '@workflow-toolbox/runtime'
+import type { WorkflowRuntime, EffortAlias, AgentDefaults } from '@workflow-toolbox/runtime'
 
 // ---------------------------------------------------------------------------
 // Input contract
@@ -141,6 +141,10 @@ export interface DevFullInput {
    *  against. null = OMIT, so each child's own committed stage-class defaults
    *  rule (mirrors implementerModel/fixerModel/verifierType passthrough). */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  /** Forwarded verbatim to every child for per-role agent routing. */
+  agentTypes: Readonly<Record<string, string>> | null
+  /** Forwarded verbatim so every child applies the blanket agentType fallback. */
+  perAgent: AgentDefaults | null
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +510,10 @@ function parseInput(raw: unknown): DevFullInput {
   // Optional Class B/C per-role effort overrides, validated by the shared
   // parseConfig helper (reads only the recognized `effort` slice). Forwarded
   // VERBATIM to all three children — see the field doc on DevFullInput.
-  const effort = parseConfig(raw).effort ?? null
+  const cfg = parseConfig(raw)
+  const effort = cfg.effort ?? null
+  const agentTypes = cfg.agentTypes ?? null
+  const perAgent = cfg.perAgent ?? null
 
   return {
     goal,
@@ -525,6 +532,8 @@ function parseInput(raw: unknown): DevFullInput {
     reviewerType,
     verifierType,
     effort,
+    agentTypes,
+    perAgent,
   }
 }
 
@@ -581,6 +590,8 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
     projectDir: input.projectDir,
     ...(input.verifierType !== null ? { verifierType: input.verifierType } : {}),
     ...(input.effort !== null ? { effort: input.effort } : {}),
+    ...(input.agentTypes !== null ? { agentTypes: input.agentTypes } : {}),
+    ...(input.perAgent !== null ? { perAgent: input.perAgent } : {}),
   })
   if (!planCall.ok) return finish('aborted-at-plan', planCall.reason)
 
@@ -633,6 +644,8 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   if (input.implementerModel !== null) implementArgs['implementerModel'] = input.implementerModel
   if (input.implementerType !== null) implementArgs['implementerType'] = input.implementerType
   if (input.effort !== null) implementArgs['effort'] = input.effort
+  if (input.agentTypes !== null) implementArgs['agentTypes'] = input.agentTypes
+  if (input.perAgent !== null) implementArgs['perAgent'] = input.perAgent
 
   const implementCall = await callChild(rt, input.scriptPaths.implement, implementArgs)
   if (!implementCall.ok) return finish('aborted-at-implement', implementCall.reason)
@@ -728,6 +741,8 @@ async function run(rt: WorkflowRuntime, input: DevFullInput): Promise<DevFullOut
   if (input.reviewerType !== null) reviewArgs['reviewerType'] = input.reviewerType
   if (input.verifierType !== null) reviewArgs['verifierType'] = input.verifierType
   if (input.effort !== null) reviewArgs['effort'] = input.effort
+  if (input.agentTypes !== null) reviewArgs['agentTypes'] = input.agentTypes
+  if (input.perAgent !== null) reviewArgs['perAgent'] = input.perAgent
 
   // -------------------------------------------------------------------------
   // Phase 'Review & Fix' — dev-review-fix child (narrow-only: the review
@@ -788,7 +803,8 @@ export default defineWorkflow({
       'Use for end-to-end autonomous development ONLY when the operator accepts the whole-chain trust ' +
       'boundary (no human gate from goal to tree mutations). For human-gated steps, run the split ' +
       'workflows instead. Args: {goal, projectDir, scriptPaths: {plan, implement, reviewFix}} plus ' +
-      'optional areas/maxRefutedRatio/maxIterationsPerTask/maxFixIterations/dimensions/diffCommand.',
+      'optional areas/maxRefutedRatio/maxIterationsPerTask/maxFixIterations/dimensions/diffCommand. ' +
+      'perAgent.agentType and agentTypes.<child-role> are forwarded to every child; per-role values win.',
     phases: [
       { title: 'Plan', detail: 'dev-plan child; gate A: shape, degraded context, refuted-task ratio' },
       { title: 'Implement', detail: 'dev-implement child; gate B: continue iff >= 1 task succeeded' },

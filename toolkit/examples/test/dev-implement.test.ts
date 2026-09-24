@@ -62,6 +62,27 @@ const ARTIFACT = {
 
 const VALID_INPUT = { artifact: ARTIFACT }
 
+describe('dev-implement agentType routing', () => {
+  it('keeps defaults, applies perAgent.agentType to every role, and lets a role override win', async () => {
+    const runs = [
+      { args: {}, expected: undefined },
+      { args: { perAgent: { agentType: 'blanket' } }, expected: 'blanket' },
+      { args: { perAgent: { agentType: 'blanket' }, agentTypes: { check: 'specialist' } }, expected: 'blanket' },
+    ]
+    for (const run of runs) {
+      const rt = makeRuntime()
+      await wf.run(rt, JSON.stringify({ ...VALID_INPUT, ...run.args }))
+      expect(rt.calls.length).toBeGreaterThan(0)
+      for (const call of rt.calls) {
+        const expected = call.opts?.label?.startsWith('dev-implement:check:') && 'agentTypes' in run.args
+          ? 'specialist'
+          : run.expected
+        expect(call.opts?.agentType).toBe(expected)
+      }
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

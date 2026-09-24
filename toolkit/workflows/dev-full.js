@@ -1,7 +1,7 @@
 export const meta = {
   "name": "dev-full",
   "description": "Full mode of the dev-workflow family: chains dev-plan, dev-implement and dev-review-fix in ONE run via workflow() composition over their committed artifacts, converting the human gates into code gates (refuted-ratio abort, degraded-context abort, continue iff at least one task succeeded, in-code change-set handoff). Every abort RETURNS a structured report preserving the completed children's output.",
-  "whenToUse": "Use for end-to-end autonomous development ONLY when the operator accepts the whole-chain trust boundary (no human gate from goal to tree mutations). For human-gated steps, run the split workflows instead. Args: {goal, projectDir, scriptPaths: {plan, implement, reviewFix}} plus optional areas/maxRefutedRatio/maxIterationsPerTask/maxFixIterations/dimensions/diffCommand.",
+  "whenToUse": "Use for end-to-end autonomous development ONLY when the operator accepts the whole-chain trust boundary (no human gate from goal to tree mutations). For human-gated steps, run the split workflows instead. Args: {goal, projectDir, scriptPaths: {plan, implement, reviewFix}} plus optional areas/maxRefutedRatio/maxIterationsPerTask/maxFixIterations/dimensions/diffCommand. perAgent.agentType and agentTypes.<child-role> are forwarded to every child; per-role values win.",
   "phases": [
     {
       "title": "Plan",
@@ -659,7 +659,10 @@ unreadable channel never fails your task.`;
       }
       verifierType = raw["verifierType"];
     }
-    const effort = parseConfig(raw).effort ?? null;
+    const cfg = parseConfig(raw);
+    const effort = cfg.effort ?? null;
+    const agentTypes = cfg.agentTypes ?? null;
+    const perAgent = cfg.perAgent ?? null;
     return {
       goal,
       areas,
@@ -676,7 +679,9 @@ unreadable channel never fails your task.`;
       fixerType,
       reviewerType,
       verifierType,
-      effort
+      effort,
+      agentTypes,
+      perAgent
     };
   }
   async function callChild(rt, scriptPath, args) {
@@ -710,7 +715,9 @@ unreadable channel never fails your task.`;
       areas: input.areas,
       projectDir: input.projectDir,
       ...input.verifierType !== null ? { verifierType: input.verifierType } : {},
-      ...input.effort !== null ? { effort: input.effort } : {}
+      ...input.effort !== null ? { effort: input.effort } : {},
+      ...input.agentTypes !== null ? { agentTypes: input.agentTypes } : {},
+      ...input.perAgent !== null ? { perAgent: input.perAgent } : {}
     });
     if (!planCall.ok) return finish("aborted-at-plan", planCall.reason);
     const planNarrow = narrowPlanResult(planCall.value);
@@ -745,6 +752,8 @@ unreadable channel never fails your task.`;
     if (input.implementerModel !== null) implementArgs["implementerModel"] = input.implementerModel;
     if (input.implementerType !== null) implementArgs["implementerType"] = input.implementerType;
     if (input.effort !== null) implementArgs["effort"] = input.effort;
+    if (input.agentTypes !== null) implementArgs["agentTypes"] = input.agentTypes;
+    if (input.perAgent !== null) implementArgs["perAgent"] = input.perAgent;
     const implementCall = await callChild(rt, input.scriptPaths.implement, implementArgs);
     if (!implementCall.ok) return finish("aborted-at-implement", implementCall.reason);
     const implementNarrow = narrowImplementResult(implementCall.value);
@@ -813,6 +822,8 @@ ${statusLines.join("\n")}` + (changedFiles !== null ? "\n\nNote: the changed-fil
     if (input.reviewerType !== null) reviewArgs["reviewerType"] = input.reviewerType;
     if (input.verifierType !== null) reviewArgs["verifierType"] = input.verifierType;
     if (input.effort !== null) reviewArgs["effort"] = input.effort;
+    if (input.agentTypes !== null) reviewArgs["agentTypes"] = input.agentTypes;
+    if (input.perAgent !== null) reviewArgs["perAgent"] = input.perAgent;
     rt.phase("Review & Fix");
     const reviewCall = await callChild(rt, input.scriptPaths.reviewFix, reviewArgs);
     if (!reviewCall.ok) return finish("aborted-at-review", reviewCall.reason);
@@ -837,7 +848,7 @@ ${statusLines.join("\n")}` + (changedFiles !== null ? "\n\nNote: the changed-fil
     meta: {
       name: "dev-full",
       description: "Full mode of the dev-workflow family: chains dev-plan, dev-implement and dev-review-fix in ONE run via workflow() composition over their committed artifacts, converting the human gates into code gates (refuted-ratio abort, degraded-context abort, continue iff at least one task succeeded, in-code change-set handoff). Every abort RETURNS a structured report preserving the completed children's output.",
-      whenToUse: "Use for end-to-end autonomous development ONLY when the operator accepts the whole-chain trust boundary (no human gate from goal to tree mutations). For human-gated steps, run the split workflows instead. Args: {goal, projectDir, scriptPaths: {plan, implement, reviewFix}} plus optional areas/maxRefutedRatio/maxIterationsPerTask/maxFixIterations/dimensions/diffCommand.",
+      whenToUse: "Use for end-to-end autonomous development ONLY when the operator accepts the whole-chain trust boundary (no human gate from goal to tree mutations). For human-gated steps, run the split workflows instead. Args: {goal, projectDir, scriptPaths: {plan, implement, reviewFix}} plus optional areas/maxRefutedRatio/maxIterationsPerTask/maxFixIterations/dimensions/diffCommand. perAgent.agentType and agentTypes.<child-role> are forwarded to every child; per-role values win.",
       phases: [
         { title: "Plan", detail: "dev-plan child; gate A: shape, degraded context, refuted-task ratio" },
         { title: "Implement", detail: "dev-implement child; gate B: continue iff >= 1 task succeeded" },

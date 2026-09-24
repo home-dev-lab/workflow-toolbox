@@ -95,6 +95,11 @@ export interface DevPlanInput {
    *  default); 'critique' is additionally clamped to a 'high' floor via
    *  resolveVerifierEffort. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  /** Per-role keys mirror effort: discoverTask, discoverSynthesis, plan,
+   * planWork, planSynthesis, critique, synthesize. */
+  agentTypes: Readonly<Record<string, string>> | null
+  /** Blanket fallback parsed from `perAgent.agentType`. */
+  defaultAgentType: string | undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -463,9 +468,12 @@ function parseInput(raw: unknown): DevPlanInput {
   // Optional Class B/C per-role effort overrides, validated by the shared
   // parseConfig helper. It reads only the recognized `effort` slice and
   // IGNORES dev-plan's bespoke goal/areas/projectDir/verifierType keys.
-  const effort = parseConfig(obj).effort ?? null
+  const cfg = parseConfig(obj)
+  const effort = cfg.effort ?? null
+  const agentTypes = cfg.agentTypes ?? null
+  const defaultAgentType = cfg.perAgent?.agentType
 
-  return { goal: obj['goal'], areas, projectDir, verifierType, effort }
+  return { goal: obj['goal'], areas, projectDir, verifierType, effort, agentTypes, defaultAgentType }
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +555,17 @@ function validateArtifact(artifact: PlanArtifact): void {
 // ---------------------------------------------------------------------------
 
 async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOutput> {
+  const agentType = (role: string, current?: string): string | undefined =>
+    input.agentTypes?.[role] ?? input.defaultAgentType ?? current
+  const roleTypes = {
+    discoverTask: agentType('discoverTask'),
+    discoverSynthesis: agentType('discoverSynthesis'),
+    plan: agentType('plan'),
+    planWork: agentType('planWork'),
+    planSynthesis: agentType('planSynthesis'),
+    critique: agentType('critique', input.verifierType),
+    synthesize: agentType('synthesize'),
+  }
   const warnings: string[] = []
   const stats: Record<string, PatternStats> = {}
 
@@ -590,6 +609,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `"testCommand": "<cmd or empty>", "buildCommand": "<cmd or empty>", "conventions": "<digest>" }`,
     taskSchema: DISCOVERY_SCHEMA,
     taskEffort: discoverTaskEffort,
+    ...(roleTypes.discoverTask !== undefined ? { taskType: roleTypes.discoverTask } : {}),
     synthesisPrompt: (parts) =>
       `Consolidate the per-area discoveries into one project context for a development plan.\n` +
       `Goal: ${input.goal}\n` +
@@ -604,6 +624,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `"conventions": "<digest>", "repoBrief": "<one-paragraph project summary>" }`,
     synthesisSchema: CONTEXT_SCHEMA,
     synthesisEffort: discoverSynthesisEffort,
+    ...(roleTypes.discoverSynthesis !== undefined ? { synthesisType: roleTypes.discoverSynthesis } : {}),
     phase: 'Discover',
   })
 
@@ -650,6 +671,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `isolation. Prefer fewer, well-scoped subtasks over many fragments.\n` +
       `Return { "subtasks": [{ "description": "<subtask description>" }] }`,
     planEffort,
+    ...(roleTypes.plan !== undefined ? { planType: roleTypes.plan } : {}),
     workerPrompt: (subtask) =>
       `Detail the implementation task: ${subtask.description}\n` +
       `Goal: ${input.goal}\n` +
@@ -690,6 +712,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `"snippet", "alternativesConsidered": [{ "route", "killReason" }] }] }`,
     workerSchema: CANDIDATE_TASKS_SCHEMA,
     workerEffort: planWorkEffort,
+    ...(roleTypes.planWork !== undefined ? { workerType: roleTypes.planWork } : {}),
     // Draft-narrative synthesis is a checker-style consumer: it needs the task
     // list, not navigation — snippets are STRIPPED (withSnippet=false), which
     // is also this path's cap (no snippet text can reach the prompt at all).
@@ -699,6 +722,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       `Candidate tasks: ${JSON.stringify(results.map((r) => ({ tasks: r.tasks.map((t) => taskForPrompt(t, false)) })))}\n` +
       `Plain text. This is a working note for the final synthesis, not the artifact.`,
     synthesisEffort: planSynthesisEffort,
+    ...(roleTypes.planSynthesis !== undefined ? { synthesisType: roleTypes.planSynthesis } : {}),
     maxSubtasks: 8,
     phase: 'Plan',
   })
@@ -844,7 +868,9 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
       votesPerClaim: (task) => (isIsolatedLowRisk(task) ? 1 : 3),
       maxVerifyClaims: 12,
       effort: critiqueEffort,
-      ...(input.verifierType !== undefined ? { verifierType: input.verifierType } : {}),
+      ...(roleTypes.critique !== undefined
+        ? { verifierType: roleTypes.critique }
+        : {}),
       phase: 'Critique',
     })
 
@@ -926,6 +952,7 @@ async function run(rt: WorkflowRuntime, input: DevPlanInput): Promise<DevPlanOut
     label: 'dev-plan:synthesize',
     phase: 'Synthesize',
     effort: synthesizeEffort,
+    ...(roleTypes.synthesize !== undefined ? { agentType: roleTypes.synthesize } : {}),
   })
 
   if (synthesized === null) {
@@ -994,7 +1021,9 @@ export default defineWorkflow({
       'ids, contracts, test plans, done criteria, and a cycle-checked dependency graph) for human review.',
     whenToUse:
       'Use to plan a feature or fix before implementation. The human reviews/edits the PlanArtifact, ' +
-      'then passes the approved artifact to dev-implement.',
+      'then passes the approved artifact to dev-implement. Agent routing accepts perAgent.agentType ' +
+      'and agentTypes.{discoverTask,discoverSynthesis,plan,planWork,planSynthesis,critique,synthesize}; ' +
+      'a per-role value wins over the blanket fallback.',
     phases: [
       { title: 'Discover', detail: 'Parallel per-area exploration, consolidated project context' },
       { title: 'Plan', detail: 'Dynamic decomposition into self-sufficient candidate tasks' },

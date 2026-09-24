@@ -1,7 +1,7 @@
 export const meta = {
   "name": "dev-plan",
   "description": "Planning half of the dev-workflow family: discovers the repository context, dynamically decomposes the goal into self-sufficient implementation tasks, adversarially critiques each task claim against the actual code, and synthesizes a validated PlanArtifact (tasks with ids, contracts, test plans, done criteria, and a cycle-checked dependency graph) for human review.",
-  "whenToUse": "Use to plan a feature or fix before implementation. The human reviews/edits the PlanArtifact, then passes the approved artifact to dev-implement.",
+  "whenToUse": "Use to plan a feature or fix before implementation. The human reviews/edits the PlanArtifact, then passes the approved artifact to dev-implement. Agent routing accepts perAgent.agentType and agentTypes.{discoverTask,discoverSynthesis,plan,planWork,planSynthesis,critique,synthesize}; a per-role value wins over the blanket fallback.",
   "phases": [
     {
       "title": "Discover",
@@ -2319,8 +2319,11 @@ ${request.renderClaim(request.claim)}`;
       }
       verifierType = obj["verifierType"];
     }
-    const effort = parseConfig(obj).effort ?? null;
-    return { goal: obj["goal"], areas, projectDir, verifierType, effort };
+    const cfg = parseConfig(obj);
+    const effort = cfg.effort ?? null;
+    const agentTypes = cfg.agentTypes ?? null;
+    const defaultAgentType = cfg.perAgent?.agentType;
+    return { goal: obj["goal"], areas, projectDir, verifierType, effort, agentTypes, defaultAgentType };
   }
   var RERUN_HINT = "Do NOT resumeFromRunId \u2014 resume replays the same invalid synthesis from cache. Re-run fresh (adjust the goal if the planner keeps producing this shape).";
   function validateArtifact(artifact) {
@@ -2377,6 +2380,16 @@ ${request.renderClaim(request.claim)}`;
     }
   }
   async function run(rt, input) {
+    const agentType = (role, current) => input.agentTypes?.[role] ?? input.defaultAgentType ?? current;
+    const roleTypes = {
+      discoverTask: agentType("discoverTask"),
+      discoverSynthesis: agentType("discoverSynthesis"),
+      plan: agentType("plan"),
+      planWork: agentType("planWork"),
+      planSynthesis: agentType("planSynthesis"),
+      critique: agentType("critique", input.verifierType),
+      synthesize: agentType("synthesize")
+    };
     const warnings = [];
     const stats = {};
     const discoverTaskEffort = resolveEffort(input.effort?.["discoverTask"], DISCOVER_TASK_EFFORT);
@@ -2398,6 +2411,7 @@ testCommand and buildCommand MUST be a single shell command executable VERBATIM 
 Return { "observations": [{ "file": "<path>", "detail": "<relevant fact>" }], "testCommand": "<cmd or empty>", "buildCommand": "<cmd or empty>", "conventions": "<digest>" }`,
       taskSchema: DISCOVERY_SCHEMA,
       taskEffort: discoverTaskEffort,
+      ...roleTypes.discoverTask !== void 0 ? { taskType: roleTypes.discoverTask } : {},
       synthesisPrompt: (parts) => `Consolidate the per-area discoveries into one project context for a development plan.
 Goal: ${input.goal}
 Discoveries: ${JSON.stringify(parts)}
@@ -2405,6 +2419,7 @@ Resolve disagreements conservatively (prefer the command actually present in the
 Return { "testCommand": "<cmd or empty>", "buildCommand": "<cmd or empty>", "conventions": "<digest>", "repoBrief": "<one-paragraph project summary>" }`,
       synthesisSchema: CONTEXT_SCHEMA,
       synthesisEffort: discoverSynthesisEffort,
+      ...roleTypes.discoverSynthesis !== void 0 ? { synthesisType: roleTypes.discoverSynthesis } : {},
       phase: "Discover"
     });
     for (const w of discoverResult.warnings) warnings.push(w);
@@ -2431,6 +2446,7 @@ Conventions: ${context.conventions}
 Each subtask must be one coherent unit of work a single developer could TDD in isolation. Prefer fewer, well-scoped subtasks over many fragments.
 Return { "subtasks": [{ "description": "<subtask description>" }] }`,
       planEffort,
+      ...roleTypes.plan !== void 0 ? { planType: roleTypes.plan } : {},
       workerPrompt: (subtask) => `Detail the implementation task: ${subtask.description}
 Goal: ${input.goal}
 Project brief: ${context.repoBrief}
@@ -2448,6 +2464,7 @@ BEFORE committing to an approach for this task, ENUMERATE the plausible alternat
 Return { "tasks": [{ "title", "intent", "files": [{ "path", "status", "role" }], "contracts", "testPlan", "doneCriteria": ["<criterion>"], "risk": "<low|medium|high>", "snippet", "alternativesConsidered": [{ "route", "killReason" }] }] }`,
       workerSchema: CANDIDATE_TASKS_SCHEMA,
       workerEffort: planWorkEffort,
+      ...roleTypes.planWork !== void 0 ? { workerType: roleTypes.planWork } : {},
       // Draft-narrative synthesis is a checker-style consumer: it needs the task
       // list, not navigation — snippets are STRIPPED (withSnippet=false), which
       // is also this path's cap (no snippet text can reach the prompt at all).
@@ -2456,6 +2473,7 @@ Goal: ${input.goal}
 Candidate tasks: ${JSON.stringify(results.map((r) => ({ tasks: r.tasks.map((t) => taskForPrompt(t, false)) })))}
 Plain text. This is a working note for the final synthesis, not the artifact.`,
       synthesisEffort: planSynthesisEffort,
+      ...roleTypes.planSynthesis !== void 0 ? { synthesisType: roleTypes.planSynthesis } : {},
       maxSubtasks: 8,
       phase: "Plan"
     });
@@ -2529,7 +2547,7 @@ Refute the task if any claim is wrong.`,
         votesPerClaim: (task) => isIsolatedLowRisk(task) ? 1 : 3,
         maxVerifyClaims: 12,
         effort: critiqueEffort,
-        ...input.verifierType !== void 0 ? { verifierType: input.verifierType } : {},
+        ...roleTypes.critique !== void 0 ? { verifierType: roleTypes.critique } : {},
         phase: "Critique"
       });
       for (const w of critiqueResult.warnings) warnings.push(w);
@@ -2574,7 +2592,8 @@ Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conv
       schema: PLAN_ARTIFACT_SCHEMA,
       label: "dev-plan:synthesize",
       phase: "Synthesize",
-      effort: synthesizeEffort
+      effort: synthesizeEffort,
+      ...roleTypes.synthesize !== void 0 ? { agentType: roleTypes.synthesize } : {}
     });
     if (synthesized === null) {
       throw new Error(
@@ -2613,7 +2632,7 @@ Return { "goal", "context": { "projectDir", "testCommand", "buildCommand", "conv
     meta: {
       name: "dev-plan",
       description: "Planning half of the dev-workflow family: discovers the repository context, dynamically decomposes the goal into self-sufficient implementation tasks, adversarially critiques each task claim against the actual code, and synthesizes a validated PlanArtifact (tasks with ids, contracts, test plans, done criteria, and a cycle-checked dependency graph) for human review.",
-      whenToUse: "Use to plan a feature or fix before implementation. The human reviews/edits the PlanArtifact, then passes the approved artifact to dev-implement.",
+      whenToUse: "Use to plan a feature or fix before implementation. The human reviews/edits the PlanArtifact, then passes the approved artifact to dev-implement. Agent routing accepts perAgent.agentType and agentTypes.{discoverTask,discoverSynthesis,plan,planWork,planSynthesis,critique,synthesize}; a per-role value wins over the blanket fallback.",
       phases: [
         { title: "Discover", detail: "Parallel per-area exploration, consolidated project context" },
         { title: "Plan", detail: "Dynamic decomposition into self-sufficient candidate tasks" },
