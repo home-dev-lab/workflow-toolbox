@@ -33,6 +33,8 @@ const CLAIM_OBSERVATION_MARGIN_MS = 1_000
 const CONTENDER_OBSERVATION_MS = 500
 const PAUSED_HOLDER_COMPLETION_BOUND_MS = PAUSED_CLAIM_HOLD_MS + FALLBACK_DISCOVERY_BOUND_MS
 const PAUSED_HOLDER_TEST_BOUND_MS = OLD_CLAIM_STALE_BOUND_MS + CLAIM_OBSERVATION_MARGIN_MS + CONTENDER_OBSERVATION_MS + PAUSED_HOLDER_COMPLETION_BOUND_MS + FALLBACK_DISCOVERY_MARGIN_MS
+// Hosted Windows completed the six-monitor race but retained a process handle beyond the old 2 s removal window.
+const WINDOWS_TEMP_REMOVE_RETRIES = { maxRetries: 100, retryDelay: 100 }
 
 function temporaryDir(tag: string) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), `wt-artifact-${tag}-`)))
@@ -320,7 +322,7 @@ afterEach(async () => {
   }
   for (const record of [...detachedProcesses.values()]) await stopDetached(record)
   for (const dir of temporaryDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true, ...(process.platform === 'win32' ? { maxRetries: 20, retryDelay: 100 } : {}) })
+    rmSync(dir, { recursive: true, force: true, ...(process.platform === 'win32' ? WINDOWS_TEMP_REMOVE_RETRIES : {}) })
   }
   ensureOutputs.clear()
 })
@@ -1946,8 +1948,10 @@ describe('review decisions: serving security matrix', () => {
         WT_ARTIFACT_SERVER_PORT: String(reservation.port), WT_ARTIFACT_SERVER_ROOTS: `artifacts=${root}`,
       }))
       await waitForState(stateHome, (state) => state.roots.length === 1)
-      const rich = await renderInChrome(`http://localhost:${reservation.port}/artifacts/rich.html`)
-      const plain = await renderInChrome(`http://localhost:${reservation.port}/artifacts/plain.html`)
+      const [rich, plain] = await Promise.all([
+        renderInChrome(`http://localhost:${reservation.port}/artifacts/rich.html`),
+        renderInChrome(`http://localhost:${reservation.port}/artifacts/plain.html`),
+      ])
       expect(rich.code, rich.stderr).toBe(0)
       expect(rich.stdout).toContain('data-script="ran"')
       expect(rich.stdout).toContain('data-fetch="blocked"')

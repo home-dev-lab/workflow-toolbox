@@ -50,6 +50,12 @@ function fixture(script: string) {
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_LANE_MIN_AVAILABLE_MIB: '0' }
   return { root, dir, config, env }
 }
+function isolateWatcherHostCensus(f: ReturnType<typeof fixture>) {
+  const helperFixture = join(f.root, 'helpers.json')
+  writeFileSync(helperFixture, '[]\n')
+  f.env.WT_LANE_WATCH_TEST_HELPERS = helperFixture
+  return helperFixture
+}
 function run(f: ReturnType<typeof fixture>, extra: string[] = [], model = 'openai/gpt-5.6-luna') {
   return spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', model, '--brief', join(f.dir, 'brief.md'), '--allow-no-git', ...extra], { encoding: 'utf8', env: f.env })
 }
@@ -225,6 +231,11 @@ describe('wt-lane memory and termination evidence seams', () => {
 })
 
 describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requires POSIX process-group signals; Windows process evidence is transcript-tested)', () => {
+  it('isolates watcher fixtures from the host process census', () => {
+    const f = fixture('exit 0')
+    expect(JSON.parse(readFileSync(isolateWatcherHostCensus(f), 'utf8'))).toEqual([])
+  })
+
   it('refuses a stale brief and names the acknowledgement flag and fresh-round remedy', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     const brief = join(f.dir, 'brief.md')
@@ -708,6 +719,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   }, 60_000)
   it('observe mode journals would-clean but kills nothing', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    isolateWatcherHostCensus(f)
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); const pidFile = join(f.dir, 'opencode.pid')
     waitForContent(status, /"state": "running"/); waitForFile(pidFile)
@@ -814,6 +826,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   }, 60_000)
   it('journals a stalled episode again after it clears and recurs for the same runId', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 120')
+    isolateWatcherHostCensus(f)
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); waitForFile(join(f.dir, 'opencode.pid'))
     const state = JSON.parse(readFileSync(status, 'utf8'))
