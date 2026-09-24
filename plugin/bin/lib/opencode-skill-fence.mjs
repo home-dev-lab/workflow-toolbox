@@ -3,6 +3,7 @@ import crypto from 'node:crypto'
 import { accessSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { externalModelEnv } from './external-model-env.mjs'
 import { resolvedBinary } from './resolved-binary.mjs'
 import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-allowlist.mjs'
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
@@ -21,15 +22,16 @@ const CACHE_STORE_MARKER_CONTENT = 'workflow-toolbox opencode skill-fence cache 
 // OPENCODE_CONFIG skills.paths exposes a materialised skill while
 // OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true excludes the external Claude skill.
 
-export function opencodeChildEnv(env = process.env) {
-  const childEnv = { ...env, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true' }
+export function opencodeChildEnv(env = process.env, extraNames = []) {
+  const childEnv = externalModelEnv(env, extraNames)
+  childEnv.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'true'
   // An inherited config can add arbitrary skill paths. Launchers may add their own
   // validated OPENCODE_CONFIG after this function returns, but never inherit one silently.
   delete childEnv.OPENCODE_CONFIG
   return childEnv
 }
 
-export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform) {
+export function spawnCommand(spawnFn, bin, args, options, platform) {
   if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(bin)) {
     // cmd parses a shim invocation twice. Escape metacharacters for both passes, and preserve the
     // outer quote pair that /s /c requires around a quoted command line.
@@ -43,6 +45,11 @@ export function spawnOpencode(spawnFn, bin, args, options = {}, platform = proce
     return spawnFn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${command}"`], { ...options, windowsVerbatimArguments: true })
   }
   return spawnFn(bin, args, options)
+}
+
+export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform) {
+  const childOptions = { ...options, env: externalModelEnv(options.env ?? process.env) }
+  return spawnCommand(spawnFn, bin, args, childOptions, platform)
 }
 
 export function opencodeSkillFenceRefusal(reason) {
@@ -345,8 +352,7 @@ function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = d
   writeFileSync(path.join(home, '.claude', 'skills', ALLOW_SENTINEL, 'SKILL.md'), `---\nname: ${ALLOW_SENTINEL}\ndescription: Synthetic allow-list capability probe\n---\n`)
   // Re-materialise after creating the fixture source.
   const allowedFixture = materialiseAllowedSkills({ names: [ALLOW_SENTINEL], laneDir: worktree, env: {}, homeDir: home })
-  const probeEnv = {
-    ...opencodeChildEnv({
+  const probeEnv = opencodeChildEnv({
     ...env,
     HOME: home,
     OPENCODE_TEST_HOME: home,
@@ -354,9 +360,8 @@ function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = d
     XDG_DATA_HOME: path.join(fixture, 'xdg-data'),
     XDG_CACHE_HOME: path.join(fixture, 'xdg-cache'),
     XDG_STATE_HOME: path.join(fixture, 'xdg-state'),
-    }),
-    OPENCODE_CONFIG: allowedFixture.configPath,
-  }
+  })
+  probeEnv.OPENCODE_CONFIG = allowedFixture.configPath
   try {
     const probe = spawnOpencode(spawnSyncFn, binary, ['--pure', 'debug', 'skill'], { cwd: worktree, encoding: 'utf8', env: probeEnv, timeout: 30_000 }, platform)
     if (probe.status !== 0) {

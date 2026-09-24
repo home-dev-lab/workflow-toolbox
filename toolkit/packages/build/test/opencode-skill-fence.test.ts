@@ -6,6 +6,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
+import { externalModelEnv } from '../../../../plugin/bin/lib/external-model-env.mjs'
+// @ts-expect-error Standalone plugin helper has no declaration surface.
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFenceCache, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
 
 const FENCE_MODULE = new URL('../../../../plugin/bin/lib/opencode-skill-fence.mjs', import.meta.url).href
@@ -100,10 +102,82 @@ async function waitForFile(file: string) {
 
 describe('OpenCode Claude-skill fence', () => {
   it('forces true after an inherited false value', () => {
-    expect(opencodeChildEnv({ OPENCODE_CONFIG: '/unsafe.json', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false', KEEP: 'yes' })).toMatchObject({
-      OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', KEEP: 'yes',
+    expect(opencodeChildEnv({ OPENCODE_CONFIG: '/unsafe.json', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false', KEEP: 'secret', PATH: '/bin', HOME: '/home/test' })).toEqual({
+      HOME: '/home/test', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin',
     })
     expect(opencodeChildEnv({ OPENCODE_CONFIG: '/unsafe.json' })).not.toHaveProperty('OPENCODE_CONFIG')
+  })
+
+  it('keeps credentials and unknown exported secrets out of a real child environment', () => {
+    const home = '/home/test'
+    const childEnv = opencodeChildEnv({
+      PATH: process.env.PATH,
+      HOME: home,
+      CLAUDE_CODE_OAUTH_TOKEN: 'session credential',
+      ANTHROPIC_API_KEY: 'api credential',
+      ANTHROPIC_AUTH_TOKEN: 'auth credential',
+      COMPANY_VAULT_SECRET: 'unknown secret',
+      OPENCODE_API_KEY: 'provider credential',
+      OPENAI_ORG_TOKEN: 'organization credential',
+      LC_SECRET: 'locale-shaped credential',
+      SSH_AUTH_SOCK: '/tmp/owner-agent.sock',
+    })
+    const result = spawnSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.env))'], { encoding: 'utf8', env: childEnv })
+    expect(result.status).toBe(0)
+    expect(JSON.parse(result.stdout)).toMatchObject({ PATH: process.env.PATH, HOME: home, OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true' })
+    expect(result.stdout).not.toContain('session credential')
+    expect(result.stdout).not.toContain('api credential')
+    expect(result.stdout).not.toContain('auth credential')
+    expect(result.stdout).not.toContain('unknown secret')
+    expect(result.stdout).not.toContain('organization credential')
+    expect(result.stdout).not.toContain('locale-shaped credential')
+    expect(result.stdout).not.toContain('owner-agent.sock')
+  })
+
+  it('allows an explicitly named lane variable without opening a prefix wildcard', () => {
+    expect(opencodeChildEnv({ PATH: '/bin', LANE_DATABASE_URL: 'needed', LANE_OTHER_SECRET: 'blocked' }, ['LANE_DATABASE_URL'])).toEqual({
+      LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin',
+    })
+    expect(opencodeChildEnv({ PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'LANE_DATABASE_URL', LANE_DATABASE_URL: 'needed' })).toEqual({
+      LANE_DATABASE_URL: 'needed', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true', PATH: '/bin', WT_EXTERNAL_MODEL_ENV_ALLOW: 'LANE_DATABASE_URL',
+    })
+  })
+
+  it('reserves credential-shaped extras for explicit code call sites', () => {
+    const env = {
+      WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,SAFE_MARKER',
+      GITHUB_TOKEN: 'configured credential',
+      NODE_OPTIONS: '--require /tmp/hook.cjs',
+      SAFE_MARKER: 'configured safe value',
+      OPENAI_API_KEY: 'explicit provider credential',
+      CLAUDE_CODE_OAUTH_TOKEN: 'absolute exclusion',
+      ANTHROPIC_API_KEY: 'absolute api exclusion',
+      ANTHROPIC_AUTH_TOKEN: 'absolute auth exclusion',
+    }
+    expect(externalModelEnv(env)).toEqual({ NODE_OPTIONS: '--require /tmp/hook.cjs', SAFE_MARKER: 'configured safe value', WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,SAFE_MARKER' })
+    expect(externalModelEnv(env, ['OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'])).toEqual({
+      NODE_OPTIONS: '--require /tmp/hook.cjs', OPENAI_API_KEY: 'explicit provider credential', SAFE_MARKER: 'configured safe value', WT_EXTERNAL_MODEL_ENV_ALLOW: 'GITHUB_TOKEN,NODE_OPTIONS,SAFE_MARKER',
+    })
+  })
+
+  it('rebuilds an already-filtered environment after it is mutated', () => {
+    const filtered = externalModelEnv({ PATH: '/bin' })
+    filtered.CLAUDE_CODE_OAUTH_TOKEN = 'late credential'
+    let observed: Record<string, string> | undefined
+    spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env: filtered })
+    expect(observed).toEqual({ PATH: '/bin' })
+  })
+
+  it('matches canonical environment names case-insensitively only on Windows', () => {
+    const env = { Path: 'one', pAtH: 'two', AppData: 'three', OPENCODE_CONFIG_DIR: 'four', lc_messages: 'five' }
+    expect(externalModelEnv(env, [], 'win32')).toEqual(env)
+    expect(externalModelEnv(env, [], 'linux')).toEqual({ Path: 'one', OPENCODE_CONFIG_DIR: 'four' })
+  })
+
+  it('admits only non-credential POSIX locale names through the LC prefix', () => {
+    expect(externalModelEnv({ LC_ALL: 'one', LC_CTYPE: 'two', LC_CUSTOM: 'three', LC_123: 'four', LC_SECRET: 'five' })).toEqual({
+      LC_ALL: 'one', LC_CTYPE: 'two', LC_CUSTOM: 'three',
+    })
   })
 
   it('uses uncached effective discovery with the exact cwd, environment, and non-pure flags', () => {
@@ -112,7 +186,7 @@ describe('OpenCode Claude-skill fence', () => {
       calls.push(args)
       return { status: 0, stdout: '[{"name":"allowed","location":"/allowed/SKILL.md"}]', stderr: '' }
     }
-    const env = { MARKER: 'same' }
+    const env = { OPENCODE_TEST_MARKER: 'same' }
     expect(verifyEffectiveOpencodeSkillDiscovery('/bin/opencode', { cwd: '/lane', env, spawnSyncFn })).toMatchObject({ ok: true })
     expect(verifyEffectiveOpencodeSkillDiscovery('/bin/opencode', { cwd: '/lane', env, spawnSyncFn })).toMatchObject({ ok: true })
     expect(calls).toHaveLength(2)
@@ -229,7 +303,7 @@ describe('OpenCode Claude-skill fence', () => {
       const spawnSyncFn = (command: string, args: string[], options: Record<string, unknown>) => {
         expect(command).toBe(process.env.ComSpec)
         expect(args).toEqual(['/d', '/s', '/c', '"C:\\tools\\opencode.cmd"'])
-        expect(options).toEqual({ windowsVerbatimArguments: true })
+        expect(options).toMatchObject({ windowsVerbatimArguments: true, env: expect.any(Object) })
         return { status: 0 }
       }
 

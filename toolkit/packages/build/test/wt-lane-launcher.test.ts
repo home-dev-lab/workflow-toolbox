@@ -47,7 +47,7 @@ function fixture(script: string) {
   chmodSync(join(bin, 'opencode'), 0o755)
   chmodSync(join(bin, 'vm_stat'), 0o755)
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_LANE_MIN_AVAILABLE_MIB: '0' }
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,IGNORE_FENCE,INVISIBLE_ALLOW,IDENTITY_RECORD,IDENTITY_MARKER,SLOW_PREFLIGHT_AT_COUNT,FAIL_PREFLIGHT_AT_COUNT,EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0' }
   return { root, dir, config, env }
 }
 function run(f: ReturnType<typeof fixture>, extra: string[] = [], model = 'openai/gpt-5.6-luna') {

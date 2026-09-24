@@ -37,7 +37,7 @@ describe('wt-opencode-verify', () => {
       writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst fs=require('node:fs'); const args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }; if(args[0]==='debug' && args[1]==='skill') { console.log('[]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); fs.writeFileSync(process.env.CALLS, JSON.stringify(args)); fs.writeFileSync(process.env.FENCE, process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS); process.stdout.write('{"part":{"type":"text","text":"VERDICT"}}\\n')\n`)
       writeFileSync(path.join(binDir, 'opencode.cmd'), '@node "%~dp0opencode" %*\r\n')
       chmodSync(path.join(binDir, 'opencode'), 0o755)
-      const result = spawnSync('node', [ENTRY, '--dir', dir, '--id', 'vote-123', '-m', 'openai/gpt-5.6-terra', '--fallback-model', 'openai/gpt-5.6-luna', '--variant', 'max', '--task-file', source], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}`, CALLS: calls, FENCE: path.join(dir, 'fence'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }) })
+      const result = spawnSync('node', [ENTRY, '--dir', dir, '--id', 'vote-123', '-m', 'openai/gpt-5.6-terra', '--fallback-model', 'openai/gpt-5.6-luna', '--variant', 'max', '--task-file', source], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}`, CALLS: calls, FENCE: path.join(dir, 'fence'), WT_EXTERNAL_MODEL_ENV_ALLOW: 'CALLS,FENCE', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }) })
       expect(result.status).toBe(0)
       expect(result.stdout).toBe('VERDICT')
       expect(readFileSync(path.join(dir, 'fence'), 'utf8')).toBe('true')
@@ -83,11 +83,11 @@ describe('wt-opencode-verify', () => {
     }
   })
 
-  it('passes the same sanitized environment object and cwd to discovery and spawn', async () => {
+  it('passes an equivalently rebuilt sanitized environment and the same cwd to discovery and spawn', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-identity-'))
     const spawnFn = vi.fn(() => childResult({ stdout: '{"part":{"type":"text","text":"VERDICT"}}\n' }))
     let discoveryOptions: { cwd?: string, env?: NodeJS.ProcessEnv } | undefined
-    const inherited = { IDENTITY_MARKER: 'same', OPENCODE_CONFIG: '/unsafe.json' }
+    const inherited = { OPENCODE_TEST_MARKER: 'same', OPENCODE_CONFIG: '/unsafe.json' }
     try {
       await runVerifier({ dir, id: 'identity', stdin: true, taskFile: null, model: 'primary', fallbackModel: null, variant: null }, {
         binary: 'opencode', providerAuthenticated: () => true, skillFenceVerifier: () => ({ ok: true }),
@@ -96,8 +96,8 @@ describe('wt-opencode-verify', () => {
       })
       const spawnOptions = (spawnFn.mock.calls[0] as unknown as [string, string[], { cwd?: string, env?: NodeJS.ProcessEnv }])[2]
       expect(spawnOptions.cwd).toBe(dir)
-      expect(spawnOptions.env).toBe(discoveryOptions?.env)
-      expect(spawnOptions.env).toMatchObject({ IDENTITY_MARKER: 'same', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true' })
+      expect(spawnOptions.env).toEqual(discoveryOptions?.env)
+      expect(spawnOptions.env).toMatchObject({ OPENCODE_TEST_MARKER: 'same', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'true' })
       expect(spawnOptions.env).not.toHaveProperty('OPENCODE_CONFIG')
     } finally {
       rmSync(dir, { recursive: true, force: true })

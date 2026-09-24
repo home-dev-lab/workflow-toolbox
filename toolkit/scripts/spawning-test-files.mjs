@@ -114,6 +114,7 @@ export const spawningTestFiles = [
   'packages/build/test/propagation-reminder-hook.test.ts',
   'packages/build/test/queue-gate-marker-expiry.test.ts',
   'packages/build/test/queue-not-empty-gate.test.ts',
+  'packages/build/test/quota-probe-token.test.ts',
   'packages/build/test/quota-watch-no-subscription.test.ts',
   'packages/build/test/quota-watch-route.test.ts',
   'packages/build/test/quota-watch-single-instance.test.ts',

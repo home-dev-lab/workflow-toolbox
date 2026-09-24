@@ -42,7 +42,7 @@ printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'
   const home = path.join(root, 'home')
   mkdirSync(home)
   writeFileSync(path.join(home, '.zprofile'), `export OPENCODE_CONFIG=${path.join(root, 'shell-startup-unsafe.json')}\n`)
-  const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${binDir}${delimiter}${process.env.PATH}`, RECORD: record, IDENTITY_MARKER: 'same', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
+  const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${binDir}${delimiter}${process.env.PATH}`, RECORD: record, IDENTITY_MARKER: 'same', WT_EXTERNAL_MODEL_ENV_ALLOW: 'RECORD,IDENTITY_MARKER', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
   return { root, bin, record, env }
 }
 
@@ -71,7 +71,7 @@ describe('all toolbox-owned OpenCode launch paths', () => {
 
   it.skipIf(process.platform === 'win32')('uses one sanitized cwd/environment/config context for observer probe and direct spawn [POSIX JSON-stream fixture]', () => {
     const f = fixture()
-    const keys = ['PATH', 'RECORD', 'IDENTITY_MARKER', 'OPENCODE_CONFIG', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
+    const keys = ['PATH', 'RECORD', 'IDENTITY_MARKER', 'WT_EXTERNAL_MODEL_ENV_ALLOW', 'OPENCODE_CONFIG', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     for (const key of keys) process.env[key] = f.env[key]
     try {

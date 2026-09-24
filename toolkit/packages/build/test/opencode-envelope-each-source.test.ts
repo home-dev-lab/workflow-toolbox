@@ -3,16 +3,23 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 // @ts-expect-error -- runtime .mjs helper intentionally has no declaration file.
 import { DEFAULT_MAX_TASKS, applyItemTemplate, generateEachTasks, parseEachSource } from '../../../../plugin/bin/lib/opencode-envelope-tasks.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-opencode-envelope.mjs')
 const roots: string[] = []
+const previousExtraEnv = process.env.WT_EXTERNAL_MODEL_ENV_ALLOW
+
+beforeEach(() => {
+  process.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'FAKE_CONCURRENCY_LOG,FAKE_PROMPT_CAPTURE,FAKE_MODEL_CAPTURE,FAKE_EXIT_CODE,FAKE_ANSWER'
+})
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  if (previousExtraEnv === undefined) delete process.env.WT_EXTERNAL_MODEL_ENV_ALLOW
+  else process.env.WT_EXTERNAL_MODEL_ENV_ALLOW = previousExtraEnv
 })
 
 function makeRoot() {
