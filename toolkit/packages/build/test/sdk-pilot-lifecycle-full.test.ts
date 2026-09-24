@@ -15,6 +15,8 @@ const FIXTURE_LANE_TIMEOUT_SECONDS = 60
 const FIXTURE_TEST_TIMEOUT_MS = 120_000
 const FIXED_CRITIC_ROUNDS = 3
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
+const pytestFailure = readFileSync(new URL('./fixtures/failed-test-output/pytest.txt', import.meta.url), 'utf8')
+const gradleJunitFailure = readFileSync(new URL('./fixtures/failed-test-output/gradle-junit.txt', import.meta.url), 'utf8')
 const roots: string[] = []
 
 afterEach(() => {
@@ -686,6 +688,41 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(await lifecycle.transition({ phase: 'tdd', tool_use_id: 'skip-red-verify-fix' })).toMatch(/lane receipt unchanged/)
   })
 
+  it.each([
+    ['pytest', pytestFailure, 'test_failure.py::TestCalculator::test_adds_numbers'],
+    ['junit-gradle', gradleJunitFailure, 'CalculatorTest > addsNumbers()'],
+  ])('routes a %s red full suite using its exact failed-test name', async (testFramework, output, failedTest) => {
+    let testRuns = 0
+    const gateRunner = async (args: { name: string; log: string; root: string }) => {
+      const code = await writePassingGate(args)
+      if (args.name === 'test' && ++testRuns === 2) { appendFileSync(args.log, output); return 1 }
+      return code
+    }
+    const lifecycle = fullLifecycle({ gateRunner, testFramework }); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] initial review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: `review before ${testFramework} red verify` }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: `${testFramework}-review` })
+    await lifecycle.artifact({ kind: 'brief', content: `fix before ${testFramework} red verify` }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: `${testFramework}-fix` })
+    await lifecycle.run({ kind: 'gate', name: 'typecheck' }); await lifecycle.run({ kind: 'gate', name: 'lint' }); await lifecycle.run({ kind: 'gate', name: 'test' })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: [failedTest], tool_use_id: `${testFramework}-red` })).toBe('accepted phase=tdd')
+  })
+
+  it.each(['custom-runner', 'undetected'])('refuses the %s failed-test adapter and tells the pilot to escalate', async (testFramework) => {
+    let testRuns = 0
+    const gateRunner = async (args: { name: string; log: string; root: string }) => {
+      const code = await writePassingGate(args)
+      if (args.name === 'test' && ++testRuns === 2) { appendFileSync(args.log, 'FAIL tests/example.test.js custom runner failure\n'); return 1 }
+      return code
+    }
+    const lifecycle = fullLifecycle({ gateRunner, testFramework }); await reachReview(lifecycle)
+    const finding = '[HIGH][anchor: DoD 1][location: tracked.txt:2] initial review defect'
+    edgeConfig(lifecycle, { review: { verdict: 'changes-requested', findings: [finding] } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review before unknown red verify' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'changes-requested', findings: [finding], tool_use_id: 'unknown-review' })
+    await lifecycle.artifact({ kind: 'brief', content: 'fix before unknown red verify' }); await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 1 }); await lifecycle.transition({ phase: 'tdd', tool_use_id: 'unknown-fix' })
+    await lifecycle.run({ kind: 'gate', name: 'typecheck' }); await lifecycle.run({ kind: 'gate', name: 'lint' }); await lifecycle.run({ kind: 'gate', name: 'test' })
+    expect(await lifecycle.transition({ phase: 'verify', outcome: 'failed', findings: ['custom failure'], tool_use_id: 'unknown-red' })).toMatch(new RegExp(`missing failed-test adapter "${testFramework}".*escalate`, 'i'))
+  })
+
   it('refuses invented failing test names absent from the red full-suite receipt', async () => {
     let testRuns = 0
     const gateRunner = async (args: { name: string; log: string; root: string }) => {
@@ -873,7 +910,7 @@ function fullLifecycle(options: Record<string, unknown> = {}) {
   const archiveRoot = root()
   writeFileSync(calls, ''); writeFileSync(counts, '{}'); writeFileSync(join(worktree, '.lane', 'edge-config.json'), '{}')
   const base = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).stdout.trim()
-  const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, rules: [], ...options })
+  const server = createLifecycleServer({ worktree, archiveRoot, route: 'FULL', executor: 'gpt-lane', models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }, cardId: 'full', cardText: 'Route: FULL\n## Definition of done\n- exercise the lifecycle fixture\n', sessionTag: 'test', laneLauncher: laneLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, now: () => Date.now() - 1_000, gateRunner: writePassingGate, testFramework: 'vitest', rules: [], ...options })
   return { ...handlers(server), calls, base, root: worktree, state: server.state, requestStop: server.requestStop, finalizePartial: server.finalizePartial }
 }
 function liteLifecycle() {

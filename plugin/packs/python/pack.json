@@ -1,5 +1,6 @@
 {
   "language": "python",
+  "testFramework": "pytest",
   "triggers": {
     "extensions": [".py", ".pyi"]
   },

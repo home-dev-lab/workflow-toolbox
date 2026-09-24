@@ -1,5 +1,6 @@
 {
   "language": "java",
+  "testFramework": "junit-gradle",
   "triggers": {
     "extensions": [".java"],
     "files": ["pom.xml"]

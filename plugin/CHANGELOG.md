@@ -18,6 +18,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - Preserve an opted-in adopt symlink and its linked-to file when rendering or atomic publication of its managed replacement fails
+- Parse red VERIFY failing-test names through the active language pack's Vitest, pytest, or Gradle/JUnit adapter; preserve parameterized pytest node IDs, reject unittest summaries, skip unreadable project directories, and refuse absent, ambiguous, or unknown adapter evidence with an escalation instruction
 - Preserve generated content, adopted script snippets, home paths, and Windows separators literally when they contain JavaScript replacement tokens such as `$&`; lint now rejects dynamic `replace` and `replaceAll` replacement strings across plugin and published toolkit sources
 - `wt-second-opinion` gives each Astra call private Codex broker state, captures its detached broker while the companion is alive, revalidates process identity before cleanup, and confirms or force-escalates termination on completion, error, supported signals, or process exit; unavailable host cleanup is reported.
 - `wt-deep-search` (EXPERIMENTAL): a deep search started with no Exa key and no opencode on PATH is refused at once, naming both remedies and saying ordinary web search still works, instead of returning a handle that fails nine seconds later with a bare exit status; a missing Exa key is recorded as missing, a refused key as refused, and an opencode not-found failure names the program to install

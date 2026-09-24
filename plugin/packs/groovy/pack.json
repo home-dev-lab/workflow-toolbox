@@ -1,5 +1,6 @@
 {
   "language": "groovy",
+  "testFramework": "junit-gradle",
   "triggers": {
     "extensions": [".groovy", ".gradle"],
     "files": ["build.gradle", "settings.gradle", "spock.conf"]

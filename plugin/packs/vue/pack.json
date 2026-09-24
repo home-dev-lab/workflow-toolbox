@@ -1,5 +1,6 @@
 {
   "language": "vue",
+  "testFramework": "vitest",
   "triggers": {
     "extensions": [".vue"]
   },
