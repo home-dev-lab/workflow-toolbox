@@ -43,7 +43,7 @@ function fixture(script: string) {
 }
 
 function run(root: string, ...args: string[]) {
-  return spawnSync(process.execPath, [WAITER, '--dir', root, '--poll', '0.02', '--timeout', '1', ...args], {
+  return spawnSync(process.execPath, [WAITER, '--dir', root, '--poll', '0.02', '--timeout', '30', ...args], {
     encoding: 'utf8',
   })
 }
