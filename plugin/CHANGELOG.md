@@ -23,6 +23,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - External lanes refuse to launch below a configurable available-memory floor, and signal-killed children now retain a numeric exit while naming earlyoom, kernel OOM, or an unknown signal cause instead of masquerading as timeout exit 124
 
 ### Added
+- Add a journaled, warn-only PreToolUse Bash guard for unquoted scalar lists that zsh would pass as one word; same-command `shwordsplit`, non-zsh shells, arrays, explicit splits, and two measured singleton command-substitution shapes stay silent.
 - Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
 
 ### Fixed

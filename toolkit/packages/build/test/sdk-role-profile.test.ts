@@ -33,6 +33,7 @@ const readers = ['judge', 'critic', 'review', 'refutation'] as const
 const writers = ['tdd'] as const
 const requiredGuards = [
   'wt-unquoted-tool-glob-guard-hook.mjs', 'wt-merge-chain-guard-hook.mjs',
+  'wt-zsh-word-split-guard-hook.mjs',
   'wt-concurrent-test-guard-hook.mjs', 'wt-piped-gate-exit-code-guard-hook.mjs',
   'wt-pgrep-env-dump-guard-hook.mjs', 'wt-git-commit-backtick-guard-hook.mjs',
   'wt-var-colon-modifier-guard-hook.mjs', 'wt-find-newermt-format-guard-hook.mjs',

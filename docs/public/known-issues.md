@@ -382,6 +382,12 @@ It strips heredoc bodies, backtick spans, and quoted spans before matching, so a
 
 It deliberately does not cover a bare unquoted glob as an ordinary shell argument (`ls path/prefix*`, `for f in *.md`), where unquoted is normally what the author meant; flagging that class is the false-positive shape that gets a guard switched off. It also says nothing about the sibling zsh traps of unquoted word-splitting or `$var:path` being read as a parameter modifier rather than concatenation, and it only inspects Bash tool calls under a zsh-shaped hazard model — the silent-expansion half of the risk still applies under other shells even where the hard-abort half does not.
 
+### `wt-zsh-word-split-guard-hook.mjs` — unquoted scalar word-split warner (PreToolUse on Bash)
+
+Warns, never denies, when one Bash command builds a scalar as a space-separated string and later uses it as an unquoted whole word in a command argument, `set --`, or a `for`/`select`/`foreach` list. Under zsh that scalar reaches the consumer as one word rather than being split. The field case was `kill $L`: a list intended for 27 processes killed none, and its own `for p in $L` verification also iterated once and reported success.
+
+The guard is silent outside zsh, when the same command enables `shwordsplit`/`sh_word_split` or emulates a splitting shell, for arrays and explicit `${=name}` splitting, for quoted uses, and for the two measured singleton command substitutions (`git rev-parse <rev>` and a one-PID parent lookup). It can see only assignments and option changes in the current command; it cannot inspect a user's `.zshrc`, inherited variables, or scripts executed from files. It is a lexer approximation and is journaled warn-only because its measured population included two false positives among 24 warnings.
+
 ### `wt-var-colon-modifier-guard-hook.mjs` — bare `$var:` parameter-modifier warner (PreToolUse on Bash)
 
 Warns (never blocks) when a double-quoted Bash string contains a bare, unbraced `$var:letter` where `letter` is one of the 13 standalone parameter-expansion modifiers `man zshexpn` documents (`a A c e h l P q Q r s t u`). In zsh, `:` right after an unbraced parameter name starts a history/modifier expansion rather than being read as literal text — `git show "$s:src/db-base.ts"` fails with `bad substitution`, and the resulting empty command substitution can silently read as "not found" instead of erroring loudly. Safe forms are `"${var}:path"` (braces) or a single-quoted string.
