@@ -99,6 +99,32 @@ describe('wt-zsh-word-split-guard-hook analyzer cases', () => {
   })
 })
 
+describe('wt-zsh-word-split-guard-hook option and scope precision', () => {
+  it.each([
+    ['set -o form', 'set -o shwordsplit; L="1 2"; kill $L'],
+    ['quoted option name', 'setopt "shwordsplit"; L="1 2"; kill $L'],
+    ['control-flow prefix', 'if true; then setopt shwordsplit; fi; L="1 2"; kill $L'],
+  ])('stays silent when splitting is enabled with the %s', (_label, command) => {
+    expect(bash(command).stdout).toBe('')
+  })
+
+  it.each([
+    ['a later scalar assignment', 'L="1 2"; L=3; kill $L'],
+    ['an assignment in a command substitution', 'L=ok; out=$(L="a b"); kill $L'],
+    ['an assignment in a subshell', 'L=ok; (L="a b"); kill $L'],
+  ])('stays silent after %s', (_label, command) => {
+    expect(bash(command).stdout).toBe('')
+  })
+
+  it('does not treat quoted text as an option change', () => {
+    expect(bash('echo "x; setopt shwordsplit; y"; L="1 2"; kill $L').context).toContain('zsh does not word-split')
+  })
+
+  it('stays silent for quoted option text without a risky scalar', () => {
+    expect(bash('echo "x; setopt shwordsplit; y"').stdout).toBe('')
+  })
+})
+
 describe('wt-zsh-word-split-guard-hook contract', () => {
   it('warns without denying and names safe forms', () => {
     const result = bash(FIELD_CASE)

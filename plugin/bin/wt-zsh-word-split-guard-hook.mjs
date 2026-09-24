@@ -259,14 +259,35 @@ function isKnownSingleValueSub(command) {
   return /^ps\s+-o\s+ppid=\s+-p\s+\$\$\s*\|\s*tr\s+-d\s+(['"]) \1$/.test(value)
 }
 
-function enablesWordSplit(command) {
-  for (const segment of command.split(/[;&|\n]/)) {
-    const words = segment.trim().split(/\s+/)
-    const optionNames = words.slice(1).map((word) => word.toLowerCase().replaceAll('_', ''))
-    if (words[0]?.toLowerCase() === 'setopt' && optionNames.includes('shwordsplit')) return true
-    if (words[0]?.toLowerCase() === 'emulate' && optionNames.some((word) => ['sh', 'ksh', 'bash'].includes(word))) return true
+function staticWord(word) {
+  if (!word || word.meta.assign || word.meta.refs.size > 0 || word.meta.subs.length > 0) return null
+  return word.meta.literal
+}
+
+function commandEnablesWordSplit(words) {
+  let index = 0
+  while (SKIP_PREFIX.has(staticWord(words[index]))) index++
+  const command = staticWord(words[index])?.toLowerCase()
+  const args = words.slice(index + 1).map(staticWord)
+  if (args.includes(null)) return false
+  const normalized = args.map((word) => word.toLowerCase().replaceAll('_', ''))
+  if (command === 'setopt' && normalized.includes('shwordsplit')) return true
+  if (command === 'set') {
+    return normalized.some((word, at) => word === '-o' && normalized[at + 1] === 'shwordsplit')
   }
-  return false
+  return command === 'emulate' && normalized.some((word) => ['sh', 'ksh', 'bash'].includes(word))
+}
+
+function enablesWordSplit(command) {
+  let words = []
+  for (const token of lex(command)) {
+    if (token.type === 'word') words.push(token)
+    else {
+      if (commandEnablesWordSplit(words)) return true
+      words = []
+    }
+  }
+  return commandEnablesWordSplit(words)
 }
 
 function classify(meta, vars) {
@@ -282,13 +303,15 @@ function classify(meta, vars) {
 
 function recordAssign(state, word, forceArray) {
   const { name, element } = word.meta.assign
-  const value = state.vars.get(name) ?? { kind: 'none', array: false }
-  if (forceArray || element || word.meta.isArray) value.array = true
-  else {
-    const kind = classify(word.meta, state.vars)
+  const kind = classify(word.meta, state.vars)
+  if (word.meta.assign.op === '+=') {
+    const value = state.vars.get(name) ?? { kind: 'none', array: false }
+    if (forceArray || element || word.meta.isArray) value.array = true
     if (RANK[kind] > RANK[value.kind]) value.kind = kind
+    state.vars.set(name, value)
+    return
   }
-  state.vars.set(name, value)
+  state.vars.set(name, { kind, array: forceArray || element || word.meta.isArray })
 }
 
 function markArray(state, name) {
@@ -306,8 +329,16 @@ function flag(state, word, context, command, allowed) {
   state.findings.push({ name, kind: value.kind, context, use })
 }
 
+function cloneVars(vars) {
+  return new Map([...vars].map(([name, value]) => [name, { ...value }]))
+}
+
+function analyzeSubstitution(state, src) {
+  analyzeInto({ ...state, vars: cloneVars(state.vars) }, src)
+}
+
 function processCommand(state, words) {
-  for (const word of words) for (const sub of word.meta.subs) analyzeInto(state, sub)
+  for (const word of words) for (const sub of word.meta.subs) analyzeSubstitution(state, sub)
   let index = 0
   while (index < words.length) {
     const word = words[index]
@@ -343,12 +374,19 @@ function analyzeInto(state, src) {
   if (state.depth > 8) return
   state.depth++
   let words = []
+  const parentScopes = []
   for (const token of lex(src)) {
     if (token.type === 'word') words.push(token)
-    else if (token.type === 'redir-target') { for (const sub of token.meta.subs) analyzeInto(state, sub) }
-    else { processCommand(state, words); words = [] }
+    else if (token.type === 'redir-target') { for (const sub of token.meta.subs) analyzeSubstitution(state, sub) }
+    else {
+      processCommand(state, words)
+      words = []
+      if (token.v === '(') { parentScopes.push(state.vars); state.vars = cloneVars(state.vars) }
+      else if (token.v === ')' && parentScopes.length > 0) state.vars = parentScopes.pop()
+    }
   }
   processCommand(state, words)
+  if (parentScopes.length > 0) state.vars = parentScopes[0]
   state.depth--
 }
 
