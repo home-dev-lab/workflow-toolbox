@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.187.0] - 2026-09-24
+
 ### Changed
 - Run second-opinion's Claude Opus route at `xhigh` effort whatever `--effort` the caller passes; `--effort` now drives only the GPT-6 Astra route.
 - Pin the shipped `pilot` and `pilot-orchestrator` agent templates to `effort: medium` (was `high`): pilots arbitrate and implement, while critics keep a higher pinned effort. Re-adopt the agents set to pick it up; a project copy already edited to `medium` is now merely behind, not diverged.
@@ -35,6 +37,33 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - Close Secret Guard bypasses around reference-wrapped vault values and alternate `op read` arguments; preserve reference value bytes across shell quoting contexts and UTF-8 transcript offsets; authenticate the target JSONL `tool_use` record before repair writes; retain every built-in and known secret across stream boundaries; and reuse the active journal rotation segment
+
+### Known limits
+- The SDK pilot runner, its lifecycle server and What is running remain EXPERIMENTAL.
+- The environment passed to external-model children (opencode, codex) is not yet restricted by an allow-list in this release; that allow-list ships in a later release.
+- Two structural classes found by cross-family review stay open and are tracked: host guards can import helpers a writer role can modify when the worktree is the plugin's own checkout, and the gate-evidence hook runs one git read that can execute a repository-configured fsmonitor. Both already existed in 0.186.0.
+- Adopters: `secret:env:NAME` is now refused by `wt-secret-guard`; move to `secret:file:` or `op://`. Re-adopt the agent templates after updating (`install.mjs --set agents --install --dir <project>/.claude/agents`).
+
+### Quality
+
+Measured on the release tree against the 0.181.0 baseline (kept on purpose, not refreshed). Cognitive complexity rose by 5 and the longest function by 1 line (lifecycle-launch.mjs, lifecycle-state-machine.mjs), both under their ratchets; ESLint warnings held at 687, knip fell by 3, duplication fell; coverage rose to about 81 % of lines, measured on the full suite of the release tree (7,462 passed, 20 skipped).
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 125 | -2 | 127 -> 125 | plugin/bin/lib/lifecycle-launch.mjs, plugin/workflows/independent-analysis.js |
+| Cognitive complexity | 261 -> 266 | +5 | 261 -> 266 | plugin/bin/lib/lifecycle-launch.mjs, plugin/bin/lib/lifecycle-state-machine.mjs, plugin/workflows/independent-analysis.js |
+| Biggest file (lines) | 2729 -> 2729 | 0 | 2176 -> 2234 | - |
+| Longest function (lines) | 708 -> 709 | +1 | 708 -> 709 | - |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 687 -> 687 | 0 | 41 -> 39 | plugin/bin/lib/lifecycle-state-machine.mjs, plugin/workflows/independent-analysis.js, plugin/skills/adopt/scripts/install.mjs, plugin/bin/lib/lifecycle-launch.mjs |
+| Duplication % | 2.885613003631333 -> 2.7234369006520907 | -0.16 | 432 -> 466 | - |
+| Knip issues | 221 -> 218 | -3 | 5 -> 5 | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 80.94 | +38.94 | 0 -> - | - |
+| Coverage branches % | 40.12 -> 71.44 | +31.32 | 0 -> - | - |
+| Coverage functions % | 44.48 -> 82.41 | +37.93 | 0 -> - | - |
+| Coverage statements % | 40.62 -> 78.03 | +37.41 | 0 -> - | - |
 
 ## [0.186.0] - 2026-09-22
 
