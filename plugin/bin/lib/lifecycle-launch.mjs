@@ -62,9 +62,22 @@ function vitestName(line) {
   return separator > 0 && /\.[cm]?[jt]sx?$/.test(source) ? rest.slice(separator + 3).trim() : null
 }
 
+function pytestName(line) {
+  if (!line.startsWith('FAILED ')) return null
+  const rest = line.slice(7)
+  if (!rest.includes('::')) return null
+  let bracketDepth = 0
+  for (let index = 0; index < rest.length - 2; index += 1) {
+    if (rest[index] === '[') bracketDepth += 1
+    else if (rest[index] === ']') bracketDepth = Math.max(0, bracketDepth - 1)
+    else if (bracketDepth === 0 && rest.slice(index, index + 3) === ' - ') return rest.slice(0, index)
+  }
+  return rest
+}
+
 const failedTestAdapters = new Map([
   ['vitest', { name: vitestName, shape: 'Vitest suite > test name' }],
-  ['pytest', { name: (line) => /^FAILED\s+(.+?)(?:\s+-\s+.*)?$/.exec(line)?.[1] ?? null, shape: 'pytest node id path::Class::test' }],
+  ['pytest', { name: pytestName, shape: 'pytest node id path::Class::test' }],
   ['junit-gradle', { name: (line) => /^(.+ > .+) FAILED$/.exec(line)?.[1] ?? null, shape: 'Gradle/JUnit Class > method' }],
 ])
 
