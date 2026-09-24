@@ -160,6 +160,7 @@ export const spawningTestFiles = [
   'scripts/test/child-process-coverage.test.ts',
   'scripts/test/citation-marker-check.test.ts',
   'scripts/test/label-intent-lens.test.ts',
+  'scripts/test/process-enumeration-load.test.ts',
   'scripts/test/suite-under-load.test.ts',
   'scripts/test/wt-observer.test.ts',
   'scripts/test/wt-wake-channel.test.ts',

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { createCodexBrokerOwnership } from './codex-broker-ownership.mjs'
 import { freemem } from 'node:os'
@@ -43,6 +43,21 @@ function realInvocation() {
     },
     read(file) {
       try { return { status: 'read', value: readFileSync(file, 'utf8') } } catch (error) { return { status: 'unavailable', value: '', reason: error?.code ?? String(error) } }
+    },
+    listProcesses() {
+      let uptime
+      try { uptime = Number(readFileSync('/proc/uptime', 'utf8').split(/\s+/)[0]) } catch { return null }
+      const observedAt = Date.now()
+      return readdirSync('/proc', { withFileTypes: true }).flatMap((entry) => {
+        if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) return []
+        try {
+          const stat = readFileSync(join('/proc', entry.name, 'stat'), 'utf8')
+          const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+          const command = readFileSync(join('/proc', entry.name, 'cmdline'), 'utf8').split('\0').filter(Boolean).join(' ') || stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')'))
+          const startedAt = observedAt - Math.max(0, uptime - Number(fields[19]) / 100) * 1000
+          return [{ pid: Number(entry.name), ppid: Number(fields[1]), elapsedMs: Math.max(0, observedAt - startedAt), command }]
+        } catch { return [] }
+      })
     },
     freeMemory: () => freemem(),
     realpath(input) {

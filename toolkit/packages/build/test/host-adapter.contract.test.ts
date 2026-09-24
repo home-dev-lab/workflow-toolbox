@@ -107,6 +107,16 @@ describe('host adapter evidence contract', () => {
     }
   })
 
+  it('reads Linux process discovery from the non-spawning /proc adapter when available', () => {
+    const run = vi.fn(() => { throw new Error('ps must not run') })
+    const listProcesses = vi.fn(() => [snapshotSamples.linux])
+    const host = createHostAdapter({ platform: 'linux', invoke: { run, listProcesses } })
+
+    expect(host.readProcessSnapshot()).toEqual({ supported: true, processes: [snapshotSamples.linux] })
+    expect(listProcesses).toHaveBeenCalledOnce()
+    expect(run).not.toHaveBeenCalled()
+  })
+
   it.each(['aix', 'freebsd', 'sunos'] as const)('keeps process discovery supported on %s', (platform) => {
     const run = vi.fn(() => ({ status: 0, stdout: '1 0 12 /sbin/init\n', stderr: '', error: null }))
     const host = createHostAdapter({ platform, invoke: { run } })
