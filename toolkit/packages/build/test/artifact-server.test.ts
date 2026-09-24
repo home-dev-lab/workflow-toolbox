@@ -1964,7 +1964,9 @@ describe('review decisions: serving security matrix', () => {
     } finally {
       await closeServer(sink)
     }
-  }, 20_000)
+  // Real-host test, bound measured: Ubuntu run 36056224538 was still running at the old
+  // 20.299 s limit; the same two-browser render completed locally in 0.988 s (round 14).
+  }, 30_000)
 
   it('[B-02][E-02][E-03] serves each type with CSP and rejects aliases, traversal, hosts, and methods', async () => {
     const project = temporaryDir('security-project')
