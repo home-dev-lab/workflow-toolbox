@@ -20,6 +20,6 @@ describe('pid to parent-pid host perimeter', () => {
     const perimeter = sourceFiles(ROOT)
     const violations = perimeter.filter((path) => RAW_PARENT_TABLE.test(readFileSync(path, 'utf8')))
       .map((path) => relative(ROOT, path).replaceAll('\\', '/'))
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 212, violations: [] })
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 214, violations: [] })
   })
 })

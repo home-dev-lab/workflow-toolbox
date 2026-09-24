@@ -41,20 +41,19 @@ function fixture() {
   cpSync(join(ROOT, 'plugin', 'bin'), join(installed, 'bin'), { recursive: true })
   cpSync(join(ROOT, 'plugin', 'hooks-modules'), join(installed, 'hooks-modules'), { recursive: true })
   cpSync(join(ROOT, 'plugin', 'skills'), join(installed, 'skills'), { recursive: true })
-  const sdk = join(worktree, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(sdk, { recursive: true })
-  writeFileSync(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+  const pluginData = join(root, 'workflow-toolbox-test')
+  const sdk = join(pluginData, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(sdk, { recursive: true })
+  writeFileSync(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', main: 'index.cjs' }))
   writeFileSync(join(sdk, 'index.cjs'), `
 const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
-  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE})}));
+  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,sandbox:options.sandbox,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE}),unsandboxed:await options.canUseTool('Bash',{command:'true',dangerouslyDisableSandbox:true})}));
   const mode=process.env.FAKE_MODE;
   if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
   else if(mode==='first-result') yield {type:'result',subtype:'success',is_error:false,result:'too early'};
-  else if(mode!=='empty') { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; if(mode!=='no-write') fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':plugin.path.endsWith('/harden')?'wt-sdk-harden':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; if(mode==='multiple') { yield {type:'result',is_error:false,usage:{input_tokens:2,cache_creation_input_tokens:3,cache_read_input_tokens:5,output_tokens:7}}; yield {type:'result',is_error:false,usage:{input_tokens:11,cache_creation_input_tokens:13,cache_read_input_tokens:17,output_tokens:19}}; } else yield {type:'result',subtype:'success',is_error:mode==='error',usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:mode==='no-write'?' generated review ': 'executor report'}; }
+  else if(mode!=='empty') { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; if(mode!=='no-write') fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; if(mode==='multiple') { yield {type:'result',is_error:false,usage:{input_tokens:2,cache_creation_input_tokens:3,cache_read_input_tokens:5,output_tokens:7}}; yield {type:'result',is_error:false,usage:{input_tokens:11,cache_creation_input_tokens:13,cache_read_input_tokens:17,output_tokens:19}}; } else yield {type:'result',subtype:'success',is_error:mode==='error',usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:mode==='no-write'?' generated review ': 'executor report'}; }
 })()`)
-  const preload = join(root, 'sdk-preload.cjs')
-  writeFileSync(preload, `const Module=require('node:module');const load=Module._load;Module._load=function(request,parent,isMain){if(request==='@anthropic-ai/claude-agent-sdk')return require(${JSON.stringify(join(sdk, 'index.cjs'))});return load.call(this,request,parent,isMain)}\n`)
-  return { root, worktree, cli: join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: state, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${preload}`.trim() } }
+  return { root, worktree, cli: join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: pluginData, WT_AGENT_SDK_PATH: join(sdk, 'index.cjs'), XDG_STATE_HOME: state } }
 }
 
 describe('Claude SDK executor', () => {
@@ -117,8 +116,21 @@ describe('Claude SDK executor', () => {
     expect(executorCanUseTool(root, report, false, 'Bash', { command: `node -e "require('fs').writeFileSync(Buffer.from('2e2e2f65736361706564','hex').toString(),'x')"` }).behavior).toBe('allow')
     expect(executorCanUseTool(root, report, false, 'Bash', { command: `p=$(printf '\\056\\056\\057escaped'); : > "$p"` }).behavior).toBe('allow')
     expect(executorCanUseTool(root, report, false, 'Bash', { command: 'pnpm test' }).behavior).toBe('allow')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: 'git diff -- plugin/CHANGELOG.md' }).behavior).toBe('allow')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: 'git show HEAD:plugin/CHANGELOG.md' }).behavior).toBe('allow')
     const outside = mkdtempSync(join(tmpdir(), 'wt-executor-outside-')); roots.push(outside); symlinkSync(outside, join(root, 'link'))
     expect(executorCanUseTool(root, report, false, 'Write', { file_path: join(root, 'link', 'escaped') }).behavior).toBe('deny')
+  })
+
+  it('launches the writer with mandatory sandboxing and denies per-command escape', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.sandbox.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'sandbox.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside') } })
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0')
+    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({
+      sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true },
+      unsandboxed: { behavior: 'deny', message: 'unsandboxed Bash refused' },
+    })
   })
 
   it.runIf(process.env.WT_CLAUDE_EXECUTOR_REAL_E2E === 'true')('keeps real SDK Bash writes inside the worktree', () => {
@@ -158,16 +170,20 @@ describe('Claude SDK executor', () => {
   it('prints a detached pid, loads the guard, writes only the named report, and ends its log with EXIT=0', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.nonce.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'run.log'); const receipt = join(f.root, 'receipt.json'); const outside = join(f.root, 'outside.txt')
     writeFileSync(brief, `Implement the task.\n\nWrite the report to \`${report}\`.\n`)
+    writeFileSync(join(f.worktree, 'AGENTS.md'), '# Guide\n')
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: outside } })
     expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+\nlog=.+\n$/); expect(result.stderr).toBe('')
     waitFor(report); waitFor(receipt)
-    expect(readFileSync(report, 'utf8')).toBe('executor report\n')
+    // The executor appends its variant line to the report after the SDK wrote it, before EXIT: read after EXIT.
     expect(waitForExit(log, 3000)).toBe('EXIT=0')
+    expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=high origin=role base forced=false\n')
     waitFor(`${log}.usage.json`)
     expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
     expect(existsSync(outside)).toBe(false)
-    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
-    expect(JSON.parse(readFileSync(receipt, 'utf8')).plugins[0].path).toContain(join('hooks-modules', 'pilot-guard'))
+    const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
+    expect(sdkReceipt).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
+    expect(sdkReceipt.prompt).toContain(`${join(f.worktree, 'AGENTS.md')} is the repository's contributor guide; read it before planning or changing code.`)
+    expect(sdkReceipt.plugins[0].path).toContain(join('hooks-modules', 'pilot-guard'))
     if (process.env.WT_EXECUTOR_E2E_OUTPUT === 'true') process.stdout.write(`CLAUDE_EXECUTOR_E2E ${result.stdout.trim()} EXIT=0 report=${readFileSync(report, 'utf8').trim()} outside=${existsSync(outside)}\n`)
   })
 
@@ -179,7 +195,7 @@ describe('Claude SDK executor', () => {
     waitFor(log); const until = Date.now() + 3000
     while (readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1) !== 'EXIT=124' && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
     expect(readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1)).toBe('EXIT=124')
-    expect(JSON.parse(readFileSync(receipt, 'utf8')).tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', 'mcp__plugin_context-mode_context-mode__ctx_search'])
+    expect(JSON.parse(readFileSync(receipt, 'utf8')).tools).toEqual(['Read', 'Glob', 'Grep', 'mcp__plugin_context-mode_context-mode__ctx_search'])
   })
 
   it('item 7: the log always ENDS with an exit marker, even when an earlier marker is followed by later lines', () => {
@@ -219,13 +235,13 @@ describe('Claude SDK executor', () => {
   it('item 11: writes a read-only report from terminal result text when absent', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.generated.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'generated.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'no-write' } })
-    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); expect(readFileSync(report, 'utf8')).toBe('generated review\n')
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); expect(readFileSync(report, 'utf8')).toBe('generated review\n\nvariant=high origin=role base forced=false\n')
   })
 
   it('item 12: exits 1 when the terminal result is_error despite a written report', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.error.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'error.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'error' } })
-    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(report, 'utf8')).toBe('executor report\n')
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=high origin=role base forced=false\n')
   })
 
   it('item 13: accumulates usage across multiple result messages', () => {

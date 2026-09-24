@@ -190,15 +190,17 @@ export function isValidLinkHref(href) {
 
 const PHASE_LABELS = Object.freeze({
   discovery: 'Discovery', plan: 'Plan', critic: 'Critic', tdd: 'TDD', verify: 'Verify',
-  review: 'Independent review', refutation: 'Independent refutation', harden: 'Harden', report: 'Report',
+  review: 'Independent review', refutation: 'Independent refutation', report: 'Report',
 });
 export const PANE_PHASES = Object.freeze(PHASES.map((phase) => Object.freeze([phase, PHASE_LABELS[phase]])));
 
 function phaseLabelFor(row, phase) {
-  const label = PHASE_LABELS[phase] || phase;
+  const round = row.phaseRounds?.[phase];
+  let label = PHASE_LABELS[phase] || phase;
+  if (phase === 'tdd' && Number.isSafeInteger(round) && round > 0) label = 'TDD fix';
+  if (phase === 'tdd' && row.legacyHarden) label = 'Harden (legacy)';
   const model = phase === 'review' ? row.models?.review : phase === 'refutation' ? row.models?.refutation : null;
   const withModel = model && model !== 'unknown' ? `${label} (${model})` : label;
-  const round = row.phaseRounds?.[phase];
   if (!Number.isSafeInteger(round) || round <= 0) return withModel;
   let suffix = ` · round ${round}`;
   if (LOOP_BOUNDS[phase]) suffix += ` (max ${LOOP_BOUNDS[phase]})`;

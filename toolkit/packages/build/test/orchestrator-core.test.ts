@@ -39,7 +39,7 @@ const text = (server: RegisteredServer, name: string, input: Record<string, unkn
 function fakeSdk(root: string) {
   const packageDir = join(root, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
   mkdirSync(packageDir, { recursive: true })
-  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', main: 'index.cjs' }))
+  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', main: 'index.cjs' }))
   writeFileSync(join(packageDir, 'index.cjs'), 'module.exports = { query() {} }\n')
 }
 
@@ -511,16 +511,16 @@ describe('orchestrator driver', () => {
     delete env.CLAUDE_PLUGIN_DATA
     const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...env, NODE_NO_WARNINGS: '1' } })
     expect(result.status).toBe(1)
-    expect(result.stderr.trim().split(/\r?\n/)).toEqual(['wt-run-orchestrator: @anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk'])
+    expect(result.stderr.trim().split(/\r?\n/)).toEqual(["wt-run-orchestrator: @anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'"])
     expect(result.stdout).toBe('')
   })
 
-  it('resolves the SDK from the orchestrator process cwd in an installed plugin tree', () => {
-    const f = repoFixture(); fakeSdk(f.root)
+  it('resolves an external operator-selected SDK in an installed plugin tree', () => {
+    const f = repoFixture(); const sdkRoot = mkdtempSync(join(tmpdir(), 'wt-orch-sdk-')); roots.push(sdkRoot); fakeSdk(sdkRoot)
     const installed = join(f.root, 'installed-plugin'); cpSync(join(ROOT, 'plugin'), installed, { recursive: true })
     const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const profile = join(f.root, 'bad-profile.json'); writeFileSync(profile, '{bad')
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report, '--profile-env', profile], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') } })
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report, '--profile-env', profile], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global'), WT_AGENT_SDK_PATH: join(sdkRoot, 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'index.cjs') } })
     expect(result.status).toBe(1)
     expect(result.stderr.trim().split(/\r?\n/)).toEqual([expect.stringContaining('wt-run-orchestrator: cannot read --profile-env')])
     expect(result.stderr).not.toContain('@anthropic-ai/claude-agent-sdk is not installed')
@@ -533,7 +533,7 @@ describe('SDK orchestrator judge', () => {
       { id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship one\n' },
       { id: '2', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship two\n' },
     ]
-    const f = repoFixture(cards); const knowledgeBaseIndex = join(f.root, 'MEMORY.md'); writeFileSync(knowledgeBaseIndex, '# Memory\n'); let calls = 0; const prompts: string[] = []; let queryOptions: Record<string, unknown> = {}
+    const f = repoFixture(cards); const knowledgeBaseIndex = join(f.root, 'MEMORY.md'); writeFileSync(knowledgeBaseIndex, '# Memory\n'); writeFileSync(join(f.root, 'AGENTS.md'), '# Guide\n'); let calls = 0; const prompts: string[] = []; let queryOptions: Record<string, unknown> = {}
     type Server = { instance: { _registeredTools: Record<string, { handler: (input: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
     const judgment = '## Independent Review\nBoth diffs satisfy their cards.\n\n## Decisions\n1 accept; 2 reject.'
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: Record<string, unknown> }) => {
@@ -555,7 +555,7 @@ describe('SDK orchestrator judge', () => {
     const plugins = [join(f.root, 'rules-plugin'), join(f.root, 'lsp-plugin')]; plugins.forEach((plugin) => mkdirSync(plugin))
     const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex, pluginDirs: plugins }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
     expect(calls).toBe(1)
-    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', 'LSP', CONTEXT_MODE_TOOLS.search] })
+    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', CONTEXT_MODE_TOOLS.search] })
     expect(queryOptions.plugins).toEqual([
       { type: 'local', path: expect.stringContaining('pilot-guard') },
       { type: 'local', path: resolveContextModeRoot(process.env) },
@@ -565,11 +565,12 @@ describe('SDK orchestrator judge', () => {
     expect(f.launches.every((launch) => JSON.stringify(launch).includes(JSON.stringify(plugins)))).toBe(true)
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
     expect(prompts).toEqual([
-      `KNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
+      `${join(f.root, 'AGENTS.md')} is the repository's contributor guide; read it before planning or changing code.\n\nKNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
       'Judge card 2: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
       'Every card is decided: write_judgment.',
     ])
     expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: knowledgeBaseIndex })).toEqual({ behavior: 'allow' })
+    expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: join(f.root, 'AGENTS.md') })).toEqual({ behavior: 'allow' })
     writeFileSync(join(f.root, 'a-fiche.md'), 'fiche\n')
     expect(await (queryOptions.canUseTool as (name: string, input: Record<string, unknown>) => Promise<{ behavior: string }>)('Read', { file_path: join(f.root, 'a-fiche.md') })).toEqual({ behavior: 'allow' })
     expect(result.rows.map((row: { decision: string, reason: string }) => [row.decision, row.reason])).toEqual([['accepted', 'accept reason'], ['rejected', 'reject reason']])

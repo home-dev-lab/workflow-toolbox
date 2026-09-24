@@ -1,6 +1,6 @@
-import { appendFileSync, closeSync, openSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { isAbsolute, win32 } from 'node:path';
+import { dirname, isAbsolute, resolve, win32 } from 'node:path';
 
 const TERMINATION_GRACE_MS = 1_000;
 
@@ -41,12 +41,31 @@ function processFamilyExists(pid, platform = process.platform, kill = process.ki
   }
 }
 
+export function resolveWindowsCommandShim(executable, read = readFileSync, nodeExecutable = process.execPath) {
+  const source = read(executable, 'utf8');
+  const invocation = source.split(/\r?\n/).find((line) => /%\*/.test(line) && /(?:%~dp0|%dp0%)/i.test(line));
+  const candidates = [...String(invocation ?? '').matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  const script = candidates.find((value) => /^(?:%~dp0|%dp0%)/i.test(value));
+  if (!script) throw new Error('opencode command shim is not a supported npm Node shim');
+  const relative = script.replace(/^%~dp0/i, '').replace(/^%dp0%[\\/]?/i, '');
+  const scriptPath = /^[A-Za-z]:[\\/]/.test(executable)
+    ? win32.resolve(win32.dirname(executable), relative)
+    : resolve(dirname(executable), relative.replaceAll('\\', '/'));
+  return { executable: nodeExecutable, args: [scriptPath] };
+}
+
+function spawnCommand(spawn, executable, args, options, platform, resolveCommandShim) {
+  if (platform !== 'win32' || !/\.(?:cmd|bat)$/i.test(executable)) return spawn(executable, args, options);
+  const resolved = resolveCommandShim(executable);
+  return spawn(resolved.executable, [...resolved.args, ...args], options);
+}
+
 // ⚠ The child carries DEEP_SEARCH_WORKER=1 so that a deep-search run cannot start another one.
 // Measured 2026-09-21: an agentic run pointed at the plugin's own directory read the CLI it found
 // there and re-ran it, and each child did the same — seven runs in two minutes. The marker is what
 // `bin/deep.mjs start` refuses on; the neutral working directory is the other half.
 export function startOpencode(options, deps = {}) {
-  const { prompt, dir, logPath, timeoutMs = 30 * 60_000 } = options;
+  const { prompt, dir, logPath, executable = 'opencode', timeoutMs = 30 * 60_000 } = options;
   if (typeof deps.spawn !== 'function') throw new TypeError('opencode requires an injected spawner');
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('opencode requires a full brief');
   if (!absolutePath(dir)) throw new TypeError('opencode requires an absolute --dir');
@@ -61,18 +80,27 @@ export function startOpencode(options, deps = {}) {
   const scheduleTimeout = deps.setTimeout ?? setTimeout;
   const cancelTimeout = deps.clearTimeout ?? clearTimeout;
   const platform = deps.platform ?? process.platform;
+  const environment = childEnvironment(deps.env ?? process.env);
+  const resolveCommandShim = deps.resolveCommandShim ?? resolveWindowsCommandShim;
   const graceMs = deps.terminationGraceMs ?? TERMINATION_GRACE_MS;
   const signalFamily = deps.signalProcessFamily ?? ((pid, signal) => signalProcessFamily(pid, signal, platform));
   const familyExists = deps.processFamilyExists ?? ((pid) => processFamilyExists(pid, platform));
   const log = open(logPath, 'w');
   let child;
   try {
-    child = deps.spawn('opencode', ['run', '--auto', '--dir', dir, prompt], {
-      detached: true,
-      shell: false,
-      stdio: ['ignore', log, log],
-      env: childEnvironment(deps.env ?? process.env),
-    });
+    try {
+      child = spawnCommand(deps.spawn, executable, ['run', '--auto', '--dir', dir, prompt], {
+        detached: true,
+        shell: false,
+        stdio: ['ignore', log, log],
+        env: environment,
+      }, platform, resolveCommandShim);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        throw new Error('opencode was not found; install opencode and ensure it is on PATH');
+      }
+      throw new Error(`opencode failed to start: ${error?.code ?? error?.message ?? String(error)}`, { cause: error });
+    }
   } finally {
     close(log);
   }
@@ -113,9 +141,14 @@ export function startOpencode(options, deps = {}) {
     if (!timedOut) finish(Number.isInteger(code) ? code : 1);
     else finishTimeoutIfTerminated();
   });
-  child.once?.('error', () => {
+  child.once?.('error', (error) => {
     childExited = true;
-    if (!timedOut) finish(127);
+    if (finished) return;
+    if (!timedOut) {
+      const code = error?.code === 'ENOENT' ? 127 : 126;
+      append(logPath, `\nSPAWN_ERROR=${error?.code ?? 'unknown'}`);
+      finish(code);
+    }
     else finishTimeoutIfTerminated();
   });
   timeout = scheduleTimeout(() => {

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { confinedToWorktree } from './pilot-runner-core.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, repositoryGuidePaths, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 
 const MAX_UNPRODUCTIVE_TURNS = 3
@@ -15,13 +15,14 @@ const WAVE_TOOLS = new Set([
   'write_judgment',
 ].map((name) => `mcp__sdk-wave-lifecycle__${name}`))
 
-export function waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex = null, profile = null } = {}) {
+export function waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex = null, profile = null, repositoryGuides = [] } = {}) {
   if (WAVE_TOOLS.has(toolName)) return { behavior: 'allow' }
   if (profile?.tools.includes(toolName) && !['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'allow' }
   if (!['Read', 'Glob', 'Grep'].includes(toolName)) return { behavior: 'deny', message: `tool refused by wave judge: ${toolName}` }
   if (!input || typeof input !== 'object' || Array.isArray(input)) return { behavior: 'deny', message: `invalid tool input: ${toolName}` }
   const requested = input.file_path ?? input.path ?? waveDir
   if (typeof requested !== 'string') return { behavior: 'deny', message: `invalid path: ${String(requested)}` }
+  if (toolName === 'Read' && repositoryGuides.includes(path.resolve(requested))) return { behavior: 'allow' }
   if (toolName === 'Read' && knowledgeBaseReadAllowed(knowledgeBaseIndex, requested)) return { behavior: 'allow' }
   const pattern = toolName === 'Glob' ? input.pattern : (input.glob ?? input.pattern)
   if ((toolName === 'Glob' || toolName === 'Grep') && typeof pattern === 'string') {
@@ -47,15 +48,16 @@ function messageQueue() {
   }
 }
 
-export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir, pluginDirs = [], prepareRole = prepareSdkRole }) {
+export function createSdkJudge({ query, models, waveDir, waveServer, contract, env = process.env, knowledgeBaseIndex = null, projectRoot = waveDir, pluginDirs = [], loadedCodePaths = [], prepareRole = prepareSdkRole }) {
   const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: knowledgeBaseIndex, env, projectRoot })
-  const sdkRole = prepareRole('judge', { worktree: waveDir, env })
+  const repositoryGuides = repositoryGuidePaths(projectRoot)
+  const sdkRole = prepareRole('judge', { worktree: waveDir, env, loadedCodePaths })
   sdkRole.pluginPaths.push(...pluginDirs)
   let knowledgeBaseSent = false
   const withKnowledgeBase = (content) => {
     if (knowledgeBaseSent) return content
     knowledgeBaseSent = true
-    return `${knowledgeBasePromptLine(knowledgeBase)}\n${content}`
+    return withRepositoryGuide(projectRoot, `${knowledgeBasePromptLine(knowledgeBase)}\n${content}`)
   }
   const queue = messageQueue()
   let active = null
@@ -107,7 +109,7 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
       permissionMode: 'default',
       cwd: waveDir,
       mcpServers: { 'sdk-wave-lifecycle': waveServer },
-      canUseTool: async (toolName, input) => waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex: knowledgeBase.path, profile: sdkRole.profile }),
+      canUseTool: async (toolName, input) => waveCanUseTool(waveDir, toolName, input, { knowledgeBaseIndex: knowledgeBase.path, profile: sdkRole.profile, repositoryGuides }),
       env: { ...env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
     }, sdkRole)
     const stream = query({ prompt: prompt(), options: queryOptions })

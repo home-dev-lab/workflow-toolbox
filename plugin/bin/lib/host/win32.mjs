@@ -8,7 +8,7 @@ const PROCESS_TABLE_SCRIPT = [
   '    executableName = $_.Name }',
   '} | ConvertTo-Json -Depth 4 -Compress',
 ].join(' ')
-const PROCESS_SNAPSHOT_SCRIPT = "Get-CimInstance Win32_Process | ForEach-Object { '{0} {1} {2}' -f $_.ProcessId,$_.ParentProcessId,$_.CommandLine }"
+const PROCESS_SNAPSHOT_SCRIPT = "$now = Get-Date; Get-CimInstance Win32_Process | ForEach-Object { $elapsed = if ($null -eq $_.CreationDate) { -1 } else { [math]::Round(($now - $_.CreationDate).TotalMilliseconds) }; $start = if ($null -eq $_.CreationDate) { -1 } else { [DateTimeOffset]::new($_.CreationDate).ToUnixTimeMilliseconds() }; '{0} {1} {2} {3} {4}' -f $_.ProcessId,$_.ParentProcessId,$elapsed,$start,$_.CommandLine }"
 export const processRelationshipOperation = { command: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', PROCESS_TABLE_SCRIPT] }
 export const processSnapshotOperation = { command: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', PROCESS_SNAPSHOT_SCRIPT] }
 
@@ -36,11 +36,14 @@ export function readProcessSnapshot(invoke) {
   const result = invoke.run(processSnapshotOperation.command, processSnapshotOperation.args)
   if (result.status !== 0) return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
   const processes = String(result.stdout ?? '').split(/\r?\n/).flatMap((line) => {
-    const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line)
-    return match ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: null, command: match[3] }] : []
+    const match = /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)$/.exec(line)
+    return match && Number(match[3]) >= 0 && Number(match[4]) >= 0
+      ? [{ pid: Number(match[1]), ppid: Number(match[2]), elapsedMs: Number(match[3]), startTime: Number(match[4]), startIdentity: Number(match[4]), command: match[5] }]
+      : []
   })
   return { supported: true, processes }
 }
 
 export const resolveCanonicalPath = (invoke, input) => invoke.realpath(input)
-export const endProcessFamily = (invoke, pid) => invoke.killTree(pid)
+export const endProcessFamily = (invoke, pid) => invoke.killTree(pid, false)
+export const forceEndProcessFamily = (invoke, pid) => invoke.killTree(pid, true)

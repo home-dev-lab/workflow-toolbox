@@ -1,10 +1,23 @@
 {
   "name": "wt-secret-guard",
   "version": "0.1.1",
-  "description": "Private function-hook secret scrubber for prompts and tool results",
+  "description": "Function-hook secret scrubber for prompts, assistant text, tool results, and raw outbound tool inputs",
   "author": {
     "name": "Frederic Thomas",
     "email": "fthomas@apache.org"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/function-hooks-notice.mjs\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   },
   "userConfig": {
     "opAccount": {
@@ -34,6 +47,13 @@
       "type": "boolean",
       "required": false,
       "default": false
+    },
+    "secretFileReadWarnings": {
+      "title": "Warn when a tool would read a likely secret file",
+      "description": "Measurement-only warning. The read still executes and a value-free event is journaled.",
+      "type": "boolean",
+      "required": false,
+      "default": true
     }
   }
 }

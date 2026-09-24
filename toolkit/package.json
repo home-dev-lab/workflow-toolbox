@@ -8,7 +8,7 @@
   "scripts": {
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
-    "quality:lint": "cd .. && node toolkit/node_modules/eslint/bin/eslint.js --config toolkit/eslint.config.mjs \"toolkit/packages/*/src/**/*.ts\" \"plugin/**/*.mjs\" \"plugin/**/*.js\" --max-warnings 687",
+    "quality:lint": "cd .. && node toolkit/node_modules/eslint/bin/eslint.js --config toolkit/eslint.config.mjs \"toolkit/packages/*/src/**/*.ts\" \"plugin/**/*.mjs\" \"plugin/**/*.js\" \"plugin/**/*.{ts,mts,cts}\" --max-warnings 687",
     "quality:host": "node scripts/host-primitive-census.mjs",
     "quality:dup": "jscpd packages/runtime/src packages/patterns/src packages/build/src packages/std/src packages/pipeline-spec/src packages/comm/src packages/debugger/src packages/scaffold/src packages/smoke/src ../plugin --config .jscpd.json",
     "quality:dead": "cd .. && node toolkit/node_modules/knip/bin/knip.js --config knip.json --max-issues 221",
@@ -44,6 +44,7 @@
     "canary:budget": "tsx packages/smoke/src/budget-canaries.ts",
     "canary:version": "tsx packages/smoke/src/check-version.ts",
     "canary:agents": "tsx packages/smoke/src/sdk-agent-probe.ts",
+    "probe:sdk-alias": "node scripts/agent-sdk-alias-probe.mjs",
     "canary:observer": "tsx packages/smoke/src/observer-canaries.ts",
     "audit:rules-overlap": "node scripts/audit-rules-overlap.mjs",
     "report:citation-candidates": "tsx scripts/citation-candidate-report.ts",
@@ -58,7 +59,7 @@
     "// ratchet 2026-09-17: coverage percentages are pinned in vitest.config.mts and judged by pnpm test itself (one suite run; quality:coverage is an alias, never a second suite)": "coverage thresholds"
   },
   "devDependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.273",
+    "@anthropic-ai/claude-agent-sdk": "0.3.280",
     "@changesets/cli": "^2.31.1",
     "@eslint/js": "^10.0.1",
     "@vitest/coverage-v8": "4.1.11",

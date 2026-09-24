@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 interface PackManifest {
   language: string
+  testFramework: string
   triggers: { extensions: string[]; files?: string[] }
 }
 
@@ -30,6 +31,14 @@ function duplicateClaims(triggerType: 'extensions' | 'files') {
 }
 
 describe('language pack trigger family', () => {
+  it('declares a failed-test adapter for every language pack', () => {
+    const frameworks = new Set(['vitest', 'pytest', 'junit-gradle'])
+    const manifests = fs.readdirSync(packsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(packsDir, entry.name, 'pack.json')))
+      .map((entry) => JSON.parse(fs.readFileSync(path.join(packsDir, entry.name, 'pack.json'), 'utf8')) as PackManifest)
+    expect(manifests.every((manifest) => frameworks.has(manifest.testFramework))).toBe(true)
+  })
+
   it('assigns every file trigger to exactly one pack', () => {
     expect(duplicateClaims('files'), 'duplicate file triggers').toEqual([])
   })

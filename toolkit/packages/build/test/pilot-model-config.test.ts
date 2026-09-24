@@ -40,23 +40,23 @@ describe('pilot model configuration', () => {
       env: { WT_PILOT_MODEL: 'haiku' },
       settingsEnv: { WT_PILOT_MODEL: 'opus', WT_PILOT_HARD_MODEL: 'fable' },
     })).toEqual({
-      pilot: { value: 'haiku', source: 'env', effective: 'haiku', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
-      pilotHard: { value: 'fable', source: 'settings', effective: 'fable', remappedBy: null, variant: { value: 'medium', origin: 'model cap', source: 'profile', forced: false } },
-      orchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
-      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
+      pilot: { value: 'haiku', source: 'env', effective: 'haiku', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      pilotHard: { value: 'fable', source: 'settings', effective: 'fable', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      orchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
       sdkPilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
-      sdkOrchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
+      sdkOrchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
     })
   })
 
-  it('defaults: harness pilot opus, hard fable, orchestrator opus; SDK runner pilot, hard and orchestrator opus (owner 2026-09-14)', () => {
+  it('defaults every harness and SDK pilot/orchestrator cell to opus at explicit SDK-default effort high (owner 2026-09-22)', () => {
     expect(resolvePilotModels({ env: {}, settingsEnv: {} })).toEqual({
-      pilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
-      pilotHard: { value: 'fable', source: 'default', effective: 'fable', remappedBy: null, variant: { value: 'medium', origin: 'model cap', source: 'profile', forced: false } },
-      orchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
-      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
+      pilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      pilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      orchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
       sdkPilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
-      sdkOrchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
+      sdkOrchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
     })
   })
 
@@ -66,9 +66,9 @@ describe('pilot model configuration', () => {
     ['gpt-lane', 'FULL', false, { critic: 'openai/gpt-5.6-sol', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
     ['gpt-lane', 'FULL', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
     ['claude-sdk', 'LITE', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
-    ['claude-sdk', 'LITE', true, { critic: 'fable', code: 'opus', review: 'opus', refutation: 'fable' }],
+    ['claude-sdk', 'LITE', true, { critic: 'opus', code: 'opus', review: 'opus', refutation: 'opus' }],
     ['claude-sdk', 'FULL', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
-    ['claude-sdk', 'FULL', true, { critic: 'fable', code: 'opus', review: 'opus', refutation: 'fable' }],
+    ['claude-sdk', 'FULL', true, { critic: 'opus', code: 'opus', review: 'opus', refutation: 'opus' }],
   ] as const)('resolves the %s %s hard=%s executor cell', (executor, route, hard, models) => {
     const consent = executor === 'gpt-lane' ? 'true' : 'not_true'
     expect(resolveExecutorProfile({
@@ -106,17 +106,19 @@ describe('pilot model configuration', () => {
     }
   })
 
-  it('resolves role base, then model cap, then explicit variant override', () => {
+  it('resolves role base, the GPT Sol implementation profile, then explicit variant override', () => {
     expect(resolveRoleVariant('review', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'role base' })
-    expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'medium', origin: 'model cap' })
+    expect(resolveRoleVariant('code', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'model profile' })
+    expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'role base' })
     expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: { WT_EXECUTOR_REVIEW_VARIANT: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override' })
   })
 
-  it('ships medium for all ten variant options, with no high or model-derived default', () => {
+  it('ships explicit high defaults except for the model-derived code effort', () => {
     const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8'))
     const variants = Object.entries(manifest.userConfig).filter(([key]) => key.endsWith('_variant')).map(([, schema]) => (schema as { default: string }).default)
     expect(variants).toHaveLength(10)
-    expect(new Set(variants)).toEqual(new Set(['medium']))
+    expect(variants.filter((variant) => variant === 'high')).toHaveLength(9)
+    expect(variants.filter((variant) => variant === '')).toHaveLength(1)
   })
 
   it('resolves a pilot plugin option before process env, settings env, and the default', () => {

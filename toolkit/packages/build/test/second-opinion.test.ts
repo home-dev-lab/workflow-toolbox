@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
@@ -39,6 +40,35 @@ function fixture(consented: boolean) {
   }
 }
 
+function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang') {
+  const f = fixture(true)
+  const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
+  const appPidFile = join(f.repo, 'app-server.pid')
+  const brokerPidFile = join(f.repo, 'broker.pid')
+  mkdirSync(companionDir, { recursive: true })
+  writeFileSync(join(companionDir, 'app-server-broker.mjs'), [
+    "import { spawn } from 'node:child_process'",
+    "import { writeFileSync } from 'node:fs'",
+    "import { join } from 'node:path'",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'app-server'], { stdio: 'ignore' })",
+    "writeFileSync(join(process.cwd(), 'app-server.pid'), String(child.pid))",
+    "process.on('SIGTERM', () => { child.kill('SIGTERM'); process.exit(0) })",
+    'setInterval(() => {}, 1000)',
+  ].join('\n'))
+  writeFileSync(join(companionDir, 'codex-companion.mjs'), [
+    "import { spawn } from 'node:child_process'",
+    "import { mkdirSync, writeFileSync } from 'node:fs'",
+    "import { join } from 'node:path'",
+    "const child = spawn(process.execPath, [join(import.meta.dirname, 'app-server-broker.mjs')], { detached: true, stdio: 'ignore' })",
+    'child.unref()',
+    "writeFileSync(join(process.cwd(), 'broker.pid'), String(child.pid))",
+    "const stateDir = join(process.env.CLAUDE_PLUGIN_DATA, 'state', 'fixture')",
+    "setTimeout(() => { mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })) }, 1500)",
+    mode === 'hang' ? 'setInterval(() => {}, 1000)' : `setTimeout(() => process.exit(${mode === 'normal' ? 0 : 7}), 100)`,
+  ].join('\n'))
+  return { ...f, companionDir, appPidFile, brokerPidFile }
+}
+
 function lines(file: string) {
   return readFileSync(file, 'utf8').trimEnd().split(/\r?\n/)
 }
@@ -60,12 +90,9 @@ function dependencies(overrides: Record<string, unknown> = {}) {
   return {
     resolveCodexCompanion: vi.fn(() => '/fake/codex-companion.mjs'),
     runCodex: vi.fn(() => ({ status: 0, stdout: 'astra answer\n', stderr: '' })),
-    probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Claude Fable', percent: 12 }] })),
     resolveSdkQuery: vi.fn(() => async function* () {
-      yield { type: 'result', subtype: 'success', is_error: false, result: 'fable answer' }
+      yield { type: 'result', subtype: 'success', is_error: false, result: 'opus answer' }
     }),
-    listBrokers: vi.fn(() => ({ supported: true, pids: [] })),
-    stopBroker: vi.fn(),
     ...overrides,
   }
 }
@@ -107,12 +134,12 @@ describe('second-opinion advisor', () => {
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
   })
 
-  it('uses Fable when that route is forced despite active lane consent', async () => {
+  it('uses a fresh Opus consult when that route is forced despite active lane consent', async () => {
     const f = fixture(true)
     const deps = dependencies()
-    expect(await runSecondOpinion({ ...f.options, route: 'fable' }, deps, f.env)).toBe(0)
+    expect(await runSecondOpinion({ ...f.options, route: 'opus' }, deps, f.env)).toBe(0)
 
-    expect(lines(f.out)[0]).toBe('ROUTE=claude-fable')
+    expect(lines(f.out)[0]).toBe('ROUTE=claude-opus')
     expect(deps.resolveSdkQuery).toHaveBeenCalledOnce()
     expect(deps.runCodex).not.toHaveBeenCalled()
   })
@@ -130,13 +157,13 @@ describe('second-opinion advisor', () => {
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
   })
 
-  it('refuses a route outside auto, astra and fable instead of running Fable', async () => {
+  it('refuses a route outside auto, astra and opus instead of running Opus', async () => {
     const f = fixture(true)
     const deps = dependencies()
     expect(await runSecondOpinion({ ...f.options, route: 'Astra' }, deps, f.env)).toBe(2)
 
     expect(lines(f.out)).toEqual([
-      'REFUSED: unknown route "Astra"; use auto, astra, or fable.',
+      'REFUSED: unknown route "Astra"; use auto, astra, or opus.',
       'EXIT=2',
     ])
     expect(deps.runCodex).not.toHaveBeenCalled()
@@ -160,44 +187,15 @@ describe('second-opinion advisor', () => {
     const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'fabel'], { encoding: 'utf8', env: { ...process.env, ...f.env } })
 
     expect(result.status).toBe(2)
-    expect(lines(f.out)).toEqual(['REFUSED: --route must be auto, astra, or fable', 'EXIT=2'])
+    expect(lines(f.out)).toEqual(['REFUSED: --route must be auto, astra, or opus', 'EXIT=2'])
   })
 
   it('accepts --route as a CLI flag rather than reporting an unknown argument', () => {
     const f = fixture(true)
-    const result = spawnSync(process.execPath, [CLI, '--out', f.out, '--route', 'fable'], { encoding: 'utf8', env: { ...process.env, ...f.env } })
+    const result = spawnSync(process.execPath, [CLI, '--out', f.out, '--route', 'opus'], { encoding: 'utf8', env: { ...process.env, ...f.env } })
 
     expect(result.status).toBe(2)
     expect(lines(f.out)).toEqual(['REFUSED: --request is required', 'EXIT=2'])
-  })
-
-  it('refuses Fable when the quota probe reports no Fable scope, instead of reading silence as headroom', async () => {
-    const f = fixture(false)
-    const deps = dependencies({ probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Opus', percent: 3 }] })) })
-    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
-
-    expect(lines(f.out)).toEqual([
-      'ROUTE=claude-fable',
-      'REFUSED: the quota probe reported no Claude Fable weekly scope, so the Fable quota guard cannot be applied.',
-      'EXIT=1',
-    ])
-    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
-  })
-
-  it('applies the Fable quota guard when Fable is forced despite active lane consent', async () => {
-    const f = fixture(true)
-    const deps = dependencies({
-      probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Fable', percent: 90 }] })),
-    })
-    expect(await runSecondOpinion({ ...f.options, route: 'fable' }, deps, f.env)).toBe(1)
-
-    expect(lines(f.out)).toEqual([
-      'ROUTE=claude-fable',
-      'REFUSED: Claude Fable weekly scoped quota is 90%, at or above the 90% limit.',
-      'EXIT=1',
-    ])
-    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
-    expect(deps.runCodex).not.toHaveBeenCalled()
   })
 
   it('uses Astra exactly once when lane consent and the Codex runtime are present', async () => {
@@ -222,8 +220,9 @@ describe('second-opinion advisor', () => {
     expect(lines(f.out).at(-1)).toBe('EXIT=0')
   })
 
-  it('uses one read-only Fable SDK query when lane consent is not given', async () => {
+  it('uses one fresh read-only Opus SDK query when lane consent is not given', async () => {
     const f = fixture(false)
+    writeFileSync(join(f.repo, 'CLAUDE.md'), '# Guide\n')
     let queryInput: unknown
     const query = vi.fn((input) => {
       queryInput = input
@@ -234,45 +233,40 @@ describe('second-opinion advisor', () => {
     const deps = dependencies({ resolveSdkQuery: vi.fn(() => query) })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(0)
 
-    expect(deps.probeQuota).toHaveBeenCalledOnce()
     expect(query).toHaveBeenCalledOnce()
     expect(queryInput).toMatchObject({
-      prompt: 'Question with facts and sources.',
+      prompt: `${join(f.repo, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
-        model: 'fable',
+        model: 'opus',
+        effort: 'xhigh',
         cwd: f.repo,
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],
       },
     })
-    expect(lines(f.out)).toEqual(['ROUTE=claude-fable', 'independent answer', 'EXIT=0'])
+    expect(lines(f.out)).toEqual(['ROUTE=claude-opus', 'independent answer', 'EXIT=0'])
     expect(deps.runCodex).not.toHaveBeenCalled()
   })
 
-  it.each([90, 97])('refuses Fable at or above the default quota threshold (%s%%)', async (percent) => {
+  it('runs the Opus fallback at xhigh effort whatever effort the caller passed', async () => {
     const f = fixture(false)
-    const deps = dependencies({
-      probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Fable', percent }] })),
+    let sdkEffort: unknown
+    const query = vi.fn((input: { options: { effort?: unknown } }) => {
+      sdkEffort = input.options.effort
+      return (async function* () {
+        yield { type: 'result', subtype: 'success', is_error: false, result: 'opus answer' }
+      })()
     })
-    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
-    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
-    expect(lines(f.out)).toEqual([
-      'ROUTE=claude-fable',
-      `REFUSED: Claude Fable weekly scoped quota is ${percent}%, at or above the 90% limit.`,
-      'EXIT=1',
-    ])
+    const deps = dependencies({ resolveSdkQuery: vi.fn(() => query) })
+    expect(await runSecondOpinion({ ...f.options, effort: 'low', route: 'auto' }, deps, f.env)).toBe(0)
+
+    expect(query).toHaveBeenCalledOnce()
+    expect(sdkEffort).toBe('xhigh')
+    expect(lines(f.out)[0]).toBe('ROUTE=claude-opus')
+    expect(deps.runCodex).not.toHaveBeenCalled()
   })
 
-  it('honors WT_SECOND_OPINION_FABLE_MAX_PCT', async () => {
-    const f = fixture(false)
-    const deps = dependencies({
-      probeQuota: vi.fn(() => ({ weekly_scoped: [{ scope: 'Fable', percent: 74 }] })),
-    })
-    expect(await runSecondOpinion(f.options, deps, { ...f.env, WT_SECOND_OPINION_FABLE_MAX_PCT: '70' })).toBe(1)
-    expect(lines(f.out)[1]).toContain('74%, at or above the 70% limit')
-  })
-
-  it('refuses rather than falling back to Fable when consent is given but Codex is missing', async () => {
+  it('refuses rather than falling back to Opus when consent is given but Codex is missing', async () => {
     const f = fixture(true)
     const deps = dependencies({ resolveCodexCompanion: vi.fn(() => null) })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
@@ -286,12 +280,12 @@ describe('second-opinion advisor', () => {
   it('refuses with the SDK resolver fix when consent is absent and the SDK is missing', async () => {
     const f = fixture(false)
     const deps = dependencies({
-      resolveSdkQuery: vi.fn(() => { throw new Error('@anthropic-ai/claude-agent-sdk is not installed; run: npm install -g @anthropic-ai/claude-agent-sdk') }),
+      resolveSdkQuery: vi.fn(() => { throw new Error("@anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'") }),
     })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
     expect(lines(f.out)).toEqual([
-      'ROUTE=claude-fable',
-      'REFUSED: Claude Agent SDK unavailable; run: npm install -g @anthropic-ai/claude-agent-sdk',
+      'ROUTE=claude-opus',
+      "REFUSED: Claude Agent SDK unavailable; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'",
       'EXIT=1',
     ])
   })
@@ -300,57 +294,168 @@ describe('second-opinion advisor', () => {
     const f = fixture(true)
     const deps = dependencies({
       runCodex: vi.fn(() => ({ status: 7, stdout: 'partial answer\n', stderr: 'companion failed\n' })),
-      listBrokers: vi.fn(() => ({ supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' })),
     })
     expect(await runSecondOpinion(f.options, deps, f.env)).toBe(7)
     expect(lines(f.out)).toEqual([
       'ROUTE=gpt-astra',
       'partial answer',
       'companion failed',
-      'broker cleanup unavailable on this platform',
       'EXIT=7',
     ])
   })
 
-  it('stops only brokers that appeared during its own Astra call', async () => {
+  it('writes unavailable cleanup diagnostics before the exit marker', async () => {
     const f = fixture(true)
-    const listBrokers = vi.fn()
-      .mockReturnValueOnce({ supported: true, pids: [11, 12] })
-      .mockReturnValueOnce({ supported: true, pids: [11, 12, 21] })
-    const deps = dependencies({ listBrokers })
-    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(0)
-    expect(deps.stopBroker).toHaveBeenCalledOnce()
-    expect(deps.stopBroker).toHaveBeenCalledWith(21)
-    expect(lines(f.out)).toContain('stopped broker pid 21 started by this call')
+    const deps = dependencies({
+      runCodex: vi.fn(() => ({
+        status: 1,
+        stdout: '',
+        stderr: '',
+        cleanup: ['app-server cleanup unavailable: broker not captured; process discovery unavailable on this platform'],
+      })),
+    })
+
+    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
+    expect(lines(f.out)).toEqual([
+      'ROUTE=gpt-astra',
+      'app-server cleanup unavailable: broker not captured; process discovery unavailable on this platform',
+      'EXIT=1',
+    ])
+  })
+
+  it('does not rewrite a completed result because the signal is aborted afterwards', async () => {
+    const f = fixture(true)
+    const controller = new AbortController()
+    const deps = dependencies({
+      runCodex: vi.fn(() => {
+        controller.abort('SIGTERM')
+        return { status: 0, stdout: 'complete\n', stderr: '', interrupted: false }
+      }),
+    })
+
+    expect(await runSecondOpinion({ ...f.options, signal: controller.signal }, deps, f.env)).toBe(0)
     expect(lines(f.out).at(-1)).toBe('EXIT=0')
   })
 
-  it('stops the Codex app-server process family when the wrapper receives SIGTERM', () => {
+  it('does not spawn a companion when the call was aborted before spawn', async () => {
     const f = fixture(true)
-    const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
-    const appPidFile = join(f.repo, 'app-server.pid')
-    mkdirSync(companionDir, { recursive: true })
-    writeFileSync(join(companionDir, 'codex-companion.mjs'), [
-      "import { spawn } from 'node:child_process'",
-      "import { writeFileSync } from 'node:fs'",
-      "import { join } from 'node:path'",
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', 'app-server'], { stdio: 'ignore' })",
-      "writeFileSync(join(process.cwd(), 'app-server.pid'), String(child.pid))",
-      'setInterval(() => {}, 1000)',
-    ].join('\n'))
+    const controller = new AbortController()
+    controller.abort()
+    const endProcessFamily = vi.fn()
+    const deps = createSecondOpinionDependencies({
+      platform: process.platform,
+      endProcessFamily,
+      readProcessSnapshot: vi.fn(),
+    })
+    deps.resolveCodexCompanion = () => '/this/path/must/not/spawn.mjs'
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra', signal: controller.signal }, deps, f.env)).toBe(1)
+    expect(lines(f.out)).toContain('Codex companion launch aborted before spawn.')
+    expect(endProcessFamily).not.toHaveBeenCalled()
+  })
+
+  it('passes cancellation into the Opus SDK query instead of swallowing it', async () => {
+    const f = fixture(false)
+    const controller = new AbortController()
+    let receivedController: AbortController | undefined
+    const deps = dependencies({
+      resolveSdkQuery: vi.fn(() => ({ options }: { options: { abortController?: AbortController } }) => {
+        receivedController = options.abortController
+        return (async function* () {
+          await new Promise((resolve) => options.abortController?.signal.addEventListener('abort', resolve, { once: true }))
+          throw new Error('query aborted')
+        })()
+      }),
+    })
+    const running = runSecondOpinion({ ...f.options, route: 'opus', abortController: controller }, deps, f.env)
+    setTimeout(() => controller.abort(), 10)
+
+    expect(await running).toBe(1)
+    expect(receivedController).toBe(controller)
+    expect(lines(f.out)).toEqual(['ROUTE=claude-opus', 'query aborted', 'EXIT=1'])
+  })
+
+  it.skipIf(process.platform === 'win32').each([['SIGTERM', 143], ['SIGINT', 130], ['SIGHUP', 129]] as const)(
+    'stops the Codex app-server behind the detached broker on %s without stopping another session (Windows skipped: Node terminates before JS signal cleanup)',
+    (signal, expectedExit) => {
+    const f = detachedBrokerFixture()
     const wrapper = spawn(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
       env: { ...process.env, ...f.env, HOME: f.repo },
       stdio: 'ignore',
     })
     let appPid = 0
+    let brokerPid = 0
+    let otherBroker: ReturnType<typeof spawn> | null = null
     try {
-      expect(waitFor(() => existsSync(appPidFile))).toBe(true)
-      appPid = Number(readFileSync(appPidFile, 'utf8'))
+      expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
+      appPid = Number(readFileSync(f.appPidFile, 'utf8'))
+      brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
       expect(processExists(appPid)).toBe(true)
-      process.kill(wrapper.pid!, 'SIGTERM')
+      otherBroker = spawn(process.execPath, [join(f.companionDir, 'app-server-broker.mjs')], {
+        cwd: f.repo,
+        detached: true,
+        stdio: 'ignore',
+      })
+      otherBroker.unref()
+      expect(processExists(otherBroker.pid!)).toBe(true)
+      process.kill(wrapper.pid!, signal)
       expect(waitFor(() => !processExists(appPid))).toBe(true)
+      expect(processExists(otherBroker.pid!)).toBe(true)
+      expect(waitFor(() => lines(f.out).at(-1) === `EXIT=${expectedExit}`)).toBe(true)
     } finally {
       if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
+      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (otherBroker?.pid && processExists(otherBroker.pid)) process.kill(-otherBroker.pid, 'SIGKILL')
+      if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
+    }
+    },
+  )
+
+  it.each([['normal', 0], ['error', 7]] as const)('stops the detached broker app-server after a %s companion end', (mode, expectedStatus) => {
+    const f = detachedBrokerFixture(mode)
+    const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
+      env: { ...process.env, ...f.env, HOME: f.repo },
+      encoding: 'utf8',
+      timeout: 5_000,
+    })
+    expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
+    const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
+    const brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
+    try {
+      expect(result.status).toBe(expectedStatus)
+      expect(waitFor(() => !processExists(appPid))).toBe(true)
+      expect(waitFor(() => !processExists(brokerPid))).toBe(true)
+    } finally {
+      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
+    }
+  })
+
+  it('stops the detached broker app-server from the process exit hook', () => {
+    const f = detachedBrokerFixture()
+    const harness = join(f.repo, 'exit-harness.mjs')
+    const coreUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/second-opinion-core.mjs')).href
+    const adapterUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/adapter.mjs')).href
+    writeFileSync(harness, [
+      `import { createSecondOpinionDependencies, runSecondOpinion } from ${JSON.stringify(coreUrl)}`,
+      `import { hostAdapter } from ${JSON.stringify(adapterUrl)}`,
+      `runSecondOpinion(${JSON.stringify({ ...f.options, route: 'astra' })}, createSecondOpinionDependencies(hostAdapter), process.env)`,
+      'setTimeout(() => process.exit(19), 300)',
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [harness], {
+      env: { ...process.env, ...f.env, HOME: f.repo },
+      encoding: 'utf8',
+      timeout: 5_000,
+    })
+    expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
+    const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
+    const brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
+    try {
+      expect(result.status).toBe(19)
+      expect(waitFor(() => !processExists(appPid))).toBe(true)
+      expect(waitFor(() => !processExists(brokerPid))).toBe(true)
+    } finally {
+      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
   })
@@ -359,12 +464,13 @@ describe('second-opinion advisor', () => {
     const f = fixture(true)
     const companion = join(f.repo, 'overflow-companion.mjs')
     writeFileSync(companion, "process.stdout.write('x'.repeat(1024))\n")
-    const endProcessFamily = vi.fn()
+    const stop = vi.fn(() => [])
     const adapter = {
       platform: process.platform,
-      endProcessFamily,
+      endProcessFamily: vi.fn(),
       readProcessSnapshot: () => ({ supported: true, processes: [] }),
       readProcessRelationships: () => ({ status: 'known', processes: [] }),
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop }),
     }
     const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64 })
     deps.resolveCodexCompanion = () => companion
@@ -375,6 +481,28 @@ describe('second-opinion advisor', () => {
       'REFUSED: Codex companion output exceeded 64 bytes.',
       'EXIT=1',
     ])
-    expect(endProcessFamily).toHaveBeenCalled()
+    expect(stop).toHaveBeenCalled()
+    expect(adapter.endProcessFamily).not.toHaveBeenCalled()
+  })
+
+  it('removes process-exit and abort listeners when companion spawning errors', async () => {
+    const f = fixture(true)
+    const baselineExitListeners = process.listenerCount('exit')
+    const signal = {
+      aborted: false,
+      reason: undefined,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    }
+    const adapter = {
+      platform: process.platform,
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
+    }
+    const deps = createSecondOpinionDependencies(adapter)
+    deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra', signal }, deps, f.env)).toBe(1)
+    expect(process.listenerCount('exit')).toBe(baselineExitListeners)
+    expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
   })
 })

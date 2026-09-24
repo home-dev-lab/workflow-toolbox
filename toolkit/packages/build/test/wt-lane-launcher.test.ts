@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
-import { inspectStartedProcess } from '../../../../plugin/bin/wt-lane.mjs'
+import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, parse } from '../../../../plugin/bin/wt-lane.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
@@ -43,9 +43,11 @@ function fixture(script: string) {
   writeFileSync(join(dir, 'brief.md'), '# brief\n')
   writeFileSync(join(bin, 'opencode'), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_OPENCODE)} opencode "$@"\n`)
   writeFileSync(join(bin, 'opencode.cmd'), `@echo off\r\n"${process.execPath}" "${FAKE_OPENCODE}" opencode %*\r\n`)
+  writeFileSync(join(bin, 'vm_stat'), '#!/bin/sh\nprintf "Mach Virtual Memory Statistics: (page size of 4096 bytes)\\nPages free: 524288.\\n"\n')
   chmodSync(join(bin, 'opencode'), 0o755)
+  chmodSync(join(bin, 'vm_stat'), 0o755)
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script }
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_LANE_MIN_AVAILABLE_MIB: '0' }
   return { root, dir, config, env }
 }
 function run(f: ReturnType<typeof fixture>, extra: string[] = [], model = 'openai/gpt-5.6-luna') {
@@ -172,6 +174,56 @@ function currentDecisionFile(dir: string) {
   return join(dir, '.lane', 'supervision', `${runId}.decision.json`)
 }
 
+describe('wt-lane memory and termination evidence seams', () => {
+  it('treats a blank memory-floor environment value as the default', () => {
+    const previous = process.env.WT_LANE_MIN_AVAILABLE_MIB
+    process.env.WT_LANE_MIN_AVAILABLE_MIB = '  \t '
+    try {
+      expect(parse(['--dir', '.', '--model', 'test/model', '--brief', 'brief.md']).minAvailableMib).toBe(1024)
+    } finally {
+      if (previous === undefined) delete process.env.WT_LANE_MIN_AVAILABLE_MIB
+      else process.env.WT_LANE_MIN_AVAILABLE_MIB = previous
+    }
+  })
+
+  it('permits an unavailable memory source only when the configured floor is zero', () => {
+    const unavailable = () => ({ mib: null, source: 'available memory on aix', reason: 'unsupported platform' })
+    expect(() => assertLaunchMemory(false, 0, unavailable)).not.toThrow()
+    expect(() => assertLaunchMemory(false, 1, unavailable)).toThrow('available memory is unknown')
+  })
+
+  it('classifies a captured earlyoom journal line for the exact child pid', () => {
+    const line = '2026-09-22T11:52:43+0100 host earlyoom[900]: sending SIGTERM to process 4242 uid 1000 "opencode": badness 974, VmRSS 488 MiB'
+    const run = (() => ({ status: 0, stdout: `${line}\n` })) as unknown as typeof spawnSync
+
+    expect(identifySignalCause(4242, 'SIGTERM', { platform: 'linux', startedAt: 1_790_079_163_000, run }))
+      .toEqual({ signal: 'SIGTERM', cause: 'earlyoom', evidence: line })
+  })
+
+  it('classifies kernel OOM evidence after an empty earlyoom journal', () => {
+    let calls = 0
+    const line = 'Sep 22 11:52:43 host kernel: Out of memory: Killed process 4242 (opencode) total-vm:1234kB'
+    const run = (() => ({ status: 0, stdout: ++calls === 1 ? '' : `${line}\n` })) as unknown as typeof spawnSync
+
+    expect(identifySignalCause(4242, 'SIGKILL', { platform: 'linux', run }))
+      .toEqual({ signal: 'SIGKILL', cause: 'kernel-oom', evidence: line })
+  })
+
+  it('does not blame a lane when its pid is only another number on an OOM journal line', () => {
+    const line = '2026-09-22T11:52:43+0100 host earlyoom[4242]: sending SIGTERM to process 9999 uid 1000 "other": badness 974, VmRSS 4242 MiB'
+    const run = (() => ({ status: 0, stdout: `${line}\n` })) as unknown as typeof spawnSync
+
+    expect(identifySignalCause(4242, 'SIGTERM', { platform: 'linux', run }))
+      .toEqual({ signal: 'SIGTERM', cause: 'unknown' })
+  })
+
+  it('reports unknown when journalctl is unavailable or the platform has no journal', () => {
+    const unavailable = (() => ({ status: null, error: Object.assign(new Error('missing'), { code: 'ENOENT' }), stdout: '' })) as unknown as typeof spawnSync
+    expect(identifySignalCause(4242, 'SIGTERM', { platform: 'linux', run: unavailable })).toEqual({ signal: 'SIGTERM', cause: 'unknown' })
+    expect(identifySignalCause(4242, 'SIGTERM', { platform: 'darwin', run: (() => { throw new Error('must not run') }) as unknown as typeof spawnSync })).toEqual({ signal: 'SIGTERM', cause: 'unknown' })
+  })
+})
+
 describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requires POSIX process-group signals; Windows process evidence is transcript-tested)', () => {
   it('refuses a stale brief and names the acknowledgement flag and fresh-round remedy', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
@@ -231,6 +283,16 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
     expect(JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8')).state).not.toBe('launching')
   })
+  it('refuses to launch when available memory is below the configured threshold', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    f.env.WT_LANE_MIN_AVAILABLE_MIB = String(Number.MAX_SAFE_INTEGER)
+
+    const result = run(f)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toMatch(/^wt-lane: Refused: available memory \d+ MiB is below the required \d+ MiB; lower WT_LANE_MIN_AVAILABLE_MIB only after freeing or deliberately budgeting memory\.\n$/)
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
+  })
   it.each(['google/gemini-3.6-flash', 'openai/gpt-5.6-sol-fast'])('refuses unlisted model %s before spawn', (model) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     const res = run(f, [], model)
@@ -256,6 +318,24 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     waitForContent(journal, /"event":"terminated"/)
     expect(journalEvents(journal, 'terminated')).toHaveLength(1)
+  })
+  it('records an externally signaled child as cause unknown instead of a timeout', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const result = run(f, ['--timeout', '60'])
+    expect(result.status, result.stderr).toBe(0)
+    const status = currentStateFile(f.dir)
+    waitForContent(status, /"state": "running"/)
+    const child = JSON.parse(readFileSync(status, 'utf8')).childPid
+
+    process.kill(child, 'SIGTERM')
+    waitFor(join(f.dir, '.lane', 'run.log'))
+
+    expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({
+      state: 'exited',
+      exit: 143,
+      killedBy: { signal: 'SIGTERM', cause: 'unknown' },
+    })
+    expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).toMatch(/KILLED_BY=signal SIGTERM, cause unknown\nEXIT=143\n$/)
   })
   it('reports timeout for owner decision without killing live work', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
@@ -488,7 +568,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
     killIdentity(worker, 'SIGTERM'); waitForIdentityExit(worker)
     const preload = join(f.root, 'darwin.cjs')
-    writeFileSync(preload, "Object.defineProperty(process, 'platform', { value: 'darwin' })\n")
+    writeFileSync(preload, "Object.defineProperty(process, 'platform', { value: 'darwin' }); const childProcess = require('node:child_process'); const original = childProcess.spawnSync; childProcess.spawnSync = function (command, args, options) { return command === 'ps' ? { status: 0, stdout: '', stderr: '' } : original.call(this, command, args, options) }; require('node:module').syncBuiltinESMExports()\n")
     const second = spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: { ...f.env, NODE_OPTIONS: `--require=${preload}` } })
     expect(second.status, second.stderr).toBe(0)
     const secondState = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))

@@ -36,6 +36,7 @@ export async function continueDeepResearch(handle, options, deps) {
       dir: options.dir,
       logPath: options.logPath ?? `${deps.store.directory}/${handle}.log`,
       timeoutMs: options.timeoutMs,
+      executable: options.opencodePath,
     });
     await deps.store.update(handle, {
       status: 'running',
@@ -66,7 +67,7 @@ export async function continueDeepResearch(handle, options, deps) {
           const result = await deps.exa.run(options);
           await deps.store.update(handle, { status: 'done', engine: 'exa', result });
         } catch (error) {
-          if (['exhausted', 'rate-limit', 'fatal'].includes(error?.classification)
+          if (['missing', 'exhausted', 'refused', 'rate-limit', 'fatal'].includes(error?.classification)
             && deps.opencode?.start) {
             try {
               await launchOpencode('availability', {
@@ -109,6 +110,7 @@ export async function startDeepResearch(options, deps) {
     effort: options.effort,
     dir: options.dir,
     timeoutMs: options.timeoutMs,
+    opencodePath: options.opencodePath,
   });
 
   if (deps.schedule) {

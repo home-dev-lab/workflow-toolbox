@@ -13,6 +13,10 @@ export function opReferencesIn(command) {
   return [...new Set(refs)];
 }
 
+// A value exists only when op SUCCEEDED: an exit status other than 0 - or none at all - is a failure,
+// whatever stdout it produced (Astra at 2618aa81: `{exitCode: 1, stdout: 'partial-failed-result'}` was
+// bound and run). Fail closed: a result that does not say it succeeded is not a value.
 export function opValueFrom(result) {
+  if (result?.exitCode !== 0) return '';
   return String(result?.stdout ?? '').replace(/\r?\n$/, '');
 }

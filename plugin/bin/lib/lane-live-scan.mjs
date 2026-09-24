@@ -250,7 +250,7 @@ function scanDarwinLaneProcesses(spawnSyncImpl, now = Date.now()) {
   return result
 }
 
-function scanWindowsLaneProcesses(spawnSyncImpl) {
+function scanWindowsLaneProcesses(spawnSyncImpl, win32Path) {
   const script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'node.exe' -or $_.Name -eq 'node' } | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
   let result
   try {
@@ -276,8 +276,8 @@ function scanWindowsLaneProcesses(spawnSyncImpl) {
   for (const row of rows.slice(0, PROCESS_SCAN_MAX_ENTRIES)) {
     if (!row || typeof row.CommandLine !== 'string' || !Number.isSafeInteger(Number(row.ProcessId))) continue
     const args = windowsCommandArgs(row.CommandLine)
-    const dir = laneDirFromArgs(args.map((arg) => arg.replaceAll('/', path.win32.sep)), path.win32)
-    if (dir && path.win32.isAbsolute(dir)) processes.push({ pid: String(row.ProcessId), dir, command: args.map((arg) => path.win32.basename(arg)).slice(0, 2).join(' ') })
+    const dir = laneDirFromArgs(args.map((arg) => arg.replaceAll('/', () => win32Path.sep)), win32Path)
+    if (dir && win32Path.isAbsolute(dir)) processes.push({ pid: String(row.ProcessId), dir, command: args.map((arg) => win32Path.basename(arg)).slice(0, 2).join(' ') })
   }
   return { status: rows.length > PROCESS_SCAN_MAX_ENTRIES ? 'capped' : 'known', processes }
 }
@@ -290,8 +290,9 @@ export function scanLiveLaneProcesses({
   readdirImpl = readdirSync,
   readFileImpl = readFileSync,
   spawnSyncImpl = spawnSync,
+  win32Path = path.win32,
 } = {}) {
-  if (platform === 'win32') return scanWindowsLaneProcesses(spawnSyncImpl)
+  if (platform === 'win32') return scanWindowsLaneProcesses(spawnSyncImpl, win32Path)
   if (platform === 'darwin') return scanDarwinLaneProcesses(spawnSyncImpl)
   if (platform !== 'linux') return { status: 'unknown', processes: [] }
 

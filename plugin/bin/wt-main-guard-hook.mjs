@@ -68,6 +68,27 @@ const STATE_DIR = mainGuardStateDir()
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
 const ALLOW_ONCE_PATH = path.join(STATE_DIR, 'allow-once.json')
 
+function inspectGit(args, cwd) {
+  const env = {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_PAGER: '',
+    GIT_EXTERNAL_DIFF: '',
+    GIT_ASKPASS: '',
+    SSH_ASKPASS: '',
+  }
+  for (const key of Object.keys(env)) {
+    if (/^GIT_CONFIG_(?:COUNT|KEY_|VALUE_)/.test(key)) delete env[key]
+  }
+  return execFileSync('git', ['--no-pager', '-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false', ...args], {
+    cwd,
+    env,
+    timeout: 2000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+}
+
 // Per-class blocking posture, decided by measurement (see the report this port shipped with,
 // and docs/public/known-issues.md).
 // true  = ships DENY (blocking) for this class.
@@ -276,11 +297,7 @@ function isMainMasterRef(r) {
 
 function currentBranch(cwd) {
   try {
-    return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd,
-      timeout: 2000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
+    return inspectGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd)
       .toString()
       .trim()
   } catch {
@@ -329,21 +346,9 @@ function resetHardWorktree(seg, cwd) {
 function resetHardViolation(seg, cwd) {
   const worktree = resetHardWorktree(seg, cwd)
   if (!worktree) return null
-  try {
-    const porcelain = execFileSync('git', ['status', '--porcelain'], {
-      cwd: worktree,
-      timeout: 2000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-      .toString()
-      .trim()
-    if (!porcelain) return null
-    return `discards ${porcelain.split('\n').length} uncommitted change(s)`
-  } catch {
-    // A missing git executable, non-worktree cwd, or status failure is not proof of a destructive
-    // action. Stay silent rather than create a false violation.
-    return null
-  }
+  // Every Git worktree-status reader can re-hash through repository-selected clean/process
+  // filters. The guard must not execute repository commands merely to refine a journal entry.
+  return `may discard uncommitted changes in ${worktree}; state left unknown without executing repository-configured filters`
 }
 
 // ---------------------------------------------------------------------------------------

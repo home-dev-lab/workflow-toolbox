@@ -1,0 +1,133 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "detached-grandchild",
+    "capturedAt": "2026-09-22T23:06:32.465Z",
+    "command": "node detached-grandchild.mjs /home/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/ubuntu-latest/detached-grandchild.json",
+    "runId": "35795762873",
+    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runnerImage": {
+      "label": "ubuntu-latest",
+      "os": "ubuntu24",
+      "version": "20260907.300.1"
+    },
+    "osRelease": {
+      "platform": "linux",
+      "release": "6.17.0-1022-azure",
+      "version": "#22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "command": "ps --version",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "ps from procps-ng 4.0.4\n"
+      },
+      "powershell": {
+        "status": "not_used",
+        "reason": "PowerShell is not used by these probes on this OS"
+      }
+    }
+  },
+  "status": "measured",
+  "pids": {
+    "aPid": 2125,
+    "bPid": 2132,
+    "cPid": 2139
+  },
+  "concepts": {
+    "processGroupAndSessionColumns": [
+      "pid",
+      "ppid",
+      "pgid",
+      "sid"
+    ]
+  },
+  "before": {
+    "relevantProcesses": {
+      "command": "ps -o pid=,ppid=,pgid=,sid= -p 2125,2132,2139",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "   2125    2118    2125    2125\n   2132    2125    2132    2132\n   2139    2132    2132    2132\n"
+    },
+    "treeWalkFromA": [
+      {
+        "pid": 2132,
+        "ppid": 2125,
+        "pgid": 2132,
+        "sid": 2132
+      },
+      {
+        "pid": 2139,
+        "ppid": 2132,
+        "pgid": 2132,
+        "sid": 2132
+      }
+    ],
+    "processTable": {
+      "command": "ps -axo pid=,ppid=,pgid=,sid=",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "      1       0       1       1\n      2       0       0       0\n      3       2       0       0\n      4       2       0       0\n      5       2       0       0\n      6       2       0       0\n      7       2       0       0\n      8       2       0       0\n      9       2       0       0\n     10       2       0       0\n     11       2       0       0\n     12       2       0       0\n     13       2       0       0\n     14       2       0       0\n     15       2       0       0\n     16       2       0       0\n     17       2       0       0\n     18       2       0       0\n     19       2       0       0\n     20       2       0       0\n     21       2       0       0\n     22       2       0       0\n     23       2       0       0\n     24       2       0       0\n     25       2       0       0\n     26       2       0       0\n     27       2       0       0\n     28       2       0       0\n     29       2       0       0\n     30       2       0       0\n     31       2       0       0\n     32       2       0       0\n     33       2       0       0\n     34       2       0       0\n     35       2       0       0\n     36       2       0       0\n     37       2       0       0\n     38       2       0       0\n     39       2       0       0\n     40       2       0       0\n     41       2       0       0\n     42       2       0       0\n     43       2       0       0\n     44       2       0       0\n     45       2       0       0\n     46       2       0       0\n     47       2       0       0\n     48       2       0       0\n     49       2       0       0\n     50       2       0       0\n     51       2       0       0\n     52       2       0       0\n     53       2       0       0\n     54       2       0       0\n     55       2       0       0\n     56       2       0       0\n     57       2       0       0\n     58       2       0       0\n     59       2       0       0\n     60       2       0       0\n     61       2       0       0\n     62       2       0       0\n     63       2       0       0\n     64       2       0       0\n     65       2       0       0\n     66       2       0       0\n     67       2       0       0\n     68       2       0       0\n     69       2       0       0\n     70       2       0       0\n     71       2       0       0\n     72       2       0       0\n     73       2       0       0\n     74       2       0       0\n     75       2       0       0\n     76       2       0       0\n     77       2       0       0\n     78       2       0       0\n     79       2       0       0\n     80       2       0       0\n     81       2       0       0\n     82       2       0       0\n     83       2       0       0\n     84       2       0       0\n     85       2       0       0\n     86       2       0       0\n     87       2       0       0\n     88       2       0       0\n     89       2       0       0\n     90       2       0       0\n     91       2       0       0\n     93       2       0       0\n    104       2       0       0\n    105       2       0       0\n    106       2       0       0\n    107       2       0       0\n    140       2       0       0\n    157       1     157     157\n    173       2       0       0\n    179       2       0       0\n    180       2       0       0\n    198       2       0       0\n    210       2       0       0\n    217       2       0       0\n    221       1     221     221\n    226       1     226     226\n    238       2       0       0\n    281       2       0       0\n    325       1     325     325\n    339       2       0       0\n    342       2       0       0\n    343       2       0       0\n    392       2       0       0\n    423       1     423     423\n    492       1     492     492\n    554       2       0       0\n    559       2       0       0\n    560       2       0       0\n    561       2       0       0\n    562       2       0       0\n    563       2       0       0\n    643       1     643     643\n    731       2       0       0\n    750       1     750     750\n    755       1     755     755\n    758       1     758     758\n    762       1     762     762\n    772       1     772     772\n    774       1     774     774\n    775       1     775     775\n    815       1     815     815\n    835       1     835     835\n    876       1     870     870\n    887       1     887     887\n    901     876     870     870\n    924       1     924     924\n    936       1     936     936\n    978       1     978     978\n    991       1     991     991\n   1013     991     991     991\n   1056       1    1056    1056\n   1125     758     758     758\n   1127     758     758     758\n   1155       1    1155    1155\n   1190       2       0       0\n   1245     775     775     775\n   1798       2       0       0\n   1800       1    1800    1800\n   1813    1800    1800    1800\n   1815    1813    1800    1800\n   1860    1800    1800    1800\n   1881    1860    1800    1800\n   2117    1881    1800    1800\n   2118    2117    1800    1800\n   2125    2118    2125    2125\n   2132    2125    2132    2132\n   2139    2132    2132    2132\n   2145    2118    1800    1800\n"
+    }
+  },
+  "termination": {
+    "command": "process.kill(-2125, SIGTERM)",
+    "exitCode": 0,
+    "signal": null,
+    "error": null,
+    "raw": "",
+    "durationMilliseconds": 0.021843
+  },
+  "aExit": {
+    "code": null,
+    "signal": "SIGTERM"
+  },
+  "afterTermination": {
+    "relevantProcesses": {
+      "command": "ps -o pid=,ppid=,pgid=,sid= -p 2125,2132,2139",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "   2132       1    2132    2132\n   2139    2132    2132    2132\n"
+    },
+    "treeWalkFromA": [],
+    "processTable": {
+      "command": "ps -axo pid=,ppid=,pgid=,sid=",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "      1       0       1       1\n      2       0       0       0\n      3       2       0       0\n      4       2       0       0\n      5       2       0       0\n      6       2       0       0\n      7       2       0       0\n      8       2       0       0\n      9       2       0       0\n     10       2       0       0\n     11       2       0       0\n     12       2       0       0\n     13       2       0       0\n     14       2       0       0\n     15       2       0       0\n     16       2       0       0\n     17       2       0       0\n     18       2       0       0\n     19       2       0       0\n     20       2       0       0\n     21       2       0       0\n     22       2       0       0\n     23       2       0       0\n     24       2       0       0\n     25       2       0       0\n     26       2       0       0\n     27       2       0       0\n     28       2       0       0\n     29       2       0       0\n     30       2       0       0\n     31       2       0       0\n     32       2       0       0\n     33       2       0       0\n     34       2       0       0\n     35       2       0       0\n     36       2       0       0\n     37       2       0       0\n     38       2       0       0\n     39       2       0       0\n     40       2       0       0\n     41       2       0       0\n     42       2       0       0\n     43       2       0       0\n     44       2       0       0\n     45       2       0       0\n     46       2       0       0\n     47       2       0       0\n     48       2       0       0\n     49       2       0       0\n     50       2       0       0\n     51       2       0       0\n     52       2       0       0\n     53       2       0       0\n     54       2       0       0\n     55       2       0       0\n     56       2       0       0\n     57       2       0       0\n     58       2       0       0\n     59       2       0       0\n     60       2       0       0\n     61       2       0       0\n     62       2       0       0\n     63       2       0       0\n     64       2       0       0\n     65       2       0       0\n     66       2       0       0\n     67       2       0       0\n     68       2       0       0\n     69       2       0       0\n     70       2       0       0\n     71       2       0       0\n     72       2       0       0\n     73       2       0       0\n     74       2       0       0\n     75       2       0       0\n     76       2       0       0\n     77       2       0       0\n     78       2       0       0\n     79       2       0       0\n     80       2       0       0\n     81       2       0       0\n     82       2       0       0\n     83       2       0       0\n     84       2       0       0\n     85       2       0       0\n     86       2       0       0\n     87       2       0       0\n     88       2       0       0\n     89       2       0       0\n     90       2       0       0\n     91       2       0       0\n     93       2       0       0\n    104       2       0       0\n    105       2       0       0\n    106       2       0       0\n    107       2       0       0\n    140       2       0       0\n    157       1     157     157\n    173       2       0       0\n    179       2       0       0\n    180       2       0       0\n    198       2       0       0\n    210       2       0       0\n    217       2       0       0\n    221       1     221     221\n    226       1     226     226\n    238       2       0       0\n    281       2       0       0\n    325       1     325     325\n    339       2       0       0\n    342       2       0       0\n    343       2       0       0\n    392       2       0       0\n    423       1     423     423\n    492       1     492     492\n    554       2       0       0\n    559       2       0       0\n    560       2       0       0\n    561       2       0       0\n    562       2       0       0\n    563       2       0       0\n    643       1     643     643\n    731       2       0       0\n    750       1     750     750\n    755       1     755     755\n    758       1     758     758\n    762       1     762     762\n    772       1     772     772\n    774       1     774     774\n    775       1     775     775\n    815       1     815     815\n    835       1     835     835\n    876       1     870     870\n    887       1     887     887\n    901     876     870     870\n    924       1     924     924\n    936       1     936     936\n    978       1     978     978\n    991       1     991     991\n   1013     991     991     991\n   1056       1    1056    1056\n   1125     758     758     758\n   1127     758     758     758\n   1155       1    1155    1155\n   1190       2       0       0\n   1245     775     775     775\n   1798       2       0       0\n   1800       1    1800    1800\n   1813    1800    1800    1800\n   1815    1813    1800    1800\n   1860    1800    1800    1800\n   1881    1860    1800    1800\n   2117    1881    1800    1800\n   2118    2117    1800    1800\n   2132       1    2132    2132\n   2139    2132    2132    2132\n   2149    2118    1800    1800\n"
+    },
+    "reached": {
+      "a": true,
+      "b": false,
+      "c": false
+    },
+    "knownPidStatus": {
+      "a": "absent",
+      "b": "present",
+      "c": "present"
+    }
+  },
+  "cleanup": {
+    "relevantProcesses": {
+      "command": "ps -o pid=,ppid=,pgid=,sid= -p 2125,2132,2139",
+      "exitCode": 1,
+      "signal": null,
+      "error": null,
+      "raw": ""
+    },
+    "knownPidStatus": {
+      "a": "absent",
+      "b": "absent",
+      "c": "absent"
+    },
+    "noneRemain": true
+  }
+}

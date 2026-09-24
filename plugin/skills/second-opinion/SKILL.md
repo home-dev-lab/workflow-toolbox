@@ -3,13 +3,13 @@ name: second-opinion
 description: >
   Get one independent, read-only second opinion for difficult, ambiguous,
   high-risk, or stuck coding and reasoning problems. Automatically uses GPT-6
-  Astra when GPT-lane consent and its runtime are available, otherwise Claude
-  Fable when its scoped quota permits. The main session keeps the task, edits,
+  Astra when GPT-lane consent and its runtime are available, otherwise a
+  fresh-context Claude Opus consult at xhigh effort. The main session keeps the task, edits,
   verification, and final decision.
 when_to_use: >
   Use for a difficult, ambiguous, high-risk, or stuck question that needs one
-  independent challenge. Force Fable when the session is not on Fable and the
-  question is ours to arbitrate, such as grounding a card or confirming a
+  independent challenge. Force Opus when the question is ours to arbitrate,
+  such as grounding a card or confirming a
   verdict. Force Astra when a decorrelated model family is wanted.
 ---
 
@@ -43,12 +43,14 @@ separately as one candidate among alternatives and ask the advisor to attack it.
 
 Choose effort once: `low` for a scoped challenge or review, `medium` for an
 unclear cause or real trade-off, and `high` for failed attempts, subtle
-cross-system behavior, or an expensive-to-reverse decision.
+cross-system behavior, or an expensive-to-reverse decision. Expect `--effort`
+to drive the Astra route only: the Opus route always runs at `xhigh`, whatever
+effort you pass.
 
-Choose `auto` to preserve consent-based routing. Choose `fable` only when the
-session is not on Fable and the question is ours to arbitrate, such as grounding
-a card or confirming a verdict. Choose `astra` when a decorrelated model family
-is wanted.
+Choose `auto` to preserve consent-based routing. Choose `opus` when the question
+is ours to arbitrate, such as grounding a card or confirming a verdict. The CLI
+starts a fresh SDK context for that consult. Choose `astra` when a decorrelated
+model family is wanted.
 
 ## Launch detached
 
@@ -58,7 +60,7 @@ request and output files.
 ```bash
 setsid nohup node "${CLAUDE_PLUGIN_ROOT}/bin/wt-second-opinion.mjs" \
   --request <request-file> --out <out-file> --effort <low|medium|high> \
-  --route <auto|astra|fable> \
+  --route <auto|astra|opus> \
   --repo <repository> >/dev/null 2>&1 < /dev/null &
 ```
 
@@ -67,7 +69,7 @@ On Windows, launch the same `node` command with `Start-Process` instead of
 
 Poll the output file until its final line is `EXIT=<code>`. Read the **whole
 file**, never only the final line: the first line identifies the selected route
-(`ROUTE=gpt-astra` or `ROUTE=claude-fable`), the body is the complete answer or
+(`ROUTE=gpt-astra` or `ROUTE=claude-opus`), the body is the complete answer or
 refusal, and the last line is completion status. A refusal names the unavailable
 runtime or quota condition and its remedy; never bypass it by silently choosing
 another model.

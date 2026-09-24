@@ -1,5 +1,6 @@
 {
   "language": "typescript",
+  "testFramework": "vitest",
   "triggers": {
     "extensions": [".ts", ".tsx"]
   },

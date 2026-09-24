@@ -4,7 +4,7 @@ import path from 'node:path'
 import { createSecondOpinionDependencies, runSecondOpinion } from './lib/second-opinion-core.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 
-const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|fable] [--repo <dir>]'
+const usage = 'Usage: node wt-second-opinion.mjs --request <file> --out <file> [--effort low|medium|high] [--route auto|astra|opus] [--repo <dir>]'
 
 function parseArgs(argv) {
   const options = { effort: 'medium', route: 'auto', repo: process.cwd() }
@@ -19,7 +19,7 @@ function parseArgs(argv) {
   if (!options.request) return { error: '--request is required', out: options.out }
   if (!options.out) return { error: '--out is required' }
   if (!['low', 'medium', 'high'].includes(options.effort)) return { error: '--effort must be low, medium, or high', out: options.out }
-  if (!['auto', 'astra', 'fable'].includes(options.route)) return { error: '--route must be auto, astra, or fable', out: options.out }
+  if (!['auto', 'astra', 'opus'].includes(options.route)) return { error: '--route must be auto, astra, or opus', out: options.out }
   options.request = path.resolve(options.request)
   options.out = path.resolve(options.out)
   options.repo = path.resolve(options.repo)
@@ -30,13 +30,15 @@ function parseArgs(argv) {
 
 let outputPath
 const abortController = new AbortController()
-let terminationSignal = null
 const requestTermination = (signal) => {
-  terminationSignal = signal
-  abortController.abort()
+  abortController.abort(signal)
 }
-process.once('SIGTERM', requestTermination)
-process.once('SIGINT', requestTermination)
+const signalListeners = new Map(['SIGHUP', 'SIGTERM', 'SIGINT'].map((signal) => [signal, () => requestTermination(signal)]))
+for (const [signal, listener] of signalListeners) process.once(signal, listener)
+
+function removeSignalListeners() {
+  for (const [signal, listener] of signalListeners) process.removeListener(signal, listener)
+}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
@@ -50,14 +52,12 @@ async function main() {
     return 2
   }
   outputPath = options.out
-  return runSecondOpinion({ ...options, signal: abortController.signal }, createSecondOpinionDependencies(hostAdapter))
+  return runSecondOpinion({ ...options, signal: abortController.signal, abortController }, createSecondOpinionDependencies(hostAdapter))
 }
 
 function finish(code) {
-  if (!terminationSignal) { process.exitCode = code; return }
-  process.removeListener('SIGTERM', requestTermination)
-  process.removeListener('SIGINT', requestTermination)
-  process.exitCode = terminationSignal === 'SIGINT' ? 130 : 143
+  removeSignalListeners()
+  process.exitCode = code
 }
 
 main().then(finish).catch((error) => {

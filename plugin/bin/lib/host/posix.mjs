@@ -3,12 +3,12 @@ const PROCESS_SNAPSHOT_ARGS = ['-eo', 'pid=,ppid=,etimes=,args=']
 export const processRelationshipOperation = { command: 'ps', args: PROCESS_TABLE_ARGS }
 export const processSnapshotOperation = { command: 'ps', args: PROCESS_SNAPSHOT_ARGS }
 
-function elapsedSeconds(value) {
+export function elapsedSeconds(value) {
   const parts = value.split('-')
   const days = parts.length === 2 ? Number(parts[0]) : 0
   const clock = parts.at(-1).split(':').map(Number)
   if (clock.some((part) => !Number.isFinite(part))) return null
-  const [hours, minutes, seconds] = clock.length === 3 ? clock : [0, ...clock]
+  const [hours, minutes, seconds] = [0, 0, ...clock].slice(-3)
   return days * 86_400 + hours * 3_600 + minutes * 60 + seconds
 }
 
@@ -37,4 +37,5 @@ export function readProcessSnapshot(invoke) {
 }
 
 export const resolveCanonicalPath = (invoke, input) => invoke.realpath(input)
-export const endProcessFamily = (invoke, pid) => invoke.killGroup(pid)
+export const endProcessFamily = (invoke, pid) => invoke.killGroup(pid, 'SIGTERM')
+export const forceEndProcessFamily = (invoke, pid) => invoke.killGroup(pid, 'SIGKILL')

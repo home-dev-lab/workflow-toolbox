@@ -108,6 +108,15 @@ describe('wt-concurrent-test-guard-hook', () => {
     })
   })
 
+  it('denies unavailable process enumeration in the role-closed environment', () => {
+    const result = run('pnpm test', { ...process.env, PATH: '', WT_SDK_ROLE_GUARD_FAILURE: 'closed' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('could not enumerate existing test-runner processes')
+    expect(result.stdout).toContain('"permissionDecision":"deny"')
+    expect(result.entries).toHaveLength(1)
+    expect(result.entries[0]).toMatchObject({ decision: 'blocked', class: 'enumeration-unavailable' })
+  })
+
   it('is registered as a PreToolUse hook on Bash in the plugin manifest', () => {
     const manifest = JSON.parse(readFileSync(PLUGIN_MANIFEST, 'utf8'))
     const wired = (manifest.hooks?.PreToolUse ?? [])

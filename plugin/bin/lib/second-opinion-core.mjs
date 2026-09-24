@@ -1,14 +1,20 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
-import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
+import { withRepositoryGuide } from './sdk-role-profile.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
-const QUOTA_PROBE = fileURLToPath(new URL('../wt-quota-probe.mjs', import.meta.url))
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
+// The Claude fallback always runs Opus at xhigh; the caller's --effort drives only the Astra route.
+const OPUS_EFFORT = 'xhigh'
+function signalExitCode(reason) {
+  if (reason === 'SIGHUP') return 129
+  if (reason === 'SIGINT') return 130
+  if (reason === 'SIGTERM') return 143
+  return null
+}
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
@@ -37,9 +43,11 @@ function codexCompanion(env) {
 }
 
 function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES }) {
+  if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
+  const ownership = adapter.createCodexBrokerOwnership(env)
   const child = spawn(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
     cwd,
-    env,
+    env: ownership.env,
     detached: adapter.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -47,8 +55,27 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   const chunks = { stdout: [], stderr: [] }
   let outputBytes = 0
   let overflow = false
-  const stopOwnedFamily = () => {
-    if (child.pid) adapter.endProcessFamily(child.pid)
+  let cleanup = null
+  let companionAlive = true
+  let interrupted = null
+  const captureBroker = () => {
+    if (companionAlive && child.pid) ownership.capture(child.pid)
+  }
+  captureBroker()
+  const captureTimer = setInterval(captureBroker, 25)
+  captureTimer.unref()
+  child.once('exit', () => {
+    companionAlive = false
+    clearInterval(captureTimer)
+  })
+  const stopEverything = (reason = null) => {
+    if (cleanup) return cleanup
+    if (reason) interrupted ??= reason
+    clearInterval(captureTimer)
+    captureBroker()
+    if (companionAlive) child.kill('SIGTERM')
+    cleanup = ownership.stop()
+    return cleanup
   }
   const collect = (stream, chunk) => {
     if (overflow) return
@@ -57,39 +84,42 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
       overflow = true
       chunks.stdout.length = 0
       chunks.stderr.length = 0
-      stopOwnedFamily()
+      stopEverything()
       return
     }
     chunks[stream].push(chunk)
   }
   child.stdout.on('data', (chunk) => collect('stdout', chunk))
   child.stderr.on('data', (chunk) => collect('stderr', chunk))
-  signal?.addEventListener('abort', stopOwnedFamily, { once: true })
+  const onAbort = () => stopEverything(signal?.reason)
+  const onExit = () => { stopEverything() }
+  process.once('exit', onExit)
+  signal?.addEventListener('abort', onAbort, { once: true })
+  if (signal?.aborted) onAbort()
   return new Promise((resolve) => {
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearInterval(captureTimer)
+      process.removeListener('exit', onExit)
+      signal?.removeEventListener('abort', onAbort)
+      resolve({ ...result, interrupted })
+    }
     child.once('error', (error) => {
-      stopOwnedFamily()
-      resolve(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
-        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n` })
+      stopEverything()
+      finish(overflow
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
+        : { status: 1, stdout: Buffer.concat(chunks.stdout).toString(), stderr: `${Buffer.concat(chunks.stderr).toString()}${error.message}\n`, cleanup })
     })
     child.once('close', (code, childSignal) => {
-      stopOwnedFamily()
-      signal?.removeEventListener('abort', stopOwnedFamily)
-      resolve(overflow
-        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n` }
-        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString() })
+      companionAlive = false
+      stopEverything()
+      finish(overflow
+        ? { status: 1, stdout: '', stderr: `REFUSED: Codex companion output exceeded ${maxOutputBytes} bytes.\n`, cleanup }
+        : { status: code ?? (childSignal ? 1 : 0), stdout: Buffer.concat(chunks.stdout).toString(), stderr: Buffer.concat(chunks.stderr).toString(), cleanup })
     })
   })
-}
-
-export function parseProcessLines(stdout) {
-  const pids = []
-  for (const line of stdout.split(/\r?\n/)) {
-    if (!/openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(line)) continue
-    const match = /^\s*(\d+)\s+/.exec(line)
-    if (match) pids.push(Number(match[1]))
-  }
-  return pids
 }
 
 export function listProcessTable(adapter) {
@@ -111,23 +141,9 @@ export function listBrokers(adapter) {
   return { supported: true, pids: table.processes.filter((process) => /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(process.command)).map((process) => process.pid) }
 }
 
-function probeQuota(env) {
-  const result = spawnSync(process.execPath, [QUOTA_PROBE], { env, encoding: 'utf8', input: '' })
-  if (result.status !== 0) throw new Error((result.stderr || result.stdout || `probe exited ${result.status}`).trim())
-  return JSON.parse(result.stdout)
-}
-
 function resolveSdkQuery(repo, env) {
   const require = resolveAgentSdkRequire({ projectDir: repo, env })
   return require('@anthropic-ai/claude-agent-sdk').query
-}
-
-function fableThreshold(env) {
-  const configured = resolveWorkflowToolboxOption('second_opinion_fable_max_pct', { env }).value
-  if (!Number.isFinite(configured) || configured < 0 || configured > 100) {
-    throw new Error('WT_SECOND_OPINION_FABLE_MAX_PCT must be a number from 0 to 100')
-  }
-  return configured
 }
 
 function sdkRemedy(error) {
@@ -139,10 +155,7 @@ function sdkRemedy(error) {
 export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveCodexCompanion: codexCompanion,
   runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes }),
-  probeQuota,
   resolveSdkQuery,
-  listBrokers: () => listBrokers(adapter),
-  stopBroker: (pid) => process.kill(pid, 'SIGTERM'),
 })
 
 export async function runSecondOpinion(options, dependencies, env = process.env) {
@@ -150,9 +163,9 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
   const consent = resolveConsent(options.repo, env)
   const route = options.route ?? 'auto'
 
-  // The CLI validates the value; a direct caller gets the same refusal rather than a silent Fable run.
-  if (!['auto', 'astra', 'fable'].includes(route)) {
-    writeFileSync(options.out, `REFUSED: unknown route ${JSON.stringify(route)}; use auto, astra, or fable.\n`)
+  // The CLI validates the value; a direct caller gets the same refusal rather than a silent Opus run.
+  if (!['auto', 'astra', 'opus'].includes(route)) {
+    writeFileSync(options.out, `REFUSED: unknown route ${JSON.stringify(route)}; use auto, astra, or opus.\n`)
     appendLine(options.out, 'EXIT=2')
     return 2
   }
@@ -174,7 +187,6 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     }
 
     writeFileSync(options.out, 'ROUTE=gpt-astra\n')
-    const before = dependencies.listBrokers()
     let result
     try {
       result = await dependencies.runCodex({
@@ -187,55 +199,18 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
       })
       appendOutput(options.out, result.stdout)
       appendOutput(options.out, result.stderr)
+      for (const line of result.cleanup ?? []) appendLine(options.out, line)
     } catch (error) {
       result = { status: 1 }
       appendLine(options.out, error instanceof Error ? error.message : String(error))
     }
 
-    if (!before.supported) {
-      appendLine(options.out, before.reason)
-    } else {
-      const after = dependencies.listBrokers()
-      if (!after.supported) appendLine(options.out, after.reason)
-      else for (const pid of after.pids.filter((pid) => !before.pids.includes(pid))) {
-        try {
-          dependencies.stopBroker(pid)
-          appendLine(options.out, `stopped broker pid ${pid} started by this call`)
-        } catch (error) {
-          appendLine(options.out, `could not stop broker pid ${pid}: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-    }
-    appendLine(options.out, `EXIT=${result.status}`)
-    return result.status
+    const code = signalExitCode(result.interrupted) ?? result.status
+    appendLine(options.out, `EXIT=${code}`)
+    return code
   }
 
-  writeFileSync(options.out, 'ROUTE=claude-fable\n')
-  let threshold
-  let quota
-  try {
-    threshold = fableThreshold(env)
-    quota = dependencies.probeQuota(env)
-  } catch (error) {
-    appendLine(options.out, `REFUSED: could not read the active account Fable quota: ${error instanceof Error ? error.message : String(error)}.`)
-    appendLine(options.out, 'EXIT=1')
-    return 1
-  }
-  const fableScopes = Array.isArray(quota.weekly_scoped)
-    ? quota.weekly_scoped.filter((item) => /fable/i.test(String(item?.scope)) && Number.isFinite(item?.percent))
-    : []
-  // No Fable scope means the guard has nothing to measure; silence is not headroom.
-  if (fableScopes.length === 0) {
-    appendLine(options.out, 'REFUSED: the quota probe reported no Claude Fable weekly scope, so the Fable quota guard cannot be applied.')
-    appendLine(options.out, 'EXIT=1')
-    return 1
-  }
-  const percent = fableScopes.reduce((maximum, item) => Math.max(maximum, item.percent), -Infinity)
-  if (percent >= threshold) {
-    appendLine(options.out, `REFUSED: Claude Fable weekly scoped quota is ${percent}%, at or above the ${threshold}% limit.`)
-    appendLine(options.out, 'EXIT=1')
-    return 1
-  }
+  writeFileSync(options.out, 'ROUTE=claude-opus\n')
 
   let query
   try {
@@ -250,13 +225,15 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
   let failed = false
   try {
     const stream = query({
-      prompt: request,
+      prompt: withRepositoryGuide(options.repo, request),
       options: {
-        model: 'fable',
+        model: 'opus',
+        effort: OPUS_EFFORT,
         cwd: options.repo,
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],
         permissionMode: 'default',
+        abortController: options.abortController,
         canUseTool: async (toolName) => ['Read', 'Glob', 'Grep'].includes(toolName)
           ? { behavior: 'allow' }
           : { behavior: 'deny', message: 'second-opinion is read-only' },
@@ -275,10 +252,10 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
   }
   if (!answer.trim()) {
     failed = true
-    answer = 'Claude Fable returned no answer.'
+    answer = 'Claude Opus returned no answer.'
   }
   appendOutput(options.out, answer)
-  const code = failed ? 1 : 0
+  const code = signalExitCode(options.signal?.aborted ? options.signal.reason : null) ?? (failed ? 1 : 0)
   appendLine(options.out, `EXIT=${code}`)
   return code
 }

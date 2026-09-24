@@ -29,6 +29,7 @@ export function runFailOpenHook(hookName, fn, onError) {
     return fn()
   } catch (error) {
     writeFailOpenTrace(hookName, error)
+    if (process.env.WT_SDK_ROLE_GUARD_FAILURE === 'closed') process.exitCode = 1
     return onError ? onError(error) : undefined
   }
 }
@@ -39,6 +40,7 @@ export async function runFailOpenHookAsync(hookName, fn, onError) {
     await fn()
   } catch (error) {
     writeFailOpenTrace(hookName, error)
+    if (process.env.WT_SDK_ROLE_GUARD_FAILURE === 'closed') process.exitCode = 1
     if (onError) await onError(error)
   }
 }

@@ -1,0 +1,143 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "detached-grandchild",
+    "capturedAt": "2026-09-22T23:07:00.974Z",
+    "command": "node detached-grandchild.mjs D:\\a\\workflow-toolbox\\workflow-toolbox\\probes\\host-platform\\evidence\\windows-latest\\detached-grandchild.json",
+    "runId": "35795762873",
+    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runnerImage": {
+      "label": "windows-latest",
+      "os": "win25-vs2026",
+      "version": "20260907.229.1"
+    },
+    "osRelease": {
+      "platform": "win32",
+      "release": "10.0.26100",
+      "version": "Windows Server 2025 Datacenter",
+      "arch": "x64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "status": "not_used",
+        "reason": "procps is not the process-table provider on this OS"
+      },
+      "powershell": {
+        "command": "pwsh -NoProfile -NonInteractive -Command $PSVersionTable.PSVersion.ToString()",
+        "exitCode": 0,
+        "signal": null,
+        "error": null,
+        "raw": "7.6.5\r\n"
+      }
+    }
+  },
+  "status": "measured",
+  "pids": {
+    "aPid": 3500,
+    "bPid": 984,
+    "cPid": 4000
+  },
+  "concepts": {
+    "processGroup": "unsupported",
+    "session": "unsupported",
+    "nearestConcept": "process tree rooted at a PID"
+  },
+  "before": {
+    "relevantProcesses": {
+      "command": "powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process -Filter 'ProcessId=3500 OR ProcessId=984 OR ProcessId=4000' | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "[{\"ProcessId\":3500,\"ParentProcessId\":2192,\"Name\":\"node.exe\"},{\"ProcessId\":984,\"ParentProcessId\":3500,\"Name\":\"node.exe\"},{\"ProcessId\":4000,\"ParentProcessId\":984,\"Name\":\"node.exe\"}]\r\n"
+    },
+    "treeWalkFromA": [
+      {
+        "pid": 984,
+        "ppid": 3500
+      },
+      {
+        "pid": 4000,
+        "ppid": 984
+      },
+      {
+        "pid": 1532,
+        "ppid": 4000
+      }
+    ],
+    "processTable": {
+      "command": "powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "[{\"ProcessId\":0,\"ParentProcessId\":0},{\"ProcessId\":4,\"ParentProcessId\":0},{\"ProcessId\":92,\"ParentProcessId\":4},{\"ProcessId\":132,\"ParentProcessId\":4},{\"ProcessId\":556,\"ParentProcessId\":4},{\"ProcessId\":768,\"ParentProcessId\":760},{\"ProcessId\":892,\"ParentProcessId\":760},{\"ProcessId\":988,\"ParentProcessId\":892},{\"ProcessId\":1008,\"ParentProcessId\":892},{\"ProcessId\":1016,\"ParentProcessId\":892},{\"ProcessId\":740,\"ParentProcessId\":988},{\"ProcessId\":1028,\"ParentProcessId\":892},{\"ProcessId\":1124,\"ParentProcessId\":988},{\"ProcessId\":1172,\"ParentProcessId\":988},{\"ProcessId\":1352,\"ParentProcessId\":988},{\"ProcessId\":1364,\"ParentProcessId\":988},{\"ProcessId\":1384,\"ParentProcessId\":988},{\"ProcessId\":1508,\"ParentProcessId\":988},{\"ProcessId\":1544,\"ParentProcessId\":988},{\"ProcessId\":1624,\"ParentProcessId\":988},{\"ProcessId\":1632,\"ParentProcessId\":988},{\"ProcessId\":1660,\"ParentProcessId\":988},{\"ProcessId\":1668,\"ParentProcessId\":988},{\"ProcessId\":1684,\"ParentProcessId\":988},{\"ProcessId\":1804,\"ParentProcessId\":988},{\"ProcessId\":1956,\"ParentProcessId\":988},{\"ProcessId\":2000,\"ParentProcessId\":988},{\"ProcessId\":1472,\"ParentProcessId\":988},{\"ProcessId\":2132,\"ParentProcessId\":988},{\"ProcessId\":2168,\"ParentProcessId\":988},{\"ProcessId\":2176,\"ParentProcessId\":988},{\"ProcessId\":2264,\"ParentProcessId\":988},{\"ProcessId\":2344,\"ParentProcessId\":988},{\"ProcessId\":2472,\"ParentProcessId\":988},{\"ProcessId\":2520,\"ParentProcessId\":988},{\"ProcessId\":2536,\"ParentProcessId\":988},{\"ProcessId\":2544,\"ParentProcessId\":988},{\"ProcessId\":2580,\"ParentProcessId\":988},{\"ProcessId\":2620,\"ParentProcessId\":988},{\"ProcessId\":2664,\"ParentProcessId\":988},{\"ProcessId\":2744,\"ParentProcessId\":988},{\"ProcessId\":2824,\"ParentProcessId\":988},{\"ProcessId\":2836,\"ParentProcessId\":988},{\"ProcessId\":2852,\"ParentProcessId\":988},{\"ProcessId\":2876,\"ParentProcessId\":988},{\"ProcessId\":2952,\"ParentProcessId\":988},{\"ProcessId\":3032,\"ParentProcessId\":988},{\"ProcessId\":2052,\"ParentProcessId\":988},{\"ProcessId\":2988,\"ParentProcessId\":988},{\"ProcessId\":3156,\"ParentProcessId\":988},{\"ProcessId\":3216,\"ParentProcessId\":988},{\"ProcessId\":3248,\"ParentProcessId\":988},{\"ProcessId\":3304,\"ParentProcessId\":988},{\"ProcessId\":3344,\"ParentProcessId\":988},{\"ProcessId\":3352,\"ParentProcessId\":988},{\"ProcessId\":3488,\"ParentProcessId\":988},{\"ProcessId\":3504,\"ParentProcessId\":988},{\"ProcessId\":3540,\"ParentProcessId\":988},{\"ProcessId\":3556,\"ParentProcessId\":988},{\"ProcessId\":3580,\"ParentProcessId\":988},{\"ProcessId\":3684,\"ParentProcessId\":988},{\"ProcessId\":3748,\"ParentProcessId\":988},{\"ProcessId\":3764,\"ParentProcessId\":988},{\"ProcessId\":3776,\"ParentProcessId\":988},{\"ProcessId\":3784,\"ParentProcessId\":988},{\"ProcessId\":3792,\"ParentProcessId\":988},{\"ProcessId\":3888,\"ParentProcessId\":988},{\"ProcessId\":3924,\"ParentProcessId\":988},{\"ProcessId\":3932,\"ParentProcessId\":988},{\"ProcessId\":3940,\"ParentProcessId\":988},{\"ProcessId\":3948,\"ParentProcessId\":988},{\"ProcessId\":3960,\"ParentProcessId\":988},{\"ProcessId\":4052,\"ParentProcessId\":988},{\"ProcessId\":4060,\"ParentProcessId\":988},{\"ProcessId\":4076,\"ParentProcessId\":988},{\"ProcessId\":632,\"ParentProcessId\":988},{\"ProcessId\":4128,\"ParentProcessId\":988},{\"ProcessId\":4944,\"ParentProcessId\":740},{\"ProcessId\":5012,\"ParentProcessId\":988},{\"ProcessId\":4844,\"ParentProcessId\":988},{\"ProcessId\":4632,\"ParentProcessId\":988},{\"ProcessId\":4860,\"ParentProcessId\":988},{\"ProcessId\":5420,\"ParentProcessId\":988},{\"ProcessId\":6408,\"ParentProcessId\":2520},{\"ProcessId\":6452,\"ParentProcessId\":988},{\"ProcessId\":6468,\"ParentProcessId\":988},{\"ProcessId\":7032,\"ParentProcessId\":740},{\"ProcessId\":6208,\"ParentProcessId\":3792},{\"ProcessId\":6264,\"ParentProcessId\":6208},{\"ProcessId\":5260,\"ParentProcessId\":988},{\"ProcessId\":7108,\"ParentProcessId\":988},{\"ProcessId\":6212,\"ParentProcessId\":988},{\"ProcessId\":7652,\"ParentProcessId\":988},{\"ProcessId\":7860,\"ParentProcessId\":988},{\"ProcessId\":7172,\"ParentProcessId\":988},{\"ProcessId\":1260,\"ParentProcessId\":704},{\"ProcessId\":4048,\"ParentProcessId\":704},{\"ProcessId\":3608,\"ParentProcessId\":988},{\"ProcessId\":2912,\"ParentProcessId\":4048},{\"ProcessId\":8060,\"ParentProcessId\":4048},{\"ProcessId\":1876,\"ParentProcessId\":988},{\"ProcessId\":772,\"ParentProcessId\":2520},{\"ProcessId\":940,\"ParentProcessId\":7172},{\"ProcessId\":8088,\"ParentProcessId\":988},{\"ProcessId\":8112,\"ParentProcessId\":3304},{\"ProcessId\":1788,\"ParentProcessId\":988},{\"ProcessId\":376,\"ParentProcessId\":2520},{\"ProcessId\":5624,\"ParentProcessId\":7376},{\"ProcessId\":4620,\"ParentProcessId\":8112},{\"ProcessId\":5544,\"ParentProcessId\":988},{\"ProcessId\":3632,\"ParentProcessId\":740},{\"ProcessId\":1296,\"ParentProcessId\":740},{\"ProcessId\":8376,\"ParentProcessId\":988},{\"ProcessId\":8476,\"ParentProcessId\":740},{\"ProcessId\":8484,\"ParentProcessId\":740},{\"ProcessId\":8596,\"ParentProcessId\":740},{\"ProcessId\":8672,\"ParentProcessId\":988},{\"ProcessId\":8712,\"ParentProcessId\":988},{\"ProcessId\":8180,\"ParentProcessId\":3156},{\"ProcessId\":2164,\"ParentProcessId\":988},{\"ProcessId\":2292,\"ParentProcessId\":740},{\"ProcessId\":7964,\"ParentProcessId\":5624},{\"ProcessId\":2020,\"ParentProcessId\":2520},{\"ProcessId\":4288,\"ParentProcessId\":2020},{\"ProcessId\":4092,\"ParentProcessId\":740},{\"ProcessId\":1432,\"ParentProcessId\":740},{\"ProcessId\":5020,\"ParentProcessId\":2020},{\"ProcessId\":8808,\"ParentProcessId\":988},{\"ProcessId\":3700,\"ParentProcessId\":5624},{\"ProcessId\":3320,\"ParentProcessId\":988},{\"ProcessId\":8868,\"ParentProcessId\":988},{\"ProcessId\":7600,\"ParentProcessId\":988},{\"ProcessId\":3696,\"ParentProcessId\":988},{\"ProcessId\":7212,\"ParentProcessId\":988},{\"ProcessId\":6616,\"ParentProcessId\":988},{\"ProcessId\":8948,\"ParentProcessId\":988},{\"ProcessId\":2016,\"ParentProcessId\":988},{\"ProcessId\":2296,\"ParentProcessId\":2020},{\"ProcessId\":7160,\"ParentProcessId\":2296},{\"ProcessId\":7096,\"ParentProcessId\":7160},{\"ProcessId\":5564,\"ParentProcessId\":7160},{\"ProcessId\":2192,\"ParentProcessId\":5564},{\"ProcessId\":3500,\"ParentProcessId\":2192},{\"ProcessId\":984,\"ParentProcessId\":3500},{\"ProcessId\":4000,\"ParentProcessId\":984},{\"ProcessId\":1532,\"ParentProcessId\":4000},{\"ProcessId\":1776,\"ParentProcessId\":740},{\"ProcessId\":2084,\"ParentProcessId\":2192}]\r\n"
+    }
+  },
+  "termination": {
+    "command": "taskkill /T /PID 3500",
+    "exitCode": 128,
+    "signal": null,
+    "error": null,
+    "raw": "ERROR: The process with PID 1532 (child process of PID 4000) could not be terminated.\r\nReason: This process can only be terminated forcefully (with /F option).\r\nERROR: The process with PID 4000 (child process of PID 984) could not be terminated.\r\nReason: One or more child processes of this process were still running.\r\nERROR: The process with PID 984 (child process of PID 3500) could not be terminated.\r\nReason: One or more child processes of this process were still running.\r\nERROR: The process with PID 3500 (child process of PID 2192) could not be terminated.\r\nReason: One or more child processes of this process were still running.\r\n"
+  },
+  "aExit": {
+    "code": null,
+    "signal": null,
+    "timeout": true
+  },
+  "afterTermination": {
+    "relevantProcesses": {
+      "command": "powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process -Filter 'ProcessId=3500 OR ProcessId=984 OR ProcessId=4000' | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "[{\"ProcessId\":3500,\"ParentProcessId\":2192,\"Name\":\"node.exe\"},{\"ProcessId\":984,\"ParentProcessId\":3500,\"Name\":\"node.exe\"},{\"ProcessId\":4000,\"ParentProcessId\":984,\"Name\":\"node.exe\"}]\r\n"
+    },
+    "treeWalkFromA": [
+      {
+        "pid": 984,
+        "ppid": 3500
+      },
+      {
+        "pid": 4000,
+        "ppid": 984
+      },
+      {
+        "pid": 1532,
+        "ppid": 4000
+      }
+    ],
+    "processTable": {
+      "command": "powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": "[{\"ProcessId\":0,\"ParentProcessId\":0},{\"ProcessId\":4,\"ParentProcessId\":0},{\"ProcessId\":92,\"ParentProcessId\":4},{\"ProcessId\":132,\"ParentProcessId\":4},{\"ProcessId\":556,\"ParentProcessId\":4},{\"ProcessId\":768,\"ParentProcessId\":760},{\"ProcessId\":892,\"ParentProcessId\":760},{\"ProcessId\":988,\"ParentProcessId\":892},{\"ProcessId\":1008,\"ParentProcessId\":892},{\"ProcessId\":1016,\"ParentProcessId\":892},{\"ProcessId\":740,\"ParentProcessId\":988},{\"ProcessId\":1028,\"ParentProcessId\":892},{\"ProcessId\":1124,\"ParentProcessId\":988},{\"ProcessId\":1172,\"ParentProcessId\":988},{\"ProcessId\":1352,\"ParentProcessId\":988},{\"ProcessId\":1364,\"ParentProcessId\":988},{\"ProcessId\":1384,\"ParentProcessId\":988},{\"ProcessId\":1508,\"ParentProcessId\":988},{\"ProcessId\":1544,\"ParentProcessId\":988},{\"ProcessId\":1624,\"ParentProcessId\":988},{\"ProcessId\":1632,\"ParentProcessId\":988},{\"ProcessId\":1660,\"ParentProcessId\":988},{\"ProcessId\":1668,\"ParentProcessId\":988},{\"ProcessId\":1684,\"ParentProcessId\":988},{\"ProcessId\":1804,\"ParentProcessId\":988},{\"ProcessId\":1956,\"ParentProcessId\":988},{\"ProcessId\":2000,\"ParentProcessId\":988},{\"ProcessId\":1472,\"ParentProcessId\":988},{\"ProcessId\":2132,\"ParentProcessId\":988},{\"ProcessId\":2168,\"ParentProcessId\":988},{\"ProcessId\":2176,\"ParentProcessId\":988},{\"ProcessId\":2264,\"ParentProcessId\":988},{\"ProcessId\":2344,\"ParentProcessId\":988},{\"ProcessId\":2472,\"ParentProcessId\":988},{\"ProcessId\":2520,\"ParentProcessId\":988},{\"ProcessId\":2536,\"ParentProcessId\":988},{\"ProcessId\":2544,\"ParentProcessId\":988},{\"ProcessId\":2580,\"ParentProcessId\":988},{\"ProcessId\":2620,\"ParentProcessId\":988},{\"ProcessId\":2664,\"ParentProcessId\":988},{\"ProcessId\":2744,\"ParentProcessId\":988},{\"ProcessId\":2824,\"ParentProcessId\":988},{\"ProcessId\":2836,\"ParentProcessId\":988},{\"ProcessId\":2852,\"ParentProcessId\":988},{\"ProcessId\":2876,\"ParentProcessId\":988},{\"ProcessId\":2952,\"ParentProcessId\":988},{\"ProcessId\":3032,\"ParentProcessId\":988},{\"ProcessId\":2052,\"ParentProcessId\":988},{\"ProcessId\":2988,\"ParentProcessId\":988},{\"ProcessId\":3156,\"ParentProcessId\":988},{\"ProcessId\":3216,\"ParentProcessId\":988},{\"ProcessId\":3248,\"ParentProcessId\":988},{\"ProcessId\":3304,\"ParentProcessId\":988},{\"ProcessId\":3344,\"ParentProcessId\":988},{\"ProcessId\":3352,\"ParentProcessId\":988},{\"ProcessId\":3488,\"ParentProcessId\":988},{\"ProcessId\":3504,\"ParentProcessId\":988},{\"ProcessId\":3540,\"ParentProcessId\":988},{\"ProcessId\":3556,\"ParentProcessId\":988},{\"ProcessId\":3580,\"ParentProcessId\":988},{\"ProcessId\":3684,\"ParentProcessId\":988},{\"ProcessId\":3748,\"ParentProcessId\":988},{\"ProcessId\":3764,\"ParentProcessId\":988},{\"ProcessId\":3776,\"ParentProcessId\":988},{\"ProcessId\":3784,\"ParentProcessId\":988},{\"ProcessId\":3792,\"ParentProcessId\":988},{\"ProcessId\":3888,\"ParentProcessId\":988},{\"ProcessId\":3924,\"ParentProcessId\":988},{\"ProcessId\":3932,\"ParentProcessId\":988},{\"ProcessId\":3940,\"ParentProcessId\":988},{\"ProcessId\":3948,\"ParentProcessId\":988},{\"ProcessId\":3960,\"ParentProcessId\":988},{\"ProcessId\":4052,\"ParentProcessId\":988},{\"ProcessId\":4060,\"ParentProcessId\":988},{\"ProcessId\":4076,\"ParentProcessId\":988},{\"ProcessId\":632,\"ParentProcessId\":988},{\"ProcessId\":4128,\"ParentProcessId\":988},{\"ProcessId\":4944,\"ParentProcessId\":740},{\"ProcessId\":5012,\"ParentProcessId\":988},{\"ProcessId\":4844,\"ParentProcessId\":988},{\"ProcessId\":4632,\"ParentProcessId\":988},{\"ProcessId\":4860,\"ParentProcessId\":988},{\"ProcessId\":5420,\"ParentProcessId\":988},{\"ProcessId\":6408,\"ParentProcessId\":2520},{\"ProcessId\":6452,\"ParentProcessId\":988},{\"ProcessId\":6468,\"ParentProcessId\":988},{\"ProcessId\":7032,\"ParentProcessId\":740},{\"ProcessId\":6208,\"ParentProcessId\":3792},{\"ProcessId\":6264,\"ParentProcessId\":6208},{\"ProcessId\":5260,\"ParentProcessId\":988},{\"ProcessId\":7108,\"ParentProcessId\":988},{\"ProcessId\":6212,\"ParentProcessId\":988},{\"ProcessId\":7652,\"ParentProcessId\":988},{\"ProcessId\":7860,\"ParentProcessId\":988},{\"ProcessId\":7172,\"ParentProcessId\":988},{\"ProcessId\":1260,\"ParentProcessId\":704},{\"ProcessId\":4048,\"ParentProcessId\":704},{\"ProcessId\":3608,\"ParentProcessId\":988},{\"ProcessId\":2912,\"ParentProcessId\":4048},{\"ProcessId\":8060,\"ParentProcessId\":4048},{\"ProcessId\":1876,\"ParentProcessId\":988},{\"ProcessId\":772,\"ParentProcessId\":2520},{\"ProcessId\":940,\"ParentProcessId\":7172},{\"ProcessId\":8088,\"ParentProcessId\":988},{\"ProcessId\":8112,\"ParentProcessId\":3304},{\"ProcessId\":1788,\"ParentProcessId\":988},{\"ProcessId\":376,\"ParentProcessId\":2520},{\"ProcessId\":5624,\"ParentProcessId\":7376},{\"ProcessId\":4620,\"ParentProcessId\":8112},{\"ProcessId\":5544,\"ParentProcessId\":988},{\"ProcessId\":3632,\"ParentProcessId\":740},{\"ProcessId\":1296,\"ParentProcessId\":740},{\"ProcessId\":8376,\"ParentProcessId\":988},{\"ProcessId\":8476,\"ParentProcessId\":740},{\"ProcessId\":8484,\"ParentProcessId\":740},{\"ProcessId\":8596,\"ParentProcessId\":740},{\"ProcessId\":8672,\"ParentProcessId\":988},{\"ProcessId\":8712,\"ParentProcessId\":988},{\"ProcessId\":8180,\"ParentProcessId\":3156},{\"ProcessId\":2164,\"ParentProcessId\":988},{\"ProcessId\":2292,\"ParentProcessId\":740},{\"ProcessId\":7964,\"ParentProcessId\":5624},{\"ProcessId\":2020,\"ParentProcessId\":2520},{\"ProcessId\":4288,\"ParentProcessId\":2020},{\"ProcessId\":4092,\"ParentProcessId\":740},{\"ProcessId\":1432,\"ParentProcessId\":740},{\"ProcessId\":5020,\"ParentProcessId\":2020},{\"ProcessId\":8808,\"ParentProcessId\":988},{\"ProcessId\":3700,\"ParentProcessId\":5624},{\"ProcessId\":3320,\"ParentProcessId\":988},{\"ProcessId\":8868,\"ParentProcessId\":988},{\"ProcessId\":7600,\"ParentProcessId\":988},{\"ProcessId\":3696,\"ParentProcessId\":988},{\"ProcessId\":7212,\"ParentProcessId\":988},{\"ProcessId\":6616,\"ParentProcessId\":988},{\"ProcessId\":8948,\"ParentProcessId\":988},{\"ProcessId\":2016,\"ParentProcessId\":988},{\"ProcessId\":2296,\"ParentProcessId\":2020},{\"ProcessId\":7160,\"ParentProcessId\":2296},{\"ProcessId\":7096,\"ParentProcessId\":7160},{\"ProcessId\":5564,\"ParentProcessId\":7160},{\"ProcessId\":2192,\"ParentProcessId\":5564},{\"ProcessId\":3500,\"ParentProcessId\":2192},{\"ProcessId\":984,\"ParentProcessId\":3500},{\"ProcessId\":4000,\"ParentProcessId\":984},{\"ProcessId\":1532,\"ParentProcessId\":4000},{\"ProcessId\":1776,\"ParentProcessId\":740},{\"ProcessId\":496,\"ParentProcessId\":2192}]\r\n"
+    },
+    "reached": {
+      "a": false,
+      "b": false,
+      "c": false
+    },
+    "knownPidStatus": {
+      "a": "present",
+      "b": "present",
+      "c": "present"
+    }
+  },
+  "cleanup": {
+    "relevantProcesses": {
+      "command": "powershell.exe -NoProfile -NonInteractive -Command Get-CimInstance Win32_Process -Filter 'ProcessId=3500 OR ProcessId=984 OR ProcessId=4000' | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress",
+      "exitCode": 0,
+      "signal": null,
+      "error": null,
+      "raw": ""
+    },
+    "knownPidStatus": {
+      "a": "absent",
+      "b": "absent",
+      "c": "absent"
+    },
+    "noneRemain": true
+  }
+}

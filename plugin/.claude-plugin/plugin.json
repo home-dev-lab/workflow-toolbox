@@ -86,10 +86,10 @@
     },
     "second_opinion_fable_max_pct": {
       "type": "number",
-      "title": "Second-opinion Fable quota ceiling",
+      "title": "Legacy second-opinion Fable quota ceiling",
       "default": 90,
       "required": false,
-      "description": "Refuse a Fable second-opinion call when its weekly scoped usage percentage is at or above this value."
+      "description": "Retained so existing settings remain valid; ignored now that the Claude second-opinion route uses Opus instead of Fable."
     },
     "lane_orphan_cleanup": {
       "type": "string",
@@ -122,7 +122,7 @@
     "pilot_hard_model": {
       "type": "string",
       "title": "Hard-card pilot model",
-      "default": "fable",
+      "default": "opus",
       "required": false,
       "description": "Harness model alias or full claude-* model for hard-card harness pilots. Environment fallback: WT_PILOT_HARD_MODEL."
     },
@@ -155,27 +155,27 @@
       "description": "Harness model alias or full claude-* model for the SDK orchestrator. Environment fallback: WT_SDK_ORCHESTRATOR_MODEL."
     },
     "pilot_variant": {
-      "type": "string", "title": "Pilot variant", "default": "medium", "required": false,
+      "type": "string", "title": "Pilot variant", "default": "high", "required": false,
       "description": "Reasoning variant for standard harness pilots. Environment fallback: WT_PILOT_VARIANT."
     },
     "pilot_hard_variant": {
-      "type": "string", "title": "Hard-card pilot variant", "default": "medium", "required": false,
+      "type": "string", "title": "Hard-card pilot variant", "default": "high", "required": false,
       "description": "Reasoning variant for hard-card harness pilots. Environment fallback: WT_PILOT_HARD_VARIANT."
     },
     "orchestrator_variant": {
-      "type": "string", "title": "Harness orchestrator variant", "default": "medium", "required": false,
+      "type": "string", "title": "Harness orchestrator variant", "default": "high", "required": false,
       "description": "Reasoning variant for the harness orchestrator. Environment fallback: WT_ORCHESTRATOR_VARIANT."
     },
     "sdk_pilot_variant": {
-      "type": "string", "title": "SDK pilot variant", "default": "medium", "required": false,
+      "type": "string", "title": "SDK pilot variant", "default": "high", "required": false,
       "description": "Reasoning variant for standard SDK pilots. Environment fallback: WT_SDK_PILOT_VARIANT."
     },
     "sdk_pilot_hard_variant": {
-      "type": "string", "title": "Hard-card SDK pilot variant", "default": "medium", "required": false,
+      "type": "string", "title": "Hard-card SDK pilot variant", "default": "high", "required": false,
       "description": "Reasoning variant for hard-card SDK pilots. Environment fallback: WT_SDK_PILOT_HARD_VARIANT."
     },
     "sdk_orchestrator_variant": {
-      "type": "string", "title": "SDK orchestrator variant", "default": "medium", "required": false,
+      "type": "string", "title": "SDK orchestrator variant", "default": "high", "required": false,
       "description": "Reasoning variant for the SDK orchestrator. Environment fallback: WT_SDK_ORCHESTRATOR_VARIANT."
     },
     "sdk_pilot_max_active": {
@@ -190,7 +190,7 @@
       "title": "Executor critic model",
       "default": "",
       "required": false,
-      "description": "Per-phase override. Empty: claude-sdk opus / hard fable; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra. Environment fallback: WT_EXECUTOR_CRITIC_MODEL."
+      "description": "Per-phase override. Empty: claude-sdk opus in every cell; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra. Environment fallback: WT_EXECUTOR_CRITIC_MODEL."
     },
     "executor_code_model": {
       "type": "string",
@@ -211,22 +211,22 @@
       "title": "Executor refutation model",
       "default": "",
       "required": false,
-      "description": "Per-phase override. Empty: claude-sdk opus / hard fable; gpt-lane openai/gpt-6-astra / hard openai/gpt-6-astra. Environment fallback: WT_EXECUTOR_REFUTATION_MODEL."
+      "description": "Per-phase override. Empty: claude-sdk opus in every cell; gpt-lane openai/gpt-6-astra in every cell. Environment fallback: WT_EXECUTOR_REFUTATION_MODEL."
     },
     "executor_critic_variant": {
-      "type": "string", "title": "Executor critic variant", "default": "medium", "required": false,
+      "type": "string", "title": "Executor critic variant", "default": "high", "required": false,
       "description": "Reasoning variant for critic executors. Environment fallback: WT_EXECUTOR_CRITIC_VARIANT."
     },
     "executor_code_variant": {
-      "type": "string", "title": "Executor code variant", "default": "medium", "required": false,
-      "description": "Reasoning variant for code executors. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
+      "type": "string", "title": "Executor code variant", "default": "", "required": false,
+      "description": "Reasoning variant for code executors. Empty selects xhigh for GPT Sol implementation and high otherwise. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
     },
     "executor_review_variant": {
-      "type": "string", "title": "Executor review variant", "default": "medium", "required": false,
+      "type": "string", "title": "Executor review variant", "default": "high", "required": false,
       "description": "Reasoning variant for review executors. Environment fallback: WT_EXECUTOR_REVIEW_VARIANT."
     },
     "executor_refutation_variant": {
-      "type": "string", "title": "Executor refutation variant", "default": "medium", "required": false,
+      "type": "string", "title": "Executor refutation variant", "default": "high", "required": false,
       "description": "Reasoning variant for refutation executors. Environment fallback: WT_EXECUTOR_REFUTATION_VARIANT."
     },
     "configDir": {
@@ -355,6 +355,15 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-unquoted-tool-glob-guard-hook.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-zsh-word-split-guard-hook.mjs\""
           }
         ]
       },

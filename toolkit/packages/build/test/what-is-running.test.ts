@@ -543,7 +543,7 @@ describe('What is running collector seam', () => {
     const component = (name: string) => (props: Record<string, unknown> = {}) => ({ name, props })
     const pilot = {
       id: 'pilot-layout', kind: 'pilot', label: 'SDK pilot', sdkLifecycle: true, phase: 'tdd', outcome: 'error: typecheck gate failed', route: 'LITE', elapsed: '18 min',
-      phaseStates: { discovery: 'done', plan: 'skipped', critic: 'skipped', tdd: 'running', verify: 'not started', review: 'skipped', refutation: 'skipped', harden: 'skipped', report: 'not started' },
+      phaseStates: { discovery: 'done', plan: 'skipped', critic: 'skipped', tdd: 'running', verify: 'not started', review: 'skipped', refutation: 'skipped', report: 'not started' },
       phaseCosts: { discovery: { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23, models: { 'anthropic/claude-opus-5': { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23 } } }, tdd: 'unknown' },
       runCost: { usd: 1.23, models: { 'anthropic/claude-opus-5': { input: 12, output: 46, cacheRead: 206064, cacheWrite: 57558, usd: 1.23 } } },
       phaseElapsed: { tdd: '17 min' }, inspectors: { discovery: { summary: 'Route selected.' } }, gates: { test: 'pass', typecheck: 'fail (1)' }, review: {}, lanes: [],
@@ -558,7 +558,7 @@ describe('What is running collector seam', () => {
       expect(collapsed.match(/Orphan watch:/g)).toHaveLength(1)
       expect(collapsed).toMatch(/SDK pilot.*drives the stages below/)
       expect(collapsed).toMatch(/TDD ✗.*ERROR/)
-      expect(collapsed).toContain('next: Verify, Report · skipped: 5')
+      expect(collapsed).toContain('next: Verify, Report · skipped: 4')
       expect(collapsed).toContain('for the pilot runner')
       expect(collapsed).not.toMatch(/(?:^|[ ·])unknown(?:$|[ ·])/i)
     }
@@ -577,7 +577,7 @@ describe('What is running collector seam', () => {
       mkdirSync(lane, { recursive: true })
       writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
       writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Loop rounds\n`)
-      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=harden\n')
+      writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=tdd\n')
       writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [
         { phase: 'discovery', round: null, entered_at: 1, exited_at: 2 },
         { phase: 'plan', round: 1, entered_at: 2, exited_at: 3 },
@@ -588,22 +588,66 @@ describe('What is running collector seam', () => {
         { phase: 'verify', round: null, entered_at: 7, exited_at: 8 },
         { phase: 'review', round: 1, entered_at: 8, exited_at: 9 },
         { phase: 'refutation', round: 1, entered_at: 9, exited_at: 10 },
-        { phase: 'harden', round: 1, entered_at: 10, exited_at: 11 },
+        { phase: 'tdd', round: 1, entered_at: 10, exited_at: 11 },
         { phase: 'verify', round: null, entered_at: 11, exited_at: 12 },
         { phase: 'review', round: 2, entered_at: 12, exited_at: 13 },
         { phase: 'refutation', round: 2, entered_at: 13, exited_at: 14 },
-        { phase: 'harden', round: 2, entered_at: 14, exited_at: null },
+        { phase: 'tdd', round: 2, entered_at: 14, exited_at: null },
       ], lanes: [] }))
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
       const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
-      expect(row.phaseRounds).toEqual({ plan: 2, critic: 2, review: 2, refutation: 2, harden: 2 })
+      expect(row.phaseRounds).toEqual({ plan: 2, critic: 2, tdd: 2, review: 2, refutation: 2 })
       const text = await renderedText({ ...snapshot, sessions: undefined, rows: [{ ...row, project: 'wt-suite' }] })
       expect(text).toContain('Plan · round 2 (max 6)')
       expect(text).toContain('Critic · round 2 (max 6)')
-      expect(text).toContain('Independent review · round 2 (max 6)')
-      expect(text).toContain('Independent refutation · round 2 (max 6)')
-      expect(text).toContain('Harden · round 2 (max 5)')
+      expect(text).toContain('TDD fix · round 2')
+      expect(text).toContain('Independent review · round 2')
+      expect(text).toContain('Independent refutation · round 2')
+      expect(text).not.toContain('Independent review · round 2 (max')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('shows review loop-back as an unbounded TDD fix round, never as Harden', async () => {
+    const pilot = {
+      id: 'pilot-fix-loop', kind: 'pilot', sdkLifecycle: true, label: 'SDK pilot', phase: 'tdd', outcome: 'running',
+      phaseStates: { discovery: 'done', plan: 'done', critic: 'done', tdd: 'running', verify: 'done', review: 'done', refutation: 'not started', report: 'not started' },
+      phaseRounds: { review: 7, tdd: 7 }, phaseCosts: {}, inspectors: {}, lanes: [],
+    }
+    const text = await renderedText({ discovery: 'available', rows: [{ ...pilot, project: 'wt-suite' }], services: { count: 0 }, helpers: { count: 0 } })
+    expect(text).toContain('TDD fix · round 7')
+    expect(text).toContain('Independent review · round 7')
+    expect(text).not.toContain('Independent review · round 7 (max')
+    expect(text).not.toContain('Harden')
+  })
+
+  it('accepts and labels a legacy lifecycle timeline containing harden', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-wir-legacy-harden-'))
+    try {
+      const paths = collector(root)
+      const cardId = '1868819337624683548'
+      const worktree = join(paths.suiteRoot, 'worktrees', 'legacy-harden')
+      const lane = join(worktree, '.lane')
+      mkdirSync(lane, { recursive: true })
+      writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId, route: 'FULL' }))
+      writeFileSync(join(lane, 'card.md'), `# card ${cardId}: Legacy harden\n`)
+      writeFileSync(join(lane, 'lifecycle.json'), JSON.stringify({ phases: [
+        { phase: 'review', round: 1, entered_at: 1, exited_at: 2 },
+        { phase: 'harden', round: 1, entered_at: 2, exited_at: null },
+      ], lanes: [] }))
+      writeFileSync(join(lane, 'usage.json'), JSON.stringify({ phases: [
+        { phase: 'tdd', models: { opus: { input: 10, output: 1, cache_read: 2, cache_write: 3 } }, unknown: [] },
+        { phase: 'harden', models: { opus: { input: 20, output: 4, cache_read: 5, cache_write: 6 } }, unknown: [] },
+      ] }))
+      const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const row = snapshot.rows.find((item: { id: string }) => item.id === cardId)
+      expect(row).toMatchObject({ phase: 'tdd', legacyHarden: true, phaseRounds: { review: 1, tdd: 1 } })
+      expect(row.phaseCosts.tdd).toMatchObject({ input: 30, output: 5, cacheRead: 7, cacheWrite: 9 })
+      expect(row.runCost).toMatchObject({ input: 30, output: 5, cacheRead: 7, cacheWrite: 9 })
+      expect(row.phaseElapsed).toMatchObject({ tdd: expect.any(String) })
+      expect(row.phaseCosts.harden).toBeUndefined()
+      const text = await renderedText({ ...snapshot, sessions: undefined, rows: [{ ...row, project: 'wt-suite' }] })
+      expect(text).toContain('Harden (legacy) · round 1')
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 

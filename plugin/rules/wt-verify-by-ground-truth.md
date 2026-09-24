@@ -36,6 +36,15 @@ witness.
 Misread code not spoil one result. It retroactively VOID every "gates green" claim built on same
 capture path.
 
+**Comparing two arms — record the condition beside each result, and alternate the arms.** One run
+of each, taken in sequence, is not two readings of two arms; it is one reading of the machine taken
+twice. Alternation is a design constraint applied before the runs, not a question asked after —
+asking after depends on someone remembering to ask it.
+⚠ Discriminator between a regression and a condition: a regression breaks the SAME thing every run.
+A load-sensitive suite drops whatever sits nearest its margin at that instant, so the failing SET
+MOVES. Two red runs sharing no failing test in common is not broad instability — it is something
+taking the margin.
+
 ## A gate must certify the intended tree
 
 **Exit code answer for the COMMAND, never the SUBJECT.** Gate can genuinely belong to gate, run
@@ -109,6 +118,17 @@ report nobody re-read.
 
 **Delegate green report = input. Not proof of work. Not proof of WHERE it ran.** Re-run gates
 yourself. Verify provenance from execution traces.
+
+**A gate log at a FIXED path is evidence for nobody — the brief is where the collision is
+authored.** A brief that names a fixed log path hands that same path to every delegate who ever
+reads it, across sessions and across time; two runs write it, two readers read it, and neither can
+prove whose green they saw. A brief names a STAMPED path (`<what>-<timestamp>.log`) or names none
+and lets the delegate choose its own. Reusing a path also makes a completion marker meaningless — a
+dead run's marker lands mid-file in a live run's output, present and greppable and false — so
+completion is decided from the LAST line of the file, never from a match anywhere in it.
+⚠ Tell, readable without knowing the other writer exists: a gate log whose green CONTRADICTS the
+failures someone is discussing. Two readers who both find failures, or both find green, agree by
+construction and the collision stays invisible.
 
 **ANY surprise — good, bad, novel — is anomaly to EXPLAIN before you label it.** Favorable
 surprise is the one that silently skip verification. Include FIRST occurrence of class never

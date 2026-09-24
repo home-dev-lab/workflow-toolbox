@@ -13,7 +13,7 @@ import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBase
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
 import { createBoardClient } from './board-http-client.mjs'
-import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole } from './sdk-role-profile.mjs'
+import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
@@ -31,9 +31,8 @@ const NEXT_BY_PHASE = {
   critic: `write the critic brief, run the critic lane, then transition critic; if critic round ${MAX_CRITIC_ROUNDS} requests blocking changes, transition with outcome changes-requested; the server routes a spent bound to report`,
   tdd: 'write the tdd brief, run the tdd lane, then transition tdd',
   verify: 'run the three gates, then transition verify',
-  review: 'write the review brief, run the review lane, then transition review; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',
-  refutation: 'write the refutation brief, run the refutation lane, then transition refutation; if the lane requests changes for the fourth time, transition with outcome changes-requested — the server routes a spent bound to report',
-  harden: 'write the harden brief, run the harden lane, then transition harden',
+  review: 'write the review brief, run the review lane, then transition review; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
+  refutation: 'write the refutation brief, run the refutation lane, then transition refutation; blocking findings return to a TDD fix round, while mechanical non-convergence escalates with the unresolved findings',
   report: 'write the pilot report, then transition report',
 }
 const PLANKA_TOOLS = new Set([
@@ -363,7 +362,7 @@ export async function runPilot(options, dependencies) {
   let timeoutBoundary = null
   const pluginRoot = resolve(MODULE_DIR, '../..')
   const configuredPlugins = options.pluginDirs ?? []
-  const sdkRole = (dependencies.prepareSdkRole ?? prepareSdkRole)('pilot', { worktree: options.dir, env: effectiveEnv, pluginRoot, adapterOptions: { log } })
+  const sdkRole = (dependencies.prepareSdkRole ?? prepareSdkRole)('pilot', { worktree: options.dir, env: effectiveEnv, pluginRoot, loadedCodePaths: dependencies.loadedCodePaths, adapterOptions: { log } })
   sdkRole.pluginPaths.push(...configuredPlugins)
 
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier
@@ -404,7 +403,7 @@ export async function runPilot(options, dependencies) {
   async function* prompt() {
     const lspLine = sdkRole.lsp.available ? 'LSP navigation: available' : `LSP navigation: absent (${sdkRole.lsp.reason})`
     const standing = `Pilot card ${options.card} in ${options.dir}. ${knowledgeBasePromptLine(knowledgeBase)} Read that index if present, then open the fiches it lists that bear on this card; they are read-only. ${GROUNDING_INITIAL_PROMPT} ${lspLine}. Include that exact LSP navigation state in the closing report. Lanes run synchronously through the lifecycle run tool. Keep working through every phase until transition report returns the awaiting_fidelity receipt, then write nothing more and end the turn.`
-    yield { type: 'user', message: { role: 'user', content: `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card` } }
+    yield { type: 'user', message: { role: 'user', content: withRepositoryGuide(options.dir, `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card`) } }
     while (!completed && !timeoutBoundary) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
       if (pendingTurnEnds > 0) {

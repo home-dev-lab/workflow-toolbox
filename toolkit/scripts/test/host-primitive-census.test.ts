@@ -78,7 +78,7 @@ describe('raw host primitive quality ratchet', () => {
   it('pins the measured ceiling to the tree that ships', () => {
     const result = scanHostPrimitives(PLUGIN_ROOT)
 
-    expect(result.perimeterFiles).toBe(223)
+    expect(result.perimeterFiles).toBe(225)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

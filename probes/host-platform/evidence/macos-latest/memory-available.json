@@ -1,0 +1,80 @@
+{
+  "provenance": {
+    "schemaVersion": 1,
+    "probe": "memory-available",
+    "capturedAt": "2026-09-22T23:06:41.685Z",
+    "command": "node memory-available.mjs /Users/runner/work/workflow-toolbox/workflow-toolbox/probes/host-platform/evidence/macos-latest/memory-available.json",
+    "runId": "35795762873",
+    "commitSha": "11d9e62ef25a9f9f51bee174fa7662f791cfe04e",
+    "runnerImage": {
+      "label": "macos-latest",
+      "os": "macos26",
+      "version": "20260907.0351.1"
+    },
+    "osRelease": {
+      "platform": "darwin",
+      "release": "25.6.0",
+      "version": "Darwin Kernel Version 25.6.0: Fri Jul 31 19:16:43 PDT 2026; root:xnu-12377.161.14~5/RELEASE_ARM64_VMAPPLE",
+      "arch": "arm64"
+    },
+    "tools": {
+      "node": "v24.20.0",
+      "procps": {
+        "status": "not_used",
+        "reason": "procps is not the process-table provider on this OS"
+      },
+      "powershell": {
+        "status": "not_used",
+        "reason": "PowerShell is not used by these probes on this OS"
+      }
+    }
+  },
+  "osMemory": {
+    "status": "measured",
+    "freeBytes": 161447936,
+    "totalBytes": 7516192768
+  },
+  "linux": {
+    "status": "not_applicable",
+    "reason": "This host is not Linux."
+  },
+  "macos": {
+    "status": "measured",
+    "vmStat": {
+      "status": "measured",
+      "command": "vm_stat",
+      "exitCode": 0,
+      "signal": null,
+      "durationMilliseconds": 5.906084,
+      "error": null,
+      "stdout": "Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages free:                                     6989.\nPages active:                                 188442.\nPages inactive:                               188445.\nPages speculative:                              2913.\nPages throttled:                                   0.\nPages wired down:                              53350.\nPages purgeable:                                1752.\n\"Translation faults\":                        4846283.\nPages copy-on-write:                          458737.\nPages zero filled:                           1504463.\nPages reactivated:                             82573.\nPages purged:                                   4765.\nFile-backed pages:                            233315.\nAnonymous pages:                              146485.\nPages stored in compressor:                    65896.\nPages occupied by compressor:                  17835.\nDecompressions:                                18481.\nCompressions:                                  92830.\nPageins:                                      381440.\nPageouts:                                       4220.\nSwapins:                                           0.\nSwapouts:                                          0.\n",
+      "stderr": ""
+    },
+    "pageSizeBytes": "16384",
+    "totalMemory": {
+      "status": "measured",
+      "command": "sysctl hw.memsize",
+      "exitCode": 0,
+      "signal": null,
+      "durationMilliseconds": 6.118833,
+      "error": null,
+      "stdout": "hw.memsize: 7516192768\n",
+      "stderr": ""
+    },
+    "memoryPressure": {
+      "status": "measured",
+      "command": "memory_pressure -Q",
+      "exitCode": 0,
+      "signal": null,
+      "durationMilliseconds": 5.511375,
+      "error": null,
+      "stdout": "The system has 7516192768 (458752 pages with a page size of 16384).\nSystem-wide memory free percentage: 84%\n",
+      "stderr": ""
+    },
+    "note": "Raw vm_stat fields are retained so free, inactive, speculative, and purgeable can be recomputed without assuming whether fields overlap."
+  },
+  "windows": {
+    "status": "not_applicable",
+    "reason": "This host is not Windows."
+  }
+}

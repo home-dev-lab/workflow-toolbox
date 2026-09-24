@@ -82,11 +82,15 @@ function classify(provider, response, body, now) {
 
   if (/OPTION_NOT_IN_PLAN/i.test(text) || /insufficient.{0,30}credits?/i.test(text)) {
     classification = 'exhausted';
+  } else if (status === 401 || status === 403) {
+    classification = 'refused';
   } else if (status === 429) classification = 'rate-limit';
   else if (status !== null && status >= 500) classification = 'transient';
 
   return new ProviderFailure(
-    `${provider === 'brave' ? 'Brave' : 'Exa'} search failed with status ${status ?? 'unknown'}`,
+    classification === 'refused'
+      ? `${provider === 'brave' ? 'Brave' : 'Exa'} search failed with status ${status}: ${status === 401 ? 'API key was refused' : 'request was forbidden'}`
+      : `${provider === 'brave' ? 'Brave' : 'Exa'} search failed with status ${status ?? 'unknown'}`,
     {
       provider,
       classification,

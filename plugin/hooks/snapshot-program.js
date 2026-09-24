@@ -146,7 +146,7 @@ const clockTicksAvailability = clockTicks === null
   : { status: 'available' };
 let procUptime = null;
 const PHASES = ${JSON.stringify([...LIFECYCLE_PHASES, 'awaiting_fidelity'])};
-const LITE_SKIPS = new Set(['plan', 'critic', 'review', 'refutation', 'harden']);
+const LITE_SKIPS = new Set(['plan', 'critic', 'review', 'refutation']);
 const DIR_SCAN_CAP = Number.isSafeInteger(config.scanEntryCap) && config.scanEntryCap > 0 ? config.scanEntryCap : 1000;
 const WORKTREE_DETAIL_CAP = Number.isSafeInteger(config.worktreeDetailCap) && config.worktreeDetailCap > 0 ? config.worktreeDetailCap : 48;
 const cappedScans = [];
@@ -266,14 +266,15 @@ function lifecycleTimeline(worktree) {
   if (!value || !Array.isArray(value.phases) || value.phases.length === 0) return null;
   const validTime = item => item === null || Number.isFinite(item);
   const validRound = item => item === null || (Number.isSafeInteger(item) && item > 0);
-  if (!value.phases.every(item => item && typeof item === 'object' && PHASES.includes(item.phase) && item.phase !== 'awaiting_fidelity'
+  if (!value.phases.every(item => item && typeof item === 'object' && (PHASES.includes(item.phase) || item.phase === 'harden') && item.phase !== 'awaiting_fidelity'
     && validRound(item.round) && Number.isFinite(item.entered_at) && validTime(item.exited_at))) return null;
-  const phaseHistory = value.phases.map(item => item.phase);
+  const legacyHarden = value.phases.some(item => item.phase === 'harden');
+  const phaseHistory = value.phases.map(item => item.phase === 'harden' ? 'tdd' : item.phase);
   if (Number.isFinite(value.ended_at) && phaseHistory.at(-1) === 'report') phaseHistory.push('awaiting_fidelity');
   const phaseRounds = {};
-  for (const item of value.phases) if (item.round !== null) phaseRounds[item.phase] = item.round;
+  for (const item of value.phases) if (item.round !== null) phaseRounds[item.phase === 'harden' ? 'tdd' : item.phase] = item.round;
   const criticRounds = phaseRounds.critic || 0;
-  return { source, phaseHistory, phaseRounds, criticRounds, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
+  return { source, phaseHistory, phaseRounds, criticRounds, legacyHarden, phases: value.phases, lanes: Array.isArray(value.lanes) ? value.lanes : [] };
 }
 function currentSupervisions(worktree) {
   const records = [];
@@ -330,6 +331,7 @@ function minutes(iso) { const at = Date.parse(iso || ''); return Number.isFinite
 function freshTime(at) { return Number.isFinite(at) && now - at <= ACTIVE_WINDOW_MS; }
 function phaseOf(value) {
   const phase = String(value || '').trim().toLowerCase().replace(/[ -]+/g, '_');
+  if (phase === 'harden') return 'tdd';
   return PHASES.includes(phase) ? phase : UNKNOWN;
 }
 function statesOf(history, route) {
@@ -476,7 +478,7 @@ function inspectors(worktree, route, runnerLog) {
     ['critic', critics.slice(0, 1), selected => criticSummary(slice(selected[0], REPORT_TAIL_BYTES))],
     ['tdd', [tddReport, tddRun, tddBrief].filter(Boolean), () => tddSummary(tddReport, tddRun, tddBrief)],
     ['verify', gateFiles.map(item => item.file), () => verifySummary],
-    ...['review', 'refutation', 'harden'].map(phase => {
+    ...['review', 'refutation'].map(phase => {
       const evidence = phaseEvidence(phase);
       const selected = [evidence.report, evidence.run, evidence.brief, ...laneEvidence(phase)].filter((file, index, all) => file && all.indexOf(file) === index);
       return [phase, selected, () => phaseReportSummary(evidence.report, evidence.brief, evidence.run)];
@@ -826,7 +828,7 @@ function phaseCosts(worktree, timeline) {
 }
 function phaseElapsed(timeline) {
   const result = {};
-  for (const phase of timeline?.phases ?? []) if (phase.exited_at === null) result[phase.phase] = formatAge((now - phase.entered_at) / 1000);
+  for (const phase of timeline?.phases ?? []) if (phase.exited_at === null) result[phaseOf(phase.phase)] = formatAge((now - phase.entered_at) / 1000);
   return result;
 }
 
@@ -1011,7 +1013,7 @@ function roleLabel(value, inferred = false) {
     : /^(?:astra|consult)/.test(role) ? 'Astra consultation'
     : /^fix/.test(role) ? 'Fix lane'
     : role === 'tdd' ? 'TDD lane'
-    : ['discovery', 'plan', 'critic', 'verify', 'harden', 'report'].includes(role) ? role[0].toUpperCase() + role.slice(1) + ' lane'
+    : ['discovery', 'plan', 'critic', 'verify', 'report'].includes(role) ? role[0].toUpperCase() + role.slice(1) + ' lane'
     : role === 'implementation' ? 'Lane' : null;
   return label ? label + (inferred && label !== 'Lane' ? ' (inferred)' : '') : null;
 }
@@ -1026,10 +1028,10 @@ function structuredLaneRole(worktree, launchedBrief = null) {
   const accepted = [...runnerLog.matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)].at(-1)?.[1];
   if (roleLabel(accepted)) return roleLabel(accepted);
   const phaseRun = list(lanePath(worktree)).map(name => ({ name, stat: info(lanePath(worktree, name)) }))
-    .filter(item => item.stat?.isFile() && /^(?:discovery|plan|critic|tdd|verify|review|refutation|harden|report|implementation|fix)-run\.[^.]+\.log$/i.test(item.name))
+    .filter(item => item.stat?.isFile() && /^(?:discovery|plan|critic|tdd|verify|review|refutation|report|implementation|fix)-run\.[^.]+\.log$/i.test(item.name))
     .sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs || right.name.localeCompare(left.name))[0]?.name.match(/^([^-]+)/)?.[1];
   if (roleLabel(phaseRun)) return roleLabel(phaseRun);
-  const launchedPhase = launchedBrief && path.basename(launchedBrief).match(/^(discovery|plan|critic|tdd|verify|review|refutation|harden|report|implementation|fix)-brief(?:[.-]|$)/i)?.[1];
+  const launchedPhase = launchedBrief && path.basename(launchedBrief).match(/^(discovery|plan|critic|tdd|verify|review|refutation|report|implementation|fix)-brief(?:[.-]|$)/i)?.[1];
   if (roleLabel(launchedPhase)) return roleLabel(launchedPhase);
   for (const name of ['WT_LANE_ROLE', 'LANE_ROLE']) {
     const label = roleLabel(envField(lanePath(worktree, 'env.log'), name)); if (label) return label;
@@ -1088,6 +1090,7 @@ for (const worktree of scannedWorktrees) {
         phaseSource: timeline ? 'lifecycle' : 'log',
         lifecycleSource: timeline?.source || null,
         phaseRounds: timeline?.phaseRounds || {},
+        legacyHarden: timeline?.legacyHarden || false,
         criticRounds,
         runnerLogTruncated: (info(runnerLogFile)?.size || 0) > LOG_TAIL_BYTES,
         outcome: 'running',
@@ -1228,6 +1231,7 @@ for (const id of ids) {
     model: lane?.model || workers[0]?.model || UNKNOWN,
     models: frozenRoute?.models || {},
     phaseRounds: lane?.phaseRounds || {},
+    legacyHarden: lane?.legacyHarden || false,
     criticRounds: lane?.criticRounds,
     runnerLogTruncated: lane?.runnerLogTruncated || false,
     who,
@@ -1367,7 +1371,7 @@ function deepActors(actors) {
 function sdkImplementationState(actors) {
   const pilots = deepActors(actors).filter(actor => actor.kind === 'pilot');
   if (pilots.some(actor => ['done', 'waiting for arbiter review'].includes(actor.phaseStates?.verify)
-    || ['review', 'refutation', 'harden', 'report', 'awaiting_fidelity'].some(phase => !['not started', 'skipped', undefined].includes(actor.phaseStates?.[phase])))) return 'done';
+    || ['review', 'refutation', 'report', 'awaiting_fidelity'].some(phase => !['not started', 'skipped', undefined].includes(actor.phaseStates?.[phase])))) return 'done';
   if (pilots.some(actor => ['running', 'done'].includes(actor.phaseStates?.tdd) || actor.phaseStates?.verify === 'running')) return 'running';
   return null;
 }
