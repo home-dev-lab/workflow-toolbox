@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 import { accessSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { externalModelEnv } from './external-model-env.mjs'
+import { externalModelEnv, providerCredentialNames } from './external-model-env.mjs'
 import { resolvedBinary } from './resolved-binary.mjs'
 import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-allowlist.mjs'
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
@@ -23,7 +23,8 @@ const CACHE_STORE_MARKER_CONTENT = 'workflow-toolbox opencode skill-fence cache 
 // OPENCODE_DISABLE_CLAUDE_CODE_SKILLS=true excludes the external Claude skill.
 
 export function opencodeChildEnv(env = process.env, extraNames = [], platform) {
-  const childEnv = platform === undefined ? externalModelEnv(env, extraNames) : externalModelEnv(env, extraNames, platform)
+  const names = typeof extraNames === 'string' ? providerCredentialNames(extraNames) : extraNames
+  const childEnv = platform === undefined ? externalModelEnv(env, names) : externalModelEnv(env, names, platform)
   childEnv.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'true'
   // An inherited config can add arbitrary skill paths. Launchers may add their own
   // validated OPENCODE_CONFIG after this function returns, but never inherit one silently.
@@ -50,7 +51,9 @@ export function spawnCommand(spawnFn, bin, args, options, platform) {
 }
 
 export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform, extraNames = []) {
-  const childOptions = { ...options, env: externalModelEnv(options.env ?? process.env, extraNames, platform) }
+  const modelIndex = args.indexOf('--model')
+  const modelNames = modelIndex >= 0 ? providerCredentialNames(args[modelIndex + 1]) : []
+  const childOptions = { ...options, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
   return spawnCommand(spawnFn, bin, args, childOptions, platform)
 }
 
@@ -186,11 +189,11 @@ export function materialiseAllowedSkills({ names, laneDir, env = process.env, ho
 
 // `--pure` excludes external plugins, while toolbox runs currently allow them. The
 // discovery command therefore deliberately omits `--pure` so its flags match the run.
-export function verifyEffectiveOpencodeSkillDiscovery(bin, { cwd, env, spawnSyncFn = spawnSync, timeoutMs = 30_000, platform = process.platform } = {}) {
+export function verifyEffectiveOpencodeSkillDiscovery(bin, { cwd, env, spawnSyncFn = spawnSync, timeoutMs = 30_000, platform = process.platform, extraNames = [], model } = {}) {
   const startedAt = Date.now()
   let probe
   try {
-    probe = spawnOpencode(spawnSyncFn, bin, ['debug', 'skill'], { cwd, env, encoding: 'utf8', timeout: timeoutMs }, platform)
+    probe = spawnOpencode(spawnSyncFn, bin, ['debug', 'skill'], { cwd, env, encoding: 'utf8', timeout: timeoutMs }, platform, [...extraNames, ...providerCredentialNames(model)])
   } catch (error) {
     return { ok: false, reason: `effective OpenCode skill discovery failed (${error instanceof Error ? error.message : String(error)})`, durationMs: Date.now() - startedAt }
   }
@@ -365,7 +368,7 @@ function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = d
   })
   probeEnv.OPENCODE_CONFIG = allowedFixture.configPath
   try {
-    const probe = spawnOpencode(spawnSyncFn, binary, ['--pure', 'debug', 'skill'], { cwd: worktree, encoding: 'utf8', env: probeEnv, timeout: 30_000 }, platform)
+    const probe = spawnOpencode(spawnSyncFn, binary, ['--pure', 'debug', 'skill'], { cwd: worktree, encoding: 'utf8', env: probeEnv, timeout: 30_000 }, platform, ['OPENCODE_CONFIG'])
     if (probe.status !== 0) {
       const reason = 'the OpenCode Claude-skill fence capability probe failed'
       return { ok: false, allowOk: false, cached: false, reason, allowReason: reason, mechanism: MECHANISM }

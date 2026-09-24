@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
-import { externalModelEnv } from '../../../../plugin/bin/lib/external-model-env.mjs'
+import { externalModelEnv, providerCredentialNames } from '../../../../plugin/bin/lib/external-model-env.mjs'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFenceCache, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
 
@@ -169,6 +169,34 @@ describe('OpenCode Claude-skill fence', () => {
     expect(externalModelEnv(env)).toEqual({ WT_EXTERNAL_MODEL_ENV_ALLOW: 'MYSQL_PWD,GIT_CONFIG_PARAMETERS' })
   })
 
+  it('drops inherited configuration channels that can embed unrelated credentials', () => {
+    const env = {
+      PATH: '/bin',
+      OPENCODE_CONFIG: '/owner/opencode.json',
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: { headers: { Authorization: 'Bearer other-service-secret' } } }),
+      OPENCODE_CONFIG_DIR: '/owner/opencode',
+      CODEX_HOME: '/owner/codex',
+    }
+    let observed: Record<string, string> | undefined
+    spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env })
+    expect(observed).toEqual({ PATH: '/bin' })
+  })
+
+  it('admits a configured harmless variable without admitting credentials or execution hooks', () => {
+    expect(externalModelEnv({
+      WT_EXTERNAL_MODEL_ENV_ALLOW: 'EDITOR,GITHUB_TOKEN,NODE_OPTIONS',
+      EDITOR: 'vi',
+      GITHUB_TOKEN: 'credential',
+      NODE_OPTIONS: '--require /tmp/hook.cjs',
+    })).toEqual({ EDITOR: 'vi', WT_EXTERNAL_MODEL_ENV_ALLOW: 'EDITOR,GITHUB_TOKEN,NODE_OPTIONS' })
+  })
+
+  it('selects provider credentials from one shared model rule', () => {
+    expect(providerCredentialNames('openai/gpt-5.6-sol')).toEqual(['OPENAI_API_KEY'])
+    expect(providerCredentialNames('google/gemini-2.5-pro')).toEqual(['GOOGLE_GENERATIVE_AI_API_KEY'])
+    expect(providerCredentialNames('anthropic/claude-sonnet-4-5')).toEqual([])
+  })
+
   it('does not let a configured execution hook mint an excluded credential', () => {
     const env = externalModelEnv({
       WT_EXTERNAL_MODEL_ENV_ALLOW: 'NODE_OPTIONS',
@@ -202,8 +230,8 @@ describe('OpenCode Claude-skill fence', () => {
 
   it('matches canonical environment names case-insensitively only on Windows', () => {
     const env = { Path: 'one', pAtH: 'two', AppData: 'three', OPENCODE_CONFIG_DIR: 'four', lc_messages: 'five' }
-    expect(externalModelEnv(env, [], 'win32')).toEqual(env)
-    expect(externalModelEnv(env, [], 'linux')).toEqual({ Path: 'one', OPENCODE_CONFIG_DIR: 'four' })
+    expect(externalModelEnv(env, [], 'win32')).toEqual({ Path: 'one', pAtH: 'two', AppData: 'three', lc_messages: 'five' })
+    expect(externalModelEnv(env, [], 'linux')).toEqual({ Path: 'one' })
   })
 
   it('admits only non-credential POSIX locale names through the LC prefix', () => {
@@ -218,9 +246,9 @@ describe('OpenCode Claude-skill fence', () => {
       calls.push(args)
       return { status: 0, stdout: '[{"name":"allowed","location":"/allowed/SKILL.md"}]', stderr: '' }
     }
-    const env = { OPENCODE_TEST_MARKER: 'same' }
-    expect(verifyEffectiveOpencodeSkillDiscovery('/bin/opencode', { cwd: '/lane', env, spawnSyncFn })).toMatchObject({ ok: true })
-    expect(verifyEffectiveOpencodeSkillDiscovery('/bin/opencode', { cwd: '/lane', env, spawnSyncFn })).toMatchObject({ ok: true })
+    const env = { OPENCODE_TEST_MARKER: 'same', OPENAI_API_KEY: 'selected-key' }
+    expect(verifyEffectiveOpencodeSkillDiscovery('/bin/opencode', { cwd: '/lane', env, spawnSyncFn, extraNames: ['OPENAI_API_KEY'] })).toMatchObject({ ok: true })
+    expect(verifyEffectiveOpencodeSkillDiscovery('/bin/opencode', { cwd: '/lane', env, spawnSyncFn, extraNames: ['OPENAI_API_KEY'] })).toMatchObject({ ok: true })
     expect(calls).toHaveLength(2)
     expect(calls[0]?.[1]).toEqual(['debug', 'skill'])
     expect(calls[0]?.[2]).toMatchObject({ cwd: '/lane', env })

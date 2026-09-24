@@ -8,6 +8,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { laneTextFromOutput } from './wt-verifier-cli-guard-hook.mjs'
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
+import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
 
 export const DEFAULT_MODEL = 'openai/gpt-5.6-luna'
@@ -68,10 +69,6 @@ function resolveBinary() {
   return null
 }
 
-function providerCredentialNames(model) {
-  return String(model).toLowerCase().startsWith('openai/') ? ['OPENAI_API_KEY'] : []
-}
-
 function runOnce(spawnFn, bin, args, timeoutSec = DEFAULT_TIMEOUT_SEC, env = process.env, cwd, extraNames = []) {
   return new Promise((resolve) => {
     const child = spawnOpencode(spawnFn, bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env, cwd }, process.platform, extraNames)
@@ -103,7 +100,7 @@ export async function runVerifier(options, { spawnFn = spawn, binary = resolveBi
   if (!fence.ok) return { code: 1, output: opencodeSkillFenceRefusal(fence.reason) }
   const credentialNames = providerCredentialNames(options.model)
   const childEnv = opencodeChildEnv(env, credentialNames)
-  const discovery = skillDiscoveryVerifier(binary, { cwd: options.dir, env: childEnv, platform: process.platform })
+  const discovery = skillDiscoveryVerifier(binary, { cwd: options.dir, env: childEnv, platform: process.platform, extraNames: credentialNames })
   if (!discovery.ok) return { code: 1, output: effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-verify') }
   if (!providerAuthenticated(binary, childEnv, credentialNames)) {
     return { code: 1, output: 'OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)' }

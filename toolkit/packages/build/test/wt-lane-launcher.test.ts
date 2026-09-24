@@ -1182,11 +1182,14 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const malformed = run(f, ['--variant', 'hi gh']); expect(malformed.status).toBe(2); expect(malformed.stderr).toContain('--variant')
   })
   it('fences Claude Code skills while preserving the opencode argv contract and launch options', () => {
-    const f = fixture('printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
+    const f = fixture('# PROVIDER_KEYS; printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
     f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
+    f.env.OPENAI_API_KEY = 'selected-key'
+    f.env.GOOGLE_GENERATIVE_AI_API_KEY = 'unrelated-key'
     const res = run(f, ['--variant', 'high', '--timeout', '1']); expect(res.status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'claude-skills-fence'), 'utf8')).toBe('true\n')
+    expect(readFileSync(join(f.dir, 'provider-keys'), 'utf8')).toBe('selected-key|unset\n')
     const argv = readFileSync(join(f.dir, 'argv'), 'utf8').split('\n')
     expect(argv[1]).toMatch(/^Read and execute the complete brief at .+[/\\]\.lane[/\\]brief-snapshots[/\\]\d+-\d+\.md\.$/)
     expect(argv).toEqual([

@@ -128,6 +128,42 @@ describe('wt-opencode-verify', () => {
     }
   })
 
+  it('passes the Google credential only for a selected Google model and fallback', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-google-'))
+    const env = { OPENAI_API_KEY: 'openai-provider-key', GOOGLE_GENERATIVE_AI_API_KEY: 'google-provider-key' }
+    const spawnFn = vi.fn()
+    spawnFn.mockImplementationOnce(() => childResult({ stderr: '429 rate limit', code: 1 }))
+    spawnFn.mockImplementationOnce(() => childResult({ stdout: '{"part":{"type":"text","text":"GOOGLE"}}\n' }))
+    try {
+      await runVerifier({ dir, id: 'google-fallback', stdin: true, taskFile: null, model: 'openai/gpt-5.6-sol', fallbackModel: 'google/gemini-2.5-pro', variant: null }, {
+        binary: 'opencode', providerAuthenticated: () => true, skillFenceVerifier: () => ({ ok: true }), skillDiscoveryVerifier: () => ({ ok: true }), readStdin: () => 'review', spawnFn, env,
+      })
+      const primaryEnv = (spawnFn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2].env
+      const fallbackEnv = (spawnFn.mock.calls[1] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2].env
+      expect(primaryEnv).toMatchObject({ OPENAI_API_KEY: 'openai-provider-key' })
+      expect(primaryEnv).not.toHaveProperty('GOOGLE_GENERATIVE_AI_API_KEY')
+      expect(fallbackEnv).toMatchObject({ GOOGLE_GENERATIVE_AI_API_KEY: 'google-provider-key' })
+      expect(fallbackEnv).not.toHaveProperty('OPENAI_API_KEY')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves the selected provider credential through effective discovery', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-discovery-provider-'))
+    let discoveryEnv: NodeJS.ProcessEnv | undefined
+    try {
+      await runVerifier({ dir, id: 'discovery-provider', stdin: true, taskFile: null, model: 'openai/gpt-5.6-sol', fallbackModel: null, variant: null }, {
+        binary: 'opencode', providerAuthenticated: () => true, skillFenceVerifier: () => ({ ok: true }),
+        skillDiscoveryVerifier: (_bin: string, options: { env: NodeJS.ProcessEnv }) => { discoveryEnv = options.env; return { ok: true } },
+        readStdin: () => 'review', spawnFn: () => childResult({ stdout: '{"part":{"type":"text","text":"OK"}}\n' }), env: { OPENAI_API_KEY: 'openai-provider-key' },
+      })
+      expect(discoveryEnv).toMatchObject({ OPENAI_API_KEY: 'openai-provider-key' })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('terminates a timed-out child and cleans up its task copy', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-'))
     const child = childResult({ hangs: true })

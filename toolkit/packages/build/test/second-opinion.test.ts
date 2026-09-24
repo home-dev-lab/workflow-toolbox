@@ -110,7 +110,8 @@ describe('second-opinion advisor', () => {
       COMPANY_VAULT_SECRET: 'unknown secret',
     })
     try {
-      expect(ownership.env).toMatchObject({ PATH: process.env.PATH, HOME: process.env.HOME, CODEX_HOME: '/codex-home' })
+      expect(ownership.env).toMatchObject({ PATH: process.env.PATH, HOME: process.env.HOME })
+      expect(ownership.env).not.toHaveProperty('CODEX_HOME')
       expect(ownership.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN')
       expect(ownership.env).not.toHaveProperty('ANTHROPIC_API_KEY')
       expect(ownership.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN')
