@@ -26,12 +26,12 @@ function fixture(script: string) {
   roots.push(root)
   const lane = join(root, '.lane')
   mkdirSync(lane)
-  writeFileSync(join(lane, 'run.log'), '')
+  const runId = `${process.pid}-${Date.now()}`
+  writeFileSync(join(lane, 'run.log'), `LANE_RUN_ID=${runId}\n`)
   const worker = spawn(process.execPath, ['-e', script], { cwd: root, detached: true, stdio: 'ignore' })
   workers.push(worker)
   worker.unref()
   writeFileSync(join(lane, 'pid'), String(worker.pid))
-  const runId = `${worker.pid}-1`
   const identity = inspectProcess(worker.pid!) ?? {
     pid: worker.pid!, argv: [process.execPath, '-e', script], startTime: Date.now(), startTimeApproximate: true,
   }
@@ -70,6 +70,14 @@ describe('wt-lane-wait', () => {
     const result = run(f.root, '--timeout', '0.08')
     expect(result.status).toBe(124)
     expect(result.stdout.trim()).toBe('LANE TIMEOUT exit=124')
+  })
+
+  it('never accepts an exit marker from an earlier run', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 7 })); setTimeout(() => fs.writeFileSync('.lane/run.log', 'LANE_RUN_ID=' + state.runId + '\\nEXIT=7\\n'), 80); }, 40)")
+    writeFileSync(join(f.lane, 'run.log'), 'LANE_RUN_ID=earlier-run\nEXIT=0\n')
+    const result = run(f.root)
+    expect(result.status).toBe(7)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=7/)
   })
 
   it('prints a recorded OOM cause with the lane exit', () => {
@@ -116,6 +124,13 @@ describe('wt-lane-wait', () => {
     expect(result.stdout.trim()).toBe('LANE DIED exit=unknown')
   })
 
+  it('waits for termination publication after the worker and child are gone', () => {
+    const f = fixture("const fs = require('node:fs'); const cp = require('node:child_process'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'terminating' })); const code = `const fs = require('node:fs'); setTimeout(() => { const state = JSON.parse(fs.readFileSync(process.argv[1])); fs.writeFileSync(process.argv[1], JSON.stringify({ ...state, state: 'abandoned' })); fs.appendFileSync(process.argv[2], 'EXIT=126\\\\n') }, 80)`; const child = cp.spawn(process.execPath, ['-e', code, '.lane/supervision/' + file, '.lane/run.log'], { detached: true, stdio: 'ignore' }); child.unref(); }, 40)")
+    const result = run(f.root)
+    expect(result.status).toBe(126)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=126/)
+  })
+
   it('returns 124 when the lane does not finish before timeout', () => {
     const f = fixture('setTimeout(() => {}, 30_000)')
     const result = run(f.root, '--timeout', '0.08')
@@ -139,6 +154,21 @@ describe('wt-lane-wait', () => {
     const result = run(f.root)
     expect(result.status).toBe(9)
     expect(result.stdout.trim()).toMatch(/^LANE DONE exit=9/)
+  })
+
+  it.each(['256', '-1', '9'.repeat(400)])('maps unsupported lane exit %s to process failure without throwing', (exit) => {
+    const f = fixture(`const fs = require('node:fs'); fs.appendFileSync('.lane/run.log', 'EXIT=${exit}\\n')`)
+    const result = run(f.root)
+    expect(result.status).toBe(1)
+    expect(result.stdout.trim()).toMatch(new RegExp(`^LANE DONE exit=${exit} `))
+    expect(result.stderr).toBe('')
+  })
+
+  it('accepts the current run marker after its supervision record disappears', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); fs.rmSync('.lane/supervision/current.json'); fs.rmSync('.lane/supervision/' + file); setTimeout(() => fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'), 60); setTimeout(() => {}, 80); }, 60)")
+    const result = run(f.root)
+    expect(result.status).toBe(7)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=7/)
   })
 
   it('reports report byte size without reading or printing the log body', () => {

@@ -402,7 +402,7 @@ describe('second-opinion advisor', () => {
     const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
       env: { ...process.env, ...f.env, HOME: f.repo },
       encoding: 'utf8',
-      timeout: 5_000,
+      timeout: process.platform === 'win32' ? 15_000 : 5_000,
     })
     expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
     const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
@@ -418,7 +418,7 @@ describe('second-opinion advisor', () => {
       }
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
-  })
+  }, process.platform === 'win32' ? 30_000 : 10_000)
 
   it('stops the detached broker app-server from the process exit hook', () => {
     const f = detachedBrokerFixture()

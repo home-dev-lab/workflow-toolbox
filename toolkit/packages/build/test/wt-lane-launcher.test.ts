@@ -705,7 +705,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).not.toContain('old run')
     expect(readFileSync(journal, 'utf8')).not.toContain('"event":"would-clean"')
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
-  })
+  }, 60_000)
   it('observe mode journals would-clean but kills nothing', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
