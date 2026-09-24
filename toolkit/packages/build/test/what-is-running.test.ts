@@ -467,7 +467,7 @@ describe('What is running collector seam', () => {
       expect(approximate.cappedScans).toEqual([])
       expect(row.activity).toMatch(/^last write at least /)
     } finally { rmSync(root, { recursive: true, force: true }) }
-  })
+  }, process.platform === 'win32' ? 30_000 : 20_000) // Hosted Windows measured 22.628 s for 6,001 volume files.
 
   it('uses the card file title when the lane brief starts with the standard preamble', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-preamble-title-'))

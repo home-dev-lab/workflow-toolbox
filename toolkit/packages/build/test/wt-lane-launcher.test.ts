@@ -1104,19 +1104,21 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(control.status).toBe(1); expect(control.stderr).toContain('recorded owner')
     process.kill(Number(/pid=(\d+)/.exec(res.stdout)?.[1]), 'SIGTERM')
   })
-  it('prints a control command that runs as written outside the plugin repository', () => {
+  it.each(['extend', 'abandon'])('prints a %s command that runs as written outside the plugin repository', (decision) => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30'); f.env.CLAUDE_CODE_SESSION_ID = 'owner-session'
+    isolateWatcherHostCensus(f)
     const res = run(f, ['--timeout', '1', '--decision-grace', '10']); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir)
     waitForContent(status, /decision-needed/); waitForVerdict(status, 'decision-needed')
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env, timeout: 30_000 })
     expect(watcher.status, `${watcher.error ?? ''}\n${watcher.stderr}`).toBe(0)
-    const command = /extend with (node .*? --decision extend)(?:,| before)/.exec(watcher.stdout)?.[1]
+    const command = new RegExp(`${decision} with (node .*? --decision ${decision})(?:,| before)`).exec(watcher.stdout)?.[1]
     expect(command).toBeTruthy()
     const control = spawnSync(command!, { cwd: f.root, shell: true, encoding: 'utf8', env: f.env })
     expect(control.status, control.stderr).toBe(0)
     const state = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))
-    killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
+    if (decision === 'extend') killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
+    else expect(state.state).toBe('abandoned')
   }, 60_000)
   it('single-quotes printed commands for spaces, apostrophes, and command substitutions', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
