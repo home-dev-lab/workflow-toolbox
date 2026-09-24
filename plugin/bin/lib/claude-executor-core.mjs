@@ -26,7 +26,7 @@ function bashConfined(root, command) {
   // obvious escapes; an interpreter can always construct a path without spelling it here.
   if (/(?:^|[\s'"=])(?:\.\.[\\/]|~[\\/]|\$(?:HOME|TMPDIR|TEMP|TMP)\b|\$\{)/.test(command)) return false
   if (/(?:^|[\s'"=(:,])\.\.(?=$|[\s'"),;&|\\/])/.test(command)) return false
-  const absolutePaths = command.match(/(?:[A-Za-z]:[\\/]|\/)[^\s'";|&<>)]*/g) ?? []
+  const absolutePaths = [...command.matchAll(/(?:^|[\s'"=(:,])((?:[A-Za-z]:[\\/]|\/)[^\s'";|&<>)]*)/g)].map((match) => match[1])
   return absolutePaths.every((candidate) => confined(root, candidate))
 }
 
@@ -57,7 +57,7 @@ export function executorCanUseTool(root, report, readOnly, toolName, input, { kn
 }
 
 export function parseExecutorArgs(argv) {
-  const options = { dir: null, model: null, variant: null, variantOrigin: null, brief: null, log: null, timeout: 5400, role: null, knowledgeBaseIndex: null }
+  const options = { dir: null, model: null, variant: null, variantOrigin: null, brief: null, log: null, timeout: 5400, role: null, knowledgeBaseIndex: null, sdkPath: null }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--dir') options.dir = argv[++i] ?? null
@@ -69,6 +69,7 @@ export function parseExecutorArgs(argv) {
     else if (arg === '--timeout') options.timeout = Number(argv[++i])
     else if (arg === '--role') options.role = argv[++i] ?? null
     else if (arg === '--knowledge-base-index') options.knowledgeBaseIndex = argv[++i] ?? null
+    else if (arg === '--sdk-path') options.sdkPath = argv[++i] ?? null
     else if (arg === '--help' || arg === '-h') return { help: true }
     else return { error: `unknown argument: ${arg}` }
   }
@@ -79,6 +80,7 @@ export function parseExecutorArgs(argv) {
   options.dir = path.resolve(options.dir); options.brief = path.resolve(options.brief)
   options.log = path.resolve(options.log ?? path.join(options.dir, '.lane', 'run.log'))
   if (options.knowledgeBaseIndex) options.knowledgeBaseIndex = path.resolve(options.knowledgeBaseIndex)
+  if (options.sdkPath) options.sdkPath = path.resolve(options.sdkPath)
   return options
 }
 

@@ -362,7 +362,7 @@ export async function runPilot(options, dependencies) {
   let timeoutBoundary = null
   const pluginRoot = resolve(MODULE_DIR, '../..')
   const configuredPlugins = options.pluginDirs ?? []
-  const sdkRole = (dependencies.prepareSdkRole ?? prepareSdkRole)('pilot', { worktree: options.dir, env: effectiveEnv, pluginRoot, adapterOptions: { log } })
+  const sdkRole = (dependencies.prepareSdkRole ?? prepareSdkRole)('pilot', { worktree: options.dir, env: effectiveEnv, pluginRoot, loadedCodePaths: dependencies.loadedCodePaths, adapterOptions: { log } })
   sdkRole.pluginPaths.push(...configuredPlugins)
 
   // B5: completion is `awaiting_fidelity receipt && report exists`, so a report left by an earlier

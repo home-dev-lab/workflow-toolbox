@@ -41,20 +41,19 @@ function fixture() {
   cpSync(join(ROOT, 'plugin', 'bin'), join(installed, 'bin'), { recursive: true })
   cpSync(join(ROOT, 'plugin', 'hooks-modules'), join(installed, 'hooks-modules'), { recursive: true })
   cpSync(join(ROOT, 'plugin', 'skills'), join(installed, 'skills'), { recursive: true })
-  const sdk = join(worktree, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(sdk, { recursive: true })
+  const pluginData = join(root, 'workflow-toolbox-test')
+  const sdk = join(pluginData, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(sdk, { recursive: true })
   writeFileSync(join(sdk, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', main: 'index.cjs' }))
   writeFileSync(join(sdk, 'index.cjs'), `
 const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
-  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE})}));
+  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,sandbox:options.sandbox,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE}),unsandboxed:await options.canUseTool('Bash',{command:'true',dangerouslyDisableSandbox:true})}));
   const mode=process.env.FAKE_MODE;
   if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
   else if(mode==='first-result') yield {type:'result',subtype:'success',is_error:false,result:'too early'};
   else if(mode!=='empty') { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; if(mode!=='no-write') fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; if(mode==='multiple') { yield {type:'result',is_error:false,usage:{input_tokens:2,cache_creation_input_tokens:3,cache_read_input_tokens:5,output_tokens:7}}; yield {type:'result',is_error:false,usage:{input_tokens:11,cache_creation_input_tokens:13,cache_read_input_tokens:17,output_tokens:19}}; } else yield {type:'result',subtype:'success',is_error:mode==='error',usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:mode==='no-write'?' generated review ': 'executor report'}; }
 })()`)
-  const preload = join(root, 'sdk-preload.cjs')
-  writeFileSync(preload, `const Module=require('node:module');const load=Module._load;Module._load=function(request,parent,isMain){if(request==='@anthropic-ai/claude-agent-sdk')return require(${JSON.stringify(join(sdk, 'index.cjs'))});return load.call(this,request,parent,isMain)}\n`)
-  return { root, worktree, cli: join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: state, NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${preload}`.trim() } }
+  return { root, worktree, cli: join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: pluginData, WT_AGENT_SDK_PATH: join(sdk, 'index.cjs'), XDG_STATE_HOME: state } }
 }
 
 describe('Claude SDK executor', () => {
@@ -117,8 +116,21 @@ describe('Claude SDK executor', () => {
     expect(executorCanUseTool(root, report, false, 'Bash', { command: `node -e "require('fs').writeFileSync(Buffer.from('2e2e2f65736361706564','hex').toString(),'x')"` }).behavior).toBe('allow')
     expect(executorCanUseTool(root, report, false, 'Bash', { command: `p=$(printf '\\056\\056\\057escaped'); : > "$p"` }).behavior).toBe('allow')
     expect(executorCanUseTool(root, report, false, 'Bash', { command: 'pnpm test' }).behavior).toBe('allow')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: 'git diff -- plugin/CHANGELOG.md' }).behavior).toBe('allow')
+    expect(executorCanUseTool(root, report, false, 'Bash', { command: 'git show HEAD:plugin/CHANGELOG.md' }).behavior).toBe('allow')
     const outside = mkdtempSync(join(tmpdir(), 'wt-executor-outside-')); roots.push(outside); symlinkSync(outside, join(root, 'link'))
     expect(executorCanUseTool(root, report, false, 'Write', { file_path: join(root, 'link', 'escaped') }).behavior).toBe('deny')
+  })
+
+  it('launches the writer with mandatory sandboxing and denies per-command escape', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.sandbox.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'sandbox.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside') } })
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0')
+    expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({
+      sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true },
+      unsandboxed: { behavior: 'deny', message: 'unsandboxed Bash refused' },
+    })
   })
 
   it.runIf(process.env.WT_CLAUDE_EXECUTOR_REAL_E2E === 'true')('keeps real SDK Bash writes inside the worktree', () => {
@@ -183,7 +195,7 @@ describe('Claude SDK executor', () => {
     waitFor(log); const until = Date.now() + 3000
     while (readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1) !== 'EXIT=124' && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
     expect(readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1)).toBe('EXIT=124')
-    expect(JSON.parse(readFileSync(receipt, 'utf8')).tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', 'mcp__plugin_context-mode_context-mode__ctx_search'])
+    expect(JSON.parse(readFileSync(receipt, 'utf8')).tools).toEqual(['Read', 'Glob', 'Grep', 'mcp__plugin_context-mode_context-mode__ctx_search'])
   })
 
   it('item 7: the log always ENDS with an exit marker, even when an earlier marker is followed by later lines', () => {

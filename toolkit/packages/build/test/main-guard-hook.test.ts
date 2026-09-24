@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -258,7 +258,51 @@ describe('wt-main-guard-hook — reset-hard is journal-only on dirty worktrees',
     expect(journalLines().some((l) => l.class === 'reset-hard' && l.decision === 'allowed-journaled')).toBe(true)
   })
 
-  it('stays silent for git reset --hard on a clean worktree', () => {
+  it('does not execute repository fsmonitor configuration while inspecting a dirty worktree', () => {
+    const repo = join(sandboxHome, 'fsmonitor-reset-repo')
+    const marker = join(sandboxHome, 'fsmonitor-ran')
+    const monitor = join(repo, 'fsmonitor.sh')
+    initGitRepo(repo)
+    writeFileSync(monitor, `#!/bin/sh\n: > "${marker}"\n`)
+    chmodSync(monitor, 0o755)
+    spawnSync('git', ['-C', repo, 'config', 'core.fsmonitor', monitor])
+    writeFileSync(join(repo, 'f.txt'), 'dirty')
+
+    const r = run('git reset --hard HEAD', { cwd: repo })
+
+    expect(r.status).toBe(0)
+    expect(existsSync(marker)).toBe(false)
+    expect(journalLines().some((line) => line.class === 'reset-hard')).toBe(true)
+  })
+
+  it('never executes command-bearing repository configuration or attributes on any Git read path', () => {
+    const repo = join(sandboxHome, 'host-read-config-repo')
+    const marker = join(sandboxHome, 'repository-command-ran')
+    const command = join(sandboxHome, 'mark.sh')
+    const hooks = join(repo, 'hooks')
+    initGitRepo(repo)
+    writeFileSync(command, `#!/bin/sh\nprintf '%s\\n' "$1" >> "${marker}"\n`); chmodSync(command, 0o755)
+    mkdirSync(hooks)
+    writeFileSync(join(hooks, 'pre-commit'), `#!/bin/sh\n"${command}" hooksPath\n`); chmodSync(join(hooks, 'pre-commit'), 0o755)
+    writeFileSync(join(repo, '.gitattributes'), 'f.txt filter=probe diff=probe\n')
+    const configs: Array<[string, string]> = [
+      ['core.fsmonitor', `${command} fsmonitor`], ['core.hooksPath', hooks],
+      ['filter.probe.clean', `${command} clean`], ['filter.probe.smudge', `${command} smudge`], ['filter.probe.process', `${command} process`],
+      ['diff.probe.textconv', `${command} textconv`], ['diff.probe.command', `${command} diff-command`],
+      ['core.pager', `${command} pager`], ['core.sshCommand', `${command} ssh`],
+      ['credential.helper', `!${command} credential`], ['gpg.program', `${command} gpg`],
+    ]
+    for (const [key, value] of configs) spawnSync('git', ['-C', repo, 'config', key, value])
+    writeFileSync(join(repo, 'f.txt'), 'y')
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(join(repo, 'f.txt'), old, old)
+
+    expect(run('git merge feature', { cwd: repo }).status).toBe(0)
+    expect(run('git reset --hard HEAD', { cwd: repo }).status).toBe(0)
+    expect(existsSync(marker)).toBe(false)
+  })
+
+  it('journals unknown state for git reset --hard without asking Git to inspect the worktree', () => {
     const repo = join(sandboxHome, 'clean-reset-repo')
     initGitRepo(repo)
 
@@ -266,7 +310,7 @@ describe('wt-main-guard-hook — reset-hard is journal-only on dirty worktrees',
 
     expect(r.denied).toBe(false)
     expect(r.stdout).toBe('')
-    expect(journalLines().some((l) => l.class === 'reset-hard')).toBe(false)
+    expect(journalLines().some((l) => l.class === 'reset-hard' && String(l.reason).includes('state left unknown'))).toBe(true)
   })
 
   it('journals git checkout -f when the named -C worktree has uncommitted changes', () => {

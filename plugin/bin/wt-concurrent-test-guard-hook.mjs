@@ -135,6 +135,19 @@ function warning(input, message) {
   })
 }
 
+function deny(input, message) {
+  emitGuardNotice({
+    payload: input,
+    stdoutJson: {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: `[workflow-toolbox concurrent-test guard] Refused: ${message}`,
+      },
+    },
+  })
+}
+
 function main() {
   const input = readInput()
   if (input.hook_event_name !== 'PreToolUse' || input.tool_name !== 'Bash') return
@@ -142,15 +155,18 @@ function main() {
 
   const result = existingRunnerCount()
   if (!result.available) {
+    const closed = process.env.WT_SDK_ROLE_GUARD_FAILURE === 'closed'
     recordGuardEvent({
       guard: GUARD,
-      decision: 'warned',
+      decision: closed ? 'blocked' : 'warned',
       class: 'enumeration-unavailable',
       session: input.session_id,
       agent: input.agent_id,
       evidence: { status: 'unavailable' },
     })
-    warning(input, `could not enumerate existing test-runner processes: ${result.reason}. This is unknown, not a zero count.`)
+    const message = `could not enumerate existing test-runner processes: ${result.reason}. This is unknown, not a zero count.`
+    if (closed) deny(input, message)
+    else warning(input, message)
     return
   }
 
