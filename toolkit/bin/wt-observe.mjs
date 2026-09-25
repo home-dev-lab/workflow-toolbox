@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync as existsSync4, mkdirSync as mkdirSync3, readFileSync as readFileSync6, readdirSync as readdirSync3, realpathSync as realpathSync3, renameSync as renameSync3, rmSync as rmSync2, statSync as statSync2, unlinkSync as unlinkSync3, writeFileSync as writeFileSync3, openSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { delimiter, dirname as dirname2, join as join7, resolve as resolvePath } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 // packages/debugger/src/observe-lifecycle.ts
 import { join } from "node:path";
@@ -2783,19 +2783,9 @@ async function main(argv = process.argv.slice(2)) {
     return 1;
   }
 }
-var argv1 = process.argv[1];
-if (argv1 !== void 0) {
-  let same = false;
-  try {
-    const { realpathSync: realpathSync4 } = await import("node:fs");
-    same = import.meta.url === pathToFileURL(realpathSync4(argv1)).href;
-  } catch {
-    same = import.meta.url === pathToFileURL(argv1).href;
-  }
-  if (same) {
-    process.exitCode = await main();
-  }
-}
+var entryGuardUrl = import.meta.url.includes("/packages/debugger/src/") ? new URL("../../../../plugin/bin/lib/host/entry-guard.mjs", import.meta.url) : new URL("../../plugin/bin/lib/host/entry-guard.mjs", import.meta.url);
+var { isInvokedDirectly } = await import(entryGuardUrl.href);
+if (isInvokedDirectly(import.meta.url)) process.exitCode = await main();
 export {
   main,
   scanRunsForPrune

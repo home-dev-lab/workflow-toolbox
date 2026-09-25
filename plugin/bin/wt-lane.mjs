@@ -16,6 +16,7 @@ import { laneModelRefusal, resolveRoleVariant, variantRefusal } from './lib/lane
 import { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
@@ -859,9 +860,7 @@ async function integrationMain() {
   return integrateLane(options)
 }
 
-let isMain = false
-try { isMain = realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch {}
-if (isMain) {
+if (isInvokedDirectly(import.meta.url)) {
   const entrypoint = process.argv[2] === 'integrate' ? integrationMain : main
   entrypoint().then((code) => { process.exitCode = code }).catch((error) => { process.stderr.write(`wt-lane: ${error instanceof Error ? error.message : String(error)}\n`); process.exitCode = 1 })
 }

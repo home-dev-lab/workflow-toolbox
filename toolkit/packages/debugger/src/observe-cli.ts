@@ -49,7 +49,7 @@ import { randomBytes } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, openSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join, resolve as resolvePath } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import {
   classifyHealth,
   decideStart,
@@ -1899,18 +1899,9 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
   }
 }
 
-// Realpath-compare the entry guard (bin symlinks NO-OP a naive === — see
-// bin-symlink-entry-guard): run main() only when executed directly.
-const argv1 = process.argv[1]
-if (argv1 !== undefined) {
-  let same = false
-  try {
-    const { realpathSync } = await import('node:fs')
-    same = import.meta.url === pathToFileURL(realpathSync(argv1)).href
-  } catch {
-    same = import.meta.url === pathToFileURL(argv1).href
-  }
-  if (same) {
-    process.exitCode = await main()
-  }
-}
+// The shared guard handles symlinks and fails closed when either path is unavailable.
+const entryGuardUrl = import.meta.url.includes('/packages/debugger/src/')
+  ? new URL('../../../../plugin/bin/lib/host/entry-guard.mjs', import.meta.url)
+  : new URL('../../plugin/bin/lib/host/entry-guard.mjs', import.meta.url)
+const { isInvokedDirectly } = await import(entryGuardUrl.href)
+if (isInvokedDirectly(import.meta.url)) process.exitCode = await main()
