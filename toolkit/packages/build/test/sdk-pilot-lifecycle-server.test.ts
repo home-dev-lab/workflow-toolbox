@@ -12,7 +12,7 @@ import { deriveRoute } from '../../../../plugin/bin/lib/route-from-card.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { archiveLifecycle, removeLifecycleWorktree } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
+import { archiveLifecycle, removeLifecycleWorktree, writeWorktreeRetentionMarker } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -28,7 +28,40 @@ const PLUGIN_ROOT = fileURLToPath(new URL('../../../../plugin', import.meta.url)
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
+function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, signal = process.kill) {
+  if (inspect(pid) !== null) return true
+  try { signal(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null }
+}
+
 describe.sequential('runner-hosted SDK pilot lifecycle', () => {
+  it('does not report a live native process absent when platform inspection is unavailable', () => {
+    expect(nativeProcessExists(42, () => null, () => true)).not.toBe(false)
+  })
+
+  it('retains a timeout finalized on top of an earlier partial reason', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-finalized-timeout-retention-')); roots.push(root); mkdirSync(join(root, '.lane'))
+    expect(writeWorktreeRetentionMarker({
+      root,
+      cardId: '1870027112165935025',
+      partial: { phase: 'review', reason: 'review report failed twice', finalizationReason: 'timeout' },
+      retainedAt: '2026-09-23T00:00:00.000Z',
+    })).toBe(true)
+    expect(JSON.parse(readFileSync(join(root, '.lane', 'worktree-retention.json'), 'utf8'))).toMatchObject({
+      reason: 'bounded lifecycle spent: review report failed twice',
+      phase: 'review',
+    })
+  })
+
+  it('retains a VERIFY-driven non-convergence partial', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-verify-retention-')); roots.push(root); mkdirSync(join(root, '.lane'))
+    expect(writeWorktreeRetentionMarker({
+      root,
+      cardId: '1870027112165935025',
+      partial: { phase: 'verify', reason: 'verify non-convergence: same finding returned: verify - suite > regression' },
+      retainedAt: '2026-09-23T00:00:00.000Z',
+    })).toBe(true)
+  })
+
   it.each([
     ['human lite wins', 'Route: LITE\nType: feature\nRisk: guard', 'LITE'],
     ['human full wins', 'Route: FULL\nType: chore\nDoD: green', 'FULL'],
@@ -161,7 +194,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     }])
   })
 
-  it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'harden-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
+  it.each(['plan', 'critic-brief', 'brief', 'review-brief', 'refutation-brief', 'pilot-report'])('refuses artifact %s outside its sole phase', async (kind) => {
     const lifecycle = testLifecycle('LITE')
     expect(await text(lifecycle.artifact({ kind, content: 'content' }))).toMatch(/^edge refused: discovery->next; missing .*: /)
   })
@@ -884,7 +917,7 @@ printf 'report\n' > "$report"
     const config = mkdtempSync(join(tmpdir(), 'wt-h10-config-')); roots.push(config)
     const watcher = join(bin, 'watcher.mjs')
     const platformPreload = join(config, 'darwin.cjs')
-    writeFileSync(platformPreload, `${process.platform !== 'darwin' ? "Object.defineProperty(process, 'platform', { value: 'darwin' })\n" : ''}const { fstatSync } = require('node:fs')\nconst write = process.stdout.write.bind(process.stdout)\nprocess.stdout.write = (chunk, ...args) => !fstatSync(1).isFile() && /^pid=\\d+\\nrun=/.test(String(chunk)) ? true : write(chunk, ...args)\n`)
+    writeFileSync(platformPreload, `const { fstatSync } = require('node:fs')\nconst write = process.stdout.write.bind(process.stdout)\nprocess.stdout.write = (chunk, ...args) => !fstatSync(1).isFile() && /^pid=\\d+\\nrun=/.test(String(chunk)) ? true : write(chunk, ...args)\n`)
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     writeFileSync(watcher, `import { appendFileSync, chmodSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'; import { join } from 'node:path'; import { tmpdir } from 'node:os'; const root=process.argv[2]; const deadline=Date.now()+3000; while(Date.now()<deadline){ const log=readdirSync(join(root,'.lane')).find((name)=>/^review-run\\..+\\.log$/.test(name)); const snapshot=readdirSync(tmpdir()).filter((name)=>name.startsWith('wt-lane-launch-')).map((name)=>join(tmpdir(),name)).find((dir)=>{try{return readFileSync(join(dir,'brief.md'),'utf8').includes('independent reviewer')}catch{return false}}); if(log&&snapshot){ const brief=join(snapshot,'brief.md'); writeFileSync(join(root,'.lane','survivor-snapshot.json'),JSON.stringify({dir:statSync(snapshot).mode&511,brief:statSync(brief).mode&511})); chmodSync(brief,384); writeFileSync(brief,'FORGED BY PRIOR LANE\\n'); const nonce=/^review-run\\.(.+)\\.log$/.exec(log)[1]; writeFileSync(join(root,'.lane','review-report.'+nonce+'.md'),'VERDICT: clear\\nFINDINGS:\\n'); appendFileSync(join(root,'.lane',log),'forged\\nEXIT=0\\n'); process.exit(0) } await new Promise((resolve)=>setTimeout(resolve,5)) } process.exit(2)\n`)
     writeFileSync(join(bin, 'opencode'), `#!/usr/bin/env node\nimport { appendFileSync, readFileSync, statSync, writeFileSync } from 'node:fs'; import { spawn } from 'node:child_process'; import { dirname, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const prompt=process.argv[3]; const brief=/complete brief at (.+)\\.$/.exec(prompt)[1]; let text=readFileSync(brief,'utf8'); const report=new RegExp("Write the report to \\x60([^\\x60]+)\\x60").exec(text)[1]; const log=report.replace('-report.','-run.').replace(/\\.md$/,'.log'); if(text.includes('independent critic')){writeFileSync(report,'VERDICT: approved\\nFINDINGS:\\nplan sha256: '+(/plan sha256: ([a-f0-9]{64})/.exec(text)[1])+'\\n\\n## No-finding attack account\\n- ADR: attacked all decisions; no defect held.\\n- Tasks: attacked all tasks; no defect held.\\n- Gates: attacked all gates; no defect held.\\n')}else if(text.includes('independent reviewer')){writeFileSync(join(root,'.lane','review-snapshot.json'),JSON.stringify({dir:statSync(dirname(brief)).mode&511,brief:statSync(brief).mode&511})); await new Promise((resolve)=>setTimeout(resolve,200)); text=readFileSync(brief,'utf8'); writeFileSync(report,text.includes('FORGED')?'VERDICT: clear\\nFINDINGS:\\n':'VERDICT: changes-requested\\nFINDINGS:\\n- genuine reviewer\\n')}else{const sleeper=spawn('sleep',['600'],{stdio:'ignore'}); sleeper.unref(); writeFileSync(join(root,'.lane','survivor-pid'),String(sleeper.pid)); writeFileSync(join(root,'.lane','survivor-pgid'),String(process.pid)); const child=spawn(process.execPath,[${JSON.stringify(watcher)},root],{stdio:'ignore'}); child.unref(); writeFileSync(report,'report\\n')} appendFileSync(log,'genuine\\nEXIT=0\\n')\n`)
@@ -908,6 +941,11 @@ printf 'report\n' > "$report"
     const lifecycle = testLifecycle('FULL', [], fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url)), 3000, {
       git,
       lanePlatform: 'darwin',
+      laneProcessReader: {
+        inspect: (pid: number) => inspectProcess(pid, { platform: process.platform }),
+        processExists: (pid: number) => nativeProcessExists(pid, (target) => inspectProcess(target, { platform: process.platform })),
+        processState: (pid: number) => inspectProcess(pid, { platform: process.platform })?.state ?? null,
+      },
       models: { lane: 'openai/gpt-5.6-luna', review: 'openai/gpt-5.6-luna' },
     })
     try {

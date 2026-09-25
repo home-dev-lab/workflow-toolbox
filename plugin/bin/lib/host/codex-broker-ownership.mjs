@@ -34,24 +34,36 @@ function descendants(processes, rootPid) {
 }
 
 function processStart(item, observedAt) {
+  if (Number.isFinite(item?.startIdentity)) return item.startIdentity
+  if (Number.isFinite(item?.startTime)) return item.startTime
   return Number.isFinite(item?.elapsedMs) ? observedAt - item.elapsedMs : null
 }
 
 function processIdentity(item, observedAt) {
+  if (!item) return null
+  const command = String(item.command ?? '')
+  let startIdentity = null
+  if (Number.isFinite(item.startIdentity)) startIdentity = item.startIdentity
+  else if (Number.isFinite(item.startTime)) startIdentity = item.startTime
+  if (startIdentity !== null) return { pid: item.pid, startIdentity, command }
   const startedAt = processStart(item, observedAt)
-  return startedAt === null ? null : { pid: item.pid, startedAt, command: String(item.command ?? '') }
+  return startedAt === null ? null : { pid: item.pid, startedAt, command }
 }
 
-function sameIdentity(item, identity, observedAt) {
-  if (!item || item.pid !== identity.pid || String(item.command ?? '') !== identity.command) return false
-  const startedAt = processStart(item, observedAt)
-  return startedAt !== null && Math.abs(startedAt - identity.startedAt) <= START_TIME_TOLERANCE_MS
+function sameStart(item, identity, observedAt) {
+  if (!item || item.pid !== identity.pid) return false
+  const current = processIdentity(item, observedAt)
+  if (!current) return false
+  if (Number.isFinite(identity.startIdentity)) return current.startIdentity === identity.startIdentity
+  return Number.isFinite(current.startedAt) && Math.abs(current.startedAt - identity.startedAt) <= START_TIME_TOLERANCE_MS
 }
 
 function sameProcess(item, identity, observedAt) {
-  if (!item || item.pid !== identity.pid || !BROKER_PATTERN.test(String(item.command ?? ''))) return false
-  const startedAt = processStart(item, observedAt)
-  return startedAt !== null && Math.abs(startedAt - identity.startedAt) <= START_TIME_TOLERANCE_MS
+  return BROKER_PATTERN.test(String(item?.command ?? '')) && sameStart(item, identity, observedAt)
+}
+
+function sameIdentity(item, identity, observedAt) {
+  return sameStart(item, identity, observedAt) && String(item.command ?? '') === identity.command
 }
 
 const pause = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
@@ -82,7 +94,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   function snapshot() {
     try {
       const table = adapter.readProcessSnapshot()
-      if (table.supported) return table.processes
+      if (table.supported) return { processes: table.processes, unknownPids: table.unknownPids ?? [] }
       discoveryFailure = table.reason ?? 'process discovery unavailable on this platform'
     } catch {
       discoveryFailure = 'process discovery unavailable on this platform'
@@ -95,8 +107,9 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     if (!companionPid) return identity?.pid ?? null
     if (identity && adapter.platform !== 'win32') return identity.pid
     const observedAt = now()
-    const processes = snapshot()
-    if (!processes) return null
+    const result = snapshot()
+    if (!result) return null
+    const { processes } = result
     if (!identity) {
       const companion = processes.find((item) => item.pid === companionPid)
       const companionStartedAt = processStart(companion, observedAt) ?? ownershipStartedAt
@@ -109,7 +122,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
       if (!candidate || !BROKER_PATTERN.test(String(candidate.command ?? ''))) return null
       const captured = processIdentity(candidate, observedAt)
       // A broker started before this companion cannot be ours; one started after it may lag by seconds under load.
-      if (!captured || captured.startedAt < companionStartedAt - START_TIME_TOLERANCE_MS) return null
+      const candidateStartedAt = captured?.startIdentity ?? captured?.startedAt
+      if (!captured || candidateStartedAt < companionStartedAt - START_TIME_TOLERANCE_MS) return null
       claimedPid = candidate.pid
       identity = captured
     }
@@ -127,12 +141,14 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
 
   function currentOwnedProcess() {
     const observedAt = now()
-    const processes = snapshot()
-    if (!processes) return { status: 'unavailable', processes: [] }
+    const result = snapshot()
+    if (!result) return { status: 'unavailable', processes: [] }
+    const { processes, unknownPids } = result
+    if (unknownPids.includes(identity?.pid)) return { status: 'unknown', processes }
     const item = processes.find((process) => process.pid === identity?.pid)
     if (!item) return { status: 'gone', processes }
     const owned = adapter.platform === 'win32'
-      ? BROKER_PATTERN.test(String(item.command ?? '')) && sameIdentity(item, identity, observedAt)
+      ? sameIdentity(item, identity, observedAt)
       : sameProcess(item, identity, observedAt)
     return owned
       ? { status: 'owned', processes }
@@ -151,8 +167,9 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
 
   function currentOwnedDescendants() {
     const observedAt = now()
-    const processes = snapshot()
-    if (!processes) return { status: 'unavailable', identities: [], reason: discoveryFailure }
+    const result = snapshot()
+    if (!result) return { status: 'unavailable', identities: [], reason: discoveryFailure }
+    const { processes } = result
     const identities = [...capturedDescendants.values()].filter((captured) => {
       const item = processes.find((process) => process.pid === captured.pid)
       return sameIdentity(item, captured, observedAt)
@@ -162,8 +179,9 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
 
   function forceEndVerifiedWindowsProcess(captured) {
     const observedAt = now()
-    const processes = snapshot()
-    if (!processes) return { status: 'unavailable', reason: discoveryFailure }
+    const snapshotResult = snapshot()
+    if (!snapshotResult) return { status: 'unavailable', reason: discoveryFailure }
+    const { processes } = snapshotResult
     const item = processes.find((process) => process.pid === captured.pid)
     if (!item) return { status: 'gone' }
     if (!sameIdentity(item, captured, observedAt)) return { status: 'changed' }
@@ -237,14 +255,17 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
         return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: process family remained alive after forced termination`]
       }
       if (state.status === 'gone') return [`broker/app-server process family pid ${identity.pid} already stopped`]
+      if (state.status === 'unknown') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity unknown during cleanup`]
       if (state.status !== 'owned') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
       const graceful = adapter.endProcessFamily(identity.pid)
       state = waitUntilGone()
       if (state.status === 'gone' || state.status === 'changed') return [`stopped broker/app-server process family pid ${identity.pid} started by this call`]
+      if (state.status === 'unknown') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity unknown during cleanup`]
       if (state.status !== 'owned') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
       const forced = adapter.forceEndProcessFamily(identity.pid)
       state = waitUntilGone()
       if (state.status === 'gone' || state.status === 'changed') return [`force-stopped broker/app-server process family pid ${identity.pid} started by this call`]
+      if (state.status === 'unknown') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity unknown during cleanup`]
       const reason = forced?.reason ?? graceful?.reason ?? 'process family remained alive after SIGKILL'
       return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${reason}`]
     } catch (error) {

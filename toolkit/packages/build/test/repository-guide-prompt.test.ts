@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -12,8 +12,12 @@ const guideLine = (path: string) => `${path} is the repository's contributor gui
 function fixture(setup: (root: string) => void) {
   const root = mkdtempSync(join(tmpdir(), 'wt-repository-guide-'))
   roots.push(root)
-  setup(root)
-  return root
+  const canonicalRoot = join(root, 'canonical')
+  const alias = join(root, 'alias')
+  mkdirSync(canonicalRoot)
+  setup(canonicalRoot)
+  symlinkSync('canonical', alias, 'dir')
+  return alias
 }
 
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })

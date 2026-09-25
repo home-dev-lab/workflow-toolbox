@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -223,6 +223,10 @@ describe('second-opinion advisor', () => {
 
   it('uses one fresh read-only Opus SDK query when lane consent is not given', async () => {
     const f = fixture(false)
+    const repoAlias = join(f.repo, '..', 'repo-alias')
+    symlinkSync(f.repo, repoAlias, 'dir')
+    f.repo = repoAlias
+    f.options.repo = repoAlias
     writeFileSync(join(f.repo, 'CLAUDE.md'), '# Guide\n')
     let queryInput: unknown
     const query = vi.fn((input) => {
@@ -239,13 +243,31 @@ describe('second-opinion advisor', () => {
       prompt: `${canonicalPath(join(f.repo, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
         model: 'opus',
-        effort: 'medium',
+        effort: 'xhigh',
         cwd: f.repo,
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],
       },
     })
     expect(lines(f.out)).toEqual(['ROUTE=claude-opus', 'independent answer', 'EXIT=0'])
+    expect(deps.runCodex).not.toHaveBeenCalled()
+  })
+
+  it('runs the Opus fallback at xhigh effort whatever effort the caller passed', async () => {
+    const f = fixture(false)
+    let sdkEffort: unknown
+    const query = vi.fn((input: { options: { effort?: unknown } }) => {
+      sdkEffort = input.options.effort
+      return (async function* () {
+        yield { type: 'result', subtype: 'success', is_error: false, result: 'opus answer' }
+      })()
+    })
+    const deps = dependencies({ resolveSdkQuery: vi.fn(() => query) })
+    expect(await runSecondOpinion({ ...f.options, effort: 'low', route: 'auto' }, deps, f.env)).toBe(0)
+
+    expect(query).toHaveBeenCalledOnce()
+    expect(sdkEffort).toBe('xhigh')
+    expect(lines(f.out)[0]).toBe('ROUTE=claude-opus')
     expect(deps.runCodex).not.toHaveBeenCalled()
   })
 

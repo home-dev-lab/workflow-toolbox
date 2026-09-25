@@ -50,7 +50,8 @@ test('an agentic run never works inside the plugin that launched it', async (t) 
   const root = await stateRoot(t);
   // DEEP_SEARCH_NO_WORKER keeps `start` from detaching a worker. Without it this test launched a
   // REAL opencode run on every suite run — see the note at the seam in bin/deep.mjs.
-  const env = { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1' };
+  // Provider detection is part of start validation; this synthetic key is never used because the worker seam is off.
+  const env = { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1', EXA_API_KEY: 'fixture-provider-key' };
   const result = spawnSync(
     process.execPath,
     [cli, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
@@ -72,7 +73,7 @@ test('start does not spawn a worker when the no-worker seam is set', async (t) =
   const result = spawnSync(
     process.execPath,
     [cli, 'start', '--mode', 'agentic', '--question', 'anything', '--json'],
-    { env: { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1' }, encoding: 'utf8' },
+    { env: { ...process.env, XDG_STATE_HOME: root, DEEP_SEARCH_NO_WORKER: '1', EXA_API_KEY: 'fixture-provider-key' }, encoding: 'utf8' },
   );
   assert.equal(result.status, 0, result.stderr);
   const after = spawnSync('bash', ['-lc', 'ps -eo args | grep -c "[o]pencode run" || true'], { encoding: 'utf8' }).stdout.trim();

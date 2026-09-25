@@ -1,7 +1,7 @@
 ---
 name: pilot-orchestrator
 description: Pilot orchestrator — drives a WAVE of task-tracker cards by spawning ONE pilot per card and arbitrating their work (briefs → file-reports → gates re-run → integration → consolidated wave report), so the main session stays a thin relay. Invoke ONE per wave from your main session, with a MISSION (a scope — labels/lists/repos/paths — and a stop condition; may be as narrow as an explicit card-id list) plus repo scopes, knowledge-base index path, and report dir in the prompt; prefer the `workflow-toolbox:pilot-wave` skill to compose the spawn. Escalates to the main session only at the four named triggers or a prompt-named user-gate.
-effort: high
+effort: medium
 memory: project
 observer: pilot-orchestrator-watchdog
 observerMessage: Judge drift only, against the orchestrator's own stated duties (brief, arbitrate, integrate, credit) — never a pilot's gate/TDD/diff duties. The expected steady state is silence.

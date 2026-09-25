@@ -562,26 +562,26 @@ function stripQuoted(value) {
   return value
 }
 
-function shellValueFor(name, assignments, depth = 0) {
+function shellValueFor(name, assignments, depth, home) {
   if (depth > 8) return null
   const raw = assignments.get(name)
   if (typeof raw !== 'string' || raw.length === 0) return null
-  const home = os.homedir()
   const value = stripQuoted(raw)
   return value
-    .replace(/\$HOME\b/g, home)
-    .replace(/\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (_, ref) => shellValueFor(ref, assignments, depth + 1) ?? process.env[ref] ?? '')
+    .replace(/\$HOME\b/g, () => home)
+    .replace(/\$([A-Za-z_][A-Za-z0-9_]*)\b/g, (_, ref) => shellValueFor(ref, assignments, depth + 1, home) ?? process.env[ref] ?? '')
 }
 
-export function streamFilePathFromCommand(command) {
+export function streamFilePathFromCommand(command, home) {
   if (typeof command !== 'string' || command.length === 0) return null
+  home ??= os.homedir()
   const assignments = new Map()
   for (const m of command.matchAll(/(?:^|\n)([A-Za-z_][A-Za-z0-9_]*)=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g)) {
     assignments.set(m[1], m[2])
   }
   const redirect = command.match(/>\s*"\$STREAMFILE"(?:\s|$)/)
   if (redirect === null) return null
-  const streamFile = shellValueFor('STREAMFILE', assignments)
+  const streamFile = shellValueFor('STREAMFILE', assignments, 0, home)
   return typeof streamFile === 'string' && path.isAbsolute(streamFile) ? streamFile : null
 }
 

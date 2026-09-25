@@ -143,7 +143,10 @@ describe('wt-lane-wait', () => {
   })
 
   it('bounds a missing marker after terminal supervision while the worker is alive', () => {
-    const f = fixture(`const fs = require('node:fs'); setTimeout(() => { ${terminalUpdate} setTimeout(() => {}, 30_000); }, 40)`)
+    const f = fixture('setTimeout(() => {}, 30_000)')
+    const record = join(f.lane, 'supervision', readFileSync(join(f.lane, 'supervision', 'current.json'), 'utf8').match(/"runId":"([^"]+)"/)![1] + '.json')
+    const state = JSON.parse(readFileSync(record, 'utf8'))
+    writeFileSync(record, JSON.stringify({ ...state, state: 'exited', exit: 137 }))
     const result = run(f.root, '--timeout', '0.12')
     expect(result.status).toBe(1)
     expect(result.stdout.trim()).toBe('LANE DIED exit=unknown')

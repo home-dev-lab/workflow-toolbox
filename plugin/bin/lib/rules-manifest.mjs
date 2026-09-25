@@ -3,11 +3,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const RULE_MANIFEST_VERSION = 1
-export const RULE_RECIPIENTS = Object.freeze(['pilot', 'orchestrator', 'critic', 'tdd', 'review', 'refutation', 'harden'])
+export const RULE_RECIPIENTS = Object.freeze(['pilot', 'orchestrator', 'critic', 'tdd', 'review', 'refutation'])
 export const RULE_TRIGGERS = Object.freeze([
   'standing',
-  ...['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'harden', 'report'].map((phase) => `phase:${phase}`),
-  ...['critic', 'tdd', 'review', 'refutation', 'harden'].map((role) => `lane:${role}`),
+  ...['discovery', 'plan', 'critic', 'tdd', 'verify', 'review', 'refutation', 'report'].map((phase) => `phase:${phase}`),
+  ...['critic', 'tdd', 'review', 'refutation'].map((role) => `lane:${role}`),
   'critic->plan',
 ])
 

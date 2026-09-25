@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
 import { resolveRoleVariant } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
-import { resolveAgentSdkRequire } from './lib/sdk-resolution.mjs'
+import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
 
-const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|harden|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
+const usage = () => 'Usage: node wt-claude-executor.mjs --dir <worktree> --model <alias> --brief <file> --role <tdd|critic|review|refutation> [--variant <name>] [--knowledge-base-index <path>] [--log <path>] [--timeout 5400]'
 
 function finish(log, code) {
   try {
@@ -23,9 +23,9 @@ async function worker(options) {
   mkdirSync(path.dirname(options.log), { recursive: true })
   const launch = executorBrief(options)
   const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-  const sdkRole = prepareSdkRole(options.role, { worktree: options.dir, env: process.env, pluginRoot, adapterOptions: { log: (line) => appendFileSync(options.log, `${line}\n`) } })
-  const require = resolveAgentSdkRequire({ projectDir: options.dir })
-  const { query } = require('@anthropic-ai/claude-agent-sdk')
+  const resolution = resolveAgentSdk({ sdkEntry: options.sdkPath, ownToolkitManifest: null, projectDir: null, npmRoot: null, writableRoots: [options.dir] })
+  const sdkRole = prepareSdkRole(options.role, { worktree: options.dir, env: process.env, pluginRoot, loadedCodePaths: resolvedAgentSdkCodePaths(resolution), adapterOptions: { log: (line) => appendFileSync(options.log, `${line}\n`) } })
+  const { query } = resolution.require(resolution.entryPath)
   const abortController = new AbortController()
   let timedOut = false
   const timer = setTimeout(() => {
@@ -41,7 +41,7 @@ async function worker(options) {
   let servedModel = options.model
   const effort = options.variant
     ? { value: options.variant, origin: options.variantOrigin ?? 'override' }
-    : resolveRoleVariant(['tdd', 'harden'].includes(options.role) ? 'code' : options.role, options.model)
+    : resolveRoleVariant(options.role === 'tdd' ? 'code' : options.role, options.model)
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   appendFileSync(options.log, `variant=${effort.value} origin=${effort.origin} forced=false\n`)
   try {
@@ -52,7 +52,7 @@ async function worker(options) {
       settingSources: [],
       canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex, profile: sdkRole.profile }),
       permissionMode: 'default',
-      sandbox: { enabled: true, autoAllowBashIfSandboxed: false },
+      sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true },
       settings: { permissions: { blockReadsOutsideWorkingDirectories: true, disableBypassPermissionsMode: 'disable' } },
       abortController,
       env: { ...process.env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
@@ -96,10 +96,12 @@ async function main() {
   if (options.error) { process.stderr.write(`wt-claude-executor: ${options.error}\n${usage()}\n`); return 2 }
   if (!existsSync(options.dir) || !statSync(options.dir).isDirectory()) { process.stderr.write(`wt-claude-executor: --dir is not a directory: ${options.dir}\n`); return 2 }
   if (!existsSync(options.brief)) { process.stderr.write(`wt-claude-executor: --brief does not exist: ${options.brief}\n`); return 2 }
+  if (isWorker && !options.sdkPath) { process.stderr.write('wt-claude-executor: worker requires parent-resolved --sdk-path\n'); return 2 }
   try { assertHarnessAlias(options.model); executorBrief(options) } catch (error) { process.stderr.write(`wt-claude-executor: ${error instanceof Error ? error.message : String(error)}\n`); return 2 }
   if (isWorker) return worker(options)
   mkdirSync(path.join(options.dir, '.lane'), { recursive: true })
-  const child = spawn(process.execPath, [process.argv[1], '--worker', '--dir', options.dir, '--model', options.model, ...(options.variant ? ['--variant', options.variant] : []), ...(options.variantOrigin ? ['--variant-origin', options.variantOrigin] : []), '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role, ...(options.knowledgeBaseIndex ? ['--knowledge-base-index', options.knowledgeBaseIndex] : [])], { detached: true, stdio: 'ignore', env: process.env })
+  const resolution = resolveAgentSdk({ projectDir: options.dir, writableRoots: [options.dir] })
+  const child = spawn(process.execPath, [process.argv[1], '--worker', '--sdk-path', resolution.entryPath, '--dir', options.dir, '--model', options.model, ...(options.variant ? ['--variant', options.variant] : []), ...(options.variantOrigin ? ['--variant-origin', options.variantOrigin] : []), '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role, ...(options.knowledgeBaseIndex ? ['--knowledge-base-index', options.knowledgeBaseIndex] : [])], { detached: true, stdio: 'ignore', env: process.env })
   child.unref()
   process.stdout.write(`pid=${child.pid}\nlog=${options.log}\n`)
   return 0

@@ -84,5 +84,16 @@ Fix belongs to something also distributed → unfinished until decided: durable,
 project-agnostic core → distributed copy, normal dev loop; local calibrations/paths/account
 specifics → stay private. Unstated decision = how copies silently diverge.
 
+⚠ **"Does the distributed set already carry this?" is answered against the SOURCE at a named
+revision — never against an installed copy.** An installed copy is a build artefact, and nothing in
+its content says which tree it was built from: ahead of the released line, behind it, or locally
+edited all read identically. Resolve the question the way a distributor would — read the file at
+the revision you would ship from.
+Getting this backwards inverts the decision silently: a clause that exists only on an unmerged
+branch reads as already distributed, so the port that would have carried it never gets made, and
+the copy adopters receive stays behind while everyone believes it is current. It fails in the other
+direction too: advice about what adopters have, given from a machine running an ahead-of-release
+copy, is wrong by exactly the difference, with no signal that anything is off.
+
 Composes with `wt-verify-by-ground-truth.md` — proving subject RUNS the fix, control readable
 whether fix worked or not = verification duties, live there.

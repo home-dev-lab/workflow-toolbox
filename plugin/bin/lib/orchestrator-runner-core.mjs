@@ -392,7 +392,7 @@ export async function runOrchestrator(input, dependencies = {}) {
       if (symlink) throw new Error(`judge refused: symlink under wave directory: ${path.relative(waveDir, symlink)}`)
       waveServer = (dependencies.createWaveServer ?? createWaveServer)({ waveDir, cards: ordered, sdk: dependencies.sdk, sdkRequire: dependencies.sdkRequire })
       for (const row of ordered) { waveServer.setCardState(row.id, 'piloting'); waveServer.setCardState(row.id, 'judging') }
-      judge = createSdkJudge({ query: dependencies.query, models: dependencies.models, waveDir, waveServer, contract: dependencies.contract, env: dependencies.env, knowledgeBaseIndex: options.knowledgeBaseIndex, projectRoot: repo, pluginDirs: options.pluginDirs })
+      judge = createSdkJudge({ query: dependencies.query, models: dependencies.models, waveDir, waveServer, contract: dependencies.contract, env: dependencies.env, knowledgeBaseIndex: options.knowledgeBaseIndex, projectRoot: repo, pluginDirs: options.pluginDirs, loadedCodePaths: dependencies.loadedCodePaths })
     }
     for (const row of ordered) {
       // No receipts to judge when the dependency install failed: the card is escalated as is.

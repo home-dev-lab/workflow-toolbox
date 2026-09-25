@@ -578,7 +578,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const worker = { pid: state.workerPid, argv: state.workerArgv, startTime: state.workerStartTime }
     killIdentity(worker, 'SIGTERM'); waitForIdentityExit(worker)
     const preload = join(f.root, 'darwin.cjs')
-    writeFileSync(preload, "Object.defineProperty(process, 'platform', { value: 'darwin' })\n")
+    writeFileSync(preload, "Object.defineProperty(process, 'platform', { value: 'darwin' }); const childProcess = require('node:child_process'); const original = childProcess.spawnSync; childProcess.spawnSync = function (command, args, options) { return command === 'ps' ? { status: 0, stdout: '', stderr: '' } : original.call(this, command, args, options) }; require('node:module').syncBuiltinESMExports()\n")
     const second = spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: { ...f.env, NODE_OPTIONS: `--require=${preload}` } })
     expect(second.status, second.stderr).toBe(0)
     const secondState = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))

@@ -219,6 +219,26 @@ describe('scanLiveLaneProcesses', () => {
     })
   })
 
+  it('preserves replacement metacharacters in an injected Windows separator', () => {
+    const separator = "[$`][$&][$'][$$]"
+    const result = scanLiveLaneProcesses({
+      platform: 'win32',
+      win32Path: { basename: (value: string) => value.split(separator).at(-1)!, isAbsolute: () => true, sep: separator },
+      spawnSyncImpl: () => ({
+        status: 0,
+        stdout: JSON.stringify({
+          ProcessId: 405,
+          CommandLine: 'node.exe D:/tools/wt-lane.mjs --dir D:/work/lane-15',
+        }),
+      }),
+    })
+
+    expect(result).toEqual({
+      status: 'known',
+      processes: [{ pid: '405', dir: `D:${separator}work${separator}lane-15`, command: 'node.exe D:/tools/wt-lane.mjs' }],
+    })
+  })
+
   it('names PowerShell when Windows process enumeration is unavailable', () => {
     expect(scanLiveLaneProcesses({
       platform: 'win32',

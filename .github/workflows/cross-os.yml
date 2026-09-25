@@ -98,7 +98,9 @@ jobs:
           New-Item -ItemType Directory -Force ci-diagnostics | Out-Null
           pnpm test 2>&1 | Tee-Object ci-diagnostics/vitest.log
           exit $LASTEXITCODE
-        timeout-minutes: 22
+        # The full Windows suite measured 17.7 minutes before develop's added process-heavy tests;
+        # 30 minutes preserves diagnostics for a slow hosted runner without changing test coverage.
+        timeout-minutes: 30
       # Diagnostic, never a gate: the vitest fork carrying artifact-server.test.ts has died on the hosted
       # Windows runner without a result line since run 27 (`Worker exited unexpectedly` names no file).
       # Run that one file alone, one worker, verbose reporter, with Node tracing every exit and uncaught

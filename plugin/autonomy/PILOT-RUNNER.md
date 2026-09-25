@@ -5,7 +5,9 @@
 `node plugin/bin/wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <card.md>` runs the pilot with `query()`,
 `permissionMode: 'default'`, and `settingSources: []`. The SDK routes every tool request through
 `canUseTool`, which applies real-path confinement to filesystem tools and denies tools outside the
-pilot role profile. Supplying the callback makes the SDK use its stdio permission-prompt transport,
+pilot role profile. Every role excludes and explicitly disallows context-mode tools outside its
+declared subset, including `ctx_doctor`, `ctx_purge`, and the `ctx_execute` family. The invariant is:
+no role runs model-authored code or commands outside its declared, guarded path. Supplying the callback makes the SDK use its stdio permission-prompt transport,
 so the callback response resolves requests headlessly rather than opening an interactive prompt.
 The lifecycle surface is the Planka HTTP MCP and the in-process `sdk-pilot-lifecycle` MCP server. The lifecycle server exposes `transition`,
 `write_artifact`, `route_finding`, and `run`; it owns phases, artifacts, lanes, gates, and the report-edge commit.
@@ -17,8 +19,7 @@ through the runner mailbox and owner-facing output only through the pilot report
 ## What an SDK session receives
 
 Every Claude SDK query uses the table in `plugin/bin/lib/sdk-role-profile.mjs`; GPT lanes and
-`lane_skills` are unchanged. `LSP` is listed for every role and becomes available only when the
-generated role plugin has a resolved language server. Context-mode 1.0.177 is loaded from the active
+`lane_skills` are unchanged. `LSP` is absent from every SDK role. Context-mode is loaded from the active
 profile's `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` cache. Readers use `disallowedTools` so the plugin's
 other nine MCP tools do not enter their receipt.
 
@@ -29,35 +30,41 @@ symlink target once.
 
 | Role | Tools | LSP | Selected workflow-toolbox skills | Shipped command guards |
 | --- | --- | --- | --- | --- |
-| pilot | Read, Glob, Grep, LSP, all ten context-mode MCP tools — no Edit, Write or Bash: every increment goes through the lifecycle `run` tool | optional, visible | stale-card-sweep, lesson-harvest, deep-grounding | none beyond the confinement; nothing to guard without a shell |
-| tdd, harden | Read, Glob, Grep, LSP, Edit, Write, Bash, all ten context-mode MCP tools | optional, visible | changelog | writer set |
-| judge, critic, review, refutation | Read, Glob, Grep, LSP, `ctx_search` only | optional, visible | none | none; no Bash |
+| pilot | Read, Glob, Grep, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` — no Edit, Write, Bash, diagnostics, deletion, LSP, or `ctx_execute` family: every increment goes through the lifecycle `run` tool | disabled | stale-card-sweep, lesson-harvest, deep-grounding | none; this role has no model-authored command path |
+| tdd | Read, Glob, Grep, Edit, Write, guarded Bash, `ctx_fetch_and_index`, `ctx_index`, and `ctx_search` | disabled | changelog | writer set; model-authored commands run only through guarded, mandatory-sandbox Bash |
+| judge, critic, review, refutation | Read, Glob, Grep, `ctx_search` only | disabled | none | none; no Bash |
 
-The initial implementation detects TypeScript and JavaScript from a root `tsconfig.json` or
-`package.json`, or a `.ts`, `.js`, `.mjs`, or `.cjs` file in the worktree. It resolves
-`typescript-language-server` on `PATH`; an absolute `WT_LSP_TYPESCRIPT_SERVER` overrides PATH only
-when set. The generated `.lsp.json` carries the resolved absolute command and only the detected
-language mappings. Missing binaries never refuse a session: the init log and `lifecycle.json` state
-`LSP absent: typescript-language-server not found on PATH`, and the closing report states
-`LSP navigation: absent (...)`; availability is stated with the command and the report says
-`LSP navigation: available`. When available, omission of `LSP` from the SDK init receipt refuses the
-incomplete receipt; when absent, the SDK is expected to omit it.
+SDK roles do not receive LSP. Pinning the `typescript-language-server` launcher is insufficient:
+that server can select and fork a workspace `node_modules/typescript/lib/tsserver.js`, turning
+workspace content into host-executed code. The init log and `lifecycle.json` record this explicit
+disabled state, and an initialization receipt that exposes `LSP` is refused.
 
-The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
+Context-mode's fetch/index/search service processes are run by the plugin, not from model-authored
+source. Their library-controlled persistent context storage outside the worktree is a known exception
+to worktree confinement.
+The writer's model-authored shell work gets done through `Bash`, where sandbox availability is
+mandatory, per-command sandbox escape is disabled and denied by authorization, and the writer guards
+apply. The writer set is the fifteen guards named in `sdk-role-profile.mjs`: shell correctness guards for
 unquoted globs, merge chains, concurrent tests, piped gate status, process-environment dumps,
 commit backticks, zsh colon modifiers, `find -newermt`, `PIPESTATUS`, and absent package scripts;
 plus main, gate-evidence, stale-date, rule-convention, and shipped-twin checks. Each SDK callback
 spawns the original shipped script with the native hook payload unchanged and returns its JSON
-decision unchanged. A non-zero exit or invalid JSON is logged and produces no decision, never an
-unreported allow. The `pilot-guard` function plugin remains loaded for confinement, and
-context-mode supplies the read bound. Spawn guards are excluded because these sessions have no
+decision unchanged. A role-launched guard forces its otherwise fail-open wrapper to exit non-zero on
+an internal crash; a launch failure, non-zero exit, or invalid JSON is logged and returns an explicit
+denial. Ordinary host hook callers retain the documented fail-open default. The active plugin roots,
+generated role plugin, and selected guard scripts are derived from the prepared role and supplied to
+both the authorization callback and sandbox `denyWrite`, so Write, Edit, and Bash cannot replace code
+the host will execute. The `pilot-guard` function plugin matches `Bash` only, so it never protects the
+pilot role, which has no Bash tool; process execution is instead absent from that role. Context-mode
+supplies the read bound. Spawn guards are excluded because these sessions have no
 Agent tool; Stop and SessionStart workflow-toolbox hooks are excluded because lifecycle servers own
 transitions; Planka producers are excluded because executors do not write the board.
 
 Only selected skills are copied into generated `.lane/sdk-plugins/<role>/` directories; the full
 workflow-toolbox plugin, its workflows, monitors, statusline, and unrelated skills are never loaded.
 The initialization receipt must contain the confinement plugin, context-mode plugin, generated skill
-plugin where applicable, every role tool, and every selected skill. Callback registration is not a
+plugin where applicable, every role tool, and every selected skill. Any receipt tool outside the role
+profile and the role's exact lifecycle tools refuses startup. Callback registration is not a
 receipt field, so startup proves every script exists and registers one callback per selected table
 entry; the refusal probe proves that callback execution works. A missing guard, skill, confinement
 plugin, or context-mode 1.0.177 path refuses startup and names the path.
@@ -107,10 +114,10 @@ form and Node path APIs for resolution and real-path containment on each host.
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
 | plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing/reworded criterion is refused with an example. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. `CONTEST routed card <id>:` gets exactly one plan round; a repeated maintained scope disagreement proceeds and is reported. A fourth other changes-requested verdict after three plan rounds reaches a partial report. |
-| tdd or harden -> verify | Attested lane receipt and non-empty report. On FULL, `tdd-brief.md` has the plan `## Tasks` block byte-identically. |
+| tdd -> verify | Attested lane receipt and non-empty report. The initial FULL `tdd-brief.md` has the plan `## Tasks` block byte-identically; later TDD fix briefs carry runner-owned review findings and focused-gate instructions. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
-| review -> refutation, harden, or report | Attested lane receipt and report verdict. `clear` reaches refutation; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
-| refutation -> report or harden | Attested lane receipt and report verdict. `clear` reaches report; `changes-requested` requires findings and reaches harden. A fourth changes-requested review/refutation round reaches a partial report. |
+| review -> refutation, tdd, or report | Attested lane receipt and report verdict. `clear` reaches refutation; blocking `changes-requested` writes `review-findings.md` and reaches a TDD fix. Mechanical non-convergence reaches a partial report. |
+| refutation -> report, tdd, or partial report | Attested lane receipt and report verdict. `clear` reaches report; blocking `changes-requested` reaches a TDD fix unless non-convergence fires. |
 | report -> awaiting_fidelity | Pilot report with valid `## E2E` and `## Acceptance` quoting every folded card DoD criterion with `Outcome: proven`, `Outcome: not done: <reason>`, or `Outcome: deferred: card <id> — <L4 reason>` naming an id in `routed_cards`, plus mechanically appended `## Routed cards` and `## Independent Review` on FULL; unchanged lifecycle snapshot; runner commit; and external archive manifest. Any non-proven outcome or `e2e not run` classifies the delivery as partial before archive. A partial report must contain `Partial: <reason>`; a full report must not contain `Partial:`. |
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
@@ -142,7 +149,7 @@ patterns with separators are confined by real-path checking their non-glob prefi
 relative symlinks. The `measures wildcard-first Glob and Grep matches through an in-worktree symlink with a real SDK query` lock (`WT_REAL_SDK_LOCKS=1`) measured wildcard-first matches not to escape the worktree through an in-worktree symlink. Lifecycle implementation, receipts/launch, and report-edge transaction code live
 in separate modules behind the unchanged public server export.
 
-TDD and harden briefs, and independent critic/review/refutation briefs, put mapped exact rule sections
+TDD and independent critic/review/refutation briefs put mapped exact rule sections
 under `## Rules that apply to this role (authoritative)`. Both executor families receive a
 runner-owned snapshot brief; its knowledge-base availability line reflects the selected launcher.
 The independent brief names the runner's once-resolved knowledge-base index and states that fiches are
@@ -152,14 +159,14 @@ the index and real-path-contained regular Markdown fiches while Glob/Grep remain
 OpenCode runs with `--dir` and `cwd` set to the worktree and `--auto` in `wt-lane.mjs`; `--auto` approves an
 `external_directory` read the user's OpenCode config leaves on `ask`, so the brief names the index and tells
 the lane to report a refused read (a config that denies it wins) rather than rely on the knowledge base.
-TDD and harden briefs also carry the frontmatter-stripped body of the shipped changelog skill in a
+TDD briefs also carry the frontmatter-stripped body of the shipped changelog skill in a
 server-written authoritative section; a missing skill source refuses brief composition.
 
 Tree signature v3 is a filesystem signature over names from HEAD, the index, and non-ignored
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or
 rename does not change it; recorded v2 signatures do not compare.
 
-TDD and harden lanes use `openai/gpt-5.6-terra`; critic, review, and refutation use
+TDD lanes use `openai/gpt-5.6-terra`; critic, review, and refutation use
 `openai/gpt-5.6-sol`. Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
 toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
 A lane must not rely on background processes surviving its receipt: the reported process group contains

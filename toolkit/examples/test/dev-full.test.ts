@@ -156,6 +156,25 @@ describe('dev-full meta', () => {
   })
 })
 
+describe('dev-full agentType routing', () => {
+  it('omits defaults, forwards perAgent.agentType to every child, and preserves per-role overrides', async () => {
+    const runs = [
+      {},
+      { perAgent: { agentType: 'blanket' } },
+      { perAgent: { agentType: 'blanket' }, agentTypes: { check: 'specialist' } },
+    ]
+    for (const config of runs) {
+      const { rt, calls } = makeRuntime()
+      await run(rt, { ...VALID_INPUT, ...config })
+      for (const childArgs of [calls.plan[0], calls.implement[0], calls.review[0]]) {
+        const args = childArgs as Record<string, unknown>
+        expect(args['perAgent']).toEqual(config.perAgent)
+        expect(args['agentTypes']).toEqual(config.agentTypes)
+      }
+    }
+  })
+})
+
 // ---------------------------------------------------------------------------
 // parseInput — fail fast (the ONLY throwing surface)
 // ---------------------------------------------------------------------------

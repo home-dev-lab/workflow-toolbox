@@ -10,16 +10,14 @@
         "critic",
         "tdd",
         "review",
-        "refutation",
-        "harden"
+        "refutation"
       ],
       "triggers": [
         "standing",
         "lane:critic",
         "lane:tdd",
         "lane:review",
-        "lane:refutation",
-        "lane:harden"
+        "lane:refutation"
       ]
     },
     {
@@ -52,14 +50,12 @@
       "recipients": [
         "pilot",
         "tdd",
-        "harden",
         "review",
         "refutation"
       ],
       "triggers": [
         "standing",
         "lane:tdd",
-        "lane:harden",
         "lane:review",
         "lane:refutation"
       ]
@@ -88,7 +84,7 @@
         "refutation"
       ],
       "triggers": [
-        "phase:harden",
+        "phase:tdd",
         "lane:critic",
         "lane:review",
         "lane:refutation"
@@ -109,11 +105,11 @@
       "heading": "## Choosing the level",
       "recipients": [
         "pilot",
-        "harden"
+        "tdd"
       ],
       "triggers": [
         "phase:plan",
-        "lane:harden"
+        "lane:tdd"
       ]
     },
     {
@@ -121,21 +117,21 @@
       "heading": "## Mechanical beats disciplined, every time available",
       "recipients": [
         "pilot",
-        "harden"
+        "tdd"
       ],
       "triggers": [
         "phase:plan",
-        "lane:harden"
+        "lane:tdd"
       ]
     },
     {
       "source": "rules/wt-step-back-architectural.md",
       "heading": "# Step back to the architectural root — and ground \"it doesn't exist\" before a workaround",
       "recipients": [
-        "harden"
+        "tdd"
       ],
       "triggers": [
-        "lane:harden"
+        "lane:tdd"
       ]
     },
     {
@@ -153,13 +149,11 @@
       "heading": "## A gate is its exit code, never its printed text",
       "recipients": [
         "pilot",
-        "tdd",
-        "harden"
+        "tdd"
       ],
       "triggers": [
         "phase:verify",
-        "lane:tdd",
-        "lane:harden"
+        "lane:tdd"
       ]
     },
     {

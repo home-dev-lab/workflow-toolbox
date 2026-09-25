@@ -27,7 +27,7 @@
     ]
   },
   "hooks": {
-    "events": { "PreToolUse": 24, "PostToolUse": 9, "SessionStart": 11, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
+    "events": { "PreToolUse": 25, "PostToolUse": 9, "SessionStart": 11, "UserPromptSubmit": 1, "SubagentStop": 1, "Stop": 5 },
     "types": ["command"],
     "matchers": ["Bash", "SendMessage", "Edit|Write|MultiEdit", "StructuredOutput", "Agent", "Workflow", "*", "SendMessage|Agent|Task", "mcp__planka__get_board|mcp__planka__find_cards"],
     "payloadFields": ["hook_event_name", "session_id", "tool_name", "tool_input", "transcript_path", "cwd", "agent_id", "agent_type", "stop_hook_active"],
