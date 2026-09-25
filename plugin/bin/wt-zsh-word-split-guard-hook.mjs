@@ -3,7 +3,8 @@
 // unquoted where zsh does not split it. This is a lexer approximation, not a zsh parser.
 // It sees same-command assignments only and cannot inspect options enabled in a user's .zshrc.
 
-import { pathToFileURL } from 'node:url'
+import { realpathSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 import { readStdinJson } from './lib/host/read-stdin-json.mjs'
@@ -449,7 +450,8 @@ function main() {
 // Entry-guard: run only when invoked directly as a hook, so the module is importable by
 // tests (e.g. for `analyze`) without executing (and blocking on) stdin. Same idiom as
 // wt-verifier-cli-guard-hook.mjs and wt-adopt-check-hook.mjs.
-const invokedPath = process.argv[1]
-if (invokedPath !== undefined && import.meta.url === pathToFileURL(invokedPath).href) {
-  runFailOpenHook(GUARD, main)
-}
+// Compared as real paths, like wt-lane.mjs: Node resolves the main module through symlinks and
+// Windows short names, so a URL comparison against the raw argv[1] would silently never run the hook.
+let invokedDirectly = false
+try { invokedDirectly = realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)) } catch {}
+if (invokedDirectly) runFailOpenHook(GUARD, main)
