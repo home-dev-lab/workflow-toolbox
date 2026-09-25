@@ -1900,8 +1900,6 @@ export async function main(argv: readonly string[] = process.argv.slice(2)): Pro
 }
 
 // The shared guard handles symlinks and fails closed when either path is unavailable.
-const entryGuardUrl = import.meta.url.includes('/packages/debugger/src/')
-  ? new URL('../../../../plugin/bin/lib/host/entry-guard.mjs', import.meta.url)
-  : new URL('../../plugin/bin/lib/host/entry-guard.mjs', import.meta.url)
+const entryGuardUrl = new URL('./lib/host/entry-guard.mjs', import.meta.url)
 const { isInvokedDirectly } = await import(entryGuardUrl.href)
 if (isInvokedDirectly(import.meta.url)) process.exitCode = await main()

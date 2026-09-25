@@ -2783,7 +2783,7 @@ async function main(argv = process.argv.slice(2)) {
     return 1;
   }
 }
-var entryGuardUrl = import.meta.url.includes("/packages/debugger/src/") ? new URL("../../../../plugin/bin/lib/host/entry-guard.mjs", import.meta.url) : new URL("../../plugin/bin/lib/host/entry-guard.mjs", import.meta.url);
+var entryGuardUrl = new URL("./lib/host/entry-guard.mjs", import.meta.url);
 var { isInvokedDirectly } = await import(entryGuardUrl.href);
 if (isInvokedDirectly(import.meta.url)) process.exitCode = await main();
 export {
