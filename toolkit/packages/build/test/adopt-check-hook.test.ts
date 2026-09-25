@@ -7,7 +7,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -18,6 +18,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-adopt-check-hook.mjs')
 const INSTALL_RULES = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
 const RULE = 'wt-delegation-ladder.md'
+const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
 
 const roots: string[] = []
 afterEach(() => {
@@ -48,6 +49,14 @@ function installInto(dir: string, script = INSTALL_RULES): void {
     env: sealedPluginCliEnv(dir),
   })
   if (res.status !== 0) throw new Error(`fixture install failed: ${res.stdout}${res.stderr}`)
+}
+
+function installOnDemand(dir: string, script = INSTALL_RULES): void {
+  installInto(dir, script)
+  for (const file of readdirSync(dir).filter((name) => name.endsWith('.md'))) {
+    const target = join(dir, file)
+    writeFileSync(target, ON_DEMAND_FRONTMATTER + readFileSync(target, 'utf8'))
+  }
 }
 
 function runHook(cwd: string, env: NodeJS.ProcessEnv, hook = HOOK): { stdout: string; context: string } {
@@ -158,6 +167,64 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     installInto(join(f.cfg, 'rules')) // adopted globally, nothing in the project
     const r = runHook(f.proj, f.env)
     expect(r.stdout).toBe('')
+  })
+
+  it.each([
+    ['project', (f: ReturnType<typeof fixture>) => join(f.proj, '.claude', 'rules-on-demand')],
+    ['global', (f: ReturnType<typeof fixture>) => join(f.cfg, 'rules-on-demand')],
+  ])('is SILENT when adopted on demand at the %s level', (_label, locate) => {
+    const f = fixture('on-demand-current')
+    installOnDemand(locate(f))
+
+    expect(runHook(f.proj, f.env).stdout).toBe('')
+  })
+
+  it('reports stale on-demand content at its real location without calling it absent', () => {
+    const f = fixture('on-demand-stale')
+    const dir = join(f.cfg, 'rules-on-demand')
+    installOnDemand(dir)
+    ageManagedRule(join(dir, RULE))
+    writeFileSync(join(dir, RULE), ON_DEMAND_FRONTMATTER + readFileSync(join(dir, RULE), 'utf8'))
+
+    const result = runHook(f.proj, f.env)
+    expect(result.context).toContain(`${RULE} (${dir})`)
+    expect(result.context).toContain(`--set rules --install --dir '${dir}'`)
+    expect(result.context).not.toContain('NOT installed')
+  })
+
+  it('reports a static plus on-demand copy as a double load', () => {
+    const f = fixture('on-demand-duplicate')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    const onDemandDir = join(f.cfg, 'rules-on-demand')
+    installInto(staticDir)
+    installOnDemand(onDemandDir)
+
+    const result = runHook(f.proj, f.env)
+    expect(result.context).toContain('DOUBLE-LOAD')
+    expect(result.context).toContain(staticDir)
+    expect(result.context).toContain(onDemandDir)
+  })
+
+  it('reports project and config on-demand copies as a double load', () => {
+    const f = fixture('on-demand-project-config-duplicate')
+    const projectDir = join(f.proj, '.claude', 'rules-on-demand')
+    const configDir = join(f.cfg, 'rules-on-demand')
+    installOnDemand(projectDir)
+    installOnDemand(configDir)
+
+    const result = runHook(f.proj, f.env)
+    expect(result.context).toContain('DOUBLE-LOAD')
+    expect(result.context).toContain(projectDir)
+    expect(result.context).toContain(configDir)
+  })
+
+  it('resolves directory symlinks before deciding a static and on-demand path are duplicates', () => {
+    const f = fixture('on-demand-symlink')
+    const staticDir = join(f.cfg, 'rules', 'wt')
+    installInto(staticDir)
+    symlinkSync(staticDir, join(f.cfg, 'rules-on-demand'), 'dir')
+
+    expect(runHook(f.proj, f.env).stdout).toBe('')
   })
 
   // Card 1835727457 (rules/wt/ subfolder migration): the hook must search BOTH the

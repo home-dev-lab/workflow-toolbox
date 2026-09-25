@@ -22,6 +22,7 @@ import {
   readdirSync,
   mkdirSync,
   cpSync,
+  renameSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -37,6 +38,7 @@ const INSTALLER_ENV: NodeJS.ProcessEnv = sealedPluginCliEnv(ENV_ROOT, {
 })
 const RULE = 'wt-delegation-ladder.md'
 const AUTONOMY = 'AUTONOMY.md'
+const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
 
 const roots: string[] = []
 afterEach(() => {
@@ -80,6 +82,13 @@ function ageRuleCopy(file: string, version = '0.0.1'): void {
   const body = readFileSync(join(REPO_ROOT, 'plugin/rules', RULE), 'utf8') + '\nA PARAGRAPH SINCE REWRITTEN UPSTREAM\n'
   const fp = createHash('sha256').update(body, 'utf8').digest('hex').slice(0, 12)
   writeFileSync(file, `<!-- installed from workflow-toolbox v${version} · content sha256:${fp} by the adopt skill -->\n\n${body}`)
+}
+
+function addOnDemandFrontmatter(dir: string): void {
+  for (const file of readdirSync(dir).filter((name) => name.endsWith('.md'))) {
+    const target = join(dir, file)
+    writeFileSync(target, ON_DEMAND_FRONTMATTER + readFileSync(target, 'utf8'))
+  }
 }
 
 describe('adopt installer — edit-safety contract (committed drift lock)', () => {
@@ -218,7 +227,211 @@ describe('adopt installer — explicit rules roots cannot create flat duplicates
   })
 })
 
+describe('adopt installer — rules-on-demand copies', () => {
+  it.each([
+    ['block value', '---\non-demand:\n  triggers: [Edit]\n---\n'],
+    ['trailing comment', '---\non-demand: # engine\n---\n'],
+    ['inline map', '---\non-demand: {triggers: [Edit]}\n---\n'],
+  ])('recognizes the top-level on-demand key with a %s', (_label, frontmatter) => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    run(['--set', 'rules', '--install'], dir)
+    for (const file of readdirSync(dir).filter((name) => name.endsWith('.md'))) {
+      const target = join(dir, file)
+      writeFileSync(target, frontmatter + readFileSync(target, 'utf8'))
+    }
+
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(`${RULE}: UP-TO-DATE`)
+    writeFileSync(rulePath(dir), readFileSync(rulePath(dir), 'utf8') + '\nVISIBLE BODY EDIT\n')
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(`${RULE}: EDITED`)
+  })
+
+  it('classifies the adopted BODY behind on-demand frontmatter and detects a real body edit', () => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    run(['--set', 'rules', '--install'], dir)
+    addOnDemandFrontmatter(dir)
+
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(`${RULE}: UP-TO-DATE`)
+    writeFileSync(rulePath(dir), readFileSync(rulePath(dir), 'utf8') + '\nMY LOCAL ON-DEMAND EDIT\n')
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(`${RULE}: EDITED`)
+  })
+
+  it('refreshes a stale on-demand copy in place and preserves its frontmatter byte for byte', () => {
+    const dir = join(mkDir(), 'rules-on-demand')
+    run(['--set', 'rules', '--install'], dir)
+    addOnDemandFrontmatter(dir)
+    ageRuleCopy(rulePath(dir))
+    writeFileSync(rulePath(dir), ON_DEMAND_FRONTMATTER + readFileSync(rulePath(dir), 'utf8'))
+
+    expect(run(['--set', 'rules', '--check'], dir)).toContain(`${RULE}: STALE`)
+    expect(run(['--set', 'rules', '--install'], dir)).toContain(`${RULE}: REFRESHED`)
+    const refreshed = readFileSync(rulePath(dir), 'utf8')
+    expect(refreshed.startsWith(ON_DEMAND_FRONTMATTER)).toBe(true)
+    expect(refreshed.slice(0, ON_DEMAND_FRONTMATTER.length)).toBe(ON_DEMAND_FRONTMATTER)
+    expect(refreshed).not.toContain('A PARAGRAPH SINCE REWRITTEN UPSTREAM')
+  })
+
+  it('an implicit install finds and refreshes the config rules-on-demand copy without writing rules/wt', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const config = join(root, 'config')
+    const target = join(config, 'rules-on-demand')
+    mkdirSync(project, { recursive: true })
+    run(['--set', 'rules', '--install'], target)
+    addOnDemandFrontmatter(target)
+    ageRuleCopy(rulePath(target))
+    writeFileSync(rulePath(target), ON_DEMAND_FRONTMATTER + readFileSync(rulePath(target), 'utf8'))
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const result = runInCwdResult(['--set', 'rules', '--install'], project, env)
+    expect(result.status).toBe(0)
+    expect(result.out).toContain(`[rules] target=${target}`)
+    expect(result.out).toContain(`${RULE}: REFRESHED`)
+    expect(existsSync(join(config, 'rules', 'wt', RULE))).toBe(false)
+  })
+
+  it('reports copies present in both rules/wt and rules-on-demand instead of choosing one', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const config = join(root, 'config')
+    const staticDir = join(config, 'rules', 'wt')
+    const onDemandDir = join(config, 'rules-on-demand')
+    mkdirSync(project, { recursive: true })
+    run(['--set', 'rules', '--install'], staticDir)
+    run(['--set', 'rules', '--install'], onDemandDir)
+    addOnDemandFrontmatter(onDemandDir)
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const result = runInCwdResult(['--set', 'rules', '--check', '--global'], project, env)
+    expect(result.status).not.toBe(0)
+    expect(result.out).toContain('DUPLICATE')
+    expect(result.out).toContain(staticDir)
+    expect(result.out).toContain(onDemandDir)
+  })
+
+  it('does not report a duplicate when rules-on-demand is a directory symlink to rules/wt', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const config = join(root, 'config')
+    const staticDir = join(config, 'rules', 'wt')
+    const onDemandDir = join(config, 'rules-on-demand')
+    mkdirSync(project, { recursive: true })
+    run(['--set', 'rules', '--install'], staticDir)
+    symlinkSync(staticDir, onDemandDir, 'dir')
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const result = runInCwdResult(['--set', 'rules', '--check', '--global'], project, env)
+    expect(result.status).toBe(0)
+    expect(result.out).not.toContain('DUPLICATE')
+    expect(result.out).toContain(`${RULE}: UP-TO-DATE`)
+  })
+
+  it('an explicit static install does not recreate a rule moved to sibling rules-on-demand', () => {
+    const root = mkDir()
+    const config = join(root, 'config')
+    const staticDir = join(config, 'rules', 'wt')
+    const onDemandDir = join(config, 'rules-on-demand')
+    const moved = 'wt-memory-hygiene.md'
+    run(['--set', 'rules', '--install'], staticDir)
+    mkdirSync(onDemandDir, { recursive: true })
+    renameSync(join(staticDir, moved), join(onDemandDir, moved))
+    writeFileSync(join(onDemandDir, moved), ON_DEMAND_FRONTMATTER + readFileSync(join(onDemandDir, moved), 'utf8'))
+
+    const result = runResult(['--set', 'rules', '--install'], staticDir)
+    expect(result.status).not.toBe(0)
+    expect(result.out).toContain(`${moved}: SKIPPED`)
+    expect(result.out).toContain(onDemandDir)
+    expect(existsSync(join(staticDir, moved))).toBe(false)
+  })
+
+  it('routes disjoint static and on-demand copies per file without a false duplicate', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const config = join(root, 'config')
+    const staticDir = join(config, 'rules', 'wt')
+    const onDemandDir = join(config, 'rules-on-demand')
+    const moved = 'wt-memory-hygiene.md'
+    mkdirSync(project, { recursive: true })
+    run(['--set', 'rules', '--install'], staticDir)
+    mkdirSync(onDemandDir, { recursive: true })
+    renameSync(join(staticDir, moved), join(onDemandDir, moved))
+    writeFileSync(join(onDemandDir, moved), ON_DEMAND_FRONTMATTER + readFileSync(join(onDemandDir, moved), 'utf8'))
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const checked = runInCwdResult(['--set', 'rules', '--check', '--global'], project, env)
+    expect(checked.status).toBe(0)
+    expect(checked.out).not.toContain('DUPLICATE')
+    expect(checked.out).toContain(`[rules] target=${staticDir}`)
+    expect(checked.out).toContain(`[rules] target=${onDemandDir}`)
+
+    const installed = runInCwdResult(['--set', 'rules', '--install', '--global'], project, env)
+    expect(installed.status).toBe(0)
+    expect(existsSync(join(staticDir, moved))).toBe(false)
+    expect(existsSync(join(onDemandDir, moved))).toBe(true)
+  })
+
+  it('deduplicates on-demand directories that are profile aliases of the same real directory', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const home = join(root, 'home')
+    const defaultConfig = join(home, '.claude')
+    const activeConfig = join(home, '.claude-second')
+    const target = join(defaultConfig, 'rules-on-demand')
+    mkdirSync(project, { recursive: true })
+    run(['--set', 'rules', '--install'], target)
+    addOnDemandFrontmatter(target)
+    mkdirSync(activeConfig, { recursive: true })
+    symlinkSync(target, join(activeConfig, 'rules-on-demand'), 'dir')
+    const env = sealedPluginCliEnv(root, {
+      HOME: home,
+      CLAUDE_CONFIG_DIR: activeConfig,
+      CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin'),
+    })
+
+    const result = runInCwdResult(['--set', 'rules', '--install'], project, env)
+    expect(result.status).toBe(0)
+    expect(result.out).not.toContain('DUPLICATE')
+    expect(existsSync(join(activeConfig, 'rules', 'wt', RULE))).toBe(false)
+  })
+})
+
 describe('adopt installer — omitted --dir resolves existing adoption level', () => {
+  it('bare --check preserves migration reporting when flat rules and rules/wt are disjoint', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const flat = join(project, '.claude', 'rules')
+    const wt = join(flat, 'wt')
+    const moved = 'wt-memory-hygiene.md'
+    mkdirSync(project, { recursive: true })
+    run(['--set', 'rules', '--install'], flat)
+    mkdirSync(wt)
+    renameSync(join(flat, moved), join(wt, moved))
+    const env = sealedPluginCliEnv(root, { CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const result = runInCwdResult(['--set', 'rules', '--check'], project, env)
+    expect(result.status).toBe(0)
+    expect(result.out).not.toContain('DUPLICATE adopted targets')
+    expect(result.out).toContain(`${RULE}: MIGRATION-PENDING`)
+    expect(result.out).toContain(`${moved}: UP-TO-DATE`)
+  })
+
+  it('legacy-only --install --global reports migration pending instead of refreshing the flat directory', () => {
+    const root = mkDir()
+    const project = join(root, 'project')
+    const config = join(root, 'config')
+    const flat = join(config, 'rules')
+    const wt = join(flat, 'wt')
+    mkdirSync(project, { recursive: true })
+    run(['--set', 'rules', '--install'], flat)
+    const before = readFileSync(join(flat, RULE), 'utf8')
+    const env = sealedPluginCliEnv(root, { CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_ROOT: join(REPO_ROOT, 'plugin') })
+
+    const result = runInCwdResult(['--set', 'rules', '--install', '--global'], project, env)
+    expect(result.status).toBe(0)
+    expect(result.out).toContain(`${RULE}: SKIPPED — MIGRATION-PENDING`)
+    expect(readFileSync(join(flat, RULE), 'utf8')).toBe(before)
+    expect(existsSync(join(wt, RULE))).toBe(false)
+  })
+
   it('refreshes the one existing config-dir copy instead of creating a project duplicate', () => {
     const root = mkDir()
     const project = join(root, 'project')

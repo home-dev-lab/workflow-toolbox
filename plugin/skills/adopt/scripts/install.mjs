@@ -831,11 +831,13 @@ function stripAgentBanner(text) {
  *  ever comparing content); fixing that reachability exposed this as a real false-positive
  *  DRIFT on every genuinely clean, directly-adopted rule. */
 function stripRuleBanner(text) {
-  const nl = text.indexOf('\n')
-  const firstLine = nl === -1 ? text : text.slice(0, nl)
+  const head = onDemandFrontmatter(text)
+  const candidate = head ? text.slice(head.length) : text
+  const nl = candidate.indexOf('\n')
+  const firstLine = nl === -1 ? candidate : candidate.slice(0, nl)
   if (!VERSION_RE.test(firstLine)) return text
   if (nl === -1) return ''
-  return text.slice(nl + 1).replace(/^\n+/, '')
+  return candidate.slice(nl + 1).replace(/^\n+/, '')
 }
 
 function stripScriptBanner(text) {
@@ -862,11 +864,13 @@ function renderItem(set, item, version, root, oldContent = null) {
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
   const b = banner(version, fingerprint(content), item.file)
-  const text = set.kind === 'agents'
-    ? insertAgentBanner(content, b)
-    : set.kind === 'scripts' && content.startsWith('#!')
-      ? `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
-      : `${b}\n\n${content}`
+  const onDemandHead = set.kind === 'rules' ? onDemandFrontmatter(oldContent ?? '') : null
+  let text
+  if (set.kind === 'agents') text = insertAgentBanner(content, b)
+  else if (onDemandHead) text = `${onDemandHead}${b}\n\n${content}`
+  else if (set.kind === 'scripts' && content.startsWith('#!')) {
+    text = `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
+  } else text = `${b}\n\n${content}`
   return { text, preserved }
 }
 
@@ -997,8 +1001,15 @@ function bannerLine(set, text) {
     const nl = after.indexOf('\n')
     return nl === -1 ? after : after.slice(0, nl)
   }
-  const nl = text.indexOf('\n')
-  return nl === -1 ? text : text.slice(0, nl)
+  const head = set.kind === 'rules' ? onDemandFrontmatter(text) : null
+  const candidate = head ? text.slice(head.length) : text
+  const nl = candidate.indexOf('\n')
+  return nl === -1 ? candidate : candidate.slice(0, nl)
+}
+
+function onDemandFrontmatter(text) {
+  const block = frontmatterBlock(text)
+  return block && /^on-demand\s*:/m.test(block) ? block : null
 }
 
 function explicitNestedTarget(set, dir, args) {
@@ -1029,58 +1040,118 @@ function discoveredConfigRoots() {
   return [...roots].map((dir) => path.resolve(dir))
 }
 
-function adoptionDirectoryKind(dir) {
+function adoptionDirectoryInfo(dir) {
   try {
     const real = fs.realpathSync(dir)
-    return real === path.resolve(dir) ? 'real directory' : `symlinked directory -> ${real}`
+    return {
+      realPath: real,
+      kind: real === path.resolve(dir) ? 'real directory' : `symlinked directory -> ${real}`,
+    }
   } catch {
-    return 'unresolved directory'
+    return { realPath: path.resolve(dir), kind: 'unresolved directory' }
   }
 }
 
-function hasAdoptedSet(set, dir, root) {
-  return set.resolveItems(root).some((item) => hasAdoptionBanner(set, path.join(dir, item.file)))
+function adoptedFiles(set, dir, root) {
+  return new Set(
+    set.resolveItems(root)
+      .filter((item) => hasAdoptionBanner(set, path.join(dir, item.file)))
+      .map((item) => item.file),
+  )
 }
 
 function existingAdoptionCandidates(name, set, root) {
   const candidates = new Map()
-  const add = (level, dir) => {
+  const add = (level, dir, placement = 'static') => {
     const resolved = path.resolve(dir)
-    if (!hasAdoptedSet(set, resolved, root)) return
+    const files = adoptedFiles(set, resolved, root)
+    if (files.size === 0) return
+    const { realPath, kind } = adoptionDirectoryInfo(resolved)
     const existing = candidates.get(resolved)
     if (existing) existing.levels.add(level)
-    else candidates.set(resolved, { dir: resolved, levels: new Set([level]), kind: adoptionDirectoryKind(resolved) })
-  }
-  const addWithLegacyRules = (level, dir) => {
-    add(level, dir)
-    if (name === 'rules') {
-      const legacy = legacyRulesDir(dir)
-      if (legacy) add(level, legacy)
-    }
+    else candidates.set(resolved, { dir: resolved, realPath, placement, levels: new Set([level]), kind, files })
   }
 
-  addWithLegacyRules('project', path.join(process.cwd(), set.defaultDir))
+  add('project', path.join(process.cwd(), set.defaultDir))
+  if (name === 'rules') add('project on-demand', path.join(process.cwd(), '.claude', 'rules-on-demand'), 'on-demand')
   for (const configRoot of discoveredConfigRoots()) {
-    addWithLegacyRules('config', path.join(configRoot, set.globalSubdir))
+    add('config', path.join(configRoot, set.globalSubdir))
+    if (name === 'rules') add('config on-demand', path.join(configRoot, 'rules-on-demand'), 'on-demand')
   }
   return [...candidates.values()]
 }
 
+function mergeOnDemandAliases(candidates) {
+  const byRealPath = new Map()
+  const merged = []
+  for (const candidate of candidates) {
+    if (candidate.placement !== 'on-demand') {
+      merged.push(candidate)
+      continue
+    }
+    const existing = byRealPath.get(candidate.realPath)
+    if (!existing) {
+      byRealPath.set(candidate.realPath, candidate)
+      merged.push(candidate)
+      continue
+    }
+    for (const level of candidate.levels) existing.levels.add(level)
+    for (const file of candidate.files) existing.files.add(file)
+  }
+  return merged
+}
+
+function overlappingCandidates(candidates) {
+  const locationsByFile = new Map()
+  for (const candidate of candidates) {
+    for (const file of candidate.files) {
+      const locations = locationsByFile.get(file) ?? []
+      locations.push(candidate)
+      locationsByFile.set(file, locations)
+    }
+  }
+  return new Set([...locationsByFile].filter(([, locations]) => locations.length > 1).flatMap(([, locations]) => locations))
+}
+
 function resolveImplicitInstallDirs(chosen, args, root) {
-  if (args.mode !== 'install' || args.dir || args.global) return new Map()
+  if (!['check', 'install'].includes(args.mode) || args.dir) return new Map()
   const bySet = new Map()
   const ambiguous = []
   for (const name of chosen) {
-    const candidates = existingAdoptionCandidates(name, SETS[name], root)
-    if (candidates.length > 1) ambiguous.push({ name, candidates })
-    else if (candidates.length === 1) bySet.set(name, candidates[0].dir)
+    let candidates = existingAdoptionCandidates(name, SETS[name], root)
+    if (args.global) {
+      const activeRoot = path.resolve(resolvedConfigRoot())
+      candidates = candidates.filter(({ dir }) => {
+        const relative = path.relative(activeRoot, dir)
+        return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+      })
+    } else if (args.mode === 'check') {
+      const projectRoot = path.resolve(process.cwd(), '.claude')
+      candidates = candidates.filter(({ dir }) => {
+        const relative = path.relative(projectRoot, dir)
+        return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+      })
+    }
+    candidates = mergeOnDemandAliases(candidates).filter((candidate) =>
+      candidate.placement !== 'on-demand' ||
+      !candidates.some((other) => other.placement === 'static' && other.realPath === candidate.realPath),
+    )
+    const overlapping = overlappingCandidates(candidates)
+    if (overlapping.size > 0) ambiguous.push({ name, candidates: [...overlapping] })
+    else if (candidates.length > 0) {
+      const itemDirs = new Map()
+      for (const candidate of candidates) {
+        for (const file of candidate.files) itemDirs.set(file, candidate.dir)
+      }
+      bySet.set(name, { defaultDir: candidates.length === 1 ? candidates[0].dir : null, itemDirs })
+    }
   }
   if (ambiguous.length > 0) {
     const lines = ambiguous.flatMap(({ name, candidates }) =>
       candidates.map(({ dir, levels, kind }) => `  [${name}] ${[...levels].join('/')} ${kind}: ${dir}`),
     )
     fail(
-      `--install found more than one adopted target:\n${lines.join('\n')}\n` +
+      `DUPLICATE adopted targets found; the same managed files would load from more than one directory:\n${lines.join('\n')}\n` +
         `refusing to guess; pass --dir '<directory>' with one --set, or --global for the active config profile.`,
     )
   }
@@ -1143,10 +1214,10 @@ function classify(target, set) {
   const fpm = FP_RE.exec(line)
   const body = stripBannerFor(set, content)
   const contentFp = contentFingerprint(body)
-  if (!fpm) return { state: 'edited-unknown', installedVer, contentFp }
+  if (!fpm) return { state: 'edited-unknown', installedVer, contentFp, frontmatter: onDemandFrontmatter(content) }
   const clean = fingerprint(body) === fpm[1] || contentFingerprint(body) === fpm[1]
   // Re-derive this from the body; never trust the banner hash for shipped-content identity.
-  return { state: clean ? 'clean' : 'edited', installedVer, contentFp, body }
+  return { state: clean ? 'clean' : 'edited', installedVer, contentFp, body, frontmatter: onDemandFrontmatter(content) }
 }
 
 function journalPath(dir) {
@@ -1896,7 +1967,17 @@ function legacyItemDecision(set, dir, item, classification) {
   }
 }
 
-function decideManagedItem(set, dir, item, args, version, root, nestedDir) {
+function siblingOnDemandDir(set, dir, args) {
+  if (!args.dir || args.mode !== 'install' || set.kind !== 'rules') return null
+  const resolved = path.resolve(dir)
+  if (path.basename(resolved) === 'wt' && path.basename(path.dirname(resolved)) === 'rules') {
+    return path.join(path.dirname(path.dirname(resolved)), 'rules-on-demand')
+  }
+  if (path.basename(resolved) === 'rules') return path.join(path.dirname(resolved), 'rules-on-demand')
+  return null
+}
+
+function decideManagedItem(set, dir, item, args, version, root, alternateDirs) {
   const target = path.join(dir, item.file)
   const classification = classify(target, set)
   const shippedFp = shippedFingerprint(set, item, root)
@@ -1910,9 +1991,13 @@ function decideManagedItem(set, dir, item, args, version, root, nestedDir) {
     currentContentFp,
   })
   let duplicate = false
-  if (nestedDir && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(nestedDir, item.file))) {
+  if (alternateDirs.nested && hasAdoptionBanner(set, target) && hasAdoptionBanner(set, path.join(alternateDirs.nested, item.file))) {
     duplicate = true
-    decision = { status: `DUPLICATE (also present in ${nestedDir}/${item.file})`, write: false }
+    decision = { status: `DUPLICATE (also present in ${alternateDirs.nested}/${item.file})`, write: false }
+  }
+  if (alternateDirs.onDemand && hasAdoptionBanner(set, path.join(alternateDirs.onDemand, item.file))) {
+    duplicate = true
+    decision = { status: `DUPLICATE (adopted copy already present in ${path.join(alternateDirs.onDemand, item.file)})`, write: false }
   }
   const legacyDecision = legacyItemDecision(set, dir, item, classification)
   if (legacyDecision) decision = legacyDecision
@@ -1923,8 +2008,10 @@ function decideManagedItem(set, dir, item, args, version, root, nestedDir) {
   return { target, classification, decision, stale, migrationPending: !!legacyDecision, duplicate }
 }
 
-function localAgentContent(set, target, classification) {
-  if (set.kind !== 'agents' || !['edited', 'edited-unknown'].includes(classification.state)) return null
+function existingContentForRender(set, target, classification) {
+  const preserveAgentFields = set.kind === 'agents' && ['edited', 'edited-unknown'].includes(classification.state)
+  const preserveOnDemandFrontmatter = set.kind === 'rules' && classification.frontmatter
+  if (!preserveAgentFields && !preserveOnDemandFrontmatter) return null
   try {
     return fs.readFileSync(target, 'utf8')
   } catch {
@@ -1957,7 +2044,7 @@ function replaceSymlinkAtomically(target, text) {
 
 function writeManagedItem(set, dir, item, args, version, root, planned) {
   const { target, classification } = planned
-  const oldContent = localAgentContent(set, target, classification)
+  const oldContent = existingContentForRender(set, target, classification)
   const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent)
   if (preserved.length > 0) {
     process.stdout.write(
@@ -1980,8 +2067,8 @@ function writeManagedItem(set, dir, item, args, version, root, planned) {
   process.stdout.write(`  ${item.file}: ${verb} ${versions} -> ${target} (journal ${journalPath(dir)})\n`)
 }
 
-function renderManagedItem(set, dir, item, args, version, root, nestedDir) {
-  const planned = decideManagedItem(set, dir, item, args, version, root, nestedDir)
+function renderManagedItem(set, dir, item, args, version, root, alternateDirs) {
+  const planned = decideManagedItem(set, dir, item, args, version, root, alternateDirs)
   const { classification, decision } = planned
   if (args.mode === 'install') {
     if (decision.write) writeManagedItem(set, dir, item, args, version, root, planned)
@@ -2003,10 +2090,12 @@ function renderManagedItem(set, dir, item, args, version, root, nestedDir) {
 }
 
 /** Process one set into `dir`. Returns the aggregate flags for the check-mode hint. */
-function processSet(set, dir, args, version, root) {
+function processSet(set, dir, args, version, root, selectedItems = null) {
   if (args.mode === 'install') fs.mkdirSync(dir, { recursive: true })
   process.stdout.write(`[${set.kind}] target=${dir}\n`)
   const nestedDir = explicitNestedTarget(set, dir, args)
+  const onDemandDir = siblingOnDemandDir(set, dir, args)
+  const alternateDirs = { nested: nestedDir, onDemand: onDemandDir }
   const items = set.resolveItems(root)
   if (args.file && !items.some((item) => item.file === args.file)) {
     fail(`--file is not managed by --set ${set.kind}: ${args.file}`)
@@ -2019,8 +2108,9 @@ function processSet(set, dir, args, version, root) {
     anyMigrationPending: false,
     anyDuplicate: false,
   }
-  for (const item of items.filter((candidate) => !args.file || candidate.file === args.file)) {
-    mergeSetState(state, renderManagedItem(set, dir, item, args, version, root, nestedDir))
+  for (const item of items.filter((candidate) =>
+    (!args.file || candidate.file === args.file) && (!selectedItems || selectedItems.has(candidate.file)))) {
+    mergeSetState(state, renderManagedItem(set, dir, item, args, version, root, alternateDirs))
   }
   return state
 }
@@ -2609,6 +2699,19 @@ function mergeSetState(state, result) {
   }
 }
 
+function managedSetGroups(set, fallbackDir, resolution, root) {
+  if (!resolution) return new Map([[fallbackDir, null]])
+  const defaultDir = resolution.defaultDir || fallbackDir
+  const groups = new Map()
+  for (const item of set.resolveItems(root)) {
+    const dir = resolution.itemDirs.get(item.file) || defaultDir
+    const files = groups.get(dir) ?? new Set()
+    files.add(item.file)
+    groups.set(dir, files)
+  }
+  return groups
+}
+
 function runManagedCommand(args, context) {
   const { root, version, chosen, globalRoot } = context
   const implicitInstallDirs = resolveImplicitInstallDirs(chosen, args, root)
@@ -2634,15 +2737,13 @@ function runManagedCommand(args, context) {
     // --global the config dir IS the '.claude' layer already, so `globalSubdir` (its own
     // field, NOT derived from defaultDir's basename — see the SETS comment above) is
     // appended instead.
-    const dir = path.resolve(
-      args.dir ||
-        implicitInstallDirs.get(name) ||
-        (args.global
-          ? path.join(globalRoot, set.globalSubdir)
-          : path.join(process.cwd(), set.defaultDir)),
+    const fallbackDir = path.resolve(
+      args.dir || (args.global ? path.join(globalRoot, set.globalSubdir) : path.join(process.cwd(), set.defaultDir)),
     )
-    refuseExplicitRootInstall(set, dir, args, root)
-    mergeSetState(state, processSet(set, dir, args, version, root))
+    for (const [dir, files] of managedSetGroups(set, fallbackDir, implicitInstallDirs.get(name), root)) {
+      refuseExplicitRootInstall(set, dir, args, root)
+      mergeSetState(state, processSet(set, dir, args, version, root, files))
+    }
   }
 
   if (state.anyDuplicate) process.exitCode = 1
