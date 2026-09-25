@@ -2692,6 +2692,7 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-spawn-capability-guard-hook.mjs",
         "plugin/bin/wt-spawn-channel-guard-hook.mjs",
         "plugin/bin/wt-spawn-readonly-guard-hook.mjs",
+        "plugin/bin/wt-right-sized-spawn-guard-hook.mjs",
         "plugin/bin/wt-workflow-model-guard-hook.mjs",
         "plugin/bin/wt-nested-spawn-guard-hook.mjs",
         "plugin/bin/wt-spawn-shape-guard-hook.mjs",

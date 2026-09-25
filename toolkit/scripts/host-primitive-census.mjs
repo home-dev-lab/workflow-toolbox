@@ -9,9 +9,9 @@ const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 
-// Ratchet reseeded 2026-09-21 after adding .js/.cjs plus complete child-process,
-// filesystem and OS module calls. It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1927
+// Lowered to 1925 after entry guards moved their realpath access into the host adapter.
+// It may only decrease as calls move behind the adapter.
+export const HOST_PRIMITIVE_CEILING = 1925
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

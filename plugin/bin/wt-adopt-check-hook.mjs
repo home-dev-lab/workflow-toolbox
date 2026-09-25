@@ -65,9 +65,8 @@ function readInput() {
  *  per-file status lines (`  <file>: <status>`) into a Map<file, {status, location}>. Never throws —
  *  a missing/failed child (broken install, no such dir handled fine by install-rules
  *  itself) just yields an empty map, which contributes nothing to the merge. */
-function checkDir(dir, set = 'rules') {
+function checkDir(dir, set = 'rules', locationKind = 'static') {
   const map = new Map()
-  if (!fs.existsSync(INSTALL_RULES)) return map
   let res
   try {
     res = spawnSync(process.execPath, [INSTALL_RULES, '--check', '--set', set, '--dir', dir], {
@@ -80,7 +79,15 @@ function checkDir(dir, set = 'rules') {
   const stdout = res && res.stdout ? res.stdout : ''
   for (const line of stdout.split('\n')) {
     const m = /^ {2}(\S+\.md): (.+)$/.exec(line)
-    if (m) map.set(m[1], { status: m[2], location: dir })
+    if (m) {
+      let realLocation = path.resolve(dir)
+      try {
+        realLocation = fs.realpathSync(dir)
+      } catch {
+        // Missing candidate directories legitimately report ABSENT.
+      }
+      map.set(m[1], { status: m[2], location: dir, realLocation, locationKind })
+    }
   }
   return map
 }
@@ -118,6 +125,22 @@ const RANK = { ok: 0, edited: 1, ahead: 2, stale: 3, absent: 4 }
  *  subfolder, card 1835727457). Four maps in the common case (project flat, project wt,
  *  global flat, global wt). */
 function mergeAll(maps, file) {
+  const present = maps
+    .map((map) => map.get(file))
+    .filter((finding) => finding && bucket(finding.status) !== 'absent')
+  const staticLocations = new Set(present.filter((finding) => finding.locationKind === 'static').map((finding) => finding.realLocation))
+  const onDemandLocations = new Set(present.filter((finding) => finding.locationKind === 'on-demand').map((finding) => finding.realLocation))
+  if (
+    onDemandLocations.size > 1 ||
+    (staticLocations.size && onDemandLocations.size && new Set([...staticLocations, ...onDemandLocations]).size > 1)
+  ) {
+    return {
+      bucket: 'duplicate',
+      location: null,
+      status: 'DUPLICATE',
+      locations: [...new Set(present.map((finding) => finding.location))].sort(),
+    }
+  }
   let best = { bucket: 'absent', location: null, status: 'ABSENT' }
   for (const map of maps) {
     const finding = map.get(file)
@@ -152,7 +175,12 @@ function stripBanner(text) {
   if (bannerIndex === -1) return text
   lines.splice(bannerIndex, 1)
   if (lines[bannerIndex] === '') lines.splice(bannerIndex, 1)
-  return lines.join('\n').replace(/[ \t\r\n]+$/u, '')
+  const withoutBanner = lines.join('\n')
+  const frontmatter = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/.exec(withoutBanner)?.[1]
+  const body = frontmatter && /^on-demand\s*:/m.test(frontmatter)
+    ? withoutBanner.slice(frontmatter.length)
+    : withoutBanner
+  return body.replace(/^[\r\n]+|[ \t\r\n]+$/gu, '')
 }
 
 function contentDirection(file, finding, set) {
@@ -206,7 +234,7 @@ function forceRemedy(installCmd, set, file, dir) {
 }
 
 function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'SessionStart', noticeOnly = false) {
-  const buckets = { absent: [], stale: [], ahead: [], edited: [] }
+  const buckets = { absent: [], stale: [], ahead: [], edited: [], duplicate: [] }
   for (const [file, finding] of perFile) {
     if (finding.bucket !== 'ok') buckets[finding.bucket].push({ file, ...finding })
   }
@@ -215,7 +243,7 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
   // pilot suite made a choice, and nagging it on every session would be a guard that is
   // always red, which is a guard that gets ignored. For agents, only STALE is a finding.
   if (set !== 'rules') buckets.absent = []
-  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length) return null
+  if (!buckets.absent.length && !buckets.stale.length && !buckets.ahead.length && !buckets.edited.length && !buckets.duplicate.length) return null
 
   const named = (items) =>
     items
@@ -224,6 +252,9 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
       .join(', ')
 
   const lines = []
+  for (const finding of buckets.duplicate.sort((a, b) => a.file.localeCompare(b.file))) {
+    lines.push(`${finding.file}: DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}. Remove one copy; this hook will not choose silently.`)
+  }
   if (buckets.absent.length) {
     lines.push(
       `workflow-toolbox rules NOT installed here: ${named(buckets.absent)}. ` +
@@ -321,7 +352,7 @@ export function main() {
   // and just hasn't run the migration. Checking only the flat dir would miss a project that
   // HAS migrated. Union of both, same "ok wins" rule already used for project-vs-global.
   const SETS = [
-    { set: 'rules', subdirs: ['rules', path.join('rules', 'wt')] },
+    { set: 'rules', subdirs: ['rules', path.join('rules', 'wt'), 'rules-on-demand'] },
     { set: 'agents', subdirs: ['agents'] },
   ]
 
@@ -329,8 +360,9 @@ export function main() {
   for (const { set, subdirs } of SETS) {
     const maps = []
     for (const subdir of subdirs) {
-      maps.push(checkDir(path.join(root, '.claude', subdir), set))
-      maps.push(checkDir(path.join(configDir, subdir), set))
+      const locationKind = subdir === 'rules-on-demand' ? 'on-demand' : 'static'
+      maps.push(checkDir(path.join(root, '.claude', subdir), set, locationKind))
+      maps.push(checkDir(path.join(configDir, subdir), set, locationKind))
     }
     if (maps.every((m) => m.size === 0)) continue // couldn't check any location → skip this set
 
@@ -338,7 +370,9 @@ export function main() {
     const perFile = new Map()
     for (const file of files) perFile.set(file, mergeAll(maps, file))
 
-    const remedyDir = path.join(root, '.claude', subdirs[subdirs.length - 1])
+    const remedyDir = set === 'rules'
+      ? path.join(root, '.claude', 'rules', 'wt')
+      : path.join(root, '.claude', subdirs[subdirs.length - 1])
     const built = buildMessage(perFile, INSTALL_RULES, remedyDir, set, event, noticeOnly)
     if (built) sections.push(built)
   }
@@ -369,7 +403,7 @@ export function main() {
 }
 
 // Run only when executed as a hook, not when imported by the selftest.
-import { pathToFileURL } from 'node:url'
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
+if (isInvokedDirectly(import.meta.url)) {
   runFailOpenHook('wt-adopt-check-hook.mjs', main)
 }

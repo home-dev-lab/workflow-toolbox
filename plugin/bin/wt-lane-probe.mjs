@@ -39,9 +39,9 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { handleHelpFlag } from './lib/cli-help.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 
 const HELP = `wt-lane-probe — prove an executor LANE is routing to a worktree WHILE IT RUNS, not
 by asking at report time. Lists live processes matching --pattern, resolves each one's cwd, and
@@ -304,4 +304,4 @@ function emit(result, archivePath) {
   process.exit(0)
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main(hostAdapter)
+if (isInvokedDirectly(import.meta.url)) main(hostAdapter)

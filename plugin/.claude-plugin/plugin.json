@@ -489,6 +489,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-right-sized-spawn-guard-hook.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-spawn-shape-guard-hook.mjs\""
           }
         ]

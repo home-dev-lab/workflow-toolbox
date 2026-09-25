@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -25,6 +25,15 @@ afterEach(() => {
 })
 
 describe('raw host primitive quality ratchet', () => {
+  it('rejects raw argv entry guards in plugin bin modules', () => {
+    const rawEntryGuard = /import\.meta\.url\s*===\s*pathToFileURL\([^)]*(?:argv|invokedPath)|path\.resolve\(process\.argv\[1\]\)\s*===\s*fileURLToPath\(import\.meta\.url\)/
+    const binSources = readdirSync(join(PLUGIN_ROOT, 'bin'), { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.mjs'))
+      .map((entry) => ({ file: `bin/${entry.name}`, source: readFileSync(join(PLUGIN_ROOT, 'bin', entry.name), 'utf8') }))
+
+    expect(binSources.filter(({ source }) => rawEntryGuard.test(source)).map(({ file }) => file)).toEqual([])
+  })
+
   it('refuses a fixture above the ceiling and names its file and remedy', () => {
     const root = fixturePlugin()
     writeFileSync(join(root, 'bin', 'outside.mjs'), 'if (process.platform === "linux") process.kill(1)\n')
@@ -79,7 +88,7 @@ describe('raw host primitive quality ratchet', () => {
     const result = scanHostPrimitives(PLUGIN_ROOT)
 
     // external-model-env.mjs is a legitimate new perimeter file; provider-definitions.mjs stays inside the host adapter.
-    expect(result.perimeterFiles).toBe(226)
+    expect(result.perimeterFiles).toBe(227)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
