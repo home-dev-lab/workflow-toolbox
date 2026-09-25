@@ -5,12 +5,35 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.187.2] - 2026-09-25
+
 ### Added
 - Ship right-sized Agent tool defaults: `wt-implementer-sonnet` for settled test-first increments, `wt-implementer-opus` for judgment-heavy implementation, read-only `wt-reviewer` for adversarial plan or diff review, and low-effort `wt-chores` for board/card work, CI triage, and mechanical summaries. A journaled fail-open Agent pre-tool guard refuses a new absent or `general-purpose` type unless the prompt records an unfenced `general-purpose because: <reason>` sentence, while preserving resumes and decoding host string/structured inputs; its bounded registration names the host-resolvable `workflow-toolbox:wt-*` alternatives.
 
 ### Fixed
 - Use the shared fail-closed realpath entry guard for every `plugin/bin` CLI and hook, so symlinked, Windows short-path, and versioned plugin-cache invocations execute normally while query- or hash-qualified imports remain inert.
 - Recognize adopted rules moved into project or config `rules-on-demand/` directories: checks compare only the adopted body, refreshes preserve the engine-owned frontmatter byte for byte and stay in place, and the SessionStart hook no longer requests a duplicate static install. Static plus on-demand copies are reported as a double load, while directory-symlink aliases resolve as one location.
+
+### Quality
+
+Measured on the release tree against the 0.181.0 baseline (`pnpm quality:delta`). Cognitive complexity rose by 5 and the longest function by 1 line; no ratchet was loosened. ESLint warnings fell to 684 (ceiling 687), duplication, knip issues and the biggest file fell; coverage figures count spawned processes. One test fails on this machine only under host load (`wake-floor-in-flight`, a known procfs scan cap); it is not a regression of this release. The SDK pilot runner remains experimental.
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 125 | -2 | 94 -> 123 | plugin/bin/wt-actionable-snapshot-producer-hook.mjs |
+| Cognitive complexity | 261 -> 266 | +5 | 145 -> 124 | - |
+| Biggest file (lines) | 2729 -> 2719 | -10 | 2729 -> 2719 | plugin/bin/wt-observe.mjs, toolkit/packages/debugger/src/observe-cli.ts, plugin/bin/wt-verifier-cli-guard-hook.mjs |
+| Longest function (lines) | 708 -> 709 | +1 | 426 -> 493 | - |
+| Max depth | 7 -> 7 | 0 | 7 -> 7 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 687 -> 684 | -3 | 37 -> 36 | plugin/bin/wt-observe.mjs, plugin/bin/wt-lane.mjs, plugin/skills/adopt/scripts/install.mjs |
+| Duplication % | 2.885613003631333 -> 2.7010485125169317 | -0.18 | 150 -> 150 | - |
+| Knip issues | 221 -> 218 | -3 | - -> - | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 81.13 | +39.13 | - -> 5.64 | - |
+| Coverage branches % | 40.12 -> 71.65 | +31.53 | - -> 1.44 | - |
+| Coverage functions % | 44.48 -> 82.62 | +38.14 | - -> 3.03 | - |
+| Coverage statements % | 40.62 -> 78.24 | +37.62 | - -> 4.83 | - |
 
 ## [0.187.1] - 2026-09-25
 
