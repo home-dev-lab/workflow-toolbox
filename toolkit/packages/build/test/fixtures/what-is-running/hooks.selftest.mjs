@@ -8,6 +8,7 @@ import * as hooksModule from '../../../../../../plugin/hooks/hooks.js';
 import * as artifactHelpers from '../../../../../../plugin/hooks/snapshot-program.js';
 import { PHASES } from '../../../../../../plugin/bin/lib/lifecycle-state-machine.mjs';
 import { captureHasPane } from './host-capture-match.mjs';
+import { HOST_USER_CONFIG_TYPES } from './host-user-config-types.mjs';
 
 const { readSnapshot, register } = hooksModule;
 const hookDir = fileURLToPath(new URL('.', import.meta.url));
@@ -190,7 +191,7 @@ await test('[Step 4 URL discovery] configured and discovered Planka bases resolv
   assert.equal(userConfig.extraRoots.type, 'string');
   assert.equal(userConfig.extraRoots.default, '');
   for (const [key, option] of Object.entries(userConfig)) {
-    assert.ok(['string', 'number', 'boolean'].includes(option.type), `userConfig.${key}.type ${option.type} is not a type the host validator accepts`);
+    assert.ok(HOST_USER_CONFIG_TYPES.includes(option.type), `userConfig.${key}.type ${option.type} is not a type the host validator accepts`);
   }
   const discovered = await readSnapshot({ process: processCapability }, paths);
   assert.equal(discovered.rows.find((row) => row.cardId === '1862698281071544189').cardUrl, 'http://localhost:3000/cards/1862698281071544189');

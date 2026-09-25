@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { HOST_USER_CONFIG_TYPES } from './fixtures/what-is-running/host-user-config-types.mjs'
 
 // The host validates a plugin's hooks module statically before it loads it, and refuses the WHOLE module
 // on one call shape it does not accept. Measured 2026-09-23 on Claude Code 2.1.280: a `$.env.get(name)` with
@@ -47,4 +49,46 @@ describe('every shipped plugin passes the host validator (claude plugin validate
       expect(output).toMatch(/Validation passed/)
     }, 180_000)
   }
+})
+
+// The offline selftest (fixtures/what-is-running/hooks.selftest.mjs) checks every plugin.json userConfig type against
+// HOST_USER_CONFIG_TYPES, because the cross-os CI has no `claude` binary. That list is a copy of a host fact, so it
+// is pinned here to the host itself: on 2026-09-25 it still read string/number/boolean while the host accepted
+// `file` and `directory` too, and the selftest refused a manifest the host validator passed.
+// Candidates probed besides the list itself: the documented five and plausible types a manifest author might try.
+// Types OUTSIDE the list are what make this able to see a list that is too short, and the ones the host rejects are
+// the control that shows the probe can say no.
+const PROBED_USER_CONFIG_TYPES = ['string', 'number', 'boolean', 'directory', 'file', 'array', 'object', 'integer', 'path', 'url', 'select', 'enum']
+
+describe('the userConfig type list the offline selftest uses matches the installed host validator', () => {
+  it('accepts exactly HOST_USER_CONFIG_TYPES among the probed candidates, and rejects at least one', (context) => {
+    if (unavailable) context.skip(unavailable)
+    const root = mkdtempSync(join(tmpdir(), 'wt-usercfg-types-'))
+    try {
+      const verdicts: Record<string, string> = {}
+      for (const type of [...new Set([...HOST_USER_CONFIG_TYPES, ...PROBED_USER_CONFIG_TYPES])]) {
+        const dir = join(root, type, '.claude-plugin')
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'plugin.json'), JSON.stringify({
+          name: 'usercfg-type-probe',
+          version: '0.0.0',
+          description: 'probe',
+          author: { name: 'probe' },
+          userConfig: { probe_option: { type, title: 'Probe', description: 'Probe option' } },
+        }))
+        const run = spawnSync(CLAUDE, ['plugin', 'validate', join(root, type), '--strict'], { encoding: 'utf8', timeout: 120_000 })
+        const output = `${run.stdout ?? ''}${run.stderr ?? ''}`
+        verdicts[type] = run.status === 0 && /Validation passed/.test(output)
+          ? 'accepted'
+          : /userConfig\.probe_option\.type/.test(output) ? 'rejected' : `unclassified (exit ${run.status}): ${output.trim()}`
+      }
+      const unclassified = Object.entries(verdicts).filter(([, verdict]) => verdict.startsWith('unclassified'))
+      expect(unclassified).toEqual([])
+      const accepted = Object.keys(verdicts).filter((type) => verdicts[type] === 'accepted').sort()
+      expect(accepted, JSON.stringify(verdicts)).toEqual([...HOST_USER_CONFIG_TYPES].sort())
+      expect(Object.values(verdicts)).toContain('rejected')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 300_000)
 })
