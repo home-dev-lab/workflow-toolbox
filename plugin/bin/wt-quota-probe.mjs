@@ -3,7 +3,8 @@
 // via the same OAuth endpoint the CLI uses. Read the quota BEFORE a large fan-out:
 // a run that dies at the wall mid-arc costs more than the check.
 //
-// READS ONLY: this probe reads `<configDir>/.credentials.json` and NEVER writes it.
+// READS ONLY: this probe prefers CLAUDE_CODE_OAUTH_TOKEN, otherwise reads
+// `<configDir>/.credentials.json`, and NEVER writes credentials.
 // TOKEN HYGIENE: the access token is used only as the `Authorization` header and
 // is never printed or logged.
 // ENDPOINT RISK: `https://api.anthropic.com/api/oauth/usage` is not publicly
@@ -23,12 +24,15 @@ import { join } from 'node:path'
 const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 
 let oauth
-try {
-  oauth = JSON.parse(readFileSync(join(configDir, '.credentials.json'), 'utf8')).claudeAiOauth
-  if (!oauth?.accessToken) throw new Error('no accessToken')
-} catch (e) {
-  console.error(JSON.stringify({ error: `no credentials in ${configDir}: ${e.message}` }))
-  process.exit(1)
+if (process.env.CLAUDE_CODE_OAUTH_TOKEN) oauth = { accessToken: process.env.CLAUDE_CODE_OAUTH_TOKEN }
+else {
+  try {
+    oauth = JSON.parse(readFileSync(join(configDir, '.credentials.json'), 'utf8')).claudeAiOauth
+    if (!oauth?.accessToken) throw new Error('no accessToken')
+  } catch (e) {
+    console.error(JSON.stringify({ error: `no credentials in ${configDir}: ${e.message}` }))
+    process.exit(1)
+  }
 }
 if (oauth.expiresAt && oauth.expiresAt < Date.now()) {
   // The CLI refreshes this file on use; a stale token here usually just means run any

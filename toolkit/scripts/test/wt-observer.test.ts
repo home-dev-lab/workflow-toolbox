@@ -90,6 +90,7 @@ function spawnObserver(env: Record<string, string>, args: string[] = ['--once'])
   const child = spawn(process.execPath, [observerScript, ...args], {
     env: {
       ...process.env,
+      WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION',
       WT_OBSERVER_COST_LOG: path.join(path.dirname(env.WT_WAKE_SPOOL), 'lane-cost.jsonl'),
       WT_OBSERVER_STATE_DIR: path.join(path.dirname(env.WT_WAKE_SPOOL), 'observer-state'),
       ...env,

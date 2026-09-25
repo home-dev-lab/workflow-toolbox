@@ -99,6 +99,31 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 }
 
 describe('second-opinion advisor', () => {
+  it('gives the external Codex companion only its allow-listed environment', () => {
+    const adapter = createHostAdapter({ platform: process.platform })
+    const ownership = adapter.createCodexBrokerOwnership({
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      CODEX_HOME: '/codex-home',
+      CLAUDE_CODE_OAUTH_TOKEN: 'session credential',
+      ANTHROPIC_API_KEY: 'api credential',
+      ANTHROPIC_AUTH_TOKEN: 'auth credential',
+      COMPANY_VAULT_SECRET: 'unknown secret',
+    })
+    try {
+      expect(ownership.env).toMatchObject({ PATH: process.env.PATH })
+      if (process.env.HOME === undefined) expect(ownership.env).not.toHaveProperty('HOME')
+      else expect(ownership.env).toHaveProperty('HOME', process.env.HOME)
+      expect(ownership.env).not.toHaveProperty('CODEX_HOME')
+      expect(ownership.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN')
+      expect(ownership.env).not.toHaveProperty('ANTHROPIC_API_KEY')
+      expect(ownership.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN')
+      expect(ownership.env).not.toHaveProperty('COMPANY_VAULT_SECRET')
+    } finally {
+      ownership.stop()
+    }
+  })
+
   it('reads process discovery through the adapter supplied by its caller', () => {
     const expected = { supported: true, processes: [{ pid: 7, ppid: 1, elapsedMs: 2000, command: 'broker' }] }
     const adapter = { readProcessSnapshot: vi.fn(() => expected) }

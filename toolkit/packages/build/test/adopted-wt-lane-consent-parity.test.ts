@@ -81,7 +81,7 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
   chmodSync(join(bin, 'opencode'), 0o755)
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'resolved-binary.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'resolved-binary.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', 'host'), join(pluginRoot, 'bin', 'lib', 'host'), { recursive: true })
@@ -273,6 +273,7 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     chmodSync(join(bin, 'opencode'), 0o755)
     f.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ''}`
     f.env.WT_ADOPTED_SEEN_FENCE = seen
+    f.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_ADOPTED_SEEN_FENCE'
     f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     expect(launch(f).status).toBe(0)

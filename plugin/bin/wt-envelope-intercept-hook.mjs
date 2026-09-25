@@ -12,6 +12,7 @@ import crypto from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { runFailOpenHookAsync } from './lib/fail-open-trace.mjs'
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
+import { providerCredentialNames } from './lib/external-model-env.mjs'
 import {
   laneTextFromOutput,
   laneUsageFromOutput,
@@ -110,8 +111,9 @@ function runScriptedOpencodeCall(prompt, workdir, model, variant) {
   const fence = verifyOpencodeSkillFence('opencode', { platform: process.platform })
   if (!fence.ok) return { stdout: opencodeSkillFenceRefusal(fence.reason), stderr: '', model, durationMs: 0 }
   const binary = fence.binary ?? 'opencode'
-  const childEnv = opencodeChildEnv()
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(binary, { cwd: workdir, env: childEnv, platform: process.platform })
+  const credentialNames = providerCredentialNames(model)
+  const childEnv = opencodeChildEnv(undefined, credentialNames)
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(binary, { cwd: workdir, env: childEnv, platform: process.platform, extraNames: credentialNames })
   if (!discovery.ok) return { stdout: effectiveSkillDiscoveryRefusal(discovery, 'wt-envelope-intercept'), stderr: '', model, durationMs: discovery.durationMs }
 
   const taskFile = path.join(workdir, `.wt-envelope-intercept-${process.pid}-${crypto.randomUUID().slice(0, 8)}.md`)

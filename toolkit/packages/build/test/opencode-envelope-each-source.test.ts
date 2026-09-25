@@ -3,16 +3,23 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 // @ts-expect-error -- runtime .mjs helper intentionally has no declaration file.
 import { DEFAULT_MAX_TASKS, applyItemTemplate, generateEachTasks, parseEachSource } from '../../../../plugin/bin/lib/opencode-envelope-tasks.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-opencode-envelope.mjs')
 const roots: string[] = []
+const previousExtraEnv = process.env.WT_EXTERNAL_MODEL_ENV_ALLOW
+
+beforeEach(() => {
+  process.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_FAKE_CONCURRENCY_LOG,WT_FAKE_PROMPT_CAPTURE,WT_FAKE_MODEL_CAPTURE,WT_FAKE_EXIT_CODE,WT_FAKE_ANSWER'
+})
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  if (previousExtraEnv === undefined) delete process.env.WT_EXTERNAL_MODEL_ENV_ALLOW
+  else process.env.WT_EXTERNAL_MODEL_ENV_ALLOW = previousExtraEnv
 })
 
 function makeRoot() {
@@ -71,18 +78,18 @@ function installFakeOpencode(root: string) {
     "fs.writeFileSync(__dirname + '/ran.txt', 'task child started\\n')",
     "fs.writeFileSync(__dirname + '/argv.json', JSON.stringify(process.argv.slice(2)))",
     "const taskFile = process.argv[process.argv.indexOf('-f') + 1]",
-    "if (process.env.FAKE_CONCURRENCY_LOG) {",
+    "if (process.env.WT_FAKE_CONCURRENCY_LOG) {",
     "  const fs = require('node:fs')",
-    "  fs.appendFileSync(process.env.FAKE_CONCURRENCY_LOG, 'enter\\n')",
+    "  fs.appendFileSync(process.env.WT_FAKE_CONCURRENCY_LOG, 'enter\\n')",
     "  const until = Date.now() + 120",
     "  while (Date.now() < until) {}",
-    "  fs.appendFileSync(process.env.FAKE_CONCURRENCY_LOG, 'leave\\n')",
+    "  fs.appendFileSync(process.env.WT_FAKE_CONCURRENCY_LOG, 'leave\\n')",
     "}",
-    "if (process.env.FAKE_PROMPT_CAPTURE) require('node:fs').writeFileSync(process.env.FAKE_PROMPT_CAPTURE, require('node:fs').readFileSync(taskFile, 'utf8'))",
+    "if (process.env.WT_FAKE_PROMPT_CAPTURE) require('node:fs').writeFileSync(process.env.WT_FAKE_PROMPT_CAPTURE, require('node:fs').readFileSync(taskFile, 'utf8'))",
     "const model = process.argv[process.argv.indexOf('--model') + 1]",
-    "if (process.env.FAKE_MODEL_CAPTURE) require('node:fs').writeFileSync(process.env.FAKE_MODEL_CAPTURE, model)",
-    "if (process.env.FAKE_EXIT_CODE) { process.stderr.write('requested model ' + model); process.exit(Number(process.env.FAKE_EXIT_CODE)) }",
-    "process.stdout.write(JSON.stringify({ part: { type: 'text', text: process.env.FAKE_ANSWER ?? 'answer' } }) + '\\n')",
+    "if (process.env.WT_FAKE_MODEL_CAPTURE) require('node:fs').writeFileSync(process.env.WT_FAKE_MODEL_CAPTURE, model)",
+    "if (process.env.WT_FAKE_EXIT_CODE) { process.stderr.write('requested model ' + model); process.exit(Number(process.env.WT_FAKE_EXIT_CODE)) }",
+    "process.stdout.write(JSON.stringify({ part: { type: 'text', text: process.env.WT_FAKE_ANSWER ?? 'answer' } }) + '\\n')",
     '',
   ].join('\n'))
   writeFileSync(bin, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(script)} "$@"\n`)
@@ -184,8 +191,8 @@ describe('wt-opencode-envelope generated task sources', () => {
       ...process.env,
       PATH: `${root}${delimiter}${process.env.PATH ?? ''}`,
        XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'),
-      FAKE_ANSWER: 'line one\n"line two"',
-      FAKE_MODEL_CAPTURE: modelCapture,
+      WT_FAKE_ANSWER: 'line one\n"line two"',
+      WT_FAKE_MODEL_CAPTURE: modelCapture,
     }
     clearFixtureTrace(root)
     const startedAt = Date.now()
@@ -215,7 +222,7 @@ describe('wt-opencode-envelope generated task sources', () => {
     clearFixtureTrace(root)
     const failedStartedAt = Date.now()
     const failed = spawnSync(process.execPath, [SCRIPT, tasks, '--dir', workdir, '--model', 'does-not-exist', '--manifest', manifestPath], {
-      encoding: 'utf8', env: { ...env, FAKE_EXIT_CODE: '1' },
+      encoding: 'utf8', env: { ...env, WT_FAKE_EXIT_CODE: '1' },
     })
     const failedDetails = envelopeFailure(root, failed, failedStartedAt)
     expect(failed.status, failedDetails).toBe(0)
@@ -312,7 +319,7 @@ describe('wt-opencode-envelope generated task sources', () => {
       '--manifest', manifestPath,
     ], {
       encoding: 'utf8',
-       env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), FAKE_CONCURRENCY_LOG: concurrencyLog },
+       env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), WT_FAKE_CONCURRENCY_LOG: concurrencyLog },
     })
 
     expect(result.status).toBe(0)
@@ -382,7 +389,7 @@ describe('wt-opencode-envelope generated task sources', () => {
     const result = spawnSync(process.execPath, [
       SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', 'Synthesize:\n{{answers}}',
       '--dir', workdir, '--manifest', manifestPath,
-    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), FAKE_PROMPT_CAPTURE: promptCapture } })
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), WT_FAKE_PROMPT_CAPTURE: promptCapture } })
     const details = envelopeFailure(root, result, startedAt)
 
     expect(result.status, details).toBe(0)
@@ -416,7 +423,7 @@ describe('wt-opencode-envelope generated task sources', () => {
     const result = spawnSync(process.execPath, [
       SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', 'Synthesize:\n{{answers}}',
       '--dir', workdir, '--manifest', manifestPath,
-    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), FAKE_PROMPT_CAPTURE: promptCapture } })
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), WT_FAKE_PROMPT_CAPTURE: promptCapture } })
 
     expect(result.status).toBe(0)
     const rendered = readFileSync(promptCapture, 'utf8')
@@ -506,7 +513,7 @@ describe('wt-opencode-envelope generated task sources', () => {
     writeFileSync(sourceManifest, JSON.stringify({ tasks: [] }))
     const result = spawnSync(process.execPath, [
       SCRIPT, '--reduce', sourceManifest, '--reduce-prompt', '{{answers}}', '--dir', workdir, '--manifest', manifestPath,
-    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), FAKE_PROMPT_CAPTURE: promptCapture } })
+    ], { encoding: 'utf8', env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: root, CLAUDE_CONFIG_DIR: join(root, 'config'), WT_FAKE_PROMPT_CAPTURE: promptCapture } })
 
     expect(result.status).toBe(0)
     const outputManifest = manifestPathFromStdout(result.stdout)

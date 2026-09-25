@@ -20,6 +20,7 @@ describe('pid to parent-pid host perimeter', () => {
     const perimeter = sourceFiles(ROOT)
     const violations = perimeter.filter((path) => RAW_PARENT_TABLE.test(readFileSync(path, 'utf8')))
       .map((path) => relative(ROOT, path).replaceAll('\\', '/'))
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 214, violations: [] })
+    // external-model-env.mjs expands the perimeter; provider-definitions.mjs remains behind HOST_ROOT.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 215, violations: [] })
   })
 })

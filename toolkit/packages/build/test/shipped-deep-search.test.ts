@@ -6,6 +6,8 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error shipped dependency-free plugin source has no declaration file
 import { detectProviders } from '../../../../plugins/wt-deep-search/src/detect.js'
+// @ts-expect-error shipped dependency-free plugin source has no declaration file
+import { startOpencode } from '../../../../plugins/wt-deep-search/src/deep/opencode.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGIN = join(REPO_ROOT, 'plugins', 'wt-deep-search')
@@ -30,6 +32,35 @@ describe('shipped wt-deep-search', () => {
   it('its own test suite passes', () => {
     const run = spawnSync(process.execPath, ['--test'], { cwd: PLUGIN, encoding: 'utf8' })
     expect(run.status, `${run.stdout}\n${run.stderr}`.slice(-12_000)).toBe(0)
+  })
+
+  it('treats a POSIX EPERM process-group probe as still alive', () => {
+    const timers: Array<() => void> = []
+    const writes: string[] = []
+    let probes = 0
+    startOpencode(
+      { prompt: 'full brief', dir: '/work', logPath: '/state/deep.log', timeoutMs: 90_000 },
+      {
+        appendFileSync: (_path: string, value: string) => writes.push(value),
+        clearTimeout() {},
+        closeSync() {},
+        kill: () => {
+          probes += 1
+          throw Object.assign(new Error('not permitted'), { code: probes === 1 ? 'EPERM' : 'ESRCH' })
+        },
+        openSync: () => 8,
+        platform: 'darwin',
+        setTimeout: (callback: () => void) => { timers.push(callback); return timers.length },
+        signalProcessFamily() {},
+        spawn: () => ({ pid: 44, once() {}, unref() {} }),
+      },
+    )
+
+    timers.shift()?.()
+    timers.shift()?.()
+    expect(writes).toEqual([])
+    timers.shift()?.()
+    expect(writes).toEqual(['\nTIMEOUT=90000\nEXIT=124\n'])
   })
 
   it('declares no dependency, at build time or at run time', () => {
