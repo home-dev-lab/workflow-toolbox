@@ -25,19 +25,9 @@
     "partial": false
   },
   {
-    "user": "proportionate-verification.md",
-    "shipped": "wt-proportionate-verification-at-act.md",
-    "partial": true
-  },
-  {
     "user": "sdlc-interim.md",
     "shipped": "wt-sdlc.md",
     "partial": false
-  },
-  {
-    "user": "sdlc-interim.md",
-    "shipped": "wt-sdlc-at-act.md",
-    "partial": true
   },
   {
     "user": "proactive-decision-making.md",

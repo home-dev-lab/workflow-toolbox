@@ -205,7 +205,7 @@ tree itself, instead of only in the `wt-` filename prefix nothing enforced:
     ├── wt-delegation-ladder.md
     ├── wt-delegation-ladder-at-act.md
     ├── wt-sdlc.md
-    ├── wt-sdlc-at-act.md
+    ├── wt-verify-by-ground-truth-at-act.md
     └── …
 ```
 

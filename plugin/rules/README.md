@@ -26,8 +26,10 @@ each line with the `m` flag, skips balanced single- and double-quoted text while
 separators (`;`, `&&`, `||`, `|`, single `&`, `(`, or newline), then accepts environment
 assignments and the wrappers `timeout`, `nice`, `time`, `nohup`, `setsid`, `sudo`, `env`, `npx`,
 `pnpm exec`, and `bash -c`/`sh -c`. Keeping quote traversal inside the anchored fragment prevents
-command-looking text in arguments such as `git commit -m "fix; pnpm test"` or
-`grep '&& git merge'` from becoming a command head. The shared corpus in
+command-looking text in single-line arguments such as `git commit -m "fix; pnpm test"` or
+`grep '&& git merge'` from becoming a command head. This quote handling is line-local: because the
+engine applies the pattern with `m`, heredoc bodies and lines inside multiline strings can still
+match. Excluding those bodies requires a real shell parser. The shared corpus in
 `shipped-rule-splits.test.ts` locks the identical fragment and its behavior across every Bash
 spec.
 
