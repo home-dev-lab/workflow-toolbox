@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Ship right-sized Agent tool defaults: `wt-implementer-sonnet` for settled test-first increments, `wt-implementer-opus` for judgment-heavy implementation, read-only `wt-reviewer` for adversarial plan or diff review, and low-effort `wt-chores` for board/card work, CI triage, and mechanical summaries. A journaled fail-open Agent pre-tool guard refuses an absent or `general-purpose` type unless the prompt records `general-purpose because: <reason>`, making the expensive fallback an explicit decision.
+
 ## [0.187.1] - 2026-09-25
 
 ### Fixed

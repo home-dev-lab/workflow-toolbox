@@ -124,6 +124,7 @@ export const spawningTestFiles = [
   'packages/build/test/rules-manifest.test.ts',
   'packages/build/test/run-cost.test.ts',
   'packages/build/test/run-gate.test.ts',
+  'packages/build/test/right-sized-spawn-guard-hook.test.ts',
   'packages/build/test/sdk-pilot-lifecycle-full.test.ts',
   'packages/build/test/sdk-pilot-lifecycle-server.test.ts',
   'packages/build/test/second-opinion.test.ts',
