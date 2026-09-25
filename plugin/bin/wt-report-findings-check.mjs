@@ -3,8 +3,8 @@
 // separate CLI so lesson harvesting retains its stable extraction-only exit-code contract.
 
 import { readFileSync } from 'node:fs'
-import { pathToFileURL } from 'node:url'
 import { handleHelpFlag } from './lib/cli-help.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 
 export const PROBATION_UNTIL = '2026-09-14'
 
@@ -124,4 +124,4 @@ function main() {
   process.exit(result.mode === 'block' && (result.withoutDisposition > 0 || missingSections.length > 0) ? 1 : 0)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main()
+if (isInvokedDirectly(import.meta.url)) main()

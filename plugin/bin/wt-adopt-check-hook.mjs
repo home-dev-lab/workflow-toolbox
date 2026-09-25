@@ -369,7 +369,7 @@ export function main() {
 }
 
 // Run only when executed as a hook, not when imported by the selftest.
-import { pathToFileURL } from 'node:url'
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
+if (isInvokedDirectly(import.meta.url)) {
   runFailOpenHook('wt-adopt-check-hook.mjs', main)
 }

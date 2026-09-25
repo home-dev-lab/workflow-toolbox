@@ -50,9 +50,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { pathToFileURL } from 'node:url'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { writeFailOpenTrace } from './lib/fail-open-trace.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 
 // The external-CLI delegation signatures — a DELIBERATE byte-identical COPY of
 // @workflow-toolbox/patterns' provenance-gate EXTERNAL_CLI_SIGNATURES (itself a copy of the
@@ -1211,9 +1211,7 @@ export function run() {
 
 // Entry-guard: run only when invoked directly as a hook, so the module is importable by the
 // drift-lock / decision unit tests without executing (and blocking on) stdin.
-const invokedPath = process.argv[1]
-const isEntry = invokedPath !== undefined && import.meta.url === pathToFileURL(invokedPath).href
-if (isEntry) {
+if (isInvokedDirectly(import.meta.url)) {
   try {
     run()
   } catch {

@@ -2,11 +2,11 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 import { resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
 import { snapshotPath, stateRoot } from './lib/actionability-state-paths.mjs'
 import { createBoardClient } from './lib/board-http-client.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { produceSnapshot } from './wt-actionable-snapshot-producer-hook.mjs'
 
 const PAGE_SIZE = 10
@@ -93,4 +93,4 @@ async function main() {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main()
+if (isInvokedDirectly(import.meta.url)) await main()
