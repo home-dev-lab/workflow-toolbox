@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { externalModelEnv } from '../external-model-env.mjs'
 
 const BROKER_PATTERN = /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i
 const START_TIME_TOLERANCE_MS = 1_500
@@ -275,5 +276,5 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     }
   }
 
-  return { env: { ...env, CLAUDE_PLUGIN_DATA: root }, capture, stop }
+  return { env: { ...externalModelEnv(env), CLAUDE_PLUGIN_DATA: root }, capture, stop }
 }

@@ -350,6 +350,70 @@ test('opencode launch uses an argument array without a shell', () => {
   assert.deepEqual(result, { logPath: '/state/deep-1.log', pid: 44 });
 });
 
+// Released behaviour, restored: with no explicit model and no OPENCODE_MODEL, deep-search never
+// infers a provider from the environment. Round 5 added environment-auth inference here; round 7
+// removed it (Astra MED: it invented providers from unrelated *_API_KEY-shaped names such as
+// STRIPE_API_KEY, and overlooked multi-variable credentials such as AWS's pair). This is a
+// deliberate reversal to the release, not a regression: only forwarding with an EXPLICIT model or
+// OPENCODE_MODEL is kept.
+test('opencode never infers a provider credential from the environment when no model is given', () => {
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: { PATH: '/usr/bin', OPENAI_API_KEY: 'selected' },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.deepEqual(launch[1], ['run', '--auto', '--dir', '/work', 'full brief']);
+  assert.equal(launch[2].env.OPENAI_API_KEY, undefined);
+  assert.equal(launch[2].env.GOOGLE_GENERATIVE_AI_API_KEY, undefined);
+});
+
+test('opencode never invents a provider from an unrelated *_API_KEY-shaped credential when no model is given', () => {
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: { PATH: '/usr/bin', STRIPE_API_KEY: 'unrelated-secret' },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.equal(launch[2].env.STRIPE_API_KEY, undefined);
+});
+
+test('opencode launch passes only the explicitly selected known provider credential', () => {
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', model: 'openai/gpt-5.6-sol' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: { OPENAI_API_KEY: 'selected', GOOGLE_GENERATIVE_AI_API_KEY: 'unrelated' },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.equal(launch[2].env.OPENAI_API_KEY, 'selected');
+  assert.equal(launch[2].env.GOOGLE_GENERATIVE_AI_API_KEY, undefined);
+});
+
+test('opencode launch passes only Azure credentials to an Azure model', () => {
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', model: 'azure/gpt-5' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: { OPENAI_API_KEY: 'unrelated', AZURE_API_KEY: 'selected', AZURE_RESOURCE_NAME: 'resource' },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.deepEqual(launch[1], ['run', '--auto', '--dir', '/work', '--model', 'azure/gpt-5', 'full brief']);
+  assert.equal(launch[2].env.AZURE_API_KEY, 'selected');
+  assert.equal(launch[2].env.AZURE_RESOURCE_NAME, 'resource');
+  assert.equal(launch[2].env.OPENAI_API_KEY, undefined);
+});
+
 test('opencode names asynchronous ENOENT without mislabelling other spawn errors', () => {
   for (const [code, marker] of [['ENOENT', 'EXIT=127'], ['EACCES', 'EXIT=126']]) {
     let onError;
@@ -502,6 +566,35 @@ test('opencode timeout escalates to SIGKILL and withholds the marker until the f
   assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
 });
 
+test('a POSIX EPERM liveness probe means the process family still exists', () => {
+  const timers = [];
+  const writes = [];
+  let probes = 0;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', timeoutMs: 90_000 },
+    {
+      appendFileSync: (_path, value) => writes.push(value),
+      clearTimeout() {},
+      closeSync() {},
+      kill: () => {
+        probes += 1;
+        throw Object.assign(new Error('not permitted'), { code: probes === 1 ? 'EPERM' : 'ESRCH' });
+      },
+      openSync: () => 8,
+      platform: 'darwin',
+      setTimeout: (callback) => { timers.push(callback); return timers.length; },
+      signalProcessFamily() {},
+      spawn: () => ({ pid: 44, once() {}, unref() {} }),
+    },
+  );
+
+  timers.shift()();
+  timers.shift()();
+  assert.deepEqual(writes, []);
+  timers.shift()();
+  assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
+});
+
 test('Windows timeout forces the process tree when it has not exited after graceful taskkill', () => {
   let onExit;
   const timers = [];
@@ -639,6 +732,12 @@ test('opencode receives only the environment it needs, never provider or unrelat
     EXA_API_KEY: 'sentinel-exa-secret',
     BRAVE_API_KEY: 'sentinel-brave-secret',
     UNRELATED_CREDENTIAL: 'sentinel-unrelated-secret',
+    MYSQL_PWD: 'owner-password',
+    GIT_CONFIG_PARAMETERS: "'http.extraheader'='Authorization: Bearer owner-token'",
+    NODE_OPTIONS: '--require /tmp/hook.cjs',
+    AWS_CONFIG_FILE: '/owner/aws.conf',
+    opencode_config: 'C:\\owner\\injected.json',
+    OPENAI_API_KEY: 'provider-key',
   };
   startOpencode(
     { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },
@@ -657,6 +756,98 @@ test('opencode receives only the environment it needs, never provider or unrelat
     LANG: 'C.UTF-8',
     DEEP_SEARCH_WORKER: '1',
   });
+});
+
+test('opencode never forwards the session Anthropic credential when it is the only key present', () => {
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'session-secret', CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret' },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.equal(launch[2].env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(launch[2].env.CLAUDE_CODE_OAUTH_TOKEN, undefined);
+});
+
+test('opencode never forwards the Anthropic credential for an explicit anthropic model, even via a registry fixture', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'deep-search-anthropic-registry-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(join(root, 'opencode'), { recursive: true });
+  await writeFile(join(root, 'opencode', 'models.json'), JSON.stringify({ anthropic: { env: ['ANTHROPIC_API_KEY'] } }));
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', model: 'anthropic/claude-x' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: { PATH: '/usr/bin', ANTHROPIC_API_KEY: 'session-secret', XDG_CACHE_HOME: root },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.equal(launch[2].env.ANTHROPIC_API_KEY, undefined);
+});
+
+// Round 6 asserted OPENAI_API_KEY forwarding here via the now-removed environment-provider
+// inference. With no model given, neither key is a candidate any more (deep-search's own
+// EXA_API_KEY was never a candidate either, and stays that way).
+test('opencode forwards neither EXA_API_KEY nor OPENAI_API_KEY when no model is given', () => {
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: { PATH: '/usr/bin', OPENAI_API_KEY: 'openai-secret', EXA_API_KEY: 'exa-secret' },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.equal(launch[2].env.OPENAI_API_KEY, undefined);
+  assert.equal(launch[2].env.EXA_API_KEY, undefined);
+});
+
+test('opencode strips a registry-declared deny-listed credential regardless of its letter case', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'deep-search-case-registry-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(join(root, 'opencode'), { recursive: true });
+  await writeFile(join(root, 'opencode', 'models.json'), JSON.stringify({
+    azure: { env: ['anthropic_api_key', 'claude_code_oauth_token', 'anthropic_auth_token'] },
+  }));
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', model: 'azure/gpt-5' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: {
+        PATH: '/usr/bin', XDG_CACHE_HOME: root,
+        anthropic_api_key: 'A', claude_code_oauth_token: 'C', anthropic_auth_token: 'T',
+      },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.equal(launch[2].env.anthropic_api_key, undefined);
+  assert.equal(launch[2].env.claude_code_oauth_token, undefined);
+  assert.equal(launch[2].env.anthropic_auth_token, undefined);
+});
+
+test('a registry entry for one provider cannot authorize a credential the known map assigns to another', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'deep-search-cross-provider-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const { mkdir } = await import('node:fs/promises');
+  await mkdir(join(root, 'opencode'), { recursive: true });
+  await writeFile(join(root, 'opencode', 'models.json'), JSON.stringify({ azure: { env: ['OPENAI_API_KEY'] } }));
+  let launch;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', model: 'azure/gpt-5' },
+    {
+      closeSync() {}, openSync: () => 8, setTimeout: () => 7,
+      env: { PATH: '/usr/bin', XDG_CACHE_HOME: root, OPENAI_API_KEY: 'O' },
+      spawn: (...args) => { launch = args; return { pid: 44, once() {}, unref() {} }; },
+    },
+  );
+  assert.equal(launch[2].env.OPENAI_API_KEY, undefined);
 });
 
 test('package metadata keeps runtime and development dependencies empty', async () => {

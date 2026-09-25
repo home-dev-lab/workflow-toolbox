@@ -49,7 +49,7 @@ function fixture(script: string, watcherHostCensus = false) {
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
   const helperFixture = join(root, 'helpers.json')
   writeFileSync(helperFixture, '[]\n')
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_LANE_MIN_AVAILABLE_MIB: '0', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,WT_IGNORE_FENCE,WT_INVISIBLE_ALLOW,WT_IDENTITY_RECORD,WT_IDENTITY_MARKER,WT_SLOW_PREFLIGHT_AT_COUNT,WT_FAIL_PREFLIGHT_AT_COUNT,WT_EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
   return { root, dir, config, env }
 }
 function isolateWatcherHostCensus(f: ReturnType<typeof fixture>) {
@@ -271,7 +271,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const f = fixture('brief=${2#Read and execute the complete brief at }; brief=${brief%.}; cp "$brief" "$PWD/obeyed.md"')
     const brief = join(f.dir, 'brief.md')
     writeFileSync(brief, original)
-    f.env.SLOW_PREFLIGHT_AT_COUNT = '2'
+    f.env.WT_SLOW_PREFLIGHT_AT_COUNT = '2'
 
     const result = run(f)
     expect(result.status, result.stderr).toBe(0)
@@ -376,7 +376,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   })
   it('serializes simultaneous launch guards before either worker can replace the pointer', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
-    f.env.SLOW_PREFLIGHT_AT_COUNT = '2'
+    f.env.WT_SLOW_PREFLIGHT_AT_COUNT = '2'
     const argv = [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', '--timeout', '60']
     const first = spawnChild(process.execPath, argv, { env: f.env })
     const second = spawnChild(process.execPath, argv, { env: f.env })
@@ -391,7 +391,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   })
   it('never recovers an old launch lock while its recorded owner is still alive', async () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
-    f.env.SLOW_PREFLIGHT_AT_COUNT = '1'
+    f.env.WT_SLOW_PREFLIGHT_AT_COUNT = '1'
     const argv = [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git', '--timeout', '60']
     const first = spawnChild(process.execPath, argv, { env: f.env })
     const lock = join(f.dir, '.lane', 'supervision', 'launch.lock')
@@ -413,7 +413,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   }, 15_000)
   it('does not release a launch lock after its owner record has been replaced', async () => {
     const f = fixture('sleep 0.2')
-    f.env.SLOW_PREFLIGHT_AT_COUNT = '1'
+    f.env.WT_SLOW_PREFLIGHT_AT_COUNT = '1'
     const first = spawnChild(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { env: f.env })
     const ownerFile = join(f.dir, '.lane', 'supervision', 'launch.lock', 'owner.json')
     waitForFile(ownerFile)
@@ -651,7 +651,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   it('records launch-failed when the real worker fails its own preflight', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     const countFile = join(f.dir, '.lane', 'preflight-count')
-    f.env.FAIL_PREFLIGHT_AT_COUNT = '2'
+    f.env.WT_FAIL_PREFLIGHT_AT_COUNT = '2'
     const result = run(f)
     expect(result.status, result.stderr).toBe(0)
     const stateFile = currentStateFile(f.dir, 4000)
@@ -1237,11 +1237,14 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(malformed.stderr).toContain('--variant')
   })
   it('fences Claude Code skills while preserving the opencode argv contract and launch options', () => {
-    const f = fixture('printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
+    const f = fixture('# PROVIDER_KEYS; printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
     f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
+    f.env.OPENAI_API_KEY = 'selected-key'
+    f.env.GOOGLE_GENERATIVE_AI_API_KEY = 'unrelated-key'
     const res = run(f, ['--variant', 'high', '--timeout', '1']); expect(res.status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'claude-skills-fence'), 'utf8')).toBe('true\n')
+    expect(readFileSync(join(f.dir, 'provider-keys'), 'utf8')).toBe('selected-key|unset|unset|unset\n')
     const argv = readFileSync(join(f.dir, 'argv'), 'utf8').split('\n')
     expect(argv[1]).toMatch(/^Read and execute the complete brief at .+[/\\]\.lane[/\\]brief-snapshots[/\\]\d+-\d+\.md\.$/)
     expect(argv).toEqual([
@@ -1257,9 +1260,16 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       '',
     ])
   })
+  it('passes only Azure credentials to an Azure lane', () => {
+    const f = fixture('# PROVIDER_KEYS; printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
+    Object.assign(f.env, { WT_LANE_MODELS: 'azure/gpt-5', OPENAI_API_KEY: 'unrelated-key', AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource' })
+    const res = run(f, ['--model', 'azure/gpt-5', '--timeout', '1']); expect(res.status).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'provider-keys'), 'utf8')).toBe('unset|unset|azure-key|azure-resource\n')
+  })
   it('refuses before launch when OpenCode ignores the fence', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
-    f.env.IGNORE_FENCE = '1'
+    f.env.WT_IGNORE_FENCE = '1'
     const res = run(f)
     expect(res.status).toBe(1)
     expect(res.stderr).toBe('OPENCODE_SKILL_FENCE_UNAVAILABLE: the synthetic Claude skill is still listed under the forced fence; update OpenCode or workflow-toolbox before launching.\n')
@@ -1267,7 +1277,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   })
   it('refuses before spawn when effective discovery reports a project-native refused skill', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
-    f.env.EFFECTIVE_SKILLS = '[{"name":"save-memory","location":"/lane/.opencode/skills/save-memory/SKILL.md"}]'
+    f.env.WT_EFFECTIVE_SKILLS = '[{"name":"save-memory","location":"/lane/.opencode/skills/save-memory/SKILL.md"}]'
     const res = run(f)
     expect(res.status).toBe(1)
     expect(res.stderr).toContain('save-memory at /lane/.opencode/skills/save-memory/SKILL.md')
@@ -1276,7 +1286,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
 
   it.each(['Save-Memory', 'save_memory', 'SAVE-MEMORY'])('refuses the discovered %s variant before spawn', (name) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
-    f.env.EFFECTIVE_SKILLS = JSON.stringify([{ name, location: `/lane/.opencode/skills/${name}/SKILL.md` }])
+    f.env.WT_EFFECTIVE_SKILLS = JSON.stringify([{ name, location: `/lane/.opencode/skills/${name}/SKILL.md` }])
     const res = run(f)
     expect(res.status).toBe(1)
     expect(res.stderr).toContain(`${name} at /lane/.opencode/skills/${name}/SKILL.md`)
@@ -1284,21 +1294,21 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   })
 
   it('drops an inherited OPENCODE_CONFIG before both effective discovery and spawn', () => {
-    const f = fixture('printf "run|%s|%s|%s\\n" "$PWD" "$IDENTITY_MARKER" "${OPENCODE_CONFIG-unset}" >> "$IDENTITY_RECORD"; printf spawned > "$PWD/spawned"')
-    f.env.IDENTITY_RECORD = join(f.root, 'identity-record')
-    f.env.IDENTITY_MARKER = 'same'
+    const f = fixture('printf "run|%s|%s|%s\\n" "$PWD" "$WT_IDENTITY_MARKER" "${OPENCODE_CONFIG-unset}" >> "$WT_IDENTITY_RECORD"; printf spawned > "$PWD/spawned"')
+    f.env.WT_IDENTITY_RECORD = join(f.root, 'identity-record')
+    f.env.WT_IDENTITY_MARKER = 'same'
     f.env.OPENCODE_CONFIG = join(f.root, 'unsafe.json')
     expect(run(f).status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
-    expect(readFileSync(f.env.IDENTITY_RECORD, 'utf8').trim().split('\n').slice(-2)).toEqual([
+    expect(readFileSync(f.env.WT_IDENTITY_RECORD, 'utf8').trim().split('\n').slice(-2)).toEqual([
       `probe|${f.dir}|same|unset`,
       `run|${f.dir}|same|unset`,
     ])
   })
   it('keeps an empty allow-list launchable when the allow half is unavailable', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
-    f.env.INVISIBLE_ALLOW = '1'
+    f.env.WT_INVISIBLE_ALLOW = '1'
     const res = run(f)
     expect(res.status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
@@ -1312,7 +1322,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(run(f).stderr).toContain('missing: missing-source (skill source is missing: missing)')
     mkdirSync(join(f.config, 'skills', 'allowed'), { recursive: true })
     writeFileSync(join(f.config, 'skills', 'allowed', 'SKILL.md'), '---\nname: allowed\ndescription: allowed\n---\n')
-    f.env.WT_LANE_SKILLS = 'allowed'; f.env.INVISIBLE_ALLOW = '1'
+    f.env.WT_LANE_SKILLS = 'allowed'; f.env.WT_INVISIBLE_ALLOW = '1'
     const unavailable = run(f)
     expect(unavailable.status).toBe(1)
     expect(unavailable.stderr).toContain('allow-list half failed for opencode-config-skills-paths')
