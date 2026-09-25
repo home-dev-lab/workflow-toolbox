@@ -5,6 +5,8 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HOLD_MS = 60 * 60 * 1000
+// Six Node processes can take over five seconds to start on the saturated Windows CI host.
+const WORKER_READY_MS = 15_000
 
 function worker() {
   const descriptors = Array.from({ length: 8 }, () => openSync(process.platform === 'win32' ? 'NUL' : '/dev/null', 'r'))
@@ -34,7 +36,6 @@ async function main() {
   if (process.argv.includes('--worker')) return worker()
   const options = parse(process.argv.slice(2))
   const load = Array.from({ length: options.workers }, () => spawn(process.execPath, [fileURLToPath(import.meta.url), '--worker'], {
-    detached: process.platform !== 'win32',
     stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
   }))
   const stop = () => {
@@ -50,7 +51,7 @@ async function main() {
   process.once('SIGINT', () => { stop(); process.exit(130) })
   try {
     const receipts = await Promise.all(load.map((child) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`load worker ${child.pid ?? 'unknown'} did not become ready`)), 5_000)
+      const timer = setTimeout(() => reject(new Error(`load worker ${child.pid ?? 'unknown'} did not become ready`)), WORKER_READY_MS)
       child.once('message', (message) => { clearTimeout(timer); resolve(message) })
       child.once('error', reject)
     })))
