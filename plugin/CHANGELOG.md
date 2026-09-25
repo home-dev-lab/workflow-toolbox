@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Recognize adopted rules moved into project or config `rules-on-demand/` directories: checks compare only the adopted body, refreshes preserve the engine-owned frontmatter byte for byte and stay in place, and the SessionStart hook no longer requests a duplicate static install. Static plus on-demand copies are reported as a double load, while directory-symlink aliases resolve as one location.
+
 ## [0.187.1] - 2026-09-25
 
 ### Fixed

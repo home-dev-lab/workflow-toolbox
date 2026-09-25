@@ -822,11 +822,13 @@ function stripAgentBanner(text) {
  *  ever comparing content); fixing that reachability exposed this as a real false-positive
  *  DRIFT on every genuinely clean, directly-adopted rule. */
 function stripRuleBanner(text) {
-  const nl = text.indexOf('\n')
-  const firstLine = nl === -1 ? text : text.slice(0, nl)
+  const head = onDemandFrontmatter(text)
+  const candidate = head ? text.slice(head.length) : text
+  const nl = candidate.indexOf('\n')
+  const firstLine = nl === -1 ? candidate : candidate.slice(0, nl)
   if (!VERSION_RE.test(firstLine)) return text
   if (nl === -1) return ''
-  return text.slice(nl + 1).replace(/^\n+/, '')
+  return candidate.slice(nl + 1).replace(/^\n+/, '')
 }
 
 function stripScriptBanner(text) {
@@ -853,11 +855,13 @@ function renderItem(set, item, version, root, oldContent = null) {
   const { content, preserved } =
     set.kind === 'agents' ? preserveLocalFrontmatter(rawContent, oldContent) : { content: rawContent, preserved: [] }
   const b = banner(version, fingerprint(content), item.file)
-  const text = set.kind === 'agents'
-    ? insertAgentBanner(content, b)
-    : set.kind === 'scripts' && content.startsWith('#!')
-      ? `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
-      : `${b}\n\n${content}`
+  const onDemandHead = set.kind === 'rules' ? onDemandFrontmatter(oldContent ?? '') : null
+  let text
+  if (set.kind === 'agents') text = insertAgentBanner(content, b)
+  else if (onDemandHead) text = `${onDemandHead}${b}\n\n${content}`
+  else if (set.kind === 'scripts' && content.startsWith('#!')) {
+    text = `${content.slice(0, content.indexOf('\n') + 1)}${b}\n\n${content.slice(content.indexOf('\n') + 1)}`
+  } else text = `${b}\n\n${content}`
   return { text, preserved }
 }
 
@@ -988,8 +992,15 @@ function bannerLine(set, text) {
     const nl = after.indexOf('\n')
     return nl === -1 ? after : after.slice(0, nl)
   }
-  const nl = text.indexOf('\n')
-  return nl === -1 ? text : text.slice(0, nl)
+  const head = set.kind === 'rules' ? onDemandFrontmatter(text) : null
+  const candidate = head ? text.slice(head.length) : text
+  const nl = candidate.indexOf('\n')
+  return nl === -1 ? candidate : candidate.slice(0, nl)
+}
+
+function onDemandFrontmatter(text) {
+  const block = frontmatterBlock(text)
+  return block && /^on-demand:\s*$/m.test(block) ? block : null
 }
 
 function explicitNestedTarget(set, dir, args) {
@@ -1020,12 +1031,15 @@ function discoveredConfigRoots() {
   return [...roots].map((dir) => path.resolve(dir))
 }
 
-function adoptionDirectoryKind(dir) {
+function adoptionDirectoryInfo(dir) {
   try {
     const real = fs.realpathSync(dir)
-    return real === path.resolve(dir) ? 'real directory' : `symlinked directory -> ${real}`
+    return {
+      realPath: real,
+      kind: real === path.resolve(dir) ? 'real directory' : `symlinked directory -> ${real}`,
+    }
   } catch {
-    return 'unresolved directory'
+    return { realPath: path.resolve(dir), kind: 'unresolved directory' }
   }
 }
 
@@ -1035,12 +1049,13 @@ function hasAdoptedSet(set, dir, root) {
 
 function existingAdoptionCandidates(name, set, root) {
   const candidates = new Map()
-  const add = (level, dir) => {
+  const add = (level, dir, placement = 'static') => {
     const resolved = path.resolve(dir)
     if (!hasAdoptedSet(set, resolved, root)) return
+    const { realPath, kind } = adoptionDirectoryInfo(resolved)
     const existing = candidates.get(resolved)
     if (existing) existing.levels.add(level)
-    else candidates.set(resolved, { dir: resolved, levels: new Set([level]), kind: adoptionDirectoryKind(resolved) })
+    else candidates.set(resolved, { dir: resolved, realPath, placement, levels: new Set([level]), kind })
   }
   const addWithLegacyRules = (level, dir) => {
     add(level, dir)
@@ -1051,18 +1066,37 @@ function existingAdoptionCandidates(name, set, root) {
   }
 
   addWithLegacyRules('project', path.join(process.cwd(), set.defaultDir))
+  if (name === 'rules') add('project on-demand', path.join(process.cwd(), '.claude', 'rules-on-demand'), 'on-demand')
   for (const configRoot of discoveredConfigRoots()) {
     addWithLegacyRules('config', path.join(configRoot, set.globalSubdir))
+    if (name === 'rules') add('config on-demand', path.join(configRoot, 'rules-on-demand'), 'on-demand')
   }
   return [...candidates.values()]
 }
 
 function resolveImplicitInstallDirs(chosen, args, root) {
-  if (args.mode !== 'install' || args.dir || args.global) return new Map()
+  if (!['check', 'install'].includes(args.mode) || args.dir) return new Map()
   const bySet = new Map()
   const ambiguous = []
   for (const name of chosen) {
-    const candidates = existingAdoptionCandidates(name, SETS[name], root)
+    let candidates = existingAdoptionCandidates(name, SETS[name], root)
+    if (args.global) {
+      const activeRoot = path.resolve(resolvedConfigRoot())
+      candidates = candidates.filter(({ dir }) => {
+        const relative = path.relative(activeRoot, dir)
+        return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+      })
+    } else if (args.mode === 'check') {
+      const projectRoot = path.resolve(process.cwd(), '.claude')
+      candidates = candidates.filter(({ dir }) => {
+        const relative = path.relative(projectRoot, dir)
+        return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+      })
+    }
+    candidates = candidates.filter((candidate) =>
+      candidate.placement !== 'on-demand' ||
+      !candidates.some((other) => other.placement === 'static' && other.realPath === candidate.realPath),
+    )
     if (candidates.length > 1) ambiguous.push({ name, candidates })
     else if (candidates.length === 1) bySet.set(name, candidates[0].dir)
   }
@@ -1071,7 +1105,7 @@ function resolveImplicitInstallDirs(chosen, args, root) {
       candidates.map(({ dir, levels, kind }) => `  [${name}] ${[...levels].join('/')} ${kind}: ${dir}`),
     )
     fail(
-      `--install found more than one adopted target:\n${lines.join('\n')}\n` +
+      `DUPLICATE adopted targets found; the same managed files would load from more than one directory:\n${lines.join('\n')}\n` +
         `refusing to guess; pass --dir '<directory>' with one --set, or --global for the active config profile.`,
     )
   }
@@ -1134,10 +1168,10 @@ function classify(target, set) {
   const fpm = FP_RE.exec(line)
   const body = stripBannerFor(set, content)
   const contentFp = contentFingerprint(body)
-  if (!fpm) return { state: 'edited-unknown', installedVer, contentFp }
+  if (!fpm) return { state: 'edited-unknown', installedVer, contentFp, frontmatter: onDemandFrontmatter(content) }
   const clean = fingerprint(body) === fpm[1] || contentFingerprint(body) === fpm[1]
   // Re-derive this from the body; never trust the banner hash for shipped-content identity.
-  return { state: clean ? 'clean' : 'edited', installedVer, contentFp, body }
+  return { state: clean ? 'clean' : 'edited', installedVer, contentFp, body, frontmatter: onDemandFrontmatter(content) }
 }
 
 function journalPath(dir) {
@@ -1914,8 +1948,10 @@ function decideManagedItem(set, dir, item, args, version, root, nestedDir) {
   return { target, classification, decision, stale, migrationPending: !!legacyDecision, duplicate }
 }
 
-function localAgentContent(set, target, classification) {
-  if (set.kind !== 'agents' || !['edited', 'edited-unknown'].includes(classification.state)) return null
+function existingContentForRender(set, target, classification) {
+  const preserveAgentFields = set.kind === 'agents' && ['edited', 'edited-unknown'].includes(classification.state)
+  const preserveOnDemandFrontmatter = set.kind === 'rules' && classification.frontmatter
+  if (!preserveAgentFields && !preserveOnDemandFrontmatter) return null
   try {
     return fs.readFileSync(target, 'utf8')
   } catch {
@@ -1948,7 +1984,7 @@ function replaceSymlinkAtomically(target, text) {
 
 function writeManagedItem(set, dir, item, args, version, root, planned) {
   const { target, classification } = planned
-  const oldContent = localAgentContent(set, target, classification)
+  const oldContent = existingContentForRender(set, target, classification)
   const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent)
   if (preserved.length > 0) {
     process.stdout.write(
