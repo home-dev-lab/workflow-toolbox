@@ -96,7 +96,7 @@ Observe an assumption about the host before building anything on it; treat the o
 evidence, not the assumption as a premise. A delivery without the required output says `e2e not
 run` with a reason instead of being presented as ready.
 
-Rationale and field cases: `docs/wt/wt-sdlc-at-act.md` §Real sources expose integration failures.
+Rationale and field cases: `docs/wt/wt-sdlc.md` §Real sources expose integration failures.
 
 ## Proportionality
 
@@ -116,8 +116,3 @@ these five sections: **Implemented** (what and why), **Verification** (each exec
 outcome), **Independent Review** (lenses, confirmed and refuted findings), **Decisions**
 (fixed, partially addressed, rejected with justification, or routed to a named card), and **Remaining Risks** (unverified or
 uncertain). Do not claim completion while omitting a failed or unexecuted mandatory check.
-
-## At-act companion
-
-Its act-bound half is `wt-sdlc-at-act.md`, loaded alongside this file or served on demand where an
-engine is installed.

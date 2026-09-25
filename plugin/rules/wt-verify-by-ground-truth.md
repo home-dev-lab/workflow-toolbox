@@ -14,7 +14,7 @@ while sampling it: absolute rate is upper bound, and going quiet is part of inst
 **Witness line must be one the BROKEN instrument could MISS.** Seeded row that reads correctly
 under both working and broken interpretation test nothing. Choose against suspected failure mode:
 row that must be PRESENT when mode is truncation; row that must be ABSENT when mode is
-over-matching. Same family as a check readable in both outcomes; this applies it to choice of
+over-matching. Same family as control readable in both outcomes; this applies it to choice of
 witness.
 Misread code not spoil one result. It retroactively VOID every "gates green" claim built on the
 same capture path.

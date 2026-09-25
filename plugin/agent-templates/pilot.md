@@ -313,7 +313,7 @@ five copies of a published surface, and nobody ever decided to publish it.
 
 ## Verification shape — the proportionate ladder
 
-<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:bca2ebc42dfec1eff7a6aff73a3b11b052c84386a4f3f680210cdec790c298a1 -->
+<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:b6cc206d6ddba2cb4fcdadf9da4c5da4604d5b932b46a7c33e274a72e08afb06 -->
 <!-- embedded-copy:proportionate-verification-ladder:start -->
 Verification mandatory. How MUCH you spin up scales with what changed.
 
@@ -450,7 +450,7 @@ what it was pointed at, however deep it go.
   low-risk change can still land on a surface deserving a full breadth sweep. A surface nobody
   else touch may need only the change's own depth.
 - Breadth finding handled like any finding: fix in scope, record what is not. Never fold an
-  out-of-scope find into a silent extra fix. Its regression lock is proven red before acceptance.
+  out-of-scope find into a silent extra fix. Its lock proven red the same way as any other fix.
   No separate standard here.
 
 Never licenses skipping verification: gates (test / typecheck / lint by exit code) and your own

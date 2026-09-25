@@ -136,7 +136,7 @@ what it was pointed at, however deep it go.
   low-risk change can still land on a surface deserving a full breadth sweep. A surface nobody
   else touch may need only the change's own depth.
 - Breadth finding handled like any finding: fix in scope, record what is not. Never fold an
-  out-of-scope find into a silent extra fix. Its regression lock is proven red before acceptance.
+  out-of-scope find into a silent extra fix. Its lock proven red the same way as any other fix.
   No separate standard here.
 
 Never licenses skipping verification: gates (test / typecheck / lint by exit code) and your own
@@ -156,6 +156,3 @@ or outward-facing changes. Lower rung otherwise.
      This note previously named two paths that a later reorganisation emptied, so it sent a
      reader to files that no longer existed while reading perfectly plausible. A tree move is
      exactly the kind of change nobody re-reads as a change to a safety mechanism. -->
-
-Its act-bound half is `wt-proportionate-verification-at-act.md`, loaded alongside this file or
-served on demand where an engine is installed.

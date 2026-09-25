@@ -1,8 +1,0 @@
-{
-  "on-demand": {
-    "triggers": [
-      { "kind": "bash", "flags": "m", "before-first-act": true, "regex": "^(?:(?:[^'\";&|()\\n]|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')*(?:;|&&|\\|\\||\\||&(?!&)|\\()\\s*)*\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+))\\s+)*(?:(?:timeout(?:\\s+\\S+)?|nice(?:\\s+(?:-[^\\s]+|\\d+))*|time|nohup|setsid|sudo(?:\\s+-[^\\s]+)*|npx|pnpm\\s+exec|env(?:\\s+(?:-[^\\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+)))*)\\s+|(?:ba)?sh\\s+-c\\s+['\"]\\s*)*(?:vitest|pytest|tsc|mypy|ruff|eslint|pnpm\\s+vitest|(?:pnpm|npm|yarn)(?:\\s+(?:(?:-C|--dir|-F|--filter)\\s+\\S+|--filter=\\S+|-r))*\\s+(?:run\\s+)?(?:test|typecheck|lint|build|check))\\b" }
-    ]
-  },
-  "compliance": { "kind": "none", "reason": "The at-act half governs executing and recording verification gates." }
-}
