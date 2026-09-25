@@ -1,5 +1,10 @@
 # Scale verification to the change's risk — at act
 
+<!-- embedded-copy:mutation-red-proof:start -->
+**2. Method diversity — strongest lever on what remain.**
+Reach the same question by genuinely different ROUTES: static reading, dynamic execution,
+property/proof, fuzzing, differential compare against known-good. Two agents reading same code
+twice = ONE method run twice, however different their prompts.
 **MUTATION is sharpest: only way to know a check CAN fail is to make it fail.** Test written from
 same understanding as code agree with the code's mistakes — go green on the very bug it was meant
 to catch. Its green is then evidence of nothing.
@@ -14,3 +19,4 @@ Mutating a whole module to hunt surviving mutants = genuinely different, much la
 the cheap per-fix form is not a down-payment on the expensive one.
 This is the operational answer to "was the failure it prevent actually exercised" — a question a
 green suite cannot settle about itself.
+<!-- embedded-copy:mutation-red-proof:end -->

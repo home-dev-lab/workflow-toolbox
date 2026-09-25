@@ -14,10 +14,10 @@ while sampling it: absolute rate is upper bound, and going quiet is part of inst
 **Witness line must be one the BROKEN instrument could MISS.** Seeded row that reads correctly
 under both working and broken interpretation test nothing. Choose against suspected failure mode:
 row that must be PRESENT when mode is truncation; row that must be ABSENT when mode is
-over-matching. Same family as control readable in both outcomes; this applies it to choice of
+over-matching. Same family as a check readable in both outcomes; this applies it to choice of
 witness.
-Misread code not spoil one result. It retroactively VOID every "gates green" claim built on same
-capture path.
+Misread code not spoil one result. It retroactively VOID every "gates green" claim built on the
+same evidence path.
 
 **Comparing two arms — record the condition beside each result, and alternate the arms.** One run
 of each, taken in sequence, is not two readings of two arms; it is one reading of the machine taken
@@ -57,6 +57,36 @@ diligent and perfectly wrong. No thoroughness inside that set reach outside it.
 ⚠ Requiring probe to state reach not protect commissioner. It protect NEXT reader — the one who
 can notice stated reach and other evidence cannot both be true.
 ⚠ Keyword search own floor: target described in different words than query is invisible to it.
+
+## A guard pass signal is not its invariant
+
+**Guard pass-signal ≠ the invariant it prove.** Check property PER UNIT. Not aggregate mechanism
+emitted.
+
+**Probe result RELAYED carry set it scanned and its self-exclusion. Else not relayed.**
+Danger moment is hand-off, not measurement. Number stripped of provenance stop being reading,
+become fact. Next reader cannot recover what it covered.
+Probe that count its own process = ordinary case, not exotic.
+Same hollow measurement twice = not corroboration. Two readings, one instrument, agree by
+construction.
+Relayed claim later shown hollow → correction go back to SAME recipients. Not absorbed into
+report nobody re-read.
+
+## Delegate green report is input, not proof
+
+**Delegate green report = input. Not proof of work. Not proof of WHERE it ran.** Re-run gates
+yourself. Verify provenance from execution traces.
+
+**A gate log at a FIXED path is evidence for nobody — the brief is where the collision is
+authored.** A brief that names a fixed log path hands that same path to every delegate who ever
+reads it, across sessions and across time; two runs write it, two readers read it, and neither can
+prove whose green they saw. A brief names a STAMPED path (`<what>-<timestamp>.log`) or names none
+and lets the delegate choose its own. Reusing a path also makes a completion marker meaningless — a
+dead run's marker lands mid-file in a live run's output, present and greppable and false — so
+completion is decided from the LAST line of the file, never from a match anywhere in it.
+⚠ Tell, readable without knowing the other writer exists: a gate log whose green CONTRADICTS the
+failures someone is discussing. Two readers who both find failures, or both find green, agree by
+construction and the collision stays invisible.
 
 **ANY surprise — good, bad, novel — is anomaly to EXPLAIN before you label it.** Favorable
 surprise is the one that silently skip verification. Include FIRST occurrence of class never
@@ -129,4 +159,28 @@ hazard.
 **One mechanical read not enough — evidence across sources, leads to chase, surprise needing root
 cause?** Escalate to `deep-grounding` skill. Do not chain ad-hoc reads.
 
-The act-bound half of this rule is served on demand as `wt-verify-by-ground-truth-at-act.md`.
+## Control must be readable in BOTH outcomes, not only in failure
+
+Trap appear when fix purpose is to make something STOP happening. Natural control read artifact
+the fix REMOVE. It then execute only when fix FAILED. Success become indistinguishable from
+"check could not run".
+
+Before trusting control, ask what it read in SUCCESS case. Answer "nothing — thing it read no
+longer exist"? Not a control. Find source that exist either way.
+
+## Summary asserting a guarantee is verified against its body, SAME pass
+
+Docstring, header, comment claim a PROPERTY — "this path is literal", "cursor derive from
+acknowledgements", "return everything after X"? Read the body under it before moving on. Not
+later. Not as review step. Same pass — claim and code diverge at the moment code change and claim
+does not.
+
+Failure is not carelessness. Treating it as carelessness is why it repeat. Rewrite body, then
+adjust summary → you describe what you INTENDED, not what you WROTE. That summary is exactly what
+next reader trust when checking quickly. So it mislead exactly when it matter.
+
+This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
+needed: the sentence is reassuring.
+
+Its act-bound half is `wt-verify-by-ground-truth-at-act.md`, loaded alongside this file or served
+on demand where an engine is installed.

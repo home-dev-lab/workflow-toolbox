@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Changed
 - Split the six large shipped rules into reasoning-focused core files and lossless `-at-act` halves with adjacent trigger specs; adopt still installs both halves statically when no on-demand engine is present.
+- Keep decision-time and report-time obligations in the always-loaded halves, preserve whole paragraphs across the split, and scope on-demand triggers to real command and brief-writing acts.
 
 ## [0.187.2] - 2026-09-25
 

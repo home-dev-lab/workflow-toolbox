@@ -17,6 +17,11 @@ arbiter.
 cost, zero latency, zero ambiguity. Routing a deterministic predicate to a model instead isn't
 rigor — it's over-delegation, introducing uncertainty into a question that had none.
 
+Compose pilot/orchestrator spawn (environment brief + model elevation) via
+`workflow-toolbox:pilot-wave` skill. Non-delegable duties: owning wake-ups (delegate's
+background wait doesn't reliably re-wake it — inbound message does), user-gates (publish /
+deploy / destructive / business preference), memory writes, Workflow tool.
+
 Your OWN turns are a spend too. Session runs expensive tier → delegating is standing default,
 not a fallback for heavy work only: hand even light chores — card/report writing, doc
 grounding, mechanical file edit, investigation — to cheaper spawned agent, keep your turns for
@@ -126,6 +131,29 @@ Workhorse tier DOMINATED by a stronger one — costs more per unit for lower qua
 reserve strong tier for quality, keep cheap tier for trivial work, avoid dominated tier
 entirely.
 
+MECHANICAL escalation trigger, never "use judgment": escalate after two failed attempts at same
+fix, one repeated diagnosis, or ~15–20 min without narrowing problem. Judgment-based clause is
+unenforceable, silently ignored — agent grinding a wrong hypothesis feels busy, not stuck, so
+only a counting rule fires regardless.
+
+Green report = EVIDENCE, not proof: rerun gates by exit code, read diff yourself before
+committing. Arc complete → LEAVE the agent idle; do not send it a shutdown request. ⚠ Observed twice out of twice on one
+harness version: a shutdown request accepted by an in-process sub-agent was followed within seconds by the
+end of the SPAWNING session itself (unproven as a cause — no counter-example sought); an idle agent costs nothing. Terminated/quota-killed
+agent resumes from transcript on next message — try resuming before respawning; never spawn a
+successor into same worktree before predecessor's death confirmed (two writers corrupt one
+tree). Before assuming agent stuck, check observable state (git status, file mtimes, HEAD)
+rather than nudging blindly.
+
+⚠ But silence alone ≠ agent dead: a legitimately-waiting agent writes nothing, identical to one
+that died. Signal that discriminates = agent's RESPONSE, not how long it stayed quiet —
+check-in states observation, asks, rather than asserting death; asserting it forces a live
+agent to spend a turn correcting a wrong premise.
+
+Don't poll completion through a status/task-lookup tool: display name isn't an id such tools
+accept, a lookup finding nothing proves nothing. Wait for completion notification, or arm own
+watcher on a real signal (file changes, process state) for independent wake-up.
+
 ## Four prohibitions that sharpen the ladder
 
 1. **Executing a fully-specified design = executor-lane work, not inline on a strong model.**
@@ -173,4 +201,5 @@ increment. Availability of a bridge on the machine is NOT consent to use it: con
 account-level authorization (the ceiling) with project-level narrowing (never widening) — a
 refusal at either level wins, and default is OFF.
 
-The act-bound half of this rule is served on demand as `wt-delegation-ladder-at-act.md`.
+Its act-bound half is `wt-delegation-ladder-at-act.md`, loaded alongside this file or served on
+demand where an engine is installed.

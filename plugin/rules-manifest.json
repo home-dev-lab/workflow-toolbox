@@ -157,7 +157,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth-at-act.md",
+      "source": "rules/wt-verify-by-ground-truth.md",
       "heading": "## Delegate green report is input, not proof",
       "recipients": [
         "pilot"
@@ -195,7 +195,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth-at-act.md",
+      "source": "rules/wt-verify-by-ground-truth.md",
       "heading": "## Control must be readable in BOTH outcomes, not only in failure",
       "recipients": [
         "pilot",
@@ -209,7 +209,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth-at-act.md",
+      "source": "rules/wt-verify-by-ground-truth.md",
       "heading": "## Summary asserting a guarantee is verified against its body, SAME pass",
       "recipients": [
         "review",

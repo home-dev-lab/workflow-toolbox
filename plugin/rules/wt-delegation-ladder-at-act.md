@@ -10,11 +10,6 @@ already written. `install.mjs --set agents --install` adopts them with a version
 ⚠ Adoption is picked up within MINUTES, same session, no restart — measured. The "a new agent type
 needs ~90 minutes or a restart" caution applies to a hand-written definition, not to an adoption.
 
-Compose pilot/orchestrator spawn (environment brief + model elevation) via
-`workflow-toolbox:pilot-wave` skill. Non-delegable duties: owning wake-ups (delegate's
-background wait doesn't reliably re-wake it — inbound message does), user-gates (publish /
-deploy / destructive / business preference), memory writes, Workflow tool.
-
 ## Briefing an executor (the split that makes delegation safe)
 
 Arbiter designs, briefs, gates, reviews, commits. Executor implements. Structural decisions
@@ -30,7 +25,7 @@ requires the guard or proves case impossible — never files as harmless scope n
 Every hand-written executor-lane brief requires `## Lessons for the memory` in its report, with
 `None.` legitimate, alongside gate evidence. At that lane's integration, harvest that one report;
 never defer reports into an end-of-run pile. Rationale and field cases:
-`docs/wt/wt-delegation-ladder.md` §Executor report lessons.
+`docs/wt/wt-delegation-ladder-at-act.md` §Executor report lessons.
 
 State INVARIANT executor must reach, not mechanism you guessed reaches it. Prescribing *how*
 caps executor at briefer's own knowledge of a layer executor actually reads. State what must be
@@ -59,29 +54,6 @@ WITHDRAWN while the rule still names it, and the brief is then wrong BEFORE the 
 Covers a tool, a write path, an output channel, an agent type. Executor behaves correctly, cannot
 comply, explains — one round trip bought for nothing, and the competence of both parties hides it.
 Confirm at brief time; never infer from the rule that prescribes it.
-
-MECHANICAL escalation trigger, never "use judgment": escalate after two failed attempts at same
-fix, one repeated diagnosis, or ~15–20 min without narrowing problem. Judgment-based clause is
-unenforceable, silently ignored — agent grinding a wrong hypothesis feels busy, not stuck, so
-only a counting rule fires regardless.
-
-Green report = EVIDENCE, not proof: rerun gates by exit code, read diff yourself before
-committing. Arc complete → LEAVE the agent idle; do not send it a shutdown request. ⚠ Observed twice out of twice on one
-harness version: a shutdown request accepted by an in-process sub-agent was followed within seconds by the
-end of the SPAWNING session itself (unproven as a cause — no counter-example sought); an idle agent costs nothing. Terminated/quota-killed
-agent resumes from transcript on next message — try resuming before respawning; never spawn a
-successor into same worktree before predecessor's death confirmed (two writers corrupt one
-tree). Before assuming agent stuck, check observable state (git status, file mtimes, HEAD)
-rather than nudging blindly.
-
-⚠ But silence alone ≠ agent dead: a legitimately-waiting agent writes nothing, identical to one
-that died. Signal that discriminates = agent's RESPONSE, not how long it stayed quiet —
-check-in states observation, asks, rather than asserting death; asserting it forces a live
-agent to spend a turn correcting a wrong premise.
-
-Don't poll completion through a status/task-lookup tool: display name isn't an id such tools
-accept, a lookup finding nothing proves nothing. Wait for completion notification, or arm own
-watcher on a real signal (file changes, process state) for independent wake-up.
 
 ## Paste the definition of done verbatim — a paraphrase can invert a criterion
 

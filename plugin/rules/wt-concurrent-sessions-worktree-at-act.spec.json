@@ -2,7 +2,7 @@
   "on-demand": {
     "triggers": [
       { "kind": "tool", "tool": "^Agent$", "unconditional": true },
-      { "kind": "bash", "regex": "git\\s+(?:worktree|merge|rebase|reset)\\b" }
+      { "kind": "bash", "regex": "(?:^|(?:;|&&|\\|)\\s*|\\(\\s*)(?:git(?:\\s+(?:(?:-C|-c|--git-dir|--work-tree|--config-env)\\s+\\S+|--(?:exec-path|namespace|super-prefix)=\\S+|--(?:literal-pathspecs|no-pager)))*\\s+(?:worktree|merge|rebase|reset|pull)\\b|gh\\s+pr\\s+merge\\b)" }
     ]
   },
   "compliance": { "kind": "none", "reason": "Worktree creation, spawn-base correction, and reintegration are act-bound procedures." }

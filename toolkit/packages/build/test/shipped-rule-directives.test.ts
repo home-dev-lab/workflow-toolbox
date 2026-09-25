@@ -36,7 +36,7 @@ describe('shipped rule directives', () => {
   })
 
   it('requires gate logs to use run-specific paths and terminal completion markers', () => {
-    const text = rule('wt-verify-by-ground-truth-at-act.md').replaceAll('\n', ' ')
+    const text = rule('wt-verify-by-ground-truth.md').replaceAll('\n', ' ')
 
     expect(text).toContain('A gate log at a FIXED path is evidence for nobody')
     expect(text).toContain('A brief names a STAMPED path')

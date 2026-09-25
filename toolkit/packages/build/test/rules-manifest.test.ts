@@ -64,7 +64,7 @@ describe('SDK role rules manifest', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
     expect(Buffer.byteLength(contract)).toBe(6135)
-    expect(Buffer.byteLength(composed)).toBe(8381)
+    expect(Buffer.byteLength(composed)).toBe(8380)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 
@@ -125,6 +125,11 @@ describe('SDK role rules manifest', () => {
     const tdd = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: 'tdd', trigger: 'lane:tdd' })
     expect(tdd).toContain('# Step back to the architectural root')
     expect(tdd).toContain('Stop, question the shape.')
+  })
+
+  it('keeps unexplained surprises in the SDK pilot verify phase', () => {
+    const verify = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: 'pilot', trigger: 'phase:verify' })
+    expect(verify).toContain('ANY surprise — good, bad, novel — is anomaly to EXPLAIN before you label it')
   })
 })
 

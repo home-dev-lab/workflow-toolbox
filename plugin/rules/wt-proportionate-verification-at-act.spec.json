@@ -1,7 +1,7 @@
 {
   "on-demand": {
     "triggers": [
-      { "kind": "bash", "regex": "(?:vitest|jest|pytest|cargo\\s+test|go\\s+test|pnpm\\s+test|npm\\s+test)\\b" }
+      { "kind": "bash", "regex": "(?:^|(?:;|&&|\\|)\\s*|\\(\\s*)(?:vitest|jest|pytest|bun\\s+test|node\\s+--test|make\\s+test|go\\s+test|cargo\\s+test|(?:pnpm|npm|yarn)(?:\\s+(?:-C|--filter)\\s+\\S+)*\\s+(?:run\\s+)?test)\\b" }
     ]
   },
   "compliance": { "kind": "none", "reason": "The at-act half governs proving a fix red by mutation before accepting green." }

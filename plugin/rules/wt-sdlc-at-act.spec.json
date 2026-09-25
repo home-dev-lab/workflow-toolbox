@@ -1,9 +1,8 @@
 {
   "on-demand": {
     "triggers": [
-      { "kind": "tool", "tool": "^(?:Edit|Write|MultiEdit)$", "unconditional": true },
-      { "kind": "bash", "regex": "(?:test|typecheck|lint|build|check|vitest|pytest)\\b" }
+      { "kind": "bash", "regex": "(?:^|(?:;|&&|\\|)\\s*|\\(\\s*)(?:vitest|pytest|tsc|mypy|ruff|eslint|(?:pnpm|npm|yarn)(?:\\s+(?:-C|--filter)\\s+\\S+)*\\s+(?:run\\s+)?(?:test|typecheck|lint|build|check))\\b" }
     ]
   },
-  "compliance": { "kind": "none", "reason": "Implementation, verification, and end-to-end obligations govern edits and gates." }
+  "compliance": { "kind": "none", "reason": "The at-act half governs executing and recording verification gates." }
 }

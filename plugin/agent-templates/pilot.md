@@ -313,7 +313,7 @@ five copies of a published surface, and nobody ever decided to publish it.
 
 ## Verification shape — the proportionate ladder
 
-<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:e0e71b5a451eb42353d322422ba6e685506e49a22fd245400e9212a6dd12d0bc -->
+<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:9e84d62ad24926c3e51a7ae9db05a10e58893023d2771e71cb4d7609c9fc07c2 -->
 <!-- embedded-copy:proportionate-verification-ladder:start -->
 Verification mandatory. How MUCH you spin up scales with what changed.
 
@@ -354,11 +354,6 @@ is CONSEQUENTIAL **and** instrument was built from same understanding as thing i
 wrote probe and expected answer in one motion. That is where wrong instrument and wrong belief
 agree perfectly. Third tell: measurement landing exactly where you hoped deserve the second
 instrument MORE, not less.
-
-**2. Method diversity — strongest lever on what remain.**
-Reach the same question by genuinely different ROUTES: static reading, dynamic execution,
-property/proof, fuzzing, differential compare against known-good. Two agents reading same code
-twice = ONE method run twice, however different their prompts.
 
 **3. Hypothesis independence.** Each verifier construct its OWN explanation BEFORE seeing anyone
 else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on
@@ -434,7 +429,7 @@ what it was pointed at, however deep it go.
   low-risk change can still land on a surface deserving a full breadth sweep. A surface nobody
   else touch may need only the change's own depth.
 - Breadth finding handled like any finding: fix in scope, record what is not. Never fold an
-  out-of-scope find into a silent extra fix. Its lock proven red the same way as any other fix.
+  out-of-scope find into a silent extra fix. Its regression lock is proven red before acceptance.
   No separate standard here.
 
 Never licenses skipping verification: gates (test / typecheck / lint by exit code) and your own
@@ -442,6 +437,11 @@ diff-read are UNCONDITIONAL on both axes. Unsure between two rungs? Higher rung 
 or outward-facing changes. Lower rung otherwise.
 <!-- embedded-copy:proportionate-verification-ladder:end -->
 
+<!-- embedded-copy:mutation-red-proof:start -->
+**2. Method diversity — strongest lever on what remain.**
+Reach the same question by genuinely different ROUTES: static reading, dynamic execution,
+property/proof, fuzzing, differential compare against known-good. Two agents reading same code
+twice = ONE method run twice, however different their prompts.
 **MUTATION is sharpest: only way to know a check CAN fail is to make it fail.** Test written from
 same understanding as code agree with the code's mistakes — go green on the very bug it was meant
 to catch. Its green is then evidence of nothing.
@@ -456,6 +456,7 @@ Mutating a whole module to hunt surviving mutants = genuinely different, much la
 the cheap per-fix form is not a down-payment on the expensive one.
 This is the operational answer to "was the failure it prevent actually exercised" — a question a
 green suite cannot settle about itself.
+<!-- embedded-copy:mutation-red-proof:end -->
 
 ## Resume discipline — an information message is not an instruction, and idle is a decision
 

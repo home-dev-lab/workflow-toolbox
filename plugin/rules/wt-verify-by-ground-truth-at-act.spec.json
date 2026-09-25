@@ -1,9 +1,8 @@
 {
   "on-demand": {
     "triggers": [
-      { "kind": "bash", "regex": "(?:test|typecheck|lint|build|check|vitest|pytest|git\\s+merge)\\b" },
-      { "kind": "tool", "tool": "^Agent$", "unconditional": true }
+      { "kind": "bash", "regex": "(?:^|(?:;|&&|\\|)\\s*|\\(\\s*)(?:vitest|pytest|tsc|mypy|ruff|eslint|ps|curl\\s+(?:(?:https?://)?(?:localhost|127\\.0\\.0\\.1))?:\\d+|wt-observe\\s+start|go\\s+test|cargo\\s+(?:test|clippy)|git(?:\\s+(?:(?:-C|-c|--git-dir|--work-tree|--config-env)\\s+\\S+|--(?:exec-path|namespace|super-prefix)=\\S+|--(?:literal-pathspecs|no-pager)))*\\s+merge|(?:pnpm|npm|yarn)(?:\\s+(?:-C|--filter)\\s+\\S+)*\\s+(?:run\\s+)?(?:test|typecheck|lint|build|check))\\b" }
     ]
   },
-  "compliance": { "kind": "none", "reason": "Exit capture, seam gates, delegate-proof checks, and measurement controls govern verification acts." }
+  "compliance": { "kind": "none", "reason": "Exit capture, seam gates, and loaded-subject checks govern verification commands." }
 }

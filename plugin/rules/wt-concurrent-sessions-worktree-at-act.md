@@ -5,6 +5,11 @@ branch off CURRENT branch: `git worktree add .claude/worktrees/<name> -b <sessio
 Git-ignore it where the ignore file actually governs: when `.claude/` is its own repository, add `worktrees/` to `.claude/.gitignore`; otherwise add `.claude/worktrees/` to the project root's `.gitignore`. This is the harness convention: it is
 exempt from the `.claude/` protected path, stays visible to root-confined tools, and normal repo
 globs/tests do not descend into it. Sessions sharing one tree corrupt each other's edits/git state.
+Per-session worktree = isolated tree over shared `.git`. Do not mass-move existing worktrees;
+leave them where they are until deliberately purged.
+
+Harness-managed isolated spawns = different mechanism/trap: may start from repo's DEFAULT
+branch, not yours. Work must build on unmerged branch → verify base at spawn time, not after.
 
 - NOT on default branch → **the SPAWNER re-bases the tree, immediately after the spawn call
   returns. Never the spawned agent.** The pilot guard REFUSES a delegate's own rebase — changing

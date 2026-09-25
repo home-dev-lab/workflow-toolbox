@@ -82,6 +82,13 @@ const REQUIRED_CLAUSES: Record<string, ClauseRequirement[]> = {
       pattern: /Depth and breadth are independent: assess both, and neither substitutes for the other\./i,
     },
   ],
+  'mutation-red-proof': [
+    {
+      id: 'mutation-red-proof',
+      description: 'every fix still has to be proven red in isolation',
+      pattern: /every fix is proven RED in isolation before it is accepted as green/i,
+    },
+  ],
 }
 
 // Scoped to .md files, well-formed markers only (start immediately followed by a
@@ -203,6 +210,10 @@ describe('embedded-copy-sync — marker-delimited duplicates stay identical to t
     // (the whole gate would otherwise silently pass on nothing) or the convention moved —
     // either way this must fail loudly, not go green on an empty set.
     expect(canonicalBlocks.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('keeps the mutation proof as its own canonical embedded-copy block', () => {
+    expect(canonicalBlocks.map((block) => block.id)).toContain('mutation-red-proof')
   })
 
   it('never counts a canonical file as its own embedded copy', () => {

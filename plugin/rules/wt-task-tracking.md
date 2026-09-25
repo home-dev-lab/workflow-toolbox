@@ -37,4 +37,16 @@ drained. Hard deadline on specific card (service being retired, expiring window)
 category order for that card alone — name deadline explicitly or it doesn't count. Policy each
 team sets for itself, not universal ordering.
 
-The act-bound half of this rule is served on demand as `wt-task-tracking-at-act.md`.
+Move cards AT the transition, in real time — not deferred to checkpoint. Pick card up → move to
+In-Progress (before first edit); meets definition of done → move to Done; blocked on external
+trigger → move to Blocked, name the trigger. Card left in backlog while its work is underway is
+stale board a concurrent session will misread. Multi-step card only partly done stays
+In-Progress (record step in comment).
+
+Reversals reconcile at removal time. Recording "X was removed" in ONE place leaves every other
+card, note still presenting X as live. Removal/rename card must name its blast radius (items
+referencing retired concept), sweep them: fix open ones, add "superseded by #<id>" pointer to
+closed ones without rewriting their history.
+
+Its act-bound half is `wt-task-tracking-at-act.md`, loaded alongside this file or served on demand
+where an engine is installed.
