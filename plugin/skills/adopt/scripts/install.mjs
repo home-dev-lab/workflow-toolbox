@@ -693,6 +693,15 @@ async function loadAdoptedConsentModules() {
   }
 }`)
   adopted = replaceExactlyOnce(adopted, "import { hostAdapter } from './lib/host/adapter.mjs'\n", '')
+  adopted = replaceExactlyOnce(adopted, "import { isInvokedDirectly } from './lib/host/entry-guard.mjs'\n", `function isInvokedDirectly(importMetaUrl, argvPath = process.argv[1]) {
+  if (!argvPath) return false
+  try {
+    const moduleUrl = new URL(importMetaUrl)
+    if (moduleUrl.search || moduleUrl.hash) return false
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl))
+  } catch { return false }
+}
+`)
   adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
   adopted = replaceExactlyOnce(adopted, "async function loadIntegrationModule() {\n  return import('./lib/lane-integrate.mjs')\n}", `async function loadIntegrationModule() {
   const root = pluginRoot()

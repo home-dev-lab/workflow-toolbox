@@ -45,9 +45,9 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { execFileSync } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { ACTIONABLE_REFRESH_COMMAND, projectStatePath, stateRoot, snapshotPath } from './lib/actionability-state-paths.mjs'
 import { extractCards, computeSnapshot, resolveBoardProjectDir } from './lib/actionability-planka-producer-core.mjs'
 import { stateRoot as priorArtStateRoot, cardIndexPath } from './lib/prior-art-state-paths.mjs'
@@ -364,6 +364,6 @@ function main() {
   produceSnapshot(input)
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isInvokedDirectly(import.meta.url)) {
   runFailOpenHook('wt-actionable-snapshot-producer-hook.mjs', main)
 }

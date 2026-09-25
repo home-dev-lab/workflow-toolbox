@@ -2,8 +2,9 @@
 import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { derivePushChecks } from './lib/git-push.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CLI = path.join(HERE, 'wt-check-commit-signatures.mjs')
@@ -98,9 +99,7 @@ export function run() {
   if (input.hook_event_name === 'PreToolUse') handlePreToolUse(input)
 }
 
-const invokedPath = process.argv[1]
-const isEntry = invokedPath !== undefined && import.meta.url === pathToFileURL(invokedPath).href
-if (isEntry) {
+if (isInvokedDirectly(import.meta.url)) {
   try {
     run()
   } catch {
