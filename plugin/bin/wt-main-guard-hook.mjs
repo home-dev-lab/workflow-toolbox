@@ -81,7 +81,7 @@ function inspectGit(args, cwd) {
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(?:COUNT|KEY_|VALUE_)/.test(key)) delete env[key]
   }
-  return execFileSync('git', ['--no-pager', '-c', `core.hooksPath=${os.devNull}`, '-c', 'core.fsmonitor=false', ...args], {
+  return execFileSync('git', ['--no-pager', '-c', 'core.fsmonitor=false', ...args], {
     cwd,
     env,
     timeout: 2000,

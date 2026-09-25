@@ -390,7 +390,7 @@ describe('SDK pilot runner', () => {
   it('refuses to start when the only SDK install is inside the writer worktree', () => {
     const f = fixture(); const alias = join(f.root, 'worktree-alias'); symlinkSync('worktree', alias, 'dir'); fakeSdk(alias, 'writer-owned')
     expect(() => resolveAgentSdk({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: alias, env: {}, npmRoot: null, writableRoots: [alias] }))
-      .toThrow(`refuses writer-influenceable install: ${canonicalPath(join(alias, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'))} is inside writer-writable root ${canonicalPath(alias)}`)
+      .toThrow(`refuses writer-influenceable install: ${realpathSync(join(alias, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'))} is inside writer-writable root ${realpathSync(alias)}`)
   })
 
   it('resolves the SDK from the global npm root after local candidates', () => {

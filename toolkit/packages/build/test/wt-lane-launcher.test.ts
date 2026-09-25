@@ -843,12 +843,19 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     const sweepLog = join(f.root, 'sweeps.log')
     const watcher = spawnWatcher(['--project', f.dir, '--poll', '0.1'], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog } })
+    const watcherIdentity = inspectProcess(watcher.pid!)
+    if (!watcherIdentity) throw new Error('watcher identity did not become readable')
     waitForContent(journal, /"event":"stalled"/)
     writeFileSync(marker, 'fresh')
     waitForContent(sweepLog, new RegExp(`${state.runId}:stalled:cleared`))
-    ageTree(f.dir); utimesSync(f.dir, old, old)
+    killIdentity(watcherIdentity, 'SIGSTOP')
+    try {
+      ageTree(f.dir); utimesSync(f.dir, old, old)
+    } finally {
+      killIdentity(watcherIdentity, 'SIGCONT')
+    }
     waitForContent(journal, /"event":"stalled".*\n.*"event":"stalled"/s)
-    killIdentity(inspectProcess(watcher.pid!), 'SIGTERM')
+    killIdentity(watcherIdentity, 'SIGTERM')
     expect(journalEvents(journal, 'stalled')).toHaveLength(2)
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.runId))).toEqual(new Set([state.runId]))
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.episodeStartedAt)).size).toBe(2)
