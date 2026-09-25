@@ -130,7 +130,10 @@ function mergeAll(maps, file) {
     .filter((finding) => finding && bucket(finding.status) !== 'absent')
   const staticLocations = new Set(present.filter((finding) => finding.locationKind === 'static').map((finding) => finding.realLocation))
   const onDemandLocations = new Set(present.filter((finding) => finding.locationKind === 'on-demand').map((finding) => finding.realLocation))
-  if (staticLocations.size && onDemandLocations.size && new Set([...staticLocations, ...onDemandLocations]).size > 1) {
+  if (
+    onDemandLocations.size > 1 ||
+    (staticLocations.size && onDemandLocations.size && new Set([...staticLocations, ...onDemandLocations]).size > 1)
+  ) {
     return {
       bucket: 'duplicate',
       location: null,
@@ -174,7 +177,7 @@ function stripBanner(text) {
   if (lines[bannerIndex] === '') lines.splice(bannerIndex, 1)
   const withoutBanner = lines.join('\n')
   const frontmatter = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/.exec(withoutBanner)?.[1]
-  const body = frontmatter && /^on-demand:\s*$/m.test(frontmatter)
+  const body = frontmatter && /^on-demand\s*:/m.test(frontmatter)
     ? withoutBanner.slice(frontmatter.length)
     : withoutBanner
   return body.replace(/^[\r\n]+|[ \t\r\n]+$/gu, '')

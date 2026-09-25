@@ -205,6 +205,19 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(result.context).toContain(onDemandDir)
   })
 
+  it('reports project and config on-demand copies as a double load', () => {
+    const f = fixture('on-demand-project-config-duplicate')
+    const projectDir = join(f.proj, '.claude', 'rules-on-demand')
+    const configDir = join(f.cfg, 'rules-on-demand')
+    installOnDemand(projectDir)
+    installOnDemand(configDir)
+
+    const result = runHook(f.proj, f.env)
+    expect(result.context).toContain('DOUBLE-LOAD')
+    expect(result.context).toContain(projectDir)
+    expect(result.context).toContain(configDir)
+  })
+
   it('resolves directory symlinks before deciding a static and on-demand path are duplicates', () => {
     const f = fixture('on-demand-symlink')
     const staticDir = join(f.cfg, 'rules', 'wt')
