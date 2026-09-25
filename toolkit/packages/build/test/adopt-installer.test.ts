@@ -994,8 +994,8 @@ describe('adopt installer — rules set sourced from the plugin/rules bundle', (
 // dir whose rules are symlinked from another one) must NEVER be written THROUGH — a naive
 // writeFileSync follows the link and clobbers the REAL file it points at. The installer
 // reports the symlink, leaves it (and its target) untouched on a plain --install, and only
-// replaces it under --replace-symlinks (unlink the link, then write a regular managed file
-// in its place — the former target preserved).
+// replaces it under --replace-symlinks (atomically publish a regular managed file over the
+// link after rendering — the former target preserved).
 describe('adopt installer — symlink-aware install (never write through a symlink)', () => {
   const CANON = 'CANONICAL ORIGINAL — MUST STAY UNTOUCHED\n'
   // A symlink whose target is a plain hand-authored file.

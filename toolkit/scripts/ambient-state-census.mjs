@@ -43,7 +43,6 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/opencode-envelope-each-source.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [", 'zero-task case exits before opencode or plugin-state discovery'],
   ["packages/build/test/opencode-envelope-each-source.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [#2", 'argument-validation case exits before opencode or plugin-state discovery'],
   ["packages/build/test/opencode-envelope-each-source.test.ts:inherited-env-to-child:const result = spawnSync(process.execPath, [#3", 'argument-validation case exits before opencode or plugin-state discovery'],
-  ["packages/build/test/opencode-envelope-reap.test.ts:real-process-table:const listed = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' })", 'platform integration helper deliberately reads the process table to verify reaping'],
   ["packages/build/test/opencode-envelope-reap.test.ts:inherited-env-to-child:const run = spawnSync(", 'case launches only owned fixture processes and asserts their lifecycle'],
   ["packages/build/test/opencode-skill-fence.integration.test.ts:real-home-directory:const env = { ...unfencedProcessEnv, HOME: home, OPENCODE_TEST_HOME: home, CLAUDE_CONFIG_DIR: config, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_DATA_HOME:", 'opt-in real e2e case deliberately targets the operator installation home'],
   ["packages/build/test/pgrep-env-dump-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case tests command text classification with an isolated journal; no plugin-state lookup occurs'],
@@ -77,6 +76,7 @@ export const ambientStateAllowList = new Map([
   ["packages/patterns/test/provenance-gate.test.ts:inherited-env-to-child:execFileSync('node', [GUARD_HOOK], {", 'case launches its own verifier fixture and pins marker output'],
   ["packages/patterns/test/provenance-gate.test.ts:inherited-env-to-child:execFileSync('node', [GUARD_HOOK], {#2", 'case launches its own verifier fixture and pins marker output'],
   ["packages/patterns/test/provenance-gate.test.ts:inherited-env-to-child:execFileSync('node', [GUARD_HOOK], {#3", 'case launches its own verifier fixture and pins marker output'],
+  ["scripts/test/process-enumeration-load.test.ts:real-process-table:const table = spawnSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' }).stdout", 'Linux-only cleanup lock reads the real table to verify only descendants of its owned harness process'],
   ["scripts/test/wt-observer.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [observerScript, ...args], {", 'case launches an owned observer fixture with explicit session paths'],
   ["scripts/test/wt-wake-channel.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [serverScript], {", 'case launches an owned JSON-RPC fixture with explicit transport state'],
 ])

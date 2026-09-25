@@ -7,6 +7,8 @@ import { withRepositoryGuide } from './sdk-role-profile.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
+// The Claude fallback always runs Opus at xhigh; the caller's --effort drives only the Astra route.
+const OPUS_EFFORT = 'xhigh'
 function signalExitCode(reason) {
   if (reason === 'SIGHUP') return 129
   if (reason === 'SIGINT') return 130
@@ -133,8 +135,7 @@ export function listProcessRelationships(adapter) {
   }
 }
 
-export function listBrokers(adapter) {
-  const table = listProcessTable(adapter)
+export function listBrokers(adapter, table = listProcessTable(adapter)) {
   if (!table.supported) return { supported: false, pids: [], reason: 'broker cleanup unavailable on this platform' }
   return { supported: true, pids: table.processes.filter((process) => /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i.test(process.command)).map((process) => process.pid) }
 }
@@ -226,7 +227,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
       prompt: withRepositoryGuide(options.repo, request),
       options: {
         model: 'opus',
-        effort: options.effort,
+        effort: OPUS_EFFORT,
         cwd: options.repo,
         tools: ['Read', 'Glob', 'Grep'],
         settingSources: [],

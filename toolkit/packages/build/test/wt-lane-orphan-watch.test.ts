@@ -48,6 +48,8 @@ describe('lane orphan watcher self-detection', () => {
   }))
 
   it('attributes a slotted lane and emits its decision-needed event', () => withTempDir((root) => {
+    const fixture = join(root, 'helpers.json')
+    writeFileSync(fixture, '[]')
     const supervision = join(root, '.lane', 'supervision-critic-Z')
     mkdirSync(supervision, { recursive: true })
     writeFileSync(join(supervision, 'current.json'), JSON.stringify({ version: 1, runId: '10-20' }))
@@ -60,7 +62,7 @@ describe('lane orphan watcher self-detection', () => {
 
     const result = spawnSync(process.execPath, [WATCHER, '--project', root, '--once'], {
       encoding: 'utf8',
-      env: { ...process.env, CLAUDE_CODE_SESSION_ID: 'slot-owner', XDG_STATE_HOME: join(root, 'state') },
+      env: { ...process.env, CLAUDE_CODE_SESSION_ID: 'slot-owner', XDG_STATE_HOME: join(root, 'state'), WT_LANE_WATCH_TEST_HELPERS: fixture },
     })
 
     expect(result.status, result.stderr).toBe(0)

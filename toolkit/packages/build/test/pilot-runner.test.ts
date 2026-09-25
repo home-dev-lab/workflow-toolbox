@@ -6,12 +6,13 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
+import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { resolveAgentSdkRequire } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
+import { resolveAgentSdk, resolveAgentSdkRequire, resolvedAgentSdkCodePaths } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { AWAITING_FIDELITY_RESULT, LIFECYCLE_MCP_KEY, lifecycleToolName } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -26,6 +27,8 @@ const CONTEXT_MODE_TOOLS = {
   executeFile: `${CONTEXT_PREFIX}ctx_execute_file`, fetchAndIndex: `${CONTEXT_PREFIX}ctx_fetch_and_index`, index: `${CONTEXT_PREFIX}ctx_index`,
   insight: `${CONTEXT_PREFIX}ctx_insight`, purge: `${CONTEXT_PREFIX}ctx_purge`, search: `${CONTEXT_PREFIX}ctx_search`, stats: `${CONTEXT_PREFIX}ctx_stats`,
 }
+const ROLE_CONTEXT_TOOLS = [CONTEXT_MODE_TOOLS.fetchAndIndex, CONTEXT_MODE_TOOLS.index, CONTEXT_MODE_TOOLS.search]
+const DISALLOWED_CONTEXT_TOOLS = Object.values(CONTEXT_MODE_TOOLS).filter((tool) => !ROLE_CONTEXT_TOOLS.includes(tool))
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const FIXED_CRITIC_ROUNDS = 3
 prepareContextModeFixture()
@@ -44,7 +47,7 @@ const initMessage = (model?: string) => ({
   type: 'system',
   subtype: 'init',
   ...(model === undefined ? {} : { model }),
-  tools: ['Read', 'Glob', 'Grep', ...Object.values(CONTEXT_MODE_TOOLS), lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
+  tools: ['Read', 'Glob', 'Grep', ...ROLE_CONTEXT_TOOLS, lifecycleToolName('transition'), lifecycleToolName('write_artifact'), lifecycleToolName('route_finding'), lifecycleToolName('run')],
   plugins: [{ path: join(PLUGIN_ROOT, 'hooks-modules', 'pilot-guard') }, { path: resolveContextModeRoot(process.env) }, { name: 'wt-sdk-pilot' }],
   // `lesson-harvest` is declared `user-invocable: false`, and the real receipt never lists such a skill (measured
   // 2026-09-17): a fake listing it would pass a check the harness cannot satisfy.
@@ -262,7 +265,7 @@ describe('SDK pilot runner', () => {
     const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
     await runPilot({ card: '186', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
     expect(prompts[0]).toContain(`## The card, verbatim\n\n${card}`)
-    expect(prompts[0]).toContain(`${join(f.dir, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.`)
+    expect(prompts[0]).toContain(`${canonicalPath(join(f.dir, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.`)
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
@@ -363,6 +366,33 @@ describe('SDK pilot runner', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ marker: 'plugin-data', path: expect.stringContaining(join(pluginData, 'node_modules')) })
   })
 
+  it('freezes an external SDK entry and enumerates every package file its fixture loads', () => {
+    const f = fixture(); const pluginData = join(f.root, 'workflow-toolbox-test data')
+    const packageDir = join(pluginData, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
+    mkdirSync(packageDir, { recursive: true })
+    const manifest = join(packageDir, 'package.json'); const entry = join(packageDir, 'index.mjs'); const helper = join(packageDir, 'helper.mjs')
+    writeFileSync(manifest, JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', exports: { '.': './index.mjs' } }))
+    writeFileSync(entry, "export { marker } from './helper.mjs'\n")
+    writeFileSync(helper, "export const marker = 'safe'\n")
+    fakeSdk(f.dir, 'writer-owned')
+
+    const resolution = resolveAgentSdk({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: { CLAUDE_PLUGIN_DATA: pluginData }, npmRoot: null, writableRoots: [f.dir] })
+    const paths = resolvedAgentSdkCodePaths(resolution)
+    expect(resolution.entryPath).toBe(realpathSync(entry))
+    expect(paths).toEqual(expect.arrayContaining([realpathSync(manifest), realpathSync(entry), realpathSync(helper)]))
+    expect(paths.every((loaded: string) => !loaded.startsWith(`${realpathSync(f.dir)}/`))).toBe(true)
+
+    writeFileSync(manifest, JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', exports: { '.': './owned.mjs' } }))
+    writeFileSync(join(packageDir, 'owned.mjs'), "export const marker = 'owned'\n")
+    expect(resolution.entryPath).toBe(realpathSync(entry))
+  })
+
+  it('refuses to start when the only SDK install is inside the writer worktree', () => {
+    const f = fixture(); const alias = join(f.root, 'worktree-alias'); symlinkSync('worktree', alias, 'dir'); fakeSdk(alias, 'writer-owned')
+    expect(() => resolveAgentSdk({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: alias, env: {}, npmRoot: null, writableRoots: [alias] }))
+      .toThrow(`refuses writer-influenceable install: ${realpathSync(join(alias, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'))} is inside writer-writable root ${realpathSync(alias)}`)
+  })
+
   it('resolves the SDK from the global npm root after local candidates', () => {
     const f = fixture(); const globalPrefix = join(f.root, 'global'); fakeSdk(globalPrefix, 'global')
     const result = resolveSdkInChild({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: {}, npmRoot: join(globalPrefix, 'node_modules') })
@@ -411,8 +441,9 @@ describe('SDK pilot runner', () => {
   // timer alive reproduces that shape; without the forced exit this spawn ends by the test timeout, not by code 1.
   it('exits with code 1 after a refused initialization receipt even when the SDK leaves a handle alive', () => {
     const f = fixture()
-    const packageDir = join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
-    symlinkSync(ZOD_ROOT, join(f.dir, 'node_modules', 'zod'), 'dir')
+    const install = join(f.root, 'safe-sdk')
+    const packageDir = join(install, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'); mkdirSync(packageDir, { recursive: true })
+    symlinkSync(ZOD_ROOT, join(install, 'node_modules', 'zod'), 'dir')
     writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', type: 'module', main: 'index.mjs' }))
     const init = { ...initMessage('sonnet'), skills: [] }
     writeFileSync(join(packageDir, 'index.mjs'), [
@@ -423,7 +454,7 @@ describe('SDK pilot runner', () => {
       'export const tool = (name, description, schema, handler) => ({ name, description, schema, handler })',
     ].join('\n'))
     const result = spawnSync(process.execPath, [CLI, '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract], {
-      encoding: 'utf8', timeout: 20_000, env: deterministicAdmissionEnv(f.root, sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_PILOT_TEST_SDK_MANIFEST: join(f.dir, 'package.json'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') })),
+      encoding: 'utf8', timeout: 20_000, env: deterministicAdmissionEnv(f.root, sealedPluginCliEnv(f.root, { NODE_ENV: 'test', NODE_PATH: '', WT_AGENT_SDK_PATH: join(packageDir, 'index.mjs'), WT_LSP_TYPESCRIPT_SERVER: join(f.root, 'absent-language-server') })),
     })
     expect(result.signal).toBeNull()
     expect(result.status).toBe(1)
@@ -431,12 +462,12 @@ describe('SDK pilot runner', () => {
     expect(readFileSync(join(f.root, 'loaded-sdk.txt'), 'utf8')).toBe('fixture-sdk')
   })
 
-  it('starts SDK resolution from an installed plugin using the target project', () => {
-    const f = fixture(); fakeSdk(f.dir, 'project')
+  it('starts SDK resolution from an installed plugin using an external operator-selected SDK', () => {
+    const f = fixture(); const sdkRoot = join(f.root, 'safe-sdk'); fakeSdk(sdkRoot, 'operator')
     const installed = join(f.root, 'installed-plugin'); cpSync(PLUGIN_ROOT, installed, { recursive: true })
     const configDir = join(f.root, 'config'); mkdirSync(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {} }))
     const profile = join(f.root, 'bad-profile.json'); writeFileSync(profile, '{bad')
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-pilot-runner.mjs'), '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract, '--profile-env', profile], { encoding: 'utf8', env: deterministicAdmissionEnv(f.root, { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') }) })
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-pilot-runner.mjs'), '--card', '1', '--dir', f.dir, '--card-file', f.cardFile, '--contract', f.contract, '--profile-env', profile], { encoding: 'utf8', env: deterministicAdmissionEnv(f.root, { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global'), WT_AGENT_SDK_PATH: join(sdkRoot, 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'index.cjs') }) })
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('cannot read --profile-env')
     expect(result.stderr).not.toContain('@anthropic-ai/claude-agent-sdk is not installed')
@@ -1042,13 +1073,14 @@ describe('SDK pilot runner', () => {
   })
 
   it('registers the runner-hosted lifecycle server and composes the pilot role profile', async () => {
-    type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], mcpServers: Record<string, unknown>, permissionMode?: string, allowDangerouslySkipPermissions?: boolean }
+    type QueryOptions = { plugins: Array<{ path: string }>, tools: string[], disallowedTools: string[], mcpServers: Record<string, unknown>, permissionMode?: string, allowDangerouslySkipPermissions?: boolean }
     const f = fixture(); let options: QueryOptions | undefined
     const query = ({ options: received }: { options: QueryOptions }) => { options = received; return (async function* () {
       yield initMessage()})() }
     await runPilot({ card: '186', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 1, hard: false }, { query, resolvePilotModels: () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } }) })
     expect(options!.plugins.map((plugin) => plugin.path)).toEqual([expect.stringContaining('pilot-guard'), resolveContextModeRoot(process.env), expect.stringContaining(join('.lane', 'sdk-plugins', 'pilot'))])
-    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', 'LSP', ...Object.values(CONTEXT_MODE_TOOLS)])
+    expect(options!.tools).toEqual(['Read', 'Glob', 'Grep', ...ROLE_CONTEXT_TOOLS])
+    expect(options!.disallowedTools).toEqual(DISALLOWED_CONTEXT_TOOLS)
     expect(options!.mcpServers[LIFECYCLE_MCP_KEY]).toMatchObject({ type: 'sdk', name: LIFECYCLE_MCP_KEY })
     expect(options!.permissionMode).toBe('default')
     expect(options!).not.toHaveProperty('allowDangerouslySkipPermissions')
@@ -1103,7 +1135,7 @@ describe('SDK pilot runner', () => {
     const f = fixture()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, { query: () => (async function* () { yield initMessage() })(), resolvePilotModels: models })
     expect(result).toMatchObject({ exitCode: 1, summary: { completed: false, reason: expect.stringContaining('without awaiting_fidelity') } })
-    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8')).lsp).toEqual({ available: false, reason: 'typescript-language-server not found on PATH' })
+    expect(JSON.parse(readFileSync(join(f.dir, '.lane', 'lifecycle.json'), 'utf8')).lsp).toEqual({ available: false, reason: 'disabled for SDK roles: workspace language servers can execute workspace code' })
   })
 
   it('confines real Read, Glob, and Grep authorization inputs', () => {

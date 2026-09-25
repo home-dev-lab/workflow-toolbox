@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -39,6 +39,12 @@ function run(
     env: env(config, options.plugin),
   })
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+}
+
+function childProcessCwd(cwd: string): string {
+  const result = spawnSync(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { cwd, encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout
 }
 
 function fixturePlugin(): { root: string; script: string } {
@@ -125,7 +131,7 @@ describe('adopt installer refactor pins', () => {
     expect(existsSync(join(flat, files[2]!))).toBe(true)
   })
 
-  it('P2 pins unlink-before-render behavior for an opted-in symlink replacement', () => {
+  it('P2 preserves an opted-in symlink replacement when rendering fails', () => {
     const fixture = fixturePlugin()
     const targetDir = tempDir()
     const linkTarget = join(tempDir(), 'pilot.md')
@@ -139,8 +145,64 @@ describe('adopt installer refactor pins', () => {
 
     expect(result.status).toBe(1)
     expect(result.stdout).toContain('agents source not found:')
-    expect(existsSync(join(targetDir, 'pilot.md'))).toBe(false)
+    expect(lstatSync(join(targetDir, 'pilot.md')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(targetDir, 'pilot.md'))).toBe(linkTarget)
     expect(readFileSync(linkTarget, 'utf8')).toBe('target stays intact\n')
+  })
+
+  it('P2 preserves an opted-in symlink replacement when atomic publication fails', () => {
+    const fixture = fixturePlugin()
+    const sourceDir = join(fixture.root, 'agent-templates')
+    mkdirSync(sourceDir)
+    cpSync(join(PLUGIN, 'agent-templates/pilot.md'), join(sourceDir, 'pilot.md'))
+    const source = readFileSync(fixture.script, 'utf8')
+    expect(source).toContain('moveFileVerified(temp, target)')
+    writeFileSync(fixture.script, source.replace('moveFileVerified(temp, target)', "throw new Error('PINNED RENAME FAILURE')"))
+    const targetDir = tempDir()
+    const linkTarget = join(tempDir(), 'pilot.md')
+    const targetBytes = 'target stays intact\n'
+    writeFileSync(linkTarget, targetBytes)
+    symlinkSync(linkTarget, join(targetDir, 'pilot.md'))
+
+    const result = run(
+      ['--set', 'agents', '--install', '--replace-symlinks', '--file', 'pilot.md', '--dir', targetDir],
+      { plugin: fixture.root, script: fixture.script },
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('PINNED RENAME FAILURE')
+    expect(lstatSync(join(targetDir, 'pilot.md')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(targetDir, 'pilot.md'))).toBe(linkTarget)
+    expect(readFileSync(linkTarget, 'utf8')).toBe(targetBytes)
+    expect(readdirSync(targetDir)).toEqual(['pilot.md'])
+  })
+
+  it('P2 does not remove an existing temporary sibling when exclusive creation fails', () => {
+    const fixture = fixturePlugin()
+    const sourceDir = join(fixture.root, 'agent-templates')
+    mkdirSync(sourceDir)
+    cpSync(join(PLUGIN, 'agent-templates/pilot.md'), join(sourceDir, 'pilot.md'))
+    const targetDir = tempDir()
+    const linkTarget = join(targetDir, '.pilot.md.workflow-toolbox-occupied.tmp')
+    const targetBytes = 'existing temporary file stays intact\n'
+    writeFileSync(linkTarget, targetBytes)
+    symlinkSync(linkTarget, join(targetDir, 'pilot.md'))
+    const source = readFileSync(fixture.script, 'utf8')
+    const tempDeclaration = 'const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}.tmp`)'
+    expect(source).toContain(tempDeclaration)
+    writeFileSync(fixture.script, source.replace(tempDeclaration, `const temp = ${JSON.stringify(linkTarget)}`))
+
+    const result = run(
+      ['--set', 'agents', '--install', '--replace-symlinks', '--file', 'pilot.md', '--dir', targetDir],
+      { plugin: fixture.root, script: fixture.script },
+    )
+
+    expect(result.status).toBe(1)
+    expect(result.stdout).toContain('EEXIST')
+    expect(lstatSync(join(targetDir, 'pilot.md')).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(join(targetDir, 'pilot.md'))).toBe(linkTarget)
+    expect(existsSync(linkTarget)).toBe(true)
+    expect(readFileSync(linkTarget, 'utf8')).toBe(targetBytes)
   })
 
   it('P3 does not let a shipped-fingerprint catch swallow a one-shot fatal error', () => {
@@ -178,7 +240,7 @@ describe('adopt installer refactor pins', () => {
     expect(existsSync(join(target, RULE))).toBe(false)
   })
 
-  it('U3 writes through a linked settings file and preserves its target mode', () => {
+  it('U3 writes through a linked settings file and preserves its content', () => {
     const config = tempDir('wt-adopt-refactor-config-')
     const target = join(tempDir(), 'real-settings.json')
     writeFileSync(target, '{"theme":"dark"}\n')
@@ -189,15 +251,19 @@ describe('adopt installer refactor pins', () => {
 
     expect(result.status).toBe(0)
     expect(lstatSync(join(config, 'settings.json')).isSymbolicLink()).toBe(true)
-    expect(statSync(target).mode & 0o777).toBe(0o640)
+    if (process.platform !== 'win32') expect(statSync(target).mode & 0o777).toBe(0o640)
     expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ theme: 'dark', env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '3' } })
   })
 
   it('U4 preserves ignored unknown tokens and a missing --dir value fallback', () => {
-    const cwd = tempDir()
+    const container = tempDir()
+    const canonicalCwd = join(container, 'canonical')
+    const cwd = join(container, 'alias')
+    mkdirSync(canonicalCwd)
+    symlinkSync('canonical', cwd, 'dir')
     const result = run(['--unknown-token', '--check', '--dir'], { cwd })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain(`[rules] target=${join(cwd, '.claude/rules/wt')}`)
+    expect(result.stdout).toContain(`[rules] target=${join(childProcessCwd(cwd), '.claude/rules/wt')}`)
   })
 
   it.each(['toString', 'constructor', '__proto__'])('U4 ignores inherited object-property argv token %s', (token) => {

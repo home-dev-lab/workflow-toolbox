@@ -79,6 +79,7 @@ import { defineWorkflow, parseConfig } from '@workflow-toolbox/build/define'
 import { autoSelectEffort, collectTrail, emitDigest, loopUntilDone, relativizeUnder, warn } from '@workflow-toolbox/patterns'
 import type { PatternStats, TrailRecord } from '@workflow-toolbox/patterns'
 import { BEST_MODEL } from '@workflow-toolbox/runtime'
+import { withAgentDefaults } from '@workflow-toolbox/runtime'
 import type { WorkflowRuntime, JsonSchema, ModelAlias, EffortAlias } from '@workflow-toolbox/runtime'
 import { resolveEffort, resolveVerifierEffort } from '@workflow-toolbox/std'
 import type { FromSchema } from 'json-schema-to-ts'
@@ -284,6 +285,27 @@ export interface DevImplementInput {
    *  Verifier roles ('check'/'integration') NEVER auto-route — 'auto' there
    *  (and on any other role) keeps the role's committed default, as before. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  /** Per-role routing keys: load, red, green, check, mechanical, integration. */
+  agentTypes: Readonly<Record<string, string>> | null
+  /** Blanket fallback parsed from `perAgent.agentType`. */
+  defaultAgentType: string | undefined
+}
+
+function resolveAgentType(
+  input: Pick<DevImplementInput, 'agentTypes' | 'defaultAgentType'>,
+  role: string,
+  current?: string | null,
+): string | undefined {
+  return input.agentTypes?.[role] ?? input.defaultAgentType ?? current ?? undefined
+}
+
+function agentTypeOption(
+  input: Pick<DevImplementInput, 'agentTypes' | 'defaultAgentType'>,
+  role: string,
+  current?: string | null,
+): { agentType?: string } {
+  const agentType = resolveAgentType(input, role, current)
+  return agentType === undefined ? {} : { agentType }
 }
 
 /** A DevImplementInput whose artifact has been RESOLVED to a concrete value:
@@ -1180,7 +1202,10 @@ function parseInput(raw: unknown): DevImplementInput {
   // Optional Class B/C per-role effort overrides, validated by the shared
   // parseConfig helper. It reads only the recognized `effort` slice and
   // IGNORES dev-implement's bespoke artifact/mutation/implementer* keys.
-  const effort = parseConfig(obj).effort ?? null
+  const cfg = parseConfig(obj)
+  const effort = cfg.effort ?? null
+  const agentTypes = cfg.agentTypes ?? null
+  const defaultAgentType = cfg.perAgent?.agentType
 
   return {
     artifact,
@@ -1196,6 +1221,8 @@ function parseInput(raw: unknown): DevImplementInput {
     autoLaneMinTasks,
     effort,
     pathWarnings,
+    agentTypes,
+    defaultAgentType,
   }
 }
 
@@ -1569,10 +1596,13 @@ async function runTaskTddLoop(
   maxIterationsPerTask: number,
   implementerModel: ModelAlias,
   implementerType: string | null,
+  agentTypes: Readonly<Record<string, string>> | null,
+  defaultAgentType: string | undefined,
   effort: { red: EffortAlias; green: EffortAlias; check: EffortAlias },
   warnings: string[],
   stats: Record<string, PatternStats>,
 ): Promise<TddOutcome> {
+  const routing = { agentTypes, defaultAgentType }
   const ctx = artifact.context
   // Two renderings of the same task record: the red (test-writer) and green
   // (implementer) prompts carry the planner's snippet (targeted first read);
@@ -1641,6 +1671,7 @@ async function runTaskTddLoop(
             label: `dev-implement:red:${task.id}`,
             phase: 'Implement',
             effort: effort.red,
+            ...agentTypeOption(routing, 'red'),
           },
         )
         if (red === null) {
@@ -1737,7 +1768,7 @@ async function runTaskTddLoop(
           // Optional specialist subagent type (implementerType knob). Omitted
           // when null → standard subagent (default). Routes the implementer
           // ONLY; the runtime fails fast on an unknown type.
-          ...(implementerType !== null ? { agentType: implementerType } : {}),
+          ...agentTypeOption(routing, 'green', implementerType),
         },
       )
       if (green === null) {
@@ -1767,6 +1798,7 @@ async function runTaskTddLoop(
           // the implementer above may be tiered down.
           model: BEST_MODEL,
           effort: effort.check,
+          ...agentTypeOption(routing, 'check'),
         },
       )
       if (check === null) {
@@ -1954,6 +1986,7 @@ async function resolveArtifactInput(
       label: 'dev-implement:load-artifact',
       phase: 'Load',
       effort: resolveEffort(input.effort?.['load'], LOAD_EFFORT),
+      ...agentTypeOption(input, 'load'),
     },
   )
 
@@ -2008,8 +2041,9 @@ async function resolveTaskEffortMap(
   if (!redAuto && !greenAuto) return () => staticEffort
 
   const tasks = input.artifact.tasks
+  const loadType = resolveAgentType(input, 'load')
   const selection = await autoSelectEffort(
-    rt,
+    loadType !== undefined ? withAgentDefaults(rt, { agentType: loadType }) : rt,
     tasks.map((t) => ({
       id: t.id,
       brief: `${t.title} — ${t.intent}`,
@@ -2120,7 +2154,8 @@ async function runSequential(
     }
 
     const outcome = await runTaskTddLoop(
-      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffortOf(task), warnings, stats,
+      rt, artifact, task, artifact.context.projectDir, maxIterationsPerTask, input.implementerModel, input.implementerType,
+      input.agentTypes, input.defaultAgentType, taskEffortOf(task), warnings, stats,
     )
     taskTrails.push(outcome)
     if (outcome.green) {
@@ -2244,6 +2279,7 @@ interface MergeCandidateOptions {
   reportTasks: ReportTask[]
   warnings: string[]
   merged: Array<{ id: string; path: string; branch: string }>
+  routing: Pick<DevImplementInput, 'agentTypes' | 'defaultAgentType'>
 }
 
 interface CleanupMergedWorktreesOptions {
@@ -2257,12 +2293,13 @@ interface CleanupMergedWorktreesOptions {
   /** The launcher-supplied plugin root, or null. See the DevImplementInput
    *  doc comment — this decides which of the two prompt branches below runs. */
   pluginRoot: string | null
+  routing: Pick<DevImplementInput, 'agentTypes' | 'defaultAgentType'>
 }
 
 async function mergeCandidate(options: MergeCandidateOptions): Promise<void> {
   const {
     rt, ctx, signFlag, mechanicalEffort, integrationEffort, candidate, noun,
-    statusById, reportTasks, warnings, merged,
+    statusById, reportTasks, warnings, merged, routing,
   } = options
   const { id: labelKey, branch, workdir, rows: pendingRows, keptFields, cleanupEligible } = candidate
 
@@ -2274,7 +2311,8 @@ async function mergeCandidate(options: MergeCandidateOptions): Promise<void> {
       `yourself. Evidence required: the pre-merge sha and the resulting sha (or '' if aborted).\n` +
       `Return { "merged": true|false, "conflict": true|false, "preMergeSha": "<sha>", ` +
       `"mergeSha": "<sha or empty>", "note": "<what git actually said>" }`,
-      { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${labelKey}`, phase: 'Merge', effort: mechanicalEffort },
+      { schema: MERGE_RESULT_SCHEMA, label: `dev-implement:merge:${labelKey}`, phase: 'Merge', effort: mechanicalEffort,
+        ...agentTypeOption(routing, 'mechanical') },
   )
   if (merge === null || merge.conflict || !merge.merged) {
       for (const p of pendingRows) {
@@ -2310,7 +2348,8 @@ async function mergeCandidate(options: MergeCandidateOptions): Promise<void> {
         `saw an isolated ${noun === 'task' ? '' : 'lane '}worktree; you are checking that the MERGED whole still passes).\n` +
         `Return { "green": true|false, "evidence": "<what the run actually showed>", ` +
         `"failureSummary": "<empty string if green, else the failures>" }`,
-        { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${labelKey}`, phase: 'Merge', effort: integrationEffort },
+        { schema: CHECK_RESULT_SCHEMA, label: `dev-implement:integration:${labelKey}`, phase: 'Merge', effort: integrationEffort,
+          ...agentTypeOption(routing, 'integration') },
     )
     if (integ === null || !integ.green) {
         if (integ === null) {
@@ -2320,7 +2359,8 @@ async function mergeCandidate(options: MergeCandidateOptions): Promise<void> {
           `You are the merge revert agent — revert the failed merge: from ${ctx.projectDir} run ` +
           `\`git reset --hard ${merge.preMergeSha}\` and confirm with \`git rev-parse HEAD\`.\n` +
           `Return { "reverted": true|false, "headSha": "<sha>", "note": "<what happened>" }`,
-          { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${labelKey}`, phase: 'Merge', effort: mechanicalEffort },
+          { schema: REVERT_RESULT_SCHEMA, label: `dev-implement:revert:${labelKey}`, phase: 'Merge', effort: mechanicalEffort,
+            ...agentTypeOption(routing, 'mechanical') },
         )
         if (revert === null || !revert.reverted || revert.headSha !== merge.preMergeSha) {
           const how = revert === null ? 'agent died' : !revert.reverted ? 'failed' : `reported HEAD ${revert.headSha} instead of the pre-merge sha`
@@ -2347,7 +2387,7 @@ async function mergeCandidate(options: MergeCandidateOptions): Promise<void> {
 }
 
 async function cleanupMergedWorktrees(options: CleanupMergedWorktreesOptions): Promise<void> {
-  const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort, pluginRoot } = options
+  const { rt, ctx, merged, cleanupRoot, warnings, noun, mechanicalEffort, pluginRoot, routing } = options
   if (merged.length === 0) return
 
   const nounWord = noun === 'task' ? '' : 'lane '
@@ -2393,6 +2433,7 @@ async function cleanupMergedWorktrees(options: CleanupMergedWorktreesOptions): P
 
   const cleanupResult = await rt.agent<CleanupResult>(prompt, {
     schema: CLEANUP_RESULT_SCHEMA, label: 'dev-implement:cleanup', phase: 'Merge', effort: mechanicalEffort,
+    ...agentTypeOption(routing, 'mechanical'),
   })
 
   // The manual-recovery pointer names the guarded remover (never the banned
@@ -2472,7 +2513,8 @@ async function runWorktree(
     `\`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with ` +
     `\`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.\n` +
     `Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
-    { schema: SETUP_RESULT_SCHEMA, label: 'dev-implement:setup', phase: 'Setup', effort: mechanicalEffort },
+    { schema: SETUP_RESULT_SCHEMA, label: 'dev-implement:setup', phase: 'Setup', effort: mechanicalEffort,
+      ...agentTypeOption(input, 'mechanical') },
   )
   if (setup === null || !setup.isGitRepo) {
     warn(
@@ -2573,7 +2615,8 @@ async function runWorktree(
       `\nIf a path already exists, do NOT force or remove it — report that task in "failures" ` +
       `(a stale worktree from a previous run is the operator's call to delete).\n` +
       `Return { "created": ["<taskId>"], "failures": [{"id": "<taskId>", "note": "<why>"}], "note": "<summary>" }`,
-      { schema: WT_CREATE_SCHEMA, label: `dev-implement:worktrees:wave${w}`, phase: 'Setup', effort: mechanicalEffort },
+      { schema: WT_CREATE_SCHEMA, label: `dev-implement:worktrees:wave${w}`, phase: 'Setup', effort: mechanicalEffort,
+        ...agentTypeOption(input, 'mechanical') },
     )
     if (create === null) {
       warn(rt, warnings, `dev-implement: worktree provisioning agent died for wave ${w} — the whole wave fails`)
@@ -2636,7 +2679,8 @@ async function runWorktree(
             `VERBATIM setup command with ${taskWorkdir(task.id)} as the working directory (fresh worktrees ` +
             `lack installed dependencies; this makes the test command runnable):\n${worktreeSetupCommand}\n` +
             `Return { "ok": true|false, "note": "<what happened>" }`,
-            { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: 'Setup', effort: mechanicalEffort },
+            { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${task.id}`, phase: 'Setup', effort: mechanicalEffort,
+              ...agentTypeOption(input, 'mechanical') },
           )
           if (prep === null || !prep.ok) {
             return { kind: 'prepare-failed', note: prep === null ? 'preparation agent died' : prep.note }
@@ -2644,7 +2688,8 @@ async function runWorktree(
         }
 
         const outcome = await runTaskTddLoop(
-          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffortOf(task), warnings, stats,
+          rt, artifact, task, taskWorkdir(task.id), maxIterationsPerTask, input.implementerModel, input.implementerType,
+          input.agentTypes, input.defaultAgentType, taskEffortOf(task), warnings, stats,
         )
         if (!outcome.green) return { kind: 'tdd-failed', outcome }
 
@@ -2665,7 +2710,8 @@ async function runWorktree(
           `reach the shell unquoted):\n` +
           `<<<MESSAGE\n${wtBranch(task.id)}: ${safeTitle}\nMESSAGE>>>\n` +
           `Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
-          { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: 'Implement', effort: mechanicalEffort },
+          { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: 'Implement', effort: mechanicalEffort,
+            ...agentTypeOption(input, 'mechanical') },
         )
         if (fin === null || !fin.committed) {
           return { kind: 'finalize-failed', outcome, note: fin === null ? 'finalize agent died' : fin.note }
@@ -2740,13 +2786,13 @@ async function runWorktree(
       await mergeCandidate({
         rt, ctx, signFlag, mechanicalEffort, integrationEffort,
         candidate: { id: task.id, branch: wtBranch(task.id), workdir: wtPath(task.id), rows: [{ task, outcome }], keptFields: { worktreePath: wtPath(task.id), branch: wtBranch(task.id) }, cleanupEligible: true },
-        noun: 'task', statusById, reportTasks, warnings, merged,
+        noun: 'task', statusById, reportTasks, warnings, merged, routing: input,
       })
     }
   }
 
   // ---- Batched cleanup of MERGED worktrees only (kept ones stay for forensics) ----
-  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'task', mechanicalEffort, pluginRoot })
+  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'task', mechanicalEffort, pluginRoot, routing: input })
 
   // -------------------------------------------------------------------------
   // Phase 'Report' — deterministic tallying IN CODE (no agent).
@@ -2841,7 +2887,8 @@ async function runAutoLanes(
     `\`git rev-parse --is-inside-work-tree\`, then capture the current HEAD with ` +
     `\`git rev-parse HEAD\` and the repository root with \`git rev-parse --show-toplevel\`.\n` +
     `Return { "isGitRepo": true|false, "headSha": "<sha or empty>", "gitRoot": "<absolute path or empty>", "note": "<what you saw>" }`,
-    { schema: SETUP_RESULT_SCHEMA, label: 'dev-implement:setup', phase: 'Setup', effort: mechanicalEffort },
+    { schema: SETUP_RESULT_SCHEMA, label: 'dev-implement:setup', phase: 'Setup', effort: mechanicalEffort,
+      ...agentTypeOption(input, 'mechanical') },
   )
   if (setup === null || !setup.isGitRepo) {
     warn(
@@ -2907,7 +2954,8 @@ async function runAutoLanes(
     `\nIf a path already exists, do NOT force or remove it — report that lane in "failures" ` +
     `(a stale worktree from a previous run is the operator's call to delete).\n` +
     `Return { "created": ["<laneKey>"], "failures": [{"id": "<laneKey>", "note": "<why>"}], "note": "<summary>" }`,
-    { schema: WT_CREATE_SCHEMA, label: 'dev-implement:lanes:create', phase: 'Setup', effort: mechanicalEffort },
+    { schema: WT_CREATE_SCHEMA, label: 'dev-implement:lanes:create', phase: 'Setup', effort: mechanicalEffort,
+      ...agentTypeOption(input, 'mechanical') },
   )
   if (create === null) {
     warn(rt, warnings, `dev-implement: lane worktree provisioning agent died — every lane fails`)
@@ -2962,7 +3010,8 @@ async function runAutoLanes(
           `this VERBATIM setup command with ${laneWorkdir(lane.key)} as the working directory (fresh ` +
           `worktrees lack installed dependencies; this makes the test command runnable):\n${worktreeSetupCommand}\n` +
           `Return { "ok": true|false, "note": "<what happened>" }`,
-          { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${lane.key}`, phase: 'Setup', effort: mechanicalEffort },
+          { schema: PREPARE_RESULT_SCHEMA, label: `dev-implement:prepare:${lane.key}`, phase: 'Setup', effort: mechanicalEffort,
+            ...agentTypeOption(input, 'mechanical') },
         )
         if (prep === null || !prep.ok) {
           const note = `failed — lane worktree setup command: ${prep === null ? 'preparation agent died' : prep.note}`
@@ -2980,7 +3029,8 @@ async function runAutoLanes(
         }
 
         const outcome = await runTaskTddLoop(
-          rt, artifact, task, laneWorkdir(lane.key), maxIterationsPerTask, input.implementerModel, input.implementerType, taskEffortOf(task), warnings, stats,
+          rt, artifact, task, laneWorkdir(lane.key), maxIterationsPerTask, input.implementerModel, input.implementerType,
+          input.agentTypes, input.defaultAgentType, taskEffortOf(task), warnings, stats,
         )
 
         if (!outcome.green) {
@@ -3007,7 +3057,8 @@ async function runAutoLanes(
           `reach the shell unquoted):\n` +
           `<<<MESSAGE\n${laneBranch(lane.key)}: ${safeTitle}\nMESSAGE>>>\n` +
           `Return { "committed": true|false, "sha": "<sha or empty>", "note": "<what happened>" }`,
-          { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: 'Implement', effort: mechanicalEffort },
+          { schema: FINALIZE_RESULT_SCHEMA, label: `dev-implement:finalize:${task.id}`, phase: 'Implement', effort: mechanicalEffort,
+            ...agentTypeOption(input, 'mechanical') },
         )
         if (fin === null || !fin.committed) {
           abandoned = true
@@ -3104,12 +3155,12 @@ async function runAutoLanes(
     await mergeCandidate({
       rt, ctx, signFlag, mechanicalEffort, integrationEffort,
       candidate: { id: lane.key, branch: laneBranch(lane.key), workdir: lanePath(lane.key), rows: pending, keptFields: { worktreePath: lanePath(lane.key), branch: laneBranch(lane.key) }, cleanupEligible: !(laneHadFailure.get(lane.key) ?? false) },
-      noun: 'lane', statusById, reportTasks, warnings, merged,
+      noun: 'lane', statusById, reportTasks, warnings, merged, routing: input,
     })
   }
 
   // ---- Batched cleanup of MERGED-AND-CLEAN lane worktrees only ----
-  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'lane', mechanicalEffort, pluginRoot })
+  await cleanupMergedWorktrees({ rt, ctx, merged, cleanupRoot: wtRoot, warnings, noun: 'lane', mechanicalEffort, pluginRoot, routing: input })
 
   // -------------------------------------------------------------------------
   // Phase 'Report' — deterministic tallying IN CODE (no agent).
@@ -3185,7 +3236,8 @@ export default defineWorkflow({
       '{ artifact } (the inline PlanArtifact) OR { artifactPath } (a path — ABSOLUTE recommended — to ' +
       'a JSON file holding it; use this when the artifact is large or was produced/edited on disk, to ' +
       'avoid inlining ~60 KB in the args; it is read from disk and validated identically). Plus optional ' +
-      'mutation/maxIterationsPerTask/implementerModel/implementerType, and ' +
+       'mutation/maxIterationsPerTask/implementerModel/implementerType, perAgent.agentType, and ' +
+       'agentTypes.{load,red,green,check,mechanical,integration}, and ' +
       'for worktree/auto mode optional worktreeSetupCommand/worktreeRoot/signCommits (plus ' +
       'autoLaneMinTasks for "auto"), as the workflow args. ' +
       'implementerModel tiers the per-iteration implementer (default "sonnet"); the independent ' +

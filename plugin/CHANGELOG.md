@@ -5,8 +5,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.187.0] - 2026-09-24
+
 ### Changed
 - Start OpenCode and Codex external-model processes with a shared environment allow-list, excluding session Anthropic credentials and unrelated exported secrets; users can explicitly add required non-credential names with `WT_EXTERNAL_MODEL_ENV_ALLOW`. Proxy variables remain available, so credentials embedded in a proxy URL such as `user:password` reach the child. The remaining same-OS-user boundary, including readable credential files and sockets, requires the tracked OS-sandbox follow-up. The quota probe now prefers the active session's `CLAUDE_CODE_OAUTH_TOKEN` and never falls back to saved credentials when that token is refused. A launch that names a model receives that provider's credential and required extras (Azure: key plus resource name), resolved from OpenCode's offline provider registry with a logged `<PROVIDER>_API_KEY` fallback; a registry entry can never authorize another known provider's key or a session Anthropic credential in any letter case. `wt-deep-search` forwards a provider credential only for an explicit model or `OPENCODE_MODEL`; with neither, it passes none, as before.
+- Run second-opinion's Claude Opus route at `xhigh` effort whatever `--effort` the caller passes; `--effort` now drives only the GPT-6 Astra route.
+- Pin the shipped `pilot` and `pilot-orchestrator` agent templates to `effort: medium` (was `high`): pilots arbitrate and implement, while critics keep a higher pinned effort. Re-adopt the agents set to pick it up; a project copy already edited to `medium` is now merely behind, not diverged.
 - Extend the shipped ground-truth and durable-fix rules with directives for alternating comparison arms, run-specific gate logs with terminal completion markers, and resolving distributed-rule status from source at a named revision
 - Return blocking SDK review/refutation findings and red VERIFY test names to the original TDD implementer through a runner-owned findings file; every fix re-entry requires fresh TDD, review, and refutation evidence, while byte-identical briefs preserve valid receipts. Fix lanes run focused tests, typecheck, and lint before one full VERIFY suite. Review has no fixed cap and escalates on recurrence or two blocking passes without a strict new minimum; clear passes remain recorded. Timeout/error finalization preserves unresolved findings and timed-out worktrees. What is running attributes legacy Harden time and cost to TDD.
 - Disable `secret:env:NAME` in `wt-secret-guard`: Claude Code refuses a whole hooks module whose `$.env.get` takes a non-literal name, so the guard loaded nothing in any real session while it read arbitrary variables. A command carrying the form is now refused with that reason and a pointer to `secret:file` or a 1Password reference; the form returns only with a design that names its variables literally. The toolkit suite now runs `claude plugin validate --strict` on every shipped plugin where the binary is available
@@ -18,16 +22,49 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Refuse raw secret-bearing MCP, Bash, Write, Edit, and NotebookEdit inputs; repair denied transcript inputs in place by tool-use identifier; mask visible assistant streams; warn on SessionStart replay; and preserve journal records across module reloads
 
 ### Fixed
+- Preserve an opted-in adopt symlink and its linked-to file when rendering or atomic publication of its managed replacement fails
+- Parse red VERIFY failing-test names through the active language pack's Vitest, pytest, or Gradle/JUnit adapter; preserve parameterized pytest node IDs, reject unittest summaries, skip unreadable project directories, and refuse absent, ambiguous, or unknown adapter evidence with an escalation instruction
+- Prevent SDK roles from replacing code the runner may execute: active plugin roots, generated role plugins, and selected guard scripts are derived from the prepared role and denied through both tool authorization and sandbox filesystem policy. SDK-role guard crashes now exit non-zero for adapter denial while ordinary host hooks retain their documented fail-open posture. LSP is no longer offered to SDK roles because `typescript-language-server` can select executable TypeScript from the workspace.
+- Fail SDK role confinement closed: writer Bash now requires an available sandbox and cannot request per-command escape; guard adapter failures explicitly deny; role deny lists merge with caller policy; initialization rejects undeclared tools; and diagnostics/deletion context tools are removed while plugin-controlled fetch, index, and search services remain documented exceptions.
+- Remove `ctx_execute`, `ctx_execute_file`, and `ctx_batch_execute` from every SDK role and explicitly disallow them at query composition, because code in any supported context-mode language can start a shell outside the role's declared path. Pilot and reader roles have no process-execution tool; writer/executor work uses guarded, sandboxed `Bash`. Initialization receipts now refuse any role that exposes one of the removed tools; the Bash-only pilot guard is no longer described as protecting a pilot role that cannot invoke it.
 - Preserve generated content, adopted script snippets, home paths, and Windows separators literally when they contain JavaScript replacement tokens such as `$&`; lint now rejects dynamic `replace` and `replaceAll` replacement strings across plugin and published toolkit sources
 - `wt-second-opinion` gives each Astra call private Codex broker state, captures its detached broker while the companion is alive, revalidates process identity before cleanup, and confirms or force-escalates termination on completion, error, supported signals, or process exit; unavailable host cleanup is reported.
 - `wt-deep-search` (EXPERIMENTAL): a deep search started with no Exa key and no opencode on PATH is refused at once, naming both remedies and saying ordinary web search still works, instead of returning a handle that fails nine seconds later with a bare exit status; a missing Exa key is recorded as missing, a refused key as refused, and an opencode not-found failure names the program to install
 - External lanes refuse to launch below a configurable available-memory floor, and signal-killed children now retain a numeric exit while naming earlyoom, kernel OOM, or an unknown signal cause instead of masquerading as timeout exit 124
 
 ### Added
+- Add a journaled, warn-only PreToolUse Bash guard for unquoted scalar lists that zsh would pass as one word; same-command `shwordsplit`, non-zsh shells, arrays, explicit splits, and two measured singleton command-substitution shapes stay silent.
 - Point every SDK agent prompt at the repository's root `CLAUDE.md` and `AGENTS.md` contributor guides when present, without enabling ambient setting sources or duplicating a shared symlink target
 
 ### Fixed
 - Close Secret Guard bypasses around reference-wrapped vault values and alternate `op read` arguments; preserve reference value bytes across shell quoting contexts and UTF-8 transcript offsets; authenticate the target JSONL `tool_use` record before repair writes; retain every built-in and known secret across stream boundaries; and reuse the active journal rotation segment
+
+### Known limits
+- The SDK pilot runner, its lifecycle server and What is running remain EXPERIMENTAL.
+- The environment passed to external-model children (opencode, codex) is not yet restricted by an allow-list in this release; that allow-list ships in a later release.
+- Two structural classes found by cross-family review stay open and are tracked: host guards can import helpers a writer role can modify when the worktree is the plugin's own checkout, and the gate-evidence hook runs one git read that can execute a repository-configured fsmonitor. Both already existed in 0.186.0.
+- Adopters: `secret:env:NAME` is now refused by `wt-secret-guard`; move to `secret:file:` or `op://`. Re-adopt the agent templates after updating (`install.mjs --set agents --install --dir <project>/.claude/agents`).
+
+### Quality
+
+Measured on the release tree against the 0.181.0 baseline (kept on purpose, not refreshed). Cognitive complexity rose by 5 and the longest function by 1 line (lifecycle-launch.mjs, lifecycle-state-machine.mjs), both under their ratchets; ESLint warnings held at 687, knip fell by 3, duplication fell; coverage rose to about 81 % of lines, measured on the full suite of the release tree (7,462 passed, 20 skipped).
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 125 | -2 | 127 -> 125 | plugin/bin/lib/lifecycle-launch.mjs, plugin/workflows/independent-analysis.js |
+| Cognitive complexity | 261 -> 266 | +5 | 261 -> 266 | plugin/bin/lib/lifecycle-launch.mjs, plugin/bin/lib/lifecycle-state-machine.mjs, plugin/workflows/independent-analysis.js |
+| Biggest file (lines) | 2729 -> 2729 | 0 | 2176 -> 2234 | - |
+| Longest function (lines) | 708 -> 709 | +1 | 708 -> 709 | - |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 7 -> 7 | - |
+| ESLint warnings | 687 -> 687 | 0 | 41 -> 39 | plugin/bin/lib/lifecycle-state-machine.mjs, plugin/workflows/independent-analysis.js, plugin/skills/adopt/scripts/install.mjs, plugin/bin/lib/lifecycle-launch.mjs |
+| Duplication % | 2.885613003631333 -> 2.7234369006520907 | -0.16 | 432 -> 466 | - |
+| Knip issues | 221 -> 218 | -3 | 5 -> 5 | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 80.94 | +38.94 | 0 -> - | - |
+| Coverage branches % | 40.12 -> 71.44 | +31.32 | 0 -> - | - |
+| Coverage functions % | 44.48 -> 82.41 | +37.93 | 0 -> - | - |
+| Coverage statements % | 40.62 -> 78.03 | +37.41 | 0 -> - | - |
 
 ## [0.186.0] - 2026-09-22
 

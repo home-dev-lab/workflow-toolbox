@@ -161,6 +161,12 @@ export interface DevGroundInput {
   /** Optional reasoning-effort override per role (Class B/C, `parseConfig`
    *  from `args.effort`). 'auto' = keep the role's own committed default. */
   effort: Readonly<Record<string, EffortAlias | 'auto'>> | null
+  /** Per-role keys: groundExternalTask, groundExternalSynthesis,
+   * groundInternalTask, groundInternalSynthesis, poc, verify, reframe, predict.
+   * The existing `ground` key remains the fallback for all four grounding roles. */
+  agentTypes: Readonly<Record<string, string>> | null
+  /** Blanket fallback parsed from `perAgent.agentType`. */
+  defaultAgentType: string | undefined
   /** Blanket opt-out of the default leaf-agent fence (see withLeafFence). */
   messaging: boolean | null
 }
@@ -873,6 +879,11 @@ export default defineWorkflow({
       '(external research ∥ internal code analysis → PoC canary for what sources cannot ' +
       'settle → refute-first verification) before any code is written, and recommends ' +
       'cancel / reframe / proceed with a corrective path.',
+    whenToUse:
+      'Use before planning when a card rests on assumptions that should be checked against sources or code. ' +
+      'Agent routing accepts perAgent.agentType and agentTypes.{groundExternalTask,groundExternalSynthesis,' +
+      'groundInternalTask,groundInternalSynthesis,poc,verify,reframe,predict}; per-role values win. ' +
+      'agentTypes.ground remains a fallback for all four grounding roles.',
     // Eight DISTINCT titles are LOAD-BEARING: emitDigest attribution DROPS
     // BOTH digests when one pattern is invoked twice under one phase title
     // (envelope.ts ATTRIBUTION note) — every stage below gets its own title.
@@ -921,6 +932,8 @@ export default defineWorkflow({
     const effort = cfg.effort ?? null
     const verifierType = cfg.agentTypes?.['verify']
     const groundingType = cfg.agentTypes?.['ground']
+    const agentTypes = cfg.agentTypes ?? null
+    const defaultAgentType = cfg.perAgent?.agentType
     const messaging = cfg.messaging ?? null
 
     return {
@@ -934,6 +947,8 @@ export default defineWorkflow({
       verifierModel,
       effort,
       messaging,
+      agentTypes,
+      defaultAgentType,
     }
   },
 
@@ -983,6 +998,18 @@ export default defineWorkflow({
       const probe = await probeAgentType(rt, input.verifierType, { phase: 'Probe', required: true })
       resolvedVerifierType = probe.agentType
       verifyProbe = { requested: input.verifierType, available: probe.available, reason: probe.reason }
+    }
+    const agentType = (role: string, current?: string): string | undefined =>
+      input.agentTypes?.[role] ?? input.defaultAgentType ?? current
+    const roleTypes = {
+      groundExternalTask: agentType('groundExternalTask', resolvedGroundingType),
+      groundExternalSynthesis: agentType('groundExternalSynthesis', resolvedGroundingType),
+      groundInternalTask: agentType('groundInternalTask', resolvedGroundingType),
+      groundInternalSynthesis: agentType('groundInternalSynthesis', resolvedGroundingType),
+      poc: agentType('poc'),
+      verify: agentType('verify', resolvedVerifierType),
+      reframe: agentType('reframe'),
+      predict: agentType('predict'),
     }
 
     // ---- Partition — pure, in code. Disjointness is a PARTITION INVARIANT
@@ -1037,8 +1064,8 @@ export default defineWorkflow({
           taskSchema: PREMISE_RESULT_SCHEMA,
           taskModel: resolved.groundExternalTask.model,
           taskEffort: resolved.groundExternalTask.effort,
-          ...(resolvedGroundingType !== undefined
-            ? { taskType: resolvedGroundingType, synthesisType: resolvedGroundingType }
+          ...(roleTypes.groundExternalTask !== undefined
+            ? { taskType: roleTypes.groundExternalTask }
             : {}),
           synthesisPrompt: (parts) =>
             `You are the external grounding synthesis agent. Below are per-premise research ` +
@@ -1050,6 +1077,9 @@ export default defineWorkflow({
           synthesisSchema: ARM_SCHEMA,
           synthesisModel: resolved.groundExternalSynthesis.model,
           synthesisEffort: resolved.groundExternalSynthesis.effort,
+          ...(roleTypes.groundExternalSynthesis !== undefined
+            ? { synthesisType: roleTypes.groundExternalSynthesis }
+            : {}),
           phase: 'Ground External',
         }),
       }))
@@ -1069,8 +1099,8 @@ export default defineWorkflow({
           taskSchema: PREMISE_RESULT_SCHEMA,
           taskModel: resolved.groundInternalTask.model,
           taskEffort: resolved.groundInternalTask.effort,
-          ...(resolvedGroundingType !== undefined
-            ? { taskType: resolvedGroundingType, synthesisType: resolvedGroundingType }
+          ...(roleTypes.groundInternalTask !== undefined
+            ? { taskType: roleTypes.groundInternalTask }
             : {}),
           synthesisPrompt: (parts) =>
             `You are the internal grounding synthesis agent. Below are per-premise code-analysis ` +
@@ -1082,6 +1112,9 @@ export default defineWorkflow({
           synthesisSchema: ARM_SCHEMA,
           synthesisModel: resolved.groundInternalSynthesis.model,
           synthesisEffort: resolved.groundInternalSynthesis.effort,
+          ...(roleTypes.groundInternalSynthesis !== undefined
+            ? { synthesisType: roleTypes.groundInternalSynthesis }
+            : {}),
           phase: 'Ground Internal',
         }),
       }))
@@ -1184,6 +1217,7 @@ export default defineWorkflow({
               phase: 'PoC',
               model: resolved.poc.model,
               effort: resolved.poc.effort,
+              ...(roleTypes.poc !== undefined ? { agentType: roleTypes.poc } : {}),
             },
           )
           return { premiseId: p.id, report }
@@ -1293,7 +1327,9 @@ export default defineWorkflow({
             lenses: GROUNDING_LENSES,
             effort: resolved.verify.effort,
             ...(input.verifierModel !== undefined ? { model: input.verifierModel } : {}),
-            ...(resolvedVerifierType !== undefined ? { verifierType: resolvedVerifierType } : {}),
+            ...(roleTypes.verify !== undefined
+              ? { verifierType: roleTypes.verify }
+              : {}),
             phase: 'Verify',
           })
 
@@ -1378,7 +1414,8 @@ export default defineWorkflow({
             JSON.stringify(blocked.map((p) => ({ id: p.id, statement: p.statement, verdict: p.verdict, alternativeMechanisms: p.alternativeMechanisms }))),
           )}\n\n` +
           `Return { text }.`,
-        { schema: REFRAME_SCHEMA, label: 'dev-ground:reframe', phase: 'Reframe', model: resolved.reframe.model, effort: resolved.reframe.effort },
+        { schema: REFRAME_SCHEMA, label: 'dev-ground:reframe', phase: 'Reframe', model: resolved.reframe.model, effort: resolved.reframe.effort,
+          ...(roleTypes.reframe !== undefined ? { agentType: roleTypes.reframe } : {}) },
       )
       if (sketch === null) {
         warn(rt, warnings, 'dev-ground: reframe sketch agent returned null — degrading to sketch-unavailable')
@@ -1400,7 +1437,8 @@ export default defineWorkflow({
           JSON.stringify(finalResults.map((p) => ({ id: p.id, verdict: p.verdict }))),
         )}\n\n` +
         `Return { items: [{ item, outcome }] }.`,
-      { schema: PREDICT_SCHEMA, label: 'dev-ground:predict', phase: 'Predict', model: resolved.predict.model, effort: resolved.predict.effort },
+      { schema: PREDICT_SCHEMA, label: 'dev-ground:predict', phase: 'Predict', model: resolved.predict.model, effort: resolved.predict.effort,
+        ...(roleTypes.predict !== undefined ? { agentType: roleTypes.predict } : {}) },
     )
     let predictionCheck: PredictionCheckItem[]
     if (predictReport === null || predictReport.items.length === 0) {

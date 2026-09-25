@@ -16,7 +16,7 @@ const EXACT_NAMES = new Set([
 ])
 const PREFIXES = ['OPENCODE_', 'CODEX_', 'OPENAI_', 'AZURE_OPENAI_']
 const NEVER_PASS = new Set(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'])
-const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+const NAME = /^[A-Za-z_]\w*$/
 const CREDENTIAL_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|CONFIG_FILE)/i
 const EXECUTION_HOOK_NAME = /^(?:NODE_OPTIONS|BUN_OPTIONS|BASH_ENV|ENV|ZDOTDIR|PYTHONPATH|PYTHONSTARTUP|RUBYOPT|RUBYLIB|PERL5OPT|PERL5LIB|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)$/i
 const CONFIGURATION_CARRIER = /^(?:OPENCODE_CONFIG(?:_|$)|CODEX_HOME$)/i
@@ -51,8 +51,8 @@ export function externalModelEnv(env = process.env, extraNames = [], platform = 
   for (const [name, value] of Object.entries(env)) {
     const matchedName = normalize(name)
     if (value === undefined || NEVER_PASS.has(name.toUpperCase())) continue
-    if (explicitNames.has(matchedName)) child[name] = value
-    else if (!CONFIGURATION_CARRIER.test(name) && !CREDENTIAL_NAME.test(name) && (exactNames.has(matchedName) || PREFIXES.some((prefix) => matchedName.startsWith(prefix)) || /^LC_[A-Z]+$/.test(matchedName) || configuredNames.has(matchedName))) child[name] = value
+    const allowedByConfig = !CONFIGURATION_CARRIER.test(name) && !CREDENTIAL_NAME.test(name) && (exactNames.has(matchedName) || PREFIXES.some((prefix) => matchedName.startsWith(prefix)) || /^LC_[A-Z]+$/.test(matchedName) || configuredNames.has(matchedName))
+    if (explicitNames.has(matchedName) || allowedByConfig) child[name] = value
   }
   return child
 }

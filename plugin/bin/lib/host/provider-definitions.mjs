@@ -6,7 +6,9 @@ export function installedOpenCodeProviderDefinitions(env = process.env) {
     try {
       const definitions = JSON.parse(readFileSync(`${root}/opencode/models.json`, 'utf8'))
       if (definitions && typeof definitions === 'object') return definitions
-    } catch {}
+    } catch {
+      // Cache root missing, unreadable, or holding invalid JSON — try the next candidate.
+    }
   }
   return null
 }

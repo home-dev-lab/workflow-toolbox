@@ -4,7 +4,7 @@ description: >
   Get one independent, read-only second opinion for difficult, ambiguous,
   high-risk, or stuck coding and reasoning problems. Automatically uses GPT-6
   Astra when GPT-lane consent and its runtime are available, otherwise a
-  fresh-context Claude Opus consult. The main session keeps the task, edits,
+  fresh-context Claude Opus consult at xhigh effort. The main session keeps the task, edits,
   verification, and final decision.
 when_to_use: >
   Use for a difficult, ambiguous, high-risk, or stuck question that needs one
@@ -43,7 +43,9 @@ separately as one candidate among alternatives and ask the advisor to attack it.
 
 Choose effort once: `low` for a scoped challenge or review, `medium` for an
 unclear cause or real trade-off, and `high` for failed attempts, subtle
-cross-system behavior, or an expensive-to-reverse decision.
+cross-system behavior, or an expensive-to-reverse decision. Expect `--effort`
+to drive the Astra route only: the Opus route always runs at `xhigh`, whatever
+effort you pass.
 
 Choose `auto` to preserve consent-based routing. Choose `opus` when the question
 is ours to arbitrate, such as grounding a card or confirming a verdict. The CLI

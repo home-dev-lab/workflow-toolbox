@@ -128,7 +128,7 @@ async function start(args) {
   const workDir = flags.dir ?? join(store.directory, 'work');
   if (!isAbsolute(workDir)) throw new Error(`--dir must be an absolute path: ${workDir}`);
   const providers = detectProviders(process.env, fs);
-  if (!providers.exa.available && !providers.opencode.available) {
+  if (process.env.DEEP_SEARCH_NO_WORKER !== '1' && !providers.exa.available && !providers.opencode.available) {
     throw new Error('No deep-search provider is available: set EXA_API_KEY, or install opencode and ensure it is on PATH. Ordinary web search still works.');
   }
   await mkdir(workDir, { recursive: true });

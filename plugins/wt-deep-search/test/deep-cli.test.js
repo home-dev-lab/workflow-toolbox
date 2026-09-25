@@ -3,9 +3,10 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const cli = new URL('../bin/deep.mjs', import.meta.url);
+const cli = fileURLToPath(new URL('../bin/deep.mjs', import.meta.url));
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'deep-cli-test-'));
@@ -16,7 +17,7 @@ async function fixture(t) {
   return {
     directory,
     env,
-    run: (...args) => spawnSync(process.execPath, [cli.pathname, ...args], { env, encoding: 'utf8' }),
+    run: (...args) => spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8' }),
     write: async (record) => writeFile(
       join(directory, `${record.handle}.json`),
       JSON.stringify(record),
@@ -52,9 +53,9 @@ test('CLI refuses immediately without a deep provider and emits no handle', asyn
 
 test('CLI starts without an Exa key when opencode is resolvable', async (t) => {
   const f = await fixture(t);
-  const opencode = join(f.directory, 'opencode');
-  await writeFile(opencode, '#!/bin/sh\nexit 0\n');
-  await chmod(opencode, 0o755);
+  const opencode = join(f.directory, process.platform === 'win32' ? 'opencode.cmd' : 'opencode');
+  await writeFile(opencode, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
+  if (process.platform !== 'win32') await chmod(opencode, 0o755);
   delete f.env.EXA_API_KEY;
   f.env.PATH = f.directory;
   f.env.DEEP_SEARCH_NO_WORKER = '1';
@@ -68,9 +69,9 @@ test('CLI starts without an Exa key when opencode is resolvable', async (t) => {
 
 test('worker records a missing Exa key as missing before falling back', async (t) => {
   const f = await fixture(t);
-  const opencode = join(f.directory, 'opencode');
-  await writeFile(opencode, '#!/bin/sh\nexit 0\n');
-  await chmod(opencode, 0o755);
+  const opencode = join(f.directory, process.platform === 'win32' ? 'opencode.cmd' : 'opencode');
+  await writeFile(opencode, process.platform === 'win32' ? '@exit /b 0\r\n' : '#!/bin/sh\nexit 0\n');
+  if (process.platform !== 'win32') await chmod(opencode, 0o755);
   await f.write({
     handle: 'deep-one',
     status: 'running',
@@ -176,7 +177,7 @@ test('CLI result emits the requested consumer shape', async (t) => {
 test('CLI list prints persisted handles without loading repository data', async (t) => {
   const f = await fixture(t);
   await f.write({ handle: 'deep-one', status: 'done', engine: 'exa', createdAt: 10, updatedAt: 25 });
-  assert.equal(execFileSync(process.execPath, [cli.pathname, 'list'], { env: f.env, encoding: 'utf8' }), 'deep-one done exa\n');
+  assert.equal(execFileSync(process.execPath, [cli, 'list'], { env: f.env, encoding: 'utf8' }), 'deep-one done exa\n');
 });
 
 test('CLI reconciles an opencode EXIT marker before returning a result', async (t) => {

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
+import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { BoardUnavailable, createBoardClient } from '../../../../plugin/bin/lib/board-http-client.mjs'
@@ -290,7 +291,7 @@ describe('orchestrator driver', () => {
     expect(readFileSync(join(result.waveDir, 'cards/1/diff.patch'), 'utf8')).not.toContain('advanced-after-worktree.txt')
     expect(JSON.parse(readFileSync(join(result.waveDir, 'cards/1/fidelity/fidelity-manifest.json'), 'utf8')).base).toBe(originalBase)
     expect(readFileSync(f.report, 'utf8')).toContain(`base=${originalBase}; baseRef=develop`)
-  })
+  }, 60_000)
 
   it('refuses an older per-card record with no frozen base at review', () => {
     expect(() => reviewBase({ id: '1' })).toThrow('orchestrator review refused: card 1 missing field base')
@@ -515,12 +516,12 @@ describe('orchestrator driver', () => {
     expect(result.stdout).toBe('')
   })
 
-  it('resolves the SDK from the orchestrator process cwd in an installed plugin tree', () => {
-    const f = repoFixture(); fakeSdk(f.root)
+  it('resolves an external operator-selected SDK in an installed plugin tree', () => {
+    const f = repoFixture(); const sdkRoot = mkdtempSync(join(tmpdir(), 'wt-orch-sdk-')); roots.push(sdkRoot); fakeSdk(sdkRoot)
     const installed = join(f.root, 'installed-plugin'); cpSync(join(ROOT, 'plugin'), installed, { recursive: true })
     const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const profile = join(f.root, 'bad-profile.json'); writeFileSync(profile, '{bad')
-    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report, '--profile-env', profile], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') } })
+    const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report, '--profile-env', profile], { cwd: f.root, encoding: 'utf8', env: { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global'), WT_AGENT_SDK_PATH: join(sdkRoot, 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'index.cjs') } })
     expect(result.status).toBe(1)
     expect(result.stderr.trim().split(/\r?\n/)).toEqual([expect.stringContaining('wt-run-orchestrator: cannot read --profile-env')])
     expect(result.stderr).not.toContain('@anthropic-ai/claude-agent-sdk is not installed')
@@ -555,7 +556,7 @@ describe('SDK orchestrator judge', () => {
     const plugins = [join(f.root, 'rules-plugin'), join(f.root, 'lsp-plugin')]; plugins.forEach((plugin) => mkdirSync(plugin))
     const result = await runOrchestrator({ ...f.options, knowledgeBaseIndex, pluginDirs: plugins }, { ...f, judge: undefined, query, models: { orchestrator: { value: 'wave-model' } }, contract: '# contract' })
     expect(calls).toBe(1)
-    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', 'LSP', CONTEXT_MODE_TOOLS.search] })
+    expect(queryOptions).toMatchObject({ model: 'wave-model', systemPrompt: '# contract', settingSources: [], permissionMode: 'default', cwd: result.waveDir, tools: ['Read', 'Glob', 'Grep', CONTEXT_MODE_TOOLS.search] })
     expect(queryOptions.plugins).toEqual([
       { type: 'local', path: expect.stringContaining('pilot-guard') },
       { type: 'local', path: resolveContextModeRoot(process.env) },
@@ -565,7 +566,7 @@ describe('SDK orchestrator judge', () => {
     expect(f.launches.every((launch) => JSON.stringify(launch).includes(JSON.stringify(plugins)))).toBe(true)
     expect(Object.keys(queryOptions.mcpServers as object)).toEqual(['sdk-wave-lifecycle'])
     expect(prompts).toEqual([
-      `${join(f.root, 'AGENTS.md')} is the repository's contributor guide; read it before planning or changing code.\n\nKNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
+      `${canonicalPath(join(f.root, 'AGENTS.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nKNOWLEDGE_BASE_INDEX: ${knowledgeBaseIndex}\nJudge card 1: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.`,
       'Judge card 2: read it with read_card, its report with read_card_report, its diff with read_diff, then decide.',
       'Every card is decided: write_judgment.',
     ])

@@ -64,8 +64,8 @@
 // SYMLINK SAFETY: if a target file is a symlink (e.g. a config dir whose rules are
 // symlinked from another one), the engine NEVER writes through it — it reports the
 // symlink and leaves it (and its target) untouched. `--replace-symlinks` opts in to
-// unlinking the symlink and writing a regular managed file in its place (the former
-// target is preserved). This is never silent: a plain --install SKIPS a symlink.
+// atomically replacing the symlink with a regular managed file after rendering succeeds
+// (the former target is preserved). This is never silent: a plain --install SKIPS a symlink.
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -635,7 +635,7 @@ function itemContent(set, item, root) {
     return body.replace(fragment, () => replacement)
   }
   if (item.file === 'wt-lane-wait.mjs') {
-    return replaceExactlyOnce(content, "import { classifyLane, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
+    return replaceExactlyOnce(content, "import { classifyLane, laneHostPlatform, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'", `import os from 'node:os'
 import { pathToFileURL } from 'node:url'
 const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(process.env.HOME || os.homedir(), '.claude')
 let runtimeRoot = process.env.CLAUDE_PLUGIN_ROOT || process.env.WT_PLUGIN_ROOT || null
@@ -649,7 +649,7 @@ if (!runtimeRoot) {
   } catch {}
 }
 if (!runtimeRoot) throw new Error('could not locate workflow-toolbox plugin root; update the plugin and re-adopt wt-lane-wait.mjs')
-const { classifyLane, readCurrentSupervisions } = await import(pathToFileURL(path.join(runtimeRoot, 'bin', 'lib', 'lane-supervisor-core.mjs')).href)`)
+const { classifyLane, laneHostPlatform, readCurrentSupervisions } = await import(pathToFileURL(path.join(runtimeRoot, 'bin', 'lib', 'lane-supervisor-core.mjs')).href)`)
   }
   if (item.file !== 'wt-lane.mjs') return content
   // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
@@ -1816,7 +1816,7 @@ function auditOverlap(userDir, root, pairsFile, declarationsFile, set = 'rules')
  *  overrides a MANAGED file (edited / edited-unknown / clean); a hand-authored file
  *  with no toolbox banner is NEVER overwritten — we won't clobber a file we never
  *  stamped. A symlink is never written THROUGH: it writes only under `replaceSymlinks`
- *  (and then processSet unlinks the link first, preserving its target). */
+ *  (and then writeManagedItem atomically replaces the link, preserving its target). */
 function plan({ classification: c, version, force, replaceSymlinks, shippedFp, currentContentFp = shippedFp }) {
   // CONTENT wins over banner metadata, including an old/ahead version or stale stored hash.
   // Comparison uses contentFingerprint's trailing-EOF-whitespace normalization.
@@ -1930,18 +1930,33 @@ function managedWriteVerb(classification, force) {
   return 'REFRESHED'
 }
 
+function writeManagedFile(target, text, exclusive = false) {
+  fs.writeFileSync(target, text, exclusive ? { flag: 'wx' } : undefined)
+}
+
+function replaceSymlinkAtomically(target, text) {
+  const temp = path.join(path.dirname(target), `.${path.basename(target)}.workflow-toolbox-${process.pid}.tmp`)
+  let ownsTemp = false
+  try {
+    writeManagedFile(temp, text, true)
+    ownsTemp = true
+    moveFileVerified(temp, target)
+  } finally {
+    if (ownsTemp) fs.rmSync(temp, { force: true })
+  }
+}
+
 function writeManagedItem(set, dir, item, args, version, root, planned) {
   const { target, classification } = planned
   const oldContent = localAgentContent(set, target, classification)
-  // This ordering is intentionally characterized: replacement opt-in unlinks before rendering.
-  if (classification.state === 'symlink') fs.rmSync(target, { force: true })
   const { text: finalText, preserved } = renderItem(set, item, version, root, oldContent)
   if (preserved.length > 0) {
     process.stdout.write(
       `  ${item.file}: PRESERVING local frontmatter field(s) not defined by the shipped def: ${preserved.join(', ')}\n`,
     )
   }
-  fs.writeFileSync(target, finalText)
+  if (classification.state === 'symlink') replaceSymlinkAtomically(target, finalText)
+  else writeManagedFile(target, finalText)
   const verb = managedWriteVerb(classification, args.force)
   appendAdoptionJournal(dir, {
     timestamp: new Date().toISOString(),

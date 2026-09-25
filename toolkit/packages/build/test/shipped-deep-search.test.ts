@@ -4,6 +4,8 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// @ts-expect-error shipped dependency-free plugin source has no declaration file
+import { detectProviders } from '../../../../plugins/wt-deep-search/src/detect.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGIN = join(REPO_ROOT, 'plugins', 'wt-deep-search')
@@ -27,13 +29,30 @@ describe('shipped wt-deep-search', () => {
   // gate runs them where they are rather than porting them into vitest and adding a dependency.
   it('its own test suite passes', () => {
     const run = spawnSync(process.execPath, ['--test'], { cwd: PLUGIN, encoding: 'utf8' })
-    expect(run.status, run.stdout.slice(-4000) || run.stderr).toBe(0)
+    expect(run.status, `${run.stdout}\n${run.stderr}`.slice(-12_000)).toBe(0)
   })
 
   it('declares no dependency, at build time or at run time', () => {
     const manifest = JSON.parse(readFileSync(join(PLUGIN, 'package.json'), 'utf8'))
     expect(Object.keys(manifest.dependencies ?? {})).toEqual([])
     expect(Object.keys(manifest.devDependencies ?? {})).toEqual([])
+  })
+
+  it('persists the Windows filesystem casing instead of PATHEXT casing', () => {
+    const candidate = 'C:\\tools\\opencode.CMD'
+    const fs = {
+      constants: { R_OK: 4, X_OK: 1 },
+      existsSync: (path: string) => path === candidate,
+      statSync: () => ({ isDirectory: () => false, isFile: () => true }),
+      accessSync: () => {},
+      realpathSync: (path: string) => path,
+      readdirSync: () => ['opencode.cmd'],
+    }
+
+    expect(detectProviders({ PATH: 'C:\\tools' }, fs, { platform: 'win32' }).opencode).toEqual({
+      available: true,
+      path: 'C:\\tools\\opencode.cmd',
+    })
   })
 
   it('its cross-platform verdict matches the hook home resolution', () => {

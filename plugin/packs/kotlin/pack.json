@@ -1,5 +1,6 @@
 {
   "language": "kotlin",
+  "testFramework": "junit-gradle",
   "triggers": {
     "extensions": [".kt", ".kts"],
     "files": ["build.gradle.kts", "settings.gradle.kts"]

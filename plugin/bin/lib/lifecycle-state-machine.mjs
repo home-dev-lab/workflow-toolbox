@@ -13,6 +13,7 @@ import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { adaptiveRoundDecision, hasPerSectionAttackAccount, reviewConvergenceDecision, verdictFromReport } from './lifecycle-review-policy.mjs'
+import { detectFailedTestFramework } from './host/test-framework-detection.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -585,10 +586,9 @@ export function createLifecycleStateMachine({
   sdk = null,
   sdkRequire = null,
   laneLauncher = null,
-  lanePollMs = 25,
-  laneWaitMs = null,
-  lanePlatform = process.platform,
-  gateRunner = null,
+  lanePollMs = 25, laneWaitMs = null,
+  lanePlatform = process.platform, laneProcessReader = null,
+  gateRunner = null, testFramework = detectFailedTestFramework(worktree),
   git = execFileSync,
   copy = fs.cpSync,
   prospectivePatchMaxBuffer = 64 * 1024 * 1024,
@@ -677,7 +677,7 @@ export function createLifecycleStateMachine({
   const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
   writeRegularFile(
     routePath,
-    `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, models: frozenModels, base: constructionBase }, null, 2)}\n`,
+    `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, models: frozenModels, base: constructionBase, testFramework }, null, 2)}\n`,
     { flag: 'wx' },
   )
   const state = initialLifecycleState()
@@ -784,7 +784,8 @@ export function createLifecycleStateMachine({
     lanePollMs,
     laneWaitMs,
     lanePlatform,
-    gateRunner,
+    laneProcessReader,
+    gateRunner, testFramework,
     now,
     recordLaneStart: ({ phase, model, startedAt, usageFile, laneId }) => {
       const record = { phase, round: lifecycleRound(state, phase), ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile }
