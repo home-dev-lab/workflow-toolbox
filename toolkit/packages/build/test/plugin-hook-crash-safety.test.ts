@@ -465,6 +465,21 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         session_id: 'selftest-session',
         agent_id: 'selftest-subagent',
       }
+    case 'wt-grounding-prompt-hook.mjs':
+      return {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+        prompt: 'does the grounding hook load safely?',
+      }
+    case 'wt-grounding-pre-send-hook.mjs':
+      return {
+        hook_event_name: 'PreToolUse',
+        session_id: 'selftest-session',
+        cwd: sandbox.projectDir,
+        tool_name: 'Bash',
+        tool_input: { command: 'git status' },
+      }
     case 'wt-label-intent-producer-hook.mjs':
       // No toolkit/ vendored in this sandbox project — the hook must no-op cleanly rather
       // than crash, exactly what a project that doesn't vendor label-intent-lens.ts should

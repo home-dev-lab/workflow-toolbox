@@ -1,0 +1,20 @@
+[
+  {
+    "family": "knowledge-base/memory index",
+    "query": "rg {{query}} ~/.claude --glob 'MEMORY.md' --glob '*.md'",
+    "holds": "Previously established facts, decisions, and durable memory fiches.",
+    "stale_after_days": 30
+  },
+  {
+    "family": "repository history",
+    "query": "git log --all -S {{query}}",
+    "holds": "Code and decisions across every branch, including removed or superseded material.",
+    "stale_after_days": 7
+  },
+  {
+    "family": "project docs",
+    "query": "rg {{query}} . --glob '*.md'",
+    "holds": "Current project documentation, plans, architecture records, and runbooks.",
+    "stale_after_days": 14
+  }
+]

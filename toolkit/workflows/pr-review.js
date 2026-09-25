@@ -2361,6 +2361,21 @@ ${request.renderClaim(request.claim)}`;
     },
     {
       sources: [
+        "plugin/bin/wt-grounding-sources.mjs",
+        "plugin/bin/wt-grounding-prompt-hook.mjs",
+        "plugin/bin/wt-grounding-pre-send-hook.mjs",
+        "plugin/bin/lib/grounding-sources.mjs",
+        "plugin/bin/lib/host/grounding-sources.mjs",
+        "plugin/config/grounding-sources.json",
+        "plugin/skills/deep-grounding/"
+      ],
+      docs: [
+        "plugin/skills/deep-grounding/SKILL.md",
+        "plugin/skills/deep-grounding/references/source-registry.md"
+      ]
+    },
+    {
+      sources: [
         "plugin/bin/wt-artifact-server.mjs",
         "plugin/bin/wt-artifact-server-ensure.mjs",
         "plugin/bin/wt-artifact-server-context-hook.mjs",
