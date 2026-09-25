@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -136,6 +136,18 @@ describe('wt-zsh-word-split-guard-hook contract', () => {
 
   it('stays silent for an ordinary command', () => {
     expect(bash('git status').stdout).toBe('')
+  })
+
+  it.skipIf(process.platform === 'win32')('still runs when invoked through a symlinked path (entry guard compares real paths)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wt-zsh-word-split-link-')); roots.push(dir)
+    const link = join(dir, 'hook.mjs')
+    symlinkSync(HOOK, link)
+    const result = spawnSync(process.execPath, [link], {
+      input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: FIELD_CASE } }),
+      encoding: 'utf8',
+      env: { ...process.env, HOME: tmpdir(), SHELL: '/bin/zsh', WT_GUARD_MODE: '' },
+    })
+    expect(result.stdout).toContain('zsh does not word-split')
   })
 
   it('stays silent for a subagent payload', () => {

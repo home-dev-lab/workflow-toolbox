@@ -82,7 +82,7 @@ describe('failed-test adapters', () => {
     expect(detectFailedTestFramework(root)).toBe('vitest')
   })
 
-  it('skips an unreadable subdirectory instead of throwing', () => {
+  it.skipIf(process.platform === 'win32')('skips an unreadable subdirectory instead of throwing (requires POSIX permission bits)', () => {
     withProject(['example.ts', 'blocked/ignored.py'], (root) => {
       const blocked = join(root, 'blocked')
       chmodSync(blocked, 0o000)

@@ -18,6 +18,30 @@ function isUsablePath(fs, path, type, mode) {
   }
 }
 
+function canonicalWindowsPath(fs, path) {
+  if (typeof fs.realpathSync !== 'function') return path;
+  let canonical;
+  try {
+    canonical = fs.realpathSync(path);
+  } catch {
+    return path;
+  }
+  if (typeof fs.readdirSync !== 'function') return canonical;
+  try {
+    const separatorAt = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+    const directory = separatorAt < 0 ? '.' : path.slice(0, separatorAt);
+    const requestedName = path.slice(separatorAt + 1);
+    const actualName = fs.readdirSync(directory).map((entry) => (
+      typeof entry === 'string' ? entry : entry.name
+    )).find((entry) => entry.toLowerCase() === requestedName.toLowerCase());
+    if (!actualName) return canonical;
+    const canonicalSeparatorAt = Math.max(canonical.lastIndexOf('\\'), canonical.lastIndexOf('/'));
+    return `${canonical.slice(0, canonicalSeparatorAt + 1)}${actualName}`;
+  } catch {
+    return canonical;
+  }
+}
+
 export function detectProviders(env, fs, options = {}) {
   const platform = options.platform ?? process.platform;
   const isWindows = platform === 'win32';
@@ -101,7 +125,7 @@ export function detectProviders(env, fs, options = {}) {
         && isUsablePath(fs, candidate, 'file', isWindows ? null : (fs.constants?.X_OK ?? 1)));
 
     opencode = binaryPath
-      ? { available: true, path: binaryPath }
+      ? { available: true, path: isWindows ? canonicalWindowsPath(fs, binaryPath) : binaryPath }
       : {
           available: false,
           reason: 'opencode was not found on PATH',

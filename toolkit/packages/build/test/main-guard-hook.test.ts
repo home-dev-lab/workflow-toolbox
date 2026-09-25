@@ -235,6 +235,24 @@ describe('wt-main-guard-hook — journal-only merge direction', () => {
     expect(lines.some((l) => l.class === 'merge-into-main')).toBe(true)
   })
 
+  it('does not execute repository hooks while inspecting a merge INTO main', () => {
+    const repo = join(sandboxHome, 'hooked-repo')
+    const marker = join(sandboxHome, 'hook-ran')
+    const hooks = join(repo, 'hooks')
+    initGitRepo(repo, 'main')
+    mkdirSync(hooks)
+    writeFileSync(join(hooks, 'post-checkout'), `#!/bin/sh\n: > "${marker}"\n`)
+    chmodSync(join(hooks, 'post-checkout'), 0o755)
+    spawnSync('git', ['-C', repo, 'config', 'core.hooksPath', hooks])
+    spawnSync('git', ['-C', repo, 'branch', 'feature'])
+
+    const r = run('git merge feature', { cwd: repo })
+
+    expect(r.denied).toBe(false)
+    expect(existsSync(marker)).toBe(false)
+    expect(journalLines().some((line) => line.class === 'merge-into-main')).toBe(true)
+  })
+
   it('stays a true no-op merging main INTO a feature branch (the reverse direction)', () => {
     const repo = join(sandboxHome, 'repo2')
     initGitRepo(repo, 'main')

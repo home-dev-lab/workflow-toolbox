@@ -13,9 +13,14 @@ import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 
 const CONTROL = fileURLToPath(new URL('./wt-lane-control.mjs', import.meta.url))
 const LAUNCHER = fileURLToPath(new URL('./wt-lane.mjs', import.meta.url))
+const TEST_MAX_SWEEPS = (() => {
+  const value = Number(process.env.WT_LANE_WATCH_TEST_MAX_SWEEPS)
+  return Number.isSafeInteger(value) && value > 0 ? value : null
+})()
 const TEST_SEAMS_ACTIVE = new Set([
   ...(process.env.WT_LANE_WATCH_TEST_SWEEP_LOG ? ['WT_LANE_WATCH_TEST_SWEEP_LOG'] : []),
   ...(process.env.WT_LANE_WATCH_TEST_HELPERS ? ['WT_LANE_WATCH_TEST_HELPERS'] : []),
+  ...(TEST_MAX_SWEEPS !== null ? ['WT_LANE_WATCH_TEST_MAX_SWEEPS'] : []),
 ])
 const argvValue = (argv, flag) => {
   const index = Array.isArray(argv) ? argv.indexOf(flag) : -1
@@ -59,6 +64,19 @@ function records(project, staging = stagingLaneDirs(project)) {
     }
   }
   return out
+}
+
+async function continueSweeping(sweep, pollSeconds) {
+  if (TEST_MAX_SWEEPS !== null) {
+    for (let count = 1; count < TEST_MAX_SWEEPS; count += 1) {
+      await new Promise((resolve) => setImmediate(resolve))
+      sweep()
+    }
+    process.stderr.write(`wt-lane-orphan-watch: test sweep limit reached (${TEST_MAX_SWEEPS}/${TEST_MAX_SWEEPS}); exiting test mode.\n`)
+    return 0
+  }
+  setInterval(sweep, pollSeconds * 1000)
+  await new Promise(() => {})
 }
 
 const canonicalPath = (value) => {
@@ -165,12 +183,25 @@ async function main() {
       }
     }
     const staging = stagingLaneDirs(options.project)
-    const table = listProcessTable(hostAdapter)
+    let helperFixture = null
+    if (process.env.WT_LANE_WATCH_TEST_HELPERS) {
+      try {
+        const parsed = JSON.parse(readFileSync(process.env.WT_LANE_WATCH_TEST_HELPERS, 'utf8'))
+        helperFixture = Array.isArray(parsed) ? parsed : []
+      } catch { helperFixture = [] }
+    }
+    const table = helperFixture === null
+      ? listProcessTable(hostAdapter)
+      : {
+          supported: true,
+          processes: helperFixture.map((item) => ({
+            ...item,
+            command: typeof item.command === 'string' ? item.command : Array.isArray(item.argv) ? item.argv.join(' ') : '',
+          })),
+        }
     let helperRows = table.supported ? table.processes : []
     let helperAges = new Map()
-    if (process.env.WT_LANE_WATCH_TEST_HELPERS) {
-      try { helperRows = JSON.parse(readFileSync(process.env.WT_LANE_WATCH_TEST_HELPERS, 'utf8')) } catch { helperRows = [] }
-    } else {
+    if (helperFixture === null) {
       const relationships = listProcessRelationships(hostAdapter)
       if (relationships.status === 'known') helperAges = new Map(relationships.processes.map((item) => [item.pid, item.elapsedSeconds]))
     }
@@ -248,7 +279,7 @@ async function main() {
       journal({ event: 'unattributed', pid: item.pid, argv: item.command.slice(0, 300), worktree: unknown.cwd, owner: null, reason: 'unknown-owner' })
       notice(`unknown:${item.pid}`, `WARNING: unattributed opencode pid=${item.pid} argv=${JSON.stringify(item.command.slice(0, 300))}; it was not killed`)
     }
-    const brokers = listBrokers(hostAdapter)
+    const brokers = listBrokers(hostAdapter, table)
     if (brokers.supported) for (const pid of brokers.pids) {
       if (notified.has(`broker:${pid}`)) continue
       const broker = inspectProcess(pid)
@@ -266,8 +297,7 @@ async function main() {
   }
   safeSweep()
   if (options.once) return 0
-  setInterval(safeSweep, options.poll * 1000)
-  await new Promise(() => {})
+  return continueSweeping(safeSweep, options.poll)
 }
 
 main().then((code) => { process.exitCode = code })

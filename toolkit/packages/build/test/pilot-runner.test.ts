@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claude-agent-sdk'
+import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -264,7 +265,7 @@ describe('SDK pilot runner', () => {
     const models = () => ({ pilot: { value: 'sonnet', effective: 'sonnet' }, pilotHard: { value: 'opus', effective: 'opus' } })
     await runPilot({ card: '186', cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none.txt'), timeout: 2, hard: false }, { query, resolvePilotModels: models })
     expect(prompts[0]).toContain(`## The card, verbatim\n\n${card}`)
-    expect(prompts[0]).toContain(`${join(f.dir, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.`)
+    expect(prompts[0]).toContain(`${canonicalPath(join(f.dir, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.`)
     expect(prompts[0]).toContain('do not re-read the card from the board; the text above is the card')
     expect(prompts[0]).toContain('Lanes run synchronously through the lifecycle run tool')
     expect(prompts[0]).not.toContain('end your turn immediately after launch')
@@ -387,9 +388,9 @@ describe('SDK pilot runner', () => {
   })
 
   it('refuses to start when the only SDK install is inside the writer worktree', () => {
-    const f = fixture(); fakeSdk(f.dir, 'writer-owned')
-    expect(() => resolveAgentSdk({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: f.dir, env: {}, npmRoot: null, writableRoots: [f.dir] }))
-      .toThrow(`refuses writer-influenceable install: ${join(f.dir, 'node_modules', '@anthropic-ai', 'claude-agent-sdk')} is inside writer-writable root ${f.dir}`)
+    const f = fixture(); const alias = join(f.root, 'worktree-alias'); symlinkSync('worktree', alias, 'dir'); fakeSdk(alias, 'writer-owned')
+    expect(() => resolveAgentSdk({ ownToolkitManifest: join(f.root, 'missing-own/package.json'), projectDir: alias, env: {}, npmRoot: null, writableRoots: [alias] }))
+      .toThrow(`refuses writer-influenceable install: ${realpathSync(join(alias, 'node_modules', '@anthropic-ai', 'claude-agent-sdk'))} is inside writer-writable root ${realpathSync(alias)}`)
   })
 
   it('resolves the SDK from the global npm root after local candidates', () => {

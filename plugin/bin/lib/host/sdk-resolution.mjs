@@ -108,7 +108,8 @@ export function resolveAgentSdk(options = {}) {
       // A manifest alone is insufficient: the SDK must resolve from this install.
     }
   }
-  const npmRoot = sdkEntry ? null : Object.hasOwn(options, 'npmRoot') ? options.npmRoot : globalNpmRoot()
+  let npmRoot = null
+  if (!sdkEntry) npmRoot = Object.hasOwn(options, 'npmRoot') ? options.npmRoot : globalNpmRoot()
   if (npmRoot) {
     const require = createRequire(join(dirname(resolve(npmRoot)), 'package.json'))
     try {
@@ -123,11 +124,9 @@ export function resolveAgentSdk(options = {}) {
   const install = pluginData
     ? `npm install --prefix "${pluginData}" '${SDK}@>=${MIN_AGENT_SDK_VERSION}'`
     : `npm install -g '${SDK}@>=${MIN_AGENT_SDK_VERSION}'`
-  const reason = unsafe.length > 0
-    ? `refuses writer-influenceable install: ${unsafe.join('; ')}`
-    : incompatible.length > 0
-    ? `found ${[...new Set(incompatible)].join(', ')}, require >=${MIN_AGENT_SDK_VERSION}`
-    : `is not installed; require >=${MIN_AGENT_SDK_VERSION}`
+  let reason = `is not installed; require >=${MIN_AGENT_SDK_VERSION}`
+  if (unsafe.length > 0) reason = `refuses writer-influenceable install: ${unsafe.join('; ')}`
+  else if (incompatible.length > 0) reason = `found ${[...new Set(incompatible)].join(', ')}, require >=${MIN_AGENT_SDK_VERSION}`
   throw new Error(`${SDK} ${reason}; run: ${install}`)
 }
 

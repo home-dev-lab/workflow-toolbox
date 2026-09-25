@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // The host validates a plugin's hooks module statically before it loads it, and refuses the WHOLE module
@@ -33,7 +33,7 @@ const unavailable = probe.error
 
 describe('every shipped plugin passes the host validator (claude plugin validate --strict)', () => {
   it('finds the plugins it must validate', () => {
-    expect(pluginDirs.map((dir) => dir.slice(REPO_ROOT.length))).toEqual(expect.arrayContaining(['plugin', 'plugins/wt-secret-guard']))
+    expect(pluginDirs.map((dir) => relative(REPO_ROOT, dir).replaceAll('\\', '/'))).toEqual(expect.arrayContaining(['plugin', 'plugins/wt-secret-guard']))
   })
 
   for (const dir of pluginDirs) {

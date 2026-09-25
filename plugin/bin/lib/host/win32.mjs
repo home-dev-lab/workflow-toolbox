@@ -8,6 +8,7 @@ const PROCESS_TABLE_SCRIPT = [
   '    executableName = $_.Name }',
   '} | ConvertTo-Json -Depth 4 -Compress',
 ].join(' ')
+const PROCESS_READ_TIMEOUT_MS = 5_000
 const PROCESS_SNAPSHOT_SCRIPT = "$now = Get-Date; Get-CimInstance Win32_Process | ForEach-Object { $elapsed = if ($null -eq $_.CreationDate) { -1 } else { [math]::Round(($now - $_.CreationDate).TotalMilliseconds) }; $start = if ($null -eq $_.CreationDate) { -1 } else { [DateTimeOffset]::new($_.CreationDate).ToUnixTimeMilliseconds() }; '{0} {1} {2} {3} {4}' -f $_.ProcessId,$_.ParentProcessId,$elapsed,$start,$_.CommandLine }"
 export const processRelationshipOperation = { command: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', PROCESS_TABLE_SCRIPT] }
 export const processSnapshotOperation = { command: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', PROCESS_SNAPSHOT_SCRIPT] }
@@ -29,11 +30,11 @@ export function parseProcessRelationships(result) {
 }
 
 export function readProcessRelationships(invoke) {
-  return parseProcessRelationships(invoke.run(processRelationshipOperation.command, processRelationshipOperation.args))
+  return parseProcessRelationships(invoke.run(processRelationshipOperation.command, processRelationshipOperation.args, { timeout: PROCESS_READ_TIMEOUT_MS }))
 }
 
 export function readProcessSnapshot(invoke) {
-  const result = invoke.run(processSnapshotOperation.command, processSnapshotOperation.args)
+  const result = invoke.run(processSnapshotOperation.command, processSnapshotOperation.args, { timeout: PROCESS_READ_TIMEOUT_MS })
   if (result.status !== 0) return { supported: false, processes: [], reason: 'process discovery unavailable on this platform' }
   const processes = String(result.stdout ?? '').split(/\r?\n/).flatMap((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)$/.exec(line)

@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,17 +21,22 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
-function fixture(script: string) {
+function fixture(script: string, { inspectionDelayMs = 0 } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-wait-')))
   roots.push(root)
   const lane = join(root, '.lane')
   mkdirSync(lane)
-  writeFileSync(join(lane, 'run.log'), '')
-  const worker = spawn(process.execPath, ['-e', script], { cwd: root, detached: true, stdio: 'ignore' })
+  const runId = `${process.pid}-${Date.now()}`
+  writeFileSync(join(lane, 'run.log'), `LANE_RUN_ID=${runId}\n`)
+  const fixtureStderr = join(lane, 'fixture.stderr.log')
+  const fixtureStderrFd = openSync(fixtureStderr, 'w')
+  const gatedScript = `while (!require('node:fs').existsSync('.lane/start')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5); ${script}`
+  const worker = spawn(process.execPath, ['-e', gatedScript], { cwd: root, detached: true, stdio: ['ignore', 'ignore', fixtureStderrFd] })
+  closeSync(fixtureStderrFd)
   workers.push(worker)
   worker.unref()
   writeFileSync(join(lane, 'pid'), String(worker.pid))
-  const runId = `${worker.pid}-1`
+  if (inspectionDelayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, inspectionDelayMs)
   const identity = inspectProcess(worker.pid!) ?? {
     pid: worker.pid!, argv: [process.execPath, '-e', script], startTime: Date.now(), startTimeApproximate: true,
   }
@@ -39,16 +44,45 @@ function fixture(script: string) {
   mkdirSync(supervision)
   writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: worker.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, workerStartTimeApproximate: identity.startTimeApproximate, childPid: worker.pid, childArgv: identity.argv, childStartTime: identity.startTime, childStartTimeApproximate: identity.startTimeApproximate, worktree: root }))
   writeFileSync(join(supervision, 'current.json'), JSON.stringify({ runId }))
-  return { root, lane, pid: worker.pid! }
+  writeFileSync(join(lane, 'start'), '')
+  return { root, lane, pid: worker.pid!, fixtureStderr }
 }
 
 function run(root: string, ...args: string[]) {
-  return spawnSync(process.execPath, [WAITER, '--dir', root, '--poll', '0.02', '--timeout', '1', ...args], {
+  return spawnSync(process.execPath, [WAITER, '--dir', root, '--poll', '0.02', '--timeout', '30', ...args], {
     encoding: 'utf8',
   })
 }
 
+function visibleTail(file: string) {
+  try {
+    return JSON.stringify(readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).slice(-3))
+  } catch (error) {
+    return JSON.stringify([`unreadable: ${error instanceof Error ? error.message : String(error)}`])
+  }
+}
+
+function visibleFile(file: string) {
+  try {
+    return JSON.stringify(readFileSync(file, 'utf8'))
+  } catch (error) {
+    return JSON.stringify(`unreadable: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
+function failureDiagnostic(f: ReturnType<typeof fixture>, result: ReturnType<typeof run>) {
+  return `waiter stdout=${JSON.stringify(result.stdout)} stderr=${JSON.stringify(result.stderr)}; fixture stderr=${visibleFile(f.fixtureStderr)}; run.log tail=${visibleTail(join(f.lane, 'run.log'))}`
+}
+
+const terminalUpdate = "const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 137 }));"
+
 describe('wt-lane-wait', () => {
+  it('does not run fixture steps before slow process inspection publishes supervision', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 7 })); fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'); }, 40)", { inspectionDelayMs: 120 })
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(7)
+  })
+
   it('waits for the pid and accepts EXIT only on the last log line', () => {
     const f = fixture("const fs = require('node:fs'); fs.appendFileSync('.lane/run.log', 'echo EXIT=$? >> .lane/test.log\\n'); setTimeout(() => { fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'); setTimeout(() => {}, 80) }, 120)")
     const result = run(f.root)
@@ -63,11 +97,73 @@ describe('wt-lane-wait', () => {
     expect(result.status).toBe(exit)
   })
 
-  it('prints a recorded OOM cause with the lane exit', () => {
-    const f = fixture("const fs = require('node:fs'); setTimeout(() => { fs.appendFileSync('.lane/run.log', 'KILLED_BY=kernel-oom signal SIGKILL\\nEXIT=137\\n'); const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 137, killedBy: { signal: 'SIGKILL', cause: 'kernel-oom' } })); }, 80)")
+  it('ignores a stale exit marker while a nonterminal lane is alive', () => {
+    const f = fixture("const fs = require('node:fs'); fs.appendFileSync('.lane/run.log', 'EXIT=9\\n'); setTimeout(() => {}, 30_000)")
+    const result = run(f.root, '--timeout', '0.08')
+    expect(result.status).toBe(124)
+    expect(result.stdout.trim()).toBe('LANE TIMEOUT exit=124')
+  })
+
+  it('never accepts an exit marker from an earlier run', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 7 })); setTimeout(() => fs.writeFileSync('.lane/run.log', 'LANE_RUN_ID=' + state.runId + '\\nEXIT=7\\n'), 80); }, 40)")
+    writeFileSync(join(f.lane, 'run.log'), 'LANE_RUN_ID=earlier-run\nEXIT=0\n')
     const result = run(f.root)
-    expect(result.status).toBe(137)
-    expect(result.stdout.trim()).toContain('cause=kernel-oom signal=SIGKILL')
+    expect(result.status, failureDiagnostic(f, result)).toBe(7)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=7/)
+  })
+
+  it('prints a recorded OOM cause with the lane exit', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'exited', exit: 137, killedBy: { signal: 'SIGKILL', cause: 'kernel-oom' } })); fs.appendFileSync('.lane/run.log', 'KILLED_BY=kernel-oom signal SIGKILL\\nEXIT=137\\n'); }, 80)")
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(137)
+    expect(result.stdout.trim()).toContain(process.platform === 'win32'
+      ? 'cause=unavailable-on-this-platform signal=unavailable'
+      : 'cause=kernel-oom signal=SIGKILL')
+  })
+
+  it('waits for an exit marker published after the terminal supervision record', () => {
+    const f = fixture(`const fs = require('node:fs'); setTimeout(() => { ${terminalUpdate} setTimeout(() => fs.appendFileSync('.lane/run.log', 'EXIT=137\\n'), 100); }, 80)`)
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(137)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=137/)
+  })
+
+  it('accepts a published marker from a terminal record while the worker is alive', () => {
+    const f = fixture(`const fs = require('node:fs'); setTimeout(() => { ${terminalUpdate} fs.appendFileSync('.lane/run.log', 'EXIT=137\\n'); setTimeout(() => {}, 30_000); }, 40)`)
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(137)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=137/)
+  })
+
+  it('accepts a published marker from a terminal record after the worker dies', () => {
+    const f = fixture(`const fs = require('node:fs'); setTimeout(() => { ${terminalUpdate} fs.appendFileSync('.lane/run.log', 'EXIT=137\\n'); }, 40)`)
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(137)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=137/)
+  })
+
+  it('bounds a missing marker after terminal supervision while the worker is alive', () => {
+    const f = fixture('setTimeout(() => {}, 30_000)')
+    const record = join(f.lane, 'supervision', readFileSync(join(f.lane, 'supervision', 'current.json'), 'utf8').match(/"runId":"([^"]+)"/)![1] + '.json')
+    const state = JSON.parse(readFileSync(record, 'utf8'))
+    writeFileSync(record, JSON.stringify({ ...state, state: 'exited', exit: 137 }))
+    const result = run(f.root, '--timeout', '0.12')
+    expect(result.status).toBe(1)
+    expect(result.stdout.trim()).toBe('LANE DIED exit=unknown')
+  })
+
+  it('bounds a missing marker after terminal supervision when the worker is dead', () => {
+    const f = fixture(`const fs = require('node:fs'); setTimeout(() => { ${terminalUpdate} }, 40)`)
+    const result = run(f.root, '--timeout', '0.12')
+    expect(result.status).toBe(1)
+    expect(result.stdout.trim()).toBe('LANE DIED exit=unknown')
+  })
+
+  it('waits for termination publication after the worker and child are gone', () => {
+    const f = fixture("const fs = require('node:fs'); const cp = require('node:child_process'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const state = JSON.parse(fs.readFileSync('.lane/supervision/' + file)); fs.writeFileSync('.lane/supervision/' + file, JSON.stringify({ ...state, state: 'terminating' })); const code = `const fs = require('node:fs'); setTimeout(() => { const state = JSON.parse(fs.readFileSync(process.argv[1])); fs.writeFileSync(process.argv[1], JSON.stringify({ ...state, state: 'abandoned' })); fs.appendFileSync(process.argv[2], 'EXIT=126\\\\n') }, 80)`; const child = cp.spawn(process.execPath, ['-e', code, '.lane/supervision/' + file, '.lane/run.log'], { detached: true, stdio: 'ignore' }); child.unref(); }, 40)")
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(126)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=126/)
   })
 
   it('returns 124 when the lane does not finish before timeout', () => {
@@ -88,6 +184,28 @@ describe('wt-lane-wait', () => {
     expect(result.stdout.trim()).toMatch(/^LANE DIED exit=unknown$/)
   })
 
+  it('accepts a published marker from a dead lane with a nonterminal record', () => {
+    const f = fixture("const fs = require('node:fs'); fs.appendFileSync('.lane/run.log', 'EXIT=9\\n')")
+    const result = run(f.root)
+    expect(result.status).toBe(9)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=9/)
+  })
+
+  it.each(['256', '-1', '9'.repeat(400)])('maps unsupported lane exit %s to process failure without throwing', (exit) => {
+    const f = fixture(`const fs = require('node:fs'); fs.appendFileSync('.lane/run.log', 'EXIT=${exit}\\n')`)
+    const result = run(f.root)
+    expect(result.status).toBe(1)
+    expect(result.stdout.trim()).toMatch(new RegExp(`^LANE DONE exit=${exit} `))
+    expect(result.stderr).toBe('')
+  })
+
+  it('accepts the current run marker after its supervision record disappears', () => {
+    const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); fs.rmSync('.lane/supervision/current.json'); fs.rmSync('.lane/supervision/' + file); setTimeout(() => fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'), 60); setTimeout(() => {}, 80); }, 60)")
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(7)
+    expect(result.stdout.trim()).toMatch(/^LANE DONE exit=7/)
+  })
+
   it('reports report byte size without reading or printing the log body', () => {
     const f = fixture("const fs = require('node:fs'); setTimeout(() => { fs.appendFileSync('.lane/run.log', 'EXIT=0\\n'); setTimeout(() => {}, 80) }, 80)")
     writeFileSync(join(f.lane, 'report.md'), 'report')
@@ -96,5 +214,13 @@ describe('wt-lane-wait', () => {
     expect(result.stdout.trim()).toContain('report=6')
     expect(existsSync(join(f.lane, 'run.log'))).toBe(true)
     expect(readFileSync(join(f.lane, 'run.log'), 'utf8')).toContain('EXIT=0')
+  })
+
+  it('shows detached fixture errors and visible receipt lines in failure diagnostics', () => {
+    const f = fixture("throw new Error('fixture publication failed')")
+    const result = run(f.root)
+    const diagnostic = failureDiagnostic(f, result)
+    expect(diagnostic).toContain('fixture publication failed')
+    expect(diagnostic).toContain('run.log tail=["LANE_RUN_ID=')
   })
 })
