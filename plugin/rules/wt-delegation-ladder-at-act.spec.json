@@ -1,0 +1,9 @@
+{
+  "on-demand": {
+    "triggers": [
+      { "kind": "tool", "tool": "^(?:Agent|SendMessage|Workflow)$", "unconditional": true },
+      { "kind": "bash", "regex": "(?:wt-lane\\.mjs|opencode\\s+run|codex\\s+exec)\\b" }
+    ]
+  },
+  "compliance": { "kind": "none", "reason": "Adoption checks, executor briefing, and delegate addressing govern delegation acts." }
+}

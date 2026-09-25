@@ -67,11 +67,6 @@ const REQUIRED_CLAUSES: Record<string, ClauseRequirement[]> = {
       pattern: /Gates\s+\(test\/typecheck\/lint by exit code\) and your own diff-read are unconditional at every rung/i,
     },
     {
-      id: 'mutation-red-proof',
-      description: 'method diversity still requires proving each fix red in isolation',
-      pattern: /every fix is proven RED\s+in isolation before it is accepted as green/i,
-    },
-    {
       id: 'axis-disclosure',
       description: 'the report still has to say which axes it actually varied',
       pattern: /An unstated axis reads as an axis covered\./i,

@@ -1,0 +1,9 @@
+{
+  "on-demand": {
+    "triggers": [
+      { "kind": "bash", "regex": "(?:test|typecheck|lint|build|check|vitest|pytest|git\\s+merge)\\b" },
+      { "kind": "tool", "tool": "^Agent$", "unconditional": true }
+    ]
+  },
+  "compliance": { "kind": "none", "reason": "Exit capture, seam gates, delegate-proof checks, and measurement controls govern verification acts." }
+}

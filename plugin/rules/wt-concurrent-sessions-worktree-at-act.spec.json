@@ -1,0 +1,9 @@
+{
+  "on-demand": {
+    "triggers": [
+      { "kind": "tool", "tool": "^Agent$", "unconditional": true },
+      { "kind": "bash", "regex": "git\\s+(?:worktree|merge|rebase|reset)\\b" }
+    ]
+  },
+  "compliance": { "kind": "none", "reason": "Worktree creation, spawn-base correction, and reintegration are act-bound procedures." }
+}

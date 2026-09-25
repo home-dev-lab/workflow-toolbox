@@ -64,7 +64,7 @@ describe('SDK role rules manifest', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
     expect(Buffer.byteLength(contract)).toBe(6135)
-    expect(Buffer.byteLength(composed)).toBe(8367)
+    expect(Buffer.byteLength(composed)).toBe(8381)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 

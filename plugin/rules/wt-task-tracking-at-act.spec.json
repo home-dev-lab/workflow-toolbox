@@ -1,0 +1,9 @@
+{
+  "on-demand": {
+    "triggers": [
+      { "kind": "tool", "tool": "^mcp__planka__", "unconditional": true },
+      { "kind": "bash", "regex": "(?:board-list|planka-tool)\\.mjs" }
+    ]
+  },
+  "compliance": { "kind": "none", "reason": "Transitions, closure updates, reconciliation, and archival govern tracker mutations." }
+}

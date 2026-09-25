@@ -11,7 +11,7 @@ function rule(name: string): string {
 
 describe('shipped rule directives', () => {
   it('requires report lessons in every hand-written executor-lane brief and prompt harvesting at integration', () => {
-    const text = rule('wt-delegation-ladder.md')
+    const text = rule('wt-delegation-ladder-at-act.md')
     const briefing = text.slice(text.indexOf('## Briefing an executor'))
 
     expect(briefing).toContain('Every hand-written executor-lane brief requires `## Lessons for the memory`')
@@ -20,7 +20,7 @@ describe('shipped rule directives', () => {
   })
 
   it('requires the third review at a parallel-branch seam and gates on the merged tree', () => {
-    const text = rule('wt-verify-by-ground-truth.md').replaceAll('\n', ' ')
+    const text = rule('wt-verify-by-ground-truth-at-act.md').replaceAll('\n', ' ')
 
     expect(text).toContain('Merging parallel branches requires THREE reviews: each branch, then their seam.')
     expect(text).toContain('Hold sibling branches and merge them together.')
@@ -36,7 +36,7 @@ describe('shipped rule directives', () => {
   })
 
   it('requires gate logs to use run-specific paths and terminal completion markers', () => {
-    const text = rule('wt-verify-by-ground-truth.md').replaceAll('\n', ' ')
+    const text = rule('wt-verify-by-ground-truth-at-act.md').replaceAll('\n', ' ')
 
     expect(text).toContain('A gate log at a FIXED path is evidence for nobody')
     expect(text).toContain('A brief names a STAMPED path')

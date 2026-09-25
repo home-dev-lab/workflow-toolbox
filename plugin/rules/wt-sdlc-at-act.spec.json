@@ -1,0 +1,9 @@
+{
+  "on-demand": {
+    "triggers": [
+      { "kind": "tool", "tool": "^(?:Edit|Write|MultiEdit)$", "unconditional": true },
+      { "kind": "bash", "regex": "(?:test|typecheck|lint|build|check|vitest|pytest)\\b" }
+    ]
+  },
+  "compliance": { "kind": "none", "reason": "Implementation, verification, and end-to-end obligations govern edits and gates." }
+}

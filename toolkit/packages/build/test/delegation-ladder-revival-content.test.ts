@@ -1,6 +1,6 @@
 // delegation-ladder-revival-content.test.ts — content lock for card 1835166417075308428.
 //
-// plugin/rules/wt-delegation-ladder.md used to call cross-restart agent revival by raw id a
+// plugin/rules/wt-delegation-ladder-at-act.md used to call cross-restart agent revival by raw id a
 // "single dated, unreproduced observation". Read as written, that pushed a session toward
 // RE-SPAWNING a delegate after a restart instead of probing it — throwing away a delegate's
 // whole accumulated context. It was reproduced twice on 2026-08-05 (a ~290k-token wave
@@ -27,10 +27,10 @@ function collapseWhitespace(text: string): string {
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const RULE = collapseWhitespace(
-  readFileSync(join(REPO_ROOT, 'plugin/rules/wt-delegation-ladder.md'), 'utf8'),
+  readFileSync(join(REPO_ROOT, 'plugin/rules/wt-delegation-ladder-at-act.md'), 'utf8'),
 )
 
-describe('wt-delegation-ladder.md states cross-restart revival is reproduced', () => {
+describe('wt-delegation-ladder-at-act.md states cross-restart revival is reproduced', () => {
   it('never calls the observation "unreproduced" as a live claim', () => {
     // The word may still appear inside a corrective aside ("no longer calls this
     // unreproduced") — what must NOT exist is the retired claim asserting it as current fact.

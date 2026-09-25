@@ -1,0 +1,8 @@
+{
+  "on-demand": {
+    "triggers": [
+      { "kind": "bash", "regex": "(?:vitest|jest|pytest|cargo\\s+test|go\\s+test|pnpm\\s+test|npm\\s+test)\\b" }
+    ]
+  },
+  "compliance": { "kind": "none", "reason": "The at-act half governs proving a fix red by mutation before accepting green." }
+}

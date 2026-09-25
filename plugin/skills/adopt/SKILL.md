@@ -203,13 +203,18 @@ tree itself, instead of only in the `wt-` filename prefix nothing enforced:
 ├── machine-calibrations.md
 └── wt/                          ← the plugin's, adopted
     ├── wt-delegation-ladder.md
+    ├── wt-delegation-ladder-at-act.md
     ├── wt-sdlc.md
+    ├── wt-sdlc-at-act.md
     └── …
 ```
 
 `--dir` still targets any directory exactly, including the flat pre-migration root, for
 inspection during the transition. An install aimed at a parent that already contains adopted
 `wt/` files is refused rather than creating a second loaded copy.
+
+Core and `-at-act` rule halves are both installed here. A separate on-demand engine may move
+the latter using its adjacent source trigger spec; without that engine both remain static.
 
 **During the transition, `--check` and `--audit-overlap` search BOTH locations** for the
 rules set — the pre-migration flat dir and the new `wt/` default — and union the results.

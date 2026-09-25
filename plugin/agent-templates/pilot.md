@@ -313,7 +313,7 @@ five copies of a published surface, and nobody ever decided to publish it.
 
 ## Verification shape — the proportionate ladder
 
-<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:f49771f9d36efec0f5a9ec83ec3064845dcc169c9e4a7bf1a8d7cfe786daa5b5 -->
+<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:e0e71b5a451eb42353d322422ba6e685506e49a22fd245400e9212a6dd12d0bc -->
 <!-- embedded-copy:proportionate-verification-ladder:start -->
 Verification mandatory. How MUCH you spin up scales with what changed.
 
@@ -359,20 +359,6 @@ instrument MORE, not less.
 Reach the same question by genuinely different ROUTES: static reading, dynamic execution,
 property/proof, fuzzing, differential compare against known-good. Two agents reading same code
 twice = ONE method run twice, however different their prompts.
-**MUTATION is sharpest: only way to know a check CAN fail is to make it fail.** Test written from
-same understanding as code agree with the code's mistakes — go green on the very bug it was meant
-to catch. Its green is then evidence of nothing.
-So, on a copy OUTSIDE the repository: put the defect back (revert fix, flip condition, delete
-guard), count which assertions go red. **None red = suite never covered that defect**, whatever
-it say today.
-REQUIREMENT, and it is cheap: **every fix is proven RED in isolation before it is accepted as green.** One
-revert, one run. Converts "tests pass" into "test CAN fail for this reason". Fix whose lock cannot
-be shown red is not locked. It is decorated.
-Mutating a whole module to hunt surviving mutants = genuinely different, much larger commitment
-(tooling, runtime, its own false-positive triage). Legitimate to choose. NOT required here. Taking
-the cheap per-fix form is not a down-payment on the expensive one.
-This is the operational answer to "was the failure it prevent actually exercised" — a question a
-green suite cannot settle about itself.
 
 **3. Hypothesis independence.** Each verifier construct its OWN explanation BEFORE seeing anyone
 else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on
@@ -455,6 +441,21 @@ Never licenses skipping verification: gates (test / typecheck / lint by exit cod
 diff-read are UNCONDITIONAL on both axes. Unsure between two rungs? Higher rung for irreversible
 or outward-facing changes. Lower rung otherwise.
 <!-- embedded-copy:proportionate-verification-ladder:end -->
+
+**MUTATION is sharpest: only way to know a check CAN fail is to make it fail.** Test written from
+same understanding as code agree with the code's mistakes — go green on the very bug it was meant
+to catch. Its green is then evidence of nothing.
+So, on a copy OUTSIDE the repository: put the defect back (revert fix, flip condition, delete
+guard), count which assertions go red. **None red = suite never covered that defect**, whatever
+it say today.
+REQUIREMENT, and it is cheap: **every fix is proven RED in isolation before it is accepted as green.** One
+revert, one run. Converts "tests pass" into "test CAN fail for this reason". Fix whose lock cannot
+be shown red is not locked. It is decorated.
+Mutating a whole module to hunt surviving mutants = genuinely different, much larger commitment
+(tooling, runtime, its own false-positive triage). Legitimate to choose. NOT required here. Taking
+the cheap per-fix form is not a down-payment on the expensive one.
+This is the operational answer to "was the failure it prevent actually exercised" — a question a
+green suite cannot settle about itself.
 
 ## Resume discipline — an information message is not an instruction, and idle is a decision
 

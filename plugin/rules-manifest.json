@@ -45,7 +45,7 @@
       ]
     },
     {
-      "source": "rules/wt-sdlc.md",
+      "source": "rules/wt-sdlc-at-act.md",
       "heading": "## Implement and verify",
       "recipients": [
         "pilot",
@@ -145,7 +145,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## A gate is its exit code, never its printed text",
       "recipients": [
         "pilot",
@@ -157,7 +157,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## Delegate green report is input, not proof",
       "recipients": [
         "pilot"
@@ -181,7 +181,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## Before measuring fix, prove subject RUN that fix",
       "recipients": [
         "pilot",
@@ -195,7 +195,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## Control must be readable in BOTH outcomes, not only in failure",
       "recipients": [
         "pilot",
@@ -209,7 +209,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## Summary asserting a guarantee is verified against its body, SAME pass",
       "recipients": [
         "review",

@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- Split the six large shipped rules into reasoning-focused core files and lossless `-at-act` halves with adjacent trigger specs; adopt still installs both halves statically when no on-demand engine is present.
+
 ## [0.187.2] - 2026-09-25
 
 ### Added

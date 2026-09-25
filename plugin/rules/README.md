@@ -16,6 +16,11 @@ live elsewhere (in the operator's own notes), never in the shipped file.
 versioned, fingerprinted banner so a later `--check` can tell an adopted copy is
 behind the plugin (and `--install` refreshes only unedited copies).
 
+Large rules may be split into a reasoning-focused core and an `-at-act` half.
+The adjacent `-at-act.spec.json` declares when an on-demand engine can serve the
+act-bound half. The installer still adopts every Markdown half statically, so
+using no on-demand engine loses no directive.
+
 To adopt these as editable rules, run the `workflow-toolbox:adopt` skill:
 
 ```bash
