@@ -1189,7 +1189,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const res = run(f, ['--variant', 'high', '--timeout', '1']); expect(res.status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'claude-skills-fence'), 'utf8')).toBe('true\n')
-    expect(readFileSync(join(f.dir, 'provider-keys'), 'utf8')).toBe('selected-key|unset\n')
+    expect(readFileSync(join(f.dir, 'provider-keys'), 'utf8')).toBe('selected-key|unset|unset|unset\n')
     const argv = readFileSync(join(f.dir, 'argv'), 'utf8').split('\n')
     expect(argv[1]).toMatch(/^Read and execute the complete brief at .+[/\\]\.lane[/\\]brief-snapshots[/\\]\d+-\d+\.md\.$/)
     expect(argv).toEqual([
@@ -1204,6 +1204,13 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       'high',
       '',
     ])
+  })
+  it('passes only Azure credentials to an Azure lane', () => {
+    const f = fixture('# PROVIDER_KEYS; printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
+    Object.assign(f.env, { WT_LANE_MODELS: 'azure/gpt-5', OPENAI_API_KEY: 'unrelated-key', AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource' })
+    const res = run(f, ['--model', 'azure/gpt-5', '--timeout', '1']); expect(res.status).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, 'provider-keys'), 'utf8')).toBe('unset|unset|azure-key|azure-resource\n')
   })
   it('refuses before launch when OpenCode ignores the fence', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')

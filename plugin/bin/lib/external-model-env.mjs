@@ -1,4 +1,5 @@
 import { platform as runtimePlatform } from 'node:process'
+import { installedOpenCodeProviderDefinitions } from './host/provider-definitions.mjs'
 
 const EXACT_NAMES = new Set([
   'PATH', 'Path', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USER', 'USERNAME', 'LOGNAME', 'SHELL',
@@ -20,10 +21,16 @@ const CREDENTIAL_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH|C
 const EXECUTION_HOOK_NAME = /^(?:NODE_OPTIONS|BUN_OPTIONS|BASH_ENV|ENV|ZDOTDIR|PYTHONPATH|PYTHONSTARTUP|RUBYOPT|RUBYLIB|PERL5OPT|PERL5LIB|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)$/i
 const CONFIGURATION_CARRIER = /^(?:OPENCODE_CONFIG(?:_|$)|CODEX_HOME$)/i
 const PROVIDER_CREDENTIALS = Object.freeze({
+  anthropic: Object.freeze([]),
   google: Object.freeze(['GOOGLE_GENERATIVE_AI_API_KEY']),
   openai: Object.freeze(['OPENAI_API_KEY']),
 })
+const PROVIDER_EXTRAS = Object.freeze({
+  azure: Object.freeze(['AZURE_RESOURCE_NAME']),
+  'azure-cognitive-services': Object.freeze(['AZURE_COGNITIVE_SERVICES_RESOURCE_NAME']),
+})
 const PROVIDER_MODEL_SEPARATOR = String.fromCharCode(47)
+const FALLBACK_WARNED = new Set()
 
 function configuredExtraNames(env) {
   return String(env.WT_EXTERNAL_MODEL_ENV_ALLOW ?? '').split(',').map((name) => name.trim()).filter(Boolean)
@@ -50,7 +57,33 @@ export function externalModelEnv(env = process.env, extraNames = [], platform = 
   return child
 }
 
-export function providerCredentialNames(model) {
-  const provider = String(model).split(PROVIDER_MODEL_SEPARATOR, 1)[0].toLowerCase()
-  return [...(PROVIDER_CREDENTIALS[provider] ?? [])]
+// The provider a known credential name is assigned to in PROVIDER_CREDENTIALS, case-insensitive.
+// Used so an OpenCode registry definition for provider X can never authorize a credential the
+// known map assigns to a DIFFERENT provider Y (e.g. an azure entry listing OPENAI_API_KEY).
+function knownCredentialOwner(name) {
+  const upper = name.toUpperCase()
+  for (const [owner, credentials] of Object.entries(PROVIDER_CREDENTIALS)) {
+    if (credentials.some((credential) => credential.toUpperCase() === upper)) return owner
+  }
+  return null
+}
+
+export function providerCredentialNames(model, { definitions = installedOpenCodeProviderDefinitions(), warn = console.error } = {}) {
+  const reference = String(model)
+  if (!reference.includes(PROVIDER_MODEL_SEPARATOR)) return []
+  const provider = reference.split(PROVIDER_MODEL_SEPARATOR, 1)[0].toLowerCase()
+  if (Object.hasOwn(PROVIDER_CREDENTIALS, provider)) return [...PROVIDER_CREDENTIALS[provider]]
+  const installed = definitions?.[provider]?.env
+  if (Array.isArray(installed)) {
+    return [...new Set(installed.filter((name) => typeof name === 'string' && NAME.test(name)))]
+      .filter((name) => !NEVER_PASS.has(name.toUpperCase()))
+      .filter((name) => { const owner = knownCredentialOwner(name); return owner === null || owner === provider })
+  }
+  const prefix = provider.toUpperCase().replaceAll(/[^A-Z0-9]+/g, '_')
+  const names = [`${prefix}_API_KEY`, ...(PROVIDER_EXTRAS[provider] ?? [])]
+  if (!FALLBACK_WARNED.has(provider)) {
+    FALLBACK_WARNED.add(provider)
+    warn(`workflow-toolbox: OpenCode provider definitions unavailable for ${provider}; using fallback environment names ${names.join(', ')}`)
+  }
+  return names
 }

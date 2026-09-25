@@ -51,7 +51,7 @@ async function runAction() {
   }
   if (action.includes('OPENCODE_DISABLE_CLAUDE_CODE_SKILLS')) {
     write('claude-skills-fence', `${process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS || ''}\n`)
-    if (action.includes('PROVIDER_KEYS')) write('provider-keys', `${process.env.OPENAI_API_KEY || 'unset'}|${process.env.GOOGLE_GENERATIVE_AI_API_KEY || 'unset'}\n`)
+    if (action.includes('PROVIDER_KEYS')) write('provider-keys', `${process.env.OPENAI_API_KEY || 'unset'}|${process.env.GOOGLE_GENERATIVE_AI_API_KEY || 'unset'}|${process.env.AZURE_API_KEY || 'unset'}|${process.env.AZURE_RESOURCE_NAME || 'unset'}\n`)
     write('argv', `${argv.join('\n')}\n`)
     return
   }

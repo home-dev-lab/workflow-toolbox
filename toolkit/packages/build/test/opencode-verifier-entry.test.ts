@@ -149,6 +149,22 @@ describe('wt-opencode-verify', () => {
     }
   })
 
+  it('passes only Azure credentials to an Azure verifier run', async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-azure-'))
+    const env = { OPENAI_API_KEY: 'unrelated-key', AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource' }
+    const spawnFn = vi.fn(() => childResult({ stdout: '{"part":{"type":"text","text":"AZURE"}}\n' }))
+    try {
+      await runVerifier({ dir, id: 'azure', stdin: true, taskFile: null, model: 'azure/gpt-5', fallbackModel: null, variant: null }, {
+        binary: 'opencode', providerAuthenticated: () => true, skillFenceVerifier: () => ({ ok: true }), skillDiscoveryVerifier: () => ({ ok: true }), readStdin: () => 'review', spawnFn, env,
+      })
+      const childEnv = (spawnFn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }])[2].env
+      expect(childEnv).toMatchObject({ AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource' })
+      expect(childEnv).not.toHaveProperty('OPENAI_API_KEY')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('preserves the selected provider credential through effective discovery', async () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-discovery-provider-'))
     let discoveryEnv: NodeJS.ProcessEnv | undefined

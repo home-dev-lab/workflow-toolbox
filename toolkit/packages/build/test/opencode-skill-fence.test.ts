@@ -197,6 +197,31 @@ describe('OpenCode Claude-skill fence', () => {
     expect(providerCredentialNames('anthropic/claude-sonnet-4-5')).toEqual([])
   })
 
+  it('derives an Azure provider environment from OpenCode definitions', () => {
+    expect(providerCredentialNames('azure/gpt-5', { definitions: { azure: { env: ['AZURE_RESOURCE_NAME', 'AZURE_API_KEY'] } } })).toEqual([
+      'AZURE_RESOURCE_NAME', 'AZURE_API_KEY',
+    ])
+  })
+
+  it('never lets an OpenCode definition authorize a credential the known map assigns to a different provider', () => {
+    expect(providerCredentialNames('azure/gpt-5', { definitions: { azure: { env: ['OPENAI_API_KEY'] } } })).toEqual([])
+    expect(externalModelEnv({ PATH: '/bin', OPENAI_API_KEY: 'O' }, providerCredentialNames('azure/gpt-5', { definitions: { azure: { env: ['OPENAI_API_KEY'] } } }))).toEqual({ PATH: '/bin' })
+  })
+
+  it('strips a deny-listed credential from an OpenCode definition regardless of its letter case', () => {
+    expect(providerCredentialNames('azure/gpt-5', {
+      definitions: { azure: { env: ['anthropic_api_key', 'claude_code_oauth_token', 'anthropic_auth_token', 'AZURE_API_KEY'] } },
+    })).toEqual(['AZURE_API_KEY'])
+  })
+
+  it('logs and uses the documented convention when provider definitions are unavailable', () => {
+    const warnings: string[] = []
+    expect(providerCredentialNames('azure/gpt-5', { definitions: null, warn: (message: string) => warnings.push(message) })).toEqual([
+      'AZURE_API_KEY', 'AZURE_RESOURCE_NAME',
+    ])
+    expect(warnings).toEqual([expect.stringContaining('using fallback environment names AZURE_API_KEY, AZURE_RESOURCE_NAME')])
+  })
+
   it('does not let a configured execution hook mint an excluded credential', () => {
     const env = externalModelEnv({
       WT_EXTERNAL_MODEL_ENV_ALLOW: 'NODE_OPTIONS',
