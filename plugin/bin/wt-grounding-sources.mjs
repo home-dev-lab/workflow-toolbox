@@ -23,7 +23,7 @@ if (command === 'list') {
   if (asJson) console.log(JSON.stringify(entries, null, 2))
   else {
     for (const warning of warnings) console.error(`warning: ${warning}`)
-    for (const entry of entries) console.log(`${entry.family}\tlayer=${entry.layer}\t${entry.missing ? 'missing' : 'available'}\t${entry.layer === 'project' ? '[project recipe] ' : ''}${entry.query}`)
+    for (const entry of entries) console.log(`${entry.family}\tlayer=${entry.layer}\t${entry.missing ? 'missing' : 'available'}\t${entry.layer === 'project' ? '[untrusted project recipe] ' : ''}${entry.query}`)
   }
 } else if (command === 'init') {
   const result = initUserRegistry({ dryRun, configDir })

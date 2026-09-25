@@ -22,8 +22,9 @@ Registries merge by `family` in this order:
 2. The user file selected by the `grounding_sources` plugin option. Without that option, the
    fallback is `grounding-sources.json` under `CLAUDE_CONFIG_DIR` or `~/.claude`.
 3. The project file `.claude/grounding-sources.json`, which may add families but cannot replace
-   plugin or user families. Project recipes are labelled `[project recipe]` by `list`, and project
-   family names are labelled `[project]` in injected context.
+   plugin or user families. Project recipes are untrusted suggestions: read them before running
+   them. They are labelled `[untrusted project recipe]` by `list`, and project family names are
+   labelled `[untrusted project]` in injected context.
 
 Run `wt-grounding-sources.mjs list` to see the merged entries, their winning layer, and a
 `missing` flag when the required binary or configured MCP server is unavailable. Run
@@ -43,7 +44,7 @@ unreadable transcript degrades to the named value `unknown` and the outbound che
 never silently reports a plausible "queried" or "not queried" value. Transcript discovery is
 not guessed by the plugin: hooks consume the host-provided `transcript_path`.
 
-The shipped shell recipes use POSIX shell spelling (`~` and quoted globs). On Windows without a
+The shipped shell recipes use POSIX shell spelling (parameter expansion and quoted globs). On Windows without a
 POSIX-compatible shell, use MCP recipes or replace them in the user layer with native commands;
 the plugin never executes recipes itself. It only recognizes evidence structurally by executable
 and key flags.

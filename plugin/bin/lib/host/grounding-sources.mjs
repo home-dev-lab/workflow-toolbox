@@ -11,6 +11,7 @@ const PROJECT_REGISTRY = path.join('.claude', 'grounding-sources.json')
 const TRANSCRIPT_BYTE_CAP = 2 * 1024 * 1024
 const MAX_STATE_FILES = 100
 const MAX_FAMILY_LENGTH = 80
+const UTILITY_MCP_SERVERS = new Set(['excalidraw', 'time'])
 
 function jsonFile(file) {
   if (!file) return null
@@ -121,10 +122,13 @@ export function applicableGroundingSources(entries, prompt) {
   })
 }
 
-export function detectedMcpServerNames(configDirPath, { cwd } = {}) {
+export function detectedMcpServerNames(configDirPath, { cwd, env = process.env } = {}) {
+  const profileFile = env.CLAUDE_CONFIG_DIR
+    ? path.join(configDirPath, '.claude.json')
+    : path.join(env.HOME || os.homedir(), '.claude.json')
   const candidates = [
     path.join(configDirPath, 'settings.json'),
-    path.join(configDirPath, '.claude.json'),
+    profileFile,
     ...(cwd ? [path.join(cwd, '.mcp.json')] : []),
   ]
   const settings = jsonFile(path.join(configDirPath, 'settings.json'))
@@ -140,14 +144,16 @@ export function detectedMcpServerNames(configDirPath, { cwd } = {}) {
   const names = new Set()
   for (const file of candidates) {
     const value = jsonFile(file)
-    for (const name of Object.keys(value?.mcpServers ?? {})) names.add(name)
+    const servers = value?.mcpServers
+    if (servers && typeof servers === 'object' && !Array.isArray(servers)) {
+      for (const name of Object.keys(servers)) names.add(name)
+    }
   }
   return [...names].sort()
 }
 
 export function detectedUserRegistry({ env = process.env, configDir: configDirPath = groundingConfigDir(env) } = {}) {
-  const nonKnowledgeServers = new Set(['excalidraw', 'time'])
-  const entries = detectedMcpServerNames(configDirPath).filter((name) => !nonKnowledgeServers.has(name.toLowerCase())).map((name) => ({
+  const entries = detectedMcpServerNames(configDirPath, { env }).filter((name) => !UTILITY_MCP_SERVERS.has(name.toLowerCase())).map((name) => ({
     family: name,
     query: `mcp__${name}__*`,
     holds: `Information available through the ${name} MCP server.`,
@@ -188,17 +194,19 @@ function textContent(record) {
   return content.filter((block) => block?.type === 'text').map((block) => block.text).join('\n')
 }
 
-const MACHINE_ENVELOPE = /^(?:\s*<(?:task-notification|system-reminder)|\s*(?:Stop hook feedback|Another Claude session sent|This session is being continued))/i
+const MACHINE_ENVELOPE = /^(?:\s*<(?:task-notification|system-reminder|agent-message)\b|\s*(?:Stop hook feedback|Another Claude session sent|This session is being continued))/i
+const CHANNEL_ENVELOPE = /^\s*<channel\b/i
+const REACTION_NOTICE = /^\s*<channel\b[^>]*\bkind=["']reaction_notice["']/i
 
 export function humanPromptText(record) {
-  if (record?.isMeta) return ''
   if (record?.type === 'attachment' && record?.attachment?.type === 'queued_command') {
     const prompt = String(record.attachment.prompt || '')
-    return record.attachment.commandMode === 'task-notification' || MACHINE_ENVELOPE.test(prompt) ? '' : prompt
+    return record.attachment.commandMode === 'task-notification' || MACHINE_ENVELOPE.test(prompt) || REACTION_NOTICE.test(prompt) ? '' : prompt
   }
   if (record?.type !== 'user' || record?.message?.role !== 'user') return false
   const text = textContent(record)
-  return !text || MACHINE_ENVELOPE.test(text) ? '' : text
+  if (!text || MACHINE_ENVELOPE.test(text) || REACTION_NOTICE.test(text)) return ''
+  return record.isMeta && !CHANNEL_ENVELOPE.test(text) ? '' : text
 }
 
 function shellWords(command) {
@@ -216,9 +224,10 @@ function commandMatchesTemplate(command, template) {
 
 function registeredMcpRead(toolName, entries, installedMcpNames) {
   if (!toolName.startsWith('mcp__') || !/(?:^|_)(?:get|find|search|list|read|query)(?:_|$)/i.test(toolName.split('__').at(-1) || '')) return false
-  if (entries.some((entry) => entry.query.startsWith('mcp__') && toolPatternMatches(entry.query, toolName))) return true
-  const lower = toolName.toLowerCase()
-  return (installedMcpNames || []).some((name) => lower.includes(String(name).toLowerCase()))
+  const server = String(toolName.split('__')[1] || '').toLowerCase()
+  if (!server || UTILITY_MCP_SERVERS.has(server)) return false
+  if (entries.some((entry) => entry.query.startsWith('mcp__') && String(entry.query.split('__')[1] || '').toLowerCase() === server && toolPatternMatches(entry.query, toolName))) return true
+  return (installedMcpNames || []).some((name) => String(name).toLowerCase() === server && !UTILITY_MCP_SERVERS.has(server))
 }
 
 function evidenceFor(record, entries, installedMcpNames) {

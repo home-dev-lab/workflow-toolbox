@@ -6,7 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
-- Turn deep grounding into an automatic, configurable behavior: a three-layer source registry and `wt-grounding-sources.mjs` discovery CLI, concise prediction-first skill orders with dated fiche refresh rules, a cooldown-aware prompt injection, and a once-satisfiable pre-send refusal when no registered source was queried. The hooks journal their dose for later tuning; no always-loaded rule is added.
+- Turn deep grounding into an automatic, configurable behavior: a three-layer source registry and `wt-grounding-sources.mjs` discovery CLI, concise prediction-first skill orders with dated fiche refresh rules, a cooldown-aware prompt injection, and an observe-by-default pre-send check with an opt-in once-satisfiable refusal. The check journals would-refuse/refused decisions for later tuning; no always-loaded rule is added.
 
 ## [0.187.2] - 2026-09-25
 

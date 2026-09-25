@@ -1,7 +1,7 @@
 [
   {
     "family": "knowledge-base/memory index",
-    "query": "rg {{query}} ~/.claude --glob 'MEMORY.md' --glob '*.md'",
+    "query": "rg {{query}} \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects\" --glob 'MEMORY.md' --glob '**/memory/*.md'",
     "holds": "Previously established facts, decisions, and durable memory fiches.",
     "stale_after_days": 30
   },

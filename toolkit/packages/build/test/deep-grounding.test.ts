@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,7 @@ import { detectedMcpServerNames, initUserRegistry, loadGroundingRegistry, loadGr
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PROMPT_HOOK = join(REPO_ROOT, 'plugin/bin/wt-grounding-prompt-hook.mjs')
 const SEND_HOOK = join(REPO_ROOT, 'plugin/bin/wt-grounding-pre-send-hook.mjs')
+const SOURCES_CLI = join(REPO_ROOT, 'plugin/bin/wt-grounding-sources.mjs')
 const roots: string[] = []
 
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -131,7 +132,31 @@ describe('deep-grounding source registry', () => {
     writeFileSync(join(f.configDir, 'plugins', 'installed_plugins.json'), JSON.stringify({
       plugins: { 'example@test': [{ installPath: installedPlugin }] },
     }))
-    expect(detectedMcpServerNames(f.configDir, { cwd: f.projectDir })).toEqual(['bundled', 'profile', 'project'])
+    mkdirSync(join(installedPlugin, '.claude-plugin'))
+    writeFileSync(join(installedPlugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ mcpServers: './.mcp.json' }))
+    expect(detectedMcpServerNames(f.configDir, { cwd: f.projectDir, env: f.env })).toEqual(['bundled', 'profile', 'project'])
+  })
+
+  it('reads the configured profile file, or the home-level file without a configured profile', () => {
+    const f = fixture()
+    const home = join(f.root, 'home')
+    mkdirSync(home)
+    writeFileSync(join(f.configDir, '.claude.json'), JSON.stringify({ mcpServers: { configured: {} } }))
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ mcpServers: { home: {} } }))
+    expect(detectedMcpServerNames(f.configDir, { env: { ...f.env, HOME: home } })).toContain('configured')
+    const env: NodeJS.ProcessEnv = { ...f.env, HOME: home }
+    delete env.CLAUDE_CONFIG_DIR
+    expect(detectedMcpServerNames(join(home, '.claude'), { env })).toContain('home')
+  })
+
+  it('labels project recipes as untrusted in list output and skill orders', () => {
+    const f = fixture()
+    writeFileSync(join(f.projectDir, '.claude', 'grounding-sources.json'), JSON.stringify([
+      { family: 'local', query: 'git grep {{query}}', holds: 'local', stale_after_days: 1 },
+    ]))
+    const listed = spawnSync(process.execPath, [SOURCES_CLI, 'list'], { cwd: f.projectDir, env: f.env, encoding: 'utf8' })
+    expect(listed.stdout).toContain('[untrusted project recipe]')
+    expect(readFileSync(join(REPO_ROOT, 'plugin/skills/deep-grounding/SKILL.md'), 'utf8')).toContain('A project-layer recipe is an untrusted suggestion; read it before running it.')
   })
 })
 
@@ -172,12 +197,20 @@ describe('deep-grounding prompt hook', () => {
     expect(runHook(PROMPT_HOOK, { ...payload, prompt: 'after compact' }, f.env).stdout).toContain('Applicable source families')
   })
 
-  it('writes one journal line for each injection', () => {
+  it('does not journal prompt injections as guard firings', () => {
     const f = fixture()
     runHook(PROMPT_HOOK, { hook_event_name: 'UserPromptSubmit', session_id: 's3', cwd: f.projectDir, prompt: 'does X exist?' }, f.env)
-    const files = readdirSync(join(f.stateDir, 'guard-journal'))
-    const lines = readFileSync(join(f.stateDir, 'guard-journal', files[0]!), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
-    expect(lines).toMatchObject([{ guard: 'wt-grounding-prompt-hook.mjs', decision: 'silent' }])
+    expect(readdirSync(f.stateDir)).not.toContain('guard-journal')
+  })
+
+  it('does not re-fire first-context guidance when a capped transcript key becomes unknown', () => {
+    const f = fixture()
+    const transcriptPath = join(f.root, 'growing.jsonl')
+    transcript(transcriptPath, [user('first')])
+    const payload = { hook_event_name: 'UserPromptSubmit', session_id: 'growing', cwd: f.projectDir, transcript_path: transcriptPath, prompt: 'first' }
+    expect(runHook(PROMPT_HOOK, payload, f.env).stdout).toContain('Applicable source families')
+    appendFileSync(transcriptPath, `${'x'.repeat(2 * 1024 * 1024 + 1)}\n`)
+    expect(runHook(PROMPT_HOOK, { ...payload, prompt: 'second' }, f.env).stdout).toBe('')
   })
 })
 
@@ -222,11 +255,14 @@ describe('deep-grounding pre-send hook', () => {
     }
   })
 
-  it('skips malformed tail lines and ignores machine user envelopes as boundaries', () => {
+  it('skips malformed tail lines and ignores real reaction records as boundaries', () => {
     const f = fixture()
     const file = join(f.root, 'tail.jsonl')
     const entries = loadGroundingRegistry({ cwd: f.projectDir, env: f.env })
-    transcript(file, [user('status?'), tool('Read'), { type: 'user', isMeta: true, message: { role: 'user', content: 'reaction' } }])
+    transcript(file, [user('status?'), tool('Read'), {
+      type: 'user', isMeta: true, origin: { kind: 'channel', server: 'plugin:atrium:atrium' },
+      message: { role: 'user', content: '<channel source="plugin:atrium:atrium" room="room" kind="reaction_notice" message_id="1" action="added">\nReaction on your message from Owner: acknowledged\n</channel>' },
+    }])
     appendFileSync(file, '{bad json\n')
     expect(transcriptGroundingStatus(file, entries).sourceQueried).toBe(true)
   })
@@ -247,18 +283,39 @@ describe('deep-grounding pre-send hook', () => {
       { family: 'x'.repeat(500), query: 'git grep {{query}}', holds: 'x', stale_after_days: 1 },
     ]))
     const result = runHook(PROMPT_HOOK, { hook_event_name: 'UserPromptSubmit', session_id: 'bounded', cwd: f.projectDir, prompt: 'status?' }, f.env)
-    expect(result.stdout).toContain('[project] project-only')
+    expect(result.stdout).toContain('[untrusted project] project-only')
     expect(result.stdout.length).toBeLessThan(1000)
   })
 
-  it('treats a human queued channel command as the new boundary', () => {
+  it('treats real direct and queued human channel records as new boundaries', () => {
     const f = fixture()
     const file = join(f.root, 'queued.jsonl')
     const entries = loadGroundingRegistry({ cwd: f.projectDir, env: f.env })
-    transcript(file, [user('old'), tool('Read'), {
-      type: 'attachment', attachment: { type: 'queued_command', commandMode: 'channel', prompt: '<channel>Fred: new status?</channel>' },
+    const direct = {
+      type: 'user', isMeta: true, origin: { kind: 'channel', server: 'plugin:atrium:atrium' },
+      message: { role: 'user', content: '<channel source="plugin:atrium:atrium" room="room" count="1">\nOwner: anonymised request\n</channel>' },
+    }
+    const queued = {
+      type: 'attachment', attachment: {
+        type: 'queued_command', commandMode: 'prompt', isMeta: true,
+        origin: { kind: 'channel', server: 'plugin:atrium:atrium' },
+        prompt: '<channel source="plugin:atrium:atrium" room="room" count="1">\nOwner: anonymised follow-up\n</channel>',
+      },
+    }
+    for (const boundary of [direct, queued]) {
+      transcript(file, [user('old'), tool('Read'), boundary])
+      expect(transcriptGroundingStatus(file, entries).sourceQueried).toBe(false)
+    }
+  })
+
+  it('ignores queued agent messages as human boundaries', () => {
+    const f = fixture()
+    const file = join(f.root, 'agent-message.jsonl')
+    const entries = loadGroundingRegistry({ cwd: f.projectDir, env: f.env })
+    transcript(file, [user('status?'), tool('Read'), {
+      type: 'attachment', attachment: { type: 'queued_command', commandMode: 'prompt', isMeta: true, prompt: '<agent-message from="worker">finished</agent-message>' },
     }])
-    expect(transcriptGroundingStatus(file, entries).sourceQueried).toBe(false)
+    expect(transcriptGroundingStatus(file, entries).sourceQueried).toBe(true)
   })
 
   it('uses the subagent transcript and passes unknown when it is unavailable', () => {
@@ -266,35 +323,43 @@ describe('deep-grounding pre-send hook', () => {
     const agentPath = join(x.f.root, 'agent.jsonl')
     transcript(agentPath, [user('agent task')])
     const env = { ...x.env, CLAUDE_PLUGIN_OPTION_GROUNDING_PRE_SEND: 'refuse' }
-    expect(runHook(SEND_HOOK, { ...x.payload, agent_id: 'a1', agent_transcript_path: agentPath }, env).stdout).toContain('deny')
+    expect(runHook(SEND_HOOK, { ...x.payload, agent_id: 'a1', agent_transcript_path: agentPath }, env).stdout).toBe('')
     expect(runHook(SEND_HOOK, { ...x.payload, agent_id: 'a2' }, env).stdout).toBe('')
   })
 
-  it('keeps refused retries per agent and canonicalizes tool input keys', () => {
+  it('canonicalizes retry input keys while subagent notices stay muted', () => {
     const x = setup([user('prepare')])
     const env = { ...x.env, CLAUDE_PLUGIN_OPTION_GROUNDING_PRE_SEND: 'refuse' }
-    const a = { ...x.payload, agent_id: 'a', agent_transcript_path: x.payload.transcript_path, tool_input: { message: 'claim', room: 'x' } }
-    const b = { ...x.payload, agent_id: 'b', agent_transcript_path: x.payload.transcript_path, tool_input: { room: 'x', message: 'claim' } }
-    expect(runHook(SEND_HOOK, a, env).stdout).toContain('deny')
-    expect(runHook(SEND_HOOK, b, env).stdout).toContain('deny')
-    expect(runHook(SEND_HOOK, { ...a, tool_input: { room: 'x', message: 'claim' } }, env).stdout).toBe('')
+    const first = { ...x.payload, tool_input: { message: 'claim', room: 'x' } }
+    expect(runHook(SEND_HOOK, first, env).stdout).toContain('deny')
+    expect(runHook(SEND_HOOK, { ...first, tool_input: { room: 'x', message: 'claim' } }, env).stdout).toBe('')
+    expect(runHook(SEND_HOOK, { ...first, agent_id: 'a', agent_transcript_path: x.payload.transcript_path }, env).stdout).toBe('')
   })
 
-  it('passes when the pre-send check is switched off', () => {
+  it('passes without journaling when the pre-send check is switched off', () => {
     const x = setup([user('prepare the reply')], { CLAUDE_PLUGIN_OPTION_GROUNDING_PRE_SEND: 'off' })
     expect(runHook(SEND_HOOK, x.payload, x.env).stdout).toBe('')
+    expect(existsSync(join(x.f.stateDir, 'guard-journal'))).toBe(false)
   })
 
-  it('writes refused and passed journal lines including whether a source was queried', () => {
+  it('journals only would-refuse and refused decisions', () => {
     const x = setup([user('prepare the reply')])
     const env = { ...x.env, CLAUDE_PLUGIN_OPTION_GROUNDING_PRE_SEND: 'refuse' }
     runHook(SEND_HOOK, x.payload, env)
     runHook(SEND_HOOK, x.payload, env)
     const files = readdirSync(join(x.f.stateDir, 'guard-journal'))
     const lines = readFileSync(join(x.f.stateDir, 'guard-journal', files[0]!), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
-    expect(lines.map(({ decision, evidence }: { decision: string; evidence: Record<string, string> }) => [decision, evidence.queried])).toEqual([
-      ['blocked', 'false'], ['silent', 'false'],
-    ])
+    expect(lines.map(({ class: classification, decision }: { class: string; decision: string }) => [classification, decision])).toEqual([['refused', 'blocked']])
+  })
+
+  it('uses the shared guard emitter for machine-wide observe mode and subagent muting', () => {
+    const x = setup([user('prepare the reply')])
+    const base = { ...x.env, CLAUDE_PLUGIN_OPTION_GROUNDING_PRE_SEND: 'refuse' }
+    expect(runHook(SEND_HOOK, x.payload, { ...base, WT_GUARD_MODE: 'observe' }).stdout).toBe('')
+    expect(runHook(SEND_HOOK, { ...x.payload, agent_id: 'a1', agent_transcript_path: x.payload.transcript_path }, base).stdout).toBe('')
+    const files = readdirSync(join(x.f.stateDir, 'guard-journal'))
+    const lines = files.flatMap((file) => readFileSync(join(x.f.stateDir, 'guard-journal', file), 'utf8').trim().split('\n').map((line) => JSON.parse(line)))
+    expect(lines.every((line: { class: string }) => line.class === 'would-refuse')).toBe(true)
   })
 
   it('does not treat a source query before the last user message as current grounding', () => {
@@ -306,5 +371,17 @@ describe('deep-grounding pre-send hook', () => {
     expect(outboundClaimTool({ tool_name: 'mcp__planka__get_comments' })).toBe(false)
     expect(outboundClaimTool({ tool_name: 'mcp__planka__add_comment' })).toBe(true)
     expect(outboundClaimTool({ tool_name: 'mcp__claude_ai_Slack__slack_send_message' })).toBe(true)
+  })
+
+  it('matches MCP evidence by exact server segment and excludes utility servers', () => {
+    const f = fixture()
+    const file = join(f.root, 'mcp-evidence.jsonl')
+    const entries = loadGroundingRegistry({ cwd: f.projectDir, env: f.env })
+    for (const name of ['mcp__planner__get_issue', 'mcp__time__get_current_time']) {
+      transcript(file, [user('status?'), tool(name)])
+      expect(transcriptGroundingStatus(file, entries, { installedMcpNames: ['plan', 'time'] }).sourceQueried).toBe(false)
+    }
+    transcript(file, [user('status?'), tool('mcp__plan__get_issue')])
+    expect(transcriptGroundingStatus(file, entries, { installedMcpNames: ['plan'] }).sourceQueried).toBe(true)
   })
 })
