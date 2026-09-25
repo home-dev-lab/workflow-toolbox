@@ -41,6 +41,12 @@ function run(
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 
+function childProcessCwd(cwd: string): string {
+  const result = spawnSync(process.execPath, ['-e', 'process.stdout.write(process.cwd())'], { cwd, encoding: 'utf8' })
+  expect(result.status, result.stderr).toBe(0)
+  return result.stdout
+}
+
 function fixturePlugin(): { root: string; script: string } {
   const root = tempDir('wt-adopt-refactor-plugin-')
   mkdirSync(join(root, '.claude-plugin'), { recursive: true })
@@ -234,7 +240,7 @@ describe('adopt installer refactor pins', () => {
     expect(existsSync(join(target, RULE))).toBe(false)
   })
 
-  it('U3 writes through a linked settings file and preserves its target mode', () => {
+  it('U3 writes through a linked settings file and preserves its content', () => {
     const config = tempDir('wt-adopt-refactor-config-')
     const target = join(tempDir(), 'real-settings.json')
     writeFileSync(target, '{"theme":"dark"}\n')
@@ -245,15 +251,19 @@ describe('adopt installer refactor pins', () => {
 
     expect(result.status).toBe(0)
     expect(lstatSync(join(config, 'settings.json')).isSymbolicLink()).toBe(true)
-    expect(statSync(target).mode & 0o777).toBe(0o640)
+    if (process.platform !== 'win32') expect(statSync(target).mode & 0o777).toBe(0o640)
     expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ theme: 'dark', env: { CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: '3' } })
   })
 
   it('U4 preserves ignored unknown tokens and a missing --dir value fallback', () => {
-    const cwd = tempDir()
+    const container = tempDir()
+    const canonicalCwd = join(container, 'canonical')
+    const cwd = join(container, 'alias')
+    mkdirSync(canonicalCwd)
+    symlinkSync('canonical', cwd, 'dir')
     const result = run(['--unknown-token', '--check', '--dir'], { cwd })
     expect(result.status).toBe(0)
-    expect(result.stdout).toContain(`[rules] target=${join(cwd, '.claude/rules/wt')}`)
+    expect(result.stdout).toContain(`[rules] target=${join(childProcessCwd(cwd), '.claude/rules/wt')}`)
   })
 
   it.each(['toString', 'constructor', '__proto__'])('U4 ignores inherited object-property argv token %s', (token) => {

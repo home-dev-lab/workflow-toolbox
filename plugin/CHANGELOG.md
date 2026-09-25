@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- Start OpenCode and Codex external-model processes with a shared environment allow-list, excluding session Anthropic credentials and unrelated exported secrets; users can explicitly add required non-credential names with `WT_EXTERNAL_MODEL_ENV_ALLOW`. Proxy variables remain available, so credentials embedded in a proxy URL such as `user:password` reach the child. The remaining same-OS-user boundary, including readable credential files and sockets, requires the tracked OS-sandbox follow-up. The quota probe now prefers the active session's `CLAUDE_CODE_OAUTH_TOKEN` and never falls back to saved credentials when that token is refused. A launch that names a model receives that provider's credential and required extras (Azure: key plus resource name), resolved from OpenCode's offline provider registry with a logged `<PROVIDER>_API_KEY` fallback; a registry entry can never authorize another known provider's key or a session Anthropic credential in any letter case. `wt-deep-search` forwards a provider credential only for an explicit model or `OPENCODE_MODEL`; with neither, it passes none, as before.
+
 ## [0.187.0] - 2026-09-24
 
 ### Changed

@@ -83,7 +83,7 @@ describe.skipIf(process.platform === 'win32')('POSIX native prompt-storage range
     expect(after.subarray(offset + expected.length)).toEqual(before.subarray(offset + expected.length))
     expect(finalIdentity.size).toBe(identity.size)
     expect(finalIdentity.ino).toBe(identity.ino)
-  })
+  }, 60_000) // The fsync-heavy native proof can exceed Vitest's 20s default on loaded CI disks.
 
   it('refuses an expected-bytes mismatch without writing', async () => {
     const root = await fixture('mismatch')
@@ -226,7 +226,7 @@ describe.skipIf(process.platform !== 'win32')('Windows native prompt-storage ran
     expect(after.subarray(offset, offset + Buffer.byteLength(raw)).toString()).not.toBe(raw)
     expect(finalIdentity.ino).toBe(identity.ino)
     await expect(access(join(config, 'injected'))).rejects.toThrow()
-  })
+  }, 60_000) // PowerShell opens and fsyncs the same 4 MiB proof as the POSIX helper above.
 
   it('refuses an expected-bytes mismatch without overwriting the changed bytes', async () => {
     const config = await fixture('windows-mismatch')
@@ -263,7 +263,8 @@ describe.skipIf(process.platform !== 'win32')('Windows native prompt-storage ran
     const marker = `${JSON.stringify({ display: 'concurrent append' })}\n`
     await writeFile(path, `${JSON.stringify({ display: 'raw-secret' })}\n`)
 
-    expect(await windowsScrub(config, 'raw-secret', 'safe-token', async () => appendFile(path, marker))).toBe(false)
+    expect(await windowsScrub(config, 'raw-secret', 'safe-token', async () => appendFile(path, marker))).toBe(true)
+    expect(await readFile(path, 'utf8')).not.toContain('raw-secret')
     expect(await readFile(path, 'utf8')).toContain(marker)
   })
 })

@@ -27,7 +27,7 @@ describe('shipped private plugins', () => {
         cwd: REPO_ROOT,
         encoding: 'utf8',
       })
-    })
+    }, process.platform === 'win32' ? 90_000 : 45_000) // Windows CI exceeded 45s under the full process-spawning shard.
 
     it(`${plugin} selftest exits successfully`, () => {
       expect(selftest.status, selftest.stderr || selftest.stdout).toBe(0)

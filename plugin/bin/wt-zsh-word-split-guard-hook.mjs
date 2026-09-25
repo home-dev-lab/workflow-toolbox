@@ -5,6 +5,7 @@
 
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { readStdinJson } from './lib/host/read-stdin-json.mjs'
 
 const GUARD = 'wt-zsh-word-split-guard-hook.mjs'
@@ -445,4 +446,5 @@ function main() {
   })
 }
 
-runFailOpenHook(GUARD, main)
+// Real-path comparison keeps symlink and Windows short-name invocation working while imports stay inert.
+if (isInvokedDirectly(import.meta.url)) runFailOpenHook(GUARD, main)

@@ -583,10 +583,13 @@ async function main() {
   writeLaneStage(opts.log, 'skill-fence-done')
 
   const suiteLockCli = path.join(path.dirname(fileURLToPath(import.meta.url)), 'wt-suite-lock.mjs')
-  const childEnv = { ...consentModules.opencodeChildEnv(process.env), WT_SUITE_LOCK_CMD: `node ${consentModules.shellQuote(suiteLockCli)} run --`, ...(allowlist.allowed.length ? { OPENCODE_CONFIG: allowedSkills.configPath } : {}) }
+  const childEnv = consentModules.opencodeChildEnv(process.env, opts.model)
+  childEnv.WT_SUITE_LOCK_CMD = `node ${consentModules.shellQuote(suiteLockCli)} run --`
+  if (allowlist.allowed.length) childEnv.OPENCODE_CONFIG = allowedSkills.configPath
   const opencodeBinary = fence.binary ?? 'opencode'
   writeLaneStage(opts.log, 'effective-discovery-start')
-  const discovery = consentModules.verifyEffectiveOpencodeSkillDiscovery(opencodeBinary, { cwd: opts.dir, env: childEnv, platform: process.platform })
+  const ownedNames = ['OPENCODE_CONFIG']
+  const discovery = consentModules.verifyEffectiveOpencodeSkillDiscovery(opencodeBinary, { cwd: opts.dir, env: childEnv, platform: process.platform, extraNames: ownedNames, model: opts.model })
   if (!discovery.ok) {
     process.stderr.write(`${consentModules.effectiveSkillDiscoveryRefusal(discovery)}\n`)
     return 1
@@ -666,7 +669,7 @@ async function main() {
   appendFileSync(fd, `${new Date().toISOString()} stage=opencode-spawn-start ${progress}\n`)
   const childSpawnedAt = Date.now()
   try {
-    child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd] }, process.platform)
+    child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd] }, process.platform, ownedNames)
     child.once('close', (code, signal) => { earlyChildClose = [code, signal] })
     await new Promise((resolve, reject) => {
       child.once('spawn', resolve)

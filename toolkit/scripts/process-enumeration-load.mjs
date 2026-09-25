@@ -5,9 +5,12 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HOLD_MS = 60 * 60 * 1000
+// Six Node processes can take over five seconds to start on the saturated Windows CI host.
+const WORKER_READY_MS = 15_000
 
 function worker() {
-  const descriptors = Array.from({ length: 8 }, () => openSync(process.platform === 'win32' ? 'NUL' : '/dev/null', 'r'))
+  const descriptorTarget = process.platform === 'win32' ? process.execPath : '/dev/null'
+  const descriptors = Array.from({ length: 8 }, () => openSync(descriptorTarget, 'r'))
   const child = spawn(process.execPath, ['-e', `setTimeout(() => {}, ${HOLD_MS})`], { stdio: 'ignore' })
   process.send?.({ ready: true, childPid: child.pid, descriptors: descriptors.length })
   const stop = () => {
@@ -33,10 +36,7 @@ function parse(argv) {
 async function main() {
   if (process.argv.includes('--worker')) return worker()
   const options = parse(process.argv.slice(2))
-  const load = Array.from({ length: options.workers }, () => spawn(process.execPath, [fileURLToPath(import.meta.url), '--worker'], {
-    detached: process.platform !== 'win32',
-    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
-  }))
+  const load = []
   const stop = () => {
     for (const child of load) {
       try { child.send('stop') } catch {}
@@ -49,11 +49,19 @@ async function main() {
   process.once('SIGTERM', () => { stop(); process.exit(143) })
   process.once('SIGINT', () => { stop(); process.exit(130) })
   try {
-    const receipts = await Promise.all(load.map((child) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`load worker ${child.pid ?? 'unknown'} did not become ready`)), 5_000)
-      child.once('message', (message) => { clearTimeout(timer); resolve(message) })
-      child.once('error', reject)
-    })))
+    const receipts = []
+    for (let index = 0; index < options.workers; index += 1) {
+      const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--worker'], {
+        stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+      })
+      load.push(child)
+      const receipt = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`load worker ${child.pid ?? 'unknown'} did not become ready`)), WORKER_READY_MS)
+        child.once('message', (message) => { clearTimeout(timer); resolve(message) })
+        child.once('error', reject)
+      })
+      receipts.push(receipt)
+    }
     process.stderr.write(`process-enumeration-load: ready workers=${load.length} children=${receipts.length} held_fds=${receipts.reduce((sum, item) => sum + Number(item.descriptors), 0)}\n`)
     const command = spawn(options.command, options.args, { stdio: 'inherit', env: { ...process.env, WT_PROCESS_LOAD_COUNT: String(load.length) } })
     process.exitCode = await new Promise((resolve, reject) => {

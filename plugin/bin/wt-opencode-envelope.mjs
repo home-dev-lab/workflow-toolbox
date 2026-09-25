@@ -23,6 +23,7 @@ import crypto from 'node:crypto'
 import { laneTextFromOutput, laneUsageFromOutput, verifierStreamDirForEnv } from './wt-verifier-cli-guard-hook.mjs'
 import { DEFAULT_MAX_TASKS, generateEachTasks, parseEachSource } from './lib/opencode-envelope-tasks.mjs'
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
+import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
 
 const DEFAULT_MODEL = 'openai/gpt-5.6-luna' // gpt-5.4 withdrawn from Codex/ChatGPT accounts 2026-08-31
@@ -202,8 +203,8 @@ function resolveBinarySync() {
   return null
 }
 
-function providerAuthenticatedSync(bin, cwd, env) {
-  const res = spawnOpencode(preflightSpawnSync, bin, ['providers', 'list'], { cwd, encoding: 'utf8', timeout: 30000, env }, process.platform)
+function providerAuthenticatedSync(bin, cwd, env, credentialNames) {
+  const res = spawnOpencode(preflightSpawnSync, bin, ['providers', 'list'], { cwd, encoding: 'utf8', timeout: 30000, env }, process.platform, credentialNames)
   return res.status === 0
 }
 
@@ -358,11 +359,11 @@ async function runTask(task, opts, outDir) {
 
   let result
   let modelUsed = model
-  result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opts.childEnv })
+  result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model, variant, agentMode, timeoutSec, taskId: id, childEnv: opencodeChildEnv(undefined, providerCredentialNames(model)) })
 
   if (result.exitCode !== 0 && isRateLimited(result.stdout + result.stderr)) {
     modelUsed = fallbackModel
-    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opts.childEnv })
+    result = await runOnceAsync({ bin: opts.bin, taskfile, dir: opts.dir, model: fallbackModel, variant, agentMode, timeoutSec, taskId: `${id}-retry`, childEnv: opencodeChildEnv(undefined, providerCredentialNames(fallbackModel)) })
   }
 
   const answerFile = path.join(outDir, `${safeId}.answer.txt`)
@@ -522,13 +523,14 @@ async function reduceManifest(opts) {
     process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
     return 1
   }
-  const childEnv = opencodeChildEnv()
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform })
+  const credentialNames = providerCredentialNames(opts.model)
+  const childEnv = opencodeChildEnv(undefined, credentialNames)
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform, extraNames: credentialNames })
   if (!discovery.ok) {
     process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
     return 1
   }
-  if (!providerAuthenticatedSync(bin, opts.dir, childEnv)) {
+  if (!providerAuthenticatedSync(bin, opts.dir, childEnv, credentialNames)) {
     process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
     return 1
   }
@@ -664,13 +666,14 @@ async function main() {
     process.stdout.write(`${opencodeSkillFenceRefusal(fence.reason)}\n`)
     return 1
   }
-  const childEnv = opencodeChildEnv()
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform })
+  const credentialNames = providerCredentialNames(opts.model)
+  const childEnv = opencodeChildEnv(undefined, credentialNames)
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(bin, { cwd: opts.dir, env: childEnv, platform: process.platform, extraNames: credentialNames })
   if (!discovery.ok) {
     process.stdout.write(`${effectiveSkillDiscoveryRefusal(discovery, 'wt-opencode-envelope')}\n`)
     return 1
   }
-  if (!providerAuthenticatedSync(bin, opts.dir, childEnv)) {
+  if (!providerAuthenticatedSync(bin, opts.dir, childEnv, credentialNames)) {
     process.stdout.write('OPENCODE_UNAVAILABLE: no opencode provider authenticated (providers list failed)\n')
     return 1
   }

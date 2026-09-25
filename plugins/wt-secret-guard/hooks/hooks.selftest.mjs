@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { detections, optionalDetections } from './detector.js';
 import { configure, register, testState, tokenize } from './hooks.js';
@@ -27,6 +28,10 @@ const files = new Map([
   ['/tmp/wt-secret-guard-file', { text: "file-secret value with ' quote\nsecond-file-secret", mode: 0o600, inode: nextInode++ }],
 ]);
 const journalFiles = new Map();
+const bashEnvironment = (...prefixes) => ({
+  ...process.env,
+  PATH: [...prefixes, ...(process.platform === 'win32' ? [process.env.PATH] : ['/usr/bin:/bin'])].filter(Boolean).join(delimiter),
+});
 // Test values by NAME. secret:env is disabled (round 16: Claude Code refuses a hooks module whose
 // `$.env.get` takes a non-literal name), so the locks that used `secret:file:/tmp/wt-env/NAME` as their canonical
 // accepted form now use `secret:file:/tmp/wt-env/NAME`, which the mocked filesystem serves from here.
@@ -1660,7 +1665,7 @@ await test('V25 every value WE substitute is in the vault before the command run
   const result = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/wt-env/TEST_VALUE' }, async (event) => { received = event.command; return { text: value }; });
   assert.equal(result?.deny, undefined, `the env reference was refused: ${result?.deny}`);
   assert.equal(result.text.includes(value), false, 'the substituted env value reached the tool result raw');
-  assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8', env: { PATH: process.env.PATH } }).stdout, value, 'the command did not receive the value the guard registered');
+  assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8', env: bashEnvironment() }).stdout, value, 'the command did not receive the value the guard registered');
   // A reference whose value the guard cannot read is refused rather than substituted unknown.
   let executed = false;
   const unset = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/wt-env/WT_NOT_SET_ANYWHERE' }, async () => { executed = true; return { text: 'x' }; });
@@ -1721,7 +1726,7 @@ await test('reference allow-list: every supported form expands byte-identically 
     setFile('/tmp/matrix-secret', value);
     testEnv.set('MATRIX_SECRET', value);
     const path = `${directory}:${process.env.PATH}`;
-    const run = (command) => spawnSync('bash', ['-c', command], { encoding: 'buffer', env: { ...process.env, PATH: path, MATRIX_SECRET: value } });
+    const run = (command) => spawnSync('bash', ['-c', command], { encoding: 'buffer', cwd: directory, env: { ...process.env, PATH: path, MATRIX_SECRET: value } });
     const forms = [
       ['vault token', vaultToken],
       ['file reference', 'secret:file:/tmp/matrix-secret'],
@@ -1734,8 +1739,8 @@ await test('reference allow-list: every supported form expands byte-identically 
       ['double-quoted', (reference) => `printf %s "${reference}"`],
       // Round 11: a reference inside `$( )` is no longer a supported context - the allow-list accepts
       // no command substitution beside our forms except the literal `op read` form (asserted below).
-      ['bare before a redirection', (reference) => `printf %s ${reference} > ${directory}/redirected; cat ${directory}/redirected`],
-      ['double-quoted after a redirection target', (reference) => `> ${directory}/redirected printf %s "${reference}"; cat ${directory}/redirected`],
+      ['bare before a redirection', (reference) => `printf %s ${reference} > redirected; cat redirected`],
+      ['double-quoted after a redirection target', (reference) => `> redirected printf %s "${reference}"; cat redirected`],
     ];
     for (const [form, reference] of forms) {
       for (const [context, build] of contexts) {
@@ -1859,9 +1864,9 @@ await test('V9 journal rotation reuses the active segment', async () => {
   try {
     const path = join(directory, 'session.ndjson');
     writeFileSync(path, Buffer.alloc(4 * 1024 * 1024));
-    const helper = new URL('./journal-append.mjs', import.meta.url);
+    const helper = fileURLToPath(new URL('./journal-append.mjs', import.meta.url));
     for (const line of ['one\n', 'two\n', 'three\n']) {
-      const result = spawnSync(process.execPath, [helper.pathname, path], { input: line, encoding: 'utf8' });
+      const result = spawnSync(process.execPath, [helper, path], { input: line, encoding: 'utf8' });
       assert.equal(result.status, 0, result.stderr);
     }
     const entries = readdirSync(directory).filter((name) => name.startsWith('session.ndjson'));
@@ -1965,9 +1970,10 @@ await test('V31 a command using our forms never runs a program whose name the gu
   try {
     writeFileSync(join(directory, 'mark'), '#!/bin/sh\nprintf MARK >&9\n', { mode: 0o755 });
     const notCommands = [];
+    const darwinUnsupported = /^(?:true \|&|time (?:-p )?--|coproc\b|case x in [^)]*\) :;&|case x in x\) :;;&|echo "\$\(case|\{fd\}>)/;
     for (const [before, after, sane = true] of positions) {
-      if (!sane) continue;
-      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { PATH: `${directory}:${process.env.PATH}` } });
+      if (!sane || (process.platform === 'darwin' && darwinUnsupported.test(before))) continue;
+      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: bashEnvironment(directory) });
       if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
     }
     assert.deepEqual(notCommands, [], 'bash did not read a command name at these positions');
@@ -2016,7 +2022,7 @@ await test('V32 a value the guard substituted is masked in that command output w
   // it back unmasked, because a known credential UUID is kept out of unconditional masking - UUIDs are
   // ordinary run ids elsewhere. A value WE put into the command is never ordinary in its output.
   const run = (command) => bash($, { tool: 'Bash', command }, async (event) => {
-    const out = spawnSync('bash', ['-c', event.command], { encoding: 'utf8', env: { PATH: process.env.PATH } }).stdout;
+    const out = spawnSync('bash', ['-c', event.command], { encoding: 'utf8', env: bashEnvironment() }).stdout;
     return { result: { stdout: out, stderr: '' }, text: out };
   });
   const credentialUuid = '9f1c2d3e-4b5a-4c6d-8e7f-0a1b2c3d4e5f';
@@ -2071,7 +2077,7 @@ await test('V33 the heredoc end matches bash exactly, and an uncertain heredoc r
   // lookups over WSL's /mnt/c entries took 8 s; 0.15 s here). Checked equal to 600 separate `bash -c`
   // runs: 0 disagreements over 600 shapes.
   const printer = 'c() { while IFS= read -r line || [ -n "$line" ]; do printf "%s\\n" "$line"; done; }\n';
-  const out = spawnSync('bash', ['-c', printer + scripts.map((script) => `{\n${script.replace(/^cat /, 'c ')}}\n`).join('')], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout;
+  const out = spawnSync('bash', ['-s'], { encoding: 'utf8', env: bashEnvironment(), input: printer + scripts.map((script) => `{\n${script.replace(/^cat /, 'c ')}}\n`).join('') }).stdout;
   scripts.forEach((script, index) => {
     const marker = `RAN-${index}-`;
     const bashBody = out.includes(`printf ${marker}`);
@@ -2197,9 +2203,14 @@ await test('V38 a command using our forms never runs, through a listed external 
   try {
     writeFileSync(join(directory, 'mark'), '#!/bin/sh\nprintf MARK >&9\n', { mode: 0o755 });
     const notCommands = [];
+    const darwinUnsupported = /^(?:env --(?:unset|uns=|chdir|ignore-signal)|timeout\b|nice --adjustment|stdbuf --output|setsid\b|ionice\b|taskset\b|echo x \| xargs -(?:l|e)\b|env A=1 timeout\b|nohup setsid\b|command timeout\b|echo x \| xargs timeout\b|\( timeout\b)/;
+    const wrapperUtilities = ['timeout', 'nice', 'nohup', 'stdbuf', 'setsid', 'ionice', 'taskset', 'xargs', 'find'];
+    const unavailableUtilities = new Set(wrapperUtilities.filter((utility) => spawnSync('bash', ['-c', `command -v ${utility}`], { env: bashEnvironment() }).status !== 0));
     for (const [before, after, sane = true] of positions) {
-      if (!sane) continue;
-      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: { PATH: `${directory}:/usr/bin:/bin` } });
+      // These rows describe GNU utilities that macOS does not ship. Their guard parsing is still
+      // exercised below; only the impossible real-command sanity probe is skipped.
+      if (!sane || (process.platform === 'darwin' && darwinUnsupported.test(before)) || wrapperUtilities.some((utility) => unavailableUtilities.has(utility) && new RegExp(`\\b${utility}\\b`).test(before))) continue;
+      const ran = spawnSync('bash', ['-c', `exec 9>&1; ${before}mark${after}`], { encoding: 'utf8', cwd: directory, env: bashEnvironment(directory) });
       if (!ran.stdout.includes('MARK')) notCommands.push(`${JSON.stringify(`${before}<name>${after}`)}: ${ran.stderr.trim()}`);
     }
     assert.deepEqual(notCommands, [], 'bash did not run the wrapped command at these positions');
@@ -2469,7 +2480,7 @@ await test('V43 the verify10 bypasses and masking failures are closed', async ()
   try {
     writeFileSync(join(directory, 'op'), '#!/bin/sh\nprintf "%s\\n" v43-new-rotated\n', { mode: 0o755 });
     const runtime = { ...$, process: { run: async (argv, init) => (/^op(?:\.exe)?$/.test(argv[0]) ? { exitCode: 0, stdout: 'v43-old-rotated\n' } : $.process.run(argv, init)) } };
-    const execute = (command) => spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: `${directory}:/usr/bin:/bin` } }).stdout;
+    const execute = (command) => spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment(directory) }).stdout;
     for (const [command, printed] of [
       [`printf %s ${'op:/'}/vault/item/v43`, 'v43-old-rotated'],
       [`op read '${'op:/'}/vault/item/v43b'`, 'v43-old-rotated\n'],
@@ -2561,7 +2572,7 @@ await test('V45 the verify11 bypasses and masking failures are closed', async ()
   // H5: bash strips trailing newlines in a substitution; the stripped value must be masked too.
   {
     const runtime = { ...$, process: { run: async (argv, init) => (/^op(?:\.exe)?$/.test(argv[0]) ? { exitCode: 0, stdout: 'v45-newline-pass\n\n' } : $.process.run(argv, init)) } };
-    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment() }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
     const { result } = await hook(`printf %s "$(op read '${V45_REF('v45-h5')}')"`, runtime, execute);
     if (result?.deny) failures.push(`H5 refused: ${result.deny}`);
     else if (result.text.includes('v45-newline-pass')) failures.push('H5 a value with its trailing newlines stripped reached the output unmasked');
@@ -2579,7 +2590,7 @@ await test('V45 the verify11 bypasses and masking failures are closed', async ()
     const { scrub } = await import('./scrub.js');
     const scrubbed = scrub(`printf %s ${token}`, '').value;
     if (scrubbed !== `printf %s ${token}`) failures.push(`M7 scrubbing re-tokenised an issued token: ${scrubbed}`);
-    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment() }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
     const { result, received } = await hook(`printf '[%s]' ${token}`, $, execute);
     if (result?.deny || received === undefined) failures.push(`M7 a token submitted back was refused: ${result?.deny}`);
     else if (spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout !== '[vfortyfive]') failures.push('M7 a token submitted back did not rehydrate');
@@ -2656,7 +2667,7 @@ await test('V47 the verify12 bypasses and failures are closed', async () => {
     const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return typeof output === 'function' ? output(event.command) : { text: output }; });
     return { result, received };
   };
-  const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+  const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment() }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
   // 1 + 2: a vertical tab is not a blank to bash; beside our forms it is refused, in words and heredocs.
   for (const [finding, command] of [
     ['1', `printf %s ${form} x\u000b# "$(printf MARK)"`],
@@ -2804,13 +2815,13 @@ await test('V49 no lookup in the guard answers for an inherited property name', 
 // needs a vault whose serial starts at 0, which this process's vault no longer is.
 const V50_FRESH_VAULT = `
 import { spawnSync } from 'node:child_process';
-const { register, configure } = await import(process.argv[1] + '/hooks.js');
-const { classifyOutbound } = await import(process.argv[1] + '/outbound-tools.js');
+const { register, configure } = await import(new URL('./hooks.js', process.argv[1]).href);
+const { classifyOutbound } = await import(new URL('./outbound-tools.js', process.argv[1]).href);
 const hooks = [];
 register((event, matcher, hook) => hooks.push({ event, matcher: hook ? matcher : undefined, hook: hook ?? matcher }));
 configure({});
 const bash = hooks.find((hook) => hook.event === 'tool.call' && hook.matcher?.tool === 'Bash').hook;
-const value = process.argv[2];
+const value = process.argv[3];
 const $ = {
   ui: { log: async () => {} },
   fs: { read: async (path) => { if (path === '/tmp/v50-self-alias') return value; throw new Error('ENOENT'); }, write: async () => {}, stat: async () => { const error = new Error('ENOENT'); error.code = 'ENOENT'; throw error; } },
@@ -2819,10 +2830,10 @@ const $ = {
   env: { get: async (name) => (name === 'HOME' ? '/tmp/v50-home' : undefined) },
   session: { cwd: async () => '/tmp', id: async () => 'v50' },
   clock: { sleep: async () => {}, now: () => 0 },
-  plugin: { root: process.argv[1] },
+  plugin: { root: process.argv[2] },
 };
 const result = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/v50-self-alias' }, async (event) => {
-  const out = spawnSync('bash', ['-c', event.command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout;
+  const out = spawnSync('bash', ['-c', event.command], { encoding: 'utf8', env: process.env }).stdout;
   return { result: { stdout: out, stderr: '' }, text: out };
 });
 const outbound = await classifyOutbound({ pluginRoot: async () => undefined, fsStat: async () => ({}) }, { tool: 'Write', file_path: '/tmp/v50.txt', content: 'note ' + value });
@@ -2843,7 +2854,7 @@ await test('V50 the verify13 findings are closed and the README describes what t
     const fresh = await import(`./token-vault.js?v50=${Date.now()}`);
     const issued = fresh.tokenize('file', selfAlias);
     if (issued === selfAlias) failures.push('1 a fresh vault issued a token equal to its own value');
-    const run = spawnSync(process.execPath, ['--input-type=module', '-e', V50_FRESH_VAULT, new URL('.', import.meta.url).pathname.replace(/\/$/, ''), selfAlias], { encoding: 'utf8' });
+    const run = spawnSync(process.execPath, ['--input-type=module', '-e', V50_FRESH_VAULT, new URL('.', import.meta.url).href, fileURLToPath(new URL('.', import.meta.url)), selfAlias], { encoding: 'utf8' });
     let outcome = null;
     try { outcome = JSON.parse(run.stdout.trim().split('\n').at(-1)); } catch { failures.push(`1 the fresh-vault child did not report: ${run.stderr.slice(0, 200)}`); }
     if (outcome?.denied) failures.push('1 the fresh-vault hook refused the command');
@@ -2861,7 +2872,7 @@ await test('V50 the verify13 findings are closed and the README describes what t
     // The reverse order, in the shared vault: a value that equals a token already issued for ANOTHER value.
     const earlier = tokenize('vfifty', 'v50-earlier-value');
     testEnv.set('WT_V50_ALIAS', earlier);
-    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+    const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment() }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
     let received;
     const result = await bash($, { tool: 'Bash', command: 'printf %s secret:file:/tmp/wt-env/WT_V50_ALIAS' }, async (event) => { received = event.command; return execute(event.command); });
     if (result?.deny) failures.push(`1 the alias command was refused: ${result.deny}`);
@@ -2904,7 +2915,7 @@ await test('V51 the host loads the module: no dynamic $.env.get, secret:env refu
   // Static: Claude Code refuses the WHOLE hooks module when `$.env.get` takes a non-literal name (measured
   // on 2.1.280: the guard loaded nothing in every real session). Every call in the plugin's module files
   // takes a plain string literal.
-  const pluginRoot = new URL('..', import.meta.url).pathname;
+  const pluginRoot = fileURLToPath(new URL('..', import.meta.url));
   const sources = [];
   const walk = (dir) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); if (entry.isDirectory()) { if (entry.name !== 'fixtures' && entry.name !== 'node_modules') walk(path); } else if (/\.(?:m?js|cjs|ts)$/.test(entry.name) && !/\.selftest\.mjs$/.test(entry.name)) sources.push(path); } };
   walk(pluginRoot);
@@ -2914,7 +2925,7 @@ await test('V51 the host loads the module: no dynamic $.env.get, secret:env refu
       if (!/^(['"])[^'"\\$`]*\1$|^`[^`$\\]*`$/.test(match[1].trim())) failures.push(`${path.slice(pluginRoot.length)}: $.env.get(${match[1].trim()}) takes a non-literal name`);
     }
   }
-  if (!sources.some((path) => path.endsWith('hooks/hooks.js'))) failures.push('the static scan did not reach hooks/hooks.js');
+  if (!sources.some((path) => path.replaceAll('\\', '/').endsWith('/hooks/hooks.js'))) failures.push('the static scan did not reach hooks/hooks.js');
   // secret:env is disabled until names are declared literally: a clear refusal, and no environment read.
   const envReads = [];
   const runtime = { ...$, env: { get: async (name) => { envReads.push(name); return $.env.get(name); } } };
@@ -2934,7 +2945,7 @@ await test('V51 the host loads the module: no dynamic $.env.get, secret:env refu
 await test('V52 the verify14 findings: no replacement is spelled like a held value; op is placed through redirections', async () => {
   // GPT-6 Astra at 7323b6d2. Every input collected, so one red shows them all.
   const failures = [];
-  const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+  const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment() }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
   const run = async (command, runtime = $) => {
     let received;
     const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return execute(event.command); });
@@ -3015,7 +3026,7 @@ await test('V52 the verify14 findings: no replacement is spelled like a held val
 await test('V53 the verify15 findings: an issued token stays usable after its spelling becomes a value; a comment ends op read; no message recommends secret:env', async () => {
   // GPT-6 Astra at fff75e45. Every input collected, so one red shows them all.
   const failures = [];
-  const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
+  const execute = (command) => { const out = spawnSync('bash', ['-c', command], { encoding: 'utf8', env: bashEnvironment() }).stdout; return { result: { stdout: out, stderr: '' }, text: out }; };
   // 1: A's token T, whose spelling then becomes another held value, still rehydrates to A through Bash.
   {
     const first = 'v53-first-value';
@@ -3056,7 +3067,7 @@ await test('V53 the verify15 findings: an issued token stays usable after its sp
   const { REDACTION_NOTE: note } = await import('./constants.js');
   if (/secret:env/.test(note)) failures.push('3 the redaction notice recommends secret:env');
   if (!/secret:file/.test(note)) failures.push('3 the redaction notice does not point to secret:file');
-  const pluginRoot = new URL('..', import.meta.url).pathname;
+  const pluginRoot = fileURLToPath(new URL('..', import.meta.url));
   const walk = (dir, out = []) => { for (const entry of readdirSync(dir, { withFileTypes: true })) { const path = join(dir, entry.name); if (entry.isDirectory()) { if (!['fixtures', 'node_modules'].includes(entry.name)) walk(path, out); } else if (/\.(?:m?js|cjs|json)$/.test(entry.name) && !/\.selftest\.mjs$/.test(entry.name)) out.push(path); } return out; };
   for (const path of walk(pluginRoot)) {
     readFileSync(path, 'utf8').split('\n').forEach((line, index) => {

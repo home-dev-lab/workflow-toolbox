@@ -4,8 +4,9 @@
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { platform } from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { spawnOpencode as spawnCommand } from './lib/opencode-skill-fence.mjs'
+import { spawnCommand } from './lib/opencode-skill-fence.mjs'
 
 const ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const RESULT = process.env.WT_PLUGIN_EVAL_RESULT || join(ROOT, '.lane/plugin-eval-result.json')
@@ -90,10 +91,12 @@ function main() {
   const useRecordedResult = Boolean(process.env.WT_PLUGIN_EVAL_RESULT) && existsSync(RESULT)
   if (!useRecordedResult) {
     const claude = claudeBinary()
+    // This is a nested Claude process, not an external-provider lane: it must retain the
+    // active Claude session credentials.
     const run = spawnCommand(spawnSync, claude, [
       'plugin', 'eval', './plugin', '--runs', '3', '--ablation', 'none', '--no-publish',
       '--model', 'haiku', '--json', RESULT, '--report', join(ROOT, '.lane/plugin-eval-report.html'),
-    ], { cwd: ROOT, encoding: 'utf8', stdio: 'inherit' })
+    ], { cwd: ROOT, encoding: 'utf8', stdio: 'inherit', env: process.env }, platform)
     if (run.error) {
       process.stderr.write(`plugin eval: could not start ${claude}: ${run.error.message}\n`)
       return 2

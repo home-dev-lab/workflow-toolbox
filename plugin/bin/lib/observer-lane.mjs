@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './opencode-skill-fence.mjs'
+import { providerCredentialNames } from './external-model-env.mjs'
 
 const EXIT_MARKER = '__WT_OBSERVER_EXIT__='
 const OBSERVER_INSTRUCTION = 'Read the attached observer task and return its requested JSON verdict.'
@@ -118,8 +119,9 @@ export function runObserverLane({ projectDir, prompt, timeoutSeconds, model, bin
   const fence = verifyOpencodeSkillFence(binPath, { platform: process.platform })
   if (!fence.ok) return { outcome: { kind: 'error', reason: opencodeSkillFenceRefusal(fence.reason) }, taskText: prompt }
   const binary = fence.binary ?? binPath
-  const childEnv = opencodeChildEnv()
-  const discovery = verifyEffectiveOpencodeSkillDiscovery(binary, { cwd: projectDir, env: childEnv, platform: process.platform })
+  const credentialNames = providerCredentialNames(model)
+  const childEnv = opencodeChildEnv(undefined, credentialNames)
+  const discovery = verifyEffectiveOpencodeSkillDiscovery(binary, { cwd: projectDir, env: childEnv, platform: process.platform, extraNames: credentialNames })
   if (!discovery.ok) return { outcome: { kind: 'error', reason: effectiveSkillDiscoveryRefusal(discovery, 'wt-observer') }, taskText: prompt }
   const root = mkdtempSync(path.join(os.tmpdir(), 'wt-observer-'))
   const taskFile = path.join(root, 'observer-task.md')

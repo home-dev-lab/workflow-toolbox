@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { externalModelEnv } from '../external-model-env.mjs'
 
 const BROKER_PATTERN = /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i
 const START_TIME_TOLERANCE_MS = 1_500
@@ -33,17 +34,37 @@ function descendants(processes, rootPid) {
   return pids
 }
 
-function processStart(item) {
-  return Number.isFinite(item?.startTime) ? item.startTime : null
+function processStart(item, observedAt) {
+  if (Number.isFinite(item?.startIdentity)) return item.startIdentity
+  if (Number.isFinite(item?.startTime)) return item.startTime
+  return Number.isFinite(item?.elapsedMs) ? observedAt - item.elapsedMs : null
 }
 
-function processIdentity(item) {
-  return Number.isFinite(item?.startIdentity) ? item.startIdentity : processStart(item)
+function processIdentity(item, observedAt) {
+  if (!item) return null
+  const command = String(item.command ?? '')
+  let startIdentity = null
+  if (Number.isFinite(item.startIdentity)) startIdentity = item.startIdentity
+  else if (Number.isFinite(item.startTime)) startIdentity = item.startTime
+  if (startIdentity !== null) return { pid: item.pid, startIdentity, command }
+  const startedAt = processStart(item, observedAt)
+  return startedAt === null ? null : { pid: item.pid, startedAt, command }
 }
 
-function sameProcess(item, identity) {
-  if (!item || item.pid !== identity.pid || !BROKER_PATTERN.test(String(item.command ?? ''))) return false
-  return processIdentity(item) === identity.startIdentity
+function sameStart(item, identity, observedAt) {
+  if (!item || item.pid !== identity.pid) return false
+  const current = processIdentity(item, observedAt)
+  if (!current) return false
+  if (Number.isFinite(identity.startIdentity)) return current.startIdentity === identity.startIdentity
+  return Number.isFinite(current.startedAt) && Math.abs(current.startedAt - identity.startedAt) <= START_TIME_TOLERANCE_MS
+}
+
+function sameProcess(item, identity, observedAt) {
+  return BROKER_PATTERN.test(String(item?.command ?? '')) && sameStart(item, identity, observedAt)
+}
+
+function sameIdentity(item, identity, observedAt) {
+  return sameStart(item, identity, observedAt) && String(item.command ?? '') === identity.command
 }
 
 const pause = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
@@ -51,16 +72,24 @@ const pause = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffe
 export function createCodexBrokerOwnership(adapter, env, options = {}) {
   const root = mkdtempSync(path.join(tmpdir(), 'wt-second-opinion-codex-'))
   const now = options.now ?? Date.now
+  const ownershipStartedAt = now()
   const wait = options.wait ?? pause
-  const stopTimeoutMs = options.stopTimeoutMs ?? 750
+  const remove = options.removeRoot ?? rmSync
+  const stopTimeoutMs = options.stopTimeoutMs ?? (adapter.platform === 'win32' ? 3_000 : 750)
   const pollMs = options.pollMs ?? 25
   let identity = null
+  const capturedDescendants = new Map()
   let claimedPid = null
   let discoveryFailure = null
   let stopped = false
 
   const removeRoot = () => {
-    try { rmSync(root, { recursive: true, force: true }) } catch { /* best-effort exit cleanup */ }
+    for (let attempt = 0; attempt <= 10; attempt += 1) {
+      try { remove(root, { recursive: true, force: true }); return } catch (error) {
+        if (!['EPERM', 'EBUSY'].includes(error?.code) || attempt === 10) return
+        wait(50)
+      }
+    }
   }
 
   function snapshot() {
@@ -76,38 +105,53 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
 
   // This is called only while the spawned companion is known to be alive.
   function capture(companionPid) {
-    if (identity || !companionPid) return identity?.pid ?? null
+    if (!companionPid) return identity?.pid ?? null
+    if (identity && adapter.platform !== 'win32') return identity.pid
+    const observedAt = now()
     const result = snapshot()
     if (!result) return null
     const { processes } = result
-    const companion = processes.find((item) => item.pid === companionPid)
-    const companionStartedAt = processStart(companion)
-    if (companionStartedAt === null) return null
-    const statePid = brokerFromState(root)
-    if (statePid) claimedPid = statePid
-    const family = descendants(processes, companionPid)
-    const candidate = statePid
-      ? processes.find((item) => item.pid === statePid)
-      : processes.find((item) => item.pid !== companionPid && family.has(item.pid) && BROKER_PATTERN.test(String(item.command ?? '')))
-    if (!candidate || !BROKER_PATTERN.test(String(candidate.command ?? ''))) return null
-    const startedAt = processStart(candidate)
-    // A broker started before this companion cannot be ours; one started after it may lag by seconds under load.
-    if (startedAt === null || startedAt < companionStartedAt - START_TIME_TOLERANCE_MS) return null
-    claimedPid = candidate.pid
-    const startIdentity = processIdentity(candidate)
-    if (startIdentity === null) return null
-    identity = { pid: candidate.pid, startIdentity }
-    return candidate.pid
+    if (!identity) {
+      const companion = processes.find((item) => item.pid === companionPid)
+      const companionStartedAt = processStart(companion, observedAt) ?? ownershipStartedAt
+      const statePid = brokerFromState(root)
+      if (statePid) claimedPid = statePid
+      const family = descendants(processes, companionPid)
+      const candidate = statePid
+        ? processes.find((item) => item.pid === statePid)
+        : processes.find((item) => item.pid !== companionPid && family.has(item.pid) && BROKER_PATTERN.test(String(item.command ?? '')))
+      if (!candidate || !BROKER_PATTERN.test(String(candidate.command ?? ''))) return null
+      const captured = processIdentity(candidate, observedAt)
+      // A broker started before this companion cannot be ours; one started after it may lag by seconds under load.
+      const candidateStartedAt = captured?.startIdentity ?? captured?.startedAt
+      if (!captured || candidateStartedAt < companionStartedAt - START_TIME_TOLERANCE_MS) return null
+      claimedPid = candidate.pid
+      identity = captured
+    }
+    if (adapter.platform !== 'win32') return identity.pid
+    const currentBroker = processes.find((item) => item.pid === identity.pid)
+    if (!sameIdentity(currentBroker, identity, observedAt)) return identity.pid
+    const family = descendants(processes, identity.pid)
+    for (const item of processes) {
+      if (item.pid === identity.pid || !family.has(item.pid) || capturedDescendants.has(item.pid)) continue
+      const captured = processIdentity(item, observedAt)
+      if (captured) capturedDescendants.set(item.pid, captured)
+    }
+    return identity.pid
   }
 
   function currentOwnedProcess() {
+    const observedAt = now()
     const result = snapshot()
     if (!result) return { status: 'unavailable', processes: [] }
     const { processes, unknownPids } = result
     if (unknownPids.includes(identity?.pid)) return { status: 'unknown', processes }
     const item = processes.find((process) => process.pid === identity?.pid)
     if (!item) return { status: 'gone', processes }
-    return sameProcess(item, identity)
+    const owned = adapter.platform === 'win32'
+      ? sameIdentity(item, identity, observedAt)
+      : sameProcess(item, identity, observedAt)
+    return owned
       ? { status: 'owned', processes }
       : { status: 'changed', processes }
   }
@@ -122,6 +166,55 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     return state
   }
 
+  function currentOwnedDescendants() {
+    const observedAt = now()
+    const result = snapshot()
+    if (!result) return { status: 'unavailable', identities: [], reason: discoveryFailure }
+    const { processes } = result
+    const identities = [...capturedDescendants.values()].filter((captured) => {
+      const item = processes.find((process) => process.pid === captured.pid)
+      return sameIdentity(item, captured, observedAt)
+    })
+    return { status: 'known', identities }
+  }
+
+  function forceEndVerifiedWindowsProcess(captured) {
+    const observedAt = now()
+    const snapshotResult = snapshot()
+    if (!snapshotResult) return { status: 'unavailable', reason: discoveryFailure }
+    const { processes } = snapshotResult
+    const item = processes.find((process) => process.pid === captured.pid)
+    if (!item) return { status: 'gone' }
+    if (!sameIdentity(item, captured, observedAt)) return { status: 'changed' }
+    const result = adapter.forceEndProcessFamily(captured.pid)
+    return result?.status === 'ended'
+      ? { status: 'signalled' }
+      : { status: 'unavailable', reason: result?.reason ?? 'process termination unavailable on this platform' }
+  }
+
+  function stopCapturedWindowsDescendants() {
+    for (const captured of capturedDescendants.values()) {
+      const result = forceEndVerifiedWindowsProcess(captured)
+      if (result.status === 'unavailable') return result
+    }
+    return { status: 'complete' }
+  }
+
+  function waitUntilWindowsFamilyGone() {
+    const deadline = now() + stopTimeoutMs
+    let state = currentOwnedProcess()
+    let ownedDescendants = currentOwnedDescendants()
+    while ((state.status === 'owned' || state.status === 'gone')
+      && ownedDescendants.status === 'known'
+      && (state.status === 'owned' || ownedDescendants.identities.length)
+      && now() < deadline) {
+      wait(pollMs)
+      state = currentOwnedProcess()
+      ownedDescendants = currentOwnedDescendants()
+    }
+    return { state, ownedDescendants }
+  }
+
   function stop() {
     if (stopped) return []
     stopped = true
@@ -132,6 +225,36 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
         return [`app-server cleanup unavailable: ${reason}`]
       }
       let state = currentOwnedProcess()
+      if (adapter.platform === 'win32') {
+        if (state.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${discoveryFailure}`]
+        if (state.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
+        const descendantsBefore = currentOwnedDescendants()
+        if (descendantsBefore.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${descendantsBefore.reason}`]
+        if (state.status === 'gone' && descendantsBefore.identities.length === 0) return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker exited before cleanup; descendants cannot be safely discovered`]
+        if (state.status === 'owned') {
+          const rootResult = forceEndVerifiedWindowsProcess(identity)
+          if (rootResult.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
+          if (rootResult.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${rootResult.reason}`]
+        }
+        const descendantResult = stopCapturedWindowsDescendants()
+        if (descendantResult.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${descendantResult.reason}`]
+        let family = waitUntilWindowsFamilyGone()
+        if (family.state.status === 'unavailable' || family.ownedDescendants.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${family.ownedDescendants.reason ?? discoveryFailure}`]
+        if (family.state.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed during cleanup`]
+        if (family.state.status === 'gone' && family.ownedDescendants.identities.length === 0) return [`stopped broker/app-server process family pid ${identity.pid} started by this call`]
+        if (family.state.status === 'owned') {
+          const rootResult = forceEndVerifiedWindowsProcess(identity)
+          if (rootResult.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed during cleanup`]
+          if (rootResult.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${rootResult.reason}`]
+        }
+        const retryResult = stopCapturedWindowsDescendants()
+        if (retryResult.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${retryResult.reason}`]
+        family = waitUntilWindowsFamilyGone()
+        if (family.state.status === 'unavailable' || family.ownedDescendants.status === 'unavailable') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: ${family.ownedDescendants.reason ?? discoveryFailure}`]
+        if (family.state.status === 'changed') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed during cleanup`]
+        if (family.state.status === 'gone' && family.ownedDescendants.identities.length === 0) return [`force-stopped broker/app-server process family pid ${identity.pid} started by this call`]
+        return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: process family remained alive after forced termination`]
+      }
       if (state.status === 'gone') return [`broker/app-server process family pid ${identity.pid} already stopped`]
       if (state.status === 'unknown') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity unknown during cleanup`]
       if (state.status !== 'owned') return [`app-server cleanup unavailable for owned broker pid ${identity.pid}: broker identity changed before cleanup`]
@@ -153,5 +276,5 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     }
   }
 
-  return { env: { ...env, CLAUDE_PLUGIN_DATA: root }, capture, stop }
+  return { env: { ...externalModelEnv(env), CLAUDE_PLUGIN_DATA: root }, capture, stop }
 }

@@ -1,9 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { canonicalPath } from './helpers/canonical-path.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createSecondOpinionDependencies, listProcessRelationships, listProcessTable, runSecondOpinion } from '../../../../plugin/bin/lib/second-opinion-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -13,7 +14,7 @@ const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
 afterEach(() => {
   vi.restoreAllMocks()
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 function fixture(consented: boolean) {
@@ -98,6 +99,31 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 }
 
 describe('second-opinion advisor', () => {
+  it('gives the external Codex companion only its allow-listed environment', () => {
+    const adapter = createHostAdapter({ platform: process.platform })
+    const ownership = adapter.createCodexBrokerOwnership({
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      CODEX_HOME: '/codex-home',
+      CLAUDE_CODE_OAUTH_TOKEN: 'session credential',
+      ANTHROPIC_API_KEY: 'api credential',
+      ANTHROPIC_AUTH_TOKEN: 'auth credential',
+      COMPANY_VAULT_SECRET: 'unknown secret',
+    })
+    try {
+      expect(ownership.env).toMatchObject({ PATH: process.env.PATH })
+      if (process.env.HOME === undefined) expect(ownership.env).not.toHaveProperty('HOME')
+      else expect(ownership.env).toHaveProperty('HOME', process.env.HOME)
+      expect(ownership.env).not.toHaveProperty('CODEX_HOME')
+      expect(ownership.env).not.toHaveProperty('CLAUDE_CODE_OAUTH_TOKEN')
+      expect(ownership.env).not.toHaveProperty('ANTHROPIC_API_KEY')
+      expect(ownership.env).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN')
+      expect(ownership.env).not.toHaveProperty('COMPANY_VAULT_SECRET')
+    } finally {
+      ownership.stop()
+    }
+  })
+
   it('reads process discovery through the adapter supplied by its caller', () => {
     const expected = { supported: true, processes: [{ pid: 7, ppid: 1, elapsedMs: 2000, command: 'broker' }] }
     const adapter = { readProcessSnapshot: vi.fn(() => expected) }
@@ -222,6 +248,10 @@ describe('second-opinion advisor', () => {
 
   it('uses one fresh read-only Opus SDK query when lane consent is not given', async () => {
     const f = fixture(false)
+    const repoAlias = join(f.repo, '..', 'repo-alias')
+    symlinkSync(f.repo, repoAlias, 'dir')
+    f.repo = repoAlias
+    f.options.repo = repoAlias
     writeFileSync(join(f.repo, 'CLAUDE.md'), '# Guide\n')
     let queryInput: unknown
     const query = vi.fn((input) => {
@@ -235,7 +265,7 @@ describe('second-opinion advisor', () => {
 
     expect(query).toHaveBeenCalledOnce()
     expect(queryInput).toMatchObject({
-      prompt: `${join(f.repo, 'CLAUDE.md')} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
+      prompt: `${canonicalPath(join(f.repo, 'CLAUDE.md'))} is the repository's contributor guide; read it before planning or changing code.\n\nQuestion with facts and sources.`,
       options: {
         model: 'opus',
         effort: 'xhigh',
@@ -404,7 +434,10 @@ describe('second-opinion advisor', () => {
       expect(waitFor(() => lines(f.out).at(-1) === `EXIT=${expectedExit}`)).toBe(true)
     } finally {
       if (wrapper.pid && processExists(wrapper.pid)) process.kill(wrapper.pid, 'SIGKILL')
-      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (brokerPid && processExists(brokerPid)) {
+        if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
+        else process.kill(-brokerPid, 'SIGKILL')
+      }
       if (otherBroker?.pid && processExists(otherBroker.pid)) process.kill(-otherBroker.pid, 'SIGKILL')
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
@@ -416,7 +449,7 @@ describe('second-opinion advisor', () => {
     const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
       env: { ...process.env, ...f.env, HOME: f.repo },
       encoding: 'utf8',
-      timeout: 5_000,
+      timeout: process.platform === 'win32' ? 15_000 : 5_000,
     })
     expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
     const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
@@ -426,10 +459,13 @@ describe('second-opinion advisor', () => {
       expect(waitFor(() => !processExists(appPid))).toBe(true)
       expect(waitFor(() => !processExists(brokerPid))).toBe(true)
     } finally {
-      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (brokerPid && processExists(brokerPid)) {
+        if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
+        else process.kill(-brokerPid, 'SIGKILL')
+      }
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
-  })
+  }, process.platform === 'win32' ? 30_000 : 10_000)
 
   it('stops the detached broker app-server from the process exit hook', () => {
     const f = detachedBrokerFixture()
@@ -445,7 +481,7 @@ describe('second-opinion advisor', () => {
     const result = spawnSync(process.execPath, [harness], {
       env: { ...process.env, ...f.env, HOME: f.repo },
       encoding: 'utf8',
-      timeout: 5_000,
+      timeout: 15_000,
     })
     expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
     const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
@@ -455,10 +491,13 @@ describe('second-opinion advisor', () => {
       expect(waitFor(() => !processExists(appPid))).toBe(true)
       expect(waitFor(() => !processExists(brokerPid))).toBe(true)
     } finally {
-      if (brokerPid && processExists(brokerPid)) process.kill(-brokerPid, 'SIGKILL')
+      if (brokerPid && processExists(brokerPid)) {
+        if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
+        else process.kill(-brokerPid, 'SIGKILL')
+      }
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
-  })
+  }, 30_000)
 
   it('names output overflow and fails after terminating the owned companion family', async () => {
     const f = fixture(true)
