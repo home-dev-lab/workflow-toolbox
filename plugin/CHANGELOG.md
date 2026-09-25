@@ -5,8 +5,33 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.187.1] - 2026-09-25
+
+### Fixed
+- The 0.187.0 release CI was red on macOS and Windows; every job is green again on Linux, macOS and Windows. The Windows test step no longer hangs until its timeout: a hook module imported by a test ran its entry and blocked on stdin, and hook modules now run their entry only when invoked directly, compared by real path so a symlinked or short-name invocation still runs. The main-session guard inspects merges with an empty hooks directory and global config on every platform, so a repository's hooks cannot execute. Temporary-path comparisons tolerate macOS `/private/var` aliases and Windows short names, and the lane wait, process-enumeration and orphan-watch fixtures own their process trees.
+
 ### Changed
 - Start OpenCode and Codex external-model processes with a shared environment allow-list, excluding session Anthropic credentials and unrelated exported secrets; users can explicitly add required non-credential names with `WT_EXTERNAL_MODEL_ENV_ALLOW`. Proxy variables remain available, so credentials embedded in a proxy URL such as `user:password` reach the child. The remaining same-OS-user boundary, including readable credential files and sockets, requires the tracked OS-sandbox follow-up. The quota probe now prefers the active session's `CLAUDE_CODE_OAUTH_TOKEN` and never falls back to saved credentials when that token is refused. A launch that names a model receives that provider's credential and required extras (Azure: key plus resource name), resolved from OpenCode's offline provider registry with a logged `<PROVIDER>_API_KEY` fallback; a registry entry can never authorize another known provider's key or a session Anthropic credential in any letter case. `wt-deep-search` forwards a provider credential only for an explicit model or `OPENCODE_MODEL`; with neither, it passes none, as before.
+
+### Quality
+
+Measured on the release tree against the stored baseline. No ratchet was loosened.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 127 -> 125 | -2 |
+| Cognitive complexity | 261 -> 266 | +5 |
+| Biggest file (lines) | 2729 -> 2729 | 0 |
+| Longest function (lines) | 708 -> 709 | +1 |
+| Max depth | 7 -> 7 | 0 |
+| Max params | 7 -> 7 | 0 |
+| ESLint warnings | 687 -> 687 | 0 |
+| Duplication % | 2.89 -> 2.71 | -0.18 |
+| Knip issues | 221 -> 218 | -3 |
+| Dependency cycles | 2 -> 2 | 0 |
+| Coverage lines % | 42 -> 81.06 | +39.06 |
+
+Two judges went the wrong way, both unchanged since 0.187.0: cognitive complexity (+5) and the longest function (+1 line). The release tree's full suite ran beside a concurrent external lane at load average 10: two, then three different process-spawning tests hit their 10-second bounds, and the failing set moved between runs, while the same code passed the clean develop certification (7,597 passed). The SDK pilot runner remains experimental.
 
 ## [0.187.0] - 2026-09-24
 
