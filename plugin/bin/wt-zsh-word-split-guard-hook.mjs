@@ -3,6 +3,7 @@
 // unquoted where zsh does not split it. This is a lexer approximation, not a zsh parser.
 // It sees same-command assignments only and cannot inspect options enabled in a user's .zshrc.
 
+import { pathToFileURL } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 import { readStdinJson } from './lib/host/read-stdin-json.mjs'
@@ -445,4 +446,10 @@ function main() {
   })
 }
 
-runFailOpenHook(GUARD, main)
+// Entry-guard: run only when invoked directly as a hook, so the module is importable by
+// tests (e.g. for `analyze`) without executing (and blocking on) stdin. Same idiom as
+// wt-verifier-cli-guard-hook.mjs and wt-adopt-check-hook.mjs.
+const invokedPath = process.argv[1]
+if (invokedPath !== undefined && import.meta.url === pathToFileURL(invokedPath).href) {
+  runFailOpenHook(GUARD, main)
+}
