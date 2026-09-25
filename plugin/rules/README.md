@@ -16,6 +16,21 @@ live elsewhere (in the operator's own notes), never in the shipped file.
 versioned, fingerprinted banner so a later `--check` can tell an adopted copy is
 behind the plugin (and `--install` refreshes only unedited copies).
 
+Large rules may be split into a reasoning-focused core and an `-at-act` half.
+The adjacent `-at-act.spec.json` declares when an on-demand engine can serve the
+act-bound half. The installer still adopts every Markdown half statically, so
+using no on-demand engine loses no directive.
+
+Every Bash trigger uses the same **shell-aware command-head** fragment. It anchors at the start of
+each line with the `m` flag, skips balanced single- and double-quoted text while walking to shell
+separators (`;`, `&&`, `||`, `|`, single `&`, `(`, or newline), then accepts environment
+assignments and the wrappers `timeout`, `nice`, `time`, `nohup`, `setsid`, `sudo`, `env`, `npx`,
+`pnpm exec`, and `bash -c`/`sh -c`. Keeping quote traversal inside the anchored fragment prevents
+command-looking text in arguments such as `git commit -m "fix; pnpm test"` or
+`grep '&& git merge'` from becoming a command head. The shared corpus in
+`shipped-rule-splits.test.ts` locks the identical fragment and its behavior across every Bash
+spec.
+
 To adopt these as editable rules, run the `workflow-toolbox:adopt` skill:
 
 ```bash

@@ -8,9 +8,3 @@ external-CLI invocation is proven) with a directive the hook's own message does 
 own provenance." The paragraph carries no blank line internally, so the whole-paragraph-only
 split invariant leaves nothing separable without dropping that recommendation. Left whole in
 the rule.
-
-## Executor report lessons
-
-Executor templates can require a report section while a hand-written executor-lane brief omits
-it. Requiring the section in the brief makes the report harvestable; processing one report at its
-own lane integration prevents an accumulated set of reports from becoming an unreviewed backlog.

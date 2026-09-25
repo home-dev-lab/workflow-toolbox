@@ -1,0 +1,9 @@
+{
+  "on-demand": {
+    "triggers": [
+      { "kind": "tool", "tool": "^mcp__(?:planka|jira|github|atlassian)__", "unconditional": true, "before-first-act": true },
+      { "kind": "bash", "flags": "m", "before-first-act": true, "regex": "^(?:(?:[^'\";&|()\\n]|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')*(?:;|&&|\\|\\||\\||&(?!&)|\\()\\s*)*\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+))\\s+)*(?:(?:timeout(?:\\s+\\S+)?|nice(?:\\s+(?:-[^\\s]+|\\d+))*|time|nohup|setsid|sudo(?:\\s+-[^\\s]+)*|npx|pnpm\\s+exec|env(?:\\s+(?:-[^\\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+)))*)\\s+|(?:ba)?sh\\s+-c\\s+['\"]\\s*)*(?:gh\\s+(?:issue|project)\\b|jira\\b)" }
+    ]
+  },
+  "compliance": { "kind": "none", "reason": "Transitions, closure updates, reconciliation, and archival govern tracker mutations." }
+}

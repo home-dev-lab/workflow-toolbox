@@ -12,8 +12,8 @@
 //
 // What THIS test locks instead, and keeps meaningful as content evolves:
 //   (a) every "Rationale and field cases:" / "Enforced by ... Rationale and field cases:"
-//       pointer line in a plugin/rules/wt-*.md names a `§<heading>` that exists as a
-//       "## <heading>" line in the matching plugin/docs/rules-rationale/<rule>.md — a
+//       pointer line in a plugin/rules/wt-*.md names a doc path and `§<heading>` that exist as a
+//       plugin/docs/rules-rationale file and "## <heading>" line — a
 //       pointer never dangles.
 //   (b) every "## <heading>" in a rationale doc is referenced by at least one §pointer
 //       somewhere in its rule — no orphan section nobody points at.
@@ -36,7 +36,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const RULES_DIR = join(REPO_ROOT, 'plugin/rules')
 const DOCS_DIR = join(REPO_ROOT, 'plugin/docs/rules-rationale')
 
-const POINTER_RE = /§(.+)\.\s*$/
+const POINTER_RE = /`docs\/wt\/([^`]+\.md)` §(.+?)\.\s*$/
 const HEADING_RE = /^##\s+(.+?)\s*$/
 
 function ruleNames(): string[] {
@@ -46,11 +46,11 @@ function ruleNames(): string[] {
     .sort()
 }
 
-function extractPointerHeadings(ruleText: string): string[] {
-  const out: string[] = []
-  for (const line of ruleText.split('\n')) {
+function extractPointers(ruleText: string): Array<{ doc: string, heading: string }> {
+  const out: Array<{ doc: string, heading: string }> = []
+  for (const line of ruleText.replace(/\n(?=`docs\/wt\/)/g, ' ').split('\n')) {
     const m = POINTER_RE.exec(line)
-    if (m && m[1] !== undefined) out.push(m[1].trim())
+    if (m?.[1] && m[2]) out.push({ doc: m[1], heading: m[2].trim() })
   }
   return out
 }
@@ -66,6 +66,7 @@ function extractDocHeadings(docText: string): string[] {
 
 describe('rules-rationale-referential (shipped-rules cut, 2026-09-02)', () => {
   const names = ruleNames()
+  const pointers = names.flatMap((name) => extractPointers(readFileSync(join(RULES_DIR, `${name}.md`), 'utf8')))
 
   it('every rule file has exactly one matching rationale doc, and vice versa', () => {
     const docNames = readdirSync(DOCS_DIR)
@@ -80,7 +81,7 @@ describe('rules-rationale-referential (shipped-rules cut, 2026-09-02)', () => {
       const ruleText = readFileSync(join(RULES_DIR, `${name}.md`), 'utf8')
       const docText = readFileSync(join(DOCS_DIR, `${name}.md`), 'utf8')
 
-      const pointerHeadings = extractPointerHeadings(ruleText)
+      const pointerHeadings = pointers.filter((pointer) => pointer.doc === `${name}.md`).map((pointer) => pointer.heading)
       const docHeadings = extractDocHeadings(docText)
 
       // (a) every pointer names a heading that exists in the doc

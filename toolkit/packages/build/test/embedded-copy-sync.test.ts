@@ -33,7 +33,8 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const ACTIVE_ROOT = process.env.EMBEDDED_COPY_SYNC_ROOT ?? REPO_ROOT
 const PLUGIN_ROOT = join(REPO_ROOT, 'plugin')
 
-const MARKER_RE = /<!--\s*embedded-copy:([\w.-]+):start\s*-->\n([\s\S]*?)<!--\s*embedded-copy:\1:end\s*-->/g
+// The lookahead permits a canonical block nested at its ladder position inside a larger block.
+const MARKER_RE = /(?=<!--\s*embedded-copy:([\w.-]+):start\s*-->\n([\s\S]*?)<!--\s*embedded-copy:\1:end\s*-->)/g
 
 interface Block {
   file: string // repo-relative path
@@ -67,11 +68,6 @@ const REQUIRED_CLAUSES: Record<string, ClauseRequirement[]> = {
       pattern: /Gates\s+\(test\/typecheck\/lint by exit code\) and your own diff-read are unconditional at every rung/i,
     },
     {
-      id: 'mutation-red-proof',
-      description: 'method diversity still requires proving each fix red in isolation',
-      pattern: /every fix is proven RED\s+in isolation before it is accepted as green/i,
-    },
-    {
       id: 'axis-disclosure',
       description: 'the report still has to say which axes it actually varied',
       pattern: /An unstated axis reads as an axis covered\./i,
@@ -85,6 +81,13 @@ const REQUIRED_CLAUSES: Record<string, ClauseRequirement[]> = {
       id: 'breadth-axis',
       description: 'breadth still remains an independent verification axis',
       pattern: /Depth and breadth are independent: assess both, and neither substitutes for the other\./i,
+    },
+  ],
+  'mutation-red-proof': [
+    {
+      id: 'mutation-red-proof',
+      description: 'every fix still has to be proven red in isolation',
+      pattern: /every fix is proven RED in isolation before it is accepted as green/i,
     },
   ],
 }
@@ -208,6 +211,10 @@ describe('embedded-copy-sync — marker-delimited duplicates stay identical to t
     // (the whole gate would otherwise silently pass on nothing) or the convention moved —
     // either way this must fail loudly, not go green on an empty set.
     expect(canonicalBlocks.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('keeps the mutation proof as its own canonical embedded-copy block', () => {
+    expect(canonicalBlocks.map((block) => block.id)).toContain('mutation-red-proof')
   })
 
   it('never counts a canonical file as its own embedded copy', () => {

@@ -145,7 +145,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## A gate is its exit code, never its printed text",
       "recipients": [
         "pilot",
@@ -181,7 +181,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## Before measuring fix, prove subject RUN that fix",
       "recipients": [
         "pilot",

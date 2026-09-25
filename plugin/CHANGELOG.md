@@ -5,6 +5,11 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- Split the six large shipped rules into reasoning-focused core files and reviewed `-at-act` halves with adjacent trigger specs; adopt still installs both halves statically when no on-demand engine is present.
+- Keep decision-time and report-time obligations in the always-loaded halves, preserve whole paragraphs across the split, and scope on-demand triggers to real command and brief-writing acts.
+- Refuse each governed act once before execution, and use one shell-aware command-head pattern across Bash triggers so wrappers, assignments, separators, and quoted command-like text are handled consistently.
+
 ## [0.187.2] - 2026-09-25
 
 ### Added

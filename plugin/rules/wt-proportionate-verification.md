@@ -41,6 +41,7 @@ wrote probe and expected answer in one motion. That is where wrong instrument an
 agree perfectly. Third tell: measurement landing exactly where you hoped deserve the second
 instrument MORE, not less.
 
+<!-- embedded-copy:mutation-red-proof:start -->
 **2. Method diversity — strongest lever on what remain.**
 Reach the same question by genuinely different ROUTES: static reading, dynamic execution,
 property/proof, fuzzing, differential compare against known-good. Two agents reading same code
@@ -59,6 +60,7 @@ Mutating a whole module to hunt surviving mutants = genuinely different, much la
 the cheap per-fix form is not a down-payment on the expensive one.
 This is the operational answer to "was the failure it prevent actually exercised" — a question a
 green suite cannot settle about itself.
+<!-- embedded-copy:mutation-red-proof:end -->
 
 **3. Hypothesis independence.** Each verifier construct its OWN explanation BEFORE seeing anyone
 else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on
@@ -134,7 +136,7 @@ what it was pointed at, however deep it go.
   low-risk change can still land on a surface deserving a full breadth sweep. A surface nobody
   else touch may need only the change's own depth.
 - Breadth finding handled like any finding: fix in scope, record what is not. Never fold an
-  out-of-scope find into a silent extra fix. Its lock proven red the same way as any other fix.
+  out-of-scope find into a silent extra fix. Its regression lock is proven red before acceptance.
   No separate standard here.
 
 Never licenses skipping verification: gates (test / typecheck / lint by exit code) and your own
@@ -154,3 +156,6 @@ or outward-facing changes. Lower rung otherwise.
      This note previously named two paths that a later reorganisation emptied, so it sent a
      reader to files that no longer existed while reading perfectly plausible. A tree move is
      exactly the kind of change nobody re-reads as a change to a safety mechanism. -->
+
+Its act-bound half is `wt-proportionate-verification-at-act.md`, loaded alongside this file or
+served on demand where an engine is installed.

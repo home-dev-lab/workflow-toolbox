@@ -27,10 +27,10 @@ function collapseWhitespace(text: string): string {
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const RULE = collapseWhitespace(
-  readFileSync(join(REPO_ROOT, 'plugin/rules/wt-delegation-ladder.md'), 'utf8'),
+  readFileSync(join(REPO_ROOT, 'plugin/rules/wt-delegation-ladder-at-act.md'), 'utf8'),
 )
 
-describe('wt-delegation-ladder.md states cross-restart revival is reproduced', () => {
+describe('wt-delegation-ladder-at-act.md states cross-restart revival is reproduced', () => {
   it('never calls the observation "unreproduced" as a live claim', () => {
     // The word may still appear inside a corrective aside ("no longer calls this
     // unreproduced") — what must NOT exist is the retired claim asserting it as current fact.
