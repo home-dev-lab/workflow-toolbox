@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- Turn deep grounding into an automatic, configurable behavior: a three-layer source registry and `wt-grounding-sources.mjs` discovery CLI, concise prediction-first skill orders with dated fiche refresh rules, a cooldown-aware prompt injection, and an observe-by-default pre-send check with an opt-in once-satisfiable refusal. The check journals would-refuse/refused decisions for later tuning; no always-loaded rule is added.
+
 ### Changed
 - Split the six large shipped rules into reasoning-focused core files and reviewed `-at-act` halves with adjacent trigger specs; adopt still installs both halves statically when no on-demand engine is present.
 - Keep decision-time and report-time obligations in the always-loaded halves, preserve whole paragraphs across the split, and scope on-demand triggers to real command and brief-writing acts.

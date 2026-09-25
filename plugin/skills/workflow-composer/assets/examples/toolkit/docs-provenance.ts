@@ -51,6 +51,21 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-grounding-sources.mjs',
+    status: 'mapped',
+    reason: 'The deep-grounding source-registry reference documents list, init, layering, and missing dependency reporting.',
+  },
+  {
+    script: 'plugin/bin/wt-grounding-prompt-hook.mjs',
+    status: 'mapped',
+    reason: 'The deep-grounding skill and source-registry reference document first-prompt injection and cooldown reminders.',
+  },
+  {
+    script: 'plugin/bin/wt-grounding-pre-send-hook.mjs',
+    status: 'mapped',
+    reason: 'The deep-grounding source-registry reference documents the outbound refusal, retry behavior, switch, and journal.',
+  },
+  {
     script: 'plugin/bin/wt-config.mjs',
     status: 'mapped',
     reason: 'The README documents the effective-value table, JSON output, and orphaned pluginConfigs report.',
@@ -692,6 +707,21 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     sources: ['plugin/bin/wt-config.mjs', 'plugin/bin/wt-config-context-hook.mjs', 'plugin/bin/lib/plugin-options.mjs'],
     docs: ['README.md'],
+  },
+  {
+    sources: [
+      'plugin/bin/wt-grounding-sources.mjs',
+      'plugin/bin/wt-grounding-prompt-hook.mjs',
+      'plugin/bin/wt-grounding-pre-send-hook.mjs',
+      'plugin/bin/lib/grounding-sources.mjs',
+      'plugin/bin/lib/host/grounding-sources.mjs',
+      'plugin/config/grounding-sources.json',
+      'plugin/skills/deep-grounding/',
+    ],
+    docs: [
+      'plugin/skills/deep-grounding/SKILL.md',
+      'plugin/skills/deep-grounding/references/source-registry.md',
+    ],
   },
   {
     sources: [

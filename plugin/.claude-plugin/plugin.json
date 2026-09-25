@@ -16,6 +16,34 @@
     "subagents"
   ],
   "userConfig": {
+    "grounding_sources": {
+      "type": "file",
+      "title": "Deep-grounding user source registry",
+      "required": false,
+      "description": "JSON source registry merged between plugin defaults and .claude/grounding-sources.json. Empty uses the Claude config directory fallback."
+    },
+    "grounding_prompt_cooldown": {
+      "type": "number",
+      "title": "Deep-grounding reminder cooldown",
+      "default": 5,
+      "min": 2,
+      "required": false,
+      "description": "Prompt count between short deep-grounding reminders after the first prompt."
+    },
+    "grounding_pre_send": {
+      "type": "string",
+      "title": "Deep-grounding outbound check mode",
+      "default": "observe",
+      "required": false,
+      "description": "observe journals what the guard would decide without blocking; refuse blocks once; off disables it."
+    },
+    "grounding_outbound_tools": {
+      "type": "string",
+      "title": "Additional outbound tool patterns",
+      "default": "",
+      "required": false,
+      "description": "Comma- or newline-separated MCP tool-name globs treated as outbound claim sends."
+    },
     "executor_lane_consent": {
       "type": "boolean",
       "title": "Allow executor lane",
@@ -302,6 +330,16 @@
   },
   "hooks": {
     "PreToolUse": [
+      {
+        "matcher": "mcp__.*|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-grounding-pre-send-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [
@@ -790,6 +828,15 @@
       }
     ],
     "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-grounding-prompt-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "hooks": [
           {

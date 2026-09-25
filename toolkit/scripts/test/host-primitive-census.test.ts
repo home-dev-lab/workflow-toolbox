@@ -87,8 +87,9 @@ describe('raw host primitive quality ratchet', () => {
   it('pins the measured ceiling to the tree that ships', () => {
     const result = scanHostPrimitives(PLUGIN_ROOT)
 
-    // external-model-env.mjs is a legitimate new perimeter file; provider-definitions.mjs stays inside the host adapter.
-    expect(result.perimeterFiles).toBe(227)
+    // The grounding CLI, two hooks, and pure public re-export add four perimeter files;
+    // their host operations stay behind bin/lib/host, so the primitive ceiling is unchanged.
+    expect(result.perimeterFiles).toBe(231)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

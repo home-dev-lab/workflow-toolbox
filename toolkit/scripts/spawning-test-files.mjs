@@ -45,6 +45,7 @@ export const spawningTestFiles = [
   'packages/build/test/command-repeat-check.test.ts',
   'packages/build/test/commit-signature-check.test.ts',
   'packages/build/test/concurrent-test-guard-hook.test.ts',
+  'packages/build/test/deep-grounding.test.ts',
   'packages/build/test/env-prerequisite-drift-hook.test.ts',
   'packages/build/test/find-newermt-format-guard-hook.test.ts',
   'packages/build/test/frozen-fidelity-bundle.test.ts',
