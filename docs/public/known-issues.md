@@ -258,6 +258,10 @@ Warns, never blocks, when a brief asks a spawned agent to report, reply, send, m
 
 Warns, never blocks, when a read-only, do-not-modify, or investigate-only brief targets a type with a wide allow-list (`*`, `Bash`, `Write`, `Edit`, or an MCP tool), or with no `tools:` line at all. The latter is separately journaled as `spawn-readonly-no-allowlist`, because an absent declaration inherits the whole surface. Narrow read-only lists, quoted examples, and unresolved definitions stay silent.
 
+### `wt-right-sized-spawn-guard-hook.mjs` — expensive-default spawn blocker (PreToolUse on Agent)
+
+Refuses a new absent-type or `general-purpose` Agent spawn unless its prompt contains an unfenced `general-purpose because: <reason>` sentence. Resumes and named agent types pass untouched. The refusal names the plugin-scoped right-sized agents and explains that a newly created dedicated agent requires a new session for host discovery. Its manifest registration has a five-second timeout so an unclosed stdin cannot hold the host indefinitely; timeout and internal-error paths fail open.
+
 ### `wt-workflow-model-guard-hook.mjs` — inherited-model blocker (PreToolUse on Workflow)
 
 Refuses a Workflow launch unless `args.perAgent.model` is a non-empty string. `models` and `effort` alone do not satisfy the floor because an unnamed role would still inherit the session model. The `wt-observe launch` path applies the same refusal and offers `--allow-inherited-model` for an explicit one-call override.

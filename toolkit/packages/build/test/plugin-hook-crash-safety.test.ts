@@ -280,6 +280,7 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
     case 'wt-spawn-channel-guard-hook.mjs':
     case 'wt-spawn-readonly-guard-hook.mjs':
     case 'wt-nested-spawn-guard-hook.mjs':
+    case 'wt-right-sized-spawn-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse', tool_name: 'Agent', cwd: sandbox.projectDir,
         tool_input: { subagent_type: 'verify-strict', prompt: 'Inspect and report back.' },

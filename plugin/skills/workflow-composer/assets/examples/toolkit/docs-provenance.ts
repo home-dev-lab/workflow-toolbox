@@ -450,6 +450,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this warn-only PreToolUse Agent read-only boundary advisory.',
   },
   {
+    script: 'plugin/bin/wt-right-sized-spawn-guard-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents this PreToolUse expensive-default Agent spawn blocker.',
+  },
+  {
     script: 'plugin/bin/wt-workflow-model-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this warn-only PreToolUse Workflow inherited-model advisory.',
@@ -1021,6 +1026,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
        'plugin/bin/wt-spawn-capability-guard-hook.mjs',
        'plugin/bin/wt-spawn-channel-guard-hook.mjs',
        'plugin/bin/wt-spawn-readonly-guard-hook.mjs',
+       'plugin/bin/wt-right-sized-spawn-guard-hook.mjs',
        'plugin/bin/wt-workflow-model-guard-hook.mjs',
        'plugin/bin/wt-nested-spawn-guard-hook.mjs',
       'plugin/bin/wt-spawn-shape-guard-hook.mjs',

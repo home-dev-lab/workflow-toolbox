@@ -88,7 +88,7 @@ describe('raw host primitive quality ratchet', () => {
     const result = scanHostPrimitives(PLUGIN_ROOT)
 
     // external-model-env.mjs is a legitimate new perimeter file; provider-definitions.mjs stays inside the host adapter.
-    expect(result.perimeterFiles).toBe(226)
+    expect(result.perimeterFiles).toBe(227)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 
