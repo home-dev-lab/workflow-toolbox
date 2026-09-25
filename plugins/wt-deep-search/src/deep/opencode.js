@@ -81,6 +81,7 @@ function processFamilyExists(pid, platform = process.platform, kill = process.ki
   if (platform === 'win32') return true;
   try { kill(-pid, 0); return true; } catch (error) {
     if (error?.code === 'ESRCH') return false;
+    if (error?.code === 'EPERM') return true;
     throw error;
   }
 }
@@ -135,7 +136,7 @@ export function startOpencode(options, deps = {}) {
   const resolveCommandShim = deps.resolveCommandShim ?? resolveWindowsCommandShim;
   const graceMs = deps.terminationGraceMs ?? TERMINATION_GRACE_MS;
   const signalFamily = deps.signalProcessFamily ?? ((pid, signal) => signalProcessFamily(pid, signal, platform));
-  const familyExists = deps.processFamilyExists ?? ((pid) => processFamilyExists(pid, platform));
+  const familyExists = deps.processFamilyExists ?? ((pid) => processFamilyExists(pid, platform, deps.kill));
   const log = open(logPath, 'w');
   let child;
   try {

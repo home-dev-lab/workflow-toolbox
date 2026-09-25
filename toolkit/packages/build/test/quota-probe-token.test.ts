@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-quota-probe.mjs')
@@ -30,7 +31,7 @@ globalThis.fetch = async (_url, options) => {
 }
 
 function run(config: string, stub: string, mode: string) {
-  return spawnSync(process.execPath, ['--import', stub, CLI], {
+  return spawnSync(process.execPath, ['--import', pathToFileURL(stub).href, CLI], {
     encoding: 'utf8',
     env: { ...process.env, CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_OAUTH_TOKEN: 'session credential', STUB_MODE: mode },
   })

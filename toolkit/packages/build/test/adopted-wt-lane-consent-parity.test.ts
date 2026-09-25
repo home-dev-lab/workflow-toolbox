@@ -273,6 +273,7 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     chmodSync(join(bin, 'opencode'), 0o755)
     f.env.PATH = `${bin}${delimiter}${process.env.PATH ?? ''}`
     f.env.WT_ADOPTED_SEEN_FENCE = seen
+    f.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_ADOPTED_SEEN_FENCE'
     f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     expect(launch(f).status).toBe(0)

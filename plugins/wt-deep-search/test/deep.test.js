@@ -566,6 +566,35 @@ test('opencode timeout escalates to SIGKILL and withholds the marker until the f
   assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
 });
 
+test('a POSIX EPERM liveness probe means the process family still exists', () => {
+  const timers = [];
+  const writes = [];
+  let probes = 0;
+  startOpencode(
+    { prompt: 'full brief', dir: '/work', logPath: '/state/deep-1.log', timeoutMs: 90_000 },
+    {
+      appendFileSync: (_path, value) => writes.push(value),
+      clearTimeout() {},
+      closeSync() {},
+      kill: () => {
+        probes += 1;
+        throw Object.assign(new Error('not permitted'), { code: probes === 1 ? 'EPERM' : 'ESRCH' });
+      },
+      openSync: () => 8,
+      platform: 'darwin',
+      setTimeout: (callback) => { timers.push(callback); return timers.length; },
+      signalProcessFamily() {},
+      spawn: () => ({ pid: 44, once() {}, unref() {} }),
+    },
+  );
+
+  timers.shift()();
+  timers.shift()();
+  assert.deepEqual(writes, []);
+  timers.shift()();
+  assert.deepEqual(writes, ['\nTIMEOUT=90000\nEXIT=124\n']);
+});
+
 test('Windows timeout forces the process tree when it has not exited after graceful taskkill', () => {
   let onExit;
   const timers = [];
