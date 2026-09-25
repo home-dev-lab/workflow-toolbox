@@ -48,5 +48,9 @@ card, note still presenting X as live. Removal/rename card must name its blast r
 referencing retired concept), sweep them: fix open ones, add "superseded by #<id>" pointer to
 closed ones without rewriting their history.
 
+Tracker unreachable? Buffer task state in local file under dated "unsynced" section, fold it
+back into board on next session that can reach it — verify each entry landed before purging
+buffer.
+
 Its act-bound half is `wt-task-tracking-at-act.md`, loaded alongside this file or served on demand
 where an engine is installed.

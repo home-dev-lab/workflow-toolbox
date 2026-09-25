@@ -21,6 +21,16 @@ The adjacent `-at-act.spec.json` declares when an on-demand engine can serve the
 act-bound half. The installer still adopts every Markdown half statically, so
 using no on-demand engine loses no directive.
 
+Every Bash trigger uses the same **shell-aware command-head** fragment. It anchors at the start of
+each line with the `m` flag, skips balanced single- and double-quoted text while walking to shell
+separators (`;`, `&&`, `||`, `|`, single `&`, `(`, or newline), then accepts environment
+assignments and the wrappers `timeout`, `nice`, `time`, `nohup`, `setsid`, `sudo`, `env`, `npx`,
+`pnpm exec`, and `bash -c`/`sh -c`. Keeping quote traversal inside the anchored fragment prevents
+command-looking text in arguments such as `git commit -m "fix; pnpm test"` or
+`grep '&& git merge'` from becoming a command head. The shared corpus in
+`shipped-rule-splits.test.ts` locks the identical fragment and its behavior across every Bash
+spec.
+
 To adopt these as editable rules, run the `workflow-toolbox:adopt` skill:
 
 ```bash

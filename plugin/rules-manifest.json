@@ -45,7 +45,7 @@
       ]
     },
     {
-      "source": "rules/wt-sdlc-at-act.md",
+      "source": "rules/wt-sdlc.md",
       "heading": "## Implement and verify",
       "recipients": [
         "pilot",

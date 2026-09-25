@@ -33,7 +33,8 @@ const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const ACTIVE_ROOT = process.env.EMBEDDED_COPY_SYNC_ROOT ?? REPO_ROOT
 const PLUGIN_ROOT = join(REPO_ROOT, 'plugin')
 
-const MARKER_RE = /<!--\s*embedded-copy:([\w.-]+):start\s*-->\n([\s\S]*?)<!--\s*embedded-copy:\1:end\s*-->/g
+// The lookahead permits a canonical block nested at its ladder position inside a larger block.
+const MARKER_RE = /(?=<!--\s*embedded-copy:([\w.-]+):start\s*-->\n([\s\S]*?)<!--\s*embedded-copy:\1:end\s*-->)/g
 
 interface Block {
   file: string // repo-relative path

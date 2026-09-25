@@ -24,7 +24,3 @@ comments saying same thing.
 
 Archive Done cards; never hard-delete. Closed card is durable record of how work went — thin
 pointer note isn't a substitute — deleting it destroys that history.
-
-Tracker unreachable? Buffer task state in local file under dated "unsynced" section, fold it
-back into board on next session that can reach it — verify each entry landed before purging
-buffer.

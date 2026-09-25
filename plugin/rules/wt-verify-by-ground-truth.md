@@ -17,7 +17,7 @@ row that must be PRESENT when mode is truncation; row that must be ABSENT when m
 over-matching. Same family as a check readable in both outcomes; this applies it to choice of
 witness.
 Misread code not spoil one result. It retroactively VOID every "gates green" claim built on the
-same evidence path.
+same capture path.
 
 **Comparing two arms — record the condition beside each result, and alternate the arms.** One run
 of each, taken in sequence, is not two readings of two arms; it is one reading of the machine taken
@@ -181,6 +181,8 @@ next reader trust when checking quickly. So it mislead exactly when it matter.
 
 This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
 needed: the sentence is reassuring.
+
+## At-act companion
 
 Its act-bound half is `wt-verify-by-ground-truth-at-act.md`, loaded alongside this file or served
 on demand where an engine is installed.

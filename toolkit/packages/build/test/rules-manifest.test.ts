@@ -1,5 +1,6 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +16,15 @@ const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const PLUGIN_ROOT = join(ROOT, 'plugin')
 const roots: string[] = []
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
+// Paragraph multisets composed for each role from the pre-split tree at 434b5cf2^.
+const PRE_SPLIT_ROLE_FIXTURE = {
+  pilot: { count: 56, union: '49e9f1769b5b246fdb5c702233ae0e41651bef31c028819111475ad582b0c33a' },
+  critic: { count: 14, union: '5141f35652e4cf9f8a5227535941e5fb63f4346eb8ecea0edd133c935eecd036' },
+  tdd: { count: 35, union: '7b6ed8c25ce97d99902b19bb7e012685062bde50f6c126b18b7de85c038903a4' },
+  review: { count: 27, union: 'eefd26e5ff6e36452a8c4df8864440c6b517181172659ce91562ec4a983cec82' },
+  refutation: { count: 27, union: 'eefd26e5ff6e36452a8c4df8864440c6b517181172659ce91562ec4a983cec82' },
+} as const
+const digest = (text: string) => createHash('sha256').update(text).digest('hex')
 const section = (source: string, heading: string, recipients: string[], triggers: string[], level = 'test') => ({ source, heading, recipients, triggers, level, section: `${heading}\n\nExact rule bytes.\n` })
 
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -64,7 +74,7 @@ describe('SDK role rules manifest', () => {
     const contract = readFileSync(join(PLUGIN_ROOT, 'autonomy', 'PILOT-CONTRACT.md'), 'utf8')
     const composed = composeStandingPrompt(contract, loadRules({ shippedRoot: PLUGIN_ROOT }))
     expect(Buffer.byteLength(contract)).toBe(6135)
-    expect(Buffer.byteLength(composed)).toBe(8380)
+    expect(Buffer.byteLength(composed)).toBe(8367)
     for (const heading of ['## Understand before coding', '## Plan, task, and test', '## Implement and verify']) expect(composed).toContain(heading)
   })
 
@@ -121,6 +131,17 @@ describe('SDK role rules manifest', () => {
     }
   })
 
+  it('preserves every pre-split SDK directive paragraph for every role', () => {
+    const rules = loadRules({ shippedRoot: PLUGIN_ROOT })
+    for (const [role, fixture] of Object.entries(PRE_SPLIT_ROLE_FIXTURE)) {
+      const paragraphs = rules
+        .filter((entry: { recipients: string[] }) => entry.recipients.includes(role))
+        .flatMap((entry: { section: string }) => entry.section.trim().split(/\n\s*\n/))
+      expect(paragraphs, `${role} paragraph count`).toHaveLength(fixture.count)
+      expect(digest(paragraphs.map(digest).sort().join('\n')), `${role} paragraph multiset`).toBe(fixture.union)
+    }
+  })
+
   it('keeps the architectural step-back rule in the TDD implementer lane', () => {
     const tdd = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: 'tdd', trigger: 'lane:tdd' })
     expect(tdd).toContain('# Step back to the architectural root')
@@ -130,6 +151,21 @@ describe('SDK role rules manifest', () => {
   it('keeps unexplained surprises in the SDK pilot verify phase', () => {
     const verify = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: 'pilot', trigger: 'phase:verify' })
     expect(verify).toContain('ANY surprise — good, bad, novel — is anomaly to EXPLAIN before you label it')
+  })
+
+  it.each(['review', 'refutation'])('keeps pre-split plan, task, and test directives in the SDK %s lane', (role) => {
+    const content = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient: role, trigger: `lane:${role}` })
+    expect(content).toContain('Make the simplest correct change using the project\'s conventions.')
+    expect(content).toContain('Tests cover relevant happy paths, branches, boundaries, invalid input, expected failures, and')
+  })
+
+  it.each([
+    ['pilot', 'phase:report'],
+    ['review', 'lane:review'],
+    ['refutation', 'lane:refutation'],
+  ])('does not leak a core footer into the SDK-composed %s prompt', (recipient, trigger) => {
+    const content = composeRules(loadRules({ shippedRoot: PLUGIN_ROOT }), { recipient, trigger })
+    expect(content).not.toContain('Its act-bound half is')
   })
 })
 

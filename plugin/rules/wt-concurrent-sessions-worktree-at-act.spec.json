@@ -1,8 +1,8 @@
 {
   "on-demand": {
     "triggers": [
-      { "kind": "tool", "tool": "^Agent$", "unconditional": true },
-      { "kind": "bash", "regex": "(?:^|(?:;|&&|\\|)\\s*|\\(\\s*)(?:git(?:\\s+(?:(?:-C|-c|--git-dir|--work-tree|--config-env)\\s+\\S+|--(?:exec-path|namespace|super-prefix)=\\S+|--(?:literal-pathspecs|no-pager)))*\\s+(?:worktree|merge|rebase|reset|pull)\\b|gh\\s+pr\\s+merge\\b)" }
+      { "kind": "tool", "tool": "^Agent$", "unconditional": true, "before-first-act": true },
+      { "kind": "bash", "flags": "m", "before-first-act": true, "regex": "^(?:(?:[^'\";&|()\\n]|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')*(?:;|&&|\\|\\||\\||&(?!&)|\\()\\s*)*\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+))\\s+)*(?:(?:timeout(?:\\s+\\S+)?|nice(?:\\s+(?:-[^\\s]+|\\d+))*|time|nohup|setsid|sudo(?:\\s+-[^\\s]+)*|npx|pnpm\\s+exec|env(?:\\s+(?:-[^\\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+)))*)\\s+|(?:ba)?sh\\s+-c\\s+['\"]\\s*)*(?:git(?:\\s+(?:(?:-C|-c|--git-dir|--work-tree|--config-env)\\s+\\S+|--(?:git-dir|work-tree|exec-path|namespace|super-prefix)=\\S+|--(?:literal-pathspecs|no-pager)))*\\s+(?:worktree|merge|rebase|reset|pull)\\b|gh\\s+pr\\s+merge\\b)" }
     ]
   },
   "compliance": { "kind": "none", "reason": "Worktree creation, spawn-base correction, and reintegration are act-bound procedures." }

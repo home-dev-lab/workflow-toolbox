@@ -1,6 +1,7 @@
 # wt-sdlc-at-act - rationale and field cases
 
-The operative directive lives in `plugin/rules/wt-sdlc-at-act.md`.
+The operative end-to-end directive lives in `plugin/rules/wt-sdlc.md`; this file retains its field
+case because that directive was formerly in the at-act half.
 
 ## Real sources expose integration failures
 

@@ -1,7 +1,7 @@
 {
   "on-demand": {
     "triggers": [
-      { "kind": "bash", "regex": "(?:^|(?:;|&&|\\|)\\s*|\\(\\s*)(?:vitest|jest|pytest|bun\\s+test|node\\s+--test|make\\s+test|go\\s+test|cargo\\s+test|(?:pnpm|npm|yarn)(?:\\s+(?:-C|--filter)\\s+\\S+)*\\s+(?:run\\s+)?test)\\b" }
+      { "kind": "bash", "flags": "m", "before-first-act": true, "regex": "^(?:(?:[^'\";&|()\\n]|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')*(?:;|&&|\\|\\||\\||&(?!&)|\\()\\s*)*\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+))\\s+)*(?:(?:timeout(?:\\s+\\S+)?|nice(?:\\s+(?:-[^\\s]+|\\d+))*|time|nohup|setsid|sudo(?:\\s+-[^\\s]+)*|npx|pnpm\\s+exec|env(?:\\s+(?:-[^\\s]+|[A-Za-z_][A-Za-z0-9_]*=(?:\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'|[^\\s;&|()]+)))*)\\s+|(?:ba)?sh\\s+-c\\s+['\"]\\s*)*(?:vitest|jest|pytest|bun\\s+test|node\\s+--test|make\\s+test|go\\s+test|cargo\\s+test|pnpm\\s+vitest|(?:pnpm|npm|yarn)(?:\\s+(?:(?:-C|--dir|-F|--filter)\\s+\\S+|--filter=\\S+|-r))*\\s+(?:run\\s+)?test)\\b" }
     ]
   },
   "compliance": { "kind": "none", "reason": "The at-act half governs proving a fix red by mutation before accepting green." }
