@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { dirname, extname, join, relative, resolve } from 'node:path'
+import path, { dirname, extname, join, relative, resolve } from 'node:path'
 
 // Census for the "importing a plugin/bin module must never run its CLI/hook entry" invariant.
 // A module under plugin/bin/ can end with an unconditional call to its own main()/entry
@@ -75,11 +75,16 @@ function importedBinModules(testFile) {
 // scope.
 const IMPORTABLE_EXT = new Set(['.mjs', '.js', '.cjs'])
 
+export function isWithinPluginBin(modulePath, pluginBin = PLUGIN_BIN, pathApi = path) {
+  const fromRoot = pathApi.relative(pluginBin, modulePath)
+  return fromRoot !== '' && fromRoot !== '..' && !fromRoot.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(fromRoot)
+}
+
 export function census() {
   const found = new Set()
   for (const testFile of testFiles()) {
     for (const modulePath of importedBinModules(testFile)) {
-      if (!modulePath.startsWith(PLUGIN_BIN + '/')) continue
+      if (!isWithinPluginBin(modulePath)) continue
       if (!IMPORTABLE_EXT.has(extname(modulePath))) continue
       found.add(modulePath)
     }

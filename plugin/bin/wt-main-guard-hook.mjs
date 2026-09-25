@@ -61,6 +61,7 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { createGitInspectionIsolation } from './lib/host/git-inspection-isolation.mjs'
 import { stripHeredocs, stripQuotedSpans } from './lib/command-invocation.mjs'
 import { consumeMainGuardAllowOnce, mainGuardStateDir } from './lib/main-guard-allow-once.mjs'
 
@@ -69,10 +70,11 @@ const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
 const ALLOW_ONCE_PATH = path.join(STATE_DIR, 'allow-once.json')
 
 function inspectGit(args, cwd) {
+  const isolation = createGitInspectionIsolation(STATE_DIR)
   const env = {
     ...process.env,
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_CONFIG_GLOBAL: isolation.globalConfig,
     GIT_PAGER: '',
     GIT_EXTERNAL_DIFF: '',
     GIT_ASKPASS: '',
@@ -81,12 +83,21 @@ function inspectGit(args, cwd) {
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(?:COUNT|KEY_|VALUE_)/.test(key)) delete env[key]
   }
-  return execFileSync('git', ['--no-pager', '-c', 'core.fsmonitor=false', ...args], {
-    cwd,
-    env,
-    timeout: 2000,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  })
+  try {
+    return execFileSync('git', [
+      '--no-pager',
+      '-c', 'core.fsmonitor=false',
+      '-c', `core.hooksPath=${isolation.hooks}`,
+      ...args,
+    ], {
+      cwd,
+      env,
+      timeout: 2000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+  } finally {
+    isolation.cleanup()
+  }
 }
 
 // Per-class blocking posture, decided by measurement (see the report this port shipped with,

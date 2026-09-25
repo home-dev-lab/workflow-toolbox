@@ -9,7 +9,8 @@ const HOLD_MS = 60 * 60 * 1000
 const WORKER_READY_MS = 15_000
 
 function worker() {
-  const descriptors = Array.from({ length: 8 }, () => openSync(process.platform === 'win32' ? 'NUL' : '/dev/null', 'r'))
+  const descriptorTarget = process.platform === 'win32' ? process.execPath : '/dev/null'
+  const descriptors = Array.from({ length: 8 }, () => openSync(descriptorTarget, 'r'))
   const child = spawn(process.execPath, ['-e', `setTimeout(() => {}, ${HOLD_MS})`], { stdio: 'ignore' })
   process.send?.({ ready: true, childPid: child.pid, descriptors: descriptors.length })
   const stop = () => {

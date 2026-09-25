@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import path, { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
-import { census } from '../plugin-bin-import-safety-census.mjs'
+import { census, isWithinPluginBin } from '../plugin-bin-import-safety-census.mjs'
 
 // Locks the invariant: importing any module under plugin/bin/ must never run that module's
 // CLI/hook entry point (no stdin read, no process.exit, no output). Regression case: on hosted
@@ -69,6 +69,12 @@ function importFinishesWithoutHang(modulePath: string): Promise<{ hung: boolean 
 const modules = census()
 
 describe('plugin/bin modules imported by a test never run their entry on import', () => {
+  it('recognizes Windows plugin-bin children without treating sibling prefixes as children', () => {
+    const root = 'D:\\repo\\plugin\\bin'
+    expect(isWithinPluginBin('D:\\repo\\plugin\\bin\\wt-hook.mjs', root, path.win32)).toBe(true)
+    expect(isWithinPluginBin('D:\\repo\\plugin\\binary\\wt-hook.mjs', root, path.win32)).toBe(false)
+  })
+
   it('census finds at least the modules known to be imported today', () => {
     // A sanity floor: if the census ever finds zero, it stopped walking the test tree rather
     // than legitimately finding nothing, since dozens of tests import plugin/bin helpers.
