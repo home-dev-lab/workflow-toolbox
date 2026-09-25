@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error -- runtime .mjs helper intentionally has no declaration file.
 import { DEFAULT_MAX_TASKS, applyItemTemplate, generateEachTasks, parseEachSource } from '../../../../plugin/bin/lib/opencode-envelope-tasks.mjs'
 
@@ -12,11 +12,15 @@ const SCRIPT = join(REPO_ROOT, 'plugin/bin/wt-opencode-envelope.mjs')
 const roots: string[] = []
 const previousExtraEnv = process.env.WT_EXTERNAL_MODEL_ENV_ALLOW
 
+// Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
+// the sandbox itself is locked in lane-sandbox.test.ts.
 beforeEach(() => {
+  vi.stubEnv('WT_LANE_SANDBOX', 'off')
   process.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_FAKE_CONCURRENCY_LOG,WT_FAKE_PROMPT_CAPTURE,WT_FAKE_MODEL_CAPTURE,WT_FAKE_EXIT_CODE,WT_FAKE_ANSWER'
 })
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   if (previousExtraEnv === undefined) delete process.env.WT_EXTERNAL_MODEL_ENV_ALLOW
   else process.env.WT_EXTERNAL_MODEL_ENV_ALLOW = previousExtraEnv

@@ -697,7 +697,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/skills/external-lane/'],
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/bin/lib/host/lane-sandbox.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {

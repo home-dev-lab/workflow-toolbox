@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Added
+- Run every external lane child (OpenCode launcher, envelope, verifier, observer, intercept hook and skill-fence probes; the Codex companion behind second-opinion) in a bubblewrap sandbox on Linux, built from an allow-list of binds: the worktree, the toolchain and the CLI's own config and credentials are visible, while `~/.ssh`, `~/.claude`, `/run/user/<uid>` secrets and other processes are not. `WT_LANE_SANDBOX_READ`/`WT_LANE_SANDBOX_WRITE` add a path, each launch records its sandbox status, and hosts without a working `bwrap` say so in one line and keep the environment allow-list only. The suite lock now records PID namespaces so a sandboxed lane and the host never reclaim each other's live lock.
 - Turn deep grounding into an automatic, configurable behavior: a three-layer source registry and `wt-grounding-sources.mjs` discovery CLI, concise prediction-first skill orders with dated fiche refresh rules, a cooldown-aware prompt injection, and an observe-by-default pre-send check with an opt-in once-satisfiable refusal. The check journals would-refuse/refused decisions for later tuning; no always-loaded rule is added.
 
 ### Changed

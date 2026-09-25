@@ -7,6 +7,7 @@ import { externalModelEnv, providerCredentialNames } from './external-model-env.
 import { resolvedBinary } from './resolved-binary.mjs'
 import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-allowlist.mjs'
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
+import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 
 const SENTINEL = 'workflow-toolbox-fence-sentinel'
 const ALLOW_SENTINEL = 'workflow-toolbox-allowed-sentinel'
@@ -50,11 +51,21 @@ export function spawnCommand(spawnFn, bin, args, options, platform) {
   return spawnFn(bin, args, options)
 }
 
+// Every OpenCode child the plugin starts passes here: the environment is allow-listed, and on Linux
+// the process runs inside the lane sandbox (lib/host/lane-sandbox.mjs). `sandboxPaths` lets a caller
+// expose a directory it owns (a probe fixture).
 export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform, extraNames = []) {
   const modelIndex = args.indexOf('--model')
   const modelNames = modelIndex >= 0 ? providerCredentialNames(args[modelIndex + 1]) : []
-  const childOptions = { ...options, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
-  return spawnCommand(spawnFn, bin, args, childOptions, platform)
+  const { sandboxPaths, ...rest } = options
+  const childOptions = { ...rest, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
+  const sandbox = resolveLaneSandbox({ profile: 'opencode', bin, args, cwd: childOptions.cwd, env: childOptions.env, paths: sandboxPaths, platform })
+  announceUnsandboxedLane(sandbox)
+  const [command, commandArgs] = sandbox.wrap(bin, args)
+  const child = spawnCommand(spawnFn, command, commandArgs, childOptions, platform)
+  // Non-enumerable: callers that serialise or compare a spawnSync result see it unchanged.
+  if (child && typeof child === 'object') Object.defineProperty(child, 'laneSandbox', { value: { kind: sandbox.kind, line: sandbox.line }, enumerable: false })
+  return child
 }
 
 export function opencodeSkillFenceRefusal(reason) {
@@ -368,7 +379,8 @@ function verifyOpencodeSkillFenceInternal(bin, { env = process.env, stateDir = d
   })
   probeEnv.OPENCODE_CONFIG = allowedFixture.configPath
   try {
-    const probe = spawnOpencode(spawnSyncFn, binary, ['--pure', 'debug', 'skill'], { cwd: worktree, encoding: 'utf8', env: probeEnv, timeout: 30_000 }, platform, ['OPENCODE_CONFIG'])
+    // The synthetic HOME must stay visible inside the sandbox, or the fence half would pass vacuously.
+    const probe = spawnOpencode(spawnSyncFn, binary, ['--pure', 'debug', 'skill'], { cwd: worktree, encoding: 'utf8', env: probeEnv, timeout: 30_000, sandboxPaths: { writable: [fixture] } }, platform, ['OPENCODE_CONFIG'])
     if (probe.status !== 0) {
       const reason = 'the OpenCode Claude-skill fence capability probe failed'
       return { ok: false, allowOk: false, cached: false, reason, allowReason: reason, mechanism: MECHANISM }

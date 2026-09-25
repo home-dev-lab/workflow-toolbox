@@ -11,6 +11,8 @@ import { createSecondOpinionDependencies, listProcessRelationships, listProcessT
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
+const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-pid', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
+const { pidNamespaceHasProcesses } = (await import(pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/pid-namespace.mjs')).href)) as { pidNamespaceHasProcesses: (namespace: string) => boolean | null }
 const roots: string[] = []
 afterEach(() => {
   vi.restoreAllMocks()
@@ -41,8 +43,12 @@ function fixture(consented: boolean) {
   }
 }
 
-function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang') {
-  const f = fixture(true)
+// The ownership tests below read broker PIDs the fake companion writes from inside its process, so
+// they run the UNSANDBOXED path (macOS, Windows, no bwrap); inside the sandbox those would be
+// namespace PIDs. The sandboxed end of the family is locked by the namespace test further down.
+function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang', sandbox = 'off') {
+  const fixtureBase = fixture(true)
+  const f = { ...fixtureBase, env: { ...fixtureBase.env, WT_LANE_SANDBOX: sandbox } }
   const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
   const appPidFile = join(f.repo, 'app-server.pid')
   const brokerPidFile = join(f.repo, 'broker.pid')
@@ -60,6 +66,8 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang') {
     "import { spawn } from 'node:child_process'",
     "import { mkdirSync, writeFileSync } from 'node:fs'",
     "import { join } from 'node:path'",
+    "import { readlinkSync } from 'node:fs'",
+    "try { writeFileSync(join(process.cwd(), 'companion.pidns'), readlinkSync('/proc/self/ns/pid')) } catch {}",
     "const child = spawn(process.execPath, [join(import.meta.dirname, 'app-server-broker.mjs')], { detached: true, stdio: 'ignore' })",
     'child.unref()',
     "writeFileSync(join(process.cwd(), 'broker.pid'), String(child.pid))",
@@ -69,6 +77,9 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang') {
   ].join('\n'))
   return { ...f, companionDir, appPidFile, brokerPidFile }
 }
+
+// Pins the sandbox decision so an exact-output assertion does not depend on this host's bubblewrap.
+const noSandbox = () => ({ kind: 'none', line: 'lane sandbox: none (pinned by the test)', wrap: (bin: string, args: string[]) => [bin, args] })
 
 function lines(file: string) {
   return readFileSync(file, 'utf8').trimEnd().split(/\r?\n/)
@@ -467,6 +478,22 @@ describe('second-opinion advisor', () => {
     }
   }, process.platform === 'win32' ? 30_000 : 10_000)
 
+  // The sandboxed end of the same family: the broker records namespace PIDs, so the lock is the
+  // namespace itself — once the companion ends, nothing it started (detached broker included) lives.
+  it.skipIf(!BWRAP_WORKS)('leaves nothing of the companion family alive once a sandboxed companion ends (skips on a host without a working bwrap)', () => {
+    const f = detachedBrokerFixture('normal', 'on')
+    const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
+      env: { ...process.env, ...f.env, HOME: f.repo },
+      encoding: 'utf8',
+      timeout: 15_000,
+    })
+    expect(result.status, readFileSync(f.out, 'utf8')).toBe(0)
+    expect(lines(f.out)[1]).toMatch(/^lane sandbox: bwrap \(codex; writable /)
+    const namespace = readFileSync(join(f.repo, 'companion.pidns'), 'utf8')
+    expect(namespace).toMatch(/^pid:\[\d+\]$/)
+    expect(waitFor(() => pidNamespaceHasProcesses(namespace) === false)).toBe(true)
+  }, 30_000)
+
   it('stops the detached broker app-server from the process exit hook', () => {
     const f = detachedBrokerFixture()
     const harness = join(f.repo, 'exit-harness.mjs')
@@ -499,6 +526,28 @@ describe('second-opinion advisor', () => {
     }
   }, 30_000)
 
+  it('starts the Codex companion through the lane sandbox, records the sandbox line, and tells ownership the broker PID is namespaced', async () => {
+    const f = fixture(true)
+    const companion = join(f.repo, 'scripts', 'codex-companion.mjs')
+    const brokerInChildPidNamespace = vi.fn()
+    const requests: Array<Record<string, unknown>> = []
+    const adapter = {
+      platform: 'linux',
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [], brokerInChildPidNamespace }),
+    }
+    const resolveSandbox = (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { kind: 'bwrap', line: 'lane sandbox: bwrap (codex; writable /fixture)', wrap: () => [process.execPath, ['-e', "process.stdout.write('ran inside the wrapper\\n')"]] }
+    }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
+    deps.resolveCodexCompanion = () => companion
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(0)
+    expect(lines(f.out)).toEqual(['ROUTE=gpt-astra', 'lane sandbox: bwrap (codex; writable /fixture)', 'ran inside the wrapper', 'EXIT=0'])
+    expect(brokerInChildPidNamespace).toHaveBeenCalledOnce()
+    expect(requests).toEqual([expect.objectContaining({ profile: 'codex', cwd: f.options.repo, paths: { readable: [f.repo] } })])
+  })
+
   it('names output overflow and fails after terminating the owned companion family', async () => {
     const f = fixture(true)
     const companion = join(f.repo, 'overflow-companion.mjs')
@@ -511,12 +560,13 @@ describe('second-opinion advisor', () => {
       readProcessRelationships: () => ({ status: 'known', processes: [] }),
       createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop }),
     }
-    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64 })
+    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64, resolveSandbox: noSandbox })
     deps.resolveCodexCompanion = () => companion
 
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
     expect(lines(f.out)).toEqual([
       'ROUTE=gpt-astra',
+      'lane sandbox: none (pinned by the test)',
       'REFUSED: Codex companion output exceeded 64 bytes.',
       'EXIT=1',
     ])

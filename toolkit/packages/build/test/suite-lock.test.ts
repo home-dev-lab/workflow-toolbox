@@ -56,6 +56,7 @@ describe('suite lock library', () => {
       cwd: process.cwd(),
       startedAt: expect.any(String),
       platform: process.platform,
+      pidNamespace: process.platform === 'linux' ? expect.stringMatching(/^pid:\[\d+\]$/) : null,
     })
     let acquired = false
     const secondPromise = acquireSuiteLock({ root, pollMs: 10, noticeMs: 10, waitS: 1 }).then((lease: unknown) => { acquired = true; return lease })

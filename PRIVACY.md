@@ -59,6 +59,10 @@ already writes for the Workflow tool.
   writes local output plus an `EXIT=` marker. The launcher has no network client
   or telemetry. The spawned `opencode` CLI may send the supplied brief and
   repository context to the provider selected by its existing configuration.
+  On Linux the CLI runs in a bubblewrap sandbox that exposes only the worktree, the
+  toolchain and that CLI's own configuration and credentials: `~/.ssh`, `~/.claude`,
+  `/run/user/<uid>` and other processes are not visible to it (see known-issues,
+  "External-lane sandbox"). Elsewhere it runs with an allow-listed environment only.
 
 - **Artifact server** (`bin/wt-artifact-server.mjs`) — enabled unless `WT_ARTIFACT_SERVER=0`. It
   reads files below roots published by local session monitors through owner-only state files (by default, only the project's

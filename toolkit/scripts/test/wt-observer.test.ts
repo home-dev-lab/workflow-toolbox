@@ -86,11 +86,17 @@ function setupSession(root: string, sessionId = 'sess-1') {
   return { projectDir, configDir, spoolDir, stateDir, transcriptPath, subagentsDir, sessionRoot, sessionId, lessonIndexPath }
 }
 
+// The switched-off sandbox announces itself on stderr (never silent); these assertions are about everything else.
+const SANDBOX_OFF_NOTICE = 'workflow-toolbox: lane sandbox: none (disabled by WT_LANE_SANDBOX=off); running with the environment allow-list only\n'
+const withoutSandboxNotice = (stderr: string) => stderr.split(SANDBOX_OFF_NOTICE).join('')
+// Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
+// the sandbox itself is locked in lane-sandbox.test.ts.
 function spawnObserver(env: Record<string, string>, args: string[] = ['--once']) {
   const child = spawn(process.execPath, [observerScript, ...args], {
     env: {
       ...process.env,
       WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION',
+      WT_LANE_SANDBOX: 'off',
       WT_OBSERVER_COST_LOG: path.join(path.dirname(env.WT_WAKE_SPOOL), 'lane-cost.jsonl'),
       WT_OBSERVER_STATE_DIR: path.join(path.dirname(env.WT_WAKE_SPOOL), 'observer-state'),
       ...env,
@@ -316,7 +322,7 @@ describe('wt-observer CLI', () => {
     const names = readFileSync(path.join(session.spoolDir, readdirSync(session.spoolDir).find((name) => name.endsWith('.txt')) || ''), 'utf8')
     expect(names.trim()).toBe('Observer: possible premature stop while open work remains.\nCard: Card 42')
     expect(existsSync(touched)).toBe(false)
-    expect(run.stderr()).toBe('')
+    expect(withoutSandboxNotice(run.stderr())).toBe('')
   })
 
   it('writes stderr when the external lane cannot be measured cleanly', async () => {
@@ -418,6 +424,6 @@ describe('wt-observer CLI', () => {
       outcome: 'finding',
       trigger: 'once',
     })
-    expect(run.stderr()).toBe('')
+    expect(withoutSandboxNotice(run.stderr())).toBe('')
   })
 })

@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:f
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
+import { currentPidNamespace, pidNamespaceHasProcesses } from './host/pid-namespace.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
@@ -36,11 +37,27 @@ export function readSuiteLock(options = {}) {
   return { held: true, root, lockDir, holder, ageMs }
 }
 
+// A holder recorded in ANOTHER PID namespace (a sandboxed lane seen from the host, or the host seen
+// from inside a lane sandbox) cannot be judged by its PID. From the host, the lane's namespace is
+// visible and empties when the sandbox ends. From inside a sandbox, the host is invisible — including
+// a holder written before namespaces were recorded — so only the age bound can reclaim it.
+function foreignNamespaceStale(lock, options, staleMs) {
+  const env = options.env ?? process.env
+  const namespace = options.pidNamespace ?? currentPidNamespace()
+  const insideSandbox = env.WT_LANE_SANDBOX === 'bwrap'
+  const foreign = namespace !== null && lock.holder.pidNamespace !== namespace && (insideSandbox || typeof lock.holder.pidNamespace === 'string')
+  if (!foreign) return null
+  if (!insideSandbox) return (options.namespaceHasProcesses ?? pidNamespaceHasProcesses)(lock.holder.pidNamespace) === false
+  return lock.ageMs !== null && lock.ageMs >= staleMs
+}
+
 function holderIsStale(lock, options = {}) {
   if (!lock.held || !Number.isSafeInteger(lock.holder?.pid) || lock.holder.pid <= 0) return false
-  if (!pidAlive(lock.holder.pid)) return true
   const platform = options.platform ?? process.platform
   const staleMs = positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000
+  const foreign = foreignNamespaceStale(lock, options, staleMs)
+  if (foreign !== null) return foreign
+  if (!pidAlive(lock.holder.pid)) return true
   // Windows signalability does not prove process identity: after this conservative age bound,
   // reclaiming avoids a recycled PID making a crashed holder permanent. POSIX never uses age alone.
   return platform === 'win32' && lock.ageMs !== null && lock.ageMs >= staleMs
@@ -77,6 +94,7 @@ export async function acquireSuiteLock(options = {}) {
         cwd: options.cwd ?? process.cwd(),
         startedAt: new Date().toISOString(),
         platform: options.platform ?? process.platform,
+        pidNamespace: options.pidNamespace ?? currentPidNamespace(),
       }
       try {
         writeFileSync(path.join(lockDir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
