@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Lane sandbox (Linux): Codex second opinions and codex lanes had no working shell inside the sandbox since 0.188.0 when the `codex` executable was reached through a symlink. Executable symlinks are now recreated inside the sandbox, pointing at the bound real executable location, so sibling helpers such as `codex-code-mode-host` remain discoverable without exposing the symlink's containing directory. The behavior is generic for symlinked executables, including OpenCode.
+
 ## [0.188.1] - 2026-09-26
 
 ### Fixed

@@ -98,7 +98,13 @@ const absolute = (value) => (path.isAbsolute(value ?? '') ? [value] : [])
 function executableBinds(invoked, fs) {
   if (!invoked || !path.isAbsolute(invoked)) return []
   const real = fs.realpath(invoked) ?? invoked
-  return [...new Set([path.dirname(real), invoked])]
+  return real === invoked ? [path.dirname(real), invoked] : [path.dirname(real)]
+}
+
+function executableSymlinks(invoked, fs) {
+  if (!invoked || !path.isAbsolute(invoked)) return []
+  const real = fs.realpath(invoked) ?? invoked
+  return real === invoked ? [] : [{ target: real, link: invoked }]
 }
 
 // Values of the named flags, resolved to absolute against `base` (the working directory). A relative
@@ -260,6 +266,7 @@ const PROFILES = {
     fs.copy(path.join(codexHome, 'config.toml'), path.join(privHome, 'config.toml'))
     return {
       readable: executableBinds(findOnPath('codex', env.PATH, fs), fs),
+      executableSymlinks: executableSymlinks(findOnPath('codex', env.PATH, fs), fs),
       writableRemap: [{ inside: codexHome, outside: privHome }],
       writable: [...absolute(env.CLAUDE_PLUGIN_DATA)],
       readOnlyOverlaysRemap: [],
@@ -292,12 +299,16 @@ export function suiteLockCli(fs = realFs) {
 
 function toolchainPaths({ env, execPath, fs }) {
   const nodeReal = fs.realpath(execPath) ?? execPath
-  return [
-    path.dirname(path.dirname(nodeReal)),
-    ...['node', 'pnpm', 'npm', 'git'].flatMap((name) => executableBinds(findOnPath(name, env.PATH, fs), fs)),
-    ...(absolute(env.COREPACK_HOME).length ? absolute(env.COREPACK_HOME) : [path.join(xdg(env, 'XDG_CACHE_HOME', '.cache'), 'node', 'corepack')]),
-    path.join(xdg(env, 'XDG_DATA_HOME', '.local/share'), 'pnpm'),
-  ]
+  const executables = ['node', 'pnpm', 'npm', 'git'].map((name) => findOnPath(name, env.PATH, fs))
+  return {
+    readable: [
+      path.dirname(path.dirname(nodeReal)),
+      ...executables.flatMap((invoked) => executableBinds(invoked, fs)),
+      ...(absolute(env.COREPACK_HOME).length ? absolute(env.COREPACK_HOME) : [path.join(xdg(env, 'XDG_CACHE_HOME', '.cache'), 'node', 'corepack')]),
+      path.join(xdg(env, 'XDG_DATA_HOME', '.local/share'), 'pnpm'),
+    ],
+    executableSymlinks: executables.flatMap((invoked) => executableSymlinks(invoked, fs)),
+  }
 }
 
 // A git worktree's `.git` is a FILE naming its private gitdir; the shared object store lives in the
@@ -344,13 +355,18 @@ function remapArgs(flag, remaps) {
   return remaps.flatMap(({ inside, outside }) => [flag, outside, inside])
 }
 
-function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, env, chdir, fs, socketDir }) {
+function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, executableSymlinks, env, chdir, fs, socketDir }) {
   const etcTargets = ETC_LINK_TARGETS.map((file) => fs.realpath(file)).filter((file) => file && !file.startsWith('/etc/') && !file.startsWith('/usr/'))
+  const mounted = [...SYSTEM_READ_ONLY, ...readable, ...writable, ...writableRemap.map(({ inside }) => inside)]
+  const uniqueSymlinks = [...new Map(executableSymlinks.map((entry) => [entry.link, entry])).values()]
+  const symlinks = uniqueSymlinks.filter(({ link }) => !mounted.some((root) => link === root || link.startsWith(`${root}${path.sep}`)))
   return [
     '--die-with-parent', '--unshare-all', '--new-session',
     '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
     ...bindArgs('--ro-bind-try', [...SYSTEM_READ_ONLY, ...etcTargets]),
     '--dir', home(env),
+    ...[...new Set(symlinks.map(({ link }) => path.dirname(link)))].flatMap((directory) => ['--dir', directory]),
+    ...symlinks.flatMap(({ target, link }) => ['--symlink', target, link]),
     ...bindArgs('--ro-bind-try', readable),
     ...bindArgs('--bind-try', writable),
     ...remapArgs('--bind-try', writableRemap),
@@ -540,11 +556,14 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
 
   fs.ensureDir(suiteLockDir(env))
   // A read-only role (observer, second-opinion) gets its working directory bound read-only (H5).
-  const rawReadable = [...toolchainPaths({ env, execPath, fs }), ...executableBinds(bin, fs), ...selected.readable, ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
+  const toolchain = toolchainPaths({ env, execPath, fs })
+  const rawReadable = [...toolchain.readable, ...executableBinds(bin, fs), ...selected.readable, ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
   const rawWritable = [...(readonlyCwd ? [] : workdir), ...selected.writable, ...git.writable, suiteLockDir(env), ...(paths.writable ?? []), ...extras.writable]
   // The root/$HOME/ancestor refusal covers EVERY computed bind, not only the operator extras (H2).
   const readable = rawReadable.filter((item) => item && !isForbiddenPath(item, env, fs))
   const writable = rawWritable.filter((item) => item && !isForbiddenPath(item, env, fs))
+  const executableLinks = [...toolchain.executableSymlinks, ...executableSymlinks(bin, fs), ...(selected.executableSymlinks ?? [])]
+    .filter(({ target, link }) => !isForbiddenPath(target, env, fs) && !isForbiddenPath(link, env, fs))
   refuseProtectedOverlap(writable, selected.protectedPaths ?? [], fs)
   // Everything the lane can write: its writable binds and the per-run runtime dir (private remaps,
   // bridge sockets). Configuration found there never feeds the allow-list, and no log goes there.
@@ -567,6 +586,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
 
   const prefix = sandboxArguments({
     readable, writable, writableRemap: selected.writableRemap ?? [],
+    executableSymlinks: executableLinks,
     // git pointer/config overlays (H1) land read-only on top of the writable gitdir.
     readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo],
     readOnlyOverlaysRemap: selected.readOnlyOverlaysRemap ?? [],

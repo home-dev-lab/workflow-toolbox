@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
@@ -60,14 +60,14 @@ function tempRoot(tag: string): string {
 
 // A fake filesystem: a set of files (with text) and directories. Every path the module resolves is
 // answered from this map, so the unit locks never touch the real machine.
-function fakeFs(files: Record<string, string> = {}, dirs: string[] = []): FakeFs & { ensured: string[], copied: Array<[string, string]> } {
+function fakeFs(files: Record<string, string> = {}, dirs: string[] = [], realpaths: Record<string, string> = {}): FakeFs & { ensured: string[], copied: Array<[string, string]> } {
   const ensured: string[] = []
   const copied: Array<[string, string]> = []
   const dirSet = new Set([...dirs])
   return {
     ensured, copied,
     exists: (f) => f in files || dirSet.has(f) || f === '/usr/bin/bwrap' || f === '/usr/bin/socat',
-    realpath: (f) => (f in files || dirSet.has(f) ? f : null),
+    realpath: (f) => realpaths[f] ?? (f in files || dirSet.has(f) ? f : null),
     isFile: (f) => f in files,
     isDir: (f) => dirSet.has(f),
     readText: (f) => files[f] ?? null,
@@ -147,6 +147,19 @@ describe('lane sandbox plan — availability and pass-through', () => {
 })
 
 describe('lane sandbox plan — filesystem allow-list', () => {
+  it('recreates a symlinked executable inside the sandbox so its real directory and sibling helper are visible', () => {
+    const invoked = '/links/tool'
+    const real = '/real/bin/tool'
+    const fs = fakeFs({ [invoked]: 'link', [real]: 'tool', '/real/bin/helper': 'helper' }, [HOME, '/work/tree', '/links', '/real/bin'], { [invoked]: real })
+    const [, args] = plan({ bin: invoked, fs }).wrap(invoked, [])
+    const linkIndex = args.indexOf('--symlink')
+    expect(args.slice(linkIndex + 1, linkIndex + 3)).toEqual([real, invoked])
+    expect(flat(args, '--dir')).toContain(dirname(invoked))
+    expect(flat(args, '--ro-bind-try')).toContain(dirname(real))
+    expect(fs.isFile(join(dirname(args[linkIndex + 1]!), 'helper'))).toBe(true)
+    expect(args.slice(args.indexOf('--') + 1)[0]).toBe(invoked)
+  })
+
   it('builds the root from named binds only, isolates PID/net/session, and refuses / $HOME / ancestor on EVERY bind (H2)', () => {
     const files = { [`${HOME}/.config/opencode/opencode.jsonc`]: '{}' }
     const [command, args] = plan({ fs: fakeFs(files, [HOME, '/work/tree']), optionEnv: { WT_LANE_SANDBOX_READ: `/${delimiter}${HOME}${delimiter}/home` } }).wrap('/opt/opencode/bin/opencode', ['run', 'x'])
@@ -624,6 +637,22 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
       return fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', CANARY, 'canary', allowed], { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
     } finally { if (prev === undefined) delete process.env.WT_LANE_SANDBOX; else process.env.WT_LANE_SANDBOX = prev }
   }
+
+  it('preserves a symlinked executable so it resolves and runs a sibling helper (skips when bwrap is unavailable)', () => {
+    const root = tempRoot('exe-link')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree')
+    const realBin = join(root, 'real/bin'); const linkBin = join(root, 'link')
+    for (const dir of [home, worktree, realBin, linkBin]) mkdirSync(dir, { recursive: true })
+    const tool = join(realBin, 'tool'); const helper = join(realBin, 'helper'); const invoked = join(linkBin, 'tool')
+    writeFileSync(tool, '#!/bin/sh\nreal=$(readlink -f "$0")\nexec "$(dirname "$real")/helper"\n')
+    writeFileSync(helper, '#!/bin/sh\nprintf "helper-found\\n"\n')
+    chmodSync(tool, 0o755); chmodSync(helper, 0o755)
+    symlinkSync('../real/bin/tool', invoked)
+    const result = fence.spawnOpencode(spawnSync, invoked, [], { cwd: worktree, env: { PATH: process.env.PATH, HOME: home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+    expect(result.status, String(result.stderr)).toBe(0)
+    expect(result.laneSandbox?.kind).toBe('bwrap')
+    expect(String(result.stdout)).toBe('helper-found\n')
+  })
 
   it('exposes NOTHING under $HOME beyond the named allow-list (invariant canary)', () => {
     const f = homeFixture()
