@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
@@ -77,8 +77,26 @@ const okProbe = () => ({ ok: true })
 const flat = (args: string[], flag: string) => args.flatMap((v, i) => (v === flag ? [args[i + 1]!] : []))
 const everyBind = (args: string[]) => [...flat(args, '--ro-bind'), ...flat(args, '--ro-bind-try'), ...flat(args, '--bind'), ...flat(args, '--bind-try')]
 
+// A fake spawn whose bridge "listens": it creates the unix socket the bridge would create, in the
+// fake filesystem. A bridge whose socket never appears refuses the launch (round 4, LOW 5).
+function socketOf(args: string[]): string | null {
+  const flag = args.indexOf('--socket')
+  if (flag >= 0) return args[flag + 1] ?? null
+  const listen = args.find((a) => a.startsWith('UNIX-LISTEN:'))
+  return listen ? listen.slice('UNIX-LISTEN:'.length).split(',')[0]! : null
+}
+function listening(fs: FakeFs, spawned?: Array<{ command: string, args: string[] }>) {
+  return (command: string, args: string[]) => {
+    spawned?.push({ command, args })
+    const sock = socketOf(args)
+    if (sock) fs.ensureFile(sock)
+    return { kill() {}, pid: 1 }
+  }
+}
+
 function plan(overrides: Record<string, unknown> = {}): SandboxPlan {
-  const base = { profile: 'opencode', bin: '/opt/opencode/bin/opencode', args: ['run', 'x'], cwd: '/work/tree', env: { HOME, PATH: '/usr/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: () => ({ kill() {}, pid: 1 }), runtimeParent: '/run/lane', fs: fakeFs() }
+  const fs = (overrides.fs as FakeFs | undefined) ?? fakeFs()
+  const base = { profile: 'opencode', bin: '/opt/opencode/bin/opencode', args: ['run', 'x'], cwd: '/work/tree', env: { HOME, PATH: '/usr/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }
   return sandbox.resolveLaneSandbox({ ...base, ...overrides })
 }
 
@@ -225,7 +243,7 @@ describe('lane sandbox plan — codex home (H3)', () => {
   it('keeps ~/.codex read-only, runs on a per-run CODEX_HOME, copies auth in, and offers a writeback', () => {
     const codexHome = `${HOME}/.codex`
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: 'tok', [`${codexHome}/hooks.json`]: '{}' }, [HOME, '/work/tree', codexHome])
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CLAUDE_PLUGIN_DATA: '/run/lane/codex-broker' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: () => ({ kill() {}, pid: 1 }), runtimeParent: '/run/lane', fs }) as SandboxPlan & { authWriteback?: { from: string, to: string } }
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CLAUDE_PLUGIN_DATA: '/run/lane/codex-broker' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { authWriteback?: { from: string, to: string } }
     const [, args] = p.wrap('/usr/bin/node', [])
     // ~/.codex is never a writable host bind; a per-run home is remapped onto it (outside != inside).
     expect(flat(args, '--bind-try')).not.toContain(codexHome)
@@ -274,7 +292,7 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
   function egressPlan(model: string | null, auth: Record<string, unknown>, extra: Record<string, unknown> = {}) {
     const spawned: Spawned = []
     const fs = fakeFs({ [`${config}/opencode.jsonc`]: CLIPROXY, [`${share}/auth.json`]: JSON.stringify(auth) }, [config, share, HOME, '/work/tree'])
-    const p = plan({ fs, args: ['run', 'x', ...(model ? ['--model', model] : [])], spawnFn: (command: string, args: string[]) => { spawned.push({ command, args }); return { kill() {}, pid: 1 } }, ...extra }) as SandboxPlan & { egressHosts?: string[] }
+    const p = plan({ fs, args: ['run', 'x', ...(model ? ['--model', model] : [])], spawnFn: listening(fs, spawned), ...extra }) as SandboxPlan & { egressHosts?: string[] }
     return { p, spawned, args: p.wrap('opencode', ['run'])[1] }
   }
   const setenv = (args: string[], name: string) => args.flatMap((v, i) => (v === '--setenv' && args[i + 1] === name ? [args[i + 2]!] : []))
@@ -291,7 +309,8 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     expect(args).toContain('--unshare-all')
     for (const name of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) expect(setenv(args, name)).toEqual(['http://127.0.0.1:3128'])
     expect(setenv(args, 'NO_PROXY')).toEqual(['127.0.0.1,localhost,::1'])
-    expect(p.line).toContain('egress proxy to chatgpt.com, auth.openai.com only (HTTPS CONNECT, port 443)')
+    expect(p.line).toContain('egress proxy to chatgpt.com, auth.openai.com only (HTTPS CONNECT to port 443, TLS SNI must equal the CONNECT host; not covered: Host-header fronting inside TLS, and the provider account itself as a place to send data)')
+    expect(p.line).not.toContain('HTTPS CONNECT, port 443)')
   })
 
   it('an API-key openai lane is allowed api.openai.com only', () => {
@@ -319,7 +338,7 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     const spawned: Spawned = []
     const codexHome = `${HOME}/.codex`
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: JSON.stringify({ OPENAI_API_KEY: null, tokens: { a: 1 } }) }, [HOME, '/work/tree', codexHome])
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: (command: string, args: string[]) => { spawned.push({ command, args }); return { kill() {}, pid: 1 } }, runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs, spawned), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
     expect(p.egressHosts).toEqual(['chatgpt.com', 'auth.openai.com'])
   })
 
@@ -329,6 +348,79 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     expect(proxy.args[proxy.args.indexOf('--log') + 1]).toBe('/var/log/egress.jsonl')
     const quiet = egressPlan('openai/gpt-5.6-luna', { openai: { type: 'oauth' } })
     expect(quiet.spawned.find((s) => s.args.includes('--allow'))!.args).not.toContain('--log')
+  })
+})
+
+// Round 4, LOW 3: the plan follows OpenCode's documented merge order, reads only configuration the
+// lane cannot write, accepts --model=, and names a config it cannot parse.
+describe('lane sandbox plan — egress from lane-proof configuration only (round 4, LOW 3)', () => {
+  const config = `${HOME}/.config/opencode`
+  const base = (files: Record<string, string>, extra: Record<string, unknown> = {}) => {
+    const fs = fakeFs(files, [config, HOME, '/work/tree', '/opt/cfg'])
+    return plan({ fs, ...extra }) as SandboxPlan & { egressHosts?: string[] }
+  }
+  const remote = (host: string) => `{ "provider": { "p": { "options": { "baseURL": "https://${host}/v1" } } } }`
+
+  it('the LAST global file in load order wins (config.json, then opencode.json, then opencode.jsonc)', () => {
+    const p = base({ [`${config}/config.json`]: remote('first.example'), [`${config}/opencode.json`]: remote('middle.example'), [`${config}/opencode.jsonc`]: remote('last.example') }, { args: ['run', 'x', '--model', 'p/m'] })
+    expect(p.egressHosts).toEqual(['last.example'])
+  })
+
+  it('accepts --model=provider/model and -m=provider/model', () => {
+    expect(base({ [`${config}/opencode.json`]: remote('p.example') }, { args: ['run', '--model=p/m'] }).egressHosts).toEqual(['p.example'])
+    expect(base({ [`${config}/opencode.json`]: remote('p.example') }, { args: ['run', '-m=p/m'] }).egressHosts).toEqual(['p.example'])
+  })
+
+  it('OPENCODE_CONFIG overrides the global files when the lane cannot write it, and is ignored when it can', () => {
+    const outside = base({ [`${config}/opencode.json`]: remote('global.example'), '/opt/cfg/custom.json': remote('custom.example') }, { args: ['run', '--model', 'p/m'], env: { HOME, PATH: '/usr/bin', OPENCODE_CONFIG: '/opt/cfg/custom.json' } })
+    expect(outside.egressHosts).toEqual(['custom.example'])
+    const planted = base({ [`${config}/opencode.json`]: remote('global.example'), '/work/tree/.lane/cfg.json': remote('attacker.example') }, { args: ['run', '--model', 'p/m'], env: { HOME, PATH: '/usr/bin', OPENCODE_CONFIG: '/work/tree/.lane/cfg.json' } })
+    expect(planted.egressHosts).toEqual(['global.example'])
+  })
+
+  it('reads a config with a BOM and an unquoted {env:} value, and NAMES a config it still cannot parse', () => {
+    expect(base({ [`${config}/opencode.jsonc`]: `\uFEFF{ "k": {env:KEY}, "provider": { "p": { "options": { "baseURL": "https://p.example/v1" } } } }` }, { args: ['run', '--model', 'p/m'] }).egressHosts).toEqual(['p.example'])
+    const broken = base({ [`${config}/opencode.json`]: '{ "provider": ', [`${config}/opencode.jsonc`]: remote('ok.example') }, { args: ['run', '--model', 'p/m'] })
+    expect(broken.egressHosts).toEqual(['ok.example'])
+    expect(broken.line).toContain(`config not parsed by the egress planner (allow-list may be smaller than OpenCode expects): ${config}/opencode.json`)
+  })
+
+  it('codex reads the auth store of CODEX_HOME when it is set', () => {
+    const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${HOME}/.codex/auth.json`]: JSON.stringify({ tokens: { a: 1 } }), '/opt/codexhome/auth.json': JSON.stringify({ OPENAI_API_KEY: 'k' }) }, [HOME, '/work/tree', `${HOME}/.codex`, '/opt/codexhome'])
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/opt/codexhome' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
+    expect(p.egressHosts).toEqual(['api.openai.com'])
+  })
+})
+
+// Round 4, LOW 4: a writable bind never covers a CLI's config or auth location.
+describe('lane sandbox plan — config and auth stay read-only (round 4, LOW 4)', () => {
+  it('refuses an operator writable path that contains or sits inside the OpenCode config dir or ~/.opencode', () => {
+    for (const entry of [`${HOME}/.config`, `${HOME}/.config/opencode/plugins`, `${HOME}/.opencode`]) {
+      expect(() => plan({ optionEnv: { WT_LANE_SANDBOX_WRITE: entry }, fs: fakeFs({}, [HOME, '/work/tree', `${HOME}/.config`, `${HOME}/.config/opencode`, `${HOME}/.config/opencode/plugins`, `${HOME}/.opencode`]) }), entry).toThrow(/refusing writable bind .* overlaps/)
+    }
+  })
+  it('refuses a worktree that contains the config dir, and a codex writable path over CODEX_HOME', () => {
+    const cfg = '/work/tree/xdg'
+    expect(() => plan({ env: { HOME, PATH: '/usr/bin', XDG_CONFIG_HOME: cfg }, fs: fakeFs({}, [HOME, '/work/tree', cfg, `${cfg}/opencode`]) })).toThrow(sandbox.LaneSandboxRefusal)
+    const fs = fakeFs({ '/usr/local/bin/codex': 'x' }, [HOME, '/work/tree', '/data', '/data/codex'])
+    expect(() => sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', CODEX_HOME: '/data/codex', CLAUDE_PLUGIN_DATA: '/data' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/lane', fs })).toThrow(/overlaps \/data\/codex/)
+  })
+})
+
+// Round 4, MED 2 and LOW 5 at plan time.
+describe('lane sandbox plan — egress log path and bridge start (round 4)', () => {
+  const config = `${HOME}/.config/opencode`
+  const share = `${HOME}/.local/share/opencode`
+  const files = () => ({ [`${share}/auth.json`]: JSON.stringify({ openai: { type: 'oauth' } }) })
+  it('refuses an egress log under a path the lane can write, and accepts one outside', () => {
+    for (const log of ['/work/tree/.lane/egress.jsonl', `${HOME}/.local/state/wt-suite-lock/egress.jsonl`]) {
+      expect(() => plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/run/lane']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: log } }), log).toThrow(/refusing WT_LANE_EGRESS_LOG/)
+    }
+    expect(plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/var/log']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: '/var/log/egress.jsonl' } }).kind).toBe('bwrap')
+  })
+  it('refuses the launch when the egress proxy never opens its socket, and never claims the route', () => {
+    const fs = fakeFs(files(), [config, share, HOME, '/work/tree'])
+    expect(() => plan({ fs, args: ['run', '--model', 'openai/m'], spawnFn: () => ({ kill() {}, pid: 1 }) })).toThrow(/egress proxy did not start within 3 s/)
   })
 })
 
@@ -517,6 +609,20 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
         expect.objectContaining({ host: 'lane-egress-probe.invalid', decision: 'denied', reason: expect.stringMatching(/^resolution failed/) }),
       ]))
     } finally { if (prev === undefined) delete process.env.WT_LANE_EGRESS_LOG; else process.env.WT_LANE_EGRESS_LOG = prev }
+  })
+
+  // Round 4, LOW 6: a synchronous spawn failure still disposes the plan (runtime dir, bridges).
+  it('tears the sandbox plan down when the spawn itself throws', () => {
+    const root = tempRoot('spawnthrow')
+    const home = join(root, 'home'); const w = join(root, 'w'); const run = join(root, 'run')
+    for (const dir of [home, w, run]) mkdirSync(dir, { recursive: true })
+    const prev = process.env.XDG_RUNTIME_DIR
+    process.env.XDG_RUNTIME_DIR = run
+    try {
+      const boom = (() => { throw Object.assign(new Error('spawn EAGAIN'), { code: 'EAGAIN' }) }) as unknown as typeof spawnSync
+      expect(() => fence.spawnOpencode(boom, '/bin/true', [], { cwd: w, env: { PATH: process.env.PATH, HOME: home } }, 'linux')).toThrow('spawn EAGAIN')
+      expect(readdirSync(run).filter((name) => name.startsWith('wt-lane-sandbox-'))).toEqual([])
+    } finally { if (prev === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = prev }
   })
 
   it('the git pointer files are read-only inside, so a planted fsmonitor cannot be written (H1)', () => {

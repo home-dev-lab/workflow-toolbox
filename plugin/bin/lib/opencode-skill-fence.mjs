@@ -59,10 +59,17 @@ export function spawnOpencode(spawnFn, bin, args, options = {}, platform = proce
   const modelNames = modelIndex >= 0 ? providerCredentialNames(args[modelIndex + 1]) : []
   const { sandboxPaths, readonlyCwd, ...rest } = options
   const childOptions = { ...rest, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
-  const sandbox = resolveLaneSandbox({ profile: 'opencode', bin, args, cwd: childOptions.cwd, env: childOptions.env, paths: sandboxPaths, platform, readonlyCwd })
+  // A bridge that dies mid-run reports on the same stream as the lane's own stderr (its run log).
+  const diagnostics = Array.isArray(rest.stdio) && typeof rest.stdio[2] === 'number' ? rest.stdio[2] : undefined
+  const sandbox = resolveLaneSandbox({ profile: 'opencode', bin, args, cwd: childOptions.cwd, env: childOptions.env, paths: sandboxPaths, platform, readonlyCwd, diagnostics })
   announceUnsandboxedLane(sandbox)
   const [command, commandArgs] = sandbox.wrap(bin, args)
-  const child = spawnCommand(spawnFn, command, commandArgs, childOptions, platform)
+  let child
+  // A synchronous spawn failure (ENOENT on bwrap, EAGAIN) must still tear the bridges down.
+  try { child = spawnCommand(spawnFn, command, commandArgs, childOptions, platform) } catch (error) {
+    sandbox.dispose()
+    throw error
+  }
   // Tear the network bridge down: after a synchronous spawn it has already returned; after an
   // asynchronous spawn, when the child closes. A ChildProcess exposes `on`; a spawnSync result does not.
   if (child && typeof child.on === 'function') child.once('close', () => sandbox.dispose())

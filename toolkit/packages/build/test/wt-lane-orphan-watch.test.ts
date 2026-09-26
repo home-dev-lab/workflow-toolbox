@@ -12,7 +12,7 @@ import { classifyIdleHelper, IDLE_HELPER_SAFE_TO_STOP_SECONDS } from '../../../.
 const WATCHER = resolve(__dirname, '../../../../plugin/bin/wt-lane-orphan-watch.mjs')
 const LIB = resolve(__dirname, '../../../../plugin/bin/lib')
 const load = async <T>(file: string): Promise<T> => (await import(pathToFileURL(join(LIB, file)).href)) as T
-const { laneDescendantPids } = await load<{ laneDescendantPids: (roots: number[], rows: Array<{ pid: number, ppid?: number }>) => Set<number> }>('lane-live-scan.mjs')
+const { isLiveSandboxedLane, laneDescendantPids } = await load<{ isLiveSandboxedLane: (record: Record<string, unknown>, verdict: { status: string }) => boolean, laneDescendantPids: (roots: number[], rows: Array<{ pid: number, ppid?: number }>) => Set<number> }>('lane-live-scan.mjs')
 const { inspectProcess } = await load<{ inspectProcess: (pid: number | undefined) => { argv: string[], startTime: number } }>('lane-supervisor-core.mjs')
 const sandbox = await load<{ resolveLaneSandbox: (request: Record<string, unknown>) => { kind: string, line: string, wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void } }>('host/lane-sandbox.mjs')
 const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0 && spawnSync('sh', ['-c', 'command -v socat'], { stdio: 'ignore' }).status === 0
@@ -34,11 +34,11 @@ function pidsMatching(needle: string): number[] {
   })
 }
 
-async function waitFor(read: () => number[], timeoutMs = 10_000): Promise<number[]> {
+async function waitFor(read: () => number[], timeoutMs = 10_000, atLeast = 3): Promise<number[]> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const found = read()
-    if (found.length >= 3) return found
+    if (found.length >= atLeast) return found
     await new Promise((r) => setTimeout(r, 100))
   }
   return read()
@@ -169,9 +169,15 @@ describe('lane orphan watcher self-detection', () => {
     const [command, args] = plan.wrap(fake, ['run', 'sandboxed', '--dir', wt])
     const lane = spawn(command, args, { cwd: wt, detached: true, stdio: 'ignore' })
     const unowned = spawn('/bin/sh', [fake, 'run', 'unowned', '--dir', wt], { cwd: wt, detached: true, stdio: 'ignore' })
+    // An UNSANDBOXED lane whose child starts a nested opencode run: the nested one is not attributed.
+    const plain = spawn('/bin/sh', ['-c', `/bin/sh ${fake} run nested --dir ${wt}; :`], { cwd: wt, detached: true, stdio: 'ignore' })
     try {
       const inner = await waitFor(() => pidsMatching('opencode run sandboxed'))
-      const child = inspectProcess(lane.pid); const worker = inspectProcess(process.pid)
+      // Round 4, LOW 9: never vacuous — outer bwrap, inner bwrap, bootstrap shell and the fake opencode.
+      expect(inner.length, `sandboxed lane processes found: ${inner.join(',')}`).toBeGreaterThanOrEqual(3)
+      const nested = (await waitFor(() => pidsMatching('opencode run nested'), 10_000, 2)).filter((pid) => pid !== plain.pid)
+      expect(nested.length).toBe(1)
+      const child = inspectProcess(lane.pid); const worker = inspectProcess(process.pid); const plainChild = inspectProcess(plain.pid)
       const supervision = join(wt, '.lane', 'supervision')
       mkdirSync(supervision, { recursive: true })
       writeFileSync(join(supervision, 'current.json'), JSON.stringify({ version: 1, runId: '11-22' }))
@@ -179,6 +185,11 @@ describe('lane orphan watcher self-detection', () => {
         version: 1, runId: '11-22', state: 'running', owner: 'session', ownerSessionId: 'another-session', worktree: wt, log: join(wt, '.lane', 'run.log'),
         workerPid: process.pid, workerArgv: worker.argv, workerStartTime: worker.startTime,
         childPid: lane.pid, childArgv: child.argv, childStartTime: child.startTime, sandbox: plan.line,
+      }))
+      writeFileSync(join(supervision, '33-44.json'), JSON.stringify({
+        version: 1, runId: '33-44', state: 'running', owner: 'session', ownerSessionId: 'another-session', worktree: wt, log: join(wt, '.lane', 'run2.log'),
+        workerPid: process.pid, workerArgv: worker.argv, workerStartTime: worker.startTime,
+        childPid: plain.pid, childArgv: plainChild.argv, childStartTime: plainChild.startTime, sandbox: 'lane sandbox: none (disabled by WT_LANE_SANDBOX=off); running with the environment allow-list only',
       }))
       const result = spawnSync(process.execPath, [WATCHER, '--project', wt, '--once'], {
         encoding: 'utf8', timeout: 60_000,
@@ -189,11 +200,24 @@ describe('lane orphan watcher self-detection', () => {
       const warned = [...result.stdout.matchAll(/WARNING: unattributed opencode pid=(\d+)/g)].map((m) => Number(m[1]))
       for (const pid of inner) expect(warned, `sandboxed lane process ${pid} warned: ${result.stdout}`).not.toContain(pid)
       expect(warned).toContain(unowned.pid)
+      expect(warned, `nested opencode of an UNSANDBOXED lane must still be warned: ${result.stdout}`).toContain(nested[0])
+      expect(warned).not.toContain(plain.pid)
     } finally {
-      for (const p of [lane, unowned]) { try { process.kill(-p.pid!, 'SIGKILL') } catch { /* gone */ } }
+      for (const p of [lane, unowned, plain]) { try { process.kill(-p.pid!, 'SIGKILL') } catch { /* gone */ } }
       plan.dispose()
     }
   }))
+
+  // Round 4, LOW 7: only a LIVE SANDBOXED lane donates its descendants.
+  it('isLiveSandboxedLane requires the bwrap launch line AND a live status', () => {
+    const bwrap = { sandbox: 'lane sandbox: bwrap (opencode; …)' }
+    expect(isLiveSandboxedLane(bwrap, { status: 'running' })).toBe(true)
+    expect(isLiveSandboxedLane(bwrap, { status: 'decision-needed' })).toBe(true)
+    expect(isLiveSandboxedLane(bwrap, { status: 'worker-gone-child-alive' })).toBe(false)
+    expect(isLiveSandboxedLane(bwrap, { status: 'unknown' })).toBe(false)
+    expect(isLiveSandboxedLane({ sandbox: 'lane sandbox: none (bubblewrap sandbox is Linux-only)' }, { status: 'running' })).toBe(false)
+    expect(isLiveSandboxedLane({}, { status: 'running' })).toBe(false)
+  })
 
   it('laneDescendantPids follows ppid links from verified roots only', () => {
     const rows = [{ pid: 10, ppid: 1 }, { pid: 11, ppid: 10 }, { pid: 12, ppid: 11 }, { pid: 13, ppid: 12 }, { pid: 20, ppid: 1 }, { pid: 21, ppid: 20 }, { pid: 30 }]

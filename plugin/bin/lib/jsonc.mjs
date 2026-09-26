@@ -10,6 +10,8 @@ const STAR = 0x2a
 const NEWLINE = 0x0a
 const COMMA = 0x2c
 const CLOSERS = /^\s*[}\]]/
+const SUBSTITUTION = /^\{(?:env|file):/
+const BYTE_ORDER_MARK = 0xfeff
 
 // One pass: strings are copied whole, comments dropped, and a comma followed only by whitespace and
 // a closing brace or bracket dropped.
@@ -24,6 +26,12 @@ function toJson(text) {
       while (end < text.length && text.charCodeAt(end) !== QUOTE) end += text.charCodeAt(end) === ESCAPE ? 2 : 1
       out += text.slice(cursor, end + 1)
       cursor = end + 1
+    } else if (SUBSTITUTION.test(text.slice(cursor, cursor + 7))) {
+      // An UNQUOTED {env:VAR} or {file:path} is legal for OpenCode, which substitutes text before
+      // parsing; its value is unknown here, so it reads as null (never a host, never a model).
+      const end = text.indexOf('}', cursor)
+      out += 'null'
+      cursor = end < 0 ? text.length : end + 1
     } else if (code === SLASH && next === SLASH) {
       while (cursor < text.length && text.charCodeAt(cursor) !== NEWLINE) cursor += 1
     } else if (code === SLASH && next === STAR) {
@@ -55,5 +63,6 @@ function stripLeadingComments(rest) {
 
 export function parseJsonc(text) {
   if (typeof text !== 'string') return null
-  try { return JSON.parse(toJson(text)) } catch { return null }
+  const body = text.charCodeAt(0) === BYTE_ORDER_MARK ? text.slice(1) : text
+  try { return JSON.parse(toJson(body)) } catch { return null }
 }

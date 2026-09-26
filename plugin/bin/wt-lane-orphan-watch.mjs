@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, readFileSync, readdirSync, realpathSync } f
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { appendSupervisorJournal, argvSummary, classifyLane, inspectProcess, latestWorktreeWrite, readLogTail, shellQuote, supervisionPaths, supervisionSlots, terminateLane } from './lib/lane-supervisor-core.mjs'
-import { laneDescendantPids, posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
+import { isLiveSandboxedLane, laneDescendantPids, posixCommandArgs, registeredWorktrees, reportableOpencodeArgv, stagingLaneDirs, suiteUmbrellaWorktrees } from './lib/lane-live-scan.mjs'
 import { terminateOrphanWatchers } from './lib/lane-watcher-orphans.mjs'
 import { listBrokers, listProcessRelationships, listProcessTable } from './lib/second-opinion-core.mjs'
 import { idleHelperEvents } from './lib/resolved-binary.mjs'
@@ -210,7 +210,7 @@ async function main() {
     const liveChildren = []
     for (const record of known) {
       const verdict = classifyLane(record)
-      if (verdict.child === 'running') liveChildren.push(record.childPid)
+      if (isLiveSandboxedLane(record, verdict)) liveChildren.push(record.childPid)
       const processRecord = verdict.child === 'running' ? inspectProcess(record.childPid) : null
       const ownsNotice = record.owner === 'session' && Boolean(record.ownerSessionId) && record.ownerSessionId === process.env.CLAUDE_CODE_SESSION_ID
       const decisionKey = `${record.runId}:${record.timeoutAt}`
@@ -268,7 +268,8 @@ async function main() {
       const result = terminateLane(record, { journal, source: 'watcher', recordWorktree: record.__recordWorktree })
       journal({ event: result.killed ? 'cleaned' : 'cleanup-refused', runId: record.runId, pid: processRecord.pid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: result.killed ? verdict.reason : result.reason, evidence }, { killed: result.killed })
     }
-    // A sandboxed lane's opencode runs as a descendant of its recorded (bwrap) child: attributed too.
+    // A LIVE SANDBOXED lane's opencode runs as a descendant of its recorded (bwrap) child: attributed
+    // too. An unsandboxed lane's descendants are not: a nested `opencode run` there is still reported.
     const attributed = new Set([...known.map((record) => record.childPid), ...(table.supported ? laneDescendantPids(liveChildren, table.processes) : [])])
     if (table.supported) for (const item of table.processes) {
       if (!isOpencodeCommand(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue

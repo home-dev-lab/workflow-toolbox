@@ -14,6 +14,13 @@ export const ACTIVITY_SKIP_DIRS = new Set(['.git', 'node_modules', '.pnpm', 'dis
 // host PIDs the host process table still shows with their host parent. Every descendant of a child
 // the caller VERIFIED running (pid + argv + start time) belongs to that lane. `processes` rows carry
 // { pid, ppid }; a row without a ppid simply has no parent here.
+// Only a record whose launch line says it was SANDBOXED, and whose classification is live (worker
+// AND child verified running, state running or decision-needed), donates its descendants.
+export function isLiveSandboxedLane(record, verdict) {
+  return typeof record?.sandbox === 'string' && record.sandbox.startsWith('lane sandbox: bwrap')
+    && ['running', 'decision-needed'].includes(verdict?.status)
+}
+
 export function laneDescendantPids(rootPids, processes) {
   const children = new Map()
   for (const row of processes) {

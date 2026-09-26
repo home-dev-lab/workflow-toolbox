@@ -1,19 +1,24 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseJsonc } from '../jsonc.mjs'
+import { processStartTime } from './pid-namespace.mjs'
 
 // External lanes (opencode, codex) run as the owner with a shell. The environment allow-list keeps
 // secrets out of their ENVIRONMENT; this sandbox keeps them out of their FILESYSTEM, process table
 // and NETWORK. It is built from an allow-list of binds on an empty root, never by masking secret
 // paths on top of the whole filesystem: a path nobody named is absent by construction. The lane
-// runs in its own network namespace (--unshare-net) and reaches exactly what its MODEL needs: a
+// runs in its own network namespace (--unshare-net) with two routes out, both chosen by its MODEL: a
 // loopback provider endpoint through a socat relay over a unix socket, and a remote provider's own
-// hostnames through a host-side HTTPS CONNECT proxy (lane-egress-proxy.mjs) with an exact allow-list.
-// No other host loopback service and no other internet host is reachable.
+// hostnames through a host-side HTTPS CONNECT proxy (lane-egress-proxy.mjs) that checks the CONNECT
+// host against an exact allow-list and the TLS SNI against the CONNECT host. No other host loopback
+// service is reachable, and no other internet NAME can be tunnelled. Not covered, by design: HTTP
+// Host-header fronting inside the encrypted stream to another site on the same CDN, and the allowed
+// provider account itself, which is a place a lane can send data. The allow-list is derived only
+// from configuration the lane cannot write (see opencodeModelNetwork).
 
 const LANE_SANDBOX_READ_ENV = 'WT_LANE_SANDBOX_READ'
 const LANE_SANDBOX_WRITE_ENV = 'WT_LANE_SANDBOX_WRITE'
@@ -41,7 +46,8 @@ const OPENCODE_HOME_READ_ONLY = ['node_modules', 'package.json', 'package-lock.j
 const SYSTEM_READ_ONLY = ['/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc', '/nix/store']
 // /etc entries that are commonly symlinks into /run or /mnt (WSL writes resolv.conf under /mnt/wsl).
 const ETC_LINK_TARGETS = ['/etc/resolv.conf', '/etc/hosts', '/etc/ssl/certs/ca-certificates.crt']
-const OPENCODE_GLOBAL_CONFIGS = ['opencode.json', 'opencode.jsonc', 'config.json']
+// In OpenCode's own load order (measured, OpenCode 1.18.32 debug log): a later file overrides an earlier one.
+const OPENCODE_GLOBAL_CONFIGS = ['config.json', 'opencode.json', 'opencode.jsonc']
 const FILE_REFERENCE = /\{file:([^}]+)\}/g
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
 const probeCache = new Map()
@@ -138,36 +144,64 @@ function builtInProviderHosts(provider, kinds) {
   return table ? [...new Set(kinds.flatMap((kind) => table[kind] ?? []))] : []
 }
 
+// The last defined value along the load order wins, as in OpenCode's own merge.
+const lastDefined = (configs, read) => configs.map(read).filter((value) => typeof value === 'string').at(-1)
+
+function endpointsFromBaseURL(provider, baseURL) {
+  try {
+    const url = new URL(baseURL)
+    if (LOOPBACK_HOSTS.has(url.hostname)) return { provider, endpoints: [{ host: url.hostname === 'localhost' ? '127.0.0.1' : url.hostname, port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)) }], hosts: [] }
+    return { provider, endpoints: [], hosts: url.protocol === 'https:' ? [url.hostname.toLowerCase()] : [] }
+  } catch { return { provider, endpoints: [], hosts: [] } }
+}
+
 // A lane's network needs, from ITS model only (`provider/model`): a configured baseURL on loopback
 // becomes a relayed endpoint, a remote baseURL becomes that one host, and a built-in provider gets
 // its own hosts for the credential kind the OpenCode auth store holds. No model → no network.
-function opencodeModelNetwork({ configDir, model, authFile, fs }) {
-  const configs = OPENCODE_GLOBAL_CONFIGS.map((name) => readJson(path.join(configDir, name), fs)).filter(Boolean)
-  const chosen = model || configs.map((config) => config.model).find((value) => typeof value === 'string')
+//
+// OpenCode's documented precedence (opencode.ai/docs/config, "Precedence order"): remote config,
+// then the global config, then OPENCODE_CONFIG, then the project config, then `.opencode`
+// directories, then OPENCODE_CONFIG_CONTENT, later sources overriding earlier ones key by key. In
+// the global directory OpenCode 1.18.32 loads config.json, opencode.json, opencode.jsonc in that
+// order (measured, its own debug log). Only sources the lane CANNOT write feed the allow-list: the
+// global files (bound read-only) and OPENCODE_CONFIG when it lies outside every writable bind. The
+// project config and `.opencode` live in the writable worktree, so trusting them would let one lane
+// widen the next lane's egress; OpenCode may still honour them, and a host they name is then
+// refused by the proxy (fail closed). OPENCODE_CONFIG_CONTENT never reaches a lane (the environment
+// allow-list strips OPENCODE_CONFIG_*). A file that exists but does not parse is named in the
+// launch line: it can only make the allow-list SMALLER, never larger.
+function opencodeModelNetwork({ configDir, model, authFile, configFile, fs }) {
+  const files = [...OPENCODE_GLOBAL_CONFIGS.map((name) => path.join(configDir, name)), ...(configFile ? [configFile] : [])]
+  const unreadable = files.filter((file) => fs.readText(file) !== null && readJson(file, fs) === null)
+  const configs = files.map((file) => readJson(file, fs)).filter(Boolean)
+  const chosen = model || lastDefined(configs, (config) => config.model)
   const provider = typeof chosen === 'string' && chosen.includes('/') ? chosen.slice(0, chosen.indexOf('/')) : null
-  if (!provider) return { provider: null, endpoints: [], hosts: [] }
-  const baseURL = configs.map((config) => config?.provider?.[provider]?.options?.baseURL).find((value) => typeof value === 'string')
-  if (baseURL) {
-    try {
-      const url = new URL(baseURL)
-      if (LOOPBACK_HOSTS.has(url.hostname)) return { provider, endpoints: [{ host: url.hostname === 'localhost' ? '127.0.0.1' : url.hostname, port: Number(url.port || (url.protocol === 'https:' ? 443 : 80)) }], hosts: [] }
-      return { provider, endpoints: [], hosts: url.protocol === 'https:' ? [url.hostname.toLowerCase()] : [] }
-    } catch { return { provider, endpoints: [], hosts: [] } }
-  }
+  if (!provider) return { provider: null, endpoints: [], hosts: [], unreadable }
+  const baseURL = lastDefined(configs, (config) => config?.provider?.[provider]?.options?.baseURL)
+  if (baseURL) return { ...endpointsFromBaseURL(provider, baseURL), unreadable }
   const kind = readJson(authFile, fs)?.[provider]?.type === 'oauth' ? 'oauth' : 'api'
-  return { provider, endpoints: [], hosts: builtInProviderHosts(provider, [kind]) }
+  return { provider, endpoints: [], hosts: builtInProviderHosts(provider, [kind]), unreadable }
 }
 
-// Codex always talks to OpenAI: ChatGPT sign-in (tokens) and/or an API key in its auth store.
+// Codex always talks to OpenAI: ChatGPT sign-in (tokens) and/or an API key in the auth store of the
+// home codex will actually read (CODEX_HOME when set, else ~/.codex).
 function codexNetwork(codexHome, fs) {
-  const auth = readJson(path.join(codexHome, 'auth.json'), fs) ?? {}
-  const kinds = [...(auth.tokens ? ['oauth'] : []), ...(auth.OPENAI_API_KEY ? ['api'] : [])]
-  return { provider: 'openai', endpoints: [], hosts: builtInProviderHosts('openai', kinds.length ? kinds : ['oauth']) }
+  const file = path.join(codexHome, 'auth.json')
+  const auth = readJson(file, fs)
+  const kinds = [...(auth?.tokens ? ['oauth'] : []), ...(auth?.OPENAI_API_KEY ? ['api'] : [])]
+  const unreadable = fs.readText(file) !== null && auth === null ? [file] : []
+  return { provider: 'openai', endpoints: [], hosts: builtInProviderHosts('openai', kinds.length ? kinds : ['oauth']), unreadable }
 }
 
+// `--model x`, `-m x`, `--model=x` and `-m=x`.
 const modelArgument = (args) => {
-  const index = args.findIndex((value) => value === '--model' || value === '-m')
-  return index >= 0 && typeof args[index + 1] === 'string' ? args[index + 1] : null
+  for (let index = 0; index < args.length; index += 1) {
+    const value = String(args[index])
+    if ((value === '--model' || value === '-m') && typeof args[index + 1] === 'string') return args[index + 1]
+    const inline = /^(?:--model|-m)=(.+)$/.exec(value)
+    if (inline) return inline[1]
+  }
+  return null
 }
 
 // A per-run OpenCode home: auth.json and the provider packages/bin are copied or bound read-only, so
@@ -189,7 +223,8 @@ function opencodePrivateHome({ env, fs, runtimeDir, model }) {
     if (fs.isDir(src)) readOnlyOverlays.push(path.join(privCache, sub) === src ? src : { inside: path.join(cacheDir, sub), outside: src })
   }
   fs.copy(path.join(cacheDir, 'models.json'), path.join(privCache, 'models.json'))
-  const network = opencodeModelNetwork({ configDir: path.join(xdg(env, 'XDG_CONFIG_HOME', '.config'), 'opencode'), model, authFile: path.join(shareDir, 'auth.json'), fs })
+  const configDir = path.join(xdg(env, 'XDG_CONFIG_HOME', '.config'), 'opencode')
+  const network = (laneWritable) => opencodeModelNetwork({ configDir, model, authFile: path.join(shareDir, 'auth.json'), configFile: absolute(env.OPENCODE_CONFIG).find((file) => !laneWritable(file)), fs })
   return { writable, readOnlyOverlays, network }
 }
 
@@ -207,6 +242,9 @@ const PROFILES = {
       readOnlyOverlaysRemap: priv.readOnlyOverlays.filter((entry) => typeof entry === 'object'),
       readOnlyOverlays: priv.readOnlyOverlays.filter((entry) => typeof entry === 'string'),
       network: priv.network,
+      // Read-only binds land BEFORE writable ones, so a writable bind over these would win. They
+      // hold what the next lane executes or trusts (config, allow-list source, plugin packages).
+      protectedPaths: [configDir, path.join(home(env), '.opencode')],
     }
   },
   codex({ env, fs, runtimeDir, base: _base }) {
@@ -225,7 +263,8 @@ const PROFILES = {
       readOnlyOverlays: [],
       codexHome: env.CODEX_HOME ? undefined : privHome,
       authWriteback: { from: path.join(privHome, 'auth.json'), to: path.join(codexHome, 'auth.json') },
-      network: codexNetwork(codexHome, fs),
+      network: () => codexNetwork(absolute(env.CODEX_HOME)[0] ?? codexHome, fs),
+      protectedPaths: [codexHome, ...absolute(env.CODEX_HOME)],
     }
   },
 }
@@ -328,6 +367,54 @@ function sandboxAvailability({ optionEnv, platform, bwrap, probe, fs }) {
 // allowed loopback endpoint, and the egress proxy when the model has remote hosts. The sandbox has
 // its own empty loopback (--unshare-net), so nothing else on the host is reachable; the bootstrap
 // inside re-listens on each bridge's loopback address (H4).
+// The realpath of the deepest existing ancestor, with the rest appended: a path that does not exist
+// yet (a log file) is still compared by where it would really land.
+function canonicalPath(candidate, fs) {
+  const suffix = []
+  let probe = path.resolve(candidate)
+  while (true) {
+    const real = fs.realpath(probe)
+    if (real) return path.join(real, ...suffix)
+    const parent = path.dirname(probe)
+    if (parent === probe) return path.resolve(candidate)
+    suffix.unshift(path.basename(probe))
+    probe = parent
+  }
+}
+
+const within = (child, parent) => child === parent || child.startsWith(`${parent}${path.sep}`)
+
+function laneWritablePredicate(roots, fs) {
+  const canonicalRoots = roots.map((root) => canonicalPath(root, fs))
+  return (candidate) => canonicalRoots.some((root) => within(canonicalPath(candidate, fs), root))
+}
+
+// A writable bind that contains (or sits inside) a CLI's config/auth location would override its
+// read-only bind: bwrap applies binds in order and the writable ones come after. Refused, never
+// silently dropped, so the operator sees which entry did it.
+function refuseProtectedOverlap(writable, protectedPaths, fs) {
+  for (const bind of writable) {
+    const root = canonicalPath(bind, fs)
+    for (const guarded of protectedPaths) {
+      const target = canonicalPath(guarded, fs)
+      if (within(target, root) || within(root, target)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
+    }
+  }
+}
+
+// The egress log is written by the host-side proxy; a path the lane can write (or plant a symlink
+// in) would let it aim that write at any file of the owner.
+function refuseLaneWritableLog(egressLog, laneWritable) {
+  if (egressLog && laneWritable(egressLog)) throw new LaneSandboxRefusal(`refusing ${LANE_EGRESS_LOG_ENV}=${egressLog}: it lies under a path the lane can write`)
+}
+
+function reportBridgeExit(diagnostics, message) {
+  try {
+    if (typeof diagnostics === 'number') writeSync(diagnostics, message)
+    else process.stderr.write(message)
+  } catch { /* nowhere left to say it */ }
+}
+
 function networkBridges({ network, socketDir, socat, execPath, egressLog }) {
   const bridges = network.endpoints.map((endpoint, index) => {
     const sock = path.join(socketDir, `ep-${index}.sock`)
@@ -339,19 +426,38 @@ function networkBridges({ network, socketDir, socat, execPath, egressLog }) {
     while (used.has(port)) port += 1
     const sock = path.join(socketDir, 'egress.sock')
     const log = path.isAbsolute(egressLog ?? '') ? ['--log', egressLog] : []
-    bridges.push({ sock, host: '127.0.0.1', port, proxy: true, command: execPath, args: [EGRESS_PROXY, '--socket', sock, '--allow', network.hosts.join(','), '--parent', String(process.pid), ...log] })
+    const parentStart = processStartTime(process.pid)
+    bridges.push({ sock, host: '127.0.0.1', port, proxy: true, command: execPath, args: [EGRESS_PROXY, '--socket', sock, '--allow', network.hosts.join(','), '--parent', String(process.pid), ...(parentStart === null ? [] : ['--parent-start', String(parentStart)]), ...log] })
   }
   return bridges
 }
 
-function startBridges({ bridges, fs, spawnFn, socat }) {
-  const relays = bridges.map((bridge) => spawnFn(bridge.command, bridge.args, { stdio: 'ignore', detached: false }))
+// Starts every host bridge and waits for its socket. A bridge whose socket never appears REFUSES
+// the launch (the lane would otherwise start with a launch line claiming a route that does not
+// exist); a bridge that dies later says so on the lane's diagnostics stream (its run log).
+function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
+  const relays = bridges.map((bridge) => {
+    const relay = spawnFn(bridge.command, bridge.args, { stdio: ['ignore', 'ignore', typeof diagnostics === 'number' ? diagnostics : 'inherit'], detached: false })
+    if (typeof relay?.once === 'function') {
+      relay.once('exit', (code, signal) => {
+        if (!state.disposed) reportBridgeExit(diagnostics, `workflow-toolbox: lane ${bridge.proxy ? 'egress proxy' : 'endpoint relay'} exited (code ${code ?? 'none'}, signal ${signal ?? 'none'}); the sandboxed lane has lost that route\n`)
+      })
+    }
+    return relay
+  })
   const insideCommands = bridges.map((bridge) => `${shPosix(socat)} TCP4-LISTEN:${bridge.port},bind=${bridge.host},fork,reuseaddr UNIX-CONNECT:${shPosix(bridge.sock)} >/dev/null 2>&1 &`)
   // A host bridge's unix socket appears asynchronously. Wait for it BEFORE the sandbox starts, or
   // the lane's first connection races the socket into existence and is refused (measured).
   const deadline = Date.now() + 3_000
   for (const { sock } of bridges) {
     while (!fs.exists(sock) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+  }
+  const missing = bridges.filter(({ sock }) => !fs.exists(sock))
+  if (missing.length) {
+    state.disposed = true
+    for (const relay of relays) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }
+    const names = missing.map((bridge) => (bridge.proxy ? 'egress proxy' : 'relay to ' + bridge.host + ':' + bridge.port)).join(', ')
+    throw new LaneSandboxRefusal(`lane ${names} did not start within 3 s; refusing to launch a lane whose route does not exist`)
   }
   return { relays, insideCommands }
 }
@@ -372,8 +478,9 @@ function networkNote({ network, bridges, socat }) {
   if (!socat) parts.push('network isolated (socat absent, no bridge)')
   else if (endpointList) parts.push(`network isolated, bridged to ${endpointList}`)
   else parts.push('network isolated (no loopback endpoint configured)')
-  if (proxy) parts.push(`egress proxy to ${network.hosts.join(', ')} only (HTTPS CONNECT, port 443)`)
+  if (proxy) parts.push(`egress proxy to ${network.hosts.join(', ')} only (HTTPS CONNECT to port 443, TLS SNI must equal the CONNECT host; not covered: Host-header fronting inside TLS, and the provider account itself as a place to send data)`)
   else if (network.provider && socat && !endpointList) parts.push(`no egress: provider ${network.provider} has no known hosts`)
+  if (network.unreadable?.length) parts.push(`config not parsed by the egress planner (allow-list may be smaller than OpenCode expects): ${network.unreadable.join(', ')}`)
   return parts.join('; ')
 }
 
@@ -389,7 +496,7 @@ const shPosix = (value) => `'${String(value).replaceAll("'", () => SINGLE_QUOTE_
  * credentials are legitimately readable ('opencode' | 'codex'); `paths` adds caller-owned
  * directories (a probe fixture); WT_LANE_SANDBOX_READ/WRITE in `optionEnv` add the operator's.
  */
-export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, optionEnv = process.env, paths = {}, platform = process.platform, execPath = process.execPath, bwrap, socat, probe = probeBwrap, fs = realFs, spawnFn = spawn, runtimeParent, readonlyCwd = false } = {}) {
+export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, optionEnv = process.env, paths = {}, platform = process.platform, execPath = process.execPath, bwrap, socat, probe = probeBwrap, fs = realFs, spawnFn = spawn, runtimeParent, readonlyCwd = false, diagnostics } = {}) {
   const bwrapPath = bwrap ?? findOnPath('bwrap', optionEnv.PATH, fs) ?? '/usr/bin/bwrap'
   const socatPath = socat ?? findOnPath('socat', optionEnv.PATH, fs) ?? (fs.isFile('/usr/bin/socat') ? '/usr/bin/socat' : null)
   const availability = sandboxAvailability({ optionEnv, platform, bwrap: bwrapPath, probe, fs })
@@ -421,13 +528,25 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   // The root/$HOME/ancestor refusal covers EVERY computed bind, not only the operator extras (H2).
   const readable = rawReadable.filter((item) => item && !isForbiddenPath(item, env, fs))
   const writable = rawWritable.filter((item) => item && !isForbiddenPath(item, env, fs))
+  refuseProtectedOverlap(writable, selected.protectedPaths ?? [], fs)
+  // Everything the lane can write: its writable binds and the per-run runtime dir (private remaps,
+  // bridge sockets). Configuration found there never feeds the allow-list, and no log goes there.
+  const laneWritable = laneWritablePredicate([...writable, runtimeDir], fs)
+  const egressLog = optionEnv[LANE_EGRESS_LOG_ENV]
+  refuseLaneWritableLog(egressLog, laneWritable)
 
-  const network = socatPath ? selected.network : { provider: selected.network.provider, endpoints: [], hosts: [] }
+  const planned = selected.network(laneWritable)
+  const network = socatPath ? planned : { ...planned, endpoints: [], hosts: [] }
   const { endpoints } = network
   const socketDir = endpoints.length || network.hosts.length ? path.join(runtimeDir, 'net') : null
   if (socketDir) fs.ensureDir(socketDir)
-  const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog: optionEnv[LANE_EGRESS_LOG_ENV] }) : []
-  const bridge = startBridges({ bridges, fs, spawnFn, socat: socatPath })
+  const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
+  const bridgeState = { disposed: false }
+  let bridge
+  try { bridge = startBridges({ bridges, fs, spawnFn, socat: socatPath, diagnostics, state: bridgeState }) } catch (error) {
+    try { rmSync(runtimeDir, { recursive: true, force: true }) } catch { /* best effort */ }
+    throw error
+  }
 
   const prefix = sandboxArguments({
     readable, writable, writableRemap: selected.writableRemap ?? [],
@@ -459,6 +578,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const dispose = () => {
     if (disposed) return
     disposed = true
+    bridgeState.disposed = true
     for (const relay of bridge.relays) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }
     try { rmSync(runtimeDir, { recursive: true, force: true }) } catch { /* best effort */ }
   }
