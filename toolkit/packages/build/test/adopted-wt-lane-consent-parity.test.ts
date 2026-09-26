@@ -24,6 +24,12 @@ const CONSENT_PROJECTS = [
   { name: 'project narrows', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'false' } } },
 ]
 const CONSENT_MATRIX_TIMEOUT_MS = CHILD_TIMEOUT_MS * CONSENT_ACCOUNTS.length * CONSENT_PROJECTS.length + 15_000
+// This one test chains four real spawns (installer, launcher, its own opencode/wt-suite-lock
+// children, and a final help child) plus a 3s poll loop. Run 36239956154 timed it at >20s on a
+// GitHub Actions Windows runner (whole file: 278s for 19 tests) — genuinely slow spawning, not a
+// hang: the vitest default testTimeout (20_000ms, see toolkit/vitest.config.mts) has no margin
+// left for that many sequential child processes on that host.
+const SUITE_LOCK_CHILD_TIMEOUT_MS = CHILD_TIMEOUT_MS * 3 + 15_000
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -315,7 +321,7 @@ printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
     const cli = realpathSync(join(f.pluginRoot, 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs'))
     expect(readFileSync(seen, 'utf8')).toBe(cli)
     expect(existsSync(cli)).toBe(true)
-  })
+  }, SUITE_LOCK_CHILD_TIMEOUT_MS)
 
   it('refuses to launch when the installed plugin root lacks the suite-lock CLI', () => {
     const f = fixture()

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
@@ -36,7 +36,10 @@ interface FenceModule { spawnOpencode: (spawnFn: typeof spawnSync, bin: string, 
 const { delimiter } = posix
 
 const load = async <T>(file: string): Promise<T> => (await import(pathToFileURL(join(LIB, file)).href)) as T
-const sandbox = await load<SandboxModule>('host/lane-sandbox.mjs')
+const sandboxLib = process.env.WT_LANE_SANDBOX_TEST_LIB
+const sandbox = sandboxLib
+  ? (await import(pathToFileURL(join(sandboxLib, 'host/lane-sandbox.mjs')).href)) as SandboxModule
+  : await load<SandboxModule>('host/lane-sandbox.mjs')
 const suiteLock = await load<SuiteLockModule>('suite-lock.mjs')
 const fence = await load<FenceModule>('opencode-skill-fence.mjs')
 
@@ -60,14 +63,14 @@ function tempRoot(tag: string): string {
 
 // A fake filesystem: a set of files (with text) and directories. Every path the module resolves is
 // answered from this map, so the unit locks never touch the real machine.
-function fakeFs(files: Record<string, string> = {}, dirs: string[] = []): FakeFs & { ensured: string[], copied: Array<[string, string]> } {
+function fakeFs(files: Record<string, string> = {}, dirs: string[] = [], realpaths: Record<string, string> = {}): FakeFs & { ensured: string[], copied: Array<[string, string]> } {
   const ensured: string[] = []
   const copied: Array<[string, string]> = []
   const dirSet = new Set([...dirs])
   return {
     ensured, copied,
     exists: (f) => f in files || dirSet.has(f) || f === '/usr/bin/bwrap' || f === '/usr/bin/socat',
-    realpath: (f) => (f in files || dirSet.has(f) ? f : null),
+    realpath: (f) => realpaths[f] ?? (f in files || dirSet.has(f) ? f : null),
     isFile: (f) => f in files,
     isDir: (f) => dirSet.has(f),
     readText: (f) => files[f] ?? null,
@@ -147,6 +150,74 @@ describe('lane sandbox plan — availability and pass-through', () => {
 })
 
 describe('lane sandbox plan — filesystem allow-list', () => {
+  it('every late read-only overlay stays clear of writable destinations, private homes and protected paths in both profiles', () => {
+    const codexHome = `${HOME}/.codex`
+    const bin = `${codexHome}/codex`
+    const link = `${HOME}/.local/bin/codex`
+    const cases = [
+      { profile: 'codex', env: { HOME, PATH: codexHome }, fs: fakeFs({ [bin]: 'bin' }, [HOME, '/work/tree', codexHome]), execPath: '/usr/bin/node' },
+      { profile: 'codex', env: { HOME, PATH: `${HOME}/.local/bin` }, fs: fakeFs({ [bin]: 'bin', [link]: 'link' }, [HOME, '/work/tree', codexHome, `${HOME}/.local/bin`], { [link]: bin }), execPath: '/usr/bin/node' },
+      ...(['codex', 'opencode'] as const).map((profile) => ({ profile, env: { HOME, PATH: '/usr/bin' }, fs: fakeFs({ [`${HOME}/.local/bin/node`]: 'node' }, [HOME, '/work/tree', `${HOME}/.local/bin`]), execPath: `${HOME}/.local/bin/node` })),
+    ]
+    for (const { profile, env, fs, execPath } of cases) {
+      const p = plan({ profile, env, fs, execPath })
+      const [, args] = p.wrap('/bin/sh', [])
+      const mounts = args.flatMap((flag, i) => (['--bind', '--bind-try', '--ro-bind', '--ro-bind-try'].includes(flag) ? [{ flag, source: args[i + 1]!, dest: args[i + 2]!, index: i }] : []))
+      const lastWrite = Math.max(...mounts.filter((m) => m.flag === '--bind' || m.flag === '--bind-try').map((m) => m.index))
+      const protectedPaths = profile === 'codex' ? [codexHome] : [`${HOME}/.config/opencode`, `${HOME}/.opencode`]
+      const guarded = [...mounts.filter((m) => m.flag === '--bind' || m.flag === '--bind-try').map((m) => m.dest), ...protectedPaths]
+      const late = mounts.filter((m) => m.index > lastWrite && m.flag.startsWith('--ro-'))
+      expect(late.length).toBeGreaterThan(0)
+      for (const overlay of late) for (const target of guarded) {
+        expect(target === overlay.dest || target.startsWith(`${overlay.dest}/`), `${profile}: late ${overlay.dest} covers ${target}`).toBe(false)
+      }
+      if (execPath.startsWith(HOME)) {
+        expect(late.map((m) => m.dest)).not.toContain(`${HOME}/.local`)
+        expect(late.map((m) => m.dest)).toEqual(expect.arrayContaining([`${HOME}/.local/bin`, `${HOME}/.local/lib`]))
+      } else {
+        expect(late.map((m) => m.dest)).toContain(bin)
+        expect(late.map((m) => m.dest)).not.toContain(codexHome)
+      }
+      p.dispose()
+    }
+  })
+
+  it('refuses a kept executable link whose target cannot be mounted instead of silently changing PATH priority', () => {
+    const link = `${HOME}/.local/bin/codex`
+    const target = `${HOME}/codex`
+    const fs = fakeFs({ [link]: 'link', [target]: 'bin' }, [HOME, '/work/tree', `${HOME}/.local/bin`], { [link]: target })
+    expect(() => plan({ profile: 'codex', env: { HOME, PATH: `${HOME}/.local/bin` }, fs })).toThrow(/refusing executable .*codex: target directory .*home\/lane-owner cannot be mounted/)
+  })
+
+  it('names the executable and blocker if even the narrowed toolchain overlay covers a writable bind', () => {
+    const node = `${HOME}/.local/bin/node`
+    const fs = fakeFs({ [node]: 'node' }, [HOME, '/work/tree', `${HOME}/.local/bin`])
+    expect(() => plan({ fs, execPath: node, optionEnv: { WT_LANE_SANDBOX_WRITE: `${HOME}/.local/bin` } })).toThrow(/refusing executable .*node: overlay .*\.local\/bin collides with .*\.local\/bin/)
+  })
+
+  it('narrows an executable directory covering a protected OpenCode config to the executable file', () => {
+    const binary = `${HOME}/.config/opencode-cli`
+    const [, args] = plan({ bin: binary, fs: fakeFs({ [binary]: 'cli' }, [HOME, '/work/tree', `${HOME}/.config`]) }).wrap(binary, [])
+    const late = flat(args, '--ro-bind-try')
+    expect(late).toContain(binary)
+    expect(late).not.toContain(`${HOME}/.config`)
+  })
+
+  it('recreates a symlinked executable inside the sandbox so its real directory and sibling helper are visible', () => {
+    const invoked = '/links/tool'
+    const real = '/real/bin/tool'
+    const fs = fakeFs({ [invoked]: 'link', [real]: 'tool', '/real/bin/helper': 'helper' }, [HOME, '/work/tree', '/links', '/real/bin'], { [invoked]: real })
+    const [, args] = plan({ bin: invoked, fs }).wrap(invoked, [])
+    const linkIndex = args.indexOf('--symlink')
+    expect(args.slice(linkIndex + 1, linkIndex + 3)).toEqual([real, invoked])
+    // These paths are fake-fs POSIX strings, not real filesystem paths — dirname/join must use
+    // path.posix explicitly, or win32's backslash-joined key never matches the fake fs (round 3).
+    expect(flat(args, '--dir')).toContain(posix.dirname(invoked))
+    expect(flat(args, '--ro-bind-try')).toContain(posix.dirname(real))
+    expect(fs.isFile(posix.join(posix.dirname(args[linkIndex + 1]!), 'helper'))).toBe(true)
+    expect(args.slice(args.indexOf('--') + 1)[0]).toBe(invoked)
+  })
+
   it('builds the root from named binds only, isolates PID/net/session, and refuses / $HOME / ancestor on EVERY bind (H2)', () => {
     const files = { [`${HOME}/.config/opencode/opencode.jsonc`]: '{}' }
     const [command, args] = plan({ fs: fakeFs(files, [HOME, '/work/tree']), optionEnv: { WT_LANE_SANDBOX_READ: `/${delimiter}${HOME}${delimiter}/home` } }).wrap('/opt/opencode/bin/opencode', ['run', 'x'])
@@ -654,6 +725,46 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
       return fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', CANARY, 'canary', allowed], { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
     } finally { if (prev === undefined) delete process.env.WT_LANE_SANDBOX; else process.env.WT_LANE_SANDBOX = prev }
   }
+
+  it('preserves PATH priority for a symlinked executable and its sibling helper (skips when bwrap is unavailable)', () => {
+    const root = tempRoot('exe-link')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree')
+    const realBin = join(home, '.codex/releases/current/bin'); const first = join(home, '.local/bin'); const second = join(root, 'second')
+    for (const dir of [home, worktree, realBin, first, second]) mkdirSync(dir, { recursive: true })
+    const tool = join(realBin, 'codex'); const helper = join(realBin, 'helper'); const invoked = join(first, 'codex')
+    writeFileSync(tool, '#!/bin/sh\nreal=$(readlink -f "$0")\nexec "$(dirname "$real")/helper"\n')
+    writeFileSync(helper, '#!/bin/sh\nprintf "NEW\\n"\n')
+    writeFileSync(join(second, 'codex'), '#!/bin/sh\nprintf "OLD\\n"\n')
+    for (const file of [tool, helper, join(second, 'codex')]) chmodSync(file, 0o755)
+    symlinkSync('../../.codex/releases/current/bin/codex', invoked)
+    const pathValue = `${first}:${second}:${process.env.PATH}`
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { PATH: pathValue, HOME: home }, paths: { readable: [second] } })
+    const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
+    const result = spawnSync(command, args, { cwd: worktree, env: { PATH: pathValue, HOME: home }, encoding: 'utf8', timeout: 30_000 })
+    try {
+      expect(result.status, String(result.stderr)).toBe(0)
+      expect(String(result.stdout)).toBe('NEW\n')
+    } finally { p.dispose() }
+  })
+
+  it('keeps a binary inside a private Codex home runnable while hiding the host marker and allowing CODEX_HOME writes', () => {
+    const root = tempRoot('private-binary')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree')
+    const codexHome = join(home, '.codex'); const binDir = join(codexHome, 'releases/bin')
+    for (const dir of [home, worktree, binDir]) mkdirSync(dir, { recursive: true })
+    writeFileSync(join(codexHome, 'host-marker'), 'secret')
+    const binary = join(binDir, 'codex')
+    writeFileSync(binary, '#!/bin/sh\nprintf "BINARY_OK\\n"\n')
+    chmodSync(binary, 0o755)
+    const pathValue = `${binDir}:${process.env.PATH}`
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue } })
+    const [command, args] = p.wrap('/bin/sh', ['-c', 'test ! -e "$CODEX_HOME/host-marker" && touch "$CODEX_HOME/writable" && test -f "$CODEX_HOME/writable" && codex'])
+    const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
+    try {
+      expect(result.status, String(result.stderr)).toBe(0)
+      expect(result.stdout).toBe('BINARY_OK\n')
+    } finally { p.dispose() }
+  })
 
   it('exposes NOTHING under $HOME beyond the named allow-list (invariant canary)', () => {
     const f = homeFixture()
