@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // This answers WHICH commits go out; the release-push evidence guard independently answers whether the release commit was gated.
 // Push-time guard: nothing lands in a publishable tree beyond what was actually
-// authorized. Computes the commits about to be pushed (remote/branch..ref) and
-// checks every one of them against an authorized scope. Exits non-zero and names
-// the offending commit(s) if any commit is not covered.
+// authorized. Computes the commits about to be pushed — those of `ref` not reachable
+// from any ref the remote advertises (`git ls-remote <remote>`) — and checks every
+// one of them against an authorized scope. Exits non-zero and names the offending
+// commit(s) if any commit is not covered, and exits 2 if the remote cannot be listed.
 //
 // Authorized-scope shapes (pick one):
 //   {"commits": ["<sha-or-prefix>", ...]}  — precise per-commit coverage, but the
@@ -28,12 +29,15 @@ import { readFileSync } from 'node:fs';
 import { handleHelpFlag } from './lib/cli-help.mjs';
 
 const HELP = `wt-push-scope-check — push-time guard: nothing lands in a publishable tree beyond
-what was actually authorized. Computes the commits about to be pushed (remote/branch..ref) and
-checks every one against an authorized scope ({"commits":[...]} or {"maxCount":N}).
+what was actually authorized. Computes the commits about to be pushed (those of --ref not
+reachable from any ref the remote advertises, via git ls-remote) and checks every one against
+an authorized scope ({"commits":[...]} or {"maxCount":N}). Fails closed if the remote cannot be listed.
 
 Usage:
-  wt-push-scope-check.mjs --remote <name> --branch <branch> --ref <refspec> --authorized <path.json>
+  wt-push-scope-check.mjs --remote <name> [--branch <branch>] --ref <refspec> --authorized <path.json>
     --ref must be the EXACT ref about to be pushed (e.g. HEAD) — never omitted or assumed.
+    --branch is accepted for compatibility with existing callers and ignored: the outgoing set does
+    not depend on which remote branch is updated.
 
 Exit codes: 0 every commit is covered · non-zero: usage error or an uncovered commit was found.
 `;
@@ -56,10 +60,10 @@ function fail(msg) {
   process.exit(2);
 }
 
-const { remote, branch, authorized, ref } = parseArgs(process.argv.slice(2));
-if (!remote || !branch || !authorized || !ref) {
+const { remote, authorized, ref } = parseArgs(process.argv.slice(2));
+if (!remote || !authorized || !ref) {
   fail(
-    'usage: wt-push-scope-check.mjs --remote <name> --branch <branch> --ref <refspec> --authorized <path.json>\n' +
+    'usage: wt-push-scope-check.mjs --remote <name> [--branch <branch>] --ref <refspec> --authorized <path.json>\n' +
       '  --ref must be the EXACT ref you are about to push (e.g. HEAD, or a branch/tag name) — never omitted or assumed.',
   );
 }
@@ -75,13 +79,51 @@ if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
   fail(`--authorized JSON must be an object with "commits" or "maxCount": ${authorized}`);
 }
 
-let log;
+// The outgoing set is what the push would TRANSFER: commits of `ref` not reachable from any ref the
+// remote ADVERTISES right now. Measuring against one remote branch (`<remote>/<branch>`) counted
+// commits already published through another branch as unauthorized; local remote-tracking refs are
+// no substitute either, since a branch deleted on the remote stays in them until a pruning fetch.
+let advertised;
 try {
-  log = execFileSync('git', ['log', `${remote}/${branch}..${ref}`, '--oneline'], {
+  advertised = execFileSync('git', ['ls-remote', remote], {
     encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
 } catch (err) {
-  fail(`git log failed (bad remote/branch/ref, or remote ref not fetched?): ${err.message}`);
+  fail(`could not list the refs of remote "${remote}" (fail-closed: without them the outgoing set is unknown): ${err.message}`);
+}
+const advertisedShas = [
+  ...new Set(
+    advertised
+      .split('\n')
+      .map((l) => l.split('\t', 1)[0].trim())
+      .filter((s) => /^[0-9a-f]{40,64}$/.test(s)),
+  ),
+];
+
+// A remote object this clone does not have cannot be an ancestor of anything local; skip it rather
+// than let rev-list abort on an unknown object.
+let known = [];
+if (advertisedShas.length > 0) {
+  const check = execFileSync('git', ['cat-file', '--batch-check=%(objectname) %(objecttype)'], {
+    encoding: 'utf8',
+    input: `${advertisedShas.join('\n')}\n`,
+  });
+  known = check
+    .split('\n')
+    .map((l) => l.trim().split(/\s+/))
+    .filter(([sha, type]) => sha && (type === 'commit' || type === 'tag'))
+    .map(([sha]) => sha);
+}
+
+let log;
+try {
+  log = execFileSync('git', ['log', '--oneline', '--stdin', ref], {
+    encoding: 'utf8',
+    input: known.map((sha) => `^${sha}\n`).join(''),
+  });
+} catch (err) {
+  fail(`git log failed (bad ref?): ${err.message}`);
 }
 
 const lines = log.split('\n').map((l) => l.trim()).filter(Boolean);
@@ -136,7 +178,7 @@ if (offending.length > 0) {
     console.error(`UNAUTHORIZED COMMIT: ${line}`);
   }
   console.error(
-    `wt-push-scope-check: ${offending.length} unauthorized commit(s) out of ${lines.length} about to be pushed to ${remote}/${branch} (ref=${ref})`,
+    `wt-push-scope-check: ${offending.length} unauthorized commit(s) out of ${lines.length} new to ${remote} about to be pushed (ref=${ref})`,
   );
   process.exit(1);
 }

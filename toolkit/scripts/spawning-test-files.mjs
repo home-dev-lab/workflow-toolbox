@@ -116,6 +116,7 @@ export const spawningTestFiles = [
   'packages/build/test/prior-art-launch-guard-hook.test.ts',
   'packages/build/test/probe-claim-guard-hook.test.ts',
   'packages/build/test/propagation-reminder-hook.test.ts',
+  'packages/build/test/push-scope-check.test.ts',
   'packages/build/test/queue-gate-marker-expiry.test.ts',
   'packages/build/test/queue-not-empty-gate.test.ts',
   'packages/build/test/quota-probe-token.test.ts',
