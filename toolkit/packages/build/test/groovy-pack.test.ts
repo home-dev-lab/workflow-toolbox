@@ -1,9 +1,18 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { packPaths } from './helpers/pack-contract.js'
+import { describePackContract, packPaths } from './helpers/pack-contract.js'
 
-const { lspDeclarationPath, manifestPath, packDir, pluginLspDeclarationPath } = packPaths('groovy')
+const { manifestPath, packDir } = packPaths('groovy')
+
+// `.gradle` is deliberately unmapped: groovy-language-server has no Gradle API on its classpath and reports
+// `unable to resolve class org.gradle...` on an ordinary build script (measured 2026-09-26, README).
+describePackContract({
+  pack: 'groovy',
+  extensions: ['.groovy', '.gradle'],
+  files: ['build.gradle', 'settings.gradle', 'spock.conf'],
+  declaration: { command: 'groovy-language-server', args: [], extensionToLanguage: { '.groovy': 'groovy' }, diagnostics: true, startupTimeout: 30000 },
+})
 
 describe('Groovy pack', () => {
   it('owns Groovy, Gradle, and Spock trigger paths', () => {
@@ -27,10 +36,5 @@ describe('Groovy pack', () => {
     expect(fs.readFileSync(path.join(packDir, 'probe', 'expected-diagnostic.txt'), 'utf8').trim()).not.toBe('')
     expect(fs.existsSync(path.join(packDir, 'probe', 'Probe.groovy'))).toBe(true)
     expect(fs.existsSync(path.join(packDir, 'probe', 'nav', 'expected-navigation.json'))).toBe(true)
-  })
-
-  it('does not declare Groovy diagnostics after the headless server-start failure', () => {
-    expect(fs.existsSync(lspDeclarationPath)).toBe(false)
-    expect(JSON.parse(fs.readFileSync(pluginLspDeclarationPath, 'utf8'))).not.toHaveProperty('groovy')
   })
 })
