@@ -53,6 +53,7 @@ const ETC_LINK_TARGETS = ['/etc/resolv.conf', '/etc/hosts', '/etc/ssl/certs/ca-c
 const OPENCODE_GLOBAL_CONFIGS = ['config.json', 'opencode.json', 'opencode.jsonc']
 const FILE_REFERENCE = /\{file:([^}]+)\}/g
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
+const CODEX_PATH_DIR = '/run/wt-lane/bin'
 const probeCache = new Map()
 
 export class LaneSandboxRefusal extends Error {}
@@ -60,16 +61,6 @@ export class LaneSandboxRefusal extends Error {}
 const realFs = {
   exists: (file) => existsSync(file),
   realpath: (file) => { try { return realpathSync.native(file) } catch { return null } },
-  caseInsensitive: (file) => {
-    let probe = file
-    while (!existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe)
-    const name = path.basename(probe)
-    const index = name.search(/[a-z]/i)
-    if (index < 0) return false
-    const letter = name[index]
-    const other = path.join(path.dirname(probe), name.slice(0, index) + (letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase()) + name.slice(index + 1))
-    try { const a = statSync(probe); const b = statSync(other); return a.dev === b.dev && a.ino === b.ino } catch { return false }
-  },
   isFile: (file) => { try { return statSync(file).isFile() } catch { return false } },
   // Windows has no execute bit to check (a .cmd is invoked by name resolution, never by mode); the
   // check is POSIX-only, and always true on win32.
@@ -99,7 +90,7 @@ function findOnPath(name, searchPath, fs) {
   for (const directory of String(searchPath ?? '').split(path.delimiter)) {
     if (!path.isAbsolute(directory)) continue
     const candidate = path.join(directory, name)
-    if (fs.isFile(candidate)) return candidate
+    if (fs.isFile(candidate) && (fs.isExecutable?.(candidate) ?? true)) return candidate
   }
   return null
 }
@@ -278,8 +269,6 @@ const PROFILES = {
     fs.copy(path.join(codexHome, 'auth.json'), path.join(privHome, 'auth.json'))
     fs.copy(path.join(codexHome, 'config.toml'), path.join(privHome, 'config.toml'))
     return {
-      executableMounts: executableMount(findOnPath('codex', env.PATH, fs), fs),
-      executableSymlinks: executableSymlinks(findOnPath('codex', env.PATH, fs), fs),
       writableRemap: [{ inside: codexHome, outside: privHome }],
       writable: [...absolute(env.CLAUDE_PLUGIN_DATA)],
       readOnlyOverlaysRemap: [],
@@ -366,15 +355,22 @@ function operatorExtras(optionEnv, env, fs) {
   return { readable: accepted(LANE_SANDBOX_READ_ENV), writable: accepted(LANE_SANDBOX_WRITE_ENV), refused }
 }
 
+function bindPath(item) {
+  if (typeof item !== 'string' || !path.isAbsolute(item) || item.split('/').includes('..')) {
+    throw new LaneSandboxRefusal(`refusing path ${String(item)}: non-absolute path or parent traversal in a bind cannot be checked safely`)
+  }
+  return item
+}
+
 function bindArgs(flag, paths) {
-  return [...new Set(paths)].flatMap((item) => [flag, item, item])
+  return [...new Set(paths)].flatMap((item) => [flag, bindPath(item), bindPath(item)])
 }
 
 function remapArgs(flag, remaps) {
-  return remaps.flatMap(({ inside, outside }) => [flag, outside, inside])
+  return remaps.flatMap(({ inside, outside }) => [flag, bindPath(outside), bindPath(inside)])
 }
 
-function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, executableSymlinks, env, chdir, fs, socketDir }) {
+function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, executableSymlinks, codexReal, codexPath, env, chdir, fs, socketDir }) {
   const etcTargets = ETC_LINK_TARGETS.map((file) => fs.realpath(file)).filter((file) => file && !file.startsWith('/etc/') && !file.startsWith('/usr/'))
   const mounted = [...SYSTEM_READ_ONLY, ...readable, ...writable, ...writableRemap.map(({ inside }) => inside)]
   const uniqueSymlinks = [...new Map(executableSymlinks.map((entry) => [entry.link, entry])).values()]
@@ -393,10 +389,12 @@ function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays,
     // Read-only overlays land AFTER the writable binds they sit inside, so they win.
     ...bindArgs('--ro-bind-try', readOnlyOverlays),
     ...remapArgs('--ro-bind-try', readOnlyOverlaysRemap),
+    ...(codexReal ? ['--dir', CODEX_PATH_DIR, '--symlink', codexReal, `${CODEX_PATH_DIR}/codex`] : []),
     '--chdir', chdir,
     '--unsetenv', 'XDG_RUNTIME_DIR', '--unsetenv', 'DBUS_SESSION_BUS_ADDRESS', '--unsetenv', 'SSH_AUTH_SOCK',
     '--setenv', 'TMPDIR', '/tmp', '--setenv', 'TMP', '/tmp', '--setenv', 'TEMP', '/tmp',
     '--setenv', LANE_SANDBOX_SWITCH_ENV, 'bwrap',
+    ...(codexReal ? ['--setenv', 'PATH', codexPath] : []),
   ]
 }
 
@@ -422,7 +420,7 @@ function sandboxAvailability({ optionEnv, platform, bwrap, probe, fs }) {
 // The realpath of the deepest existing ancestor, with the rest appended: a path that does not exist
 // yet (a log file) is still compared by where it would really land.
 function canonicalPath(candidate, fs) {
-  if (candidate.split('/').includes('..')) throw new LaneSandboxRefusal(`refusing path ${candidate}: parent traversal in a bind cannot be checked safely`)
+  bindPath(candidate)
   const suffix = []
   let probe = candidate
   while (true) {
@@ -436,10 +434,7 @@ function canonicalPath(candidate, fs) {
 }
 
 const within = (child, parent) => child === parent || child.startsWith(`${parent}${path.sep}`)
-const withinOnDisk = (child, parent, fs) => {
-  const insensitive = fs.caseInsensitive?.(child) || fs.caseInsensitive?.(parent)
-  return within(insensitive ? child.toLowerCase() : child, insensitive ? parent.toLowerCase() : parent)
-}
+const withinOnDisk = (child, parent) => within(child.toLowerCase(), parent.toLowerCase())
 
 function laneWritablePredicate(roots, fs) {
   const canonicalRoots = roots.map((root) => canonicalPath(root, fs))
@@ -482,52 +477,19 @@ function safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs) {
 
 // A bind at the real target does not recreate an invocation beneath a private remap (nor
 // beneath an aliased HOME). Mount the selected entry point at its PATH spelling last.
-function privateExecutableOverlays(selected, env, fs) {
-  if (!selected || !path.isAbsolute(selected)) return []
-  const privateHome = path.join(home(env), '.codex')
-  if (!within(selected, privateHome)) return []
-  const source = fs.realpath(selected)
-  return source && fs.isFile(source) ? [{ inside: selected, outside: source }] : []
-}
-
-// Evaluate the first PATH hit from the ordered, emitted mounts. A bind-try with no source
-// contributes nothing; a later private remap hides an earlier executable unless a later file
-// overlay restores it. Resolve host symlinks at the source, not at the sandbox destination.
-function refuseUnreachableExecutable(prefix, selected, env, fs) {
-  if (!selected) return
-  const name = path.basename(selected)
-  const expected = fs.realpath(selected) ?? selected
-  const mountedSource = (candidate, seen = new Set()) => {
-    if (seen.has(candidate)) return null
-    seen.add(candidate)
-    let source = null
-    let boundAt = -1
-    let fileBind = false
-    for (let i = 0; i < prefix.length; i += 1) {
-      if (!['--bind', '--bind-try', '--ro-bind', '--ro-bind-try'].includes(prefix[i])) continue
-      const from = prefix[i + 1]; const to = prefix[i + 2]
-      if (!within(candidate, to) || (!fs.isFile(from) && !fs.isDir(from) && !SYSTEM_READ_ONLY.includes(from))) continue
-      source = path.join(from, path.relative(to, candidate))
-      boundAt = i
-      fileBind = fs.isFile(from)
+// Only the real target matters: the plan creates its own first PATH entry. Confirm the last
+// covering bind still exposes the real file at its original spelling, then create the link AFTER
+// all binds. Unlike a simulation of shell lookup, this has no symlink-chain or PATH fallback case.
+function refuseCoveredCodex(prefix, real, fs) {
+  let source = null
+  for (let i = 0; i < prefix.length; i += 1) {
+    if (!['--bind', '--bind-try', '--ro-bind', '--ro-bind-try'].includes(prefix[i])) continue
+    const from = prefix[i + 1]; const to = prefix[i + 2]
+    if (withinOnDisk(real, to) && (fs.isFile(from) || fs.isDir(from) || SYSTEM_READ_ONLY.includes(from))) {
+      source = path.join(from, path.relative(to, real))
     }
-    const linkAt = prefix.findIndex((item, i) => item === '--symlink' && prefix[i + 2] === candidate)
-    if (linkAt > boundAt) return mountedSource(prefix[linkAt + 1], seen)
-    // A directory bind preserves symlinks in its source; their target must be mounted too.
-    // A file bind instead dereferences its source at mount time.
-    const real = source && fs.realpath(source)
-    if (real && real !== source && !fileBind) return mountedSource(real, seen)
-    return source
   }
-  for (const directory of String(env.PATH ?? '').split(path.delimiter)) {
-    if (!path.isAbsolute(directory)) continue
-    const candidate = path.join(directory, name)
-    const source = mountedSource(candidate)
-    if (!source || !fs.isFile(source)) continue
-    if ((fs.realpath(source) ?? source) === expected) return
-    throw new LaneSandboxRefusal(`refusing executable ${selected}: PATH first reaches ${candidate} from ${source}, not the selected executable`)
-  }
-  throw new LaneSandboxRefusal(`refusing executable ${selected}: PATH cannot reach the selected executable through the emitted mounts`)
+  if (source !== real) throw new LaneSandboxRefusal(`refusing executable ${real}: its realpath is covered by a later bind or is not mounted`)
 }
 
 // The egress log is written by the host-side proxy; a path the lane can write (or plant a symlink
@@ -646,6 +608,11 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
 
   const selected = PROFILES[profile]({ env, args, fs, runtimeDir, readonlyCwd, base })
   const selectedCommand = profile === 'codex' ? findOnPath('codex', env.PATH, fs) : null
+  if (profile === 'codex' && !selectedCommand) throw new LaneSandboxRefusal('refusing executable codex: no executable selected on an absolute PATH entry')
+  const codexReal = selectedCommand ? fs.realpath(selectedCommand) : null
+  if (selectedCommand && (!codexReal || !fs.isFile(codexReal) || (fs.isExecutable && !fs.isExecutable(codexReal)))) {
+    throw new LaneSandboxRefusal(`refusing executable ${selectedCommand}: its realpath is missing or not executable`)
+  }
   const extras = operatorExtras(optionEnv, env, fs)
   const git = workdir.length ? gitPaths(workdir[0], env, fs) : { readable: [], writable: [], overlaysRo: [] }
   for (const overlay of git.overlaysRo) fs.ensureFile(overlay)
@@ -653,12 +620,12 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   fs.ensureDir(suiteLockDir(env))
   // A read-only role (observer, second-opinion) gets its working directory bound read-only (H5).
   const toolchain = toolchainPaths({ env, execPath, fs })
-  const executableMounts = [...toolchain.executableMounts, ...executableMount(bin, fs), ...(selected.executableMounts ?? [])]
+  const executableMounts = [...toolchain.executableMounts, ...executableMount(bin, fs), ...(codexReal ? [executableMount(codexReal, fs)[0]] : [])]
   const rawReadable = [...toolchain.readable, ...(selected.readable ?? []), ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
   const rawWritable = [...(readonlyCwd ? [] : workdir), ...selected.writable, ...git.writable, suiteLockDir(env), ...(paths.writable ?? []), ...extras.writable]
   // The root/$HOME/ancestor refusal covers EVERY computed bind, not only the operator extras (H2).
   const writable = rawWritable.filter((item) => item && !isForbiddenPath(item, env, fs))
-  const executableLinks = [...toolchain.executableSymlinks, ...executableSymlinks(bin, fs), ...(selected.executableSymlinks ?? [])]
+  const executableLinks = [...toolchain.executableSymlinks, ...executableSymlinks(bin, fs)]
     .filter(({ target, link }) => {
       if (isForbiddenPath(link, env, fs)) return false
       if (isForbiddenPath(target, env, fs)) throw new LaneSandboxRefusal(`refusing executable ${link}: link target ${target} cannot be mounted`)
@@ -678,8 +645,14 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   if (socketDir) fs.ensureDir(socketDir)
   const otherOverlays = [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...(selected.readOnlyOverlaysRemap ?? []).map(({ inside }) => inside)]
   const guarded = [...writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), ...(selected.protectedPaths ?? []), ...(socketDir ? [socketDir] : [])]
+  if (codexReal) {
+    const collision = [...guarded, ...rawReadable, ...otherOverlays].find((item) => {
+      const a = canonicalPath(item, fs); const b = canonicalPath(CODEX_PATH_DIR, fs)
+      return withinOnDisk(a, b) || withinOnDisk(b, a)
+    })
+    if (collision) throw new LaneSandboxRefusal(`refusing executable ${codexReal}: dedicated PATH directory ${CODEX_PATH_DIR} overlaps ${collision}`)
+  }
   const executableOverlays = safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs)
-  const privateOverlays = privateExecutableOverlays(selectedCommand, env, fs)
   const readable = [...rawReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
   const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
   const bridgeState = { disposed: false }
@@ -694,10 +667,11 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
     executableSymlinks: executableLinks,
     // Executable directories land late only if they cannot cover a writable/private/protected path.
     readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...executableOverlays],
-    readOnlyOverlaysRemap: [...(selected.readOnlyOverlaysRemap ?? []), ...privateOverlays],
+    readOnlyOverlaysRemap: selected.readOnlyOverlaysRemap ?? [],
+    codexReal, codexPath: codexReal ? [CODEX_PATH_DIR, ...String(env.PATH ?? '').split(path.delimiter).filter((entry) => path.isAbsolute(entry))].join(path.delimiter) : null,
     env, chdir: workdir[0] ?? home(env), fs, socketDir,
   })
-  refuseUnreachableExecutable(prefix, selectedCommand, env, fs)
+  if (codexReal) refuseCoveredCodex(prefix, codexReal, fs)
   if (selected.codexHome) prefix.push('--setenv', 'CODEX_HOME', selected.codexHome)
   prefix.push(...proxyEnvironment(bridges.find((item) => item.proxy)))
 
