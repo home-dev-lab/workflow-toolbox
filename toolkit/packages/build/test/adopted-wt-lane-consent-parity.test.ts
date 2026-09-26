@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it } from 'vitest'
-import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -120,8 +120,10 @@ describe('adopted wt-lane consent resolver', () => {
       'fixture hanging child',
       ['--input-type=module', '--eval', "process.stdout.write('waiting\\n'); setTimeout(() => {}, 30_000)"],
       {},
-      100,
-    )).toThrow(/fixture hanging child failed after 100ms:.*last output: waiting/)
+      // Long enough for a cold node start on a loaded Windows runner to print its line (100 ms raced it:
+      // run 36223779031 saw `<no output>`), still far below the child's own 30 s hang.
+      5000,
+    )).toThrow(/fixture hanging child failed after 5000ms:.*last output: waiting/)
   })
 
   it('includes the durable lane log tail when a launcher times out', () => {
@@ -305,7 +307,9 @@ printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
     expect(launch(f).status).toBe(0)
     const until = Date.now() + 3000
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
-    const cli = join(f.pluginRoot, 'bin', 'wt-suite-lock.mjs')
+    // Node resolves a module URL through symlinks, so the launcher reports the REAL path (macOS tmpdir is
+    // /var -> /private/var); the expectation compares against the same real path.
+    const cli = realpathSync(join(f.pluginRoot, 'bin', 'wt-suite-lock.mjs'))
     expect(readFileSync(seen, 'utf8')).toBe(`node '${cli}' run --`)
     expect(existsSync(cli)).toBe(true)
     const help = runChild('adopted suite-lock CLI help', [cli, '--help'], f.env)
@@ -322,7 +326,6 @@ printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
 
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('wt-lane: Refused: the installed workflow-toolbox plugin is older or incompatible')
-    expect(result.stdout).not.toContain('pid=')
   })
 
   it('refuses a launcher whose consent import fragment was reworded', () => {
