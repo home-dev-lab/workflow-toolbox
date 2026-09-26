@@ -71,6 +71,8 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/standing-authorizations.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [HOOK], {", 'case invokes a controlled helper script and does not resolve plugin state'],
   ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [CLI, ...args], {", 'case invokes the suite-lock helper with a temp lock root'],
   ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [CLI, ...args], {", 'case invokes an owned fixture command through the temp suite lock'],
+  ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [RUNNER, ...args], {", 'case invokes the lane runner with a temp lock root'],
+  ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:const child = spawn(process.execPath, [RUNNER, process.execPath, '-e', 'setTimeout(() => {}, 1500)'], {", 'lock-taken proof runs an owned sleep through the runner under a temp lock root'],
   ["packages/build/test/what-is-running.test.ts:inherited-env-to-child:return spawnSync(process.execPath, [SELFTEST], {", 'case invokes a controlled process-inspection fixture and asserts only injected capabilities'],
   ["packages/debugger/test/resolve-config-dir.test.ts:real-home-directory:const raw = join(homedir(), '.claude')", 'unit test deliberately locks the documented default config-directory fallback'],
   ["packages/patterns/test/adversarial-verification.test.ts:short-negative-output-match:expect(result.trail[0]!.stage).not.toContain('warm')", 'assertion is over in-memory FakeRuntime output, not process output'],
