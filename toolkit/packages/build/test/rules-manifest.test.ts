@@ -137,8 +137,10 @@ describe('SDK role rules manifest', () => {
       const paragraphs = rules
         .filter((entry: { recipients: string[] }) => entry.recipients.includes(role))
         .flatMap((entry: { section: string }) => entry.section.trim().split(/\n\s*\n/))
-      expect(paragraphs, `${role} paragraph count`).toHaveLength(fixture.count)
-      expect(digest(paragraphs.map(digest).sort().join('\n')), `${role} paragraph multiset`).toBe(fixture.union)
+      // New static twin reminder augments the pre-split paragraph multiset in the TDD recipient.
+      const historical = paragraphs.filter((paragraph: string) => !paragraph.startsWith('For ANYTHING distributed'))
+      expect(historical, `${role} paragraph count`).toHaveLength(fixture.count)
+      expect(digest(historical.map(digest).sort().join('\n')), `${role} paragraph multiset`).toBe(fixture.union)
     }
   })
 

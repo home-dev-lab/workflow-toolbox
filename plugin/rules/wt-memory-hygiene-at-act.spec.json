@@ -1,0 +1,16 @@
+{
+  "on-demand": {
+    "triggers": [
+      {
+        "kind": "path",
+        "tool": "^(?:Write|Edit|MultiEdit)$",
+        "regex": "(?:^|/)(?:MEMORY\\.md|memory/|rules/|rules-on-demand/|\\.claude/.*(?:index|hub|archive))",
+        "before-first-act": true
+      }
+    ]
+  },
+  "compliance": {
+    "kind": "none",
+    "reason": "Transitions, closure updates, reconciliation, and archival govern tracker mutations."
+  }
+}

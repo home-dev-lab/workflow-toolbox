@@ -36,7 +36,7 @@ describe('shipped rule directives', () => {
   })
 
   it('requires gate logs to use run-specific paths and terminal completion markers', () => {
-    const text = rule('wt-verify-by-ground-truth.md').replaceAll('\n', ' ')
+    const text = rule('wt-verify-by-ground-truth-at-act.md').replaceAll('\n', ' ')
 
     expect(text).toContain('A gate log at a FIXED path is evidence for nobody')
     expect(text).toContain('A brief names a STAMPED path')
@@ -44,7 +44,7 @@ describe('shipped rule directives', () => {
   })
 
   it('resolves shipped-rule status against source at a named revision', () => {
-    const text = rule('wt-durable-fix-at-the-right-level.md').replaceAll('\n', ' ')
+    const text = rule('wt-distributed-twins-at-act.md').replaceAll('\n', ' ')
 
     expect(text).toContain('answered against the SOURCE at a named revision')
     expect(text).toContain('never against an installed copy')

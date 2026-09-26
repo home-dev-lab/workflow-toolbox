@@ -1,0 +1,22 @@
+{
+  "on-demand": {
+    "triggers": [
+      {
+        "kind": "tool",
+        "tool": "^Workflow$",
+        "unconditional": true,
+        "before-first-act": true
+      },
+      {
+        "kind": "tool",
+        "tool": "^(?:Agent|Task)$",
+        "unconditional": true,
+        "before-first-act": true
+      }
+    ]
+  },
+  "compliance": {
+    "kind": "none",
+    "reason": "Adoption checks, executor briefing, and delegate addressing govern delegation and pilot-wave acts."
+  }
+}
