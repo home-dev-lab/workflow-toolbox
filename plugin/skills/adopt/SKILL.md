@@ -16,8 +16,8 @@ description: >-
 
 This skill writes **editable, versioned copies** of workflow-toolbox material into the
 user's project, on explicit request or an exact stale-copy action from the read-only adoption
-hook. It manages four sets — `rules`, `agents`,
-`autonomy`, and `docs` (below); `--set all` covers all four in one pass:
+hook. It manages three sets — `rules`, `agents`,
+and `autonomy` (below); `--set all` covers them, and the `scripts` set, in one pass:
 
 - **rules** — the cross-cutting guardrail rule files, SOURCED from the plugin's `rules/`
   bundle (every `*.md` there except `README.md` — currently the delegation ladder; the set
@@ -43,13 +43,9 @@ hook. It manages four sets — `rules`, `agents`,
 - **autonomy** — the session-autonomy mandate (`AUTONOMY.md`), standing-authorization format
   (`AUTHORIZATIONS.md`), and recommended permission classes (`PERMISSIONS.md`), SOURCED from the
   plugin's `autonomy/` bundle. Same banner/fingerprint shape as `rules`.
-- **docs** — the rationale/field-case overflow moved OUT of the shipped rules by the
-  2026-09-02 static-prefix cut, SOURCED from the plugin's `docs/rules-rationale/` bundle
-  (every `*.md` there except `README.md`, the same discovery discipline as `rules`).
-  Installed to `<config-dir>/docs/wt/`, deliberately beside `<config-dir>/rules/wt/` — a
-  rule keeps its directive text plus a one-line pointer ("Rationale and field cases:
-  `docs/wt/<rule>.md` §…"), and this is what makes that pointer resolve. Recalled on
-  demand, never auto-loaded — the point of moving the content out in the first place.
+- **docs** — retired. The shipped rules no longer point at rationale files, so this set installs
+  nothing and `--set docs` exits with that explanation. A `<config-dir>/docs/wt/` copy adopted
+  earlier is left untouched and may be deleted.
 
 A THIRD kind of agent exists and this skill does nothing for it, on purpose: the plugin's
 `agents/` directory (`fidelity-checker`, `index-groomer`, `leaf`, `lean`, `opencode-verifier`,
@@ -135,10 +131,10 @@ backward compatibility):
 When adopting into a project that already has rules, reconcile first — see the
 "Reconciling your existing project rules" section in `../../rules/README.md`.
 
-- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|autonomy|docs|all> --check`
+- **Check status (read-only, the default):** `node scripts/install.mjs --set <rules|agents|autonomy|all> --check`
 - **Inspect an edited copy (read-only):** `node scripts/install.mjs --set <set> --diff <file> --dir <found-directory>`
   prints the journalled text as adopted, the local text, and the currently shipped text.
-- **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|docs|all> --install`
+- **Install / refresh (absent + unedited only):** `node scripts/install.mjs --set <rules|agents|autonomy|all> --install`
 - **Overwrite a locally-edited copy (deliberate):** add `--force` to `--install`
 - **Overwrite one arbitrated copy only:** add `--force --file <file>` to `--install`; do not
   use set-wide `--force` when the three-way decision covered only one file.
@@ -148,7 +144,7 @@ When adopting into a project that already has rules, reconcile first — see the
 - **Target a specific dir:** add `--dir <dir>` — requires a SINGLE `--set` (with `--set all`
   each set uses its own default dir).
 - Use `--dir` for the exact destination directory; use `--global` for the config directory and
-  its managed subdirectories. For rules/docs, passing a parent that already contains adopted
+  its managed subdirectories. For rules, passing a parent that already contains adopted
   `wt/` files is refused to prevent flat duplicates; use `--dir <root>/wt` or `--global`.
 - **Target the CONFIG dir:** add `--global` — the script resolves `CLAUDE_CONFIG_DIR` itself
   (falling back to `~/.claude` only when it is unset). Never hand-build that path and pass it
@@ -203,13 +199,18 @@ tree itself, instead of only in the `wt-` filename prefix nothing enforced:
 ├── machine-calibrations.md
 └── wt/                          ← the plugin's, adopted
     ├── wt-delegation-ladder.md
+    ├── wt-delegation-ladder-at-act.md
     ├── wt-sdlc.md
+    ├── wt-verify-by-ground-truth-at-act.md
     └── …
 ```
 
 `--dir` still targets any directory exactly, including the flat pre-migration root, for
 inspection during the transition. An install aimed at a parent that already contains adopted
 `wt/` files is refused rather than creating a second loaded copy.
+
+Core and `-at-act` rule halves are both installed here. A separate on-demand engine may move
+the latter using its adjacent source trigger spec; without that engine both remain static.
 
 **During the transition, `--check` and `--audit-overlap` search BOTH locations** for the
 rules set — the pre-migration flat dir and the new `wt/` default — and union the results.

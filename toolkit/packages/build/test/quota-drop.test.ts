@@ -7,6 +7,7 @@ import { classifyQuotaDrop, resetsAtToMs } from '../../../../plugin/bin/lib/quot
 // previously reported reset time had not come — a window cannot reset before its own reset time.
 
 const NOW = Date.parse('2026-09-09T17:41:00Z')
+const NOW_LABEL = new Date(NOW).toISOString()
 
 describe('resetsAtToMs', () => {
   it('reads ISO strings, epoch seconds and epoch milliseconds', () => {
@@ -36,6 +37,15 @@ describe('classifyQuotaDrop', () => {
     expect(verdict.detail).toContain('capacity not asserted')
     expect(verdict.detail).not.toContain('capacity available')
   })
+  it('the printed "now" is always nowMs, never the new window\'s own reset time', () => {
+    // Card 1872384706947844062: `(now …)` was built from currentResetsAt (the new window's own
+    // reset time), not nowMs — a real event printed "now 2026-09-26T09:30:00.000Z" while the
+    // actual clock read 04:32Z. nowMs and currentResetsAt are deliberately far apart here so a
+    // regression (printing currentResetsAt's label) cannot coincide with the correct one.
+    const verdict = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: '2026-09-14T19:00:00Z', currentResetsAt: '2026-09-16T07:27:00Z', previousPct: 42, currentPct: 32 })
+    expect(verdict.detail).toContain(`(now ${NOW_LABEL})`)
+    expect(verdict.detail).not.toContain('(now 2026-09-16T07:27:00.000Z)')
+  })
   it('a drop AT or AFTER the previous reset time is a reset ONLY with identity continuity', () => {
     const at = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: NOW, currentResetsAt: NOW + 7 * 86400000, previousPct: 90, currentPct: 3, continuity: 'account fingerprint unchanged' })
     const after = classifyQuotaDrop({ nowMs: NOW + 60000, previousResetsAt: NOW, currentResetsAt: NOW + 7 * 86400000, previousPct: 90, currentPct: 3, continuity: 'account fingerprint unchanged' })
@@ -43,6 +53,8 @@ describe('classifyQuotaDrop', () => {
     expect(after.kind).toBe('reset')
     expect(after.detail).toContain('account fingerprint unchanged')
     expect(after.detail).toContain('new window, capacity available')
+    expect(after.detail).toContain(`(now ${new Date(NOW + 60000).toISOString()})`)
+    expect(after.detail).not.toContain(new Date(NOW + 7 * 86400000).toISOString())
   })
   it('a drop past the previous reset time WITHOUT continuity stays unverified — an account switch drops the same way', () => {
     const verdict = classifyQuotaDrop({ nowMs: NOW + 60000, previousResetsAt: NOW, currentResetsAt: NOW + 7 * 86400000, previousPct: 90, currentPct: 3 })
@@ -50,6 +62,7 @@ describe('classifyQuotaDrop', () => {
     expect(verdict.detail).toContain('reset likely but unverified')
     expect(verdict.detail).toContain('source continuity not verified on this route')
     expect(verdict.detail).not.toContain('capacity available')
+    expect(verdict.detail).toContain(`(now ${new Date(NOW + 60000).toISOString()})`)
   })
   it('a drop with no previous reset time stays undetermined', () => {
     const verdict = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: null, currentResetsAt: '2026-09-16T07:27:00Z', previousPct: 42, currentPct: 32 })
@@ -60,6 +73,7 @@ describe('classifyQuotaDrop', () => {
   it('a current reset time that is missing does not turn a premature drop into a reset', () => {
     const verdict = classifyQuotaDrop({ nowMs: NOW, previousResetsAt: '2026-09-14T19:00:00Z', currentResetsAt: null, previousPct: 42, currentPct: 32 })
     expect(verdict.kind).toBe('unverified')
-    expect(verdict.detail).toContain('reading now reports none')
+    expect(verdict.detail).toContain('next reported reset none')
+    expect(verdict.detail).toContain(`(now ${NOW_LABEL})`)
   })
 })

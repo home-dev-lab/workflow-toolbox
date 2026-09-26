@@ -15,6 +15,7 @@ import {
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { planJdtlsLaunch } from '../../plugin/bin/lib/host/jdtls-java.mjs'
 
 const TOOLKIT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = resolve(TOOLKIT_DIR, '..')
@@ -50,6 +51,17 @@ export function resolveCommand(command, pathValue) {
     } catch {}
   }
   return undefined
+}
+
+// A declaration whose command is `node` runs a plugin launcher; the binary the arms must find or hide is the
+// language server that launcher starts.
+const LAUNCHED_SERVERS = { java: 'jdtls' }
+
+export function serverBinary(pack, declaration) {
+  if (declaration.command !== 'node') return declaration.command
+  const binary = LAUNCHED_SERVERS[pack]
+  if (!binary) throw new Error(`${pack}: no server binary is known for launcher ${declaration.args?.[0] ?? '(none)'}`)
+  return binary
 }
 
 export function buildShimDirectory(pathValue, excludedCommand, shimDirectory) {
@@ -223,6 +235,13 @@ function runtimeVersion(command, args, env) {
 function runtimeDetails(pack, env) {
   const pathValue = env.PATH ?? ''
   if (pack === 'java') {
+    // The pack's launcher picks jdtls's JVM itself; record ITS choice, not whichever `java` is first on PATH.
+    const plan = planJdtlsLaunch([], { env })
+    return plan.status === 'launch'
+      ? `wt-jdtls java: ${plan.java.executable} (Java ${plan.java.major ?? 'unknown'}, from ${plan.java.source})\n${runtimeVersion(plan.java.executable, ['-version'], env)}`
+      : `wt-jdtls refused: ${plan.message}\n`
+  }
+  if (pack === 'groovy') {
     const java = resolveCommand('java', pathValue)
     return `command -v java: ${java ?? 'not found'}\n${java ? runtimeVersion(java, ['-version'], env) : ''}`
   }
@@ -307,8 +326,9 @@ export async function probePack(pack, options = {}) {
   if (declarationEntries.length !== 1) throw new Error(`${pack}: probe requires exactly one LSP declaration`)
   const [, declaration] = declarationEntries[0]
   if (/[\\/]/.test(declaration.command)) throw new Error(`${pack}: command must be a bare executable name, not a path`)
+  const server = serverBinary(pack, declaration)
   const fixtureDir = join(packDir, 'probe')
-  if (capability !== 'diagnostics') return probeNavigation(pack, capability, { ...options, repoRoot, originalPath, packDir, declaration, fixtureDir })
+  if (capability !== 'diagnostics') return probeNavigation(pack, capability, { ...options, repoRoot, originalPath, packDir, server, fixtureDir })
   const expectedSubstring = readFileSync(join(fixtureDir, 'expected-diagnostic.txt'), 'utf8').trim()
   if (!expectedSubstring) throw new Error(`${pack}: expected diagnostic substring is empty`)
 
@@ -329,7 +349,7 @@ export async function probePack(pack, options = {}) {
     mkdirSync(availableDir, { recursive: true })
     mkdirSync(missingDir, { recursive: true })
 
-    const availableResolution = resolveCommand(declaration.command, originalPath)
+    const availableResolution = resolveCommand(server, originalPath)
     const availableEnv = { ...process.env, PATH: originalPath }
     const availableRun = await runClaude(projectDir, pluginCopy, availableEnv, join(availableDir, 'debug.log'))
     availableRun.workspaceModules = workspaceModules
@@ -353,14 +373,14 @@ export async function probePack(pack, options = {}) {
     writeFileSync(join(availableDir, 'verdict.json'), `${JSON.stringify({ capability, verdict: available.pass ? 'parity' : availableRun.timedOut || availableRun.exitCode === null || !availableResolution || availableServerFailure ? 'unmeasured' : 'no parity', reason: availableServerFailure ? `server failed to start: ${availableServerFailure}` : available.reason }, null, 2)}\n`)
     console.log(`available: ${available.pass ? 'PASS' : 'FAIL'} - ${available.reason}`)
 
-    buildShimDirectory(originalPath, declaration.command, shimDir)
+    buildShimDirectory(originalPath, server, shimDir)
     const missingEnv = { ...process.env, PATH: shimDir }
-    const missingResolution = resolveCommand(declaration.command, shimDir)
+    const missingResolution = resolveCommand(server, shimDir)
     const claudeResolution = resolveCommand('claude', shimDir)
     const nodeResolution = resolveCommand('node', shimDir)
     if (missingResolution || !claudeResolution || !nodeResolution) {
       throw new Error(
-        `missing arm PATH precondition failed: ${declaration.command}=${missingResolution ?? 'absent'} claude=${claudeResolution ?? 'absent'} node=${nodeResolution ?? 'absent'}`,
+        `missing arm PATH precondition failed: ${server}=${missingResolution ?? 'absent'} claude=${claudeResolution ?? 'absent'} node=${nodeResolution ?? 'absent'}`,
       )
     }
     const missingRun = await runClaude(projectDir, pluginCopy, missingEnv, join(missingDir, 'debug.log'))
@@ -389,7 +409,7 @@ export async function probePack(pack, options = {}) {
   }
 }
 
-async function probeNavigation(pack, capability, { repoRoot, originalPath, declaration, fixtureDir, ...options }) {
+async function probeNavigation(pack, capability, { repoRoot, originalPath, server, fixtureDir, ...options }) {
   const navigationDir = join(fixtureDir, 'nav')
   const expected = JSON.parse(readFileSync(join(navigationDir, 'expected-navigation.json'), 'utf8'))[capability]
   if (!expected?.prompt || !Array.isArray(expected.expectedSubstrings) || expected.expectedSubstrings.length === 0) {
@@ -406,7 +426,7 @@ async function probeNavigation(pack, capability, { repoRoot, originalPath, decla
     cpSync(navigationDir, projectDir, { recursive: true })
     rmSync(join(projectDir, 'expected-navigation.json'), { force: true })
     const workspaceModules = linkWorkspaceModules(projectDir, options.toolkitDir ?? TOOLKIT_DIR)
-    const resolution = resolveCommand(declaration.command, originalPath)
+    const resolution = resolveCommand(server, originalPath)
     const run = resolution
       ? await runClaude(projectDir, pluginCopy, { ...process.env, PATH: originalPath }, join(armDir, 'debug.log'), expected.prompt)
       : { stdout: '', stderr: '', exitCode: null, timedOut: false, elapsedMs: 0 }

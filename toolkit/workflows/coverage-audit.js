@@ -2226,7 +2226,7 @@ ${request.renderClaim(request.claim)}`;
       docs: ["docs/public/known-issues.md"]
     },
     {
-      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-control.mjs", "plugin/bin/wt-lane-orphan-watch.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/bin/lib/lane-supervisor-core.mjs", "plugin/skills/external-lane/"],
+      sources: ["plugin/bin/wt-lane.mjs", "plugin/bin/wt-lane-control.mjs", "plugin/bin/wt-lane-orphan-watch.mjs", "plugin/bin/wt-lane-wait.mjs", "plugin/bin/lib/lane-supervisor-core.mjs", "plugin/bin/lib/host/lane-sandbox.mjs", "plugin/bin/lib/host/hardened-git.mjs", "plugin/bin/lib/host/pid-namespace.mjs", "plugin/skills/external-lane/"],
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
@@ -2236,6 +2236,25 @@ ${request.renderClaim(request.claim)}`;
     {
       sources: ["plugin/bin/wt-config.mjs", "plugin/bin/wt-config-context-hook.mjs", "plugin/bin/lib/plugin-options.mjs"],
       docs: ["README.md"]
+    },
+    {
+      sources: [
+        "plugin/bin/wt-grounding-sources.mjs",
+        "plugin/bin/wt-grounding-prompt-hook.mjs",
+        "plugin/bin/wt-grounding-pre-send-hook.mjs",
+        "plugin/bin/lib/grounding-sources.mjs",
+        "plugin/bin/lib/host/grounding-sources.mjs",
+        "plugin/config/grounding-sources.json",
+        "plugin/skills/deep-grounding/"
+      ],
+      docs: [
+        "plugin/skills/deep-grounding/SKILL.md",
+        "plugin/skills/deep-grounding/references/source-registry.md"
+      ]
+    },
+    {
+      sources: ["plugin/bin/wt-jdtls.mjs", "plugin/bin/lib/host/jdtls-java.mjs", "plugin/packs/java/.lsp.json"],
+      docs: ["plugin/packs/java/README.md"]
     },
     {
       sources: [

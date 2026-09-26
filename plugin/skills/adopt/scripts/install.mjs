@@ -24,15 +24,11 @@
 //   • autonomy — the session-autonomy mandate markdown, sourced from the plugin's
 //                autonomy/ dir at run time. Target: <cwd>/.claude. Banner is line 1,
 //                same plain-markdown prepend shape as the rules set.
-//   • docs — the rationale/field-case overflow moved OUT of the shipped rules by the
-//            2026-09-02 static-prefix cut (content SOURCED from the plugin's
-//            docs/rules-rationale/ dir at run time — every *.md there except README.md,
-//            same discovery discipline as the rules set). Target: <cwd>/.claude/docs/wt,
-//            deliberately BESIDE <cwd>/.claude/rules/wt so a rule's pointer line
-//            resolves relative to the config dir either way. Banner is line 1, same
-//            plain-markdown prepend shape as the rules set — but its OWN `kind` (never
-//            reuses `rules`), so the rules/wt/ legacy-migration fallback never probes a
-//            pre-migration location this set never had.
+//   • docs — RETIRED. It installed the rules' rationale/field-case overflow into
+//            <cwd>/.claude/docs/wt. The shipped rules no longer point at any rationale
+//            file (the repository history is the record), so nothing is installed; a
+//            copy already installed at an adopter is left untouched and may be deleted.
+//            `--set docs` fails with that explanation instead of a bare unknown-set error.
 //
 // It is safe BY CONSTRUCTION: `--install` never overwrites a locally-edited (or
 // hand-authored) file — that needs an explicit `--force`. `--check` and `--diff`
@@ -40,9 +36,9 @@
 // edited-copy arbitration can show adopted, local, and currently shipped text.
 //
 // Usage (the skill orchestrates these; a human can run them directly too):
-//   node install.mjs [--set rules|agents|autonomy|docs|scripts|all] --check   [--dir <dir>]   # report, write nothing
-//   node install.mjs [--set rules|agents|autonomy|docs|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
-//   node install.mjs [--set rules|agents|autonomy|docs|all] --install --force [--dir <dir>]  # also overwrite edited copies
+//   node install.mjs [--set rules|agents|autonomy|scripts|all] --check   [--dir <dir>]   # report, write nothing
+//   node install.mjs [--set rules|agents|autonomy|all] --install [--dir <dir>]   # write absent + refresh UNEDITED
+//   node install.mjs [--set rules|agents|autonomy|all] --install --force [--dir <dir>]  # also overwrite edited copies
 //   node install.mjs --set <set> --install --force --file <file> --dir <dir>  # overwrite one arbitrated copy
 //   node install.mjs --set <set> --diff <file> --dir <dir>                   # read-only adopted/local/shipped view
 //   node install.mjs [--set …] --install --replace-symlinks [--dir <dir>]      # replace a SYMLINKED target with a managed copy in place
@@ -51,7 +47,7 @@
 // Default --set is `rules` (backward-compatible with the original rules-only tool).
 // Each set targets its own default dir under <cwd>; `--dir` overrides the target exactly and
 // therefore requires a SINGLE --set (with `--set all` each set keeps its own default). For
-// rules/docs, do not pass the parent of an adopted `wt/` directory: --install refuses that
+// rules, do not pass the parent of an adopted `wt/` directory: --install refuses that
 // duplicate trap; use `--dir <root>/wt` or `--global`.
 //
 // `--global` targets the CONFIG dir — CLAUDE_CONFIG_DIR, or ~/.claude when that is unset —
@@ -335,28 +331,6 @@ function discoverRuleItems(root) {
     .map((file) => ({ file }))
 }
 
-/** The rationale/field-case docs this skill installs as editable copies — DISCOVERED from
- *  the plugin's docs/rules-rationale/ dir at run time, the same discipline as
- *  discoverRuleItems above (every *.md except README.md, nothing hard-coded). These are the
- *  verbatim overflow moved OUT of the shipped rules during the 2026-09-02 static-prefix cut:
- *  a rule keeps its directive text and a one-line pointer; the dated field case or
- *  hook-superseded section it points at lives here, recalled on demand instead of
- *  auto-loaded every session. Content is NOT inlined, same reason as the rules set: each
- *  file is its own single source, read verbatim under a banner. */
-function discoverDocsItems(root) {
-  const dir = path.join(root, 'docs', 'rules-rationale')
-  let entries
-  try {
-    entries = fs.readdirSync(dir)
-  } catch {
-    return [] // no bundle dir → nothing to manage (graceful)
-  }
-  return entries
-    .filter((f) => f.endsWith('.md') && f.toLowerCase() !== 'readme.md')
-    .sort()
-    .map((file) => ({ file }))
-}
-
 /** The pilot delegation suite, installed as editable project copies. Content is NOT
  *  inlined — it is READ from the plugin's agents/ dir at run time (the agent defs are
  *  their own single source). Each `file` is both the source basename under
@@ -530,20 +504,13 @@ const SETS = {
   // …) stay in agents/ — they declare no observer, so registration serves them correctly.
   agents: { kind: 'agents', srcDir: 'agent-templates', defaultDir: '.claude/agents', globalSubdir: 'agents', resolveItems: () => MANAGED_AGENTS },
   autonomy: { kind: 'autonomy', srcDir: 'autonomy', defaultDir: '.claude', globalSubdir: '', resolveItems: () => MANAGED_AUTONOMY },
-  // docs → `.claude/docs/wt/` mirrors the rules/wt/ convention above: a rule's pointer line
-  // ("Rationale and field cases: `docs/wt/<rule>.md` §…") is written relative to the config
-  // dir, on the assumption this set lands BESIDE rules/wt/ under the same root — never a
-  // hard-coded `~/.claude`, so the pointer resolves the same way under --global or a project
-  // --dir. `kind: 'docs'`, a DISTINCT value from 'rules' even though the banner/fingerprint
-  // path is identical (every kind !== 'agents' takes that path): the rules/wt/ subfolder
-  // migration fallback below is gated on `kind === 'rules'` specifically, and this set never
-  // had a pre-migration flat layout to fall back to — reusing 'rules' would make that
-  // migration heuristic silently probe a legacy location that never existed.
-  docs: { kind: 'docs', srcDir: 'docs/rules-rationale', defaultDir: '.claude/docs/wt', globalSubdir: 'docs/wt', resolveItems: discoverDocsItems },
   scripts: { kind: 'scripts', srcDir: 'bin', defaultDir: '.claude/scripts', globalSubdir: 'scripts', resolveItems: () => [{ file: 'wt-lane.mjs' }, { file: 'wt-lane-wait.mjs' }] },
 }
 
 const MANAGED_SET_NAMES = Object.keys(SETS)
+
+// Retired set name: `--set docs` names it and exits non-zero, rather than failing as an unknown set.
+const RETIRED_DOCS_SET = 'docs'
 
 // The pre-migration location for the rules set — the direct parent of the new default
 // (`.claude/rules/wt` → `.claude/rules`). Used ONLY as a heuristic for the legacy-fallback
@@ -654,7 +621,7 @@ const { classifyLane, laneHostPlatform, readCurrentSupervisions } = await import
   if (item.file !== 'wt-lane.mjs') return content
   // The adopted launcher has no stable plugin-cache neighbour. Resolve the installed plugin at
   // launch time instead of copying consent logic, so a changed resolver cannot fail open here.
-  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'\nimport { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'\nimport { laneModelRefusal, resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'\nimport { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'\nimport { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'", `
+  let adopted = replaceExactlyOnce(content, "import { resolveConsent } from './lib/lane-consent-check-core.mjs'\nimport { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'\nimport { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, suiteLockCli, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'\nimport { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'\nimport { laneModelRefusal, resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'\nimport { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'\nimport { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'", `
 function pluginRoot(env = process.env) {
   for (const candidate of [env.CLAUDE_PLUGIN_ROOT, env.WT_PLUGIN_ROOT]) {
     if (typeof candidate === 'string' && candidate) return candidate
@@ -687,7 +654,7 @@ async function loadAdoptedConsentModules() {
     const launcher = path.join(root, 'bin', 'wt-lane.mjs')
   try {
     const [{ resolveConsent }, { evaluateConsentGate }, fenceModule, allowlistModule, modelAllowlistModule, , supervisorModule, pluginDataModule, hostModule, launcherModule] = await Promise.all([import(pathToFileURL(resolver).href), import(pathToFileURL(gate).href), import(pathToFileURL(fence).href), import(pathToFileURL(allowlist).href), import(pathToFileURL(modelAllowlist).href), import(pathToFileURL(pluginOptions).href), import(pathToFileURL(supervisor).href), import(pathToFileURL(pluginDataDir).href), import(pathToFileURL(host).href), import(pathToFileURL(launcher).href)])
-    return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal: fenceModule.effectiveSkillDiscoveryRefusal, materialiseAllowedSkills: fenceModule.materialiseAllowedSkills, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, spawnOpencode: fenceModule.spawnOpencode, verifyEffectiveOpencodeSkillDiscovery: fenceModule.verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence, resolveLaneSkillAllowlist: allowlistModule.resolveLaneSkillAllowlist, laneModelRefusal: modelAllowlistModule.laneModelRefusal, resolveRoleVariant: modelAllowlistModule.resolveRoleVariant, variantRefusal: modelAllowlistModule.variantRefusal, appendSupervisorJournal: supervisorModule.appendSupervisorJournal, argvSummary: supervisorModule.argvSummary, claimCurrentSupervision: supervisorModule.claimCurrentSupervision, classifyLane: supervisorModule.classifyLane, inspectProcess: supervisorModule.inspectProcess, inspectStartedProcess: launcherModule.inspectStartedProcess, laneHardBoundAt: supervisorModule.laneHardBoundAt, latestWorktreeWrite: supervisorModule.latestWorktreeWrite, processEvidenceStatus: supervisorModule.processEvidenceStatus, readCurrentSupervision: supervisorModule.readCurrentSupervision, readLogTail: supervisorModule.readLogTail, sameIdentity: supervisorModule.sameIdentity, shellQuote: supervisorModule.shellQuote, supervisionPaths: supervisorModule.supervisionPaths, terminateLane: supervisorModule.terminateLane, writeJsonAtomic: supervisorModule.writeJsonAtomic, resolvePluginDataDir: pluginDataModule.resolvePluginDataDir, hostAdapter: hostModule.hostAdapter }
+    return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal: fenceModule.effectiveSkillDiscoveryRefusal, materialiseAllowedSkills: fenceModule.materialiseAllowedSkills, opencodeChildEnv: fenceModule.opencodeChildEnv, opencodeSkillFenceRefusal: fenceModule.opencodeSkillFenceRefusal, spawnOpencode: fenceModule.spawnOpencode, verifyEffectiveOpencodeSkillDiscovery: fenceModule.verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence: fenceModule.verifyOpencodeSkillFence, resolveLaneSkillAllowlist: allowlistModule.resolveLaneSkillAllowlist, laneModelRefusal: modelAllowlistModule.laneModelRefusal, resolveRoleVariant: modelAllowlistModule.resolveRoleVariant, variantRefusal: modelAllowlistModule.variantRefusal, appendSupervisorJournal: supervisorModule.appendSupervisorJournal, argvSummary: supervisorModule.argvSummary, claimCurrentSupervision: supervisorModule.claimCurrentSupervision, classifyLane: supervisorModule.classifyLane, inspectProcess: supervisorModule.inspectProcess, inspectStartedProcess: launcherModule.inspectStartedProcess, laneHardBoundAt: supervisorModule.laneHardBoundAt, latestWorktreeWrite: supervisorModule.latestWorktreeWrite, processEvidenceStatus: supervisorModule.processEvidenceStatus, readCurrentSupervision: supervisorModule.readCurrentSupervision, readLogTail: supervisorModule.readLogTail, sameIdentity: supervisorModule.sameIdentity, shellQuote: supervisorModule.shellQuote, supervisionPaths: supervisorModule.supervisionPaths, terminateLane: supervisorModule.terminateLane, writeJsonAtomic: supervisorModule.writeJsonAtomic, resolvePluginDataDir: pluginDataModule.resolvePluginDataDir, hostAdapter: hostModule.hostAdapter, suiteLockCli: fenceModule.suiteLockCli() }
   } catch {
     throw new Error(\`the installed workflow-toolbox plugin is older or incompatible; update it and re-adopt wt-lane.mjs (runtime modules: \${resolver}, \${gate}, \${fence}, \${allowlist}, \${modelAllowlist}, \${pluginOptions}, \${supervisor}, \${pluginDataDir}, \${host}, \${launcher})\`)
   }
@@ -702,14 +669,14 @@ async function loadAdoptedConsentModules() {
   } catch { return false }
 }
 `)
-  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
+  adopted = replaceExactlyOnce(adopted, "async function loadConsentModules() {\n  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter, suiteLockCli: suiteLockCli() }\n}", "async function loadConsentModules() {\n  return loadAdoptedConsentModules()\n}")
   adopted = replaceExactlyOnce(adopted, "async function loadIntegrationModule() {\n  return import('./lib/lane-integrate.mjs')\n}", `async function loadIntegrationModule() {
   const root = pluginRoot()
   if (!root) throw new Error('could not locate workflow-toolbox plugin root via CLAUDE_PLUGIN_ROOT, WT_PLUGIN_ROOT, or plugins/installed_plugins.json')
   const integration = path.join(root, 'bin', 'lib', 'lane-integrate.mjs')
   return import(pathToFileURL(integration).href)
 }`)
-  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { pathToFileURL } from 'node:url'")
+  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, closeSync, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { fileURLToPath, pathToFileURL } from 'node:url'")
   const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
   if (relativeRuntimeImport) {
     fail(`launcher transformation left a relative runtime import in ${src}: ${relativeRuntimeImport.slice(0, 60)}`)
@@ -1013,7 +980,7 @@ function onDemandFrontmatter(text) {
 }
 
 function explicitNestedTarget(set, dir, args) {
-  if (!args.dir || !['rules', 'docs'].includes(set.kind)) return null
+  if (!args.dir || set.kind !== 'rules') return null
   return path.join(dir, 'wt')
 }
 
@@ -1168,7 +1135,7 @@ function refuseExplicitRootInstall(set, dir, args, root) {
   if (bannerFiles.length === 0) return
   const named = bannerFiles.slice(0, 3).join(', ')
   fail(
-    `--dir ${dir} is a rules/docs root with adopted files under ${nestedDir}/ ` +
+    `--dir ${dir} is a rules root with adopted files under ${nestedDir}/ ` +
       `(first banner files: ${named}${bannerFiles.length > 3 ? ', …' : ''}). ` +
       `Use --dir ${nestedDir} or --global; refusing to create flat duplicates beside wt/.`,
   )
@@ -2638,6 +2605,9 @@ function runAuditCommand(args) {
 }
 
 function standardCommandContext(args) {
+  if (args.set === RETIRED_DOCS_SET) {
+    fail(`the '${RETIRED_DOCS_SET}' set is retired: the shipped rules no longer point at rationale files, so nothing is installed. A docs/wt/ copy installed earlier is left untouched and may be deleted.`)
+  }
   if (![...MANAGED_SET_NAMES, 'all'].includes(args.set)) {
     fail(`unknown --set '${args.set}' (expected ${MANAGED_SET_NAMES.join(' | ')} | all)`)
   }

@@ -51,6 +51,21 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-grounding-sources.mjs',
+    status: 'mapped',
+    reason: 'The deep-grounding source-registry reference documents list, init, layering, and missing dependency reporting.',
+  },
+  {
+    script: 'plugin/bin/wt-grounding-prompt-hook.mjs',
+    status: 'mapped',
+    reason: 'The deep-grounding skill and source-registry reference document first-prompt injection and cooldown reminders.',
+  },
+  {
+    script: 'plugin/bin/wt-grounding-pre-send-hook.mjs',
+    status: 'mapped',
+    reason: 'The deep-grounding source-registry reference documents the outbound refusal, retry behavior, switch, and journal.',
+  },
+  {
     script: 'plugin/bin/wt-config.mjs',
     status: 'mapped',
     reason: 'The README documents the effective-value table, JSON output, and orphaned pluginConfigs report.',
@@ -425,6 +440,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this service monitor and its degraded-flag contract under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-jdtls.mjs',
+    status: 'mapped',
+    reason: 'The Java pack README documents the launcher its .lsp.json runs: JVM choice order, WT_JDTLS_JDK_DIRS, the one-line refusal, and the per-platform discovery.',
+  },
+  {
     script: 'plugin/bin/wt-wake-channel.mjs',
     status: 'exempt',
     reason: 'Internal dependency-free MCP transport whose complete invocation contract is the adjacent plugin/.mcp.json registration.',
@@ -682,7 +702,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['docs/public/known-issues.md'],
   },
   {
-    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/skills/external-lane/'],
+    sources: ['plugin/bin/wt-lane.mjs', 'plugin/bin/wt-lane-control.mjs', 'plugin/bin/wt-lane-orphan-watch.mjs', 'plugin/bin/wt-lane-wait.mjs', 'plugin/bin/lib/lane-supervisor-core.mjs', 'plugin/bin/lib/host/lane-sandbox.mjs', 'plugin/bin/lib/host/hardened-git.mjs', 'plugin/bin/lib/host/pid-namespace.mjs', 'plugin/skills/external-lane/'],
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
@@ -692,6 +712,25 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     sources: ['plugin/bin/wt-config.mjs', 'plugin/bin/wt-config-context-hook.mjs', 'plugin/bin/lib/plugin-options.mjs'],
     docs: ['README.md'],
+  },
+  {
+    sources: [
+      'plugin/bin/wt-grounding-sources.mjs',
+      'plugin/bin/wt-grounding-prompt-hook.mjs',
+      'plugin/bin/wt-grounding-pre-send-hook.mjs',
+      'plugin/bin/lib/grounding-sources.mjs',
+      'plugin/bin/lib/host/grounding-sources.mjs',
+      'plugin/config/grounding-sources.json',
+      'plugin/skills/deep-grounding/',
+    ],
+    docs: [
+      'plugin/skills/deep-grounding/SKILL.md',
+      'plugin/skills/deep-grounding/references/source-registry.md',
+    ],
+  },
+  {
+    sources: ['plugin/bin/wt-jdtls.mjs', 'plugin/bin/lib/host/jdtls-java.mjs', 'plugin/packs/java/.lsp.json'],
+    docs: ['plugin/packs/java/README.md'],
   },
   {
     sources: [

@@ -2,23 +2,6 @@
 
 Plausibility break under pressure. Ground truth not break. Check signal that decide claim.
 
-## A gate is its exit code, never its printed text
-
-**Gate = EXIT CODE. Not printed text.** Redirect command to file. Write `$?` to same file right
-after. Read file back.
-
-Never pipe gate. Pipe exit status belong to LAST element. Failing gate piped anywhere report
-success.
-
-⚠ Code you read must belong to GATE. Not to thing that ran AFTER. Any command between gate and
-read replace value. Wrapper script final `echo` succeed even when gate it wrap failed. Last
-command in chain almost always the one whose code survive. Rarely the one that matter.
-Real case: batch report `exit 0`. Typecheck had failed `exit 2`. Number read back was wrapper
-trailing `echo`, not gate.
-**Corroborate with SECOND signal that fail differently** — tool own summary line, failure count,
-error marker in log. Read BESIDE code. Not instead of code.
-One instrument agree with itself = not corroboration.
-
 ## Corroboration requires independent conditions
 
 **Two readings taken in one window are ONE reading.** Independence is property of CONDITION,
@@ -33,8 +16,8 @@ under both working and broken interpretation test nothing. Choose against suspec
 row that must be PRESENT when mode is truncation; row that must be ABSENT when mode is
 over-matching. Same family as control readable in both outcomes; this applies it to choice of
 witness.
-Misread code not spoil one result. It retroactively VOID every "gates green" claim built on same
-capture path.
+Misread code not spoil one result. It retroactively VOID every "gates green" claim built on the
+same capture path.
 
 **Comparing two arms — record the condition beside each result, and alternate the arms.** One run
 of each, taken in sequence, is not two readings of two arms; it is one reading of the machine taken
@@ -44,31 +27,6 @@ asking after depends on someone remembering to ask it.
 A load-sensitive suite drops whatever sits nearest its margin at that instant, so the failing SET
 MOVES. Two red runs sharing no failing test in common is not broad instability — it is something
 taking the margin.
-
-## A gate must certify the intended tree
-
-**Exit code answer for the COMMAND, never the SUBJECT.** Gate can genuinely belong to gate, run
-un-piped, code read correctly — and still certify the WRONG TREE. A merge that aborts leaves
-subject unchanged; gate chained right after runs honestly on the stale tree, reports real
-success about a subject nobody intended to certify. Before trusting a green: establish WHICH
-TREE it ran on. Distinct question from "did the gate succeed".
-
-**Branch adds tests → merged count must be STRICTLY GREATER, never merely not-lower.** Equal
-count after a merge is the tell the merge never landed, whatever the gate's own exit code says.
-State this one mechanically, not as a thing to remember — a threshold that EXECUTES beats a
-check that depends on recall.
-
-Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: warns when `git merge` is chained with a gate or unclassified command through `&&`, `;`, `|`, `||`, or a newline; a diagnostic read is silent but journaled. It deliberately ignores a merge preceded by earlier commands and `git merge --abort/--continue/--quit` — run the merge alone, read its result, then gate). Rationale and field cases: `docs/wt/wt-verify-by-ground-truth.md` §Never chain a merge with its gates in one command.
-
-Enforced by `wt-piped-gate-exit-code-guard-hook.mjs` (PreToolUse Bash: warns, never blocks, when a control gate is piped and `$?` then reads the last pipeline element's code; capture instead with `command > file; echo EXIT=$? >> file`, or use `${pipestatus[1]}` on zsh).
-
-## Parallel branches require a seam review
-
-**Merging parallel branches requires THREE reviews: each branch, then their seam.** Hold sibling
-branches and merge them together. Before merging, compare their contracts by hand; branch gates
-validate each branch alone, not their seam. Run the merged tree's gates after the merge: they are
-the first mechanical checks that can judge the seam. A conflict-free merge and green sibling gates
-do not certify it. Rationale and field cases: `docs/wt/wt-verify-by-ground-truth.md` §Parallel-branch seam.
 
 ## Verify claims against their actual evidence
 
@@ -201,24 +159,6 @@ hazard.
 **One mechanical read not enough — evidence across sources, leads to chase, surprise needing root
 cause?** Escalate to `deep-grounding` skill. Do not chain ad-hoc reads.
 
-## Before measuring fix, prove subject RUN that fix
-
-Separate process resolve its OWN copy: installed cache, published version, bundled build. Editing
-working tree change none of them.
-
-1. **WHICH FILE does process load?** Read off running process — command line, resolved module
-   path, open file handles. Path observed on process is strong evidence. Version number INSIDE
-   that path is part of it.
-2. **WHICH VERSION of that file content?** Grep for sentence that exist only in the fix.
-
-⚠ What lie is a DECLARED version — manifest entry, `--version`, package field. Can be perfectly
-accurate while file actually loaded come from elsewhere. Path read off process is a DIFFERENT
-thing. Conflating the two make reader discard valid evidence. Local commit prove the edit, never
-the load.
-
-Fix sentence absent from loaded file → measurement answer question about OLD code. Discard it in
-BOTH directions. Clean result there is not evidence of success. It is evidence of NOTHING.
-
 ## Control must be readable in BOTH outcomes, not only in failure
 
 Trap appear when fix purpose is to make something STOP happening. Natural control read artifact
@@ -241,3 +181,8 @@ next reader trust when checking quickly. So it mislead exactly when it matter.
 
 This is a GESTURE. No suspicion needed. No knowledge of code history needed. Tell that it is
 needed: the sentence is reassuring.
+
+## At-act companion
+
+Its act-bound half is `wt-verify-by-ground-truth-at-act.md`, loaded alongside this file or served
+on demand where an engine is installed.

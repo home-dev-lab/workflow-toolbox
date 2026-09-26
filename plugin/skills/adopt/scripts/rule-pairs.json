@@ -10,6 +10,11 @@
     "partial": false
   },
   {
+    "user": "concurrent-sessions-worktree.md",
+    "shipped": "wt-concurrent-sessions-worktree-at-act.md",
+    "partial": true
+  },
+  {
     "user": "workflows-as-reasoning.md",
     "shipped": "wt-workflows-as-reasoning.md",
     "partial": false
@@ -35,8 +40,18 @@
     "partial": false
   },
   {
+    "user": "verify-by-ground-truth.md",
+    "shipped": "wt-verify-by-ground-truth-at-act.md",
+    "partial": true
+  },
+  {
     "user": "delegation-lanes.md",
     "shipped": "wt-delegation-ladder.md",
+    "partial": true
+  },
+  {
+    "user": "delegation-lanes.md",
+    "shipped": "wt-delegation-ladder-at-act.md",
     "partial": true
   },
   {
@@ -62,6 +77,11 @@
   {
     "user": "task-tracking.md",
     "shipped": "wt-task-tracking.md",
+    "partial": true
+  },
+  {
+    "user": "task-tracking.md",
+    "shipped": "wt-task-tracking-at-act.md",
     "partial": true
   },
   {

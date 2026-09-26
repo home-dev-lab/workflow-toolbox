@@ -341,7 +341,7 @@ still tells you to hand-create each pilot's worktree yourself rather than pass h
 
 ## Verification shape — the proportionate ladder
 
-<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:f49771f9d36efec0f5a9ec83ec3064845dcc169c9e4a7bf1a8d7cfe786daa5b5 -->
+<!-- cite: plugin/rules/wt-proportionate-verification.md#proportionate-verification-ladder sha256:b6cc206d6ddba2cb4fcdadf9da4c5da4604d5b932b46a7c33e274a72e08afb06 -->
 <!-- embedded-copy:proportionate-verification-ladder:start -->
 Verification mandatory. How MUCH you spin up scales with what changed.
 
@@ -383,6 +383,7 @@ wrote probe and expected answer in one motion. That is where wrong instrument an
 agree perfectly. Third tell: measurement landing exactly where you hoped deserve the second
 instrument MORE, not less.
 
+<!-- embedded-copy:mutation-red-proof:start -->
 **2. Method diversity — strongest lever on what remain.**
 Reach the same question by genuinely different ROUTES: static reading, dynamic execution,
 property/proof, fuzzing, differential compare against known-good. Two agents reading same code
@@ -401,6 +402,7 @@ Mutating a whole module to hunt surviving mutants = genuinely different, much la
 the cheap per-fix form is not a down-payment on the expensive one.
 This is the operational answer to "was the failure it prevent actually exercised" — a question a
 green suite cannot settle about itself.
+<!-- embedded-copy:mutation-red-proof:end -->
 
 **3. Hypothesis independence.** Each verifier construct its OWN explanation BEFORE seeing anyone
 else's, and state what it could NOT verify. Verifier handed a conclusion to check is anchored on

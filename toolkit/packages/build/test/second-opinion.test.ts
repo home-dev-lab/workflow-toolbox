@@ -22,8 +22,10 @@ function fixture(consented: boolean) {
   roots.push(root)
   const repo = join(root, 'repo')
   const config = join(root, 'config')
+  const home = join(root, 'home')
   mkdirSync(repo)
   mkdirSync(config)
+  mkdirSync(home)
   writeFileSync(join(config, 'settings.json'), JSON.stringify({
     pluginConfigs: {
       'workflow-toolbox@test': { options: { executor_lane_consent: consented } },
@@ -34,6 +36,7 @@ function fixture(consented: boolean) {
   writeFileSync(request, 'Question with facts and sources.')
   return {
     repo,
+    home,
     request,
     out,
     env: { CLAUDE_CONFIG_DIR: config },
@@ -41,8 +44,12 @@ function fixture(consented: boolean) {
   }
 }
 
-function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang') {
-  const f = fixture(true)
+// The ownership tests below read broker PIDs the fake companion writes from inside its process, so
+// they run the UNSANDBOXED path (macOS, Windows, no bwrap); inside the sandbox those would be
+// namespace PIDs. The sandboxed end of the family is locked by the namespace test further down.
+function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang', sandbox = 'off') {
+  const fixtureBase = fixture(true)
+  const f = { ...fixtureBase, env: { ...fixtureBase.env, WT_LANE_SANDBOX: sandbox } }
   const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
   const appPidFile = join(f.repo, 'app-server.pid')
   const brokerPidFile = join(f.repo, 'broker.pid')
@@ -69,6 +76,9 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang') {
   ].join('\n'))
   return { ...f, companionDir, appPidFile, brokerPidFile }
 }
+
+// Pins the sandbox decision so an exact-output assertion does not depend on this host's bubblewrap.
+const noSandbox = () => ({ kind: 'none', line: 'lane sandbox: none (pinned by the test)', wrap: (bin: string, args: string[]) => [bin, args] })
 
 function lines(file: string) {
   return readFileSync(file, 'utf8').trimEnd().split(/\r?\n/)
@@ -410,7 +420,7 @@ describe('second-opinion advisor', () => {
     (signal, expectedExit) => {
     const f = detachedBrokerFixture()
     const wrapper = spawn(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
-      env: { ...process.env, ...f.env, HOME: f.repo },
+      env: { ...process.env, ...f.env, HOME: f.home },
       stdio: 'ignore',
     })
     let appPid = 0
@@ -447,7 +457,7 @@ describe('second-opinion advisor', () => {
   it.each([['normal', 0], ['error', 7]] as const)('stops the detached broker app-server after a %s companion end', (mode, expectedStatus) => {
     const f = detachedBrokerFixture(mode)
     const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
-      env: { ...process.env, ...f.env, HOME: f.repo },
+      env: { ...process.env, ...f.env, HOME: f.home },
       encoding: 'utf8',
       timeout: process.platform === 'win32' ? 15_000 : 5_000,
     })
@@ -479,7 +489,7 @@ describe('second-opinion advisor', () => {
       'setTimeout(() => process.exit(19), 300)',
     ].join('\n'))
     const result = spawnSync(process.execPath, [harness], {
-      env: { ...process.env, ...f.env, HOME: f.repo },
+      env: { ...process.env, ...f.env, HOME: f.home },
       encoding: 'utf8',
       timeout: 15_000,
     })
@@ -499,6 +509,28 @@ describe('second-opinion advisor', () => {
     }
   }, 30_000)
 
+  it('starts the Codex companion through the lane sandbox, records the sandbox line, and tells ownership the broker PID is namespaced', async () => {
+    const f = fixture(true)
+    const companion = join(f.repo, 'scripts', 'codex-companion.mjs')
+    const brokerInChildPidNamespace = vi.fn()
+    const requests: Array<Record<string, unknown>> = []
+    const adapter = {
+      platform: 'linux',
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [], brokerInChildPidNamespace }),
+    }
+    const resolveSandbox = (request: Record<string, unknown>) => {
+      requests.push(request)
+      return { kind: 'bwrap', line: 'lane sandbox: bwrap (codex; writable /fixture)', wrap: () => [process.execPath, ['-e', "process.stdout.write('ran inside the wrapper\\n')"]] }
+    }
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
+    deps.resolveCodexCompanion = () => companion
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(0)
+    expect(lines(f.out)).toEqual(['ROUTE=gpt-astra', 'lane sandbox: bwrap (codex; writable /fixture)', 'ran inside the wrapper', 'EXIT=0'])
+    expect(brokerInChildPidNamespace).toHaveBeenCalledOnce()
+    expect(requests).toEqual([expect.objectContaining({ profile: 'codex', cwd: f.options.repo, paths: { readable: [f.repo] } })])
+  })
+
   it('names output overflow and fails after terminating the owned companion family', async () => {
     const f = fixture(true)
     const companion = join(f.repo, 'overflow-companion.mjs')
@@ -511,12 +543,13 @@ describe('second-opinion advisor', () => {
       readProcessRelationships: () => ({ status: 'known', processes: [] }),
       createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop }),
     }
-    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64 })
+    const deps = createSecondOpinionDependencies(adapter, { maxOutputBytes: 64, resolveSandbox: noSandbox })
     deps.resolveCodexCompanion = () => companion
 
     expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
     expect(lines(f.out)).toEqual([
       'ROUTE=gpt-astra',
+      'lane sandbox: none (pinned by the test)',
       'REFUSED: Codex companion output exceeded 64 bytes.',
       'EXIT=1',
     ])

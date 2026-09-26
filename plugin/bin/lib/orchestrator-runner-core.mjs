@@ -146,7 +146,10 @@ function runLogged(program, args, cwd, log) {
 // A fresh worktree carries no node_modules: the pilot's gates and lanes need the toolkit installed
 // (offline, frozen lockfile). A failed install is a receipt, and the card is escalated without a pilot.
 function defaultInstall(worktree, cardDir) {
-  return runLogged('pnpm', ['install', '--offline', '--frozen-lockfile'], path.join(worktree, 'toolkit'), path.join(cardDir, 'install.log'))
+  // --config.package-import-method=copy so the worktree's node_modules are independent COPIES, not
+  // hardlinks into the shared pnpm store: a lane editing node_modules/.pnpm then cannot alter the
+  // store file that every other checkout — host gates included — links to (M2).
+  return runLogged('pnpm', ['install', '--offline', '--frozen-lockfile', '--config.package-import-method=copy'], path.join(worktree, 'toolkit'), path.join(cardDir, 'install.log'))
 }
 
 async function defaultGates(worktree, cardDir) {

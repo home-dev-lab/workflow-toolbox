@@ -131,15 +131,12 @@ describe('adopt installer characterization - incomplete plugin bundles', () => {
     expect(result.out).toContain('could not locate the plugin manifest')
   })
 
-  it('treats absent discoverable rule and docs directories as empty sets', () => {
+  it('treats an absent discoverable rule directory as an empty set', () => {
     const fixture = fixturePlugin()
     const rules = run(['--set', 'rules', '--check', '--dir', tempDir()], { script: fixture.script })
-    const docs = run(['--set', 'docs', '--check', '--dir', tempDir()], { script: fixture.script })
     expect(rules.status).toBe(0)
-    expect(docs.status).toBe(0)
     expect(rules.out).toContain('CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH: ABSENT')
     expect(rules.out).not.toMatch(/^  .+\.md:/m)
-    expect(docs.out).toContain('adopt: nothing to do.')
   })
 
   it('names a missing fixed-set source instead of partially installing', () => {

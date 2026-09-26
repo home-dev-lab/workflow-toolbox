@@ -14,7 +14,10 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 function fixture() {
   const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-paths-'))); roots.push(root)
-  const binDir = path.join(root, 'bin'); const bin = path.join(binDir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode'); const record = path.join(root, 'record')
+  const binDir = path.join(root, 'bin'); const bin = path.join(binDir, process.platform === 'win32' ? 'opencode.cmd' : 'opencode')
+  // The record file the fake writes lives OUTSIDE the (possibly read-only, H5) project dir, in a
+  // dir the sandbox is told to make writable via WT_LANE_SANDBOX_WRITE.
+  const recordDir = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-rec-'))); roots.push(recordDir); const record = path.join(recordDir, 'record')
   mkdirSync(binDir)
   if (process.platform === 'win32') {
     const script = path.join(binDir, 'opencode.mjs')
@@ -39,11 +42,12 @@ printf '%s\n' '{"type":"text","part":{"text":"{\\"status\\":\\"clean\\"}"}}'
 `)
     chmodSync(bin, 0o755)
   }
-  const home = path.join(root, 'home')
-  mkdirSync(home)
+  // HOME is a SIBLING of the work root, never a parent of it: the lane sandbox refuses a working
+  // directory that is an ancestor of $HOME (H5), and `root` is used here as `--dir`.
+  const home = realpathSync(mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-home-'))); roots.push(home)
   writeFileSync(path.join(home, '.zprofile'), `export OPENCODE_CONFIG=${path.join(root, 'shell-startup-unsafe.json')}\n`)
-  const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${binDir}${delimiter}${process.env.PATH}`, WT_RECORD: record, WT_IDENTITY_MARKER: 'same', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_RECORD,WT_IDENTITY_MARKER', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), OPENAI_API_KEY: 'openai-key', GOOGLE_GENERATIVE_AI_API_KEY: 'google-key', AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource', XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
-  return { root, bin, record, env }
+  const env = { ...process.env, HOME: home, USERPROFILE: home, PATH: `${binDir}${delimiter}${process.env.PATH}`, WT_RECORD: record, WT_LANE_SANDBOX_WRITE: recordDir, WT_IDENTITY_MARKER: 'same', WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_RECORD,WT_IDENTITY_MARKER', OPENCODE_CONFIG: path.join(root, 'unsafe.json'), OPENAI_API_KEY: 'openai-key', GOOGLE_GENERATIVE_AI_API_KEY: 'google-key', AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource', XDG_STATE_HOME: path.join(root, 'state'), OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }
+  return { root, bin, record, recordDir, env }
 }
 
 describe('all toolbox-owned OpenCode launch paths', () => {
@@ -82,7 +86,7 @@ describe('all toolbox-owned OpenCode launch paths', () => {
 
   it.skipIf(process.platform === 'win32')('uses one sanitized cwd/environment/config context for observer probe and direct spawn [POSIX JSON-stream fixture]', () => {
     const f = fixture()
-    const keys = ['PATH', 'WT_RECORD', 'WT_IDENTITY_MARKER', 'WT_EXTERNAL_MODEL_ENV_ALLOW', 'OPENCODE_CONFIG', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'AZURE_API_KEY', 'AZURE_RESOURCE_NAME', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
+    const keys = ['PATH', 'WT_RECORD', 'WT_LANE_SANDBOX_WRITE', 'WT_IDENTITY_MARKER', 'WT_EXTERNAL_MODEL_ENV_ALLOW', 'OPENCODE_CONFIG', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'AZURE_API_KEY', 'AZURE_RESOURCE_NAME', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     for (const key of keys) process.env[key] = f.env[key]
     try {
@@ -101,7 +105,7 @@ describe('all toolbox-owned OpenCode launch paths', () => {
 
   it.skipIf(process.platform === 'win32')('passes only Azure credentials through the observer spawn [POSIX JSON-stream fixture]', () => {
     const f = fixture()
-    const keys = ['PATH', 'WT_RECORD', 'WT_IDENTITY_MARKER', 'WT_EXTERNAL_MODEL_ENV_ALLOW', 'OPENCODE_CONFIG', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'AZURE_API_KEY', 'AZURE_RESOURCE_NAME', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
+    const keys = ['PATH', 'WT_RECORD', 'WT_LANE_SANDBOX_WRITE', 'WT_IDENTITY_MARKER', 'WT_EXTERNAL_MODEL_ENV_ALLOW', 'OPENCODE_CONFIG', 'OPENAI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'AZURE_API_KEY', 'AZURE_RESOURCE_NAME', 'XDG_STATE_HOME', 'OPENCODE_DISABLE_CLAUDE_CODE_SKILLS'] as const
     const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]))
     for (const key of keys) process.env[key] = f.env[key]
     try {

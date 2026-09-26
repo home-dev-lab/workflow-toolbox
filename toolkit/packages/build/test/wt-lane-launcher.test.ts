@@ -23,6 +23,7 @@ const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$
 const PROCESS_CAPTURE_RETRY_MS = 10
 const PROCESS_CAPTURE_SCHEDULING_MARGIN_MS = 100
 const DARWIN_PROVIDER_MISS_TTL_MS = 100
+const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
   const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
@@ -36,6 +37,11 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
 })
 
+// The switched-off sandbox announces itself on stderr (never silent); these assertions are about everything else.
+const SANDBOX_OFF_NOTICE = 'workflow-toolbox: lane sandbox: none (disabled by WT_LANE_SANDBOX=off); running with the environment allow-list only\n'
+const withoutSandboxNotice = (stderr: string) => stderr.split(SANDBOX_OFF_NOTICE).join('')
+// Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
+// the sandbox itself is locked in lane-sandbox.test.ts.
 function fixture(script: string, watcherHostCensus = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-launcher-'))); roots.push(root)
   const dir = join(root, 'worktree'); const bin = join(root, 'bin'); const config = join(root, 'config')
@@ -49,7 +55,7 @@ function fixture(script: string, watcherHostCensus = false) {
   writeFileSync(join(config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
   const helperFixture = join(root, 'helpers.json')
   writeFileSync(helperFixture, '[]\n')
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,WT_IGNORE_FENCE,WT_INVISIBLE_ALLOW,WT_IDENTITY_RECORD,WT_IDENTITY_MARKER,WT_SLOW_PREFLIGHT_AT_COUNT,WT_FAIL_PREFLIGHT_AT_COUNT,WT_EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
+  const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: join(root, 'state'), WT_FAKE_OPENCODE_ACTION: script, WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_FAKE_OPENCODE_ACTION,WT_IGNORE_FENCE,WT_INVISIBLE_ALLOW,WT_IDENTITY_RECORD,WT_IDENTITY_MARKER,WT_SLOW_PREFLIGHT_AT_COUNT,WT_FAIL_PREFLIGHT_AT_COUNT,WT_EFFECTIVE_SKILLS', WT_LANE_MIN_AVAILABLE_MIB: '0', WT_LANE_SANDBOX: 'off', ...(watcherHostCensus ? {} : { WT_LANE_WATCH_TEST_HELPERS: helperFixture }) }
   return { root, dir, config, env }
 }
 function isolateWatcherHostCensus(f: ReturnType<typeof fixture>) {
@@ -1206,7 +1212,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; printf "# Report\\n" > "$PWD/.lane/report.md"')
     const known = run(f, ['--variant', 'high']); expect(known.status).toBe(0)
     const log = join(f.dir, '.lane', 'run.log'); waitFor(log)
-    expect(known.stderr).toBe('')
+    expect(withoutSandboxNotice(known.stderr)).toBe('')
     expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nhigh\n/)
   })
 
@@ -1260,6 +1266,30 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       '',
     ])
   })
+  it('hands the lane child a WT_SUITE_LOCK_CMD that runs the plugin suite-lock CLI', () => {
+    const f = fixture('suite-lock-cmd')
+    const res = run(f, ['--timeout', '1']); expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    const command = readFileSync(join(f.dir, 'suite-lock-cmd'), 'utf8')
+    const cli = join(ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs')
+    expect(command).toBe(`node '${cli}' run --`)
+    expect(existsSync(cli)).toBe(true)
+    const help = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' })
+    expect(help.status, help.stderr).toBe(0)
+    expect(help.stdout).toContain('wt-suite-lock.mjs run')
+  })
+  // The real sandbox binds only named paths: the CLI (and the plugin files it reads at import) must be
+  // visible inside it, and the lock directory writable. The lock root is the fixture's own state dir.
+  it.skipIf(!BWRAP_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips without a working bwrap)', () => {
+    const f = fixture('suite-lock-run')
+    delete f.env.WT_LANE_SANDBOX
+    f.env.WT_LANE_SANDBOX_READ = join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures')
+    const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'), 30_000)
+    expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).toContain('lane sandbox: bwrap')
+    const gate = readFileSync(join(f.dir, 'suite-lock-run'), 'utf8')
+    expect(gate).toBe('status=0\ngate ran\n')
+  }, 60_000)
   it('passes only Azure credentials to an Azure lane', () => {
     const f = fixture('# PROVIDER_KEYS; printf "%s\\n" "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > "$PWD/claude-skills-fence"; printf "%s\\n" "$@" > "$PWD/argv"')
     Object.assign(f.env, { WT_LANE_MODELS: 'azure/gpt-5', OPENAI_API_KEY: 'unrelated-key', AZURE_API_KEY: 'azure-key', AZURE_RESOURCE_NAME: 'azure-resource' })
@@ -1272,7 +1302,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     f.env.WT_IGNORE_FENCE = '1'
     const res = run(f)
     expect(res.status).toBe(1)
-    expect(res.stderr).toBe('OPENCODE_SKILL_FENCE_UNAVAILABLE: the synthetic Claude skill is still listed under the forced fence; update OpenCode or workflow-toolbox before launching.\n')
+    expect(withoutSandboxNotice(res.stderr)).toBe('OPENCODE_SKILL_FENCE_UNAVAILABLE: the synthetic Claude skill is still listed under the forced fence; update OpenCode or workflow-toolbox before launching.\n')
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
   it('refuses before spawn when effective discovery reports a project-native refused skill', () => {

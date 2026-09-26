@@ -4,7 +4,7 @@ import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, rea
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { externalModelEnv, providerCredentialNames } from '../../../../plugin/bin/lib/external-model-env.mjs'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
@@ -13,7 +13,10 @@ import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, pruneOpencodeSkillFen
 const FENCE_MODULE = new URL('../../../../plugin/bin/lib/opencode-skill-fence.mjs', import.meta.url).href
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+// Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
+// the sandbox itself is locked in lane-sandbox.test.ts.
+beforeEach(() => { vi.stubEnv('WT_LANE_SANDBOX', 'off') })
+afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function stub(mode: 'honor' | 'ignore' | 'invisible-allow') {
   const root = mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-')); roots.push(root)

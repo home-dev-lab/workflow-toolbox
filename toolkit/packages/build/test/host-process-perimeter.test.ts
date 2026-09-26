@@ -20,7 +20,9 @@ describe('pid to parent-pid host perimeter', () => {
     const perimeter = sourceFiles(ROOT)
     const violations = perimeter.filter((path) => RAW_PARENT_TABLE.test(readFileSync(path, 'utf8')))
       .map((path) => relative(ROOT, path).replaceAll('\\', '/'))
-    // external-model-env.mjs expands the perimeter; provider-definitions.mjs remains behind HOST_ROOT.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 216, violations: [] })
+    // The grounding CLI, two hooks, and pure public re-export add four perimeter files;
+    // their process access stays behind HOST_ROOT. The Java pack's `wt-jdtls.mjs` launcher adds one more
+    // (its JVM discovery and spawn live in host/jdtls-java.mjs).
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 221, violations: [] })
   })
 })

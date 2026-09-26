@@ -16,6 +16,34 @@
     "subagents"
   ],
   "userConfig": {
+    "grounding_sources": {
+      "type": "file",
+      "title": "Deep-grounding user source registry",
+      "required": false,
+      "description": "JSON source registry merged between plugin defaults and .claude/grounding-sources.json. Empty uses the Claude config directory fallback."
+    },
+    "grounding_prompt_cooldown": {
+      "type": "number",
+      "title": "Deep-grounding reminder cooldown",
+      "default": 5,
+      "min": 2,
+      "required": false,
+      "description": "Prompt count between short deep-grounding reminders after the first prompt."
+    },
+    "grounding_pre_send": {
+      "type": "string",
+      "title": "Deep-grounding outbound check mode",
+      "default": "observe",
+      "required": false,
+      "description": "observe journals what the guard would decide without blocking; refuse blocks once; off disables it."
+    },
+    "grounding_outbound_tools": {
+      "type": "string",
+      "title": "Additional outbound tool patterns",
+      "default": "",
+      "required": false,
+      "description": "Comma- or newline-separated MCP tool-name globs treated as outbound claim sends."
+    },
     "executor_lane_consent": {
       "type": "boolean",
       "title": "Allow executor lane",
@@ -155,7 +183,7 @@
       "description": "Harness model alias or full claude-* model for the SDK orchestrator. Environment fallback: WT_SDK_ORCHESTRATOR_MODEL."
     },
     "pilot_variant": {
-      "type": "string", "title": "Pilot variant", "default": "high", "required": false,
+      "type": "string", "title": "Pilot variant", "default": "medium", "required": false,
       "description": "Reasoning variant for standard harness pilots. Environment fallback: WT_PILOT_VARIANT."
     },
     "pilot_hard_variant": {
@@ -167,7 +195,7 @@
       "description": "Reasoning variant for the harness orchestrator. Environment fallback: WT_ORCHESTRATOR_VARIANT."
     },
     "sdk_pilot_variant": {
-      "type": "string", "title": "SDK pilot variant", "default": "high", "required": false,
+      "type": "string", "title": "SDK pilot variant", "default": "medium", "required": false,
       "description": "Reasoning variant for standard SDK pilots. Environment fallback: WT_SDK_PILOT_VARIANT."
     },
     "sdk_pilot_hard_variant": {
@@ -214,19 +242,19 @@
       "description": "Per-phase override. Empty: claude-sdk opus in every cell; gpt-lane openai/gpt-6-astra in every cell. Environment fallback: WT_EXECUTOR_REFUTATION_MODEL."
     },
     "executor_critic_variant": {
-      "type": "string", "title": "Executor critic variant", "default": "high", "required": false,
+      "type": "string", "title": "Executor critic variant", "default": "xhigh", "required": false,
       "description": "Reasoning variant for critic executors. Environment fallback: WT_EXECUTOR_CRITIC_VARIANT."
     },
     "executor_code_variant": {
       "type": "string", "title": "Executor code variant", "default": "", "required": false,
-      "description": "Reasoning variant for code executors. Empty selects xhigh for GPT Sol implementation and high otherwise. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
+      "description": "Reasoning variant for code executors. Empty selects xhigh for GPT Sol implementation and medium otherwise. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
     },
     "executor_review_variant": {
-      "type": "string", "title": "Executor review variant", "default": "high", "required": false,
+      "type": "string", "title": "Executor review variant", "default": "xhigh", "required": false,
       "description": "Reasoning variant for review executors. Environment fallback: WT_EXECUTOR_REVIEW_VARIANT."
     },
     "executor_refutation_variant": {
-      "type": "string", "title": "Executor refutation variant", "default": "high", "required": false,
+      "type": "string", "title": "Executor refutation variant", "default": "xhigh", "required": false,
       "description": "Reasoning variant for refutation executors. Environment fallback: WT_EXECUTOR_REFUTATION_VARIANT."
     },
     "configDir": {
@@ -302,6 +330,16 @@
   },
   "hooks": {
     "PreToolUse": [
+      {
+        "matcher": "mcp__.*|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-grounding-pre-send-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "matcher": "Bash",
         "hooks": [
@@ -790,6 +828,15 @@
       }
     ],
     "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wt-grounding-prompt-hook.mjs\"",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "hooks": [
           {
