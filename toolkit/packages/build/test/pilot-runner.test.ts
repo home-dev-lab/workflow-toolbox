@@ -1189,10 +1189,10 @@ describe('SDK pilot runner', () => {
     })
     expect(result.summary).toMatchObject({ variant: 'medium', variant_origin: 'role base' })
     expect(result.summary.executor_variants).toEqual({
-      critic: { value: 'high', origin: 'role base' },
+      critic: { value: 'xhigh', origin: 'role base' },
       code: { value: 'medium', origin: 'role base' },
       review: { value: 'xhigh', origin: 'override' },
-      refutation: { value: 'high', origin: 'role base' },
+      refutation: { value: 'xhigh', origin: 'role base' },
     })
   })
 
