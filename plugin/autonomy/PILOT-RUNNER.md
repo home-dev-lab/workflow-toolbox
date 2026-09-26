@@ -166,8 +166,8 @@ Tree signature v3 is a filesystem signature over names from HEAD, the index, and
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or
 rename does not change it; recorded v2 signatures do not compare.
 
-TDD lanes use `openai/gpt-5.6-terra`; critic, review, and refutation use
-`openai/gpt-5.6-sol`. Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
+TDD, critic, and review lanes use `openai/gpt-6-sol`; refutation uses
+`openai/gpt-6-astra`. Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
 toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
 A lane must not rely on background processes surviving its receipt: the reported process group contains
 the launcher worker, `opencode`, and its ordinary descendants, and the server terminates that group. A

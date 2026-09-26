@@ -4,6 +4,8 @@ export const DEFAULT_LANE_MODELS = Object.freeze([
   'openai/gpt-5.6-luna',
   'openai/gpt-5.6-terra',
   'openai/gpt-5.6-sol',
+  'openai/gpt-6-luna',
+  'openai/gpt-6-sol',
   'openai/gpt-6-astra',
 ])
 
@@ -45,7 +47,7 @@ export function resolveRoleVariant(role, model, { env = process.env, settingsEnv
     if (refusal) throw new Error(refusal)
     return { value: variant, origin: 'override', source, forced: false }
   }
-  if (role === 'code' && /gpt-5\.6-sol/i.test(model)) return { value: 'xhigh', origin: 'model profile', source: 'profile', forced: false }
+  if (role === 'code' && /gpt-(?:5\.6|6)-sol/i.test(model)) return { value: 'xhigh', origin: 'model profile', source: 'profile', forced: false }
   return { value: base, origin: 'role base', source: 'profile', forced: false }
 }
 

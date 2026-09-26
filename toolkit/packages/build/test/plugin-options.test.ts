@@ -13,7 +13,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const cases = [
   { option: 'lane_skills', envKey: 'WT_LANE_SKILLS', optionValue: 'option-skill', envValue: 'env-skill', defaultValue: '' },
-  { option: 'lane_models', envKey: 'WT_LANE_MODELS', optionValue: 'option/model', envValue: 'env/model', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-astra' },
+  { option: 'lane_models', envKey: 'WT_LANE_MODELS', optionValue: 'option/model', envValue: 'env/model', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-luna,openai/gpt-6-sol,openai/gpt-6-astra' },
   { option: 'artifact_server', envKey: 'WT_ARTIFACT_SERVER', optionValue: false, envValue: '1', defaultValue: true },
   { option: 'artifact_server_roots', envKey: 'WT_ARTIFACT_SERVER_ROOTS', optionValue: 'option=/root', envValue: 'env=/root', defaultValue: null },
   { option: 'artifact_server_port', envKey: 'WT_ARTIFACT_SERVER_PORT', optionValue: 49123, envValue: '49124', defaultValue: null },
@@ -100,7 +100,7 @@ describe('workflow-toolbox plugin option resolver', () => {
 
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_code_model: '' } } } }))
     const defaultRow = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest }).find((row: { option: string }) => row.option === 'executor_code_model')
-    expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra', source: 'default' })
+    expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-astra', source: 'default' })
   })
 
   it('reports the same fallback source as both model resolvers for every empty model option', () => {

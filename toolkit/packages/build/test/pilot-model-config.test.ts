@@ -61,10 +61,10 @@ describe('pilot model configuration', () => {
   })
 
   it.each([
-    ['gpt-lane', 'LITE', false, { critic: 'openai/gpt-5.6-sol', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'LITE', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'FULL', false, { critic: 'openai/gpt-5.6-sol', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'FULL', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'LITE', false, { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'LITE', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'FULL', false, { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'FULL', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-6-sol', refutation: 'openai/gpt-6-astra' }],
     ['claude-sdk', 'LITE', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
     ['claude-sdk', 'LITE', true, { critic: 'opus', code: 'opus', review: 'opus', refutation: 'opus' }],
     ['claude-sdk', 'FULL', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
@@ -106,9 +106,10 @@ describe('pilot model configuration', () => {
     }
   })
 
-  it('resolves role base, the GPT Sol implementation profile, then explicit variant override', () => {
+  it('resolves role base, the GPT-5.6 and GPT-6 Sol implementation profiles, then explicit variant override', () => {
     expect(resolveRoleVariant('review', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'role base' })
     expect(resolveRoleVariant('code', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'model profile' })
+    expect(resolveRoleVariant('code', 'openai/gpt-6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'model profile' })
     expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'role base' })
     expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: { WT_EXECUTOR_REVIEW_VARIANT: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override' })
   })

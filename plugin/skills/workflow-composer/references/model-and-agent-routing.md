@@ -140,7 +140,7 @@
       `cross-model-verify`) and makes the bridge pass `--variant <name>` to opencode,
       controlling the external model's reasoning effort per task. Valid names are per-model
       and version-dependent: as of opencode 1.18.4, `openai/gpt-5.4` accepts `none`…`xhigh`,
-      `openai/gpt-5.6-terra` / `openai/gpt-5.6-sol` accept `none`…`max` — confirm against your
+       `openai/gpt-5.6-terra`, `openai/gpt-5.6-sol`, `openai/gpt-6-luna`, and `openai/gpt-6-sol` accept `none`…`max` — confirm against your
       own opencode. ⚠ An out-of-list name is IGNORED: the bridge emits
       `OPENCODE_VARIANT_IGNORED:` and proceeds on the model default, deliberately avoiding
       opencode's own silent fallback; after a model fallback (e.g. onto

@@ -9,7 +9,7 @@ const DEFINITIONS = Object.freeze({
   executor_lane_consent: { envKey: 'WT_EXECUTOR_LANE_CONSENT', type: 'boolean', defaultValue: false },
   adopt_refresh: { envKey: 'WT_ADOPT_REFRESH', type: 'string', defaultValue: 'session' },
   lane_skills: { envKey: 'WT_LANE_SKILLS', type: 'string', defaultValue: '' },
-  lane_models: { envKey: 'WT_LANE_MODELS', type: 'string', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-astra' },
+  lane_models: { envKey: 'WT_LANE_MODELS', type: 'string', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-luna,openai/gpt-6-sol,openai/gpt-6-astra' },
   artifact_server: { envKey: 'WT_ARTIFACT_SERVER', type: 'boolean', defaultValue: true },
   artifact_server_roots: { envKey: 'WT_ARTIFACT_SERVER_ROOTS', type: 'string', defaultValue: null },
   artifact_server_port: { envKey: 'WT_ARTIFACT_SERVER_PORT', type: 'number', defaultValue: null },
@@ -145,9 +145,9 @@ function consentRow(projectDir, env) {
 }
 
 const EXECUTOR_DEFAULT_DESCRIPTIONS = {
-  executor_critic_model: 'claude-sdk opus / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra',
-  executor_code_model: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra',
-  executor_review_model: 'claude-sdk opus / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-5.6-sol',
+  executor_critic_model: 'claude-sdk opus / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-astra',
+  executor_code_model: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-astra',
+  executor_review_model: 'claude-sdk opus / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-sol',
   executor_refutation_model: 'claude-sdk opus / hard opus; gpt-lane openai/gpt-6-astra / hard openai/gpt-6-astra',
 }
 
