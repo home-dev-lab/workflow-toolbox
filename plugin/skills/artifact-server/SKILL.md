@@ -76,7 +76,9 @@ Linux, `~/Library/Application Support/wt-artifact-server` on macOS, or
 `%LOCALAPPDATA%\wt-artifact-server` on Windows. It refuses a directory owned by another uid or
 writable by group/others. Each monitor atomically writes one mode-0600 `registrations/*.json` file
 containing its PID, roots, deny policy, and start time. `server.json` is also mode 0600 and records
-the real port, local and remote URLs, pinned roots, PID, version, and start time.
+the real port, local and remote URLs, pinned roots, PID, version, and start time. The server runs
+with this state directory as its working directory, so it never holds the project or worktree of the
+session that started it (Windows cannot delete a live process's working directory).
 
 The server checks registration PIDs with `process.kill(pid, 0)` every two seconds. An idle live
 session keeps it alive. Clean removal of the last registration stops it immediately; a dead

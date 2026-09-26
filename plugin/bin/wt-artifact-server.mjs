@@ -532,6 +532,8 @@ async function stopRunning(action, force) {
 function spawnServer(port) {
   const script = fileURLToPath(import.meta.url)
   const child = spawn(process.execPath, [script, 'serve'], {
+    // Shared, long-lived: run from the state directory it owns, never the caller's cwd (see the ensure).
+    cwd: ensureSecureStateDir(),
     detached: true, windowsHide: true, stdio: 'ignore', env: { ...process.env, WT_ARTIFACT_SERVER_PORT: String(port) },
   })
   child.unref()

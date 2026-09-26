@@ -12,6 +12,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Turn deep grounding into an automatic, configurable behavior: a three-layer source registry and `wt-grounding-sources.mjs` discovery CLI, concise prediction-first skill orders with dated fiche refresh rules, a cooldown-aware prompt injection, and an observe-by-default pre-send check with an opt-in once-satisfiable refusal. The check journals would-refuse/refused decisions for later tuning; no always-loaded rule is added.
 
 ### Fixed
+- Artifact server: the shared, detached server now runs from its own state directory instead of inheriting the working directory of whichever session (or `restart` caller) started it. On Windows a live process's working directory cannot be deleted, so the server, and every PowerShell identity probe it spawns, pinned the first session's project or worktree for the server's whole lifetime.
 - `quota-drop.mjs`: the `(now …)` label printed by the quota watcher was built from `currentResetsAt` (the new window's own reported reset time) instead of the actual `nowMs`, so a reset printed as "now" a time hours or days away from the real clock. The label now always reflects `nowMs`; the new window's own reset time, when present, is printed separately under its own `next reported reset …` label. The reset decision itself (which was already keyed off `nowMs`) is unchanged.
 
 ### Changed

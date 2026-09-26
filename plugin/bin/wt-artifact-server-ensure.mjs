@@ -125,6 +125,9 @@ async function spawnServer(port, claim) {
   try {
     await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [script, 'serve'], {
+        // The server is shared and outlives this session: never pin the session's project as its cwd
+        // (Windows refuses to delete a live process's cwd). Its own state directory is what it owns.
+        cwd: ensureSecureStateDir(),
         detached: true,
         windowsHide: true,
         stdio: 'ignore',
