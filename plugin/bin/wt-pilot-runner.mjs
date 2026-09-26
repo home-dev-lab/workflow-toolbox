@@ -10,20 +10,21 @@ import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { decidePilotRun } from './lib/host/pilot-decision-store.mjs'
 
 function usage() {
-  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [...]\n       node wt-pilot-runner.mjs decide --run <id> --dod <n> --reading <text> [--state-root <path>]'
+  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [...]\n       node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading <text> [--state-root <path>]'
 }
 
 function decisionArgs(argv) {
-  const out = { runId: null, criterion: null, reading: null, root: null }
+  const out = { runId: null, requestId: null, criterion: null, reading: null, root: null }
   for (let index = 1; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === '--run') out.runId = argv[++index] ?? null
+    else if (arg === '--request') out.requestId = argv[++index] ?? null
     else if (arg === '--dod') out.criterion = Number(argv[++index])
     else if (arg === '--reading') out.reading = argv[++index] ?? null
     else if (arg === '--state-root') out.root = argv[++index] ?? null
     else return { error: `unknown decide argument: ${arg}` }
   }
-  if (!out.runId || !out.reading || !Number.isSafeInteger(out.criterion) || out.criterion < 1) return { error: 'decide requires --run <id> --dod <positive integer> --reading <text>' }
+  if (!out.runId || !out.requestId || !out.reading || !Number.isSafeInteger(out.criterion) || out.criterion < 1) return { error: 'decide requires --run <id> --request <id> --dod <positive integer> --reading <text>' }
   return out
 }
 

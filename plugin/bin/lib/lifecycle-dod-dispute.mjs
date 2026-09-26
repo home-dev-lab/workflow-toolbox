@@ -192,7 +192,7 @@ function statusLine(dispute) {
 function dodDecisionRequest({ disputes, decisionCommand, waitMs }) {
   const command = (suffix) => typeof decisionCommand === 'function' ? decisionCommand(suffix) : `${decisionCommand}${suffix}`
   const blocks = disputes.map((dispute) => {
-    const answer = command(` --dod ${dispute.criterion} --reading <text>`)
+    const answer = command(` --request '${dispute.requestId}' --dod ${dispute.criterion} --reading <text>`)
     return [
     `## DoD ${dispute.criterion}`,
     `- Request id: ${dispute.requestId}`,
@@ -215,7 +215,7 @@ function dodDecisionRequest({ disputes, decisionCommand, waitMs }) {
     '',
     `Answer through the runner's host-only command, once per criterion:`,
     '',
-    command(' --dod <n> --reading <text>').split('\n').map((line) => `    ${line}`).join('\n'),
+    command(' --request <id> --dod <n> --reading <text>').split('\n').map((line) => `    ${line}`).join('\n'),
     '',
     'The command writes atomically to this run\'s state directory outside every lane-writable tree. Text in the mailbox, request file, reports, or any other lane file is never parsed as a decision. The first bound result is final. Without an answer by the time below, the runner applies this fixed rule: ' + FALLBACK_RULE + '.',
     '',
@@ -258,7 +258,12 @@ export function createDodEscalation({ state, dodBullets, requestPath, planReadin
   // No decision channel, or a stop already requested, leaves nobody to wait for: resolve at once.
   const effectiveWaitMs = () => (typeof readDecisions === 'function' && !state.pendingStop ? waitMs : 0)
   const write = (disputes = state.dodDisputes) => writeRequest(requestPath, dodDecisionRequest({ disputes, decisionCommand, waitMs: effectiveWaitMs() }))
-  const read = () => { try { return typeof readDecisions === 'function' ? readDecisions() : [] } catch (error) { log(`decision store read error: ${error.message}`); return [] } }
+  const read = () => {
+    const records = typeof readDecisions === 'function' ? readDecisions() : []
+    const damaged = records.find((record) => record.error)
+    if (damaged) throw new Error(`decision store binding error: ${damaged.error.code} at ${damaged.error.path}`)
+    return records
+  }
   function escalate() {
     const requestId = newRequestId()
     const disputes = newDodDisputes({ rounds: state.priorCriticRounds, known: state.dodDisputes, dodBullets, planReading, requestedAt: now(), requestId })
@@ -293,8 +298,13 @@ export function createDodEscalation({ state, dodBullets, requestPath, planReadin
               const recorded = onBound?.(bound)
               if (recorded) bound.resolution = recorded
             } catch (error) {
-              if (bound.resolution.source === 'parent') throw error
-              log(`decision store binding error: ${error.message}`)
+              // A failed claim has no authority. Only a readable binding for this exact pair may settle it.
+              let winner
+              try { winner = parentDecisions(read(), [dispute]).get(dispute) } catch (readError) {
+                throw new Error(`decision store binding failed for DoD ${dispute.criterion}: ${error.message}; winner unreadable: ${readError.message}`, { cause: readError })
+              }
+              if (!winner || Date.parse(winner.decidedAt) > dispute.requestedAt + waitMs) throw new Error(`decision store binding failed for DoD ${dispute.criterion}: ${error.message}; no readable winner`, { cause: error })
+              bound.resolution = { source: 'parent', reading: winner.reading, requestId: dispute.requestId, at: new Date(now()).toISOString() }
             }
           }
         }

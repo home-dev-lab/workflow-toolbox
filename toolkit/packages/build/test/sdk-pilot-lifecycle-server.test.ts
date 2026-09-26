@@ -1334,7 +1334,7 @@ printf 'report\n' > "$report"
     const criticBrief = (lifecycle: ReturnType<typeof testLifecycle>) => readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
 
     it('writes one decision request to the lane and surfaces it to the run parent', async () => {
-      const { lifecycle, requests, second } = await disputed({ readDecisions: () => '' })
+      const { lifecycle, requests, second } = await disputed({ readDecisions: () => [] })
       expect(second).toMatch(/^accepted phase=plan \(disputed Definition-of-done term escalated to the run's parent: DoD 1; request \.lane\/dod-decision-request\.md/)
       const file = join(lifecycle.root, '.lane', 'dod-decision-request.md')
       expect(requests).toMatchObject([{ file, criteria: [1], requestId }])
@@ -1344,15 +1344,15 @@ printf 'report\n' > "$report"
       expect(request).toContain(`- Plan's reading (its "Card terms: reading chosen" entry): the documents present at the execution bound`)
       expect(request).toContain('round 1 [untagged]: the inventory is not exhaustive')
       expect(request).toContain('round 2 [untagged]: the final inventory omits a later lane file')
-      expect(request).toContain('wt-pilot-runner decide --run run-1 --dod <n> --reading <text>')
+      expect(request).toContain('wt-pilot-runner decide --run run-1 --request <id> --dod <n> --reading <text>')
       expect(request).toContain(`- Request id: ${requestId}`)
-      expect(request).toContain('- Answer with: wt-pilot-runner decide --run run-1 --dod 1 --reading <text>')
+      expect(request).toContain(`- Answer with: wt-pilot-runner decide --run run-1 --request '${requestId}' --dod 1 --reading <text>`)
       expect(request).toContain('Status: awaiting the run\'s parent')
       expect(request).not.toMatch(/owner|human/i)
     })
 
     it('generates an unguessable request id when none is injected', async () => {
-      const { lifecycle } = await disputed({ readDecisions: () => '', newRequestId: undefined })
+      const { lifecycle } = await disputed({ readDecisions: () => [], newRequestId: undefined })
       const ids = [...readFileSync(join(lifecycle.root, '.lane', 'dod-decision-request.md'), 'utf8').matchAll(/Request id: (\S+)/g)].map((match) => match[1])
       expect(ids).toHaveLength(1)
       expect(ids[0]).toMatch(/^dodreq-[a-f0-9]{24}$/)
@@ -1416,7 +1416,7 @@ printf 'report\n' > "$report"
 
     it("takes the plan's reading from its Card terms section, matching the term across case and whitespace", async () => {
       const withTerms = plan.replace("- cycle's documents: the documents present at the execution bound", "- cycle’s documents: the documents present in the lane at the execution bound\n- DoD 9: unrelated")
-      const { lifecycle } = await disputed({ readDecisions: () => '' }, withTerms)
+      const { lifecycle } = await disputed({ readDecisions: () => [] }, withTerms)
       const request = readFileSync(join(lifecycle.root, '.lane', 'dod-decision-request.md'), 'utf8')
       expect(request).toContain(`- Plan's reading (its "Card terms: reading chosen" entry): the documents present in the lane at the execution bound`)
       expect(request).not.toContain('Proof: task T1 lists them at the bound')
@@ -1424,7 +1424,7 @@ printf 'report\n' > "$report"
 
     it('says so when the Card terms section records no reading for the term, without falling back to Acceptance', async () => {
       const withTerms = plan.replace("- cycle's documents: the documents present at the execution bound", `- DoD 10: a reading of another criterion\n- ${term}s, in full: a longer term that only starts like this one`)
-      const { lifecycle } = await disputed({ readDecisions: () => '' }, withTerms)
+      const { lifecycle } = await disputed({ readDecisions: () => [] }, withTerms)
       const request = readFileSync(join(lifecycle.root, '.lane', 'dod-decision-request.md'), 'utf8')
       expect(request).toContain(`- Plan's reading: (the plan's "Card terms: reading chosen" section records no reading for this term)`)
       expect(request).not.toContain('Proof: task T1 lists them at the bound')
@@ -1432,7 +1432,7 @@ printf 'report\n' > "$report"
 
     const planWithReading = plan.replace("- cycle's documents: the documents present at the execution bound", `- ${term}: the documents present in the lane at the execution bound`)
     async function silentParent(planText: string, criticRounds: string[][]) {
-      const { lifecycle } = await disputed({ readDecisions: () => '', waitMs: 30, pollMs: 5 }, planText, criticRounds)
+      const { lifecycle } = await disputed({ readDecisions: () => [], waitMs: 30, pollMs: 5 }, planText, criticRounds)
       expect(await criticRound(lifecycle, 3, planText)).toMatch(/^accepted phase=tdd/)
       return {
         lifecycle,
@@ -1491,12 +1491,10 @@ printf 'report\n' > "$report"
       expect(await criticRound(lifecycle, 3)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
-    it('treats store read errors as no answer and binds fallback', async () => {
-      const logs: string[] = []
-      const { lifecycle } = await disputed({ readDecisions: () => { throw new Error('ENOENT') }, waitMs: 1, pollMs: 1, log: (line: string) => logs.push(line) })
-      await criticRound(lifecycle, 3)
-      expect(lifecycle.dodDisputes()[0]!.resolution).toMatchObject({ source: 'fallback' })
-      expect(logs.join('\n')).toContain('decision store read error: ENOENT')
+    it('fails closed when the store reader fails', async () => {
+      const { lifecycle } = await disputed({ readDecisions: () => { throw new Error('ENOENT') }, waitMs: 1, pollMs: 1 })
+      await expect(lifecycle.awaitDodDecisions()).rejects.toThrow('ENOENT')
+      expect(lifecycle.dodDisputes()[0]!.resolution).toBeNull()
     })
     it('does not launch a critic after the stop is requested during the decision wait', async () => {
       let stop: (() => void) | null = null

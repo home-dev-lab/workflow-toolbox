@@ -662,7 +662,7 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     const file = initializePilotDecisionStore('run-1', { root: stateRoot })
     registerPilotDecisionRequest(file, { requestId: 'visible-in-lane', criteria: [1], deadline: Date.now() + 60_000 })
     cpSync(join(ROOT, 'plugin'), join(f.worktree, 'plugin'), { recursive: true })
-    const args = [join(f.worktree, 'plugin', 'bin', 'wt-pilot-runner.mjs'), 'decide', '--run', 'run-1', '--dod', '1', '--reading', 'forged', '--state-root', stateRoot]
+    const args = [join(f.worktree, 'plugin', 'bin', 'wt-pilot-runner.mjs'), 'decide', '--run', 'run-1', '--request', 'visible-in-lane', '--dod', '1', '--reading', 'forged', '--state-root', stateRoot]
     const r = fence.spawnOpencode(spawnSync, process.execPath, args, { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
     expect(r.laneSandbox?.kind).toBe('bwrap')
     expect(r.status).not.toBe(0)

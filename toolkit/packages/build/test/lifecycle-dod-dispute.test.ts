@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import * as fs from 'node:fs'
 import { mkdirSync, mkdtempSync, readFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,7 +10,7 @@ import { createDodEscalation, DOD_ANCHOR, planReadingOfTerm } from '../../../../
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { writeRegularFile } from '../../../../plugin/bin/lib/lifecycle-launch.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { bindPilotDecision, decidePilotRun, initializePilotDecisionStore, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
+import { bindPilotDecision, decidePilotRun, initializePilotDecisionStore, readPilotDecisions, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
 const card = '## Definition of done\n- Return exactly this body:\n  ```json\n  {"ok": true}\n  ```\n'
 type Dispute = { resolution: { source: string, reading: string } | null }
@@ -66,13 +67,43 @@ describe('DoD dispute publication', () => {
     expect(state.dodDisputes[0]!.resolution).toMatchObject({ source: 'fallback' })
     expect(logs.join('\n')).toContain('late: DoD 1')
   })
-  it('continues the timeout when both the store reader and fallback recorder fail', async () => {
+  it('fails the dispute when the store reader and fallback recorder fail', async () => {
     const logs: string[] = []
     const { escalation, state } = fixture({ readDecisions: () => { throw new Error('ENOENT') }, onBound: () => { throw new Error('ENOENT') }, log: (line: string) => logs.push(line) })
     escalation.escalate()
+    await expect(escalation.awaitDecisions()).rejects.toThrow('ENOENT')
+    expect(state.dodDisputes[0]!.resolution).toBeNull()
+  })
+  it('adopts the parent after a failed fallback bind when a winner is readable', async () => {
+    let reads = 0
+    const { escalation, state } = fixture({
+      readDecisions: () => ++reads === 1 ? [] : [{ requestId: 'r', criterion: 1, reading: 'parent', decidedAt: new Date(25).toISOString() }],
+      onBound: () => { throw new Error('EIO') },
+    })
+    escalation.escalate()
     await escalation.awaitDecisions()
-    expect(logs.join('\n')).toContain('decision store read error: ENOENT')
-    expect(state.dodDisputes[0]!.resolution).toMatchObject({ source: 'fallback' })
+    expect(state.dodDisputes[0]!.resolution).toMatchObject({ source: 'parent', reading: 'parent' })
+  })
+  it('never adopts a fallback when link publication fails and no winner exists', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-bind-eio-'))
+    const file = initializePilotDecisionStore('eio', { root })
+    const { escalation, state } = fixture({
+      readDecisions: () => readPilotDecisions(file),
+      onDecisionRequest: ({ requestId, criteria, deadline }: { requestId: string, criteria: number[], deadline: number }) => registerPilotDecisionRequest(file, { requestId, criteria, deadline }),
+      onBound: (dispute: { requestId: string, criterion: number, resolution: { source: string, at: string } }) => bindPilotDecision(file, { requestId: dispute.requestId, criterion: dispute.criterion, source: dispute.resolution.source, at: dispute.resolution.at, resolution: dispute.resolution }, { fs: { ...fs, linkSync: () => { throw Object.assign(new Error('disk failed'), { code: 'EIO' }) } } }),
+    })
+    escalation.escalate()
+    await expect(escalation.awaitDecisions()).rejects.toThrow(/EIO.*no readable winner/)
+    expect(state.dodDisputes[0]!.resolution).toBeNull()
+  })
+  it('surfaces per-file corruption even alongside a valid decision', async () => {
+    const { escalation, state } = fixture({ readDecisions: () => [
+      { requestId: 'r', criterion: 1, reading: 'parent', decidedAt: new Date(25).toISOString() },
+      { error: { path: '/state/bindings/bad.json', code: 'CORRUPT' } },
+    ] })
+    escalation.escalate()
+    await expect(escalation.awaitDecisions()).rejects.toThrow('CORRUPT at /state/bindings/bad.json')
+    expect(state.dodDisputes[0]!.resolution).toBeNull()
   })
   it('records a stop as stopped rather than parent silent', async () => {
     const { escalation, state, writes } = fixture()
@@ -89,7 +120,7 @@ describe('DoD dispute publication', () => {
       readDecisions: () => [],
       onDecisionRequest: ({ requestId, criteria, deadline }: { requestId: string, criteria: number[], deadline: number }) => {
         registerPilotDecisionRequest(file, { requestId, criteria, deadline })
-        decidePilotRun({ runId: 'interleave', criterion: 1, reading: 'parent wins', root, now: () => deadline })
+        decidePilotRun({ runId: 'interleave', requestId, criterion: 1, reading: 'parent wins', root, now: () => deadline })
       },
       onBound: (dispute: { requestId: string, criterion: number, resolution: { source: string, at: string } }) => bindPilotDecision(file, { requestId: dispute.requestId, criterion: dispute.criterion, source: dispute.resolution.source, at: dispute.resolution.at, resolution: dispute.resolution }),
     })

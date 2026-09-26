@@ -17,7 +17,7 @@ import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 import { DOD_DECISION_WAIT_MS, FALLBACK_RULE } from './lifecycle-dod-dispute.mjs'
-import { bindPilotDecision, displayedDecisionStateRoot, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
+import { bindPilotDecision, displayedDecisionStateRoot, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotBinding, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
 import { laneUnsandboxedAtStart } from './host/lane-sandbox.mjs'
 import { sandboxWritablePaths } from './host/sandbox-extra-paths.mjs'
 import { pathWithin } from './host/path-within.mjs'
@@ -323,14 +323,18 @@ function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {
     },
     onPublished: ({ file, criteria, requestId }) => {
       const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
-      log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes within ${minutes} min (otherwise ${FALLBACK_RULE}):\n${command(' --dod <n> --reading <text>')}`)
+      const answer = command(` --request '${requestId}' --dod <n> --reading <text>`)
+      log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes within ${minutes} min (otherwise ${FALLBACK_RULE}):\n${answer}`)
     },
     rollbackDecisionRequest: ({ criteria, requestId }) => unregisterPilotDecisionRequest(stateFile, { criteria, requestId }),
     onBound: (dispute) => {
-      try { return bindPilotDecision(stateFile, { requestId: dispute.requestId, criterion: dispute.criterion, source: dispute.resolution.source, at: dispute.resolution.at, resolution: dispute.resolution }) }
-      catch (error) {
-        if (dispute.resolution.source === 'parent') throw error
-        log(`decision store binding error: ${error.message}`)
+      try { return bindPilotDecision(stateFile, { requestId: dispute.requestId, criterion: dispute.criterion, source: dispute.resolution.source, at: dispute.resolution.at, resolution: dispute.resolution }) } catch (error) {
+        let winner
+        try { winner = readPilotBinding(stateFile, dispute.requestId, dispute.criterion) } catch (readError) {
+          throw new Error(`decision store binding failed: ${error.message}; winner unreadable: ${readError.message}`, { cause: readError })
+        }
+        if (winner) return winner
+        throw new Error(`decision store binding failed: ${error.message}; no readable winner`, { cause: error })
       }
     },
     log,

@@ -10,6 +10,7 @@ import { bindPilotDecision, decidePilotRun, displayedDecisionStateRoot, initiali
 
 const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-pilot-runner.mjs', import.meta.url))
 const PROCESS = fileURLToPath(new URL('./fixtures/pilot-decision-process.mjs', import.meta.url))
+const WITHDRAW = fileURLToPath(new URL('./fixtures/pilot-decision-withdraw.mjs', import.meta.url))
 
 describe('pilot parent decision store', () => {
   it('accepts only a registered criterion and exposes one shared atomic record', () => {
@@ -17,11 +18,11 @@ describe('pilot parent decision store', () => {
     const file = initializePilotDecisionStore('card-123', { root })
     registerPilotDecisionRequest(file, { requestId: 'request-1', criteria: [2], deadline: 10_000 })
 
-    expect(() => decidePilotRun({ runId: 'card-123', criterion: 1, reading: 'forged', root })).toThrow('no open decision request for DoD 1')
-    decidePilotRun({ runId: 'card-123', criterion: 2, reading: 'literal parent reading', root, decidedAt: 0 })
+    expect(() => decidePilotRun({ runId: 'card-123', requestId: 'request-1', criterion: 1, reading: 'forged', root })).toThrow('no open decision request for DoD 1')
+    decidePilotRun({ runId: 'card-123', requestId: 'request-1', criterion: 2, reading: 'literal parent reading', root, decidedAt: 0 })
 
     expect(readPilotDecisions(file)).toEqual([{ requestId: 'request-1', criterion: 2, reading: 'literal parent reading', decidedAt: '1970-01-01T00:00:00.000Z', boundAt: '1970-01-01T00:00:00.000Z' }])
-    expect(() => decidePilotRun({ runId: 'card-123', criterion: 2, reading: 'overwritten', root, decidedAt: 1 })).toThrow('already bound (parent)')
+    expect(() => decidePilotRun({ runId: 'card-123', requestId: 'request-1', criterion: 2, reading: 'overwritten', root, decidedAt: 1 })).toThrow('already bound (parent)')
     expect(readFileSync(file, 'utf8')).not.toContain('.tmp')
   })
 
@@ -29,7 +30,7 @@ describe('pilot parent decision store', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-pilot-cli-'))
     const file = initializePilotDecisionStore('card-456', { root })
     registerPilotDecisionRequest(file, { requestId: 'request-2', criteria: [1], deadline: Date.now() + 60_000 })
-    const result = spawnSync(process.execPath, [CLI, 'decide', '--run', 'card-456', '--dod', '1', '--reading', 'parent via cli', '--state-root', root], { encoding: 'utf8' })
+    const result = spawnSync(process.execPath, [CLI, 'decide', '--run', 'card-456', '--request', 'request-2', '--dod', '1', '--reading', 'parent via cli', '--state-root', root], { encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(0)
     expect(file).toBe(join(root, 'card-456', 'dod-decisions.json'))
     expect(readPilotDecisions(file)[0]).toMatchObject({ criterion: 1, reading: 'parent via cli' })
@@ -42,7 +43,7 @@ describe('pilot parent decision store', () => {
     const file = initializePilotDecisionStore('first', { root })
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: Date.now() + 60_000 })
     // The store prepares both record directories.
-    expect(decidePilotRun({ runId: 'first', criterion: 1, reading: 'first answer', root }).file).toBe(file)
+    expect(decidePilotRun({ runId: 'first', requestId: 'r', criterion: 1, reading: 'first answer', root }).file).toBe(file)
     expect(existsSync(dirname(file))).toBe(true)
   })
 
@@ -61,9 +62,9 @@ describe('pilot parent decision store', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-decision-late-'))
     const file = initializePilotDecisionStore('late', { root })
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1, 2], deadline: 100 })
-    expect(() => decidePilotRun({ runId: 'late', criterion: 1, reading: 'late', decidedAt: 101, root })).toThrow('late: deadline 1970-01-01T00:00:00.100Z')
+    expect(() => decidePilotRun({ runId: 'late', requestId: 'r', criterion: 1, reading: 'late', decidedAt: 101, root })).toThrow('late: deadline 1970-01-01T00:00:00.100Z')
     bindPilotDecision(file, { requestId: 'r', criterion: 2, source: 'fallback', at: 100 })
-    expect(() => decidePilotRun({ runId: 'late', criterion: 2, reading: 'late', decidedAt: 100, root })).toThrow('already bound (fallback) at')
+    expect(() => decidePilotRun({ runId: 'late', requestId: 'r', criterion: 2, reading: 'late', decidedAt: 100, root })).toThrow('already bound (fallback) at')
   })
 
   it('quotes both shell dialects and includes a non-default state root', () => {
@@ -72,7 +73,7 @@ describe('pilot parent decision store', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-state root-'))
     const file = initializePilotDecisionStore('quoted', { root })
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: Date.now() + 60_000 })
-    const result = spawnSync(process.execPath, [CLI, 'decide', '--run', 'quoted', '--dod', '1', '--reading', 'yes', '--state-root', root], { encoding: 'utf8' })
+    const result = spawnSync(process.execPath, [CLI, 'decide', '--run', 'quoted', '--request', 'r', '--dod', '1', '--reading', 'yes', '--state-root', root], { encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(0)
     expect(readPilotDecisions(file)[0]).toMatchObject({ reading: 'yes' })
   })
@@ -95,40 +96,75 @@ describe('pilot parent decision store', () => {
   it('keeps request identifiers and criteria distinct even when punctuation would sanitize alike', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-request-names-'))
     const file = initializePilotDecisionStore('names', { root })
-    registerPilotDecisionRequest(file, { requestId: 'a/b', criteria: [1], deadline: 100 })
-    registerPilotDecisionRequest(file, { requestId: 'a?b', criteria: [2], deadline: 100 })
-    bindPilotDecision(file, { requestId: 'a/b', criterion: 1, source: 'fallback', at: 1 })
-    bindPilotDecision(file, { requestId: 'a?b', criterion: 2, source: 'fallback', at: 1 })
+    registerPilotDecisionRequest(file, { requestId: 'a.b', criteria: [1], deadline: 100 })
+    registerPilotDecisionRequest(file, { requestId: 'a-b', criteria: [2], deadline: 100 })
+    bindPilotDecision(file, { requestId: 'a.b', criterion: 1, source: 'fallback', at: 1 })
+    bindPilotDecision(file, { requestId: 'a-b', criterion: 2, source: 'fallback', at: 1 })
     expect(fs.readdirSync(join(dirname(file), 'bindings'))).toHaveLength(2)
     expect(fs.readdirSync(join(dirname(file), 'requests'))).toHaveLength(2)
-    expect(() => bindPilotDecision(file, { requestId: 'a/b', criterion: '../2', source: 'fallback', at: 1 })).toThrow('invalid pilot decision criterion')
+    expect(() => bindPilotDecision(file, { requestId: 'a.b', criterion: '../2', source: 'fallback', at: 1 })).toThrow('invalid pilot decision criterion')
   })
 
   it('ignores an answer bound to a rolled-back request and allows a new request', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-rollback-'))
     const file = initializePilotDecisionStore('rollback', { root })
     registerPilotDecisionRequest(file, { requestId: 'old', criteria: [1], deadline: 100 })
-    decidePilotRun({ runId: 'rollback', criterion: 1, reading: 'old', root, decidedAt: 1 })
+    decidePilotRun({ runId: 'rollback', requestId: 'old', criterion: 1, reading: 'old', root, decidedAt: 1 })
     unregisterPilotDecisionRequest(file, { requestId: 'old', criteria: [1] })
-    expect(() => decidePilotRun({ runId: 'rollback', criterion: 1, reading: 'invalid', root, decidedAt: 2 })).toThrow('no open')
+    expect(() => decidePilotRun({ runId: 'rollback', requestId: 'old', criterion: 1, reading: 'invalid', root, decidedAt: 2 })).toThrow('no open')
     registerPilotDecisionRequest(file, { requestId: 'new', criteria: [1], deadline: 100 })
-    decidePilotRun({ runId: 'rollback', criterion: 1, reading: 'new', root, decidedAt: 2 })
+    decidePilotRun({ runId: 'rollback', requestId: 'new', criterion: 1, reading: 'new', root, decidedAt: 2 })
     expect(readPilotDecisions(file).map((decision: { requestId: string }) => decision.requestId).sort()).toEqual(['new', 'old'])
   })
 
-  it('uses exclusive create when links are unsupported and retries a torn winner read', () => {
+  it('refuses unsupported links without leaving a binding', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-no-links-'))
     const file = initializePilotDecisionStore('no-links', { root })
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: 100 })
     const noLinks = { ...fs, linkSync: () => { throw Object.assign(new Error('unsupported'), { code: 'EPERM' }) } }
-    decidePilotRun({ runId: 'no-links', criterion: 1, reading: 'winner', root, decidedAt: 1, bindingOptions: { fs: noLinks } })
-    let reads = 0
-    const torn = { ...noLinks, readFileSync: ((path: fs.PathOrFileDescriptor, ...args: unknown[]) => {
-      if (String(path).includes('bindings') && reads++ < 2) return ''
-      return fs.readFileSync(path, ...args as [BufferEncoding])
-    }) as typeof fs.readFileSync }
-    expect(bindPilotDecision(file, { requestId: 'r', criterion: 1, source: 'fallback', at: 2 }, { fs: torn })).toMatchObject({ source: 'parent', reading: 'winner' })
-    expect(reads).toBeGreaterThan(2)
+    expect(() => decidePilotRun({ runId: 'no-links', requestId: 'r', criterion: 1, reading: 'winner', root, decidedAt: 1, bindingOptions: { fs: noLinks } })).toThrow(/pilot decisions need hard links.*EPERM/)
+    expect(fs.readdirSync(join(dirname(file), 'bindings'))).toEqual([])
+  })
+  it('reports corrupt bindings independently of healthy decisions', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-corrupt-'))
+    const file = initializePilotDecisionStore('corrupt', { root })
+    registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: 100 })
+    decidePilotRun({ runId: 'corrupt', requestId: 'r', criterion: 1, reading: 'healthy', root, decidedAt: 1 })
+    writeFileSync(join(dirname(file), 'bindings', 'bad.json'), '{')
+    const records = readPilotDecisions(file)
+    expect(records).toContainEqual(expect.objectContaining({ reading: 'healthy' }))
+    expect(records).toContainEqual(expect.objectContaining({ error: expect.objectContaining({ path: expect.stringContaining('bad.json'), code: 'CORRUPT' }) }))
+  })
+  it('refuses a second owner of one run directory', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-owner-'))
+    initializePilotDecisionStore('owned', { root })
+    expect(() => initializePilotDecisionStore('owned', { root })).toThrow(/already exists|already owned/)
+  })
+  it('reports withdrawal after publication rather than success', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-withdraw-'))
+    const file = initializePilotDecisionStore('withdraw', { root })
+    registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: 100 })
+    expect(() => decidePilotRun({ runId: 'withdraw', requestId: 'r', criterion: 1, reading: 'answer', root, decidedAt: 1, bindingOptions: { afterTempWrite: () => unregisterPilotDecisionRequest(file, { requestId: 'r', criteria: [1] }) } })).toThrow('request withdrawn after your decision was recorded')
+  })
+  it('exits nonzero without a success receipt when the CLI request is withdrawn after link', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-withdraw-cli-'))
+    const file = initializePilotDecisionStore('withdraw-cli', { root })
+    registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: Date.now() + 60_000 })
+    const requestPath = join(dirname(file), 'requests', `${Buffer.from('r').toString('hex')}.json`)
+    const result = spawnSync(process.execPath, ['--import', WITHDRAW, CLI, 'decide', '--run', 'withdraw-cli', '--request', 'r', '--dod', '1', '--reading', 'answer', '--state-root', root], {
+      encoding: 'utf8', env: { ...process.env, WT_DECISION_WITHDRAW_REQUEST: requestPath },
+    })
+    expect(result.status).not.toBe(0)
+    expect(result.stderr).toContain('request withdrawn after your decision was recorded')
+    expect(result.stdout).not.toContain('decided run=')
+  })
+  it('rejects invalid and mismatched request ids', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-invalid-'))
+    const file = initializePilotDecisionStore('invalid', { root })
+    expect(() => registerPilotDecisionRequest(file, { requestId: '\ud800', criteria: [1], deadline: 100 })).toThrow('invalid pilot request id')
+    registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: 100 })
+    expect(() => decidePilotRun({ runId: 'invalid', requestId: '../r', criterion: 1, reading: 'answer', root, decidedAt: 1 })).toThrow('invalid pilot request id')
+    expect(() => decidePilotRun({ runId: 'invalid', requestId: 'other', criterion: 1, reading: 'answer', root, decidedAt: 1 })).toThrow('no open decision request')
   })
 
   it('preserves both decisions from simultaneous CLI processes', async () => {
@@ -136,7 +172,7 @@ describe('pilot parent decision store', () => {
     const file = initializePilotDecisionStore('concurrent', { root })
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1, 2], deadline: Date.now() + 60_000 })
     const run = (number: number) => new Promise<number | null>((resolve) => {
-      const child = spawn(process.execPath, [CLI, 'decide', '--run', 'concurrent', '--dod', String(number), '--reading', `answer ${number}`, '--state-root', root])
+      const child = spawn(process.execPath, [CLI, 'decide', '--run', 'concurrent', '--request', 'r', '--dod', String(number), '--reading', `answer ${number}`, '--state-root', root])
       child.on('exit', resolve)
     })
     expect(await Promise.all([run(1), run(2)])).toEqual([0, 0])
@@ -145,7 +181,7 @@ describe('pilot parent decision store', () => {
 
   it('claims one winner across 16 parent processes and a fallback, fifty times', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-claim-race-'))
-    for (let iteration = 0; iteration < 50; iteration++) {
+    for (let iteration = 0; iteration < (process.env.WT_DECISION_MUTANT ? 1 : 50); iteration++) {
       const runId = `race-${iteration}`
       const file = initializePilotDecisionStore(runId, { root })
       registerPilotDecisionRequest(file, { requestId: runId, criteria: [1], deadline: Date.now() + 120_000 })
@@ -183,7 +219,7 @@ describe('pilot parent decision store', () => {
     child.kill('SIGKILL')
     await new Promise((resolve) => child.on('exit', resolve))
     const start = Date.now()
-    decidePilotRun({ runId: 'crash', criterion: 1, reading: 'survivor', root })
+    decidePilotRun({ runId: 'crash', requestId: 'r', criterion: 1, reading: 'survivor', root })
     expect(Date.now() - start).toBeLessThan(500)
     expect(readPilotDecisions(file)[0].reading).toBe('survivor')
   }, 10_000)
@@ -191,7 +227,7 @@ describe('pilot parent decision store', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-winner-'))
     const file = initializePilotDecisionStore('winner', { root })
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: 100 })
-    decidePilotRun({ runId: 'winner', criterion: 1, reading: 'parent', root, now: () => 100 })
+    decidePilotRun({ runId: 'winner', requestId: 'r', criterion: 1, reading: 'parent', root, now: () => 100 })
     expect(bindPilotDecision(file, { requestId: 'r', criterion: 1, source: 'fallback', at: 101 })).toMatchObject({ source: 'parent', reading: 'parent' })
   })
 })

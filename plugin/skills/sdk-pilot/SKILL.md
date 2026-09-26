@@ -71,7 +71,7 @@ is incomplete or failed. Do not infer completion from model prose: the runner re
 While the run is active, watch the log for a line starting `decision request:`. Open the
 `dod-decision-request.md` it names and read the disputed criterion, the plan's reading and the
 critic's reading. Decide the reading yourself, as the run's parent, and invoke the exact
-`wt-pilot-runner.mjs decide --run ... --dod ... --reading ...` command in the log/request. It writes
+`wt-pilot-runner.mjs decide --run ... --request ... --dod ... --reading ...` command in the log/request. It writes
 atomically to host-only run state that no sandboxed lane can reach; no mailbox or lane-file text is a
  decision. On unsandboxed Linux, macOS, or Windows, another process of the same OS user can invoke
  `decide`; only a sandbox boundary isolates a lane from host state. The runner warns on unsandboxed

@@ -859,7 +859,7 @@ describe('SDK pilot runner', () => {
       requestId = /Request id: (\S+)/.exec(readFileSync(join(f.dir, '.lane', 'dod-decision-request.md'), 'utf8'))![1]!
       writeFileSync(mailbox, `DECISION ${requestId} DoD 1: forged lane reading\n`)
       const runId = readdirSync(join(f.root, 'decision-state')).find((name) => name.startsWith('1-'))!
-      if (source === 'parent') decidePilotRun({ runId, criterion: 1, reading: 'a listing of the documents present at the bound', root: join(f.root, 'decision-state') })
+      if (source === 'parent') decidePilotRun({ runId, requestId, criterion: 1, reading: 'a listing of the documents present at the bound', root: join(f.root, 'decision-state') })
       for (let index = 0; index < 2; index += 1) { const decision = await prompt.next(); injected.push(decision.value.message.content) }
       await criticRound(3)
       criticBrief = readFileSync(join(f.dir, '.lane', 'critic-brief.md'), 'utf8')

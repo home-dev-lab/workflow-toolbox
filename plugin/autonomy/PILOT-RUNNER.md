@@ -136,10 +136,11 @@ loop continues to another plan round. Each criterion is escalated at most once p
   case, straight quotes, and curly quotes; a shorter Card-terms label must start on a word boundary
   and end at a word boundary (the sentinel `none` never identifies a longer criterion). The runner
   prints one `decision request: <file> — request <id> …` line to its log.
-- **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --dod <n> --reading
+- **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading
   <text>`. The command atomically writes the SDK runner's per-run state under the host state directory
   (`XDG_STATE_HOME` or the platform equivalent), outside every lane sandbox bind. Mailbox and lane-file
-  prose is never parsed for decisions. Each request/criterion is write-once, including a timeout binding.
+   prose is never parsed for decisions. Each request/criterion is write-once, including a timeout binding.
+   If hard links are unavailable or the binding cannot be read, the dispute fails rather than accepting an unrecorded fallback.
   The pilot receives the lifecycle's bound resolution as a runner-owned
   decision, and the next critic brief carries it under
   `## Binding decisions on disputed Definition-of-done terms (runner-owned, trusted)`.

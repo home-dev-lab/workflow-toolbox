@@ -6,6 +6,10 @@ import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const RUN_ID = /^[A-Za-z0-9._-]+$/
+const REQUEST_ID = /^[A-Za-z0-9._-]{1,128}$/
+function assertRequestId(requestId) {
+  if (typeof requestId !== 'string' || !REQUEST_ID.test(requestId)) throw new Error(`invalid pilot request id: ${String(requestId)}`)
+}
 let serial = 0
 
 export function pilotDecisionStateRoot({ env = process.env, platform = process.platform, home = homedir() } = {}) {
@@ -53,7 +57,7 @@ function atomicJson(file, value) {
 
 function storeDir(file, kind) { return join(dirname(file), kind) }
 function validCriterion(criterion) { return Number.isSafeInteger(criterion) && criterion > 0 }
-// Hex encodes UTF-8 bytes rather than replacing punctuation: distinct identifiers cannot alias.
+// Hex retains stable filenames for existing ASCII ids; the validated alphabet makes UTF-8 encoding injective.
 function requestFile(file, requestId) { return join(storeDir(file, 'requests'), `${Buffer.from(String(requestId)).toString('hex')}.json`) }
 function bindingFile(file, requestId, criterion) { return join(storeDir(file, 'bindings'), `${Buffer.from(String(requestId)).toString('hex')}-${criterion}.json`) }
 function requests(file) {
@@ -65,17 +69,23 @@ function activeRequest(file, criterion) {
 }
 function bindings(file) {
   return readdirSync(storeDir(file, 'bindings')).filter((name) => name.endsWith('.json'))
-    .map((name) => readBinding(join(storeDir(file, 'bindings'), name)))
+    .map((name) => {
+      const path = join(storeDir(file, 'bindings'), name)
+      try { return readBinding(path) } catch (error) {
+        return { error: { path, code: error.code ?? 'CORRUPT', message: error.message } }
+      }
+    })
 }
 function readBinding(path, fs = hostFs) {
-  const until = Date.now() + 250
-  for (;;) {
-    try {
-      const record = JSON.parse(fs.readFileSync(path, 'utf8'))
-      if (record?.requestId && record?.source && record?.boundAt) return record
-    } catch (error) { if (error.code && error.code !== 'ENOENT') throw error }
-    if (Date.now() >= until) throw new Error(`pilot decision binding incomplete: ${path}`)
+  let record
+  try { record = JSON.parse(fs.readFileSync(path, 'utf8')) } catch (error) {
+    if (error instanceof SyntaxError) throw Object.assign(new Error(`corrupt pilot decision binding: ${path}`), { code: 'CORRUPT', cause: error })
+    throw error
   }
+  if (typeof record?.requestId !== 'string' || !REQUEST_ID.test(record.requestId) || !['parent', 'fallback', 'stopped'].includes(record?.source) || !record?.boundAt || !validCriterion(record.criterion) ||
+    (record.source === 'parent' && (record.decision?.requestId !== record.requestId || record.decision?.criterion !== record.criterion || typeof record.decision?.reading !== 'string' || !record.decision.reading.trim() || !record.decision?.decidedAt)) ||
+    (record.source !== 'parent' && !record.resolution)) throw Object.assign(new Error(`corrupt pilot decision binding: ${path}`), { code: 'CORRUPT' })
+  return record
 }
 
 function claimBinding(file, record, { fs = hostFs, afterTempWrite = () => {} } = {}) {
@@ -88,15 +98,7 @@ function claimBinding(file, record, { fs = hostFs, afterTempWrite = () => {} } =
     afterTempWrite(temporary)
     try { fs.linkSync(temporary, final) } catch (error) {
       if (error.code === 'EEXIST') return readBinding(final, fs)
-      if (!['EPERM', 'ENOTSUP', 'EXDEV'].includes(error.code)) throw error
-      let fd
-      try {
-        fd = fs.openSync(final, 'wx', 0o600)
-      } catch (openError) {
-        if (openError.code === 'EEXIST') return readBinding(final, fs)
-        throw openError
-      }
-      try { fs.writeFileSync(fd, text); fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
+      throw new Error(`pilot decisions need hard links on the state filesystem: ${error.code ?? 'UNKNOWN'} at ${final}`, { cause: error })
     }
     return record
   } finally { fs.rmSync(temporary, { force: true }) }
@@ -108,8 +110,26 @@ function resolutionOf(record) {
     : record.resolution
 }
 
+export function readPilotBinding(file, requestId, criterion) {
+  assertRequestId(requestId)
+  if (!validCriterion(criterion)) throw new Error('invalid pilot decision criterion')
+  try {
+    const record = readBinding(bindingFile(file, requestId, criterion))
+    if (record.requestId !== requestId || record.criterion !== criterion) throw new Error('binding identity mismatch')
+    return resolutionOf(record)
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+}
+
 export function initializePilotDecisionStore(runId, options = {}) {
   const file = pilotDecisionStateFile(runId, options)
+  mkdirSync(dirname(dirname(file)), { recursive: true, mode: 0o700 })
+  try { mkdirSync(dirname(file), { mode: 0o700 }) } catch (error) {
+    if (error.code === 'EEXIST') throw new Error(`pilot decision run directory already exists: ${dirname(file)}`, { cause: error })
+    throw error
+  }
   atomicJson(file, { version: 1, runId, requests: {}, decisions: {}, bindings: {} })
   mkdirSync(storeDir(file, 'requests'), { recursive: true, mode: 0o700 })
   mkdirSync(storeDir(file, 'bindings'), { recursive: true, mode: 0o700 })
@@ -117,6 +137,7 @@ export function initializePilotDecisionStore(runId, options = {}) {
 }
 
 export function registerPilotDecisionRequest(file, { requestId, criteria, deadline }) {
+  assertRequestId(requestId)
   if (!criteria.every(validCriterion)) throw new Error('invalid pilot decision criterion')
   for (const request of requests(file)) {
     if (request.active && request.criteria.some((criterion) => criteria.includes(criterion))) atomicJson(requestFile(file, request.requestId), { ...request, active: false })
@@ -131,6 +152,7 @@ export function unregisterPilotDecisionRequest(file, { requestId, criteria }) {
 }
 
 export function bindPilotDecision(file, { requestId, criterion, source, at, resolution }, options = {}) {
+  assertRequestId(requestId)
   if (!validCriterion(criterion)) throw new Error('invalid pilot decision criterion')
   if (activeRequest(file, criterion)?.requestId !== requestId) throw new Error(`no open decision request for DoD ${criterion}`)
   const boundAt = new Date(at).toISOString()
@@ -138,19 +160,25 @@ export function bindPilotDecision(file, { requestId, criterion, source, at, reso
 }
 
 export function readPilotDecisions(file) {
-  return bindings(file).filter((record) => record.source === 'parent').map((record) => ({ ...record.decision }))
+  return bindings(file).map((record) => {
+    if (record.error) return record
+    if (record.source === 'parent') return { ...record.decision }
+    return null
+  }).filter(Boolean)
 }
 
-export function decidePilotRun({ runId, criterion, reading, now = Date.now, decidedAt: injectedAt, bindingOptions, ...options }) {
+export function decidePilotRun({ runId, requestId, criterion, reading, now = Date.now, decidedAt: injectedAt, bindingOptions, ...options }) {
+  assertRequestId(requestId)
   if (!validCriterion(criterion)) throw new Error('--dod must be a positive integer')
   if (typeof reading !== 'string' || !reading.trim()) throw new Error('--reading must be non-empty')
   const file = pilotDecisionStateFile(runId, options)
   const decidedAt = injectedAt === undefined ? now() : injectedAt
   const request = activeRequest(file, criterion)
-  if (!request) throw new Error(`run ${runId} has no open decision request for DoD ${criterion}`)
+  if (!request || request.requestId !== requestId) throw new Error(`run ${runId} has no open decision request for DoD ${criterion} and request ${requestId}`)
   if (decidedAt > request.deadline) throw new Error(`late: deadline ${new Date(request.deadline).toISOString()}`)
   const decision = { requestId: request.requestId, criterion, reading: reading.trim(), decidedAt: new Date(decidedAt).toISOString(), boundAt: new Date(decidedAt).toISOString() }
   const winner = claimBinding(file, { requestId: request.requestId, criterion, source: 'parent', boundAt: decision.boundAt, decision }, bindingOptions)
+  if (activeRequest(file, criterion)?.requestId !== requestId) throw new Error('request withdrawn after your decision was recorded')
   // Only the successful publisher receives its original object back.
   if (winner.decision === decision) return { file, decision }
   throw new Error(`already bound (${winner.source}) at ${winner.boundAt}`)
