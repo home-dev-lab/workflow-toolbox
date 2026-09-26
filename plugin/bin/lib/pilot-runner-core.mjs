@@ -17,7 +17,7 @@ import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 import { DOD_DECISION_WAIT_MS, FALLBACK_RULE } from './lifecycle-dod-dispute.mjs'
-import { bindPilotDecision, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
+import { bindPilotDecision, displayedDecisionStateRoot, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
 import { laneUnsandboxedAtStart } from './host/lane-sandbox.mjs'
 import { sandboxWritablePaths } from './host/sandbox-extra-paths.mjs'
 import { pathWithin } from './host/path-within.mjs'
@@ -315,7 +315,7 @@ function describeExecutorVariants(models, env) {
 function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {} }) {
   const minutes = Math.ceil((overrides.waitMs ?? DOD_DECISION_WAIT_MS) / 60_000)
   const readDecisions = overrides.readDecisions ?? (() => readPilotDecisions(stateFile))
-  const command = pilotDecisionCommand(cli, runId, process.execPath, root)
+  const command = (suffix) => pilotDecisionCommand(cli, runId, process.execPath, root, undefined, suffix)
   return {
     decisionCommand: command,
     onDecisionRequest: ({ criteria, requestId, deadline }) => {
@@ -323,7 +323,7 @@ function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {
     },
     onPublished: ({ file, criteria, requestId }) => {
       const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
-      log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes ${command} --dod <n> --reading <text> within ${minutes} min; otherwise ${FALLBACK_RULE}`)
+      log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes within ${minutes} min (otherwise ${FALLBACK_RULE}):\n${command(' --dod <n> --reading <text>')}`)
     },
     rollbackDecisionRequest: ({ criteria, requestId }) => unregisterPilotDecisionRequest(stateFile, { criteria, requestId }),
     onBound: (dispute) => {
@@ -477,7 +477,7 @@ export async function runPilot(options, dependencies) {
   const abortController = new AbortController()
   let timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
-  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: decisionStateRoot === defaultDecisionStateRoot ? null : decisionStateRoot, overrides: lifecycleOptions.dodDecisions })
+  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: totals.input + totals.cache_creation + totals.output, tool_names: [...new Set(tools)] })
   const persistUsage = () => atomicWrite(usagePath, `${JSON.stringify(currentUsage(), null, 2)}\n`, writeFile)

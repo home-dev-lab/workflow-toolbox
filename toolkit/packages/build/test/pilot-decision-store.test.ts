@@ -1,11 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process'
+import * as fs from 'node:fs'
 import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, posix, win32 } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { bindPilotDecision, decidePilotRun, initializePilotDecisionStore, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
+import { bindPilotDecision, decidePilotRun, displayedDecisionStateRoot, initializePilotDecisionStore, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
 const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-pilot-runner.mjs', import.meta.url))
 
@@ -73,6 +74,128 @@ describe('pilot parent decision store', () => {
     const result = spawnSync(process.execPath, [CLI, 'decide', '--run', 'quoted', '--dod', '1', '--reading', 'yes', '--state-root', root], { encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(0)
     expect(readPilotDecisions(file)[0]).toMatchObject({ reading: 'yes' })
+  })
+
+  it('prints two separately copyable complete Windows commands', () => {
+    expect(pilotDecisionCommand('C:\\runner.mjs', 'run', 'C:\\node.exe', 'D:\\state', 'win32', ' --dod 2 --reading <text>')).toBe(
+      "'C:\\node.exe' 'C:\\runner.mjs' decide --run 'run' --state-root 'D:\\state' --dod 2 --reading <text>\nPowerShell: & 'C:\\node.exe' 'C:\\runner.mjs' decide --run 'run' --state-root 'D:\\state' --dod 2 --reading <text>",
+    )
+  })
+
+  it('prints the root even when XDG_STATE_HOME supplied the computed default', () => {
+    const env = { XDG_STATE_HOME: '/custom/state' }
+    const root = pilotDecisionStateRoot({ platform: 'linux', env, home: '/home/u' })
+    expect(displayedDecisionStateRoot(root, root, { platform: 'linux', env })).toBe(root)
+    expect(pilotDecisionCommand('/runner', 'run', '/node', displayedDecisionStateRoot(root, root, { platform: 'linux', env }), 'linux', ' --dod 1 --reading yes')).toContain("--state-root '/custom/state/workflow-toolbox/pilot-runs' --dod 1 --reading yes")
+    expect(displayedDecisionStateRoot(root, root, { platform: 'linux', env: {} })).toBeNull()
+    expect(displayedDecisionStateRoot(root, root, { platform: 'linux', env: {}, injected: true })).toBe(root)
+  })
+
+  it('removes a newly opened lock if writing its owner fails', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-write-fail-'))
+    const file = join(root, 'run', 'dod-decisions.json')
+    expect(() => initializePilotDecisionStore('run', { root, lockOptions: {
+      fs: { ...fs, writeFileSync: () => { throw new Error('ENOSPC') } },
+    } })).toThrow('ENOSPC')
+    expect(existsSync(`${file}.lock`)).toBe(false)
+  })
+
+  it('does not overwrite a new writer when two reclaimers interleave with writers B and C', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-reclaim-race-'))
+    const file = join(root, 'run', 'dod-decisions.json')
+    fs.mkdirSync(dirname(file))
+    const lock = `${file}.lock`
+    const record = (token: string, pid: number) => JSON.stringify({ token, pid, start: pid })
+    writeFileSync(lock, record('dead', 400))
+    let switched = false
+    let cAcquired = false
+    const injected = {
+      ...fs,
+      readFileSync: ((path: fs.PathLike, ...args: unknown[]) => {
+        const observed = fs.readFileSync(path, ...args as [BufferEncoding])
+        if (path === lock && !switched) {
+          switched = true
+          // Reclaimer 2 removes the dead inode; B acquires before A renames.
+          fs.renameSync(lock, `${lock}.removed`)
+          writeFileSync(lock, record('B', 500))
+        }
+        return observed
+      }) as typeof fs.readFileSync,
+      linkSync: (source: fs.PathLike, target: fs.PathLike) => {
+        if (!cAcquired) {
+          cAcquired = true
+          // C wins the vacant pathname during A's attempted restoration. It must wait
+          // for displaced B before entering its own update.
+          writeFileSync(lock, record('C', 600), { flag: 'wx' })
+        }
+        fs.linkSync(source, target)
+      },
+    }
+    expect(() => initializePilotDecisionStore('run', { root, lockOptions: {
+      fs: injected, token: 'A', pid: 700, startTime: (pid: number) => pid,
+      pidExists: (pid: number) => pid !== 400,
+      now: (() => { let n = 0; return () => n += 1000 })(), pause: () => {},
+    } })).toThrow('timed out')
+    expect(cAcquired).toBe(true)
+    expect(existsSync(file)).toBe(false) // A never entered while B's displaced owner remained live.
+    expect(readFileSync(lock, 'utf8')).toBe(record('C', 600))
+  })
+
+  it('never reclaims a live owner merely because its lock is old', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-live-lock-'))
+    const file = join(root, 'run', 'dod-decisions.json')
+    fs.mkdirSync(dirname(file))
+    const lock = `${file}.lock`
+    writeFileSync(lock, JSON.stringify({ token: 'B', pid: 500, start: 500 }))
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(lock, old, old)
+    expect(() => initializePilotDecisionStore('run', { root, lockOptions: { pidExists: () => true, startTime: () => 500, now: (() => { let n = 0; return () => n += 36_000 })(), pause: () => {} } })).toThrow('timed out')
+    expect(readFileSync(lock, 'utf8')).toContain('"token":"B"')
+  })
+
+  it('uses the age fallback for an old unreadable owner record', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-unreadable-lock-'))
+    const file = join(root, 'run', 'dod-decisions.json')
+    fs.mkdirSync(dirname(file))
+    const lock = `${file}.lock`
+    writeFileSync(lock, 'unreadable')
+    const old = new Date(Date.now() - 60_000)
+    utimesSync(lock, old, old)
+    let reclaimed = false
+    const injected = {
+      ...fs,
+      openSync: ((path: fs.PathLike, ...args: unknown[]) => {
+        const fd = fs.openSync(path, ...args as [string])
+        if (path === lock) reclaimed = true
+        return fd
+      }) as typeof fs.openSync,
+      readFileSync: ((path: fs.PathLike, ...args: unknown[]) => {
+        if ((path === lock && !reclaimed) || String(path).endsWith('.stale')) throw Object.assign(new Error('unreadable'), { code: 'EACCES' })
+        return fs.readFileSync(path, ...args as [BufferEncoding])
+      }) as typeof fs.readFileSync,
+    }
+    initializePilotDecisionStore('run', { root, lockOptions: { fs: injected } })
+    expect(existsSync(lock)).toBe(false)
+  })
+
+  it('keeps a new lock holder outside the critical section until a displaced live writer exits', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-displaced-owner-'))
+    const file = join(root, 'run', 'dod-decisions.json')
+    fs.mkdirSync(dirname(file))
+    const lock = `${file}.lock`
+    const displaced = `${lock}.A.stale`
+    writeFileSync(displaced, JSON.stringify({ token: 'B', pid: 500, start: 500 }))
+    let inside = 1
+    let maximum = inside
+    let pauses = 0
+    initializePilotDecisionStore('run', { root, lockOptions: {
+      token: 'C', pid: 600, startTime: (pid: number) => pid, pidExists: () => true,
+      pause: () => { pauses++; inside--; fs.rmSync(displaced) },
+    } })
+    inside++
+    maximum = Math.max(maximum, inside)
+    expect(pauses).toBe(1)
+    expect(maximum).toBe(1)
   })
 
   it('preserves both decisions from simultaneous CLI processes', async () => {

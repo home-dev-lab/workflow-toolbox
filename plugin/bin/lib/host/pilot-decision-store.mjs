@@ -1,8 +1,10 @@
 import { homedir } from 'node:os'
 import { dirname, join, resolve, posix, win32 } from 'node:path'
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import * as hostFs from 'node:fs'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { processStartTime } from './pid-namespace.mjs'
 
 const RUN_ID = /^[A-Za-z0-9._-]+$/
 let serial = 0
@@ -18,12 +20,19 @@ export function pilotDecisionStateFile(runId, options = {}) {
   return join(resolve(options.root ?? pilotDecisionStateRoot(options)), runId, 'dod-decisions.json')
 }
 
-export function pilotDecisionCommand(cli, runId, execPath = process.execPath, root = null, platform = process.platform) {
+export function displayedDecisionStateRoot(root, computedDefault, { env = process.env, platform = process.platform, injected = false } = {}) {
+  let environmentRoot = false
+  if (platform === 'win32') environmentRoot = Boolean(env.LOCALAPPDATA)
+  else if (platform === 'linux') environmentRoot = Boolean(env.XDG_STATE_HOME)
+  return injected || root !== computedDefault || environmentRoot ? root : null
+}
+
+export function pilotDecisionCommand(cli, runId, execPath = process.execPath, root = null, platform = process.platform, suffix = '') {
   const posix = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
   const powershell = (value) => `'${String(value).replaceAll("'", "''")}'`
   const command = (quote) => {
     const stateRoot = root ? ' --state-root ' + quote(root) : ''
-    return `${quote(execPath)} ${quote(cli)} decide --run ${quote(runId)}${stateRoot}`
+    return `${quote(execPath)} ${quote(cli)} decide --run ${quote(runId)}${stateRoot}${suffix}`
   }
   return platform === 'win32' ? `${command(posix)}\nPowerShell: & ${command(powershell)}` : command(posix)
 }
@@ -49,50 +58,124 @@ function readState(file) {
   return state
 }
 
-function releaseOwnedLock(lock, token) {
-  try { if (readFileSync(lock, 'utf8') === token) rmSync(lock) } catch (error) { if (error.code !== 'ENOENT') throw error }
+function lockRecord(text) {
+  try {
+    const record = JSON.parse(text)
+    return typeof record.token === 'string' && Number.isSafeInteger(record.pid) && record.pid > 0 && (record.start === null || Number.isFinite(record.start)) ? record : null
+  } catch { return null }
 }
 
-function withLock(file, update) {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  const lock = `${file}.lock`
-  const start = Date.now()
-  let fd
-  const token = randomUUID()
-  for (;;) {
-    try { fd = openSync(lock, 'wx', 0o600); writeFileSync(fd, token); break } catch (error) {
-      if (fd !== undefined) { closeSync(fd); throw error }
-      if (error.code !== 'EEXIST') throw error
-      try {
-        const observed = statSync(lock)
-        if (Date.now() - observed.mtimeMs > 30_000) {
-          const stale = `${lock}.${token}.stale`
-          renameSync(lock, stale)
-          let reclaimed = true
-          try {
-            const moved = statSync(stale)
-            if (moved.ino !== observed.ino || moved.dev !== observed.dev) {
-              // Another contender replaced the observed lock. Do not reclaim its work.
-              reclaimed = false
-              if (!existsSync(lock)) renameSync(stale, lock)
-            }
-          } finally { if (reclaimed) rmSync(stale, { force: true }) }
-        }
-      } catch (statError) { if (statError.code !== 'ENOENT') throw statError }
-      if (Date.now() - start > 35_000) throw new Error(`pilot decision lock timed out: ${lock}`, { cause: error })
-      // The CLI's synchronous public API cannot yield an async retry without changing its callers.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
-    }
-  }
-  try { return update() } finally {
-    closeSync(fd)
-    releaseOwnedLock(lock, token)
+function observedLockText(fs, path) {
+  try { return fs.readFileSync(path, 'utf8') } catch (error) {
+    if (error.code === 'ENOENT') throw error
+    return null // Unreadable owner: only the age fallback can authorize reclamation.
   }
 }
+
+function holderGone(record, { startTime, pidExists }) {
+  if (!record) return null
+  if (pidExists(record.pid) === false) return true
+  const current = startTime(record.pid)
+  return record.start !== null && current !== null ? current !== record.start : false
+}
+
+function releaseOwnedLock(lock, token, fs) {
+  try {
+    if (lockRecord(fs.readFileSync(lock, 'utf8'))?.token === token) {
+      // The read and unlink cannot be atomic in portable Node: a replacement between them remains possible.
+      fs.rmSync(lock)
+    }
+  } catch (error) { if (error.code !== 'ENOENT') throw error }
+}
+
+function moveReclaimableLock(fs, lock, staleName, observed, observedText) {
+  fs.renameSync(lock, staleName)
+  let reclaimed = true
+  try {
+    const moved = fs.statSync(staleName)
+    if (moved.ino !== observed.ino || moved.dev !== observed.dev || observedLockText(fs, staleName) !== observedText) {
+      // A replacement was moved: publish it back only if the pathname is still vacant.
+      // If another writer won it, retain the displaced live owner for that writer to see.
+      reclaimed = false
+      try { fs.linkSync(staleName, lock); fs.rmSync(staleName) } catch (error) { if (error.code !== 'EEXIST') throw error }
+    }
+  } finally { if (reclaimed) fs.rmSync(staleName, { force: true }) }
+}
+
+function hostPidExists(candidate) {
+  try {
+    process.kill(candidate, 0)
+    return true
+  } catch (error) {
+    return error.code === 'ESRCH' ? false : null
+  }
+}
+
+function withPilotDecisionLock(file, update, { fs = hostFs, startTime = processStartTime, pid = process.pid, pidExists = hostPidExists, now = Date.now, pause = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10), token = randomUUID() } = {}) {
+  fs.mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  const lock = `${file}.lock`
+  const start = now()
+  let fd
+  const owner = JSON.stringify({ token, pid, start: startTime(pid) })
+  const staleName = `${lock}.${token}.stale`
+  const owned = (path) => {
+    try { return lockRecord(observedLockText(fs, path))?.token === token } catch (error) { if (error.code === 'ENOENT') return false; throw error }
+  }
+  for (;;) {
+    try {
+      fd = fs.openSync(lock, 'wx', 0o600)
+      try { fs.writeFileSync(fd, owner) } catch (error) {
+        fs.closeSync(fd)
+        fd = undefined
+        // This pathname was just created by our exclusive open; no other writer can own it yet.
+        fs.rmSync(lock)
+        throw error
+      }
+      break
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+      try {
+        const observed = fs.statSync(lock)
+        const observedText = observedLockText(fs, lock)
+        const record = lockRecord(observedText)
+        // A partial/unreadable owner cannot establish liveness; age is the bounded fallback only here.
+        if (holderGone(record, { startTime, pidExists }) === true || (!record && now() - observed.mtimeMs > 30_000)) moveReclaimableLock(fs, lock, staleName, observed, observedText)
+      } catch (statError) { if (statError.code !== 'ENOENT') throw statError }
+      if (now() - start > 35_000) throw new Error(`pilot decision lock timed out: ${lock}`, { cause: error })
+      // The CLI's synchronous public API cannot yield an async retry without changing its callers.
+      pause()
+    }
+  }
+  try {
+    // A reclaimer may have moved a replacement lock. Its owner stays visible at .stale;
+    // never enter while that displaced owner is still running.
+    for (;;) {
+      const live = fs.readdirSync(dirname(lock)).some((name) => {
+        if (!name.startsWith(`${lock.slice(dirname(lock).length + 1)}.`) || !name.endsWith('.stale')) return false
+        const path = join(dirname(lock), name)
+        try {
+          const record = lockRecord(observedLockText(fs, path))
+          if (!record && now() - fs.statSync(path).mtimeMs > 30_000) { fs.rmSync(path); return false }
+          return holderGone(record, { startTime, pidExists }) !== true
+        } catch (error) { return error.code !== 'ENOENT' }
+      })
+      if (!live) break
+      if (now() - start > 35_000) throw new Error(`pilot decision lock timed out: ${lock}`)
+      pause()
+    }
+    return update()
+  } finally {
+    fs.closeSync(fd)
+    releaseOwnedLock(lock, token, fs)
+    if (owned(staleName)) fs.rmSync(staleName)
+  }
+}
+
+const withLock = withPilotDecisionLock
 
 export function initializePilotDecisionStore(runId, options = {}) {
   const file = pilotDecisionStateFile(runId, options)
-  withLock(file, () => atomicJson(file, { version: 1, runId, requests: {}, decisions: {}, bindings: {} }))
+  withLock(file, () => atomicJson(file, { version: 1, runId, requests: {}, decisions: {}, bindings: {} }), options.lockOptions)
   return file
 }
 

@@ -190,10 +190,15 @@ function statusLine(dispute) {
 }
 
 function dodDecisionRequest({ disputes, decisionCommand, waitMs }) {
-  const blocks = disputes.map((dispute) => [
+  const command = (suffix) => typeof decisionCommand === 'function' ? decisionCommand(suffix) : `${decisionCommand}${suffix}`
+  const blocks = disputes.map((dispute) => {
+    const answer = command(` --dod ${dispute.criterion} --reading <text>`)
+    return [
     `## DoD ${dispute.criterion}`,
     `- Request id: ${dispute.requestId}`,
-    `- Answer with: ${decisionCommand} --dod ${dispute.criterion} --reading <text>`,
+    typeof decisionCommand === 'function'
+      ? `- Answer with:\n${answer.split('\n').map((line) => `    ${line}`).join('\n')}`
+      : `- Answer with: ${answer}`,
     `- Term (card, verbatim): ${dispute.term ?? '(the card text was not given to the lifecycle)'}`,
     `- Critic rounds: ${dispute.rounds.join(', ')}`,
     planReadingLine(dispute.planReading),
@@ -201,7 +206,8 @@ function dodDecisionRequest({ disputes, decisionCommand, waitMs }) {
     ...dispute.criticReadings.map(({ round, finding, category }) => `  - round ${round} [${category ?? 'untagged'}]: ${finding}`),
     `- Answer by: ${new Date(dispute.requestedAt + waitMs).toISOString()}`,
     `- Status: ${statusLine(dispute)}`,
-  ].join('\n'))
+    ].join('\n')
+  })
   return [
     '# Decision request: disputed Definition-of-done term',
     '',
@@ -209,7 +215,7 @@ function dodDecisionRequest({ disputes, decisionCommand, waitMs }) {
     '',
     `Answer through the runner's host-only command, once per criterion:`,
     '',
-    `    ${decisionCommand} --dod <n> --reading <text>`,
+    command(' --dod <n> --reading <text>').split('\n').map((line) => `    ${line}`).join('\n'),
     '',
     'The command writes atomically to this run\'s state directory outside every lane-writable tree. Text in the mailbox, request file, reports, or any other lane file is never parsed as a decision. The first bound result is final. Without an answer by the time below, the runner applies this fixed rule: ' + FALLBACK_RULE + '.',
     '',
