@@ -84,13 +84,14 @@ async function runAction() {
     write('opencode.pid', `${process.pid}\n`)
     return sleep(30_000)
   }
-  if (action.includes('echo $$ > "$PWD/opencode.pid"; sleep 30')) {
+  if (action === 'echo $$ > "$PWD/opencode.pid"; sleep 30') {
     write('opencode.pid', `${process.pid}\n`)
     return sleep(30_000)
   }
-  if (action.includes('echo $$ > "$PWD/opencode.pid"; sleep 120')) {
+  const longWorker = /^echo \$\$ > "\$PWD\/opencode\.pid"; sleep (\d+)$/.exec(action)
+  if (longWorker) {
     write('opencode.pid', `${process.pid}\n`)
-    return sleep(120_000)
+    return sleep(Number(longWorker[1]) * 1000)
   }
   if (action.includes('IFS= read -r x')) {
     await sleep(200)
