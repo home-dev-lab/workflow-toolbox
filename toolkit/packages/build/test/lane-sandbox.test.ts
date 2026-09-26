@@ -276,13 +276,82 @@ describe('lane sandbox plan — codex home (H3)', () => {
     const remapPrivate = args.flatMap((v, i) => (v === '--bind-try' && args[i + 2] === codexHome ? [args[i + 1]!] : []))
     expect(remapPrivate.length).toBe(1)
     expect(remapPrivate[0]).not.toBe(codexHome)
-    // CODEX_HOME points the companion at the private home.
+    // CODEX_HOME points the companion at the private home, by its INSIDE path: the outside path lives
+    // under the runtime dir, which the sandbox never binds (regression shipped in 0.188.0).
     const codexHomeIdx = args.indexOf('CODEX_HOME')
     expect(codexHomeIdx).toBeGreaterThan(-1)
     expect(args[codexHomeIdx - 1]).toBe('--setenv')
-    expect(args[codexHomeIdx + 1]).toBe(remapPrivate[0])
+    expect(args[codexHomeIdx + 1]).toBe(codexHome)
+    expect(args[codexHomeIdx + 1]).not.toBe(remapPrivate[0])
     expect(fs.copied.map(([a]) => a)).toContain(`${codexHome}/auth.json`)
     expect(p.authWriteback).toMatchObject({ to: `${codexHome}/auth.json` })
+  })
+})
+
+// Every path the plan hands the child through --setenv must EXIST inside the sandbox: the inside
+// path of a bind or a remap, a tmpfs, or a created --dir. A host path the sandbox never binds (the
+// per-run runtime dir under /run/user/<uid>, hidden by design) is absent in there, and the CLI fails
+// on it — codex exited 1 on "CODEX_HOME points to ... but that path does not exist" (0.188.0).
+describe('lane sandbox plan — every --setenv path exists inside the sandbox', () => {
+  const MOUNT_FLAGS = new Set(['--bind', '--bind-try', '--ro-bind', '--ro-bind-try', '--dev-bind', '--dev-bind-try'])
+  const beforeCommand = (args: string[]) => args.slice(0, args.indexOf('--') < 0 ? args.length : args.indexOf('--'))
+  function insideRoots(args: string[]): { mounts: string[], dirs: string[] } {
+    const mounts: string[] = []
+    const dirs: string[] = []
+    for (let i = 0; i < args.length; i += 1) {
+      if (MOUNT_FLAGS.has(args[i]!)) mounts.push(args[i + 2]!)
+      else if (['--tmpfs', '--proc', '--dev'].includes(args[i]!)) mounts.push(args[i + 1]!)
+      else if (args[i] === '--dir') dirs.push(args[i + 1]!)
+    }
+    return { mounts, dirs }
+  }
+  function setenvPaths(args: string[]): Array<[string, string]> {
+    return args.flatMap((v, i) => (v === '--setenv' && String(args[i + 2]).startsWith('/') ? [[args[i + 1]!, args[i + 2]!] as [string, string]] : []))
+  }
+  function expectAllInside(args: string[]) {
+    const prefix = beforeCommand(args)
+    const { mounts, dirs } = insideRoots(prefix)
+    const pairs = setenvPaths(prefix)
+    expect(pairs.length).toBeGreaterThan(0)
+    for (const [name, value] of pairs) {
+      const inside = dirs.includes(value) || mounts.some((root) => value === root || value.startsWith(`${root}/`))
+      expect(inside, `--setenv ${name} ${value} is not under any inside path (${[...mounts, ...dirs].join(', ')})`).toBe(true)
+    }
+  }
+  const codexHome = `${HOME}/.codex`
+  const codexPlan = (env: Record<string, string>) => {
+    const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: JSON.stringify({ tokens: { a: 1 } }) }, [HOME, '/work/tree', codexHome])
+    return sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin', ...env }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: listening(fs), runtimeParent: '/run/user/1000', fs })
+  }
+
+  it('codex: CODEX_HOME names the remapped ~/.codex, never the per-run dir under the runtime parent', () => {
+    for (const env of [{}, { CLAUDE_PLUGIN_DATA: '/data/codex-broker' }]) {
+      const [, args] = codexPlan(env).wrap('/usr/bin/node', [])
+      expectAllInside(args)
+      const value = args[args.indexOf('CODEX_HOME') + 1]!
+      expect(value).toBe(codexHome)
+      expect(value.startsWith('/run/user/1000/')).toBe(false)
+    }
+  })
+
+  it('codex with a user-set CODEX_HOME exports none (the user value passes through unchanged)', () => {
+    const [, args] = codexPlan({ CODEX_HOME: '/opt/codexhome' }).wrap('/usr/bin/node', [])
+    expect(args.includes('CODEX_HOME')).toBe(false)
+  })
+
+  it('opencode: every --setenv path is inside, and each private dir is remapped onto the XDG path opencode reads', () => {
+    const config = `${HOME}/.config/opencode`
+    const share = `${HOME}/.local/share/opencode`
+    for (const [env, dataRoot] of [[{ HOME, PATH: '/usr/bin' }, `${HOME}/.local/share`], [{ HOME, PATH: '/usr/bin', XDG_DATA_HOME: '/xdg/data', XDG_CACHE_HOME: '/xdg/cache', XDG_STATE_HOME: '/xdg/state' }, '/xdg/data']] as const) {
+      const shareDir = `${dataRoot}/opencode`
+      const fs = fakeFs({ [`${shareDir}/auth.json`]: JSON.stringify({ openai: { type: 'oauth' } }) }, [config, share, HOME, '/work/tree'])
+      const [, args] = plan({ fs, env, args: ['run', 'x', '--model', 'openai/gpt-5.6-luna'], runtimeParent: '/run/user/1000' }).wrap('opencode', ['run'])
+      expectAllInside(args)
+      const remapInside = (outsideTail: string) => args.flatMap((v, i) => (v === '--bind-try' && String(args[i + 1]).startsWith('/run/user/1000/') && String(args[i + 1]).endsWith(outsideTail) ? [args[i + 2]!] : []))
+      expect(remapInside('/oc-share')).toEqual([shareDir])
+      expect(remapInside('/oc-cache')).toEqual([`${'XDG_CACHE_HOME' in env ? '/xdg/cache' : `${HOME}/.cache`}/opencode`])
+      expect(remapInside('/oc-state')).toEqual([`${'XDG_STATE_HOME' in env ? '/xdg/state' : `${HOME}/.local/state`}/opencode`])
+    }
   })
 })
 
