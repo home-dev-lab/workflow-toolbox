@@ -24,6 +24,12 @@ const CONSENT_PROJECTS = [
   { name: 'project narrows', settings: { env: { WT_EXECUTOR_LANE_CONSENT: 'false' } } },
 ]
 const CONSENT_MATRIX_TIMEOUT_MS = CHILD_TIMEOUT_MS * CONSENT_ACCOUNTS.length * CONSENT_PROJECTS.length + 15_000
+// This one test chains four real spawns (installer, launcher, its own opencode/wt-suite-lock
+// children, and a final help child) plus a 3s poll loop. Run 36239956154 timed it at >20s on a
+// GitHub Actions Windows runner (whole file: 278s for 19 tests) — genuinely slow spawning, not a
+// hang: the vitest default testTimeout (20_000ms, see toolkit/vitest.config.mts) has no margin
+// left for that many sequential child processes on that host.
+const SUITE_LOCK_CHILD_TIMEOUT_MS = CHILD_TIMEOUT_MS * 3 + 15_000
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
@@ -82,15 +88,18 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   chmodSync(join(bin, 'opencode'), 0o755)
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
   cpSync(INSTALLER, join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'))
-  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'resolved-binary.mjs']) {
+  for (const file of ['lane-consent-check-core.mjs', 'lane-consent-gate-core.mjs', 'wt-lane-saturation-core.mjs', 'command-invocation.mjs', 'external-model-env.mjs', 'opencode-skill-fence.mjs', 'lane-skill-allowlist.mjs', 'lane-model-allowlist.mjs', 'executor-defaults.mjs', 'plugin-options.mjs', 'plugin-data-dir.mjs', 'lane-supervisor-core.mjs', 'lane-integrate.mjs', 'resolved-binary.mjs']) {
     cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   }
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', 'host'), join(pluginRoot, 'bin', 'lib', 'host'), { recursive: true })
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
   writeFileSync(join(pluginRoot, 'bin', 'wt-lane.mjs'), transformSource ? transformSource(launcher) : launcher)
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane-wait.mjs'), join(pluginRoot, 'bin', 'wt-lane-wait.mjs'))
-  // The suite-lock CLI a lane's WT_SUITE_LOCK_CMD runs, with the library it imports.
+  // The suite-lock runner a lane's WT_SUITE_LOCK_CMD runs, with the CLI and library it imports.
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs'), join(pluginRoot, 'bin', 'wt-suite-lock.mjs'))
+  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock.cmd'), join(pluginRoot, 'bin', 'wt-suite-lock.cmd'))
+  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock-run.mjs'), join(pluginRoot, 'bin', 'wt-suite-lock-run.mjs'))
+  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock-run.cmd'), join(pluginRoot, 'bin', 'wt-suite-lock-run.cmd'))
   for (const file of ['suite-lock.mjs', 'artifact-server.mjs']) cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2,
@@ -290,7 +299,7 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     expect(readFileSync(seen, 'utf8')).toBe('true\n')
   })
 
-  it('hands the adopted lane child a WT_SUITE_LOCK_CMD that runs the installed plugin suite-lock CLI', () => {
+  it('hands the adopted lane child an executable WT_SUITE_LOCK_CMD for the installed plugin suite-lock runner', () => {
     const f = fixture()
     const bin = join(f.root, 'bin')
     const seen = join(f.root, 'seen-lock')
@@ -309,18 +318,15 @@ printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     // Node resolves a module URL through symlinks, so the launcher reports the REAL path (macOS tmpdir is
     // /var -> /private/var); the expectation compares against the same real path.
-    const cli = realpathSync(join(f.pluginRoot, 'bin', 'wt-suite-lock.mjs'))
-    expect(readFileSync(seen, 'utf8')).toBe(`node '${cli}' run --`)
+    const cli = realpathSync(join(f.pluginRoot, 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs'))
+    expect(readFileSync(seen, 'utf8')).toBe(cli)
     expect(existsSync(cli)).toBe(true)
-    const help = runChild('adopted suite-lock CLI help', [cli, '--help'], f.env)
-    expect(help.status, help.stderr).toBe(0)
-    expect(help.stdout).toContain('wt-suite-lock.mjs run')
-  })
+  }, SUITE_LOCK_CHILD_TIMEOUT_MS)
 
   it('refuses to launch when the installed plugin root lacks the suite-lock CLI', () => {
     const f = fixture()
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-    rmSync(join(f.pluginRoot, 'bin', 'wt-suite-lock.mjs'))
+    rmSync(join(f.pluginRoot, 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs'))
 
     const result = launch(f)
 

@@ -24,6 +24,7 @@ const PROCESS_CAPTURE_RETRY_MS = 10
 const PROCESS_CAPTURE_SCHEDULING_MARGIN_MS = 100
 const DARWIN_PROVIDER_MISS_TTL_MS = 100
 const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
+const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
   const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
@@ -292,12 +293,34 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     )
   }, 15_000)
 
-  it('launches a model in the default lane model allow-list', () => {
+  it.each(['openai/gpt-6-sol', 'openai/gpt-6-luna'])('launches allowed GPT-6 lane model %s', (model) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
-    expect(run(f).status).toBe(0)
+    expect(run(f, [], model).status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
     expect(JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8')).state).not.toBe('launching')
+  })
+  it.each([
+    ['openai/gpt-6-sol', 'critic', 'max', 'role base'],
+    ['openai/gpt-6-sol', 'code', 'high', 'role base'],
+    ['openai/gpt-5.6-luna', 'critic', 'xhigh', 'role base (clamped from max)'],
+  ])('passes --role %s/%s through to the real opencode argv at %s', (model, role, effort, origin) => {
+    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"')
+    const result = run(f, ['--role', role], model)
+    expect(result.status, result.stderr).toBe(0)
+    const argvFile = join(f.dir, 'argv')
+    waitForFile(argvFile)
+    const argv = readFileSync(argvFile, 'utf8').trim().split('\n')
+    expect(argv.slice(argv.indexOf('--variant'), argv.indexOf('--variant') + 2)).toEqual(['--variant', effort])
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).toContain(`variant=${effort} origin=${origin}`)
+  })
+  it('refuses an explicit Luna max even with the unknown-variant escape hatch', () => {
+    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"')
+    const result = run(f, ['--role', 'critic', '--variant', 'max', '--allow-unknown-variant'])
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('variant max is above the xhigh ceiling')
+    expect(existsSync(join(f.dir, 'argv'))).toBe(false)
   })
   it('refuses to launch when available memory is below the configured threshold', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
@@ -309,11 +332,11 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(result.stderr).toMatch(/^wt-lane: Refused: available memory \d+ MiB is below the required \d+ MiB; lower WT_LANE_MIN_AVAILABLE_MIB only after freeing or deliberately budgeting memory\.\n$/)
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
-  it.each(['google/gemini-3.6-flash', 'openai/gpt-5.6-sol-fast'])('refuses unlisted model %s before spawn', (model) => {
+  it.each(['google/gemini-3.6-flash', 'openai/gpt-5.6-sol-fast', 'openai/gpt-6-sol-fast'])('refuses unlisted model %s before spawn', (model) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     const res = run(f, [], model)
     expect(res.status).toBe(1)
-    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-astra); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
+    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-luna, openai/gpt-6-sol, openai/gpt-6-astra); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
   it('honours a comma- or whitespace-separated WT_LANE_MODELS override with exact matching', () => {
@@ -1266,22 +1289,25 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       '',
     ])
   })
-  it('hands the lane child a WT_SUITE_LOCK_CMD that runs the plugin suite-lock CLI', () => {
+  it('hands the lane child an executable WT_SUITE_LOCK_CMD for the plugin suite-lock runner', () => {
     const f = fixture('suite-lock-cmd')
     const res = run(f, ['--timeout', '1']); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     const command = readFileSync(join(f.dir, 'suite-lock-cmd'), 'utf8')
-    const cli = join(ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs')
-    expect(command).toBe(`node '${cli}' run --`)
+    const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs')
+    expect(command).toBe(cli)
     expect(existsSync(cli)).toBe(true)
-    const help = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' })
-    expect(help.status, help.stderr).toBe(0)
-    expect(help.stdout).toContain('wt-suite-lock.mjs run')
   })
+  it.skipIf(!ZSH_WORKS)('runs WT_SUITE_LOCK_CMD as one executable under zsh (skips: zsh unavailable)', () => {
+    const f = fixture('suite-lock-run-zsh')
+    const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'), 30_000)
+    expect(readFileSync(join(f.dir, 'suite-lock-run'), 'utf8')).toBe('status=0\ngate ran\n')
+  }, 60_000)
   // The real sandbox binds only named paths: the CLI (and the plugin files it reads at import) must be
   // visible inside it, and the lock directory writable. The lock root is the fixture's own state dir.
-  it.skipIf(!BWRAP_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips without a working bwrap)', () => {
-    const f = fixture('suite-lock-run')
+  it.skipIf(!BWRAP_WORKS || !ZSH_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips without working bwrap or zsh)', () => {
+    const f = fixture('suite-lock-run-zsh')
     delete f.env.WT_LANE_SANDBOX
     f.env.WT_LANE_SANDBOX_READ = join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures')
     const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)

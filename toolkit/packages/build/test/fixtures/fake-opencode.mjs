@@ -69,9 +69,9 @@ async function runAction() {
     write('suite-lock-cmd', process.env.WT_SUITE_LOCK_CMD ?? 'unset')
     return
   }
-  if (action === 'suite-lock-run') {
-    // A lane gate the way a brief asks for one: the command runs under $WT_SUITE_LOCK_CMD.
-    const gate = spawnSync('/bin/sh', ['-c', `${process.env.WT_SUITE_LOCK_CMD ?? 'false'} ${JSON.stringify(process.execPath)} -e "console.log('gate ran')"`], { encoding: 'utf8' })
+  if (action === 'suite-lock-run-zsh') {
+    // Run the variable exactly as a zsh lane does; do not re-parse it through sh -c.
+    const gate = spawnSync('zsh', ['-c', '"$WT_SUITE_LOCK_CMD" node -e "console.log(\'gate ran\')"'], { encoding: 'utf8' })
     write('suite-lock-run', `status=${gate.status}\n${gate.stdout}${gate.stderr}`)
     return
   }

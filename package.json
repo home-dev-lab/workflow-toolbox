@@ -4,5 +4,6 @@
   "workspaces": [
     "toolkit/packages/*",
     "toolkit/examples"
-  ]
+  ],
+  "packageManager": "pnpm@11.10.0"
 }

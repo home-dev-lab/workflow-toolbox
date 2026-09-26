@@ -5,6 +5,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- External lane defaults now use `openai/gpt-6-sol`, while `openai/gpt-6-luna` is allowed for explicit lane selection. The older GPT-5.6 Luna, Terra, and Sol tiers remain allowed; `-fast` variants remain refused.
+- GPT lane executor role table (owner-approved 2026-09-26): code and standard critic move to `openai/gpt-6-sol` (code at `high`, critic at `max`); hard critic, review and refutation use `openai/gpt-6-astra` (critic `max`, review/refutation `medium`) so Sol never reviews its own code. Refutation moves from `xhigh` to `medium`. The forced `xhigh` code variant is scoped to `openai/gpt-5.6-sol` only.
+- Hard GPT-lane implementation uses Sol and review uses Astra; executor effort bases now follow model family (GPT critic/code `max`/`high`, Claude critic/code `xhigh`/`medium`) with empty variant options deferring to that family base.
+- An effort explicitly saved in plugin options still wins over the new family bases.
+
+### Fixed
+- Lane gates run from the repo root now resolve the pinned pnpm. Corepack resolves the pnpm version by walking up from the working directory, then pnpm checks it against the `--dir` target's own pin; only `toolkit/package.json` carried a `packageManager` field, so `pnpm --dir toolkit <gate>` invoked from the repo root failed for any Corepack user whose default pnpm was not already the toolkit's pin and who had no ancestor directory pinning it either (`configured to use 11.10.0 of pnpm. Your current pnpm is vX.Y.Z`). The root `package.json` now pins the same `pnpm@11.10.0`, checked equal to the toolkit's pin by a new test.
+- `WT_SUITE_LOCK_CMD` now names the dedicated `wt-suite-lock-run` executable, so every following word is run literally under the suite lock, including commands named `run`, `status`, or `release`. The administrative `wt-suite-lock` CLI again rejects unknown subcommands with usage. The runner forwards its arguments verbatim on POSIX (`"$WT_SUITE_LOCK_CMD" pnpm test`, no shell re-parsing); on Windows, `cmd.exe` still re-parses `%`, `^` and `&` in an unquoted argument, so a command carrying those characters should be run as `node wt-suite-lock.mjs run -- …` instead. It also tolerates a `run --` (or bare `--`) prefix an older adopted `wt-lane.mjs` still supplies itself, so `adopt --set scripts` need not land before both sides work together — re-adopt `wt-lane.mjs` (`adopt --set scripts`) anyway to pick up the current launcher.
+- `wt-suite-lock.mjs` and `lane-egress-proxy.mjs` compared `process.argv[1]` to `import.meta.url` directly to decide whether they were invoked directly; reached through a symlink, that comparison never matched, so the file printed nothing and exited 0 instead of running. Both now use the existing symlink-safe `isInvokedDirectly` guard (`lib/host/entry-guard.mjs`), which every other entrypoint in `plugin/bin` already used.
+- `suiteLockCli` (`lib/host/lane-sandbox.mjs`) now also refuses a suite-lock runner file that exists but lost its POSIX execute bit, with "update or reinstall workflow-toolbox" rather than a spawn failure deep inside a lane.
+- Lane sandbox (Linux): Codex second opinions and codex lanes had no working shell inside the sandbox since 0.188.0 when the `codex` executable was reached through a symlink. Executable symlinks are now recreated inside the sandbox, pointing at the bound real executable location, so sibling helpers such as `codex-code-mode-host` remain discoverable without exposing the symlink's containing directory. The behavior is generic for symlinked executables, including OpenCode.
+- Late read-only executable overlays now preserve binaries beneath private-home remaps without covering a writable bind, private remap target, or protected path. Colliding binary directories narrow to the executable file; colliding Node toolchain prefixes narrow to `bin` and `lib`, with a named refusal if narrowing cannot preserve the boundary or a kept executable link would dangle.
+
 ## [0.188.1] - 2026-09-26
 
 ### Fixed

@@ -2,7 +2,7 @@
 import { lookup } from 'node:dns'
 import { closeSync, constants, fstatSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs'
 import net from 'node:net'
-import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from './entry-guard.mjs'
 
 // Host-side egress proxy for a sandboxed lane (lane-sandbox.mjs). The lane runs in its own network
 // namespace with nothing but loopback; this proxy, reached over a unix socket bridged into that
@@ -342,4 +342,4 @@ function main() {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main()
+if (isInvokedDirectly(import.meta.url)) main()

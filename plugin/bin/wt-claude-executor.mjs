@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
-import { resolveRoleVariant } from './lib/lane-model-allowlist.mjs'
+import { resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
@@ -97,7 +97,14 @@ async function main() {
   if (!existsSync(options.dir) || !statSync(options.dir).isDirectory()) { process.stderr.write(`wt-claude-executor: --dir is not a directory: ${options.dir}\n`); return 2 }
   if (!existsSync(options.brief)) { process.stderr.write(`wt-claude-executor: --brief does not exist: ${options.brief}\n`); return 2 }
   if (isWorker && !options.sdkPath) { process.stderr.write('wt-claude-executor: worker requires parent-resolved --sdk-path\n'); return 2 }
-  try { assertHarnessAlias(options.model); executorBrief(options) } catch (error) { process.stderr.write(`wt-claude-executor: ${error instanceof Error ? error.message : String(error)}\n`); return 2 }
+  // Argument-only refusals come before the brief is read: they must not depend on filesystem
+  // shape (macOS tmpdir resolves through /private, which the brief's report-path check sees).
+  try { assertHarnessAlias(options.model) } catch (error) { process.stderr.write(`wt-claude-executor: ${error instanceof Error ? error.message : String(error)}\n`); return 2 }
+  if (options.variant) {
+    const refusal = variantRefusal(options.variant, options.model)
+    if (refusal) { process.stderr.write(`${refusal}\n`); return 2 }
+  }
+  try { executorBrief(options) } catch (error) { process.stderr.write(`wt-claude-executor: ${error instanceof Error ? error.message : String(error)}\n`); return 2 }
   if (isWorker) return worker(options)
   mkdirSync(path.join(options.dir, '.lane'), { recursive: true })
   const resolution = resolveAgentSdk({ projectDir: options.dir, writableRoots: [options.dir] })

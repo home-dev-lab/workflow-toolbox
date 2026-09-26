@@ -136,6 +136,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents the machine-wide suite lock, bounded wait, stale recovery, bypass, and operator controls.',
   },
   {
+    script: 'plugin/bin/wt-suite-lock-run.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the variable-facing runner and its literal argv contract.',
+  },
+  {
     script: 'plugin/bin/wt-lane-control.mjs',
     status: 'mapped',
     reason: 'Known-issues and the external-lane skill document the owner decision CLI and its identity refusals.',
@@ -706,7 +711,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/lib/suite-lock.mjs'],
+    sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/wt-suite-lock-run.mjs', 'plugin/bin/lib/suite-lock.mjs'],
     docs: ['docs/public/known-issues.md'],
   },
   {

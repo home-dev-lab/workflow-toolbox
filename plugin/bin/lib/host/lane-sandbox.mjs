@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import os from 'node:os'
 // POSIX paths, not the host's native ones: every path here names a location inside a Linux bwrap
 // sandbox or on the Linux host that builds it. The plan is never built elsewhere (see
@@ -61,6 +61,9 @@ const realFs = {
   exists: (file) => existsSync(file),
   realpath: (file) => { try { return realpathSync(file) } catch { return null } },
   isFile: (file) => { try { return statSync(file).isFile() } catch { return false } },
+  // Windows has no execute bit to check (a .cmd is invoked by name resolution, never by mode); the
+  // check is POSIX-only, and always true on win32.
+  isExecutable: (file) => { if (process.platform === 'win32') return true; try { accessSync(file, constants.X_OK); return true } catch { return false } },
   isDir: (file) => { try { return statSync(file).isDirectory() } catch { return false } },
   readText: (file) => { try { return readFileSync(file, 'utf8') } catch { return null } },
   ensureDir: (directory) => { try { mkdirSync(directory, { recursive: true, mode: 0o700 }) } catch { /* bind-try then leaves it private */ } },
@@ -95,10 +98,16 @@ const home = (env) => env.HOME || '/nonexistent'
 const xdg = (env, name, fallback) => (path.isAbsolute(env[name] ?? '') ? env[name] : path.join(home(env), fallback))
 const absolute = (value) => (path.isAbsolute(value ?? '') ? [value] : [])
 
-function executableBinds(invoked, fs) {
+function executableMount(invoked, fs) {
+  if (!invoked || !path.isAbsolute(invoked)) return []
+  const target = fs.realpath(invoked) ?? invoked
+  return [{ directory: path.dirname(target), fallback: [target], executable: invoked }]
+}
+
+function executableSymlinks(invoked, fs) {
   if (!invoked || !path.isAbsolute(invoked)) return []
   const real = fs.realpath(invoked) ?? invoked
-  return [...new Set([path.dirname(real), invoked])]
+  return real === invoked ? [] : [{ target: real, link: invoked }]
 }
 
 // Values of the named flags, resolved to absolute against `base` (the working directory). A relative
@@ -259,7 +268,8 @@ const PROFILES = {
     fs.copy(path.join(codexHome, 'auth.json'), path.join(privHome, 'auth.json'))
     fs.copy(path.join(codexHome, 'config.toml'), path.join(privHome, 'config.toml'))
     return {
-      readable: executableBinds(findOnPath('codex', env.PATH, fs), fs),
+      executableMounts: executableMount(findOnPath('codex', env.PATH, fs), fs),
+      executableSymlinks: executableSymlinks(findOnPath('codex', env.PATH, fs), fs),
       writableRemap: [{ inside: codexHome, outside: privHome }],
       writable: [...absolute(env.CLAUDE_PLUGIN_DATA)],
       readOnlyOverlaysRemap: [],
@@ -279,25 +289,35 @@ const PROFILES = {
 const suiteLockDir = (env) => path.join(xdg(env, 'XDG_STATE_HOME', '.local/state'), 'wt-suite-lock')
 
 /**
- * The suite-lock CLI a lane's WT_SUITE_LOCK_CMD runs, as a host-native path: it ships in the plugin's
+ * The suite-lock runner a lane's WT_SUITE_LOCK_CMD runs, as a host-native path: it ships in the plugin's
  * bin/, beside the lib/ this module lives in, so a launcher anywhere (the plugin's own, or an adopted
  * copy in a config dir) resolves the file of the plugin it loaded this module from. Throws when the
  * file is absent, so a lane is never handed a command that cannot run.
  */
 export function suiteLockCli(fs = realFs) {
-  const cli = fileURLToPath(new URL('../../wt-suite-lock.mjs', import.meta.url))
+  const cli = fileURLToPath(new URL(`../../wt-suite-lock-run${process.platform === 'win32' ? '.cmd' : '.mjs'}`, import.meta.url))
   if (!fs.isFile(cli)) throw new Error(`the suite-lock CLI is missing at ${cli}; update or reinstall workflow-toolbox`)
+  // POSIX only: a checkout that lost its execute bit (e.g. an archive extracted with the bit
+  // stripped) spawns ENOEXEC/EACCES deep inside a lane instead of failing here with a clear cause.
+  // A fake fs without isExecutable (existing callers) is treated as "unknown", never refused.
+  if (fs.isExecutable && !fs.isExecutable(cli)) throw new Error(`the suite-lock CLI at ${cli} is not executable; update or reinstall workflow-toolbox`)
   return cli
 }
 
 function toolchainPaths({ env, execPath, fs }) {
   const nodeReal = fs.realpath(execPath) ?? execPath
-  return [
-    path.dirname(path.dirname(nodeReal)),
-    ...['node', 'pnpm', 'npm', 'git'].flatMap((name) => executableBinds(findOnPath(name, env.PATH, fs), fs)),
-    ...(absolute(env.COREPACK_HOME).length ? absolute(env.COREPACK_HOME) : [path.join(xdg(env, 'XDG_CACHE_HOME', '.cache'), 'node', 'corepack')]),
-    path.join(xdg(env, 'XDG_DATA_HOME', '.local/share'), 'pnpm'),
-  ]
+  const executables = ['node', 'pnpm', 'npm', 'git'].map((name) => findOnPath(name, env.PATH, fs))
+  return {
+    executableMounts: [
+      { directory: path.dirname(path.dirname(nodeReal)), fallback: ['bin', 'lib'].map((sub) => path.join(path.dirname(path.dirname(nodeReal)), sub)), executable: execPath },
+      ...executables.flatMap((invoked) => executableMount(invoked, fs)),
+    ],
+    readable: [
+      ...(absolute(env.COREPACK_HOME).length ? absolute(env.COREPACK_HOME) : [path.join(xdg(env, 'XDG_CACHE_HOME', '.cache'), 'node', 'corepack')]),
+      path.join(xdg(env, 'XDG_DATA_HOME', '.local/share'), 'pnpm'),
+    ],
+    executableSymlinks: executables.flatMap((invoked) => executableSymlinks(invoked, fs)),
+  }
 }
 
 // A git worktree's `.git` is a FILE naming its private gitdir; the shared object store lives in the
@@ -344,13 +364,18 @@ function remapArgs(flag, remaps) {
   return remaps.flatMap(({ inside, outside }) => [flag, outside, inside])
 }
 
-function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, env, chdir, fs, socketDir }) {
+function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, executableSymlinks, env, chdir, fs, socketDir }) {
   const etcTargets = ETC_LINK_TARGETS.map((file) => fs.realpath(file)).filter((file) => file && !file.startsWith('/etc/') && !file.startsWith('/usr/'))
+  const mounted = [...SYSTEM_READ_ONLY, ...readable, ...writable, ...writableRemap.map(({ inside }) => inside)]
+  const uniqueSymlinks = [...new Map(executableSymlinks.map((entry) => [entry.link, entry])).values()]
+  const symlinks = uniqueSymlinks.filter(({ link }) => !mounted.some((root) => link === root || link.startsWith(`${root}${path.sep}`)))
   return [
     '--die-with-parent', '--unshare-all', '--new-session',
     '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
     ...bindArgs('--ro-bind-try', [...SYSTEM_READ_ONLY, ...etcTargets]),
     '--dir', home(env),
+    ...[...new Set(symlinks.map(({ link }) => path.dirname(link)))].flatMap((directory) => ['--dir', directory]),
+    ...symlinks.flatMap(({ target, link }) => ['--symlink', target, link]),
     ...bindArgs('--ro-bind-try', readable),
     ...bindArgs('--bind-try', writable),
     ...remapArgs('--bind-try', writableRemap),
@@ -417,6 +442,27 @@ function refuseProtectedOverlap(writable, protectedPaths, fs) {
       if (within(target, root) || within(root, target)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
     }
   }
+}
+
+// Late mounts override earlier binds. A directory overlay must never contain a writable mount,
+// private remap target, or protected location. Narrow only executable mounts; other late overlays
+// (git pointer files and private cache packages) must already satisfy the same invariant.
+function safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs) {
+  const collision = (overlay) => guarded.find((target) => within(canonicalPath(target, fs), canonicalPath(overlay, fs)))
+  for (const overlay of otherOverlays) {
+    const target = collision(overlay)
+    if (target) throw new LaneSandboxRefusal(`refusing late read-only overlay ${overlay}: it covers ${target}`)
+  }
+  return executableMounts.flatMap(({ directory, fallback, executable }) => {
+    if (isForbiddenPath(directory, env, fs)) throw new LaneSandboxRefusal(`refusing executable ${executable}: target directory ${directory} cannot be mounted`)
+    const target = collision(directory)
+    if (!target) return [directory]
+    for (const narrowed of fallback) {
+      const blocker = collision(narrowed)
+      if (blocker || isForbiddenPath(narrowed, env, fs)) throw new LaneSandboxRefusal(`refusing executable ${executable}: overlay ${narrowed} collides with ${blocker ?? target ?? home(env)}`)
+    }
+    return fallback
+  })
 }
 
 // The egress log is written by the host-side proxy; a path the lane can write (or plant a symlink
@@ -540,11 +586,18 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
 
   fs.ensureDir(suiteLockDir(env))
   // A read-only role (observer, second-opinion) gets its working directory bound read-only (H5).
-  const rawReadable = [...toolchainPaths({ env, execPath, fs }), ...executableBinds(bin, fs), ...selected.readable, ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
+  const toolchain = toolchainPaths({ env, execPath, fs })
+  const executableMounts = [...toolchain.executableMounts, ...executableMount(bin, fs), ...(selected.executableMounts ?? [])]
+  const rawReadable = [...toolchain.readable, ...(selected.readable ?? []), ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
   const rawWritable = [...(readonlyCwd ? [] : workdir), ...selected.writable, ...git.writable, suiteLockDir(env), ...(paths.writable ?? []), ...extras.writable]
   // The root/$HOME/ancestor refusal covers EVERY computed bind, not only the operator extras (H2).
-  const readable = rawReadable.filter((item) => item && !isForbiddenPath(item, env, fs))
   const writable = rawWritable.filter((item) => item && !isForbiddenPath(item, env, fs))
+  const executableLinks = [...toolchain.executableSymlinks, ...executableSymlinks(bin, fs), ...(selected.executableSymlinks ?? [])]
+    .filter(({ target, link }) => {
+      if (isForbiddenPath(link, env, fs)) return false
+      if (isForbiddenPath(target, env, fs)) throw new LaneSandboxRefusal(`refusing executable ${link}: link target ${target} cannot be mounted`)
+      return true
+    })
   refuseProtectedOverlap(writable, selected.protectedPaths ?? [], fs)
   // Everything the lane can write: its writable binds and the per-run runtime dir (private remaps,
   // bridge sockets). Configuration found there never feeds the allow-list, and no log goes there.
@@ -557,6 +610,10 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const { endpoints } = network
   const socketDir = endpoints.length || network.hosts.length ? path.join(runtimeDir, 'net') : null
   if (socketDir) fs.ensureDir(socketDir)
+  const otherOverlays = [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...(selected.readOnlyOverlaysRemap ?? []).map(({ inside }) => inside)]
+  const guarded = [...writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), ...(selected.protectedPaths ?? []), ...(socketDir ? [socketDir] : [])]
+  const executableOverlays = safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs)
+  const readable = [...rawReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
   const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
   const bridgeState = { disposed: false }
   let bridge
@@ -567,8 +624,9 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
 
   const prefix = sandboxArguments({
     readable, writable, writableRemap: selected.writableRemap ?? [],
-    // git pointer/config overlays (H1) land read-only on top of the writable gitdir.
-    readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo],
+    executableSymlinks: executableLinks,
+    // Executable directories land late only if they cannot cover a writable/private/protected path.
+    readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...executableOverlays],
     readOnlyOverlaysRemap: selected.readOnlyOverlaysRemap ?? [],
     env, chdir: workdir[0] ?? home(env), fs, socketDir,
   })
