@@ -234,8 +234,13 @@ export function briefEvidenceLines(receipt, upper = false) {
   ]
 }
 
+// Inlined rather than imported: this file is rewritten by the adopt installer into a standalone
+// launcher whose `./lib/` neighbours are resolved from the installed plugin, so a fresh relative
+// import here would not resolve. The shared home of this constant is lib/host/hardened-git.mjs.
+const HARDENED_GIT_CONFIG = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null']
+
 export function checkGitWorktree(dir) {
-  const result = spawnSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
+  const result = spawnSync('git', [...HARDENED_GIT_CONFIG, '-C', dir, 'rev-parse', '--is-inside-work-tree'], {
     encoding: 'utf8',
     env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
   })
@@ -693,6 +698,8 @@ async function main() {
     } catch { /* append the diagnostic below when the existing log is unreadable */ }
     appendFileSync(fd, `${new Date().toISOString()} stage=${stage}\n`)
   }
+  // Sandboxed or not is a launch fact: a reader of the log or the record can always tell which.
+  appendWorkerStage(`sandbox ${child.laneSandbox?.line ?? 'lane sandbox: unknown'}`)
   appendWorkerStage('child-identity-capture-start')
   const childCapture = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: child.spawnfile ?? opencodeBinary, expectedArgv: child.spawnargs, spawnedAt: childSpawnedAt })
   if (PLATFORM === 'win32' && !childCapture.identity) {
@@ -721,7 +728,7 @@ async function main() {
   appendWorkerStage('worker-identity-capture-done')
   const childIdentity = childCapture.identity
   const workerIdentity = workerCapture.identity
-  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(PLATFORM === 'win32' ? { workerStartTimeApproximate: workerIdentity?.startTimeApproximate ?? false, workerImage: workerIdentity?.image ?? null } : {}), ...(PLATFORM === 'darwin' ? { workerCwd: workerIdentity?.cwd ?? null } : {}), ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(PLATFORM === 'win32' ? { childStartTimeApproximate: childIdentity?.startTimeApproximate ?? false, childImage: childIdentity?.image ?? null } : {}), ...(PLATFORM === 'darwin' ? { childCwd: childIdentity?.cwd ?? null } : {}), ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
+  const baseState = { version: 1, runId, state: 'running', owner: opts.owner, ownerSessionId: process.env.CLAUDE_CODE_SESSION_ID ?? null, ownerToken: opts.ownerToken, workerPid: process.pid, workerArgv: workerIdentity?.argv ?? null, workerStartTime: workerIdentity?.startTime ?? null, ...(PLATFORM === 'win32' ? { workerStartTimeApproximate: workerIdentity?.startTimeApproximate ?? false, workerImage: workerIdentity?.image ?? null } : {}), ...(PLATFORM === 'darwin' ? { workerCwd: workerIdentity?.cwd ?? null } : {}), ...(workerCapture.unavailable ? { workerIdentity: workerCapture.unavailable } : {}), childPid: child.pid, childArgv: childIdentity?.argv ?? null, childStartTime: childIdentity?.startTime ?? null, ...(PLATFORM === 'win32' ? { childStartTimeApproximate: childIdentity?.startTimeApproximate ?? false, childImage: childIdentity?.image ?? null } : {}), ...(PLATFORM === 'darwin' ? { childCwd: childIdentity?.cwd ?? null } : {}), ...(childCapture.unavailable ? { childIdentity: childCapture.unavailable } : {}), worktree: opts.dir, log: opts.log, sandbox: child.laneSandbox?.line ?? null, launchedAt: new Date().toISOString(), timeoutSeconds: opts.timeout, decisionGraceSeconds: opts.decisionGrace, decisionTransitionBoundMs: DECISION_TRANSITION_BOUND_MS, maxExtensions: opts.maxExtensions, extensionCount: 0, defaultDecision: 'extend' }
   let currentState = baseState
   const writeState = (extra) => {
     currentState = { ...currentState, ...extra }

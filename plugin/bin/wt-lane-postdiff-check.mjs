@@ -102,6 +102,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
+import { HARDENED_GIT_CONFIG } from './lib/host/hardened-git.mjs';
 
 function usage() {
   return [
@@ -170,7 +171,7 @@ function parsePorcelainZ(raw) {
 
 function runGitStatusZ(worktree) {
   try {
-    return execFileSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], {
+    return execFileSync('git', [...HARDENED_GIT_CONFIG, 'status', '--porcelain=v1', '-z', '--untracked-files=all'], {
       cwd: worktree,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
@@ -192,7 +193,7 @@ function hashExistingPaths(worktree, paths) {
   if (unique.length === 0) return map;
   let out;
   try {
-    out = execFileSync('git', ['hash-object', '--stdin-paths'], {
+    out = execFileSync('git', [...HARDENED_GIT_CONFIG, 'hash-object', '--stdin-paths'], {
       cwd: worktree,
       input: `${unique.join('\n')}\n`,
       encoding: 'utf8',

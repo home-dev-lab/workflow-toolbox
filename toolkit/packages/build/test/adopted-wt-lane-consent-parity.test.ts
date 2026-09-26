@@ -94,7 +94,9 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
   }))
   // The launcher resolves consent solely through these fixture-owned locations. Do not
   // inherit a developer's config, home, or lane settings into the child process.
-  const env: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: join(root, 'state') }
+  // Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
+  // the sandbox itself is locked in lane-sandbox.test.ts.
+  const env: NodeJS.ProcessEnv = { WT_LANE_SANDBOX: 'off', CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: join(root, 'state') }
   if (install) {
     const result = runChild('adopt installer', [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], env)
     expect(result.status, result.stderr).toBe(0)

@@ -4,6 +4,7 @@ import path from 'node:path'
 import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { withRepositoryGuide } from './sdk-role-profile.mjs'
+import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
@@ -42,10 +43,24 @@ function codexCompanion(env) {
   return null
 }
 
-function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES }) {
+// The companion's plugin version root (`<version>/scripts/codex-companion.mjs`), read-only in the sandbox.
+function companionRoot(companion) {
+  const scripts = path.dirname(companion)
+  return path.basename(scripts) === 'scripts' ? path.dirname(scripts) : scripts
+}
+
+function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOutputBytes = CODEX_OUTPUT_LIMIT_BYTES, resolveSandbox = resolveLaneSandbox }) {
   if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
   const ownership = adapter.createCodexBrokerOwnership(env)
-  const child = spawn(process.execPath, [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request], {
+  const companionArgs = [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request]
+  // second-opinion only reads the repository: it is bound read-only (H5).
+  const sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true })
+  announceUnsandboxedLane(sandbox)
+  // Inside the sandbox's PID namespace the broker records a namespace pid; ownership must find it as
+  // a host descendant of the sandbox instead of trusting that number.
+  if (sandbox.kind === 'bwrap') ownership.brokerInChildPidNamespace?.()
+  const [command, commandArgs] = sandbox.wrap(process.execPath, companionArgs)
+  const child = spawn(command, commandArgs, {
     cwd,
     env: ownership.env,
     detached: adapter.platform !== 'win32',
@@ -75,6 +90,10 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
     captureBroker()
     if (companionAlive) child.kill('SIGTERM')
     cleanup = ownership.stop()
+    // The refreshed codex token is written back to the shared ~/.codex by the sandbox (host
+    // perimeter) only if it changed; the shared file stayed read-only during the run (H3).
+    sandbox.writeBackAuth?.()
+    sandbox.dispose?.()
     return cleanup
   }
   const collect = (stream, chunk) => {
@@ -104,7 +123,7 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
       clearInterval(captureTimer)
       process.removeListener('exit', onExit)
       signal?.removeEventListener('abort', onAbort)
-      resolve({ ...result, interrupted })
+      resolve({ ...result, interrupted, sandbox: sandbox.line })
     }
     child.once('error', (error) => {
       stopEverything()
@@ -153,7 +172,7 @@ function sdkRemedy(error) {
 
 export const createSecondOpinionDependencies = (adapter, options = {}) => ({
   resolveCodexCompanion: codexCompanion,
-  runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes }),
+  runCodex: (runOptions) => runCodex({ ...runOptions, adapter, maxOutputBytes: options.maxOutputBytes, ...(options.resolveSandbox ? { resolveSandbox: options.resolveSandbox } : {}) }),
   resolveSdkQuery,
 })
 
@@ -196,6 +215,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
         env,
         signal: options.signal,
       })
+      if (result.sandbox) appendLine(options.out, result.sandbox)
       appendOutput(options.out, result.stdout)
       appendOutput(options.out, result.stderr)
       for (const line of result.cleanup ?? []) appendLine(options.out, line)

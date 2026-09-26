@@ -3,14 +3,18 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error Standalone plugin helper has no declaration surface.
 import { materialiseAllowedSkills, opencodeChildEnv, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from '../../../../plugin/bin/lib/opencode-skill-fence.mjs'
 
 const found = spawnSync('command -v opencode', { shell: true, encoding: 'utf8' })
 const installed = found.status === 0 ? (found.stdout.trim().split('\n')[0] ?? '') : ''
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
-const unfencedProcessEnv = { ...process.env }
+// Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
+// the sandbox itself is locked in lane-sandbox.test.ts.
+const unfencedProcessEnv: NodeJS.ProcessEnv = { ...process.env, WT_LANE_SANDBOX: 'off' }
+beforeEach(() => { vi.stubEnv('WT_LANE_SANDBOX', 'off') })
+afterEach(() => { vi.unstubAllEnvs() })
 delete unfencedProcessEnv.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS
 
 describe('installed OpenCode Claude-skill fence', () => {

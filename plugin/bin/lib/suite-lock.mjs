@@ -2,9 +2,15 @@ import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:f
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
+import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
+import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
+
+// processStartTime (host perimeter) is recorded beside the PID so a reused PID does not read as the
+// same holder: a live process with that PID but a different start time is a DIFFERENT process, and
+// the lock is stale (M4 "dead locks kept", LOW 7).
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -36,11 +42,42 @@ export function readSuiteLock(options = {}) {
   return { held: true, root, lockDir, holder, ageMs }
 }
 
+// A holder recorded in ANOTHER PID namespace cannot be judged by its PID number, which is
+// namespace-local. Whether I am the one inside a sandbox is read MECHANICALLY from the user
+// namespace map (insideChildUserNamespace), never from an environment variable a child could lose
+// (M4). Returns true (stale), false (live), or null (not a foreign-namespace case → fall through).
+function foreignNamespaceStale(lock, options, reclaimMs) {
+  const namespace = options.pidNamespace ?? currentPidNamespace()
+  const holderNamespace = lock.holder.pidNamespace ?? null
+  const iAmSandboxed = options.insideSandbox ?? insideChildUserNamespace()
+  const foreign = namespace !== null && holderNamespace !== null && holderNamespace !== namespace
+  if (!foreign && !(iAmSandboxed && holderNamespace === null)) return null
+  if (iAmSandboxed) {
+    // Inside a sandbox the host holder is invisible: it can only be reclaimed once genuinely stuck,
+    // within the SAME window the caller is willing to wait (no 45-min/3-hour mismatch).
+    return lock.ageMs !== null && lock.ageMs >= reclaimMs
+  }
+  // On the host, the holder's namespace is visible and empties when its sandbox ends. Reclaim only
+  // when that namespace has NO processes; a reused inode that is populated reads as live.
+  return (options.namespaceHasProcesses ?? pidNamespaceHasProcesses)(holderNamespace) === false
+}
+
 function holderIsStale(lock, options = {}) {
   if (!lock.held || !Number.isSafeInteger(lock.holder?.pid) || lock.holder.pid <= 0) return false
-  if (!pidAlive(lock.holder.pid)) return true
   const platform = options.platform ?? process.platform
   const staleMs = positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000
+  const waitMs = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s') * 1000
+  // A sandboxed reader that cannot see the host holder reclaims within its own wait window, not
+  // after a longer bound it would never reach.
+  const foreign = foreignNamespaceStale(lock, options, Math.min(staleMs, waitMs))
+  if (foreign !== null) return foreign
+  if (!pidAlive(lock.holder.pid)) return true
+  // A live PID that is a DIFFERENT process (PID reuse) is stale: the recorded start time no longer
+  // matches. Only checked on the host, where /proc start times are comparable.
+  if (platform !== 'win32' && Number.isFinite(lock.holder.startTime)) {
+    const start = (options.processStartTime ?? processStartTime)(lock.holder.pid)
+    if (start !== null && start !== lock.holder.startTime) return true
+  }
   // Windows signalability does not prove process identity: after this conservative age bound,
   // reclaiming avoids a recycled PID making a crashed holder permanent. POSIX never uses age alone.
   return platform === 'win32' && lock.ageMs !== null && lock.ageMs >= staleMs
@@ -77,6 +114,8 @@ export async function acquireSuiteLock(options = {}) {
         cwd: options.cwd ?? process.cwd(),
         startedAt: new Date().toISOString(),
         platform: options.platform ?? process.platform,
+        pidNamespace: options.pidNamespace ?? currentPidNamespace(),
+        startTime: options.startTime ?? processStartTime(process.pid),
       }
       try {
         writeFileSync(path.join(lockDir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, { flag: 'wx', mode: 0o600 })

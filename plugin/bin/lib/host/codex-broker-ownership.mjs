@@ -82,6 +82,9 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   let claimedPid = null
   let discoveryFailure = null
   let stopped = false
+  // Set when the companion runs inside the lane sandbox: broker.json then holds a PID of the
+  // sandbox's own namespace, meaningless (or another process) on the host.
+  let brokerPidIsNamespaced = false
 
   const removeRoot = () => {
     for (let attempt = 0; attempt <= 10; attempt += 1) {
@@ -114,7 +117,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     if (!identity) {
       const companion = processes.find((item) => item.pid === companionPid)
       const companionStartedAt = processStart(companion, observedAt) ?? ownershipStartedAt
-      const statePid = brokerFromState(root)
+      const statePid = brokerPidIsNamespaced ? null : brokerFromState(root)
       if (statePid) claimedPid = statePid
       const family = descendants(processes, companionPid)
       const candidate = statePid
@@ -276,5 +279,5 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     }
   }
 
-  return { env: { ...externalModelEnv(env), CLAUDE_PLUGIN_DATA: root }, capture, stop }
+  return { env: { ...externalModelEnv(env), CLAUDE_PLUGIN_DATA: root }, capture, stop, brokerInChildPidNamespace: () => { brokerPidIsNamespaced = true } }
 }
