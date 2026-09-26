@@ -2253,6 +2253,10 @@ ${request.renderClaim(request.claim)}`;
       ]
     },
     {
+      sources: ["plugin/bin/wt-jdtls.mjs", "plugin/bin/lib/host/jdtls-java.mjs", "plugin/packs/java/.lsp.json"],
+      docs: ["plugin/packs/java/README.md"]
+    },
+    {
       sources: [
         "plugin/bin/wt-artifact-server.mjs",
         "plugin/bin/wt-artifact-server-ensure.mjs",

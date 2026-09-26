@@ -32,7 +32,7 @@ The currently consumed manifest contract is tested rather than loaded at runtime
 
 ## Language Server
 
-Each pack declaration supplies `command`, `args`, `extensionToLanguage`, and `diagnostics: true`; the TypeScript assertion is toolkit/packages/build/test/typescript-pack.test.ts:63-72. Generate the plugin-root declaration with:
+Each pack declaration supplies `command`, `args`, `extensionToLanguage`, and a boolean `diagnostics` (`true`, except for a navigation-only server such as Groovy's, whose diagnostics would be false positives); the TypeScript assertion is toolkit/packages/build/test/typescript-pack.test.ts:63-72. Generate the plugin-root declaration with:
 
 ```sh
 pnpm packs:lsp
@@ -88,4 +88,4 @@ The TypeScript pack provides the model instance: pack.json records selection ass
 
 ## Dialect Without A Server
 
-For Groovy, state that the dialect is owned by the Java pack’s triggers and rules and has no .lsp.json entry, so it has no diagnostics declaration. Add one only when a named server has documented command, args, and extension mapping and archived probes pass on both arms; then regenerate the root declaration. No standalone Groovy language server was verified when this recipe was written: the registry lookup for `groovy-language-server` returned E404 and no `groovy-language-server` or `groovy` binary resolved on the measured machine.
+When a dialect a pack triggers on has no verified server mapping, state that it is covered by the pack's triggers and rules only, with no `extensionToLanguage` entry, so it gets no diagnostics. Add a mapping only when a named server has documented command, args, and extension mapping and has been measured answering on that dialect; then regenerate the root declaration. The worked case is `.gradle` in the Groovy pack: it triggers the pack, but `groovy-language-server` is mapped for `.groovy` only, because on an ordinary `build.gradle` it reports `unable to resolve class org.gradle...` (no Gradle API on its classpath) and a diagnostics-on mapping would inject that false error on every build-script edit.

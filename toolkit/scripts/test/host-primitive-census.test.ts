@@ -88,8 +88,9 @@ describe('raw host primitive quality ratchet', () => {
     const result = scanHostPrimitives(PLUGIN_ROOT)
 
     // The grounding CLI, two hooks, and pure public re-export add four perimeter files;
-    // their host operations stay behind bin/lib/host, so the primitive ceiling is unchanged.
-    expect(result.perimeterFiles).toBe(231)
+    // their host operations stay behind bin/lib/host, so the primitive ceiling is unchanged. The Java pack's
+    // wt-jdtls.mjs launcher adds one more; its JVM discovery and spawn live in bin/lib/host/jdtls-java.mjs.
+    expect(result.perimeterFiles).toBe(232)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

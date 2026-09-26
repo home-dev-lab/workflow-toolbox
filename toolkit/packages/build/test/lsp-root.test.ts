@@ -43,10 +43,17 @@ describe('LSP root generator', () => {
     ['command', { args: [], extensionToLanguage: {}, diagnostics: true }, 'field command must be a string'],
     ['args', { command: 'server', extensionToLanguage: {}, diagnostics: true }, 'field args must be an array'],
     ['extensionToLanguage', { command: 'server', args: [], diagnostics: true }, 'field extensionToLanguage must be an object'],
-    ['diagnostics', { command: 'server', args: [], extensionToLanguage: {}, diagnostics: false }, 'field diagnostics must be exactly true'],
+    ['diagnostics', { command: 'server', args: [], extensionToLanguage: {}, diagnostics: 'yes' }, 'field diagnostics must be a boolean'],
+    ['absent diagnostics', { command: 'server', args: [], extensionToLanguage: {} }, 'field diagnostics must be a boolean'],
   ])('rejects an invalid %s field and names the pack file', (_field, declaration, message) => {
     const root = fixture({ alpha: JSON.stringify({ alpha: declaration }) })
     expect(() => buildLspRoot(root)).toThrow(`plugin/packs/alpha/.lsp.json: declaration "alpha" ${message}`)
+  })
+
+  it('accepts diagnostics: false, a navigation-only server, and emits it unchanged', () => {
+    const navigationOnly = { ...valid('nav'), diagnostics: false }
+    const root = fixture({ typescript: JSON.stringify({ typescript: valid('ts') }), alpha: JSON.stringify({ alpha: navigationOnly }) })
+    expect(JSON.parse(buildLspRoot(root)).alpha).toEqual(navigationOnly)
   })
 
   it('writes TypeScript first, then packs alphabetically, preserving written declaration order', () => {

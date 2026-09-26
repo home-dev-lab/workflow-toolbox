@@ -11,6 +11,7 @@ import {
   parseProbeArguments,
   probePack,
   resolveCommand,
+  serverBinary,
 } from '../../../scripts/lsp-pack-probe.mjs'
 
 const temporaryDirectories: string[] = []
@@ -63,6 +64,12 @@ describe('LSP pack probe pure contracts', () => {
       verdict: 'no parity',
       reason: 'planted answer present without matching LSP request',
     })
+  })
+
+  it('probes the server a plugin launcher starts, not the node interpreter that runs the launcher', () => {
+    expect(serverBinary('java', { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/wt-jdtls.mjs'] })).toBe('jdtls')
+    expect(serverBinary('groovy', { command: 'groovy-language-server', args: [] })).toBe('groovy-language-server')
+    expect(() => serverBinary('svelte', { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/other.mjs'] })).toThrow('svelte: no server binary is known for launcher')
   })
 
   it('builds one PATH shim that preserves executables while excluding only the declared command', () => {
