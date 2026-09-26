@@ -92,7 +92,7 @@ const EXECUTOR_KEYS = {
 }
 const EXECUTOR_DEFAULTS = {
   'gpt-lane': {
-    standard: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-sol', refutation: 'openai/gpt-6-astra' },
+    standard: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' },
     hard: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-6-sol', refutation: 'openai/gpt-6-astra' },
   },
   'claude-sdk': {

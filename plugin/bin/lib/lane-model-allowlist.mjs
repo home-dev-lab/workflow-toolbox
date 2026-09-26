@@ -13,8 +13,11 @@ export const DEFAULT_LANE_MODELS = Object.freeze([
 const KNOWN_VARIANTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
 
 // Owner decision 2026-09-24 (wt-suite #4039): pilots and implementation run at medium. Hard pilots
-// and orchestrators keep high. Critics, reviewers and refuters default to xhigh: on a known-defect
-// plan, high found the defect 0 times in 5 and xhigh 2 times plus 2 partial.
+// and orchestrators keep high.
+// Owner decision 2026-09-26 12:17 +01:00 (GPT lane executor role table): critic max, code high,
+// review medium, refutation medium. Astra reviews Sol's code (avoids same-model self-review);
+// Artificial Analysis ranks Astra medium above Sol max for +45% cost, and our own bench found Sol
+// already correct at medium-to-high on a hard task, with high->xhigh the worst-value step.
 const VARIANT_ROLES = Object.freeze({
   pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'medium'],
   pilotHard: ['pilot_hard_variant', 'WT_PILOT_HARD_VARIANT', 'high'],
@@ -22,10 +25,10 @@ const VARIANT_ROLES = Object.freeze({
   sdkPilot: ['sdk_pilot_variant', 'WT_SDK_PILOT_VARIANT', 'medium'],
   sdkPilotHard: ['sdk_pilot_hard_variant', 'WT_SDK_PILOT_HARD_VARIANT', 'high'],
   sdkOrchestrator: ['sdk_orchestrator_variant', 'WT_SDK_ORCHESTRATOR_VARIANT', 'high'],
-  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'xhigh'],
-  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'medium'],
-  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'xhigh'],
-  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'xhigh'],
+  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'max'],
+  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'high'],
+  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'medium'],
+  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'medium'],
 })
 
 export function variantRefusal(variant, model) {
@@ -47,7 +50,9 @@ export function resolveRoleVariant(role, model, { env = process.env, settingsEnv
     if (refusal) throw new Error(refusal)
     return { value: variant, origin: 'override', source, forced: false }
   }
-  if (role === 'code' && /gpt-(?:5\.6|6)-sol/i.test(model)) return { value: 'xhigh', origin: 'model profile', source: 'profile', forced: false }
+  // Forced xhigh is kept ONLY for gpt-5.6-sol, where it was measured; gpt-6-sol code now falls
+  // through to the role base ('high', owner table 2026-09-26).
+  if (role === 'code' && /gpt-5\.6-sol/i.test(model)) return { value: 'xhigh', origin: 'model profile', source: 'profile', forced: false }
   return { value: base, origin: 'role base', source: 'profile', forced: false }
 }
 
