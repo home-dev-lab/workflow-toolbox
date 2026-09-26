@@ -36,7 +36,10 @@ interface FenceModule { spawnOpencode: (spawnFn: typeof spawnSync, bin: string, 
 const { delimiter } = posix
 
 const load = async <T>(file: string): Promise<T> => (await import(pathToFileURL(join(LIB, file)).href)) as T
-const sandbox = await load<SandboxModule>('host/lane-sandbox.mjs')
+const sandboxLib = process.env.WT_LANE_SANDBOX_TEST_LIB
+const sandbox = sandboxLib
+  ? (await import(pathToFileURL(join(sandboxLib, 'host/lane-sandbox.mjs')).href)) as SandboxModule
+  : await load<SandboxModule>('host/lane-sandbox.mjs')
 const suiteLock = await load<SuiteLockModule>('suite-lock.mjs')
 const fence = await load<FenceModule>('opencode-skill-fence.mjs')
 
@@ -147,6 +150,59 @@ describe('lane sandbox plan — availability and pass-through', () => {
 })
 
 describe('lane sandbox plan — filesystem allow-list', () => {
+  it('every late read-only overlay stays clear of writable destinations, private homes and protected paths in both profiles', () => {
+    const codexHome = `${HOME}/.codex`
+    const bin = `${codexHome}/codex`
+    const link = `${HOME}/.local/bin/codex`
+    const cases = [
+      { profile: 'codex', env: { HOME, PATH: codexHome }, fs: fakeFs({ [bin]: 'bin' }, [HOME, '/work/tree', codexHome]), execPath: '/usr/bin/node' },
+      { profile: 'codex', env: { HOME, PATH: `${HOME}/.local/bin` }, fs: fakeFs({ [bin]: 'bin', [link]: 'link' }, [HOME, '/work/tree', codexHome, `${HOME}/.local/bin`], { [link]: bin }), execPath: '/usr/bin/node' },
+      ...(['codex', 'opencode'] as const).map((profile) => ({ profile, env: { HOME, PATH: '/usr/bin' }, fs: fakeFs({ [`${HOME}/.local/bin/node`]: 'node' }, [HOME, '/work/tree', `${HOME}/.local/bin`]), execPath: `${HOME}/.local/bin/node` })),
+    ]
+    for (const { profile, env, fs, execPath } of cases) {
+      const p = plan({ profile, env, fs, execPath })
+      const [, args] = p.wrap('/bin/sh', [])
+      const mounts = args.flatMap((flag, i) => (['--bind', '--bind-try', '--ro-bind', '--ro-bind-try'].includes(flag) ? [{ flag, source: args[i + 1]!, dest: args[i + 2]!, index: i }] : []))
+      const lastWrite = Math.max(...mounts.filter((m) => m.flag === '--bind' || m.flag === '--bind-try').map((m) => m.index))
+      const protectedPaths = profile === 'codex' ? [codexHome] : [`${HOME}/.config/opencode`, `${HOME}/.opencode`]
+      const guarded = [...mounts.filter((m) => m.flag === '--bind' || m.flag === '--bind-try').map((m) => m.dest), ...protectedPaths]
+      const late = mounts.filter((m) => m.index > lastWrite && m.flag.startsWith('--ro-'))
+      expect(late.length).toBeGreaterThan(0)
+      for (const overlay of late) for (const target of guarded) {
+        expect(target === overlay.dest || target.startsWith(`${overlay.dest}/`), `${profile}: late ${overlay.dest} covers ${target}`).toBe(false)
+      }
+      if (execPath.startsWith(HOME)) {
+        expect(late.map((m) => m.dest)).not.toContain(`${HOME}/.local`)
+        expect(late.map((m) => m.dest)).toEqual(expect.arrayContaining([`${HOME}/.local/bin`, `${HOME}/.local/lib`]))
+      } else {
+        expect(late.map((m) => m.dest)).toContain(bin)
+        expect(late.map((m) => m.dest)).not.toContain(codexHome)
+      }
+      p.dispose()
+    }
+  })
+
+  it('refuses a kept executable link whose target cannot be mounted instead of silently changing PATH priority', () => {
+    const link = `${HOME}/.local/bin/codex`
+    const target = `${HOME}/codex`
+    const fs = fakeFs({ [link]: 'link', [target]: 'bin' }, [HOME, '/work/tree', `${HOME}/.local/bin`], { [link]: target })
+    expect(() => plan({ profile: 'codex', env: { HOME, PATH: `${HOME}/.local/bin` }, fs })).toThrow(/refusing executable .*codex: target directory .*home\/lane-owner cannot be mounted/)
+  })
+
+  it('names the executable and blocker if even the narrowed toolchain overlay covers a writable bind', () => {
+    const node = `${HOME}/.local/bin/node`
+    const fs = fakeFs({ [node]: 'node' }, [HOME, '/work/tree', `${HOME}/.local/bin`])
+    expect(() => plan({ fs, execPath: node, optionEnv: { WT_LANE_SANDBOX_WRITE: `${HOME}/.local/bin` } })).toThrow(/refusing executable .*node: overlay .*\.local\/bin collides with .*\.local\/bin/)
+  })
+
+  it('narrows an executable directory covering a protected OpenCode config to the executable file', () => {
+    const binary = `${HOME}/.config/opencode-cli`
+    const [, args] = plan({ bin: binary, fs: fakeFs({ [binary]: 'cli' }, [HOME, '/work/tree', `${HOME}/.config`]) }).wrap(binary, [])
+    const late = flat(args, '--ro-bind-try')
+    expect(late).toContain(binary)
+    expect(late).not.toContain(`${HOME}/.config`)
+  })
+
   it('recreates a symlinked executable inside the sandbox so its real directory and sibling helper are visible', () => {
     const invoked = '/links/tool'
     const real = '/real/bin/tool'
@@ -656,6 +712,25 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     try {
       expect(result.status, String(result.stderr)).toBe(0)
       expect(String(result.stdout)).toBe('NEW\n')
+    } finally { p.dispose() }
+  })
+
+  it('keeps a binary inside a private Codex home runnable while hiding the host marker and allowing CODEX_HOME writes', () => {
+    const root = tempRoot('private-binary')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree')
+    const codexHome = join(home, '.codex'); const binDir = join(codexHome, 'releases/bin')
+    for (const dir of [home, worktree, binDir]) mkdirSync(dir, { recursive: true })
+    writeFileSync(join(codexHome, 'host-marker'), 'secret')
+    const binary = join(binDir, 'codex')
+    writeFileSync(binary, '#!/bin/sh\nprintf "BINARY_OK\\n"\n')
+    chmodSync(binary, 0o755)
+    const pathValue = `${binDir}:${process.env.PATH}`
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue } })
+    const [command, args] = p.wrap('/bin/sh', ['-c', 'test ! -e "$CODEX_HOME/host-marker" && touch "$CODEX_HOME/writable" && test -f "$CODEX_HOME/writable" && codex'])
+    const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
+    try {
+      expect(result.status, String(result.stderr)).toBe(0)
+      expect(result.stdout).toBe('BINARY_OK\n')
     } finally { p.dispose() }
   })
 

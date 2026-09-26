@@ -7,6 +7,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Fixed
 - Lane sandbox (Linux): Codex second opinions and codex lanes had no working shell inside the sandbox since 0.188.0 when the `codex` executable was reached through a symlink. Executable symlinks are now recreated inside the sandbox, pointing at the bound real executable location, so sibling helpers such as `codex-code-mode-host` remain discoverable without exposing the symlink's containing directory. The behavior is generic for symlinked executables, including OpenCode.
+- Late read-only executable overlays now preserve binaries beneath private-home remaps without covering a writable bind, private remap target, or protected path. Colliding binary directories narrow to the executable file; colliding Node toolchain prefixes narrow to `bin` and `lib`, with a named refusal if narrowing cannot preserve the boundary or a kept executable link would dangle.
 
 ## [0.188.1] - 2026-09-26
 
