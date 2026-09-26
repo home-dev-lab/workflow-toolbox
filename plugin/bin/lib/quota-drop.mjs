@@ -52,12 +52,13 @@ export function classifyQuotaDrop({ nowMs, previousResetsAt, currentResetsAt, pr
     return { kind: 'undetermined', detail: `${change} — cause undetermined: no reset time was reported for the previous reading (reset or source change)` }
   }
   const previousLabel = new Date(previousMs).toISOString()
+  const nowLabel = new Date(nowMs).toISOString()
   const currentLabel = currentMs === null ? 'none' : new Date(currentMs).toISOString()
   if (nowMs < previousMs) {
-    return { kind: 'unverified', detail: `${change} — reset unverified: before the reported reset time ${previousLabel} (reading now reports ${currentLabel}); a manual reset, or the source, account or binding changed — capacity not asserted` }
+    return { kind: 'unverified', detail: `${change} — reset unverified: before the reported reset time ${previousLabel} (now ${nowLabel}); next reported reset ${currentLabel} — a manual reset, or the source, account or binding changed — capacity not asserted` }
   }
   if (!continuity) {
-    return { kind: 'unverified', detail: `${change} — reset likely but unverified: past the reported reset time ${previousLabel} (now ${currentLabel}), source continuity not verified on this route — probe before relying on the capacity` }
+    return { kind: 'unverified', detail: `${change} — reset likely but unverified: past the reported reset time ${previousLabel} (now ${nowLabel}), source continuity not verified on this route — probe before relying on the capacity` }
   }
-  return { kind: 'reset', detail: `${change} — past the reported reset time ${previousLabel} (now ${currentLabel}); ${continuity} — new window, capacity available` }
+  return { kind: 'reset', detail: `${change} — past the reported reset time ${previousLabel} (now ${nowLabel}); ${continuity} — new window, capacity available` }
 }
