@@ -22,6 +22,7 @@ interface SandboxModule {
   announceUnsandboxedLane: (plan: SandboxPlan, write: (text: string) => void) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
+  suiteLockCli: (fs?: { isFile: (f: string) => boolean }) => string
 }
 interface SuiteLockModule {
   readSuiteLock: (options: Record<string, unknown>) => { root: string }
@@ -193,6 +194,13 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     const lockRoot = suiteLock.readSuiteLock({ env: {}, home: HOME, platform: 'linux' }).root
     expect(flat(args, '--bind-try')).toContain(lockRoot)
     expect(fs.ensured).toContain(lockRoot)
+  })
+
+  it('resolves the suite-lock CLI a lane runs to the plugin bin/ file that exists, and refuses when it is absent', () => {
+    const cli = join(ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs')
+    expect(sandbox.suiteLockCli()).toBe(cli)
+    expect(sandbox.suiteLockCli({ isFile: (file) => file === cli })).toBe(cli)
+    expect(() => sandbox.suiteLockCli({ isFile: () => false })).toThrow(`the suite-lock CLI is missing at ${cli}; update or reinstall workflow-toolbox`)
   })
 
   it('adds operator paths and refuses, by name, the root, home, and its ancestors', () => {

@@ -77,6 +77,7 @@ if (args[0] === '--version') process.stdout.write('fixture-1\\n')
 else if (args[0] === '--pure') process.stdout.write('[{"name":"workflow-toolbox-allowed-sentinel"}]\\n')
 else if (args[0] === 'debug' && args[1] === 'skill') process.stdout.write('[]\\n')
 else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOPTED_SEEN_FENCE, String(process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS) + '\\n')
+else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPTED_SEEN_LOCK, String(process.env.WT_SUITE_LOCK_CMD ?? 'unset'))
 `)
   chmodSync(join(bin, 'opencode'), 0o755)
   writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'fixture', version: '0.0.0' }))
@@ -88,6 +89,9 @@ else if (process.env.WT_ADOPTED_SEEN_FENCE) fs.writeFileSync(process.env.WT_ADOP
   const launcher = readFileSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane.mjs'), 'utf8')
   writeFileSync(join(pluginRoot, 'bin', 'wt-lane.mjs'), transformSource ? transformSource(launcher) : launcher)
   cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-lane-wait.mjs'), join(pluginRoot, 'bin', 'wt-lane-wait.mjs'))
+  // The suite-lock CLI a lane's WT_SUITE_LOCK_CMD runs, with the library it imports.
+  cpSync(join(REPO_ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs'), join(pluginRoot, 'bin', 'wt-suite-lock.mjs'))
+  for (const file of ['suite-lock.mjs', 'artifact-server.mjs']) cpSync(join(REPO_ROOT, 'plugin', 'bin', 'lib', file), join(pluginRoot, 'bin', 'lib', file))
   writeFileSync(join(config, 'plugins', 'installed_plugins.json'), JSON.stringify({
     version: 2,
     plugins: { 'workflow-toolbox@fixture': [{ installPath: pluginRoot, version: '0.0.0' }] },
@@ -282,6 +286,43 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     const until = Date.now() + 3000
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     expect(readFileSync(seen, 'utf8')).toBe('true\n')
+  })
+
+  it('hands the adopted lane child a WT_SUITE_LOCK_CMD that runs the installed plugin suite-lock CLI', () => {
+    const f = fixture()
+    const bin = join(f.root, 'bin')
+    const seen = join(f.root, 'seen-lock')
+    if (process.platform !== 'win32') writeFileSync(join(bin, 'opencode'), `#!/bin/sh
+if [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi
+if [ "$1" = "--pure" ]; then printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi
+if [ "$1" = "debug" ] && [ "$2" = "skill" ]; then printf '[]\\n'; exit 0; fi
+printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
+`)
+    chmodSync(join(bin, 'opencode'), 0o755)
+    f.env.WT_ADOPTED_SEEN_LOCK = seen
+    f.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_ADOPTED_SEEN_LOCK'
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    expect(launch(f).status).toBe(0)
+    const until = Date.now() + 3000
+    while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    const cli = join(f.pluginRoot, 'bin', 'wt-suite-lock.mjs')
+    expect(readFileSync(seen, 'utf8')).toBe(`node '${cli}' run --`)
+    expect(existsSync(cli)).toBe(true)
+    const help = runChild('adopted suite-lock CLI help', [cli, '--help'], f.env)
+    expect(help.status, help.stderr).toBe(0)
+    expect(help.stdout).toContain('wt-suite-lock.mjs run')
+  })
+
+  it('refuses to launch when the installed plugin root lacks the suite-lock CLI', () => {
+    const f = fixture()
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    rmSync(join(f.pluginRoot, 'bin', 'wt-suite-lock.mjs'))
+
+    const result = launch(f)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('wt-lane: Refused: the installed workflow-toolbox plugin is older or incompatible')
+    expect(result.stdout).not.toContain('pid=')
   })
 
   it('refuses a launcher whose consent import fragment was reworded', () => {

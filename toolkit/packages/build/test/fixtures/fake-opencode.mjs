@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { appendFileSync, copyFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
@@ -62,6 +63,16 @@ async function runAction() {
   if (action.includes('IDENTITY_RECORD')) {
     if (process.env.WT_IDENTITY_RECORD) appendFileSync(process.env.WT_IDENTITY_RECORD, `run|${cwd}|${process.env.WT_IDENTITY_MARKER || ''}|${process.env.OPENCODE_CONFIG || 'unset'}\n`)
     write('spawned', 'spawned')
+    return
+  }
+  if (action === 'suite-lock-cmd') {
+    write('suite-lock-cmd', process.env.WT_SUITE_LOCK_CMD ?? 'unset')
+    return
+  }
+  if (action === 'suite-lock-run') {
+    // A lane gate the way a brief asks for one: the command runs under $WT_SUITE_LOCK_CMD.
+    const gate = spawnSync('/bin/sh', ['-c', `${process.env.WT_SUITE_LOCK_CMD ?? 'false'} ${JSON.stringify(process.execPath)} -e "console.log('gate ran')"`], { encoding: 'utf8' })
+    write('suite-lock-run', `status=${gate.status}\n${gate.stdout}${gate.stderr}`)
     return
   }
   if (action.includes('opencode-config')) {
