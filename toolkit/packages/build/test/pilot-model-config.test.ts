@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { assertHarnessModel, resolveExecutorProfile as resolveExecutorProfileImpl, resolvePilotModels as resolvePilotModelsImpl } from '../../../../plugin/bin/lib/pilot-model-config.mjs'
@@ -40,21 +40,21 @@ describe('pilot model configuration', () => {
       env: { WT_PILOT_MODEL: 'haiku' },
       settingsEnv: { WT_PILOT_MODEL: 'opus', WT_PILOT_HARD_MODEL: 'fable' },
     })).toEqual({
-      pilot: { value: 'haiku', source: 'env', effective: 'haiku', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      pilot: { value: 'haiku', source: 'env', effective: 'haiku', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
       pilotHard: { value: 'fable', source: 'settings', effective: 'fable', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
       orchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
-      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
       sdkPilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
       sdkOrchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
     })
   })
 
-  it('defaults every harness and SDK pilot/orchestrator cell to opus at explicit SDK-default effort high (owner 2026-09-22)', () => {
+  it('defaults every harness and SDK pilot/orchestrator cell to opus with pilots at medium and orchestrators and hard pilots at high (owner 2026-09-22, 2026-09-24)', () => {
     expect(resolvePilotModels({ env: {}, settingsEnv: {} })).toEqual({
-      pilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      pilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
       pilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
       orchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
-      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
+      sdkPilot: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'medium', origin: 'role base', source: 'profile', forced: false } },
       sdkPilotHard: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
       sdkOrchestrator: { value: 'opus', source: 'default', effective: 'opus', remappedBy: null, variant: { value: 'high', origin: 'role base', source: 'profile', forced: false } },
     })
@@ -113,12 +113,59 @@ describe('pilot model configuration', () => {
     expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: { WT_EXECUTOR_REVIEW_VARIANT: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override' })
   })
 
-  it('ships explicit high defaults except for the model-derived code effort', () => {
+  // Owner decision 2026-09-24 (wt-suite #4039, card 1871089222002148813): pilots and implementation
+  // run at medium. Critic, review and refutation effort is deliberately NOT changed by that card.
+  it.each([
+    ['pilot', 'opus', 'WT_PILOT_VARIANT', 'pilot_variant'],
+    ['sdkPilot', 'opus', 'WT_SDK_PILOT_VARIANT', 'sdk_pilot_variant'],
+    ['code', 'sonnet', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
+    ['code', 'opus', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
+    ['code', 'openai/gpt-5.6-terra', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
+  ] as const)('resolves the %s role on %s to medium by default, and an explicit override still wins', (role, model, envKey, option) => {
+    expect(resolveRoleVariant(role, model, { env: {}, readPluginOption: noPluginOption })).toEqual({ value: 'medium', origin: 'role base', source: 'profile', forced: false })
+    expect(resolveRoleVariant(role, model, { env: { [envKey]: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override', source: 'env' })
+    expect(resolveRoleVariant(role, model, { env: {}, settingsEnv: { [envKey]: 'xhigh' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'override', source: 'settings' })
+    const pluginOption = (key: string) => key === option ? { present: true, value: 'low' } : { present: false }
+    expect(resolveRoleVariant(role, model, { env: { [envKey]: 'high' }, readPluginOption: pluginOption })).toMatchObject({ value: 'low', origin: 'override', source: 'plugin option' })
+  })
+
+  it.each(['critic', 'review', 'refutation', 'pilotHard', 'sdkPilotHard', 'orchestrator', 'sdkOrchestrator'] as const)('keeps the %s role at high: the medium decision covers pilots and implementation only', (role) => {
+    expect(resolveRoleVariant(role, 'opus', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'role base' })
+  })
+
+  it('resolves the Claude SDK implementer to medium in the executor profile and reports it per role', () => {
+    const profile = resolveExecutorProfile({ worktree: '/worktree', route: 'LITE', hard: false, env: {}, settingsEnv: {}, resolveConsentImpl: () => ({ outcome: 'not_true' }) })
+    expect(profile.variants).toEqual({ critic: 'high', code: 'medium', review: 'high', refutation: 'high' })
+    expect(profile.variantOrigins.code).toBe('role base')
+  })
+
+  it('ships medium defaults for the pilots, high for the other roles, and a model-derived code effort', () => {
     const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8'))
-    const variants = Object.entries(manifest.userConfig).filter(([key]) => key.endsWith('_variant')).map(([, schema]) => (schema as { default: string }).default)
-    expect(variants).toHaveLength(10)
-    expect(variants.filter((variant) => variant === 'high')).toHaveLength(9)
-    expect(variants.filter((variant) => variant === '')).toHaveLength(1)
+    const variants = Object.fromEntries(Object.entries(manifest.userConfig).filter(([key]) => key.endsWith('_variant')).map(([key, schema]) => [key, (schema as { default: string }).default]))
+    expect(variants).toEqual({
+      pilot_variant: 'medium',
+      pilot_hard_variant: 'high',
+      orchestrator_variant: 'high',
+      sdk_pilot_variant: 'medium',
+      sdk_pilot_hard_variant: 'high',
+      sdk_orchestrator_variant: 'high',
+      executor_critic_variant: 'high',
+      executor_code_variant: '',
+      executor_review_variant: 'high',
+      executor_refutation_variant: 'high',
+    })
+  })
+
+  it('keeps the runtime option defaults equal to the manifest defaults for every variant option', async () => {
+    const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8'))
+    const { resolveWorkflowToolboxOption } = await import(pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/plugin-options.mjs')).href)
+    const configDir = mkdtempSync(join(tmpdir(), 'wt-variant-defaults-'))
+    roots.push(configDir)
+    const variantKeys = Object.keys(manifest.userConfig).filter((name) => name.endsWith('_variant'))
+    expect(variantKeys).toHaveLength(10)
+    for (const key of variantKeys) {
+      expect(resolveWorkflowToolboxOption(key, { env: { CLAUDE_CONFIG_DIR: configDir } }), key).toEqual({ value: manifest.userConfig[key].default, source: 'default' })
+    }
   })
 
   it('resolves a pilot plugin option before process env, settings env, and the default', () => {

@@ -1168,9 +1168,32 @@ describe('SDK pilot runner', () => {
       yield initMessage()
     })()
     await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false, boardMoves: false }, { query, resolvePilotModels: models, resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: {} }), log: (line: string) => logged.push(line) })
-    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet variant=high variant_origin=role base executor=gpt-lane')
+    expect(logged[0]).toBe('route=LITE reasons=human Route: LITE model=sonnet effective=sonnet variant=medium variant_origin=role base executor=gpt-lane')
     expect(permission).toEqual({ behavior: 'deny', message: "board moves are the orchestrator's" })
     expect(lifecycleCanUseTool(f.dir, 'mcp__planka__move_card', {}, { boardMoves: true }).behavior).toBe('allow')
+  })
+
+  it('records the effective effort of the pilot and of every executor role in the run summary', async () => {
+    const f = fixture()
+    const configDir = mkdtempSync(join(tmpdir(), 'wt-effort-summary-'))
+    roots.push(configDir)
+    const env: Record<string, string> = { CLAUDE_CONFIG_DIR: configDir }
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && !/^WT_.*_(?:MODEL|VARIANT)$/.test(key) && key !== 'CLAUDE_CONFIG_DIR') env[key] = value
+    }
+    env.WT_EXECUTOR_REVIEW_VARIANT = 'xhigh'
+    const query = () => (async function* () { yield initMessage() })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
+      query, env, resolvePilotModels: models, log: () => {},
+      resolveExecutorProfile: () => ({ executor: 'claude-sdk', models: { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' } }),
+    })
+    expect(result.summary).toMatchObject({ variant: 'medium', variant_origin: 'role base' })
+    expect(result.summary.executor_variants).toEqual({
+      critic: { value: 'high', origin: 'role base' },
+      code: { value: 'medium', origin: 'role base' },
+      review: { value: 'xhigh', origin: 'override' },
+      refutation: { value: 'high', origin: 'role base' },
+    })
   })
 
   it.skipIf(process.env.WT_REAL_SDK_LOCKS !== '1')('refuses forbidden tools through a real SDK query without shadowing canUseTool', async () => {

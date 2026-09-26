@@ -16,7 +16,8 @@ export const MAX_LANE_REPORT_BYTES = 256 * 1024
 const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
 const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
 
-function launchVariant(phase, model, env) {
+// The effort a lane is launched at; the pilot runner records the same resolution in its run summary.
+export function launchVariant(phase, model, env) {
   const role = phase === 'tdd' ? 'code' : phase
   return { role, ...resolveRoleVariant(role, model, { env }) }
 }
