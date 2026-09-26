@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- `WT_SUITE_LOCK_CMD` is now one executable path rather than a POSIX-quoted command string. Lanes run `"$WT_SUITE_LOCK_CMD" pnpm test` on Linux and macOS, or the platform equivalent on Windows, without `eval` or shell re-parsing; the executable preserves the suite lock's exit-code and wait-line behavior.
+
 ## [0.188.1] - 2026-09-26
 
 ### Fixed

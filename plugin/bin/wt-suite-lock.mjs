@@ -14,6 +14,7 @@ import {
 
 const USAGE = `Usage:
   node wt-suite-lock.mjs run [--wait-s ${DEFAULT_SUITE_LOCK_WAIT_S}] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}] -- <command> [args...]
+  wt-suite-lock.mjs <command> [args...]
   node wt-suite-lock.mjs status [--json]
   node wt-suite-lock.mjs release [--force] [--stale-s ${DEFAULT_SUITE_LOCK_STALE_S}]`
 
@@ -119,7 +120,8 @@ async function main() {
   if (subcommand === 'run') return run(args)
   if (subcommand === 'status') return status(args)
   if (subcommand === 'release') return release(args)
-  throw new Error(subcommand ? `unknown subcommand: ${subcommand}` : 'missing subcommand')
+  if (subcommand) return run(['--', subcommand, ...args])
+  throw new Error('missing subcommand')
 }
 
 try {

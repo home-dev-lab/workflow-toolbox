@@ -279,13 +279,13 @@ const PROFILES = {
 const suiteLockDir = (env) => path.join(xdg(env, 'XDG_STATE_HOME', '.local/state'), 'wt-suite-lock')
 
 /**
- * The suite-lock CLI a lane's WT_SUITE_LOCK_CMD runs, as a host-native path: it ships in the plugin's
+ * The suite-lock executable a lane's WT_SUITE_LOCK_CMD runs, as a host-native path: it ships in the plugin's
  * bin/, beside the lib/ this module lives in, so a launcher anywhere (the plugin's own, or an adopted
  * copy in a config dir) resolves the file of the plugin it loaded this module from. Throws when the
  * file is absent, so a lane is never handed a command that cannot run.
  */
 export function suiteLockCli(fs = realFs) {
-  const cli = fileURLToPath(new URL('../../wt-suite-lock.mjs', import.meta.url))
+  const cli = fileURLToPath(new URL(`../../wt-suite-lock${process.platform === 'win32' ? '.cmd' : '.mjs'}`, import.meta.url))
   if (!fs.isFile(cli)) throw new Error(`the suite-lock CLI is missing at ${cli}; update or reinstall workflow-toolbox`)
   return cli
 }

@@ -590,7 +590,7 @@ async function main() {
   // Resolved (and refused when absent) by the loaded plugin runtime; see suiteLockCli in lib/host/lane-sandbox.mjs.
   const suiteLockCli = consentModules.suiteLockCli
   const childEnv = consentModules.opencodeChildEnv(process.env, opts.model)
-  childEnv.WT_SUITE_LOCK_CMD = `node ${consentModules.shellQuote(suiteLockCli)} run --`
+  childEnv.WT_SUITE_LOCK_CMD = suiteLockCli
   if (allowlist.allowed.length) childEnv.OPENCODE_CONFIG = allowedSkills.configPath
   const opencodeBinary = fence.binary ?? 'opencode'
   writeLaneStage(opts.log, 'effective-discovery-start')
