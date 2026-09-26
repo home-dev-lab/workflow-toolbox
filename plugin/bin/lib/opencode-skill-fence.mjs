@@ -9,6 +9,10 @@ import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-al
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
 import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 
+// The launcher reaches the suite-lock CLI through this module, so an adopted launcher (which
+// loads it from the installed plugin root) resolves the CLI of that same plugin.
+export { suiteLockCli } from './host/lane-sandbox.mjs'
+
 const SENTINEL = 'workflow-toolbox-fence-sentinel'
 const ALLOW_SENTINEL = 'workflow-toolbox-allowed-sentinel'
 const PROBE_CONTRACT = 'allow-list-v2-two-half'

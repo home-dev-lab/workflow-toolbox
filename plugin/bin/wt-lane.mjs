@@ -7,10 +7,9 @@ import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { constants as osConstants } from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { resolveConsent } from './lib/lane-consent-check-core.mjs'
 import { evaluateConsentGate } from './lib/lane-consent-gate-core.mjs'
-import { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
+import { effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, suiteLockCli, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence } from './lib/opencode-skill-fence.mjs'
 import { resolveLaneSkillAllowlist } from './lib/lane-skill-allowlist.mjs'
 import { laneModelRefusal, resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
@@ -31,7 +30,7 @@ const PROCESS_STARTED_AT = Date.now() - process.uptime() * 1000
 const PLATFORM = process.platform
 
 async function loadConsentModules() {
-  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter }
+  return { resolveConsent, evaluateConsentGate, effectiveSkillDiscoveryRefusal, materialiseAllowedSkills, opencodeChildEnv, opencodeSkillFenceRefusal, spawnOpencode, verifyEffectiveOpencodeSkillDiscovery, verifyOpencodeSkillFence, resolveLaneSkillAllowlist, laneModelRefusal, resolveRoleVariant, variantRefusal, appendSupervisorJournal, argvSummary, claimCurrentSupervision, classifyLane, inspectProcess, inspectStartedProcess, laneHardBoundAt, latestWorktreeWrite, processEvidenceStatus, readCurrentSupervision, readLogTail, sameIdentity, shellQuote, supervisionPaths, terminateLane, writeJsonAtomic, resolvePluginDataDir, hostAdapter, suiteLockCli: suiteLockCli() }
 }
 
 async function loadIntegrationModule() {
@@ -588,13 +587,19 @@ async function main() {
   }
   writeLaneStage(opts.log, 'skill-fence-done')
 
-  const suiteLockCli = path.join(path.dirname(fileURLToPath(import.meta.url)), 'wt-suite-lock.mjs')
+  // Resolved (and refused when absent) by the loaded plugin runtime; see suiteLockCli in lib/host/lane-sandbox.mjs.
+  const suiteLockCli = consentModules.suiteLockCli
   const childEnv = consentModules.opencodeChildEnv(process.env, opts.model)
   childEnv.WT_SUITE_LOCK_CMD = `node ${consentModules.shellQuote(suiteLockCli)} run --`
   if (allowlist.allowed.length) childEnv.OPENCODE_CONFIG = allowedSkills.configPath
   const opencodeBinary = fence.binary ?? 'opencode'
   writeLaneStage(opts.log, 'effective-discovery-start')
-  const ownedNames = ['OPENCODE_CONFIG']
+  // Names the launcher sets itself: the child environment allow-list passes them, never inherits them.
+  const ownedNames = ['OPENCODE_CONFIG', 'WT_SUITE_LOCK_CMD']
+  // Inside the Linux lane sandbox the lock DIRECTORY is bound read-write by the sandbox itself. The
+  // CLI that WT_SUITE_LOCK_CMD runs reads beyond bin/ at import (lib/artifact-server.mjs reads
+  // .claude-plugin/plugin.json), so the whole plugin root it ships in is bound read-only here.
+  const suiteLockSandboxPaths = { readable: [path.dirname(path.dirname(suiteLockCli))] }
   const discovery = consentModules.verifyEffectiveOpencodeSkillDiscovery(opencodeBinary, { cwd: opts.dir, env: childEnv, platform: process.platform, extraNames: ownedNames, model: opts.model })
   if (!discovery.ok) {
     process.stderr.write(`${consentModules.effectiveSkillDiscoveryRefusal(discovery)}\n`)
@@ -675,7 +680,7 @@ async function main() {
   appendFileSync(fd, `${new Date().toISOString()} stage=opencode-spawn-start ${progress}\n`)
   const childSpawnedAt = Date.now()
   try {
-    child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd] }, process.platform, ownedNames)
+    child = consentModules.spawnOpencode(spawn, opencodeBinary, args, { cwd: opts.dir, env: childEnv, stdio: ['ignore', fd, fd], sandboxPaths: suiteLockSandboxPaths }, process.platform, ownedNames)
     child.once('close', (code, signal) => { earlyChildClose = [code, signal] })
     await new Promise((resolve, reject) => {
       child.once('spawn', resolve)
