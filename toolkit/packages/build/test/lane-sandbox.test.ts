@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
@@ -22,7 +22,7 @@ interface SandboxModule {
   announceUnsandboxedLane: (plan: SandboxPlan, write: (text: string) => void) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
-  suiteLockCli: (fs?: { isFile: (f: string) => boolean }) => string
+  suiteLockCli: (fs?: { isFile: (f: string) => boolean, isExecutable?: (f: string) => boolean }) => string
 }
 interface SuiteLockModule {
   readSuiteLock: (options: Record<string, unknown>) => { root: string }
@@ -201,6 +201,36 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(sandbox.suiteLockCli()).toBe(cli)
     expect(sandbox.suiteLockCli({ isFile: (file) => file === cli })).toBe(cli)
     expect(() => sandbox.suiteLockCli({ isFile: () => false })).toThrow(`the suite-lock CLI is missing at ${cli}; update or reinstall workflow-toolbox`)
+  })
+
+  // A fs without isExecutable (the two calls above, and every caller predating this check) must
+  // stay unaffected: "unknown" is never treated as "refuse". Only a fs that actually answers false
+  // triggers the new refusal, on POSIX where an execute bit is a real thing to lose (a chmod 644
+  // extraction, a broken installer). Card 1872232864, review r3, LOW finding 3.
+  it('refuses a suite-lock runner that exists but lost its POSIX execute bit, and stays silent when the fs cannot answer', () => {
+    const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs')
+    expect(sandbox.suiteLockCli({ isFile: () => true, isExecutable: () => true })).toBe(cli)
+    if (process.platform === 'win32') return
+    expect(() => sandbox.suiteLockCli({ isFile: () => true, isExecutable: () => false })).toThrow(
+      `the suite-lock CLI at ${cli} is not executable; update or reinstall workflow-toolbox`,
+    )
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses a real temp copy of the runner that lost its execute bit (chmod 644)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'wt-suite-lock-cli-perm-'))
+    const copyPath = join(dir, 'wt-suite-lock-run.mjs')
+    cpSync(join(ROOT, 'plugin', 'bin', 'wt-suite-lock-run.mjs'), copyPath)
+    chmodSync(copyPath, 0o644)
+    try {
+      expect(() => sandbox.suiteLockCli({ isFile: () => true })).not.toThrow()
+      const realIsExecutable = (file: string) => {
+        try { accessSync(file, constants.X_OK); return true } catch { return false }
+      }
+      expect(realIsExecutable(copyPath)).toBe(false)
+      expect(() => sandbox.suiteLockCli({ isFile: () => true, isExecutable: () => realIsExecutable(copyPath) })).toThrow(/is not executable/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('adds operator paths and refuses, by name, the root, home, and its ancestors', () => {

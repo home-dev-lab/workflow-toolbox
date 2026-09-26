@@ -11,6 +11,10 @@ const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
 const RUNNER = join(ROOT, 'plugin/bin/wt-suite-lock-run.mjs')
 const roots: string[] = []
+// Same probe as wt-lane-launcher.test.ts: the ubuntu-latest GitHub runner in cross-os run
+// 36238137992 had no working zsh, so an unconditional spawn returned status: null (spawn error,
+// never a real exit code) — `expected null to be 7`. Gate on the same real-zsh probe and name why.
+const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -24,6 +28,13 @@ function tempRoot(tag: string): string {
 
 function cli(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [CLI, ...args], {
+    encoding: 'utf8',
+    env: { ...process.env, WT_SUITE_LOCK_DIR: root, ...extraEnv },
+  })
+}
+
+function runner(args: string[], root: string, extraEnv: NodeJS.ProcessEnv = {}) {
+  return spawnSync(process.execPath, [RUNNER, ...args], {
     encoding: 'utf8',
     env: { ...process.env, WT_SUITE_LOCK_DIR: root, ...extraEnv },
   })
@@ -128,7 +139,7 @@ describe('wt-suite-lock CLI', () => {
     expect(releaseSuiteLock(lease)).toBe(true)
   })
 
-  it.skipIf(process.platform === 'win32')('runs commands named status and run literally through WT_SUITE_LOCK_CMD in zsh', () => {
+  it.skipIf(!ZSH_WORKS)('runs commands named status and run literally through WT_SUITE_LOCK_CMD in zsh (skips: zsh unavailable)', () => {
     const root = tempRoot('literal-zsh')
     const bin = join(root, 'bin')
     const stub = '#!/bin/sh\nprintf "literal command: %s\\n" "$0"\nexit 7\n'
@@ -141,6 +152,7 @@ describe('wt-suite-lock CLI', () => {
         encoding: 'utf8',
         env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH}`, WT_SUITE_LOCK_CMD: RUNNER, WT_SUITE_LOCK_DIR: bin },
       })
+      expect(result.error, 'zsh spawn itself failed rather than the child exiting').toBeUndefined()
       expect(result.status).toBe(7)
       expect(result.stdout).toContain(`literal command: ${join(root, command)}`)
     }
@@ -154,6 +166,52 @@ describe('wt-suite-lock CLI', () => {
     expect(result.stderr).toContain('unknown subcommand: statsu')
     expect(result.stderr).toContain('Usage:')
     expect(existsSync(marker)).toBe(false)
+  })
+})
+
+describe('wt-suite-lock-run runner', () => {
+  it('runs the given argv verbatim under the lock', () => {
+    const root = tempRoot('runner-verbatim')
+    const result = runner([process.execPath, '-e', 'process.stdout.write("ran")'], root)
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('ran')
+  })
+
+  // An adopted `~/.claude/scripts/wt-lane.mjs` predating this runner still builds
+  // `node <suiteLockCli> run --` itself (card 1872232864, review r3). With WT_SUITE_LOCK_CMD now
+  // naming this dedicated runner (which always forwards ['run', '--', ...argv] on its own), that
+  // older template doubles the prefix into `run -- run -- <command>` and the runner's own `run`
+  // subcommand tries to spawn a program literally named `run`. Strip one leading `run --` (or a
+  // bare `--`) so both the old and the new launcher template work.
+  it('strips one leading "run --" from an older adopted launcher template without doubling it', () => {
+    const root = tempRoot('runner-compat-run')
+    const result = runner(['run', '--', process.execPath, '-e', 'process.stdout.write("ran")'], root)
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('ran')
+  })
+
+  it('strips a single leading "--" the same way', () => {
+    const root = tempRoot('runner-compat-dashes')
+    const result = runner(['--', process.execPath, '-e', 'process.stdout.write("ran")'], root)
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toBe('ran')
+  })
+
+  it('takes the suite lock itself while the child runs, and a second runner waits for it', async () => {
+    const root = tempRoot('runner-takes-lock')
+    const child = spawn(process.execPath, [RUNNER, process.execPath, '-e', 'setTimeout(() => {}, 1500)'], {
+      env: { ...process.env, WT_SUITE_LOCK_DIR: root },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    await waitFor(() => existsSync(join(root, 'lock.d', 'holder.json')))
+    const holder = JSON.parse(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8'))
+    expect(holder.pid).toBe(child.pid)
+    const statusWhileHeld = cli(['status'], root)
+    expect(statusWhileHeld.stdout).toContain('suite lock held')
+    const second = runner([process.execPath, '-e', 'process.stdout.write("second ran")'], root)
+    expect(second.stderr).toContain('waiting for suite lock: holder pid')
+    expect(second.stdout).toBe('second ran')
+    await new Promise((resolve) => child.once('exit', resolve))
   })
 })
 

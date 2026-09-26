@@ -6,7 +6,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
-- `WT_SUITE_LOCK_CMD` now names the dedicated `wt-suite-lock-run` executable, so every following word is run literally under the suite lock, including commands named `run`, `status`, or `release`. The administrative `wt-suite-lock` CLI again rejects unknown subcommands with usage.
+- `WT_SUITE_LOCK_CMD` now names the dedicated `wt-suite-lock-run` executable, so every following word is run literally under the suite lock, including commands named `run`, `status`, or `release`. The administrative `wt-suite-lock` CLI again rejects unknown subcommands with usage. The runner forwards its arguments verbatim on POSIX (`"$WT_SUITE_LOCK_CMD" pnpm test`, no shell re-parsing); on Windows, `cmd.exe` still re-parses `%`, `^` and `&` in an unquoted argument, so a command carrying those characters should be run as `node wt-suite-lock.mjs run -- …` instead. It also tolerates a `run --` (or bare `--`) prefix an older adopted `wt-lane.mjs` still supplies itself, so `adopt --set scripts` need not land before both sides work together — re-adopt `wt-lane.mjs` (`adopt --set scripts`) anyway to pick up the current launcher.
+- `wt-suite-lock.mjs` and `lane-egress-proxy.mjs` compared `process.argv[1]` to `import.meta.url` directly to decide whether they were invoked directly; reached through a symlink, that comparison never matched, so the file printed nothing and exited 0 instead of running. Both now use the existing symlink-safe `isInvokedDirectly` guard (`lib/host/entry-guard.mjs`), which every other entrypoint in `plugin/bin` already used.
+- `suiteLockCli` (`lib/host/lane-sandbox.mjs`) now also refuses a suite-lock runner file that exists but lost its POSIX execute bit, with "update or reinstall workflow-toolbox" rather than a spawn failure deep inside a lane.
 
 ## [0.188.1] - 2026-09-26
 

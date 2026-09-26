@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import {
   DEFAULT_SUITE_LOCK_STALE_S,
   DEFAULT_SUITE_LOCK_WAIT_S,
@@ -132,4 +132,4 @@ export async function runSuiteLockCliEntrypoint(argv = process.argv.slice(2)) {
   }
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) process.exitCode = await runSuiteLockCliEntrypoint()
+if (isInvokedDirectly(import.meta.url)) process.exitCode = await runSuiteLockCliEntrypoint()

@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import os from 'node:os'
 // POSIX paths, not the host's native ones: every path here names a location inside a Linux bwrap
 // sandbox or on the Linux host that builds it. The plan is never built elsewhere (see
@@ -61,6 +61,9 @@ const realFs = {
   exists: (file) => existsSync(file),
   realpath: (file) => { try { return realpathSync(file) } catch { return null } },
   isFile: (file) => { try { return statSync(file).isFile() } catch { return false } },
+  // Windows has no execute bit to check (a .cmd is invoked by name resolution, never by mode); the
+  // check is POSIX-only, and always true on win32.
+  isExecutable: (file) => { if (process.platform === 'win32') return true; try { accessSync(file, constants.X_OK); return true } catch { return false } },
   isDir: (file) => { try { return statSync(file).isDirectory() } catch { return false } },
   readText: (file) => { try { return readFileSync(file, 'utf8') } catch { return null } },
   ensureDir: (directory) => { try { mkdirSync(directory, { recursive: true, mode: 0o700 }) } catch { /* bind-try then leaves it private */ } },
@@ -287,6 +290,10 @@ const suiteLockDir = (env) => path.join(xdg(env, 'XDG_STATE_HOME', '.local/state
 export function suiteLockCli(fs = realFs) {
   const cli = fileURLToPath(new URL(`../../wt-suite-lock-run${process.platform === 'win32' ? '.cmd' : '.mjs'}`, import.meta.url))
   if (!fs.isFile(cli)) throw new Error(`the suite-lock CLI is missing at ${cli}; update or reinstall workflow-toolbox`)
+  // POSIX only: a checkout that lost its execute bit (e.g. an archive extracted with the bit
+  // stripped) spawns ENOEXEC/EACCES deep inside a lane instead of failing here with a clear cause.
+  // A fake fs without isExecutable (existing callers) is treated as "unknown", never refused.
+  if (fs.isExecutable && !fs.isExecutable(cli)) throw new Error(`the suite-lock CLI at ${cli} is not executable; update or reinstall workflow-toolbox`)
   return cli
 }
 

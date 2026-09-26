@@ -7,3 +7,8 @@
 
 # Host probe captures are byte evidence: never transform their UTF-8/LF bytes.
 probes/host-platform/evidence/** -text -eol
+
+# cmd.exe requires CRLF line endings to parse a batch file reliably; a `.cmd` shipped or checked
+# out with LF (the blanket rule above) can misbehave on Windows depending on how it reached the
+# disk. No test currently locks these bytes (card 1872232864, review r3, LOW finding 5).
+*.cmd text eol=crlf
