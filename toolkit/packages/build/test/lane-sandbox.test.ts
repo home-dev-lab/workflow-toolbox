@@ -468,6 +468,75 @@ describe('lane sandbox plan — codex home (H3)', () => {
   })
 })
 
+// The fake plan deliberately forces the Linux bwrap path; its real temporary root must use POSIX
+// paths. Windows verifies the normal unsandboxed branch in the availability suite above.
+describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans leave no acquired resources', () => {
+  function fixture() {
+    const root = tempRoot('refusal')
+    const runtimeParent = join(root, 'run')
+    mkdirSync(runtimeParent)
+    const credential = `${HOME}/.codex/auth.json`
+    const fake = fakeFs({ '/opt/good/bin/codex': 'binary', [credential]: '{"tokens":{}}' }, [HOME, '/work/tree', '/opt/good/bin', `${HOME}/.codex`])
+    const fs = {
+      ...fake,
+      ensureDir: (dir: string) => { mkdirSync(dir, { recursive: true }); fake.ensureDir(dir) },
+      copy: (from: string, to: string) => {
+        fake.copy(from, to)
+        if (from === credential) { mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, fake.readText(from)!, { mode: 0o600 }) }
+      },
+    }
+    const relays: Array<{ alive: boolean, kill: () => void }> = []
+    const spawnFn = (_command: string, args: string[]) => {
+      const sock = socketOf(args)
+      if (sock) fs.ensureFile(sock)
+      const relay = { alive: true, kill() { this.alive = false } }
+      relays.push(relay)
+      return relay
+    }
+    const refuse = (overrides: Record<string, unknown>, error: string | (new (message: string) => Error) = sandbox.LaneSandboxRefusal) => {
+      expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/good/bin' }, fs, runtimeParent, spawnFn, ...overrides })).toThrow(error)
+      expect(readdirSync(runtimeParent)).toEqual([])
+      expect(relays.every((relay) => !relay.alive)).toBe(true)
+    }
+    return { fs, relays, refuse }
+  }
+
+  it('selects codex before copying auth when no executable is on PATH', () => {
+    const { fs, relays, refuse } = fixture()
+    refuse({ env: { HOME, PATH: '' } })
+    expect(fs.copied).toEqual([])
+    expect(relays).toEqual([])
+  })
+
+  it('refuses a readable parent traversal without leaving the credential copy or a bridge', () => {
+    const { fs, relays, refuse } = fixture()
+    refuse({ paths: { readable: ['/data/a/../b'] } })
+    expect(fs.copied).toEqual([])
+    expect(relays).toEqual([])
+  })
+
+  it('refuses a covered codex realpath before starting the egress bridge', () => {
+    const { fs, relays, refuse } = fixture()
+    fs.isDir = (file: string) => file !== '/opt/good/bin' && file !== '/opt/good' && file !== '/opt' && file !== '/usr' && file !== '/usr/bin' && file !== '/usr/local/bin'
+    refuse({})
+    expect(fs.copied).toEqual([])
+    expect(relays).toEqual([])
+  })
+
+  it('kills a bridge that fails to open its socket and removes the credential', () => {
+    const { fs, refuse } = fixture()
+    const relays: Array<{ alive: boolean, kill: () => void }> = []
+    refuse({ spawnFn: () => {
+      const relay = { alive: true, kill() { this.alive = false } }
+      relays.push(relay)
+      return relay
+    } }, sandbox.LaneSandboxRefusal)
+    expect(relays).toHaveLength(1)
+    expect(relays[0]!.alive).toBe(false)
+    expect(fs.copied.map(([source]) => source)).toContain(`${HOME}/.codex/auth.json`)
+  })
+})
+
 // Every path the plan hands the child through --setenv must EXIST inside the sandbox: the inside
 // path of a bind or a remap, a tmpfs, or a created --dir. A host path the sandbox never binds (the
 // per-run runtime dir under /run/user/<uid>, hidden by design) is absent in there, and the CLI fails

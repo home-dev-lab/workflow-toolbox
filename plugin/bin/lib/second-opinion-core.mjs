@@ -82,6 +82,7 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
     process.removeListener('exit', onExit)
     signal?.removeEventListener('abort', onAbort)
     sandbox?.dispose?.()
+    ownership.stop()
     throw error
   }
   const chunks = { stdout: [], stderr: [] }

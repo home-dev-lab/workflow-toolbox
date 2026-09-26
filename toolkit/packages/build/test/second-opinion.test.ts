@@ -596,4 +596,26 @@ describe('second-opinion advisor', () => {
     expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
     expect(process.listenerCount('exit')).toBe(baselineExitListeners)
   })
+
+  it('stops broker ownership and removes its temp root when sandbox planning refuses', async () => {
+    const core = process.env.WT_LANE_SECOND_OPINION_TEST_LIB
+      ? await import(pathToFileURL(join(process.env.WT_LANE_SECOND_OPINION_TEST_LIB, 'second-opinion-core.mjs')).href)
+      : { createSecondOpinionDependencies, runSecondOpinion }
+    for (const reason of ['no executable selected', 'parent traversal in a readable bind', 'codex realpath is covered']) {
+      const f = fixture(true)
+      const ownershipRoot = mkdtempSync(join(f.repo, 'broker-ownership-'))
+      const stop = vi.fn(() => { rmSync(ownershipRoot, { recursive: true, force: true }); return [] })
+      const baseline = process.listenerCount('exit')
+      const adapter = {
+        platform: 'linux',
+        createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop }),
+      }
+      const deps = core.createSecondOpinionDependencies(adapter, { resolveSandbox: () => { throw new Error(`refusing ${reason}`) } })
+      deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+      expect(await core.runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+      expect(stop).toHaveBeenCalledOnce()
+      expect(existsSync(ownershipRoot)).toBe(false)
+      expect(process.listenerCount('exit')).toBe(baseline)
+    }
+  })
 })
