@@ -666,8 +666,9 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     const r = fence.spawnOpencode(spawnSync, process.execPath, args, { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
     expect(r.laneSandbox?.kind).toBe('bwrap')
     expect(r.status).not.toBe(0)
-    expect(String(r.stderr)).toContain('dod-decisions.json')
+    expect(String(r.stderr)).toContain('requests')
     expect(readFileSync(file, 'utf8')).not.toContain('forged')
+    expect(readdirSync(join(dirname(file), 'bindings'))).toEqual([])
   })
 
   it('isolates the network so NO host loopback service is reachable (the H4 security invariant)', () => {
