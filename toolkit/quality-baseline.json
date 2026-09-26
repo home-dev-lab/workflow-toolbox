@@ -254,7 +254,7 @@
           "value": 31.57
         }
       ],
-      "value": 71.98
+      "value": 72.07
     },
     "coverageFunctions": {
       "detail": "",
@@ -362,7 +362,7 @@
           "value": 33.33
         }
       ],
-      "value": 83.12
+      "value": 83.24
     },
     "coverageLines": {
       "detail": "",
@@ -470,7 +470,7 @@
           "value": 30.5
         }
       ],
-      "value": 81.65
+      "value": 81.7
     },
     "coverageStatements": {
       "detail": "",
@@ -578,7 +578,7 @@
           "value": 27.69
         }
       ],
-      "value": 78.68
+      "value": 78.74
     },
     "cyclomaticComplexity": {
       "detail": "",
@@ -670,18 +670,18 @@
           "value": 60
         },
         {
+          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:562 Function 'resolveLaneSandbox' has a complexity of 59. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
+          "function": "resolveLaneSandbox",
+          "line": 562,
+          "value": 59
+        },
+        {
           "exact": "plugin/bin/lib/host/codex-broker-ownership.mjs:221 Function 'stop' has a complexity of 53. Maximum allowed is 0.",
           "file": "plugin/bin/lib/host/codex-broker-ownership.mjs",
           "function": "stop",
           "line": 221,
           "value": 53
-        },
-        {
-          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:516 Function 'resolveLaneSandbox' has a complexity of 51. Maximum allowed is 0.",
-          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
-          "function": "resolveLaneSandbox",
-          "line": 516,
-          "value": 51
         },
         {
           "exact": "plugin/bin/wt-opencode-envelope.mjs:556 Async function 'main' has a complexity of 51. Maximum allowed is 0.",
@@ -1000,10 +1000,10 @@
           "value": 77
         }
       ],
-      "value": 2.6449314476951313
+      "value": 2.641638894334444
     },
     "eslintWarnings": {
-      "detail": "685 warnings",
+      "detail": "686 warnings",
       "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
       "function": "",
       "offenders": [
@@ -1108,7 +1108,7 @@
           "value": 7
         }
       ],
-      "value": 685
+      "value": 686
     },
     "fileLines": {
       "detail": "",
@@ -1221,6 +1221,13 @@
           "value": 496
         },
         {
+          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:2 File has too many lines (491). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
+          "function": "",
+          "line": 2,
+          "value": 491
+        },
+        {
           "exact": "plugin/bin/wt-artifact-server-ensure.mjs:4 File has too many lines (491). Maximum allowed is 1.",
           "file": "plugin/bin/wt-artifact-server-ensure.mjs",
           "function": "",
@@ -1247,13 +1254,6 @@
           "function": "",
           "line": 2,
           "value": 451
-        },
-        {
-          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:2 File has too many lines (443). Maximum allowed is 1.",
-          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
-          "function": "",
-          "line": 2,
-          "value": 443
         }
       ],
       "value": 2719
@@ -1639,6 +1639,13 @@
           "value": 6
         },
         {
+          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:450 Function 'safeLateOverlays' has too many parameters (5). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
+          "function": "safeLateOverlays",
+          "line": 450,
+          "value": 5
+        },
+        {
           "exact": "plugin/bin/lib/lifecycle-brief.mjs:106 Function 'snapshotPatch' has too many parameters (5). Maximum allowed is 0.",
           "file": "plugin/bin/lib/lifecycle-brief.mjs",
           "function": "snapshotPatch",
@@ -1646,22 +1653,15 @@
           "value": 5
         },
         {
-          "exact": "plugin/bin/lib/pilot-model-config.mjs:66 Function 'resolveModelInput' has too many parameters (5). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/pilot-model-config.mjs:67 Function 'resolveModelInput' has too many parameters (5). Maximum allowed is 0.",
           "file": "plugin/bin/lib/pilot-model-config.mjs",
           "function": "resolveModelInput",
-          "line": 66,
-          "value": 5
-        },
-        {
-          "exact": "plugin/bin/lib/run-cost-core.mjs:50 Function 'matchLaneSessions' has too many parameters (5). Maximum allowed is 0.",
-          "file": "plugin/bin/lib/run-cost-core.mjs",
-          "function": "matchLaneSessions",
-          "line": 50,
+          "line": 67,
           "value": 5
         }
       ],
       "value": 7
     }
   },
-  "releaseTag": "workflow-toolbox--v0.188.0"
+  "releaseTag": "workflow-toolbox--v0.188.1"
 }

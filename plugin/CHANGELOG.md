@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.188.2] - 2026-09-26
+
 ### Changed
 - External lane defaults now use `openai/gpt-6-sol`, while `openai/gpt-6-luna` is allowed for explicit lane selection. The older GPT-5.6 Luna, Terra, and Sol tiers remain allowed; `-fast` variants remain refused.
 - GPT lane executor role table (owner-approved 2026-09-26): code and standard critic move to `openai/gpt-6-sol` (code at `high`, critic at `max`); hard critic, review and refutation use `openai/gpt-6-astra` (critic `max`, review/refutation `medium`) so Sol never reviews its own code. Refutation moves from `xhigh` to `medium`. The forced `xhigh` code variant is scoped to `openai/gpt-5.6-sol` only.
@@ -18,6 +20,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - `suiteLockCli` (`lib/host/lane-sandbox.mjs`) now also refuses a suite-lock runner file that exists but lost its POSIX execute bit, with "update or reinstall workflow-toolbox" rather than a spawn failure deep inside a lane.
 - Lane sandbox (Linux): Codex second opinions and codex lanes had no working shell inside the sandbox since 0.188.0 when the `codex` executable was reached through a symlink. Executable symlinks are now recreated inside the sandbox, pointing at the bound real executable location, so sibling helpers such as `codex-code-mode-host` remain discoverable without exposing the symlink's containing directory. The behavior is generic for symlinked executables, including OpenCode.
 - Late read-only executable overlays now preserve binaries beneath private-home remaps without covering a writable bind, private remap target, or protected path. Colliding binary directories narrow to the executable file; colliding Node toolchain prefixes narrow to `bin` and `lib`, with a named refusal if narrowing cannot preserve the boundary or a kept executable link would dangle.
+
+### Quality
+
+Patch release: measured on the release tree against the 0.188.1 baseline (`pnpm quality:delta`). Coverage rose on all four measures; ESLint warnings rose by one (685 -> 686, still under the 687 ceiling), carded for removal; every other judge is unchanged.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 127 -> 127 | 0 |
+| Cognitive complexity | 266 -> 266 | 0 |
+| ESLint warnings | 685 -> 686 | +1 |
+| Duplication % | 2.6449 -> 2.6416 | 0 |
+| Knip issues | 220 -> 220 | 0 |
+| Coverage lines % | 81.65 -> 81.70 | +0.05 |
+| Coverage branches % | 71.98 -> 72.07 | +0.09 |
 
 ## [0.188.1] - 2026-09-26
 
