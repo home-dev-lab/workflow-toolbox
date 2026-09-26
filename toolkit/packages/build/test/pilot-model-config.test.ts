@@ -107,9 +107,9 @@ describe('pilot model configuration', () => {
   })
 
   it('resolves role base, the GPT Sol implementation profile, then explicit variant override', () => {
-    expect(resolveRoleVariant('review', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'role base' })
+    expect(resolveRoleVariant('review', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'role base' })
     expect(resolveRoleVariant('code', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'model profile' })
-    expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'role base' })
+    expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'role base' })
     expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: { WT_EXECUTOR_REVIEW_VARIANT: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override' })
   })
 
@@ -129,17 +129,31 @@ describe('pilot model configuration', () => {
     expect(resolveRoleVariant(role, model, { env: { [envKey]: 'high' }, readPluginOption: pluginOption })).toMatchObject({ value: 'low', origin: 'override', source: 'plugin option' })
   })
 
-  it.each(['critic', 'review', 'refutation', 'pilotHard', 'sdkPilotHard', 'orchestrator', 'sdkOrchestrator'] as const)('keeps the %s role at high: the medium decision covers pilots and implementation only', (role) => {
+  it.each(['pilotHard', 'sdkPilotHard', 'orchestrator', 'sdkOrchestrator'] as const)('keeps the %s role at high: the medium decision covers pilots and implementation only', (role) => {
     expect(resolveRoleVariant(role, 'opus', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'role base' })
+  })
+
+  // Card 1872363600346089413: critics, reviewers and refuters default to xhigh; an explicit
+  // override (env, settings, plugin option) still wins.
+  it.each([
+    ['critic', 'WT_EXECUTOR_CRITIC_VARIANT', 'executor_critic_variant'],
+    ['review', 'WT_EXECUTOR_REVIEW_VARIANT', 'executor_review_variant'],
+    ['refutation', 'WT_EXECUTOR_REFUTATION_VARIANT', 'executor_refutation_variant'],
+  ] as const)('resolves the %s role to xhigh by default, and an explicit override still wins', (role, envKey, option) => {
+    expect(resolveRoleVariant(role, 'opus', { env: {}, readPluginOption: noPluginOption })).toEqual({ value: 'xhigh', origin: 'role base', source: 'profile', forced: false })
+    expect(resolveRoleVariant(role, 'opus', { env: { [envKey]: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override', source: 'env' })
+    expect(resolveRoleVariant(role, 'opus', { env: {}, settingsEnv: { [envKey]: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override', source: 'settings' })
+    const pluginOption = (key: string) => key === option ? { present: true, value: 'medium' } : { present: false }
+    expect(resolveRoleVariant(role, 'opus', { env: { [envKey]: 'high' }, readPluginOption: pluginOption })).toMatchObject({ value: 'medium', origin: 'override', source: 'plugin option' })
   })
 
   it('resolves the Claude SDK implementer to medium in the executor profile and reports it per role', () => {
     const profile = resolveExecutorProfile({ worktree: '/worktree', route: 'LITE', hard: false, env: {}, settingsEnv: {}, resolveConsentImpl: () => ({ outcome: 'not_true' }) })
-    expect(profile.variants).toEqual({ critic: 'high', code: 'medium', review: 'high', refutation: 'high' })
+    expect(profile.variants).toEqual({ critic: 'xhigh', code: 'medium', review: 'xhigh', refutation: 'xhigh' })
     expect(profile.variantOrigins.code).toBe('role base')
   })
 
-  it('ships medium defaults for the pilots, high for the other roles, and a model-derived code effort', () => {
+  it('ships medium defaults for the pilots, high for the hard pilots and orchestrators, xhigh for the critic/review/refutation executors, and a model-derived code effort', () => {
     const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8'))
     const variants = Object.fromEntries(Object.entries(manifest.userConfig).filter(([key]) => key.endsWith('_variant')).map(([key, schema]) => [key, (schema as { default: string }).default]))
     expect(variants).toEqual({
@@ -149,10 +163,10 @@ describe('pilot model configuration', () => {
       sdk_pilot_variant: 'medium',
       sdk_pilot_hard_variant: 'high',
       sdk_orchestrator_variant: 'high',
-      executor_critic_variant: 'high',
+      executor_critic_variant: 'xhigh',
       executor_code_variant: '',
-      executor_review_variant: 'high',
-      executor_refutation_variant: 'high',
+      executor_review_variant: 'xhigh',
+      executor_refutation_variant: 'xhigh',
     })
   })
 

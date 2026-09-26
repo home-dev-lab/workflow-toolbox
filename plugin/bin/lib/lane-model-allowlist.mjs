@@ -10,8 +10,9 @@ export const DEFAULT_LANE_MODELS = Object.freeze([
 // Aide-memoire kept up to date with variants we have verified; never an authority on what providers expose.
 const KNOWN_VARIANTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
 
-// Owner decision 2026-09-24 (wt-suite #4039): pilots and implementation run at medium. Hard pilots,
-// orchestrators, critics, reviewers and refuters keep high; their effort is a separate measurement.
+// Owner decision 2026-09-24 (wt-suite #4039): pilots and implementation run at medium. Hard pilots
+// and orchestrators keep high. Card 1872363600346089413: critics, reviewers and refuters default
+// to xhigh instead.
 const VARIANT_ROLES = Object.freeze({
   pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'medium'],
   pilotHard: ['pilot_hard_variant', 'WT_PILOT_HARD_VARIANT', 'high'],
@@ -19,10 +20,10 @@ const VARIANT_ROLES = Object.freeze({
   sdkPilot: ['sdk_pilot_variant', 'WT_SDK_PILOT_VARIANT', 'medium'],
   sdkPilotHard: ['sdk_pilot_hard_variant', 'WT_SDK_PILOT_HARD_VARIANT', 'high'],
   sdkOrchestrator: ['sdk_orchestrator_variant', 'WT_SDK_ORCHESTRATOR_VARIANT', 'high'],
-  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'high'],
+  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'xhigh'],
   code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'medium'],
-  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'high'],
-  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'high'],
+  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'xhigh'],
+  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'xhigh'],
 })
 
 export function variantRefusal(variant, model) {

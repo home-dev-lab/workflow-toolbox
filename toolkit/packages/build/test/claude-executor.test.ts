@@ -236,7 +236,7 @@ describe('Claude SDK executor', () => {
   it('item 11: writes a read-only report from terminal result text when absent', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.generated.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'generated.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'no-write' } })
-    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); expect(readFileSync(report, 'utf8')).toBe('generated review\n\nvariant=high origin=role base forced=false\n')
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); expect(readFileSync(report, 'utf8')).toBe('generated review\n\nvariant=xhigh origin=role base forced=false\n')
   })
 
   it('item 12: exits 1 when the terminal result is_error despite a written report', () => {
