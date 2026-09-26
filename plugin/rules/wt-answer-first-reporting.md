@@ -174,8 +174,6 @@ promises next turn that doesn't exist. Nothing to do with willingness to keep go
 it slips past every rule about deciding, announcing, not quietly narrowing scope — those govern
 what gets said, never fact that saying it and stopping IS the stop.
 
-Rationale and field cases: `docs/wt/wt-answer-first-reporting.md` §Observed cost of missing this: four consecutive stops.
-
 **Operative rule: chain within same turn.** Verify last result, integrate it, pick next item,
 start it — only THEN say what needs saying, and only at a real milestone, not after every
 completed sub-step. Order rule, not a frequency exception: resuming work before speaking doesn't

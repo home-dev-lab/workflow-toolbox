@@ -10,9 +10,20 @@
     "diagnostics": true,
     "startupTimeout": 10000
   },
-  "java": {
-    "command": "jdtls",
+  "groovy": {
+    "command": "groovy-language-server",
     "args": [],
+    "extensionToLanguage": {
+      ".groovy": "groovy"
+    },
+    "diagnostics": false,
+    "startupTimeout": 30000
+  },
+  "java": {
+    "command": "node",
+    "args": [
+      "${CLAUDE_PLUGIN_ROOT}/bin/wt-jdtls.mjs"
+    ],
     "extensionToLanguage": {
       ".java": "java"
     },

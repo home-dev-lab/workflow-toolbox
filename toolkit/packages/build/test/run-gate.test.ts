@@ -18,7 +18,7 @@
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, realpathSync, writeFileSync, chmodSync, symlinkSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, realpathSync, writeFileSync, chmodSync, symlinkSync, unlinkSync, openSync, closeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -306,6 +306,60 @@ describe('wt-run-gate --check', () => {
     expect(result.status).toBe(1)
     expect(result.out).toContain('tree changed during gate; record refused')
     expect(run(['--check', root, '--gate', 'test'], { env }).stdout).toMatch(/^test: red /)
+  })
+
+  // Measured 2026-09-26: a --record gate's exit was silently 1 with no explanation of what moved
+  // — the message said "record refused", never WHICH file. This locks the missing half: the
+  // stderr line names the untracked file the gate command itself wrote into the tree it was
+  // certifying.
+  it('a --record gate whose own child writes an untracked file into the tree: exit 1, AND the stderr line names that file', () => {
+    const { root, env } = gateRepo()
+    const write = "require('fs').writeFileSync('report-from-the-gate.txt', 'written by the gate command\\n')"
+    const result = run(['--record', 'test', '--', process.execPath, '-e', write], { cwd: root, env })
+    expect(result.status).toBe(1)
+    expect(result.out).toContain('report-from-the-gate.txt')
+  })
+
+  // The EXACT shape measured 2026-09-26: the CALLER's own shell redirect captured wt-run-gate's
+  // OWN stdout (the "GATE test: record=..." line and the following "GATE test: exit=..." line)
+  // into a file living INSIDE the certified tree. That file is empty when the change-during-gate
+  // check runs (the gate's own record hadn't printed anything yet), so that first check correctly
+  // stays green — the file only grows AFTER, once wt-run-gate starts writing its own report lines
+  // into it. Only the SECOND, later check (recordTargetChanged) can see it, and until this fix it
+  // said nothing at all.
+  it('the gate process\'s own stdout, redirected by the caller into an untracked file inside the tree: exit 1, and the "after the record was written" line names that file', () => {
+    const { root, env } = gateRepo()
+    const reportPath = join(root, 'report.txt')
+    const fd = openSync(reportPath, 'w')
+    try {
+      const res = spawnSync(process.execPath, [SCRIPT, '--record', 'test', '--', process.execPath, '-e', 'process.exit(0)'], {
+        cwd: root,
+        env,
+        encoding: 'utf8',
+        stdio: ['ignore', fd, 'pipe'],
+      })
+      expect(res.status).toBe(1)
+      expect(res.stderr ?? '').toContain(`after the gate's own record was written`)
+      expect(res.stderr ?? '').toContain('report.txt')
+    } finally {
+      closeSync(fd)
+    }
+  })
+
+  // Mutation-test lock for "the decision stays on treeSignature/HEAD, never on the per-entry
+  // diff": a commit made DURING the gate that moves HEAD without touching a single tracked
+  // file's bytes (`git commit --allow-empty`). treeSignature()/HEAD sees this immediately
+  // (HEAD moved); a decision built from treeEntryDigests()/diffTreeEntryDigests() ALONE would
+  // see nothing at all, because no file's content or mode changed. Confirmed by mutation: a
+  // copy of this file with the decision swapped to entries-diff-only passes every other test in
+  // this suite unchanged and ONLY fails this one — this is the test that would have caught it.
+  it('a HEAD move with byte-identical tree content during the gate is still refused (locks the decision onto treeSignature/HEAD, not a per-entry diff)', () => {
+    const { root, env } = gateRepo()
+    const mutate = "require('child_process').execFileSync('git', ['-c','user.email=t@t','-c','user.name=t','-c','commit.gpgSign=false','commit','--allow-empty','-m','empty-commit-during-gate'])"
+    const result = run(['--record', 'test', '--', process.execPath, '-e', mutate], { cwd: root, env })
+    expect(result.status).toBe(1)
+    expect(result.out).toContain('tree changed during gate; record refused')
+    expect(result.out).toContain('HEAD moved')
   })
 
   it('returns a caller error for a tree directory outside a Git repository', () => {

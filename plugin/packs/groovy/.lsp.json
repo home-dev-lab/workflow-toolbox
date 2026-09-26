@@ -1,0 +1,11 @@
+{
+  "groovy": {
+    "command": "groovy-language-server",
+    "args": [],
+    "extensionToLanguage": {
+      ".groovy": "groovy"
+    },
+    "diagnostics": false,
+    "startupTimeout": 30000
+  }
+}

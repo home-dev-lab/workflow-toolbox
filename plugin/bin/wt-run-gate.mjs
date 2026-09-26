@@ -37,7 +37,7 @@ import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { handleHelpFlag } from './lib/cli-help.mjs'
-import { readGateRecord, recordPath, repoRoot, treeSignature, writeGateRecord } from './lib/gate-evidence.mjs'
+import { diffTreeEntryDigests, readGateRecord, recordPath, repoRoot, treeEntryDigests, treeSignature, writeGateRecord } from './lib/gate-evidence.mjs'
 
 const HELP = `wt-run-gate — run ONE gate command and make its exit code non-bypassable: writes
 the gate's real exit code to <out-dir>/<name>.exit and its combined output to <name>.log, with
@@ -103,6 +103,26 @@ function recordedTreeIsDirty(root) {
 function fail(msg) {
   process.stderr.write(`wt-run-gate: ${msg}\n`)
   process.exit(2)
+}
+
+// Names WHAT changed, for the stderr line a `--record` gate prints when the tree it certified
+// moved out from under it. Bounded to 5 paths (`, and N more` beyond that) — enough to point a
+// reader at the cause without dumping an entire diff.
+//
+// This is DESCRIPTION ONLY — the caller decides whether the tree changed from treeSignature()
+// and HEAD, never from `changedPaths`. A per-entry diff is built by a second routine
+// (treeEntryDigests/diffTreeEntryDigests) that could in principle miss something the audited
+// signature caught (a future drift between the two, or a timing gap between the two separate
+// walks); if that ever happens, the honest answer is to SAY SO rather than claim a path that
+// was never actually found.
+function describeTreeChange(startedHead, currentHead, changedPaths) {
+  const headPart = startedHead !== currentHead
+    ? `HEAD moved ${startedHead ?? 'unknown'} -> ${currentHead ?? 'unknown'}`
+    : 'HEAD unchanged'
+  const shown = changedPaths.slice(0, 5)
+  const more = changedPaths.length > 5 ? `, and ${changedPaths.length - 5} more` : ''
+  const pathsPart = changedPaths.length > 0 ? `changed: ${shown.join(', ')}${more}` : 'changed: (not attributable to a file)'
+  return `${headPart}; ${pathsPart}`
 }
 
 function parseArgs(argv) {
@@ -196,7 +216,12 @@ function main() {
   // Record-mode artifacts must not become untracked files in the checked tree: a later gate
   // would otherwise make an earlier record stale merely by writing its own log.
   const root = args.record ? repoRoot(process.cwd()) : null
+  // startedTree is the DECISION source, exactly as before this file grew a per-entry diff:
+  // both changedDuringGate and recordTargetChanged below decide on treeSignature()/HEAD alone.
+  // startedEntries exists only to DESCRIBE what changed in the stderr line — a per-entry diff
+  // built by a newer, separate routine must never be trusted to decide, only to narrate.
   const startedTree = args.record ? treeSignature(root) : null
+  const startedEntries = args.record ? treeEntryDigests(root) : null
   const startedHead = args.record ? recordedHead(root) : null
   const outDir = args.record && !args.outDirExplicit
     ? path.join(path.dirname(recordPath(root, args.record)), 'logs')
@@ -233,11 +258,14 @@ function main() {
   const combined = (res.stdout ?? '') + (res.stderr ?? '')
   fs.writeFileSync(logFile, combined)
 
+  let changedDuringGate = false
   if (args.record) {
     // Compute after the child exits: an edit during a gate must invalidate its evidence.
+    // The DECISION is treeSignature()/HEAD, exactly as before; treeEntryDigests() is called only
+    // to name what changed if the decision says it did.
     const finishedTree = treeSignature(root)
     const finishedHead = recordedHead(root)
-    const changedDuringGate = startedTree !== finishedTree || startedHead !== finishedHead
+    changedDuringGate = startedTree !== finishedTree || startedHead !== finishedHead
     const recordFile = writeGateRecord(root, {
       version: 2,
       name: args.record,
@@ -248,7 +276,13 @@ function main() {
       head: finishedHead,
       dirty: recordedTreeIsDirty(root),
     })
-    if (changedDuringGate) process.stderr.write(`wt-run-gate: ${args.record}: tree changed during gate; record refused\n`)
+    if (changedDuringGate) {
+      const changedPaths = diffTreeEntryDigests(startedEntries, treeEntryDigests(root))
+      process.stderr.write(
+        `wt-run-gate: ${args.record}: tree changed during gate; record refused — ` +
+          `${describeTreeChange(startedHead, finishedHead, changedPaths)}\n`,
+      )
+    }
     process.stdout.write(`GATE ${args.record}: record=${recordFile}\n`)
   }
 
@@ -287,7 +321,27 @@ function main() {
     }
   }
 
-  const recordTargetChanged = args.record && (startedTree !== treeSignature(root) || startedHead !== recordedHead(root))
+  // Recomputed here, separately from the check above: something can still write into the
+  // certified tree between that check and this one (measured 2026-09-26 — a certification whose
+  // own report files landed in the tree after the record was already written), and that window
+  // must not silently exit 1 with no explanation of what was written or why the record on disk no
+  // longer matches.
+  let recordTargetChanged = false
+  if (args.record) {
+    // The DECISION is treeSignature()/HEAD, same as the check above. treeEntryDigests() is
+    // called only when the decision says something changed, to name what.
+    const finalTree = treeSignature(root)
+    const finalHead = recordedHead(root)
+    recordTargetChanged = startedTree !== finalTree || startedHead !== finalHead
+    if (recordTargetChanged && !changedDuringGate) {
+      const changedPaths = diffTreeEntryDigests(startedEntries, treeEntryDigests(root))
+      process.stderr.write(
+        `wt-run-gate: ${args.record}: tree changed after the gate's own record was written; ` +
+          `no updated record was written, so the record on disk is now stale — record refused — ` +
+          `${describeTreeChange(startedHead, finalHead, changedPaths)}\n`,
+      )
+    }
+  }
   process.exit(forceFail || recordTargetChanged ? 1 : (realExitCode ?? 1))
 }
 

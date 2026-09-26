@@ -9,9 +9,9 @@ const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 
-// Lowered to 1925 after entry guards moved their realpath access into the host adapter.
+// Lowered to 1924 when the one-off rules-rationale split script was deleted (card 1871370375661618822).
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1925
+export const HOST_PRIMITIVE_CEILING = 1924
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

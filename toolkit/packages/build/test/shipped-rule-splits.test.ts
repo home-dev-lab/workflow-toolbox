@@ -25,11 +25,11 @@ const ACT_RULES = [
 ] as const
 const SPLIT_LOCKS = {
   'wt-concurrent-sessions-worktree': { lines: 53, union: '94fd849c0f35b3c3e8fea29371ded3ebbad866f15fa59f1367e885ca5f55ada6', core: '8937b8dff80951f1d687e20488e697b41c1976e684871a18dce313212674bc55', act: 'be2414462b4f360d6136234641cdf361171bed524a242dcb0fdfe0970d129ab2' },
-  'wt-delegation-ladder': { lines: 375, union: '55c21289b16c40ced332f21fdb7c0eb2495dfdbc03f5fc4e951e10c1973ce292', core: '3cb91c8722538c7230a62a791bd04c6f2322777711d5c27eda8930e2db0d7aa9', act: 'bb66df1a464e617eed82d91143fbdd817bbfe9fd01661c2cd9e2fa51c23418d3' },
+  'wt-delegation-ladder': { lines: 374, union: '26af47781251b147faeff14b05534ead2273224e33be9ee1de20150add956519', core: '3cb91c8722538c7230a62a791bd04c6f2322777711d5c27eda8930e2db0d7aa9', act: 'f4a84344d40bd3fb4de4e42263aa63cd8f33451a824a95b81af4211b12310174' },
   'wt-proportionate-verification': { lines: 130, union: '2443ca2df2e2b0941211f5b18856dcd580f05dcb3794097659bda5c9b147378e', core: 'fbb5ba1147da091297f9c9b729dabe162b227aff41bc8831ad62542b36280654', act: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
-  'wt-sdlc': { lines: 85, union: '1eed1690e088140915ca9362497e033dea21ce3d7c8da0cb3e06c9b3f5473ac2', core: '1828f149ae9560b83bd65d0b0de8278ca6e0fe9017e9f93d2ffa52b1b7a48d02', act: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
+  'wt-sdlc': { lines: 84, union: '5c8f577d28fefb30dd3116818c83b5e4cd4f8690f3c459129d25b39fcfb509b3', core: '00f1aa92edb29e139bb03bf447395c13ea6de192322b7698bb3bda534fac83a9', act: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
   'wt-task-tracking': { lines: 64, union: '4596f598a9972d55a6c821142378883eb5b5d1c64a1956bcb4552e9bd3605931', core: '9bf7869dc1535f99c3380e6a6e29e594fc49796b40991477b9ae00474bed0524', act: '49dce9023c7cc951fd0a1af3e42f8ca055961cfd6f4a79bed954d15ee8f8bdd7' },
-  'wt-verify-by-ground-truth': { lines: 185, union: '6442423a215eaf50efbcf34a7ed542224118cabad6be92d72728d2405caf1c81', core: 'de00f4263b887b4b4590875ecbb53799370e7b9637064fdb88ac804caa6eb070', act: 'ae56d485b63514f736b623b6fc13080a9c7e847c61ddf5b6874165ec93b28b1b' },
+  'wt-verify-by-ground-truth': { lines: 185, union: 'ad2b4ff26b08f5fb1df60eb82cea4e85e0aa3befa13314b776f57706dcd1d681', core: 'de00f4263b887b4b4590875ecbb53799370e7b9637064fdb88ac804caa6eb070', act: 'fc3220e0a922017eeadcf5377a8590563e67e79b33e48ee3d2798b804db5fa39' },
 } as const
 // Frozen from `git show 434b5cf2^:plugin/rules/<name>.md`, before the split.
 const ORIGINAL_RULE_FIXTURE = {
@@ -40,13 +40,14 @@ const ORIGINAL_RULE_FIXTURE = {
   'wt-task-tracking': { count: 14, union: 'cb744c35ca8fc939bb340ecdfd7d73b275d97a0c1a251fddb3cc46781af34f9d' },
   'wt-verify-by-ground-truth': { count: 58, union: '76354be330b71110c5942bd60fb66dbfbfbd0b668c06d46f332028f268afdc43' },
 } as const
-const INTENDED_REWORDINGS: Partial<Record<typeof RULES[number], Array<{ original?: string, replacement: string, reason: string }>>> = {
+const INTENDED_REWORDINGS: Partial<Record<typeof RULES[number], Array<{ original?: string, replacement?: string, reason: string }>>> = {
   'wt-concurrent-sessions-worktree': [{ replacement: '81a8f744ca67daabd3935269eeee23fee18b43028e79d34c5f1b0b1a2e81496b', reason: 'Keep the pre-edit isolation decision in CORE while detailed procedures remain act-bound.' }],
-  'wt-delegation-ladder': [{ original: 'dd43326cc967840a1b75ec45a81df9341c762c55ccb0b64a1a5ed5f1df2202c8', replacement: 'eaa70b4339040361e1d7825c01114980e56c37291f90bec6000de13a9fe7456e', reason: 'Point to the rationale file that owns the moved executor-report section.' }],
+  'wt-delegation-ladder': [{ original: 'dd43326cc967840a1b75ec45a81df9341c762c55ccb0b64a1a5ed5f1df2202c8', replacement: '1863be732237839d5b00dbe1674182243dc3337d9cbb894244d9b435da510620', reason: 'Rationale pointer removed with the retired rationale files (card 1871370375661618822).' }],
+  'wt-sdlc': [{ original: 'dd778e92f5ea2be65f38c3f347147e6c6e459b89a879936a07ece01f59f78e51', reason: 'Standalone rationale pointer paragraph deleted with the retired rationale files (card 1871370375661618822).' }],
   'wt-verify-by-ground-truth': [
     { original: '01352201c89226f231c65f565b157437c7809504628e5e07a620c57f45f0bc7f', replacement: '8cbcc46abd5d0bfb7ed8e976d5889a9bce417634ba149bfea1ff8315d96cd061', reason: 'Retain the reviewed same-capture-path clarification; the control reference is restored.' },
-    { original: 'c9021da1f771bdfd33466c496770783e49bbb09c5eca37a16899f928f65fa962', replacement: 'a891018709b2b8389b9e9383e289c0f81b2d42f40f5e3b082c1836c08518a52e', reason: 'Point merge-chain rationale at its at-act rationale file.' },
-    { original: '54510d09c69bb33c533f6f90c70512c6dff1f223d60b2c98f4a48a0ab66ae29a', replacement: 'e20564e150cd4f150cee0c7516d4da897f7c5db08177b775ff8b9741189f222c', reason: 'Point seam-review rationale at its at-act rationale file.' },
+    { original: 'c9021da1f771bdfd33466c496770783e49bbb09c5eca37a16899f928f65fa962', replacement: 'd2bffa0877373c83293082674c62078dd9f9596441599754de2680367272835a', reason: 'Merge-chain rationale pointer removed with the retired rationale files (card 1871370375661618822).' },
+    { original: '54510d09c69bb33c533f6f90c70512c6dff1f223d60b2c98f4a48a0ab66ae29a', replacement: '07bfeb883f27d487efd55da0bd71100505e8d2f12a92470d2964d932db2be15d', reason: 'Seam-review rationale pointer removed with the retired rationale files (card 1871370375661618822).' },
   ],
 }
 
@@ -119,9 +120,12 @@ describe('shipped split rules', () => {
       const lock = ORIGINAL_RULE_FIXTURE[name]
       for (const change of INTENDED_REWORDINGS[name] ?? []) {
         expect(change.reason, `${name} rewording reason`).not.toBe('')
-        const replacement = paragraphHashes.indexOf(change.replacement)
-        expect(replacement, `${name} reviewed replacement`).toBeGreaterThanOrEqual(0)
-        paragraphHashes.splice(replacement, 1)
+        expect(change.original ?? change.replacement, `${name} rewording names a paragraph`).toBeDefined()
+        if (change.replacement) {
+          const replacement = paragraphHashes.indexOf(change.replacement)
+          expect(replacement, `${name} reviewed replacement`).toBeGreaterThanOrEqual(0)
+          paragraphHashes.splice(replacement, 1)
+        }
         if (change.original) paragraphHashes.push(change.original)
       }
       expect(paragraphHashes, `${name} paragraph count`).toHaveLength(lock.count)

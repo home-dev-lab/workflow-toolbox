@@ -36,6 +36,7 @@ interface NavigationVerdictInput {
 
 export const CAPABILITIES: string[]
 export function resolveCommand(command: string, pathValue: string): string | undefined
+export function serverBinary(pack: string, declaration: { command: string; args?: string[] }): string
 export function buildShimDirectory(pathValue: string, excludedCommand: string, shimDirectory: string): string[]
 export function linkWorkspaceModules(projectDir: string, toolkitDir: string): string[]
 export function containsDiagnostic(output: string, expectedSubstring: string, options?: { includeAssistantText?: boolean }): boolean

@@ -92,8 +92,9 @@ usable indefinitely, not bloating or silently losing facts.
   candidate instead — description-matching is probabilistic, unfit for an always-apply
   correction.
 - **A rule is a pure directive.** State the operative principle and invariant making it right —
-  no narrative, incident stories, dated banners. Rationale/field cases → a note, short pointer;
-  guidance changes → rewrite the rule in place, don't stack a chronicle.
+  no narrative, incident stories, dated banners. Rationale/field cases are not kept beside a
+  rule, and no pointer leads to them — the repository history is the record; guidance changes →
+  rewrite the rule in place, don't stack a chronicle.
 - **An UNREACHABLE fact doesn't exist.** Periodically verify pairing mechanically, both
   directions: every disk fact file REACHABLE from the index; every index/hub reference resolves
   to an existing file. A deliberate de-indexing — a retraction kept only so old references

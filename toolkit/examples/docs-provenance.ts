@@ -440,6 +440,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this service monitor and its degraded-flag contract under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-jdtls.mjs',
+    status: 'mapped',
+    reason: 'The Java pack README documents the launcher its .lsp.json runs: JVM choice order, WT_JDTLS_JDK_DIRS, the one-line refusal, and the per-platform discovery.',
+  },
+  {
     script: 'plugin/bin/wt-wake-channel.mjs',
     status: 'exempt',
     reason: 'Internal dependency-free MCP transport whose complete invocation contract is the adjacent plugin/.mcp.json registration.',
@@ -722,6 +727,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/skills/deep-grounding/SKILL.md',
       'plugin/skills/deep-grounding/references/source-registry.md',
     ],
+  },
+  {
+    sources: ['plugin/bin/wt-jdtls.mjs', 'plugin/bin/lib/host/jdtls-java.mjs', 'plugin/packs/java/.lsp.json'],
+    docs: ['plugin/packs/java/README.md'],
   },
   {
     sources: [

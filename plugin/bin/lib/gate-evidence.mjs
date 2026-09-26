@@ -28,17 +28,24 @@ export function readGateDeclaration(root) {
   return parsed
 }
 
-export function treeSignature(root, fileSystem = fs) {
-  const hash = createHash('sha256')
-  hash.update('wt-tree-signature-v3\0')
-  // The signature describes the filesystem, not the index.  Include HEAD names so
+// Shared by treeSignature() and treeEntryDigests() below — the ONE place that decides which
+// names participate in a tree signature (tracked + HEAD + untracked-non-ignored). A second,
+// independently maintained name-collection routine is exactly the drift this file exists to
+// prevent (step-back-architectural: fix the shared root, don't re-derive it per caller).
+function collectTreeNames(root) {
+  // The signature describes the filesystem, not the index. Include HEAD names so
   // staging a deletion or rename cannot change the set being compared.
-  const names = [...new Set([
+  return [...new Set([
     ...gitOrEmpty(root, ['ls-tree', '-r', '--name-only', 'HEAD', '-z']).split('\0'),
     ...git(root, ['ls-files', '--cached', '-z']).split('\0'),
     ...git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0'),
   ])].filter(Boolean).sort()
-  for (const name of names) {
+}
+
+export function treeSignature(root, fileSystem = fs) {
+  const hash = createHash('sha256')
+  hash.update('wt-tree-signature-v3\0')
+  for (const name of collectTreeNames(root)) {
     const file = path.join(root, name)
     const stat = fileSystem.lstatSync(file, { throwIfNoEntry: false })
     if (!stat) continue
@@ -50,6 +57,36 @@ export function treeSignature(root, fileSystem = fs) {
     hash.update('\0')
   }
   return hash.digest('hex')
+}
+
+/** Per-file digests for the SAME tree walk treeSignature() does (same collectTreeNames(), same
+ *  kind+mode+content recipe per entry) — used only to name WHICH paths differ between two
+ *  moments in time. Never a second, independently maintained signature algorithm: treeSignature()
+ *  above is untouched and still the one value persisted to a gate record's `tree` field. A
+ *  missing entry (deleted since the name was listed) is recorded as `null` so its absence is
+ *  itself a detectable difference, not silently skipped. */
+export function treeEntryDigests(root, fileSystem = fs) {
+  const entries = new Map()
+  for (const name of collectTreeNames(root)) {
+    const file = path.join(root, name)
+    const stat = fileSystem.lstatSync(file, { throwIfNoEntry: false })
+    if (!stat) { entries.set(name, null); continue }
+    const hash = createHash('sha256')
+    hash.update(`${stat.isFile() ? 'file' : stat.isSymbolicLink() ? 'symlink' : 'other'}\0${stat.mode & 0o7777}\0`)
+    if (stat.isFile()) hash.update(fileSystem.readFileSync(file))
+    else if (stat.isSymbolicLink()) hash.update(fileSystem.readlinkSync(file))
+    else throw new Error(`unsupported repository entry: ${name}`)
+    entries.set(name, hash.digest('hex'))
+  }
+  return entries
+}
+
+/** Sorted list of every name whose digest differs between two treeEntryDigests() snapshots
+ *  (added, removed, or content/mode changed) — the names a caller reports, bounded by the
+ *  caller to a small count. */
+export function diffTreeEntryDigests(before, after) {
+  const names = new Set([...before.keys(), ...after.keys()])
+  return [...names].sort().filter((name) => before.get(name) !== after.get(name))
 }
 
 export function recordPath(root, name) {

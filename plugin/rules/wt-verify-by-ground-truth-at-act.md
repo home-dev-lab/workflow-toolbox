@@ -30,7 +30,7 @@ count after a merge is the tell the merge never landed, whatever the gate's own 
 State this one mechanically, not as a thing to remember — a threshold that EXECUTES beats a
 check that depends on recall.
 
-Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: warns when `git merge` is chained with a gate or unclassified command through `&&`, `;`, `|`, `||`, or a newline; a diagnostic read is silent but journaled. It deliberately ignores a merge preceded by earlier commands and `git merge --abort/--continue/--quit` — run the merge alone, read its result, then gate). Rationale and field cases: `docs/wt/wt-verify-by-ground-truth-at-act.md` §Never chain a merge with its gates in one command.
+Enforced by `wt-merge-chain-guard-hook.mjs` (PreToolUse Bash: warns when `git merge` is chained with a gate or unclassified command through `&&`, `;`, `|`, `||`, or a newline; a diagnostic read is silent but journaled. It deliberately ignores a merge preceded by earlier commands and `git merge --abort/--continue/--quit` — run the merge alone, read its result, then gate).
 
 Enforced by `wt-piped-gate-exit-code-guard-hook.mjs` (PreToolUse Bash: warns, never blocks, when a control gate is piped and `$?` then reads the last pipeline element's code; capture instead with `command > file; echo EXIT=$? >> file`, or use `${pipestatus[1]}` on zsh).
 
@@ -40,7 +40,7 @@ Enforced by `wt-piped-gate-exit-code-guard-hook.mjs` (PreToolUse Bash: warns, ne
 branches and merge them together. Before merging, compare their contracts by hand; branch gates
 validate each branch alone, not their seam. Run the merged tree's gates after the merge: they are
 the first mechanical checks that can judge the seam. A conflict-free merge and green sibling gates
-do not certify it. Rationale and field cases: `docs/wt/wt-verify-by-ground-truth-at-act.md` §Parallel-branch seam.
+do not certify it.
 
 ## Before measuring fix, prove subject RUN that fix
 

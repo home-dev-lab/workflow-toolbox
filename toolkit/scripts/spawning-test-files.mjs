@@ -59,6 +59,7 @@ export const spawningTestFiles = [
   'packages/build/test/host-adapter.contract.test.ts',
   'packages/build/test/intake-triage.test.ts',
   'packages/build/test/isolated-spawn-report-path-hook.test.ts',
+  'packages/build/test/jdtls-launcher.test.ts',
   'packages/build/test/label-intent-producer-hook.test.ts',
   'packages/build/test/lane-activity-cli.test.ts',
   'packages/build/test/lane-consent-check.test.ts',

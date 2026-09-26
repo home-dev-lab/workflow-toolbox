@@ -853,6 +853,9 @@ describe('adopt installer — CLI surface for the managed-set engine', () => {
     expect(out).toMatch(/\[rules\] target=.*[/\\]\.claude[/\\]rules/)
     expect(out).toMatch(/\[agents\] target=.*[/\\]\.claude[/\\]agents/)
     expect(out).toMatch(/\[autonomy\] target=.*[/\\]\.claude/)
+    // The retired docs set is not processed and installs nothing.
+    expect(out).not.toContain('[docs]')
+    expect(existsSync(join(d, '.claude/docs'))).toBe(false)
     expect(out).toContain('wt-delegation-ladder.md: WROTE')
     expect(out).toContain('pilot.md: WROTE')
     expect(out).toContain('AUTONOMY.md: WROTE')
@@ -867,40 +870,40 @@ describe('adopt installer — CLI surface for the managed-set engine', () => {
     expect(chk).toContain('nothing to do')
   })
 
-  it('--set rules names the untouched agents, autonomy, docs, and scripts sets, factually and in one line', () => {
+  it('--set rules names the untouched agents, autonomy, and scripts sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'rules', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the agents, autonomy, docs, and scripts sets exist too; they were untouched here, and --set agents, --set autonomy, --set docs, --set scripts covers them.')
+    expect(line).toBe('adopt: the agents, autonomy, and scripts sets exist too; they were untouched here, and --set agents, --set autonomy, --set scripts covers them.')
   })
 
-  it('--set agents names the untouched rules, autonomy, docs, and scripts sets, factually and in one line', () => {
+  it('--set agents names the untouched rules, autonomy, and scripts sets, factually and in one line', () => {
     const d = mkDir()
     const out = run(['--set', 'agents', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules, autonomy, docs, and scripts sets exist too; they were untouched here, and --set rules, --set autonomy, --set docs, --set scripts covers them.')
+    expect(line).toBe('adopt: the rules, autonomy, and scripts sets exist too; they were untouched here, and --set rules, --set autonomy, --set scripts covers them.')
   })
 
-  it('--set autonomy names the untouched rules, agents, docs, and scripts sets, factually and in one line', () => {
+  it('--set autonomy names the untouched rules, agents, and scripts sets, factually and in one line', () => {
     const d = mkDir()
     const out = runInCwd(['--set', 'autonomy', '--check'], d)
     const line = untouchedSetLine(out)
     expect(line).not.toContain('⚠')
     expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules, agents, docs, and scripts sets exist too; they were untouched here, and --set rules, --set agents, --set docs, --set scripts covers them.')
+    expect(line).toBe('adopt: the rules, agents, and scripts sets exist too; they were untouched here, and --set rules, --set agents, --set scripts covers them.')
   })
 
-  it('--set docs names the untouched rules, agents, autonomy, and scripts sets, factually and in one line', () => {
+  it('--set docs is retired: it exits non-zero, says why, and writes nothing', () => {
     const d = mkDir()
-    const out = runInCwd(['--set', 'docs', '--check'], d)
-    const line = untouchedSetLine(out)
-    expect(line).not.toContain('⚠')
-    expect(line).not.toMatch(/\bshould\b/i)
-    expect(line).toBe('adopt: the rules, agents, autonomy, and scripts sets exist too; they were untouched here, and --set rules, --set agents, --set autonomy, --set scripts covers them.')
+    const result = runInCwdResult(['--set', 'docs', '--install'], d)
+    expect(result.status).toBe(1)
+    expect(result.out).toContain("the 'docs' set is retired")
+    expect(result.out).toContain('may be deleted')
+    expect(existsSync(join(d, '.claude'))).toBe(false)
   })
 
   it('--set all prints no untouched-set line at all', () => {
@@ -976,7 +979,14 @@ describe('adopt installer — --global targets the config dir, resolved not type
   it('--global --install writes into the config dir, and --set all splits by set', () => {
     const cwd = mkDir()
     const cfg = mkDir()
+    // A docs copy adopted before the docs set was retired stays exactly as it was.
+    const legacyDoc = join(cfg, 'docs', 'wt', 'wt-sdlc.md')
+    mkdirSync(join(cfg, 'docs', 'wt'), { recursive: true })
+    writeFileSync(legacyDoc, 'legacy rationale copy\n')
     const out = runEnv(['--set', 'all', '--install', '--global'], { cwd, configDir: cfg })
+    expect(out).not.toContain('[docs]')
+    expect(readFileSync(legacyDoc, 'utf8')).toBe('legacy rationale copy\n')
+    expect(readdirSync(join(cfg, 'docs', 'wt'))).toEqual(['wt-sdlc.md'])
     expect(out).toContain(`[rules] target=${join(cfg, 'rules', 'wt')}`)
     expect(out).toContain(`[agents] target=${join(cfg, 'agents')}`)
     expect(out).toContain(`[autonomy] target=${cfg}`)

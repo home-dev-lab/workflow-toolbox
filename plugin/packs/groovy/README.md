@@ -9,48 +9,59 @@ Groovy still select this pack through `.groovy` or `.gradle`. Selection attaches
 not execute rules, agents, or gates automatically.
 
 The pack supplies `rules/tdd-spock.md` and `rules/lint-typecheck-build.md`, SDK-only
-`agents/critic.md` and `agents/reviewer.md`, and the diagnostics and navigation fixtures in
-`probe/`. The two rules are intentionally minimal duplications of the Java family guidance: the
+`agents/critic.md` and `agents/reviewer.md`, the diagnostics and navigation fixtures in
+`probe/`, and `.lsp.json`, which declares `groovy-language-server` for `.groovy` files. The two rules are intentionally minimal duplications of the Java family guidance: the
 current pack manifest only names rules relative to its own directory, so it cannot reference the
 Java pack's files.
 
 ## Language server
 
-No `.lsp.json` ships. `GroovyLanguageServer/groovy-language-server` was built from source URL
-`https://github.com/GroovyLanguageServer/groovy-language-server` at commit
-`347d098a928707223ce44b52cc45174a6327a5f3` under
-`~/.local/share/groovy-language-server/`; its built
-`groovy-language-server-all.jar` SHA-256 is
-`cf6e38d9fec6b82ccdb4378eafd711db357fd50ec025ca6e68ddbcb6b6bf4b1e`.
-`~/.local/bin/groovy-language-server` launches the jar with `java -jar` and must resolve on PATH.
+The pack declares `groovy-language-server` with `args: []`, `extensionToLanguage: {".groovy":"groovy"}`,
+`diagnostics: false`, and `startupTimeout: 30000`: it is a NAVIGATION server (document symbols,
+definitions, references), not a diagnostics one. The server compiles only the workspace's `.groovy` files,
+against an empty classpath unless a client sends `groovy.classpath`, and this declaration sends none. So
+any import of a dependency, or of the project's own Java classes (`import spock.lang.Specification`, a
+`com.atlassian.*` class, `src/main/java/...`), is reported `unable to resolve class`. With diagnostics on,
+those false errors would reach Claude's context on every edit. The server is not bundled;
+`groovy-language-server` must resolve on the Claude Code process `PATH`. The measured build is
+`GroovyLanguageServer/groovy-language-server` from `https://github.com/GroovyLanguageServer/groovy-language-server`
+at commit `347d098a928707223ce44b52cc45174a6327a5f3`, whose `groovy-language-server-all.jar` (SHA-256
+`cf6e38d9fec6b82ccdb4378eafd711db357fd50ec025ca6e68ddbcb6b6bf4b1e`) is started by a one-line
+`exec java -jar <jar>` script named `groovy-language-server`. It runs on Java 17: it has no Java 21 floor.
 
-The attempted declaration used `command: "groovy-language-server"`, `args: []`,
-`extensionToLanguage: {".groovy":"groovy", ".gradle":"groovy"}`, `diagnostics: true`, and a
-measured `startupTimeout: 30000`. The 2026-09-12 headless available arm resolved the command but
-Claude Code never logged `Starting LSP server instance: plugin:workflow-toolbox:groovy`; no
-`publishDiagnostics` or diagnostic attachment arrived. The missing arm passed its control (failed
-start, no diagnostic, normal exit), but the available arm failed, so declaring the server would
-silently claim unavailable diagnostics. Do not add `.lsp.json` until both archived probe arms pass.
+This replaces the 2026-09-12 decision not to declare it. That headless arm never logged `Starting LSP
+server instance: plugin:workflow-toolbox:groovy`. Since then, a real session on 2026-09-24 started the
+same server as `plugin:groovy-lsp:groovy` and answered documentSymbol, and on 2026-09-26 a test-profile
+session loading this plugin logged `Starting LSP server instance: plugin:workflow-toolbox:groovy`,
+initialized it in 1315 ms, and answered documentSymbol on `probe/nav/definitions.groovy` with
+`Greeter`, `greet`, and `FriendlyGreeter`.
+
+`.gradle` is deliberately NOT mapped. On an ordinary `build.gradle` (a `plugins {}` block, dependencies,
+and an `import org.gradle.api.tasks.testing.logging.TestExceptionFormat`), the server reported `unable to
+resolve class org.gradle.api.tasks.testing.logging.TestExceptionFormat` and returned the single symbol
+`build` (stdio probe, 2026-09-26): it has no Gradle API on its classpath, so with diagnostics on, every
+build-script edit would inject a false error, and its navigation is one symbol. `.gradle` stays a pack
+trigger for rules and context only.
 
 ## Probe
 
-The attempted command was `node toolkit/scripts/lsp-pack-probe.mjs groovy`. Its planted type error
+The diagnostics probe command is `node toolkit/scripts/lsp-pack-probe.mjs groovy`. Its planted type error
 is `probe/Probe.groovy`; `probe/expected-diagnostic.txt` names the required diagnostic substring;
-`probe/nav/` holds the navigation fixtures. Artifacts are archived at
-`.claude/reports/1862700000-lsp-probes/groovy/available/` and
-`.claude/reports/1862700000-lsp-probes/groovy/missing/`.
-
-Available arm — FAIL (2026-09-12): the binary resolved, but the harness did not start the Groovy
-LSP and delivered no planted diagnostic. Missing arm — PASS (same date): the isolated PATH had no
-server, no diagnostic arrived, and the session ended normally.
+`probe/nav/` holds the navigation fixtures. The 2026-09-12 artifacts are archived at
+`.claude/reports/1862700000-lsp-probes/groovy/available/` (FAIL: the harness did not start the server) and
+`.claude/reports/1862700000-lsp-probes/groovy/missing/` (PASS: no server on PATH, no diagnostic, normal
+exit). The declaration ships with diagnostics off, so that probe no longer applies; the evidence for it is
+the documentSymbol session above.
 
 ## Cross-platform verdict
 
-The command must resolve on the Claude Code process PATH; measured on Linux (this machine,
-2026-09-12, GroovyLanguageServer commit `347d098a928707223ce44b52cc45174a6327a5f3`, built with
-Temurin 17.0.9); macOS and Windows unmeasured until their probe artifacts exist.
+The command must resolve on the Claude Code process `PATH`, and the `java` it runs must be one the jar
+supports. Measured on Linux only (this machine, 2026-09-26, the commit above, Temurin 17.0.9 first on
+`PATH`). macOS and Windows are unmeasured: the declaration itself carries nothing platform-specific, but
+the `groovy-language-server` launch script is the installer's to provide on each platform (on Windows a
+`.cmd`/`.bat` wrapper that runs `java -jar`).
 
 ## Optional assets
 
-The pack supplies two rules and SDK-only critic and reviewer agents named in `pack.json`. It ships
-no skills and no language-server declaration. The agents do not execute automatically.
+The pack supplies two rules, SDK-only critic and reviewer agents named in `pack.json`, and the
+`groovy` language-server declaration. It ships no skills. The agents do not execute automatically.

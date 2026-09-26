@@ -183,7 +183,7 @@
       "description": "Harness model alias or full claude-* model for the SDK orchestrator. Environment fallback: WT_SDK_ORCHESTRATOR_MODEL."
     },
     "pilot_variant": {
-      "type": "string", "title": "Pilot variant", "default": "high", "required": false,
+      "type": "string", "title": "Pilot variant", "default": "medium", "required": false,
       "description": "Reasoning variant for standard harness pilots. Environment fallback: WT_PILOT_VARIANT."
     },
     "pilot_hard_variant": {
@@ -195,7 +195,7 @@
       "description": "Reasoning variant for the harness orchestrator. Environment fallback: WT_ORCHESTRATOR_VARIANT."
     },
     "sdk_pilot_variant": {
-      "type": "string", "title": "SDK pilot variant", "default": "high", "required": false,
+      "type": "string", "title": "SDK pilot variant", "default": "medium", "required": false,
       "description": "Reasoning variant for standard SDK pilots. Environment fallback: WT_SDK_PILOT_VARIANT."
     },
     "sdk_pilot_hard_variant": {
@@ -242,19 +242,19 @@
       "description": "Per-phase override. Empty: claude-sdk opus in every cell; gpt-lane openai/gpt-6-astra in every cell. Environment fallback: WT_EXECUTOR_REFUTATION_MODEL."
     },
     "executor_critic_variant": {
-      "type": "string", "title": "Executor critic variant", "default": "high", "required": false,
+      "type": "string", "title": "Executor critic variant", "default": "xhigh", "required": false,
       "description": "Reasoning variant for critic executors. Environment fallback: WT_EXECUTOR_CRITIC_VARIANT."
     },
     "executor_code_variant": {
       "type": "string", "title": "Executor code variant", "default": "", "required": false,
-      "description": "Reasoning variant for code executors. Empty selects xhigh for GPT Sol implementation and high otherwise. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
+      "description": "Reasoning variant for code executors. Empty selects xhigh for GPT Sol implementation and medium otherwise. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
     },
     "executor_review_variant": {
-      "type": "string", "title": "Executor review variant", "default": "high", "required": false,
+      "type": "string", "title": "Executor review variant", "default": "xhigh", "required": false,
       "description": "Reasoning variant for review executors. Environment fallback: WT_EXECUTOR_REVIEW_VARIANT."
     },
     "executor_refutation_variant": {
-      "type": "string", "title": "Executor refutation variant", "default": "high", "required": false,
+      "type": "string", "title": "Executor refutation variant", "default": "xhigh", "required": false,
       "description": "Reasoning variant for refutation executors. Environment fallback: WT_EXECUTOR_REFUTATION_VARIANT."
     },
     "configDir": {

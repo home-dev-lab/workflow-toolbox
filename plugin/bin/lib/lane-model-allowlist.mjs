@@ -10,17 +10,20 @@ export const DEFAULT_LANE_MODELS = Object.freeze([
 // Aide-memoire kept up to date with variants we have verified; never an authority on what providers expose.
 const KNOWN_VARIANTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
 
+// Owner decision 2026-09-24 (wt-suite #4039): pilots and implementation run at medium. Hard pilots
+// and orchestrators keep high. Critics, reviewers and refuters default to xhigh: on a known-defect
+// plan, high found the defect 0 times in 5 and xhigh 2 times plus 2 partial.
 const VARIANT_ROLES = Object.freeze({
-  pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'high'],
+  pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'medium'],
   pilotHard: ['pilot_hard_variant', 'WT_PILOT_HARD_VARIANT', 'high'],
   orchestrator: ['orchestrator_variant', 'WT_ORCHESTRATOR_VARIANT', 'high'],
-  sdkPilot: ['sdk_pilot_variant', 'WT_SDK_PILOT_VARIANT', 'high'],
+  sdkPilot: ['sdk_pilot_variant', 'WT_SDK_PILOT_VARIANT', 'medium'],
   sdkPilotHard: ['sdk_pilot_hard_variant', 'WT_SDK_PILOT_HARD_VARIANT', 'high'],
   sdkOrchestrator: ['sdk_orchestrator_variant', 'WT_SDK_ORCHESTRATOR_VARIANT', 'high'],
-  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'high'],
-  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'high'],
-  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'high'],
-  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'high'],
+  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'xhigh'],
+  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'medium'],
+  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'xhigh'],
+  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'xhigh'],
 })
 
 export function variantRefusal(variant, model) {
