@@ -34,6 +34,9 @@ const JUSTIFIED_EXCLUSIONS: Record<string, string> = {
   'wt-wake-channel.mjs':
     'MCP stdio server invoked only through plugin/.mcp.json, not an operator CLI. Its stdout is ' +
     'exclusively newline-delimited JSON-RPC, so emitting help text would corrupt the protocol.',
+  'wt-suite-lock-run.mjs':
+    'Variable-facing runner, not an operator CLI: every argv word must name a command literally, so ' +
+    'reserving --help or -h would violate its lock-and-run contract. Use wt-suite-lock.mjs for operator help.',
 }
 
 /**

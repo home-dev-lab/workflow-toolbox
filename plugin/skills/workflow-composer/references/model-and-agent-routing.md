@@ -128,7 +128,7 @@
     - **Decorrelate by FAMILY, per role-pair.** The value is a producer and its verifier
       on UNRELATED model families. Fixed families: `codex:codex-rescue` = GPT/OpenAI;
       the standard subagent = Claude/Anthropic. The opencode bridge's family is
-      *configured, not fixed* — it runs whatever `OPENCODE_MODEL:` selects (`openai/gpt-5.4`
+      *configured, not fixed* — it runs whatever `OPENCODE_MODEL:` selects (`openai/gpt-6-luna`
       when unspecified — the SAME family as `codex:codex-rescue`, so a caller pairing the
       two for decorrelation MUST set `OPENCODE_MODEL` to a non-OpenAI provider, e.g.
       `amazon-bedrock`; discover with `opencode models`) — so state
@@ -139,8 +139,8 @@
       channel as `OPENCODE_MODEL:` (`hints` for the audits, a `sourceRefs` entry for
       `cross-model-verify`) and makes the bridge pass `--variant <name>` to opencode,
       controlling the external model's reasoning effort per task. Valid names are per-model
-      and version-dependent: as of opencode 1.18.4, `openai/gpt-5.4` accepts `none`…`xhigh`,
-      `openai/gpt-5.6-terra` / `openai/gpt-5.6-sol` accept `none`…`max` — confirm against your
+      and version-dependent: `openai/gpt-5.6-luna` accepts `none`…`xhigh`;
+      `openai/gpt-5.6-terra`, `openai/gpt-5.6-sol`, `openai/gpt-6-luna`, `openai/gpt-6-sol`, and `openai/gpt-6-astra` accept `none`…`max` — confirm against your
       own opencode. ⚠ An out-of-list name is IGNORED: the bridge emits
       `OPENCODE_VARIANT_IGNORED:` and proceeds on the model default, deliberately avoiding
       opencode's own silent fallback; after a model fallback (e.g. onto

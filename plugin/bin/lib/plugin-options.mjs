@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { resolveConsent } from './lane-consent-check-core.mjs'
+import { EXECUTOR_DEFAULTS, EXECUTOR_VARIANT_BASES } from './executor-defaults.mjs'
 
 const PLUGIN_CONFIG_PREFIX = 'workflow-toolbox@'
 
@@ -9,7 +10,7 @@ const DEFINITIONS = Object.freeze({
   executor_lane_consent: { envKey: 'WT_EXECUTOR_LANE_CONSENT', type: 'boolean', defaultValue: false },
   adopt_refresh: { envKey: 'WT_ADOPT_REFRESH', type: 'string', defaultValue: 'session' },
   lane_skills: { envKey: 'WT_LANE_SKILLS', type: 'string', defaultValue: '' },
-  lane_models: { envKey: 'WT_LANE_MODELS', type: 'string', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-astra' },
+  lane_models: { envKey: 'WT_LANE_MODELS', type: 'string', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-luna,openai/gpt-6-sol,openai/gpt-6-astra' },
   artifact_server: { envKey: 'WT_ARTIFACT_SERVER', type: 'boolean', defaultValue: true },
   artifact_server_roots: { envKey: 'WT_ARTIFACT_SERVER_ROOTS', type: 'string', defaultValue: null },
   artifact_server_port: { envKey: 'WT_ARTIFACT_SERVER_PORT', type: 'number', defaultValue: null },
@@ -41,10 +42,10 @@ const DEFINITIONS = Object.freeze({
   executor_code_model: { envKey: 'WT_EXECUTOR_CODE_MODEL', type: 'string', defaultValue: '' },
   executor_review_model: { envKey: 'WT_EXECUTOR_REVIEW_MODEL', type: 'string', defaultValue: '' },
   executor_refutation_model: { envKey: 'WT_EXECUTOR_REFUTATION_MODEL', type: 'string', defaultValue: '' },
-  executor_critic_variant: { envKey: 'WT_EXECUTOR_CRITIC_VARIANT', type: 'string', defaultValue: 'xhigh' },
+  executor_critic_variant: { envKey: 'WT_EXECUTOR_CRITIC_VARIANT', type: 'string', defaultValue: '' },
   executor_code_variant: { envKey: 'WT_EXECUTOR_CODE_VARIANT', type: 'string', defaultValue: '' },
-  executor_review_variant: { envKey: 'WT_EXECUTOR_REVIEW_VARIANT', type: 'string', defaultValue: 'xhigh' },
-  executor_refutation_variant: { envKey: 'WT_EXECUTOR_REFUTATION_VARIANT', type: 'string', defaultValue: 'xhigh' },
+  executor_review_variant: { envKey: 'WT_EXECUTOR_REVIEW_VARIANT', type: 'string', defaultValue: '' },
+  executor_refutation_variant: { envKey: 'WT_EXECUTOR_REFUTATION_VARIANT', type: 'string', defaultValue: '' },
   configDir: { envKey: null, type: 'string', defaultValue: '' },
   livenessDir: { envKey: null, type: 'string', defaultValue: '' },
   suiteRoot: { envKey: null, type: 'string', defaultValue: '' },
@@ -144,23 +145,31 @@ function consentRow(projectDir, env) {
   return { value: false, source: 'default' }
 }
 
-const EXECUTOR_DEFAULT_DESCRIPTIONS = {
-  executor_critic_model: 'claude-sdk opus / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra',
-  executor_code_model: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra',
-  executor_review_model: 'claude-sdk opus / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-5.6-sol',
-  executor_refutation_model: 'claude-sdk opus / hard opus; gpt-lane openai/gpt-6-astra / hard openai/gpt-6-astra',
-}
+const EXECUTOR_DEFAULT_DESCRIPTIONS = Object.fromEntries(
+  Object.keys(EXECUTOR_DEFAULTS['gpt-lane'].standard).map((role) => [
+    `executor_${role}_model`,
+    `claude-sdk ${EXECUTOR_DEFAULTS['claude-sdk'].standard[role]} / hard ${EXECUTOR_DEFAULTS['claude-sdk'].hard[role]}; gpt-lane ${EXECUTOR_DEFAULTS['gpt-lane'].standard[role]} / hard ${EXECUTOR_DEFAULTS['gpt-lane'].hard[role]}`,
+  ]),
+)
+
+const EXECUTOR_VARIANT_DESCRIPTIONS = Object.fromEntries(
+  Object.keys(EXECUTOR_DEFAULTS['gpt-lane'].standard).map((role) => [
+    `executor_${role}_variant`,
+    `claude-sdk ${EXECUTOR_VARIANT_BASES.claude[role]}; gpt-lane ${EXECUTOR_VARIANT_BASES.openai[role]}${role === 'code' ? ' (GPT-5.6 Sol code uses xhigh)' : ''}`,
+  ]),
+)
 
 function describedResolution(option, definition, env, settings) {
   const plugin = pluginOption(settings, option, definition.type)
   const modelOption = option.endsWith('_model')
-  if (plugin.present && (!modelOption || hasModelPluginValue(plugin))) return { value: plugin.value, source: 'plugin option' }
+  const executorVariant = option.startsWith('executor_') && option.endsWith('_variant')
+  if (plugin.present && (!modelOption || hasModelPluginValue(plugin)) && (!executorVariant || plugin.value)) return { value: plugin.value, source: 'plugin option' }
   const processFallback = envValue(definition, env)
   if (processFallback.present) return { value: processFallback.value, source: modelOption ? 'env' : 'env var' }
   const settingsFallback = envValue(definition, settings?.env ?? {})
   if (settingsFallback.present) return { value: settingsFallback.value, source: modelOption ? 'settings' : 'env var' }
   return {
-    value: EXECUTOR_DEFAULT_DESCRIPTIONS[option] ?? definition.defaultValue,
+    value: EXECUTOR_DEFAULT_DESCRIPTIONS[option] ?? EXECUTOR_VARIANT_DESCRIPTIONS[option] ?? definition.defaultValue,
     source: 'default',
   }
 }

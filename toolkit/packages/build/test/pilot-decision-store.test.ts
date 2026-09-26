@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, posix, win32 } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { bindPilotDecision, decidePilotRun, displayedDecisionStateRoot, initializePilotDecisionStore, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
@@ -152,7 +153,7 @@ describe('pilot parent decision store', () => {
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: Date.now() + 60_000 })
     const requestPath = join(dirname(file), 'requests', `${Buffer.from('r').toString('hex')}.json`)
     const result = spawnSync(process.execPath, ['--import', WITHDRAW, CLI, 'decide', '--run', 'withdraw-cli', '--request', 'r', '--dod', '1', '--reading', 'answer', '--state-root', root], {
-      encoding: 'utf8', env: { ...process.env, WT_DECISION_WITHDRAW_REQUEST: requestPath },
+      encoding: 'utf8', env: sealedPluginCliEnv(root, { WT_DECISION_WITHDRAW_REQUEST: requestPath }),
     })
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('request withdrawn after your decision was recorded')

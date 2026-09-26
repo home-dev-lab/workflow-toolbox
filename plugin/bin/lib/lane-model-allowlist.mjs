@@ -1,18 +1,25 @@
 import { readWorkflowToolboxPluginOption, resolveWorkflowToolboxOption } from './plugin-options.mjs'
+import { EXECUTOR_VARIANT_BASES } from './executor-defaults.mjs'
 
 export const DEFAULT_LANE_MODELS = Object.freeze([
   'openai/gpt-5.6-luna',
   'openai/gpt-5.6-terra',
   'openai/gpt-5.6-sol',
+  'openai/gpt-6-luna',
+  'openai/gpt-6-sol',
   'openai/gpt-6-astra',
 ])
 
 // Aide-memoire kept up to date with variants we have verified; never an authority on what providers expose.
-const KNOWN_VARIANTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
+const KNOWN_VARIANTS = Object.freeze(['none', 'low', 'medium', 'high', 'xhigh', 'max'])
+const MODEL_VARIANT_CEILINGS = Object.freeze({ 'openai/gpt-5.6-luna': 'xhigh' })
+const CLAUDE_MODEL = /^(?:opus|sonnet|haiku|fable|claude-)/i
 
 // Owner decision 2026-09-24 (wt-suite #4039): pilots and implementation run at medium. Hard pilots
-// and orchestrators keep high. Critics, reviewers and refuters default to xhigh: on a known-defect
-// plan, high found the defect 0 times in 5 and xhigh 2 times plus 2 partial.
+// and orchestrators keep high.
+// Executor role bases split by model family: openai/* uses the 2026-09-26 GPT table
+// (critic max, code high, review/refutation medium); every non-openai provider gets
+// the Claude bases (critic/review/refutation xhigh, code medium). Pilot bases are unchanged.
 const VARIANT_ROLES = Object.freeze({
   pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'medium'],
   pilotHard: ['pilot_hard_variant', 'WT_PILOT_HARD_VARIANT', 'high'],
@@ -20,32 +27,47 @@ const VARIANT_ROLES = Object.freeze({
   sdkPilot: ['sdk_pilot_variant', 'WT_SDK_PILOT_VARIANT', 'medium'],
   sdkPilotHard: ['sdk_pilot_hard_variant', 'WT_SDK_PILOT_HARD_VARIANT', 'high'],
   sdkOrchestrator: ['sdk_orchestrator_variant', 'WT_SDK_ORCHESTRATOR_VARIANT', 'high'],
-  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'xhigh'],
-  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'medium'],
-  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'xhigh'],
-  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'xhigh'],
+  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT'],
+  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT'],
+  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT'],
+  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT'],
 })
 
 export function variantRefusal(variant, model) {
-  if (KNOWN_VARIANTS.includes(variant)) return null
+  if (variant === 'max' && CLAUDE_MODEL.test(model)) return `wt-lane: Refused: model ${model}: max is never used on Claude; use xhigh.`
+  if (KNOWN_VARIANTS.includes(variant)) return ceilingRefusal(variant, model)
   return `wt-lane: Refused: variant ${variant} is unknown for model ${model}; known variants: ${KNOWN_VARIANTS.join(', ')}. Choose a known variant, or pass --allow-unknown-variant to force it and leave an audit trace.`
+}
+
+function ceilingRefusal(variant, model) {
+  const ceiling = MODEL_VARIANT_CEILINGS[model.toLowerCase()]
+  if (!ceiling || KNOWN_VARIANTS.indexOf(variant) <= KNOWN_VARIANTS.indexOf(ceiling)) return null
+  return `wt-lane: Refused: variant ${variant} is above the ${ceiling} ceiling for model ${model}; choose a supported variant.`
 }
 
 export function resolveRoleVariant(role, model, { env = process.env, settingsEnv = {}, readPluginOption = readWorkflowToolboxPluginOption } = {}) {
   const definition = VARIANT_ROLES[role]
   if (!definition) throw new Error(`unknown variant role: ${String(role)}`)
-  const [option, envKey, base] = definition
+  if (typeof model !== 'string' || !model.trim()) throw new Error(`executor role ${role}: model is required`)
+  const [option, envKey, pilotBase] = definition
+  const base = pilotBase ?? EXECUTOR_VARIANT_BASES[/^openai\//i.test(model) ? 'openai' : 'claude'][role]
   const plugin = readPluginOption(option, { env })
   for (const [bag, source] of [[plugin.present && plugin.value ? { [envKey]: plugin.value } : {}, 'plugin option'], [env, 'env'], [settingsEnv, 'settings']]) {
     if (!Object.prototype.hasOwnProperty.call(bag, envKey)) continue
     const value = bag[envKey]
     if (typeof value !== 'string' || !value.trim()) throw new Error(`${envKey} must be a non-empty variant name`)
     const variant = value.trim()
-    const refusal = variantRefusal(variant, model)
+    const refusal = variantRefusal(variant, model) ?? ceilingRefusal(variant, model)
     if (refusal) throw new Error(refusal)
     return { value: variant, origin: 'override', source, forced: false }
   }
+  // Forced xhigh is kept ONLY for gpt-5.6-sol, where it was measured; gpt-6-sol code now falls
+  // through to the role base ('high', owner table 2026-09-26).
   if (role === 'code' && /gpt-5\.6-sol/i.test(model)) return { value: 'xhigh', origin: 'model profile', source: 'profile', forced: false }
+  const ceiling = MODEL_VARIANT_CEILINGS[model.toLowerCase()]
+  if (ceiling && KNOWN_VARIANTS.indexOf(base) > KNOWN_VARIANTS.indexOf(ceiling)) {
+    return { value: ceiling, origin: `role base (clamped from ${base})`, source: 'profile', forced: false }
+  }
   return { value: base, origin: 'role base', source: 'profile', forced: false }
 }
 

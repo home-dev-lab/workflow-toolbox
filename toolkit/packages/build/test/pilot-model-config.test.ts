@@ -61,10 +61,10 @@ describe('pilot model configuration', () => {
   })
 
   it.each([
-    ['gpt-lane', 'LITE', false, { critic: 'openai/gpt-5.6-sol', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'LITE', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'FULL', false, { critic: 'openai/gpt-5.6-sol', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
-    ['gpt-lane', 'FULL', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'LITE', false, { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'LITE', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'FULL', false, { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
+    ['gpt-lane', 'FULL', true, { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'openai/gpt-6-astra' }],
     ['claude-sdk', 'LITE', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
     ['claude-sdk', 'LITE', true, { critic: 'opus', code: 'opus', review: 'opus', refutation: 'opus' }],
     ['claude-sdk', 'FULL', false, { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }],
@@ -106,21 +106,69 @@ describe('pilot model configuration', () => {
     }
   })
 
-  it('resolves role base, the GPT Sol implementation profile, then explicit variant override', () => {
-    expect(resolveRoleVariant('review', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'role base' })
+  // Owner-approved table 2026-09-26 12:17 +01:00: the forced xhigh code profile is scoped to
+  // gpt-5.6-sol only (where it was measured); gpt-6-sol code now falls through to its 'high' role
+  // base, and review moves off Sol (so Sol never reviews its own code) onto Astra at 'medium'.
+  it('resolves role base, the GPT-5.6-sol code profile, then explicit variant override', () => {
+    expect(resolveRoleVariant('review', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'medium', origin: 'role base' })
     expect(resolveRoleVariant('code', 'openai/gpt-5.6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'model profile' })
-    expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'role base' })
+    expect(resolveRoleVariant('code', 'openai/gpt-6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'role base' })
+    expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'medium', origin: 'role base' })
     expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: { WT_EXECUTOR_REVIEW_VARIANT: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override' })
   })
 
+  it.each([
+    ['true', { critic: 'max', code: 'high', review: 'medium', refutation: 'medium' }],
+    ['not_true', { critic: 'xhigh', code: 'medium', review: 'xhigh', refutation: 'xhigh' }],
+  ])('resolves hard-profile efforts for %s', (outcome, variants) => {
+    expect(resolveExecutorProfile({ worktree: '/worktree', route: 'FULL', hard: true, env: {}, settingsEnv: {},
+      resolveConsentImpl: () => ({ outcome }), })).toMatchObject({ variants })
+  })
+
+  it('requires a model before reading overrides and matches OpenAI provider case-insensitively', () => {
+    expect(() => resolveRoleVariant('critic', undefined, { env: { WT_EXECUTOR_CRITIC_VARIANT: 'high' }, readPluginOption: noPluginOption })).toThrow('executor role critic: model is required')
+    expect(() => resolveRoleVariant('code', 42, { env: {}, readPluginOption: noPluginOption })).toThrow('executor role code: model is required')
+    expect(resolveRoleVariant('critic', 'OPENAI/gpt-6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'max' })
+    expect(resolveRoleVariant('critic', 'other/model', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh' })
+  })
+
+  it('refuses max for every Claude alias and full Claude id from every override source', () => {
+    for (const model of ['opus', 'sonnet', 'haiku', 'fable', 'claude-sonnet-5']) {
+      const envKey = 'WT_EXECUTOR_CRITIC_VARIANT'
+      for (const options of [
+        { env: { [envKey]: 'max' }, readPluginOption: noPluginOption },
+        { env: {}, settingsEnv: { [envKey]: 'max' }, readPluginOption: noPluginOption },
+        { env: {}, readPluginOption: () => ({ present: true, value: 'max' }) },
+      ]) expect(() => resolveRoleVariant('critic', model, options)).toThrow(`model ${model}: max is never used on Claude; use xhigh`)
+    }
+  })
+
+  it('refuses --variant max at the Claude executor CLI before resolving an SDK', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-claude-max-')); roots.push(root)
+    mkdirSync(join(root, '.lane'))
+    const brief = join(root, 'brief.md'); writeFileSync(brief, `# Critic\nWrite the report to \`${join(root, '.lane', 'critic-report.test.md')}\`\n`)
+    const result = spawnSync(process.execPath, [join(REPO_ROOT, 'plugin/bin/wt-claude-executor.mjs'), '--dir', root, '--brief', brief, '--model', 'opus', '--role', 'critic', '--variant', 'max'], { encoding: 'utf8' })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('model opus: max is never used on Claude; use xhigh')
+  })
+
+  it('clamps the Luna critic base and refuses explicit max while preserving lower overrides', () => {
+    const model = 'openai/gpt-5.6-luna'
+    expect(resolveRoleVariant('critic', model, { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'role base (clamped from max)' })
+    for (const options of [
+      { env: { WT_EXECUTOR_CRITIC_VARIANT: 'max' }, readPluginOption: noPluginOption },
+      { env: {}, settingsEnv: { WT_EXECUTOR_CRITIC_VARIANT: 'max' }, readPluginOption: noPluginOption },
+      { env: {}, readPluginOption: () => ({ present: true, value: 'max' }) },
+    ]) expect(() => resolveRoleVariant('critic', model, options)).toThrow('variant max is above the xhigh ceiling')
+    expect(resolveRoleVariant('critic', model, { env: { WT_EXECUTOR_CRITIC_VARIANT: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override' })
+    expect(resolveRoleVariant('critic', model, { env: { WT_EXECUTOR_CRITIC_VARIANT: 'none' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'none', origin: 'override' })
+  })
+
   // Owner decision 2026-09-24 (wt-suite #4039, card 1871089222002148813): pilots and implementation
-  // run at medium. Critic, review and refutation effort is deliberately NOT changed by that card.
+  // run at medium.
   it.each([
     ['pilot', 'opus', 'WT_PILOT_VARIANT', 'pilot_variant'],
     ['sdkPilot', 'opus', 'WT_SDK_PILOT_VARIANT', 'sdk_pilot_variant'],
-    ['code', 'sonnet', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
-    ['code', 'opus', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
-    ['code', 'openai/gpt-5.6-terra', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
   ] as const)('resolves the %s role on %s to medium by default, and an explicit override still wins', (role, model, envKey, option) => {
     expect(resolveRoleVariant(role, model, { env: {}, readPluginOption: noPluginOption })).toEqual({ value: 'medium', origin: 'role base', source: 'profile', forced: false })
     expect(resolveRoleVariant(role, model, { env: { [envKey]: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override', source: 'env' })
@@ -129,31 +177,75 @@ describe('pilot model configuration', () => {
     expect(resolveRoleVariant(role, model, { env: { [envKey]: 'high' }, readPluginOption: pluginOption })).toMatchObject({ value: 'low', origin: 'override', source: 'plugin option' })
   })
 
+  // GPT executor code runs high; Claude implementation retains medium (#4039).
+  it.each([
+    ['code', 'sonnet', 'medium', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
+    ['code', 'opus', 'medium', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
+    ['code', 'openai/gpt-5.6-terra', 'high', 'WT_EXECUTOR_CODE_VARIANT', 'executor_code_variant'],
+  ] as const)('resolves the %s role on %s to %s by default, and an explicit override still wins', (role, model, base, envKey, option) => {
+    expect(resolveRoleVariant(role, model, { env: {}, readPluginOption: noPluginOption })).toEqual({ value: base, origin: 'role base', source: 'profile', forced: false })
+    expect(resolveRoleVariant(role, model, { env: { [envKey]: 'medium' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'medium', origin: 'override', source: 'env' })
+    expect(resolveRoleVariant(role, model, { env: {}, settingsEnv: { [envKey]: 'xhigh' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'override', source: 'settings' })
+    const pluginOption = (key: string) => key === option ? { present: true, value: 'low' } : { present: false }
+    expect(resolveRoleVariant(role, model, { env: { [envKey]: 'medium' }, readPluginOption: pluginOption })).toMatchObject({ value: 'low', origin: 'override', source: 'plugin option' })
+  })
+
   it.each(['pilotHard', 'sdkPilotHard', 'orchestrator', 'sdkOrchestrator'] as const)('keeps the %s role at high: the medium decision covers pilots and implementation only', (role) => {
     expect(resolveRoleVariant(role, 'opus', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'role base' })
   })
 
-  // Card 1872363600346089413: critics, reviewers and refuters default to xhigh; an explicit
-  // override (env, settings, plugin option) still wins.
+  // GPT role table and prior Claude role bases; explicit overrides still win.
   it.each([
-    ['critic', 'WT_EXECUTOR_CRITIC_VARIANT', 'executor_critic_variant'],
-    ['review', 'WT_EXECUTOR_REVIEW_VARIANT', 'executor_review_variant'],
-    ['refutation', 'WT_EXECUTOR_REFUTATION_VARIANT', 'executor_refutation_variant'],
-  ] as const)('resolves the %s role to xhigh by default, and an explicit override still wins', (role, envKey, option) => {
-    expect(resolveRoleVariant(role, 'opus', { env: {}, readPluginOption: noPluginOption })).toEqual({ value: 'xhigh', origin: 'role base', source: 'profile', forced: false })
+    ['critic', 'xhigh', 'WT_EXECUTOR_CRITIC_VARIANT', 'executor_critic_variant'],
+    ['review', 'xhigh', 'WT_EXECUTOR_REVIEW_VARIANT', 'executor_review_variant'],
+    ['refutation', 'xhigh', 'WT_EXECUTOR_REFUTATION_VARIANT', 'executor_refutation_variant'],
+  ] as const)('resolves the Claude %s role to %s by default, and an explicit override still wins', (role, base, envKey, option) => {
+    expect(resolveRoleVariant(role, 'opus', { env: {}, readPluginOption: noPluginOption })).toEqual({ value: base, origin: 'role base', source: 'profile', forced: false })
     expect(resolveRoleVariant(role, 'opus', { env: { [envKey]: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override', source: 'env' })
     expect(resolveRoleVariant(role, 'opus', { env: {}, settingsEnv: { [envKey]: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override', source: 'settings' })
-    const pluginOption = (key: string) => key === option ? { present: true, value: 'medium' } : { present: false }
-    expect(resolveRoleVariant(role, 'opus', { env: { [envKey]: 'high' }, readPluginOption: pluginOption })).toMatchObject({ value: 'medium', origin: 'override', source: 'plugin option' })
+    const pluginOption = (key: string) => key === option ? { present: true, value: 'low' } : { present: false }
+    expect(resolveRoleVariant(role, 'opus', { env: { [envKey]: 'high' }, readPluginOption: pluginOption })).toMatchObject({ value: 'low', origin: 'override', source: 'plugin option' })
   })
 
-  it('resolves the Claude SDK implementer to medium in the executor profile and reports it per role', () => {
+  it('resolves the Claude SDK implementer executor profile and reports each role variant per role', () => {
     const profile = resolveExecutorProfile({ worktree: '/worktree', route: 'LITE', hard: false, env: {}, settingsEnv: {}, resolveConsentImpl: () => ({ outcome: 'not_true' }) })
     expect(profile.variants).toEqual({ critic: 'xhigh', code: 'medium', review: 'xhigh', refutation: 'xhigh' })
     expect(profile.variantOrigins.code).toBe('role base')
   })
 
-  it('ships medium defaults for the pilots, high for the hard pilots and orchestrators, xhigh for the critic/review/refutation executors, and a model-derived code effort', () => {
+  it.each([
+    ['not_true', 'claude-sdk', { critic: 'xhigh', code: 'medium', review: 'xhigh', refutation: 'xhigh' }],
+    ['true', 'gpt-lane', { critic: 'max', code: 'high', review: 'medium', refutation: 'medium' }],
+  ] as const)('resolves real option-free %s executor effort by model family', (outcome, executor, variants) => {
+    const config = mkdtempSync(join(tmpdir(), 'wt-executor-variant-')); roots.push(config)
+    const profile = resolveExecutorProfileImpl({
+      worktree: config, route: 'FULL', env: { CLAUDE_CONFIG_DIR: config }, settingsEnv: {},
+      resolveConsentImpl: () => ({ outcome }),
+    })
+    expect(profile).toMatchObject({ executor, variants })
+    expect(Object.values(profile.variantOrigins)).toEqual(['role base', 'role base', 'role base', 'role base'])
+  })
+
+  it('treats a definition default as absent, while an actual plugin variant option overrides the base', async () => {
+    const { readWorkflowToolboxPluginOption } = await import(pathToFileURL(join(REPO_ROOT, 'plugin/bin/lib/plugin-options.mjs')).href)
+    const config = mkdtempSync(join(tmpdir(), 'wt-executor-option-presence-')); roots.push(config)
+    const env = { CLAUDE_CONFIG_DIR: config }
+    // pilot_variant has a non-empty definition default ('medium'): the reader still reports absent.
+    expect(readWorkflowToolboxPluginOption('pilot_variant', { env })).toEqual({ present: false })
+    expect(readWorkflowToolboxPluginOption('executor_critic_variant', { env })).toEqual({ present: false })
+    expect(resolveRoleVariant('critic', 'opus', { env })).toMatchObject({ value: 'xhigh', origin: 'role base' })
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_critic_variant: 'high' } } } }))
+    expect(readWorkflowToolboxPluginOption('executor_critic_variant', { env })).toEqual({ present: true, value: 'high' })
+    expect(resolveRoleVariant('critic', 'opus', { env })).toMatchObject({ value: 'high', origin: 'override', source: 'plugin option' })
+  })
+
+  it('honours an explicitly saved effort even when a newer family base differs', () => {
+    const config = mkdtempSync(join(tmpdir(), 'wt-saved-effort-')); roots.push(config)
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_critic_variant: 'high' } } } }))
+    expect(resolveRoleVariant('critic', 'openai/gpt-6-sol', { env: { CLAUDE_CONFIG_DIR: config } })).toMatchObject({ value: 'high', origin: 'override', source: 'plugin option' })
+  })
+
+  it('ships pilot effort defaults and empty executor options so model-family bases decide', () => {
     const manifest = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/.claude-plugin/plugin.json'), 'utf8'))
     const variants = Object.fromEntries(Object.entries(manifest.userConfig).filter(([key]) => key.endsWith('_variant')).map(([key, schema]) => [key, (schema as { default: string }).default]))
     expect(variants).toEqual({
@@ -163,10 +255,10 @@ describe('pilot model configuration', () => {
       sdk_pilot_variant: 'medium',
       sdk_pilot_hard_variant: 'high',
       sdk_orchestrator_variant: 'high',
-      executor_critic_variant: 'xhigh',
+      executor_critic_variant: '',
       executor_code_variant: '',
-      executor_review_variant: 'xhigh',
-      executor_refutation_variant: 'xhigh',
+      executor_review_variant: '',
+      executor_refutation_variant: '',
     })
   })
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
+import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import {
   DEFAULT_SUITE_LOCK_STALE_S,
   DEFAULT_SUITE_LOCK_WAIT_S,
@@ -113,8 +114,8 @@ function release(args) {
   return 0
 }
 
-async function main() {
-  const [subcommand, ...args] = process.argv.slice(2)
+export async function runSuiteLockCli(argv = process.argv.slice(2)) {
+  const [subcommand, ...args] = argv
   if (subcommand === '--help' || subcommand === '-h') { printHelp(); return 0 }
   if (subcommand === 'run') return run(args)
   if (subcommand === 'status') return status(args)
@@ -122,9 +123,13 @@ async function main() {
   throw new Error(subcommand ? `unknown subcommand: ${subcommand}` : 'missing subcommand')
 }
 
-try {
-  process.exitCode = await main()
-} catch (error) {
-  process.stderr.write(`wt-suite-lock: ${error instanceof Error ? error.message : String(error)}\n${USAGE}\n`)
-  process.exitCode = 2
+export async function runSuiteLockCliEntrypoint(argv = process.argv.slice(2)) {
+  try {
+    return await runSuiteLockCli(argv)
+  } catch (error) {
+    process.stderr.write(`wt-suite-lock: ${error instanceof Error ? error.message : String(error)}\n${USAGE}\n`)
+    return 2
+  }
 }
+
+if (isInvokedDirectly(import.meta.url)) process.exitCode = await runSuiteLockCliEntrypoint()

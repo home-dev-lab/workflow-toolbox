@@ -11,7 +11,7 @@ import { effectiveSkillDiscoveryRefusal, opencodeChildEnv, opencodeSkillFenceRef
 import { providerCredentialNames } from './lib/external-model-env.mjs'
 import { resolvedBinary } from './lib/resolved-binary.mjs'
 
-export const DEFAULT_MODEL = 'openai/gpt-5.6-luna'
+export const DEFAULT_MODEL = 'openai/gpt-6-sol'
 export const DEFAULT_TIMEOUT_SEC = 570
 const MESSAGE = 'Follow the instructions in the attached file and output ONLY what it asks for (e.g. the verdict JSON). Do not add commentary.'
 

@@ -23,6 +23,8 @@ describe('pid to parent-pid host perimeter', () => {
     // The grounding CLI, two hooks, and pure public re-export add four perimeter files;
     // their process access stays behind HOST_ROOT. The Java pack's `wt-jdtls.mjs` launcher adds one more
     // (its JVM discovery and spawn live in host/jdtls-java.mjs).
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 222, violations: [] })
+    // Shared executor defaults and the suite-lock runner add two modules, and the pure DoD dispute
+    // module adds one, none of them adding a process-table primitive.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 224, violations: [] })
   })
 })

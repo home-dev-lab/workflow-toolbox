@@ -8,9 +8,42 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Added
 - SDK runner: a Definition-of-done criterion that the critic blocks on in two consecutive plan rounds is escalated to the run's parent, never to a person. The parent answers only through `wt-pilot-runner.mjs decide --run <id> --dod <n> --reading <text>`, which writes atomically to the runner's per-run host state outside every lane-writable sandbox bind; the lifecycle supplies its bound reading to the pilot, and `DECISION` prose in mailboxes or lane files has no special meaning. Without an answer within 15 minutes, the card criterion's literal words bind verbatim and the critic may not block again on that criterion for the rest of the run; the next critic brief, pilot report, and run summary quote both. Card-term lookup accepts shorter labels and normalizes curly quotes, transition state remains unchanged if decision-request publication fails, dispute identity is consistently the DoD number, and the mandatory `## Card terms: reading chosen` plan section is now enforced.
 
+### Changed
+- Restored unconditional anomaly, fan-out, distributed-twin, escalation, reporting, board-sweep, memory-integrity and cross-platform shipping duties to always-loaded rules; fan-out now loads its companion before Agent as well as Workflow calls.
+- Slimmed the always-loaded plugin rules by moving memory maintenance, delegation routing and addressing, board sweeps, distributed-twin checks, monitoring, Workflow fan-out, review/refutation, and gate-log guidance into pre-act companions. Split the oversized delegation and memory companions to fit the fallback delivery limit. The rules' operative-order inventory and static private-rule anchors remain checked; adoption registry now includes the new companions.
+
 ### Fixed
 - DoD dispute decisions are write-once and deadline-bound under a stale-reclaimable exclusive store lock. Timeout findings are mechanically downgraded, the pilot sees the lifecycle's bound reading before revising the plan, and request/status publication retries without half-committing. Raw fenced card criteria survive fallback; extra sandbox writable binds overlapping the store are refused, non-regular lane request files are replaced safely, and unsandboxed runs warn about their same-user authority limit.
+
+## [0.188.2] - 2026-09-26
+
+### Changed
+- External lane defaults now use `openai/gpt-6-sol`, while `openai/gpt-6-luna` is allowed for explicit lane selection. The older GPT-5.6 Luna, Terra, and Sol tiers remain allowed; `-fast` variants remain refused.
+- GPT lane executor role table (owner-approved 2026-09-26): code and standard critic move to `openai/gpt-6-sol` (code at `high`, critic at `max`); hard critic, review and refutation use `openai/gpt-6-astra` (critic `max`, review/refutation `medium`) so Sol never reviews its own code. Refutation moves from `xhigh` to `medium`. The forced `xhigh` code variant is scoped to `openai/gpt-5.6-sol` only.
+- Hard GPT-lane implementation uses Sol and review uses Astra; executor effort bases now follow model family (GPT critic/code `max`/`high`, Claude critic/code `xhigh`/`medium`) with empty variant options deferring to that family base.
+- An effort explicitly saved in plugin options still wins over the new family bases.
+
+### Fixed
 - Lane gates run from the repo root now resolve the pinned pnpm. Corepack resolves the pnpm version by walking up from the working directory, then pnpm checks it against the `--dir` target's own pin; only `toolkit/package.json` carried a `packageManager` field, so `pnpm --dir toolkit <gate>` invoked from the repo root failed for any Corepack user whose default pnpm was not already the toolkit's pin and who had no ancestor directory pinning it either (`configured to use 11.10.0 of pnpm. Your current pnpm is vX.Y.Z`). The root `package.json` now pins the same `pnpm@11.10.0`, checked equal to the toolkit's pin by a new test.
+- `WT_SUITE_LOCK_CMD` now names the dedicated `wt-suite-lock-run` executable, so every following word is run literally under the suite lock, including commands named `run`, `status`, or `release`. The administrative `wt-suite-lock` CLI again rejects unknown subcommands with usage. The runner forwards its arguments verbatim on POSIX (`"$WT_SUITE_LOCK_CMD" pnpm test`, no shell re-parsing); on Windows, `cmd.exe` still re-parses `%`, `^` and `&` in an unquoted argument, so a command carrying those characters should be run as `node wt-suite-lock.mjs run -- …` instead. It also tolerates a `run --` (or bare `--`) prefix an older adopted `wt-lane.mjs` still supplies itself, so `adopt --set scripts` need not land before both sides work together — re-adopt `wt-lane.mjs` (`adopt --set scripts`) anyway to pick up the current launcher.
+- `wt-suite-lock.mjs` and `lane-egress-proxy.mjs` compared `process.argv[1]` to `import.meta.url` directly to decide whether they were invoked directly; reached through a symlink, that comparison never matched, so the file printed nothing and exited 0 instead of running. Both now use the existing symlink-safe `isInvokedDirectly` guard (`lib/host/entry-guard.mjs`), which every other entrypoint in `plugin/bin` already used.
+- `suiteLockCli` (`lib/host/lane-sandbox.mjs`) now also refuses a suite-lock runner file that exists but lost its POSIX execute bit, with "update or reinstall workflow-toolbox" rather than a spawn failure deep inside a lane.
+- Lane sandbox (Linux): Codex second opinions and codex lanes had no working shell inside the sandbox since 0.188.0 when the `codex` executable was reached through a symlink. Executable symlinks are now recreated inside the sandbox, pointing at the bound real executable location, so sibling helpers such as `codex-code-mode-host` remain discoverable without exposing the symlink's containing directory. The behavior is generic for symlinked executables, including OpenCode.
+- Late read-only executable overlays now preserve binaries beneath private-home remaps without covering a writable bind, private remap target, or protected path. Colliding binary directories narrow to the executable file; colliding Node toolchain prefixes narrow to `bin` and `lib`, with a named refusal if narrowing cannot preserve the boundary or a kept executable link would dangle.
+
+### Quality
+
+Patch release: measured on the release tree against the 0.188.1 baseline (`pnpm quality:delta`). Coverage rose on all four measures; ESLint warnings rose by one (685 -> 686, still under the 687 ceiling), carded for removal; every other judge is unchanged.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 127 -> 127 | 0 |
+| Cognitive complexity | 266 -> 266 | 0 |
+| ESLint warnings | 685 -> 686 | +1 |
+| Duplication % | 2.6449 -> 2.6416 | 0 |
+| Knip issues | 220 -> 220 | 0 |
+| Coverage lines % | 81.65 -> 81.70 | +0.05 |
+| Coverage branches % | 71.98 -> 72.07 | +0.09 |
 
 ## [0.188.1] - 2026-09-26
 

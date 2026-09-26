@@ -392,6 +392,7 @@ export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
   const skipped = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
   const stack = [root]
   let latest = 0
+  let latestPath = null
   let visited = 0
   while (stack.length) {
     const dir = stack.pop()
@@ -403,12 +404,12 @@ export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
       const full = path.join(dir, entry.name)
       try {
         const stat = statSync(full)
-        latest = Math.max(latest, stat.mtimeMs)
+        if (stat.mtimeMs > latest) { latest = stat.mtimeMs; latestPath = full }
         if (entry.isDirectory()) stack.push(full)
       } catch {}
     }
   }
-  return { at: latest || null, bounded: false, status: 'known' }
+  return { at: latest || null, path: latestPath, bounded: false, status: 'known' }
 }
 
 export function appendSupervisorJournal(dataDir, event) {

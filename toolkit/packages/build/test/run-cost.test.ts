@@ -172,6 +172,8 @@ describe('run cost', () => {
     const table = JSON.parse(readFileSync(PRICE_TABLE, 'utf8'))
     expect(pricedModel('anthropic/claude-opus-5-20260901', { family: 'anthropic', input: 1_000_000, cache_write: 2_000_000, cache_read: 3_000_000, output: 4_000_000 }, table).row.usd).toBe(119)
     expect(pricedModel('openai/gpt-5.6-sol-20260901', { family: 'openai', input: 1_000_000, cache_write: 'not measured', cache_read: 2_000_000, output: 3_000_000, reasoning: 9_000_000 }, table).row.usd).toBe(64.8)
+    expect(pricedModel('openai/gpt-6-sol', { family: 'openai', input: 1_000_000, cache_read: 2_000_000, output: 3_000_000 }, table).row.usd).toBe(32.4)
+    expect(pricedModel('openai/gpt-6-luna', { family: 'openai', input: 1_000_000, cache_read: 2_000_000, output: 3_000_000 }, table).row.usd).toBe(1.62)
     expect(pricedModel('unlisted-model', { family: 'anthropic', input: 1 }, table).row.usd).toBe('price unknown')
     expect(pricedModel('claude-haiku-4-5-20251001', { family: 'anthropic', input: 1_000_000 }, table).row.usd).toBe(1)
     expect(pricedModel('claude-opus-50', { family: 'anthropic', input: 1 }, table).row.usd).toBe('price unknown')

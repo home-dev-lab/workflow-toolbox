@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +9,7 @@ import { isInvokedDirectly } from '../../../plugin/bin/lib/host/entry-guard.mjs'
 const roots: string[] = []
 const PLUGIN_ROOT = join(import.meta.dirname, '../../../plugin')
 const REPORT_FINDINGS_CHECK = join(import.meta.dirname, '../../../plugin/bin/wt-report-findings-check.mjs')
+const SUITE_LOCK_CLI = join(import.meta.dirname, '../../../plugin/bin/wt-suite-lock.mjs')
 const TOOLKIT_OBSERVE_CLI = join(import.meta.dirname, '../../bin/wt-observe.mjs')
 let cachedPluginRoot: string
 
@@ -22,8 +23,31 @@ const CACHE_ENTRYPOINTS = [
   { file: 'wt-observe.mjs', args: ['--help'], output: 'usage: wt-observe' },
   { file: 'wt-opencode-verify.mjs', args: ['--help'], output: 'Usage:' },
   { file: 'wt-report-findings-check.mjs', args: ['--help'], output: 'wt-report-findings-check' },
+  { file: 'wt-suite-lock.mjs', args: ['status'], output: 'suite lock' },
   { file: 'wt-verifier-cli-guard-hook.mjs', input: '{}' },
 ] as const
+
+// A raw `process.argv[1] === fileURLToPath(import.meta.url)` (either operand order) breaks the
+// moment the entrypoint is reached through a symlink: realpath differs from the symlink path, the
+// direct-execution branch never runs, and the file silently does nothing (card 1872232864). Every
+// file under plugin/bin must route that comparison through the symlink-safe isInvokedDirectly
+// guard instead. This scans the whole tree so a third raw copy can never reappear unnoticed.
+function findRawDirectExecutionComparisons(root: string): string[] {
+  const RAW_COMPARISON = /process\.argv\[1\]\s*(?:===|==)\s*fileURLToPath\(import\.meta\.url\)|fileURLToPath\(import\.meta\.url\)\s*(?:===|==)\s*process\.argv\[1\]/
+  const offenders: string[] = []
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') continue
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) { walk(full); continue }
+      if (!entry.name.endsWith('.mjs')) continue
+      const text = readFileSync(full, 'utf8')
+      if (RAW_COMPARISON.test(text)) offenders.push(full)
+    }
+  }
+  walk(root)
+  return offenders
+}
 
 beforeAll(() => {
   const root = mkdtempSync(join(tmpdir(), 'wt-plugin-cache-'))
@@ -80,6 +104,23 @@ describe('host entry guard', () => {
     const result = spawnSync(process.execPath, [link, '--help'], { encoding: 'utf8' })
 
     expect(result.stdout).toContain('wt-report-findings-check')
+  })
+
+  it.skipIf(process.platform === 'win32')('runs wt-suite-lock.mjs status invoked through a symlink (card 1872232864: a raw argv[1]===import.meta.url comparison prints nothing here)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-entry-guard-')); roots.push(root)
+    const link = join(root, 'lock.mjs')
+    symlinkSync(SUITE_LOCK_CLI, link)
+
+    const result = spawnSync(process.execPath, [link, 'status'], { encoding: 'utf8' })
+
+    expect(result.status, result.stderr).toBe(0)
+    expect(result.stdout).toContain('suite lock')
+  })
+
+  it('never lets a raw process.argv[1]===fileURLToPath(import.meta.url) comparison reappear under plugin/bin', () => {
+    const offenders = findRawDirectExecutionComparisons(join(PLUGIN_ROOT, 'bin'))
+
+    expect(offenders).toEqual([])
   })
 
   it('runs the toolkit/bin copy of wt-observe.mjs directly (not just the plugin cache twin)', () => {

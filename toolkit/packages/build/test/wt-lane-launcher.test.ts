@@ -13,7 +13,7 @@ import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, parse }
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
 const CONTROL = join(ROOT, 'plugin/bin/wt-lane-control.mjs')
-const WATCHER = join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
+const WATCHER = process.env.WT_LANE_WATCH_BINARY ?? join(ROOT, 'plugin/bin/wt-lane-orphan-watch.mjs')
 const FAKE_OPENCODE = join(ROOT, 'toolkit/packages/build/test/fixtures/fake-opencode.mjs')
 const roots: string[] = []
 const spawnedWatchers: ChildProcess[] = []
@@ -23,7 +23,19 @@ const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$
 const PROCESS_CAPTURE_RETRY_MS = 10
 const PROCESS_CAPTURE_SCHEDULING_MARGIN_MS = 100
 const DARWIN_PROVIDER_MISS_TTL_MS = 100
+const RECURRENT_STALL_MINUTES = 1
+const RECURRENT_POLL_SECONDS = 0.1
+const RECURRENT_POLL_MS = RECURRENT_POLL_SECONDS * 1000
+const RECURRENT_POLL_MULTIPLIER = 20
+// The threshold is the only aging budget; 20 polls allow the watcher to finish a sweep and emit its receipt.
+const RECURRENT_EVENT_WAIT_MS = RECURRENT_STALL_MINUTES * 60_000 + RECURRENT_POLL_MS * RECURRENT_POLL_MULTIPLIER
+const RECURRENT_EVENT_COUNT = 3
+const RECURRENT_TEST_MARGIN_MS = 60_000
+const RECURRENT_TEST_TIMEOUT_MS = RECURRENT_EVENT_COUNT * RECURRENT_EVENT_WAIT_MS + RECURRENT_TEST_MARGIN_MS
+const RECURRENT_WORKER_SECONDS = Math.ceil((RECURRENT_TEST_TIMEOUT_MS + 60_000) / 1000)
+const RECURRENT_LAUNCH_TIMEOUT_SECONDS = RECURRENT_WORKER_SECONDS + 60
 const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
+const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
   const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
@@ -79,6 +91,31 @@ function waitForContent(file: string, pattern: RegExp, ms = 30_000) {
     spawnSync('sleep', ['0.05'])
   }
   throw new Error(`timed out waiting for ${pattern} in ${file}`)
+}
+function stalledWaitWithEvidence(file: string, pattern: RegExp, evidence: { trace: string, status: string, journal: string, dir: string }, ms = 30_000, offset = 0) {
+  try {
+    const until = Date.now() + ms
+    while (Date.now() < until) {
+      if (existsSync(file) && pattern.test(readFileSync(file, 'utf8').slice(offset))) return
+      spawnSync('sleep', ['0.05'])
+    }
+    throw new Error(`timed out waiting for ${pattern} after offset ${offset} in ${file}`)
+  } catch (error) {
+    const read = (name: string) => existsSync(name) ? readFileSync(name, 'utf8') : '(missing)'
+    const writes: { path: string, mtimeMs: number }[] = []
+    const visit = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const file = join(dir, name)
+        if (file === join(evidence.dir, '.lane', 'supervision')) continue
+        const stat = statSync(file)
+        writes.push({ path: file, mtimeMs: stat.mtimeMs })
+        if (stat.isDirectory()) visit(file)
+      }
+    }
+    visit(evidence.dir)
+    writes.sort((a, b) => b.mtimeMs - a.mtimeMs)
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\ntrace tail:\n${read(evidence.trace).trim().split('\n').slice(-20).join('\n')}\nsupervision record:\n${read(evidence.status)}\nsupervisor journal:\n${read(evidence.journal)}\nlast worktree writes:\n${JSON.stringify(writes.slice(0, 20))}`)
+  }
 }
 function journalEvents(file: string, event: string) {
   if (!existsSync(file)) return []
@@ -292,12 +329,34 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     )
   }, 15_000)
 
-  it('launches a model in the default lane model allow-list', () => {
+  it.each(['openai/gpt-6-sol', 'openai/gpt-6-luna'])('launches allowed GPT-6 lane model %s', (model) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
-    expect(run(f).status).toBe(0)
+    expect(run(f, [], model).status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
     expect(JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8')).state).not.toBe('launching')
+  })
+  it.each([
+    ['openai/gpt-6-sol', 'critic', 'max', 'role base'],
+    ['openai/gpt-6-sol', 'code', 'high', 'role base'],
+    ['openai/gpt-5.6-luna', 'critic', 'xhigh', 'role base (clamped from max)'],
+  ])('passes --role %s/%s through to the real opencode argv at %s', (model, role, effort, origin) => {
+    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"')
+    const result = run(f, ['--role', role], model)
+    expect(result.status, result.stderr).toBe(0)
+    const argvFile = join(f.dir, 'argv')
+    waitForFile(argvFile)
+    const argv = readFileSync(argvFile, 'utf8').trim().split('\n')
+    expect(argv.slice(argv.indexOf('--variant'), argv.indexOf('--variant') + 2)).toEqual(['--variant', effort])
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).toContain(`variant=${effort} origin=${origin}`)
+  })
+  it('refuses an explicit Luna max even with the unknown-variant escape hatch', () => {
+    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"')
+    const result = run(f, ['--role', 'critic', '--variant', 'max', '--allow-unknown-variant'])
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('variant max is above the xhigh ceiling')
+    expect(existsSync(join(f.dir, 'argv'))).toBe(false)
   })
   it('refuses to launch when available memory is below the configured threshold', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
@@ -309,11 +368,11 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(result.stderr).toMatch(/^wt-lane: Refused: available memory \d+ MiB is below the required \d+ MiB; lower WT_LANE_MIN_AVAILABLE_MIB only after freeing or deliberately budgeting memory\.\n$/)
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
-  it.each(['google/gemini-3.6-flash', 'openai/gpt-5.6-sol-fast'])('refuses unlisted model %s before spawn', (model) => {
+  it.each(['google/gemini-3.6-flash', 'openai/gpt-5.6-sol-fast', 'openai/gpt-6-sol-fast'])('refuses unlisted model %s before spawn', (model) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     const res = run(f, [], model)
     expect(res.status).toBe(1)
-    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-astra); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
+    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-luna, openai/gpt-6-sol, openai/gpt-6-astra); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
   it('honours a comma- or whitespace-separated WT_LANE_MODELS override with exact matching', () => {
@@ -830,11 +889,13 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     }
   }, 60_000)
   it('journals a stalled episode again after it clears and recurs for the same runId', () => {
-    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 120')
+    const f = fixture(`echo $$ > "$PWD/opencode.pid"; sleep ${RECURRENT_WORKER_SECONDS}`)
     isolateWatcherHostCensus(f)
-    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const res = run(f, ['--timeout', String(RECURRENT_LAUNCH_TIMEOUT_SECONDS)]); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); waitForFile(join(f.dir, 'opencode.pid'))
+    waitForContent(status, /"state": "running"/); waitForVerdict(status, 'running')
     const state = JSON.parse(readFileSync(status, 'utf8'))
+    spawnedGroups.push(state.workerPid)
     const marker = join(f.dir, 'activity')
     const old = new Date(Date.now() - 120_000)
     const ageTree = (dir: string) => {
@@ -846,26 +907,98 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       }
     }
     writeFileSync(marker, 'old'); ageTree(f.dir); utimesSync(f.dir, old, old)
+    expect(statSync(join(f.dir, '.lane', 'run.log')).mtimeMs).toBeLessThanOrEqual(old.getTime())
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     const sweepLog = join(f.root, 'sweeps.log')
-    const watcher = spawnWatcher(['--project', f.dir, '--poll', '0.1'], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog } })
+    const trace = join(f.root, 'watch-trace.jsonl')
+    const watcher = spawnWatcher(['--project', f.dir, '--poll', String(RECURRENT_POLL_SECONDS)], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: String(RECURRENT_STALL_MINUTES), WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog, WT_LANE_WATCH_TRACE: trace } })
     const watcherIdentity = inspectProcess(watcher.pid!)
     if (!watcherIdentity) throw new Error('watcher identity did not become readable')
-    waitForContent(journal, /"event":"stalled"/)
+    const evidence = { trace, status, journal, dir: f.dir }
+    stalledWaitWithEvidence(journal, /"event":"stalled"/, evidence, RECURRENT_EVENT_WAIT_MS)
+    killIdentity(watcherIdentity, 'SIGSTOP')
+    const clearOffset = existsSync(sweepLog) ? readFileSync(sweepLog, 'utf8').length : 0
     writeFileSync(marker, 'fresh')
-    waitForContent(sweepLog, new RegExp(`${state.runId}:stalled:cleared`))
+    killIdentity(watcherIdentity, 'SIGCONT')
+    stalledWaitWithEvidence(sweepLog, new RegExp(`${state.runId}:stalled:cleared`), evidence, RECURRENT_EVENT_WAIT_MS, clearOffset)
     killIdentity(watcherIdentity, 'SIGSTOP')
     try {
       ageTree(f.dir); utimesSync(f.dir, old, old)
+      expect(statSync(join(f.dir, '.lane', 'run.log')).mtimeMs).toBeLessThanOrEqual(old.getTime())
     } finally {
       killIdentity(watcherIdentity, 'SIGCONT')
     }
-    waitForContent(journal, /"event":"stalled".*\n.*"event":"stalled"/s)
+    stalledWaitWithEvidence(journal, /"event":"stalled".*\n.*"event":"stalled"/s, evidence, RECURRENT_EVENT_WAIT_MS)
     killIdentity(watcherIdentity, 'SIGTERM')
     expect(journalEvents(journal, 'stalled')).toHaveLength(2)
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.runId))).toEqual(new Set([state.runId]))
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.episodeStartedAt)).size).toBe(2)
     killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
+  }, RECURRENT_TEST_TIMEOUT_MS)
+  it('traces each watcher record only when opted in, including stalled predicates and write path', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const status = currentStateFile(f.dir)
+    waitForFile(join(f.dir, 'opencode.pid')); waitForVerdict(status, 'running')
+    const trace = join(f.root, 'watch-trace.jsonl')
+    const env: NodeJS.ProcessEnv = { ...f.env, WT_LANE_STALL_MINUTES: '1' }
+    delete env.WT_LANE_WATCH_TRACE
+    const without = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env })
+    expect(without.status, without.stderr).toBe(0)
+    expect(existsSync(trace)).toBe(false)
+    const withTrace = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: { ...env, WT_LANE_WATCH_TRACE: trace } })
+    expect(withTrace.status, withTrace.stderr).toBe(0)
+    const lines = readFileSync(trace, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatchObject({ runId: JSON.parse(readFileSync(status, 'utf8')).runId, verdict: 'running', childInspectable: true, latestWorktreeWrite: { status: 'known' }, predicates: { running: true, inspectable: true, knownWrite: true, hasWrite: true, oldEnough: false }, decision: 'clear', stallThresholdMs: 60_000 })
+    expect(typeof lines[0].time).toBe('string')
+    expect(typeof lines[0].latestWorktreeWrite.path).toBe('string')
+    expect(typeof lines[0].latestWorktreeWrite.mtimeMs).toBe('number')
+    expect(typeof lines[0].ageMs).toBe('number')
+    killIdentity({ pid: JSON.parse(readFileSync(status, 'utf8')).workerPid, argv: JSON.parse(readFileSync(status, 'utf8')).workerArgv }, 'SIGTERM')
+  }, 60_000)
+  it('traces journaled and already-journaled decisions for an aged running lane', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const status = currentStateFile(f.dir)
+    waitForFile(join(f.dir, 'opencode.pid')); waitForVerdict(status, 'running')
+    const state = JSON.parse(readFileSync(status, 'utf8'))
+    spawnedGroups.push(state.workerPid)
+    const old = new Date(Date.now() - 120_000)
+    const ageTree = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const file = join(dir, name)
+        if (file === join(f.dir, '.lane', 'supervision')) continue
+        if (statSync(file).isDirectory()) ageTree(file)
+        utimesSync(file, old, old)
+      }
+    }
+    ageTree(f.dir); utimesSync(f.dir, old, old)
+    const trace = join(f.root, 'watch-trace.jsonl')
+    const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.05'], {
+      encoding: 'utf8', env: { ...f.env, WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TRACE: trace, WT_LANE_WATCH_TEST_MAX_SWEEPS: '2' },
+    })
+    expect(watcher.status, watcher.stderr).toBe(0)
+    const decisions = readFileSync(trace, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((line) => line.runId === state.runId)
+    expect(decisions.map((line) => line.decision), JSON.stringify(decisions)).toEqual(['journaled', 'already-journaled'])
+    expect(decisions.every((line) => line.predicates.oldEnough === true)).toBe(true)
+  }, 60_000)
+  it('disables a trace destination inside the watched tree, including symlink aliases', () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const status = currentStateFile(f.dir)
+    waitForFile(join(f.dir, 'opencode.pid')); waitForVerdict(status, 'running')
+    const state = JSON.parse(readFileSync(status, 'utf8'))
+    spawnedGroups.push(state.workerPid)
+    const alias = join(f.root, 'alias')
+    symlinkSync(f.dir, alias, 'dir')
+    const trace = join(alias, 'watch-trace.jsonl')
+    const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--poll', '0.05'], {
+      encoding: 'utf8', env: { ...f.env, WT_LANE_WATCH_TRACE: trace, WT_LANE_WATCH_TEST_MAX_SWEEPS: '2' },
+    })
+    expect(watcher.status, watcher.stderr).toBe(0)
+    expect(watcher.stderr.match(/trace destination is inside a watched worktree/g)).toHaveLength(1)
+    expect(existsSync(trace)).toBe(false)
   }, 60_000)
   it('enforce mode escalates and journals cleaned only after the orphan is gone', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
@@ -1266,22 +1399,25 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       '',
     ])
   })
-  it('hands the lane child a WT_SUITE_LOCK_CMD that runs the plugin suite-lock CLI', () => {
+  it('hands the lane child an executable WT_SUITE_LOCK_CMD for the plugin suite-lock runner', () => {
     const f = fixture('suite-lock-cmd')
     const res = run(f, ['--timeout', '1']); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     const command = readFileSync(join(f.dir, 'suite-lock-cmd'), 'utf8')
-    const cli = join(ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs')
-    expect(command).toBe(`node '${cli}' run --`)
+    const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs')
+    expect(command).toBe(cli)
     expect(existsSync(cli)).toBe(true)
-    const help = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' })
-    expect(help.status, help.stderr).toBe(0)
-    expect(help.stdout).toContain('wt-suite-lock.mjs run')
   })
+  it.skipIf(!ZSH_WORKS)('runs WT_SUITE_LOCK_CMD as one executable under zsh (skips: zsh unavailable)', () => {
+    const f = fixture('suite-lock-run-zsh')
+    const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'), 30_000)
+    expect(readFileSync(join(f.dir, 'suite-lock-run'), 'utf8')).toBe('status=0\ngate ran\n')
+  }, 60_000)
   // The real sandbox binds only named paths: the CLI (and the plugin files it reads at import) must be
   // visible inside it, and the lock directory writable. The lock root is the fixture's own state dir.
-  it.skipIf(!BWRAP_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips without a working bwrap)', () => {
-    const f = fixture('suite-lock-run')
+  it.skipIf(!BWRAP_WORKS || !ZSH_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips without working bwrap or zsh)', () => {
+    const f = fixture('suite-lock-run-zsh')
     delete f.env.WT_LANE_SANDBOX
     f.env.WT_LANE_SANDBOX_READ = join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures')
     const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)
