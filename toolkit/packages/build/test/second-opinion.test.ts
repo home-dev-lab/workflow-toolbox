@@ -597,7 +597,9 @@ describe('second-opinion advisor', () => {
     expect(process.listenerCount('exit')).toBe(baselineExitListeners)
   })
 
-  it('stops broker ownership and removes its temp root when sandbox planning refuses', async () => {
+  // The real bwrap planner takes POSIX paths; a Windows os.tmpdir() fixture cannot exercise
+  // its refusal reasons. The win32 pass-through and ownership cleanup are checked below.
+  it.skipIf(process.platform === 'win32')('stops broker ownership and removes its temp root when sandbox planning refuses (Linux planner paths)', async () => {
     const core = process.env.WT_LANE_SECOND_OPINION_TEST_LIB
       ? await import(pathToFileURL(join(process.env.WT_LANE_SECOND_OPINION_TEST_LIB, 'second-opinion-core.mjs')).href)
       : { createSecondOpinionDependencies, runSecondOpinion }
@@ -637,5 +639,30 @@ describe('second-opinion advisor', () => {
       expect(existsSync(ownershipRoot)).toBe(false)
       expect(process.listenerCount('exit')).toBe(baseline)
     }
+  })
+
+  it('stops broker ownership and removes its temp root after a win32 pass-through plan', async () => {
+    const f = fixture(true)
+    const ownershipRoot = mkdtempSync(join(f.repo, 'broker-ownership-'))
+    const stop = vi.fn(() => { rmSync(ownershipRoot, { recursive: true, force: true }); return [] })
+    const baseline = process.listenerCount('exit')
+    // Exercise the Windows spelling even when this test runs on a POSIX CI worker.
+    const windowsHome = process.platform === 'win32' ? f.home : 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\home'
+    const adapter = {
+      platform: 'win32',
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env: { ...env, HOME: windowsHome }, capture: vi.fn(), stop }),
+    }
+    const sandbox = await import(pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/lane-sandbox.mjs')).href)
+    const resolveSandbox = vi.fn((request: Record<string, unknown>) => sandbox.resolveLaneSandbox(request))
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
+    deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+    expect(resolveSandbox).toHaveBeenCalledOnce()
+    expect((resolveSandbox.mock.calls[0]![0].env as Record<string, string>).HOME).toBe(windowsHome)
+    expect(lines(f.out)).toContain('lane sandbox: none (bubblewrap sandbox is Linux-only; this host is win32); running with the environment allow-list only')
+    expect(stop).toHaveBeenCalledOnce()
+    expect(existsSync(ownershipRoot)).toBe(false)
+    expect(process.listenerCount('exit')).toBe(baseline)
   })
 })
