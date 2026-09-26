@@ -30,20 +30,21 @@ describe('wt-opencode-verify', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-'))
     const source = path.join(dir, 'task.md')
     const binDir = path.join(dir, 'bin')
-    const calls = path.join(dir, 'calls.json')
+    const work = path.join(dir, 'work'); mkdirSync(work) // --dir must not be an ancestor of HOME (H5)
+    const calls = path.join(work, 'calls.json') // the fake writes here from inside the sandbox, so it must be under the writable worktree
     writeFileSync(source, 'review this')
     try {
       mkdirSync(binDir)
       writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst fs=require('node:fs'); const args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }; if(args[0]==='debug' && args[1]==='skill') { console.log('[]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); fs.writeFileSync(process.env.WT_CALLS, JSON.stringify(args)); fs.writeFileSync(process.env.WT_FENCE, process.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS); process.stdout.write('{"part":{"type":"text","text":"VERDICT"}}\\n')\n`)
       writeFileSync(path.join(binDir, 'opencode.cmd'), '@node "%~dp0opencode" %*\r\n')
       chmodSync(path.join(binDir, 'opencode'), 0o755)
-      const result = spawnSync('node', [ENTRY, '--dir', dir, '--id', 'vote-123', '-m', 'openai/gpt-5.6-terra', '--fallback-model', 'openai/gpt-5.6-luna', '--variant', 'max', '--task-file', source], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}`, WT_CALLS: calls, WT_FENCE: path.join(dir, 'fence'), WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_CALLS,WT_FENCE', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }) })
+      const result = spawnSync('node', [ENTRY, '--dir', work, '--id', 'vote-123', '-m', 'openai/gpt-5.6-terra', '--fallback-model', 'openai/gpt-5.6-luna', '--variant', 'max', '--task-file', source], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}`, WT_CALLS: calls, WT_FENCE: path.join(work, 'fence'), WT_EXTERNAL_MODEL_ENV_ALLOW: 'WT_CALLS,WT_FENCE', OPENCODE_DISABLE_CLAUDE_CODE_SKILLS: 'false' }) })
       expect(result.status).toBe(0)
       expect(result.stdout).toBe('VERDICT')
-      expect(readFileSync(path.join(dir, 'fence'), 'utf8')).toBe('true')
+      expect(readFileSync(path.join(work, 'fence'), 'utf8')).toBe('true')
       const argv = JSON.parse(readFileSync(calls, 'utf8'))
-      expect(argv.slice(0, -1)).toEqual(['run', 'Follow the instructions in the attached file and output ONLY what it asks for (e.g. the verdict JSON). Do not add commentary.', '--agent', 'plan', '--model', 'openai/gpt-5.6-terra', '--variant', 'max', '--dir', dir, '--format', 'json', '-f'])
-      expect(argv.at(-1).replaceAll('\\', '/')).toMatch(new RegExp(`^${dir.replaceAll('\\', '/')}/\\.oc-verify-vote-123-\\d+\\.md$`))
+      expect(argv.slice(0, -1)).toEqual(['run', 'Follow the instructions in the attached file and output ONLY what it asks for (e.g. the verdict JSON). Do not add commentary.', '--agent', 'plan', '--model', 'openai/gpt-5.6-terra', '--variant', 'max', '--dir', work, '--format', 'json', '-f'])
+      expect(argv.at(-1).replaceAll('\\', '/')).toMatch(new RegExp(`^${work.replaceAll('\\', '/')}/\\.oc-verify-vote-123-\\d+\\.md$`))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -53,13 +54,14 @@ describe('wt-opencode-verify', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'wt-opencode-verify-'))
     const source = path.join(dir, 'task.md')
     const binDir = path.join(dir, 'bin')
+    const work = path.join(dir, 'work'); mkdirSync(work) // --dir must not be an ancestor of HOME (H5)
     writeFileSync(source, 'review this')
     try {
       mkdirSync(binDir)
       writeFileSync(path.join(binDir, 'opencode'), `#!/usr/bin/env node\nconst args=process.argv.slice(2); if(args[0]==='--version') { console.log('fixture-1'); process.exit(0) }; if(args[0]==='--pure') { console.log('[{"name":"workflow-toolbox-allowed-sentinel"}]'); process.exit(0) }; if(args[0]==='debug' && args[1]==='skill') { console.log('[]'); process.exit(0) }; if(args[0]==='providers') process.exit(0); process.stdout.write('ungrounded verdict'); process.stderr.write('permission.external_directory auto-rejecting');\n`)
       writeFileSync(path.join(binDir, 'opencode.cmd'), '@node "%~dp0opencode" %*\r\n')
       chmodSync(path.join(binDir, 'opencode'), 0o755)
-      const result = spawnSync('node', [ENTRY, '--dir', dir, '--id', 'denied-read', '--task-file', source], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}` }) })
+      const result = spawnSync('node', [ENTRY, '--dir', work, '--id', 'denied-read', '--task-file', source], { encoding: 'utf8', env: sealedPluginCliEnv(dir, { PATH: `${binDir}${path.delimiter}${process.env.PATH}` }) })
       expect(result.status).toBe(1)
       expect(result.stdout).toBe('OPENCODE_EXTERNAL_DIRECTORY: permission.external_directory auto-rejecting')
     } finally {

@@ -57,12 +57,16 @@ export function spawnCommand(spawnFn, bin, args, options, platform) {
 export function spawnOpencode(spawnFn, bin, args, options = {}, platform = process.platform, extraNames = []) {
   const modelIndex = args.indexOf('--model')
   const modelNames = modelIndex >= 0 ? providerCredentialNames(args[modelIndex + 1]) : []
-  const { sandboxPaths, ...rest } = options
+  const { sandboxPaths, readonlyCwd, ...rest } = options
   const childOptions = { ...rest, env: externalModelEnv(options.env ?? process.env, [...extraNames, ...modelNames], platform) }
-  const sandbox = resolveLaneSandbox({ profile: 'opencode', bin, args, cwd: childOptions.cwd, env: childOptions.env, paths: sandboxPaths, platform })
+  const sandbox = resolveLaneSandbox({ profile: 'opencode', bin, args, cwd: childOptions.cwd, env: childOptions.env, paths: sandboxPaths, platform, readonlyCwd })
   announceUnsandboxedLane(sandbox)
   const [command, commandArgs] = sandbox.wrap(bin, args)
   const child = spawnCommand(spawnFn, command, commandArgs, childOptions, platform)
+  // Tear the network bridge down: after a synchronous spawn it has already returned; after an
+  // asynchronous spawn, when the child closes. A ChildProcess exposes `on`; a spawnSync result does not.
+  if (child && typeof child.on === 'function') child.once('close', () => sandbox.dispose())
+  else sandbox.dispose()
   // Non-enumerable: callers that serialise or compare a spawnSync result see it unchanged.
   if (child && typeof child === 'object') Object.defineProperty(child, 'laneSandbox', { value: { kind: sandbox.kind, line: sandbox.line }, enumerable: false })
   return child

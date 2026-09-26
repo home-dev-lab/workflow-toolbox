@@ -234,8 +234,13 @@ export function briefEvidenceLines(receipt, upper = false) {
   ]
 }
 
+// Inlined rather than imported: this file is rewritten by the adopt installer into a standalone
+// launcher whose `./lib/` neighbours are resolved from the installed plugin, so a fresh relative
+// import here would not resolve. The shared home of this constant is lib/host/hardened-git.mjs.
+const HARDENED_GIT_CONFIG = ['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null']
+
 export function checkGitWorktree(dir) {
-  const result = spawnSync('git', ['-C', dir, 'rev-parse', '--is-inside-work-tree'], {
+  const result = spawnSync('git', [...HARDENED_GIT_CONFIG, '-C', dir, 'rev-parse', '--is-inside-work-tree'], {
     encoding: 'utf8',
     env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' },
   })

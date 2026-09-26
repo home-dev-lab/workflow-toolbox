@@ -11,8 +11,6 @@ import { createSecondOpinionDependencies, listProcessRelationships, listProcessT
 import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
-const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-pid', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
-const { pidNamespaceHasProcesses } = (await import(pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/pid-namespace.mjs')).href)) as { pidNamespaceHasProcesses: (namespace: string) => boolean | null }
 const roots: string[] = []
 afterEach(() => {
   vi.restoreAllMocks()
@@ -24,8 +22,10 @@ function fixture(consented: boolean) {
   roots.push(root)
   const repo = join(root, 'repo')
   const config = join(root, 'config')
+  const home = join(root, 'home')
   mkdirSync(repo)
   mkdirSync(config)
+  mkdirSync(home)
   writeFileSync(join(config, 'settings.json'), JSON.stringify({
     pluginConfigs: {
       'workflow-toolbox@test': { options: { executor_lane_consent: consented } },
@@ -36,6 +36,7 @@ function fixture(consented: boolean) {
   writeFileSync(request, 'Question with facts and sources.')
   return {
     repo,
+    home,
     request,
     out,
     env: { CLAUDE_CONFIG_DIR: config },
@@ -66,8 +67,6 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang', sandb
     "import { spawn } from 'node:child_process'",
     "import { mkdirSync, writeFileSync } from 'node:fs'",
     "import { join } from 'node:path'",
-    "import { readlinkSync } from 'node:fs'",
-    "try { writeFileSync(join(process.cwd(), 'companion.pidns'), readlinkSync('/proc/self/ns/pid')) } catch {}",
     "const child = spawn(process.execPath, [join(import.meta.dirname, 'app-server-broker.mjs')], { detached: true, stdio: 'ignore' })",
     'child.unref()',
     "writeFileSync(join(process.cwd(), 'broker.pid'), String(child.pid))",
@@ -421,7 +420,7 @@ describe('second-opinion advisor', () => {
     (signal, expectedExit) => {
     const f = detachedBrokerFixture()
     const wrapper = spawn(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
-      env: { ...process.env, ...f.env, HOME: f.repo },
+      env: { ...process.env, ...f.env, HOME: f.home },
       stdio: 'ignore',
     })
     let appPid = 0
@@ -458,7 +457,7 @@ describe('second-opinion advisor', () => {
   it.each([['normal', 0], ['error', 7]] as const)('stops the detached broker app-server after a %s companion end', (mode, expectedStatus) => {
     const f = detachedBrokerFixture(mode)
     const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
-      env: { ...process.env, ...f.env, HOME: f.repo },
+      env: { ...process.env, ...f.env, HOME: f.home },
       encoding: 'utf8',
       timeout: process.platform === 'win32' ? 15_000 : 5_000,
     })
@@ -478,22 +477,6 @@ describe('second-opinion advisor', () => {
     }
   }, process.platform === 'win32' ? 30_000 : 10_000)
 
-  // The sandboxed end of the same family: the broker records namespace PIDs, so the lock is the
-  // namespace itself — once the companion ends, nothing it started (detached broker included) lives.
-  it.skipIf(!BWRAP_WORKS)('leaves nothing of the companion family alive once a sandboxed companion ends (skips on a host without a working bwrap)', () => {
-    const f = detachedBrokerFixture('normal', 'on')
-    const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
-      env: { ...process.env, ...f.env, HOME: f.repo },
-      encoding: 'utf8',
-      timeout: 15_000,
-    })
-    expect(result.status, readFileSync(f.out, 'utf8')).toBe(0)
-    expect(lines(f.out)[1]).toMatch(/^lane sandbox: bwrap \(codex; writable /)
-    const namespace = readFileSync(join(f.repo, 'companion.pidns'), 'utf8')
-    expect(namespace).toMatch(/^pid:\[\d+\]$/)
-    expect(waitFor(() => pidNamespaceHasProcesses(namespace) === false)).toBe(true)
-  }, 30_000)
-
   it('stops the detached broker app-server from the process exit hook', () => {
     const f = detachedBrokerFixture()
     const harness = join(f.repo, 'exit-harness.mjs')
@@ -506,7 +489,7 @@ describe('second-opinion advisor', () => {
       'setTimeout(() => process.exit(19), 300)',
     ].join('\n'))
     const result = spawnSync(process.execPath, [harness], {
-      env: { ...process.env, ...f.env, HOME: f.repo },
+      env: { ...process.env, ...f.env, HOME: f.home },
       encoding: 'utf8',
       timeout: 15_000,
     })

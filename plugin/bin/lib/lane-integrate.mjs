@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { assertArchiveOutsideWorktree, readWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
+import { hardenedGitArgs } from './host/hardened-git.mjs'
 import { readSuiteLock } from './suite-lock.mjs'
 
 const STEP_NAMES = ['preflight', 'commit', 'merge', 'archive', 'pre-remove-check', 'remove', 'ci-branch', 'push', 'dispatch']
@@ -61,7 +62,8 @@ function run(runner, program, args, options = {}) {
 }
 
 function git(runner, cwd, args) {
-  return run(runner, 'git', ['-C', cwd, ...args])
+  // Every git call here runs against a lane or integration worktree, so it is hardened (H1).
+  return run(runner, 'git', hardenedGitArgs(['-C', cwd, ...args]))
 }
 
 function canonical(value) {
@@ -164,7 +166,7 @@ function resolveConflictMarkers(content) {
 }
 
 function mergeLane(options, runner) {
-  const args = ['-C', options.into, 'merge', '--no-ff', '-m', options.mergeSubject, options.laneBranch]
+  const args = hardenedGitArgs(['-C', options.into, 'merge', '--no-ff', '-m', options.mergeSubject, options.laneBranch])
   const result = runner('git', args, { encoding: 'utf8', env: COMMAND_ENV })
   if (resultCode(result) === 0) return
   const conflicts = git(runner, options.into, ['diff', '--name-only', '--diff-filter=U']).split(/\r?\n/).filter(Boolean)
@@ -220,7 +222,7 @@ function assertIntegrationTreeNotGated(options) {
 
 function authorizationCommitCount(options, runner) {
   const remoteBranch = `${options.remote}/${options.ciBranch}`
-  const exists = runner('git', ['-C', options.into, 'rev-parse', '--verify', '--quiet', remoteBranch], { encoding: 'utf8', env: COMMAND_ENV })
+  const exists = runner('git', hardenedGitArgs(['-C', options.into, 'rev-parse', '--verify', '--quiet', remoteBranch]), { encoding: 'utf8', env: COMMAND_ENV })
   const base = resultCode(exists) === 0 ? remoteBranch : `${options.remote}/main`
   const existing = Number(git(runner, options.into, ['rev-list', '--count', options.integrationHead, options.laneTip, `^${base}`]).trim())
   return existing + (options.hasChanges ? 1 : 0) + 1
@@ -288,14 +290,14 @@ function removeLane(options, runner) {
   if (options.keepWorktree) return
   verifyArchive(path.join(options.dir, '.lane'), options.archiveDestination)
   git(runner, options.into, ['worktree', 'remove', options.dir])
-  const contained = runner('git', ['-C', options.into, 'merge-base', '--is-ancestor', options.laneBranch, 'HEAD'], { encoding: 'utf8', env: COMMAND_ENV })
+  const contained = runner('git', hardenedGitArgs(['-C', options.into, 'merge-base', '--is-ancestor', options.laneBranch, 'HEAD']), { encoding: 'utf8', env: COMMAND_ENV })
   if (resultCode(contained) === 0) git(runner, options.into, ['branch', '-d', options.laneBranch])
 }
 
 function setupCiBranch(options, runner, stdout) {
   git(runner, options.into, ['branch', '-f', options.ciBranch, 'HEAD'])
   const remoteBranch = `${options.remote}/${options.ciBranch}`
-  const exists = runner('git', ['-C', options.into, 'rev-parse', '--verify', '--quiet', remoteBranch], { encoding: 'utf8', env: COMMAND_ENV })
+  const exists = runner('git', hardenedGitArgs(['-C', options.into, 'rev-parse', '--verify', '--quiet', remoteBranch]), { encoding: 'utf8', env: COMMAND_ENV })
   const base = resultCode(exists) === 0 ? remoteBranch : `${options.remote}/main`
   const commits = git(runner, options.into, ['rev-list', `${base}..${options.ciBranch}`]).split(/\r?\n/).filter(Boolean)
   fs.mkdirSync(path.dirname(options.authorizeFile), { recursive: true })

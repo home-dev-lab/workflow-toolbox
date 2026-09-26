@@ -133,6 +133,8 @@ export function runObserverLane({ projectDir, prompt, timeoutSeconds, model, bin
     stdio: ['ignore', 'pipe', 'pipe'],
     cwd: projectDir,
     env: childEnv,
+    // The observer only reads: its project directory is bound read-only (H5).
+    readonlyCwd: true,
   }, process.platform)
 
   let taskText = ''

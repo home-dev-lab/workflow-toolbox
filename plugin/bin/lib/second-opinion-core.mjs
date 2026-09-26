@@ -53,7 +53,8 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
   const ownership = adapter.createCodexBrokerOwnership(env)
   const companionArgs = [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request]
-  const sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform })
+  // second-opinion only reads the repository: it is bound read-only (H5).
+  const sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true })
   announceUnsandboxedLane(sandbox)
   // Inside the sandbox's PID namespace the broker records a namespace pid; ownership must find it as
   // a host descendant of the sandbox instead of trusting that number.
@@ -89,6 +90,10 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
     captureBroker()
     if (companionAlive) child.kill('SIGTERM')
     cleanup = ownership.stop()
+    // The refreshed codex token is written back to the shared ~/.codex by the sandbox (host
+    // perimeter) only if it changed; the shared file stayed read-only during the run (H3).
+    sandbox.writeBackAuth?.()
+    sandbox.dispose?.()
     return cleanup
   }
   const collect = (stream, chunk) => {
