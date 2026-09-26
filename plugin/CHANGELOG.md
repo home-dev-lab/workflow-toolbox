@@ -5,6 +5,8 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.188.0] - 2026-09-26
+
 ### Added
 - Run every external lane child (OpenCode launcher, envelope, verifier, observer, intercept hook and skill-fence probes; the Codex companion behind second-opinion) in a bubblewrap sandbox on Linux, built from an allow-list of binds: the worktree, the toolchain and the CLI's own config and credentials are visible, while `~/.ssh`, `~/.claude`, `/run/user/<uid>` secrets and other processes are not. `WT_LANE_SANDBOX_READ`/`WT_LANE_SANDBOX_WRITE` add a path, each launch records its sandbox status, and hosts without a working `bwrap` say so in one line and keep the environment allow-list only. The suite lock now records PID namespaces so a sandboxed lane and the host never reclaim each other's live lock.
 - Harden the external-lane sandbox to a full security boundary: isolate the network (`--unshare-all` + `--new-session`) so no host loopback service is reachable, with a `socat` unix-socket relay restoring only the configured local model endpoint; overlay the git pointer/config files read-only and refuse a gitdir outside `<common>/worktrees/` (and harden every host-side git call with `-c core.fsmonitor=false -c core.hooksPath=/dev/null`); give OpenCode private per-run data/cache/state with the shared cache read-only; run Codex on a private per-run `CODEX_HOME` with `~/.codex` read-only; bind the observer and second-opinion working directory read-only and refuse a working directory of `/`, `$HOME` or an ancestor; refuse the launch when a present `bwrap` probe fails (never falling open); detect the sandbox from the user-namespace map and match a lock holder by PID-namespace and start time; and install lane worktrees with `--config.package-import-method=copy`.
@@ -14,7 +16,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ### Fixed
 - Artifact server: the shared, detached server now runs from its own state directory instead of inheriting the working directory of whichever session (or `restart` caller) started it. On Windows a live process's working directory cannot be deleted, so the server, and every PowerShell identity probe it spawns, pinned the first session's project or worktree for the server's whole lifetime.
 - `quota-drop.mjs`: the `(now …)` label printed by the quota watcher was built from `currentResetsAt` (the new window's own reported reset time) instead of the actual `nowMs`, so a reset printed as "now" a time hours or days away from the real clock. The label now always reflects `nowMs`; the new window's own reset time, when present, is printed separately under its own `next reported reset …` label. The reset decision itself (which was already keyed off `nowMs`) is unchanged.
-- `wt-lane.mjs`: a lane now actually receives `WT_SUITE_LOCK_CMD`. The launcher set it, but the external-model environment allow-list stripped it before the OpenCode child started, so a lane gate could never take the machine-wide suite lock through the documented variable. The adopted launcher (`adopt --set scripts`) pointed the variable at `<config dir>/scripts/wt-suite-lock.mjs`, which is never installed; both launchers now take the CLI from the plugin runtime they load (`suiteLockCli` in `lib/host/lane-sandbox.mjs`), so an adopted copy gets the installed plugin's own file, and a launcher refuses to start a lane when that file is missing. Inside the Linux lane sandbox the plugin root is bound read-only so the CLI and the files it reads at import are reachable; the lock directory stays shared read-write as before. Re-adopt `wt-lane.mjs` to pick up the adopted-launcher half.
+- `wt-lane.mjs`: a lane now actually receives `WT_SUITE_LOCK_CMD`. The launcher set it, but the external-model environment allow-list stripped it before the OpenCode child started, so a lane gate could never take the machine-wide suite lock through the documented variable. The adopted launcher (`adopt --set scripts`) pointed the variable at `<config dir>/scripts/wt-suite-lock.mjs`, which is never installed; both launchers now take the CLI from the plugin runtime they load (`suiteLockCli` in `lib/host/lane-sandbox.mjs`), so an adopted copy gets the installed plugin's own file, and a launcher refuses to start a lane when that file is missing. Inside the Linux lane sandbox the plugin root is bound read-only so the CLI and the files it reads at import are reachable; the lock directory stays shared read-write as before. Re-adopt `wt-lane.mjs` to pick up the adopted-launcher half. Known limitation: the value is a quoted command string, so a lane shell must re-parse it (`eval "$WT_SUITE_LOCK_CMD …"` or `sh -c`); `$WT_SUITE_LOCK_CMD cmd` fails under zsh and keeps literal quotes under bash.
 
 ### Changed
 - SDK runner effort defaults: standard pilots (`pilot_variant`, `sdk_pilot_variant`) and the implementer (`executor_code_variant` left empty) now run at `medium` instead of `high`; GPT Sol implementation keeps `xhigh`. Hard pilots, orchestrators, critics, reviewers and refuters keep `high`. An explicit plugin option, `WT_*_VARIANT` environment value or profile setting still wins. The run summary now records `executor_variants`, the effective effort and its origin for every executor role, resolved the way each lane is launched.
@@ -29,6 +31,27 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - The shipped rules' rationale pointer lines (six, in `wt-answer-first-reporting`, `wt-delegation-ladder-at-act`, `wt-durable-fix-at-the-right-level`, `wt-sdlc` and `wt-verify-by-ground-truth-at-act`) and the `plugin/docs/rules-rationale/` bundle they pointed into. Every always-loaded rule gets shorter; the removed text stays in the repository history.
 - The adopt `docs` set: `--set all` no longer installs anything under `docs/wt/`, and `--set docs` exits with an explanation. A `<config-dir>/docs/wt/` copy adopted earlier is left untouched and may be deleted.
 - The one-off `toolkit/scripts/verify-rules-rationale-split.mjs` verifier and the referential test over the bundle, replaced by an inverse lock: no shipped rule points into a rationale file.
+
+### Quality
+
+Measured on the release tree against the 0.181.0 baseline (`pnpm quality:delta`). No ratchet was loosened: ESLint warnings fell to 685, duplication to 2.64 %, knip issues to 220 and the biggest file by 10 lines; cyclomatic complexity is unchanged, cognitive complexity (+5) and the longest function (+1 line) carry over from 0.187.2. The external-lane sandbox is Linux-only (bubblewrap); macOS and Windows keep the environment allow-list and say so in one line.
+
+| Judge | Total before -> after | Delta | Touched files before -> after | Resorbed files |
+|---|---:|---:|---:|---|
+| Cyclomatic complexity | 127 -> 127 | 0 | 127 -> 127 | plugin/bin/lib/lifecycle-launch.mjs |
+| Cognitive complexity | 261 -> 266 | +5 | 261 -> 266 | plugin/bin/lib/lifecycle-launch.mjs |
+| Biggest file (lines) | 2729 -> 2719 | -10 | 1747 -> 2084 | - |
+| Longest function (lines) | 708 -> 709 | +1 | 426 -> 495 | - |
+| Max depth | 7 -> 7 | 0 | 6 -> 6 | - |
+| Max params | 7 -> 7 | 0 | 6 -> 7 | - |
+| ESLint warnings | 687 -> 685 | -2 | 20 -> 19 | plugin/bin/wt-lane.mjs, plugin/skills/adopt/scripts/install.mjs, plugin/bin/lib/lifecycle-launch.mjs |
+| Duplication % | 2.885613003631333 -> 2.6449833645758702 | -0.24 | 150 -> 126 | plugin/skills/adopt/scripts/install.mjs |
+| Knip issues | 221 -> 220 | -1 | 5 -> 5 | - |
+| Dependency cycles | 2 -> 2 | 0 | - -> - | - |
+| Coverage lines % | 42 -> 81.66 | +39.66 | - -> - | - |
+| Coverage branches % | 40.12 -> 71.99 | +31.87 | 0 -> - | - |
+| Coverage functions % | 44.48 -> 83.14 | +38.66 | 0 -> - | - |
+| Coverage statements % | 40.62 -> 78.69 | +38.07 | - -> - | - |
 
 ## [0.187.2] - 2026-09-25
 
