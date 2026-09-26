@@ -183,7 +183,7 @@
       "description": "Harness model alias or full claude-* model for the SDK orchestrator. Environment fallback: WT_SDK_ORCHESTRATOR_MODEL."
     },
     "pilot_variant": {
-      "type": "string", "title": "Pilot variant", "default": "high", "required": false,
+      "type": "string", "title": "Pilot variant", "default": "medium", "required": false,
       "description": "Reasoning variant for standard harness pilots. Environment fallback: WT_PILOT_VARIANT."
     },
     "pilot_hard_variant": {
@@ -195,7 +195,7 @@
       "description": "Reasoning variant for the harness orchestrator. Environment fallback: WT_ORCHESTRATOR_VARIANT."
     },
     "sdk_pilot_variant": {
-      "type": "string", "title": "SDK pilot variant", "default": "high", "required": false,
+      "type": "string", "title": "SDK pilot variant", "default": "medium", "required": false,
       "description": "Reasoning variant for standard SDK pilots. Environment fallback: WT_SDK_PILOT_VARIANT."
     },
     "sdk_pilot_hard_variant": {
@@ -247,7 +247,7 @@
     },
     "executor_code_variant": {
       "type": "string", "title": "Executor code variant", "default": "", "required": false,
-      "description": "Reasoning variant for code executors. Empty selects xhigh for GPT Sol implementation and high otherwise. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
+      "description": "Reasoning variant for code executors. Empty selects xhigh for GPT Sol implementation and medium otherwise. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
     },
     "executor_review_variant": {
       "type": "string", "title": "Executor review variant", "default": "high", "required": false,
