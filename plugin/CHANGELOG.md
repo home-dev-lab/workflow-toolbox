@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Lane gates run from the repo root now resolve the pinned pnpm. Corepack resolves the pnpm version by walking up from the working directory, then pnpm checks it against the `--dir` target's own pin; only `toolkit/package.json` carried a `packageManager` field, so `pnpm --dir toolkit <gate>` invoked from the repo root failed for any Corepack user whose default pnpm was not already the toolkit's pin and who had no ancestor directory pinning it either (`configured to use 11.10.0 of pnpm. Your current pnpm is vX.Y.Z`). The root `package.json` now pins the same `pnpm@11.10.0`, checked equal to the toolkit's pin by a new test.
+
 ## [0.188.1] - 2026-09-26
 
 ### Fixed
