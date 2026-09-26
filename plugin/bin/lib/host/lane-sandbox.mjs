@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseJsonc } from '../jsonc.mjs'
+import { parseJsonc } from './jsonc.mjs'
 import { processStartTime } from './pid-namespace.mjs'
 
 // External lanes (opencode, codex) run as the owner with a shell. The environment allow-list keeps

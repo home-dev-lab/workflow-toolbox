@@ -426,7 +426,7 @@ describe('lane sandbox plan — egress log path and bridge start (round 4)', () 
 
 describe('JSONC reader used for the OpenCode config (round 3)', () => {
   it('keeps URLs and comment markers inside strings, drops comments and trailing commas, and returns null on garbage', async () => {
-    const { parseJsonc } = await load<{ parseJsonc: (text: unknown) => unknown }>('jsonc.mjs')
+    const { parseJsonc } = await load<{ parseJsonc: (text: unknown) => unknown }>('host/jsonc.mjs')
     const text = '{\n // line comment "x": 1\n "a": "http://127.0.0.1:8317/v1", /* block, } */ "b": "say \\"//hi\\" /* no */",\n "c": [1, 2, /* x */ ],\n "d": { "e": 3, // tail\n },\n}'
     expect(parseJsonc(text)).toEqual({ a: 'http://127.0.0.1:8317/v1', b: 'say "//hi" /* no */', c: [1, 2], d: { e: 3 } })
     expect(parseJsonc('{ "a": ')).toBeNull()
