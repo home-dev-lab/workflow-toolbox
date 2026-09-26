@@ -133,7 +133,7 @@ async function main() {
   const notified = new Set()
   const journaled = new Set()
   const episodeStarts = new Map()
-  const tracePath = process.env.WT_LANE_WATCH_TRACE
+  let tracePath = process.env.WT_LANE_WATCH_TRACE
   const appendDiagnostic = (file, line, label) => {
     if (!file) return
     try {
@@ -212,6 +212,10 @@ async function main() {
     }
     for (const event of idleHelperEvents(helperRows, { ageByPid: helperAges, inspect: inspectProcess })) if (!notified.has(event.key)) notice(event.key, event.message)
     const known = records(options.project, [...staging, ...processRecordDirs(options.project, table)])
+    if (tracePath && [options.project, ...known.flatMap((record) => [record.__recordWorktree, record.worktree].filter(Boolean))].some((root) => containsPath(root, tracePath))) {
+      process.stderr.write(`wt-lane-orphan-watch: trace destination is inside a watched worktree; disabling trace: ${tracePath}\n`)
+      tracePath = null
+    }
     const liveChildren = []
     for (const record of known) {
       const verdict = classifyLane(record)

@@ -84,7 +84,7 @@ async function runAction() {
     write('opencode.pid', `${process.pid}\n`)
     return sleep(30_000)
   }
-  if (action.includes('echo $$ > "$PWD/opencode.pid"; sleep 30')) {
+  if (action === 'echo $$ > "$PWD/opencode.pid"; sleep 30') {
     write('opencode.pid', `${process.pid}\n`)
     return sleep(30_000)
   }
