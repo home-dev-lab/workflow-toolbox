@@ -32,7 +32,7 @@ The currently consumed manifest contract is tested rather than loaded at runtime
 
 ## Language Server
 
-Each pack declaration supplies `command`, `args`, `extensionToLanguage`, and `diagnostics: true`; the TypeScript assertion is toolkit/packages/build/test/typescript-pack.test.ts:63-72. Generate the plugin-root declaration with:
+Each pack declaration supplies `command`, `args`, `extensionToLanguage`, and a boolean `diagnostics` (`true`, except for a navigation-only server such as Groovy's, whose diagnostics would be false positives); the TypeScript assertion is toolkit/packages/build/test/typescript-pack.test.ts:63-72. Generate the plugin-root declaration with:
 
 ```sh
 pnpm packs:lsp

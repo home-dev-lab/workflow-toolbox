@@ -17,8 +17,13 @@ Java pack's files.
 ## Language server
 
 The pack declares `groovy-language-server` with `args: []`, `extensionToLanguage: {".groovy":"groovy"}`,
-`diagnostics: true`, and `startupTimeout: 30000`. The server is not bundled; `groovy-language-server` must
-resolve on the Claude Code process `PATH`. The measured build is
+`diagnostics: false`, and `startupTimeout: 30000`: it is a NAVIGATION server (document symbols,
+definitions, references), not a diagnostics one. The server compiles only the workspace's `.groovy` files,
+against an empty classpath unless a client sends `groovy.classpath`, and this declaration sends none. So
+any import of a dependency, or of the project's own Java classes (`import spock.lang.Specification`, a
+`com.atlassian.*` class, `src/main/java/...`), is reported `unable to resolve class`. With diagnostics on,
+those false errors would reach Claude's context on every edit. The server is not bundled;
+`groovy-language-server` must resolve on the Claude Code process `PATH`. The measured build is
 `GroovyLanguageServer/groovy-language-server` from `https://github.com/GroovyLanguageServer/groovy-language-server`
 at commit `347d098a928707223ce44b52cc45174a6327a5f3`, whose `groovy-language-server-all.jar` (SHA-256
 `cf6e38d9fec6b82ccdb4378eafd711db357fd50ec025ca6e68ddbcb6b6bf4b1e`) is started by a one-line
@@ -35,7 +40,8 @@ initialized it in 1315 ms, and answered documentSymbol on `probe/nav/definitions
 and an `import org.gradle.api.tasks.testing.logging.TestExceptionFormat`), the server reported `unable to
 resolve class org.gradle.api.tasks.testing.logging.TestExceptionFormat` and returned the single symbol
 `build` (stdio probe, 2026-09-26): it has no Gradle API on its classpath, so with diagnostics on, every
-build-script edit would inject a false error. `.gradle` stays a pack trigger for rules and context only.
+build-script edit would inject a false error, and its navigation is one symbol. `.gradle` stays a pack
+trigger for rules and context only.
 
 ## Probe
 
@@ -44,8 +50,8 @@ is `probe/Probe.groovy`; `probe/expected-diagnostic.txt` names the required diag
 `probe/nav/` holds the navigation fixtures. The 2026-09-12 artifacts are archived at
 `.claude/reports/1862700000-lsp-probes/groovy/available/` (FAIL: the harness did not start the server) and
 `.claude/reports/1862700000-lsp-probes/groovy/missing/` (PASS: no server on PATH, no diagnostic, normal
-exit). The two-arm diagnostics probe has not been re-run since the declaration was added; the evidence
-for this declaration is the documentSymbol session above.
+exit). The declaration ships with diagnostics off, so that probe no longer applies; the evidence for it is
+the documentSymbol session above.
 
 ## Cross-platform verdict
 

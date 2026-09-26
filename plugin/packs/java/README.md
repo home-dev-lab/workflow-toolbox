@@ -25,7 +25,13 @@ Why a launcher: Eclipse JDT LS refuses a JVM older than 21 (`jdtls requires at l
 its JVM from `JAVA_HOME`, then `java` on `PATH`. A session that inherits a Java 17 `JAVA_HOME` therefore
 crash-looped the server: exit 1, three restarts, then `exceeded max crash recovery attempts`. `wt-jdtls`
 chooses the JVM that RUNS the server and passes it through jdtls's own `--java-executable` option, leaving
-`JAVA_HOME` untouched so the project keeps building with its own JDK. The choice, first match wins:
+`JAVA_HOME` untouched so the project keeps building with its own JDK.
+
+This applies only when the `jdtls` first on `PATH` is the upstream launcher, recognised by `jdtls.py`
+beside its real path. The launcher then runs that script with an absolute `python3` (`python.exe` on
+Windows), since it is a Python script. Any other `jdtls` (a Homebrew, Scoop or Chocolatey package, or a
+private wrapper) owns its JVM choice and runs unchanged, with the arguments it would have received
+without this launcher. For the upstream launcher, the choice goes to the first match:
 
 1. `--java-executable` already in the arguments: passed through unchanged;
 2. `JAVA_HOME`, when it is Java 21 or newer;
@@ -33,21 +39,33 @@ chooses the JVM that RUNS the server and passes it through jdtls's own `--java-e
 4. an installed JDK 21+, the lowest qualifying major and then its newest release (Java 21 is what the
    server is measured with): SDKMAN (`$SDKMAN_DIR` or `~/.sdkman`, `candidates/java/*`), `/usr/lib/jvm/*`
    on Linux, `/usr/libexec/java_home -v 21+` and `/Library/Java/JavaVirtualMachines` on macOS, the vendor
-   folders under `%ProgramFiles%` on Windows, and `~/.jdks` everywhere. `WT_JDTLS_JDK_DIRS` (a
-   path-list of directories whose children are JDK homes) replaces these built-in locations.
+   folders under `%ProgramFiles%` on Windows, and `~/.jdks` everywhere. `WT_JDTLS_JDK_DIRS` (a path-list
+   whose entries are JDK homes or folders of them, macOS `Contents/Home` bundles included) is searched
+   too, alongside these built-in locations.
+
+A version is read from the JDK's `release` file, else from `java -version`. For the `java` on `PATH`,
+the `release` file comes from its real path's home, and it is not read again when it is the `JAVA_HOME`
+one. The pick is started once with `-version` before it is handed over. A pick that does not run falls
+through to the next candidate: a symlink to another JDK, the wrong architecture, or a missing execute
+bit.
 
 `node plugin/bin/wt-jdtls.mjs --help` prints this contract. The launcher passes jdtls's own launcher
-options through (`-data`, `-configuration`, `--jvm-arg`, `--java-executable`,
-`--[no-]validate-java-version`) and refuses any other argument in one line with exit 2.
+options through (`-data`, `--jvm-arg=<option>`, `--java-executable`, `--[no-]validate-java-version`,
+and `-configuration`, which jdtls hands on to Equinox). It refuses any other argument, exiting 2.
 
-A version is read from the JDK's `release` file, else from `java -version`. When nothing qualifies, the
-launcher starts no JVM. It writes one line naming the requirement, what it found and where it looked, to
-stderr (Claude Code's debug log), and returns the same line as the error of the client's `initialize`
-request with `retry: false`, then exits 1. Measured on 2026-09-26 with every JDK 21+ hidden: the LSP tool
+When nothing qualifies, the launcher starts no language server. The only JVMs it may start are
+`-version` probes of candidates without a `release` file. It writes one line naming the requirement,
+what it found and where it looked, to stderr (Claude Code's debug log). It returns the same line as the
+error of the client's `initialize` request with `retry: false`, then exits 1.
+
+Every other refusal goes the same way:
+- `jdtls` not on `PATH`;
+- no `python3`, or on Windows only the Microsoft Store `python.exe` alias;
+- a planned command that cannot be started (for example a wrapper without its execute bit);
+- an unknown argument (exit 2). Measured on 2026-09-26 with every JDK 21+ hidden: the LSP tool
 answered `Error performing documentSymbol: wt-jdtls: Eclipse JDT LS needs Java 21 or newer to run, and
 none was found (JAVA_HOME=… is Java 17, `java` on PATH is Java 17; searched …). …`, and Claude Code
-started the server once per LSP request, never in a restart loop. `jdtls` itself must still resolve on
-the Claude Code process `PATH`; when it does not, the launcher refuses the same way, naming that.
+started the server once per LSP request, never in a restart loop.
 
 `jdtls` is not bundled. Eclipse JDT LS 1.61.0 was installed from
 `https://download.eclipse.org/jdtls/milestones/1.61.0/jdt-language-server-1.61.0-202609031315.tar.gz`
@@ -91,11 +109,19 @@ Its Java 17 and Java 21 artifacts are under
   folders (`Eclipse Adoptium`, `Java`, `Microsoft`, `Zulu`, `Amazon Corretto`, `BellSoft`, `Semeru`) and
   `~/.jdks`, `java.exe`, `Path` split on `;`. The registry is not read, so a JDK installed elsewhere needs
   `JAVA_HOME`, `PATH` or `WT_JDTLS_JDK_DIRS`. The launcher runs the distribution's `bin/jdtls` Python
-  script with `python`, because `jdtls.bat` ends in `pause`; `python` must therefore resolve on `PATH`.
-  SDKMAN is not searched on Windows.
+  script with the first `python.exe` on `Path` other than the WindowsApps Store alias, resolved to an
+  absolute path so a `python.exe` in the working directory is never used. It avoids `jdtls.bat` because
+  that file ends in `pause`. A packaged `jdtls.exe` runs directly, and a `jdtls.cmd` or `jdtls.bat`
+  runs through `%ComSpec%` (`cmd.exe /d /s /c`), unchanged. SDKMAN is not searched on Windows.
 
-No location degrades to a plausible wrong answer: an unreadable directory or version is skipped, and when
-nothing qualifies the launcher refuses in one line rather than starting a JVM that jdtls would reject.
+An unreadable directory or version is skipped, and the pick is run once before use. When nothing
+qualifies, the launcher refuses in one line rather than starting a JVM that jdtls would reject. The
+`-version` probes run one after another, each bounded at 10 s, inside the 23 s startup timeout. They
+are needed only for JDKs without a `release` file.
+
+A hard kill of the launcher (SIGKILL, or any termination on Windows) does not reach the JVM. Whether
+Eclipse JDT LS then exits on its own, having been given the client's process id at `initialize`, is
+not measured.
 
 ## Optional assets
 

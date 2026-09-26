@@ -5,13 +5,14 @@ import { describePackContract, packPaths } from './helpers/pack-contract.js'
 
 const { manifestPath, packDir } = packPaths('groovy')
 
-// `.gradle` is deliberately unmapped: groovy-language-server has no Gradle API on its classpath and reports
-// `unable to resolve class org.gradle...` on an ordinary build script (measured 2026-09-26, README).
+// Navigation only: groovy-language-server compiles with an empty classpath unless a client sends one, so any
+// import of a dependency or of the project's own Java classes is reported `unable to resolve class` (README).
+// With diagnostics on, those false errors would reach Claude's context on every edit. `.gradle` stays unmapped.
 describePackContract({
   pack: 'groovy',
   extensions: ['.groovy', '.gradle'],
   files: ['build.gradle', 'settings.gradle', 'spock.conf'],
-  declaration: { command: 'groovy-language-server', args: [], extensionToLanguage: { '.groovy': 'groovy' }, diagnostics: true, startupTimeout: 30000 },
+  declaration: { command: 'groovy-language-server', args: [], extensionToLanguage: { '.groovy': 'groovy' }, diagnostics: false, startupTimeout: 30000 },
 })
 
 describe('Groovy pack', () => {

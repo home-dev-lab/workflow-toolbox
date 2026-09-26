@@ -62,7 +62,8 @@ function validateDeclaration(declaration, file, key) {
   ) {
     throw new Error(`${label} field extensionToLanguage must be an object`)
   }
-  if (declaration.diagnostics !== true) throw new Error(`${label} field diagnostics must be exactly true`)
+  // `false` is a navigation-only server: its declaration stays, its diagnostics are kept out of Claude's context.
+  if (typeof declaration.diagnostics !== 'boolean') throw new Error(`${label} field diagnostics must be a boolean`)
 }
 
 export function packLspPaths(repoRoot = DEFAULT_REPO_ROOT) {

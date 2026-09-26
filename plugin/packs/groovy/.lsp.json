@@ -5,7 +5,7 @@
     "extensionToLanguage": {
       ".groovy": "groovy"
     },
-    "diagnostics": true,
+    "diagnostics": false,
     "startupTimeout": 30000
   }
 }
