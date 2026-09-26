@@ -438,7 +438,7 @@ const withinOnDisk = (child, parent) => within(child.toLowerCase(), parent.toLow
 
 function laneWritablePredicate(roots, fs) {
   const canonicalRoots = roots.map((root) => canonicalPath(root, fs))
-  return (candidate) => canonicalRoots.some((root) => withinOnDisk(canonicalPath(candidate, fs), root, fs))
+  return (candidate) => canonicalRoots.some((root) => withinOnDisk(canonicalPath(candidate, fs), root))
 }
 
 // A writable bind that contains (or sits inside) a CLI's config/auth location would override its
@@ -449,7 +449,7 @@ function refuseProtectedOverlap(writable, protectedPaths, fs) {
     const root = canonicalPath(bind, fs)
     for (const guarded of protectedPaths) {
       const target = canonicalPath(guarded, fs)
-      if (withinOnDisk(target, root, fs) || withinOnDisk(root, target, fs)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
+      if (withinOnDisk(target, root) || withinOnDisk(root, target)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
     }
   }
 }
@@ -458,7 +458,7 @@ function refuseProtectedOverlap(writable, protectedPaths, fs) {
 // private remap target, or protected location. Narrow only executable mounts; other late overlays
 // (git pointer files and private cache packages) must already satisfy the same invariant.
 function safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs) {
-  const collision = (overlay) => guarded.find((target) => withinOnDisk(canonicalPath(target, fs), canonicalPath(overlay, fs), fs))
+  const collision = (overlay) => guarded.find((target) => withinOnDisk(canonicalPath(target, fs), canonicalPath(overlay, fs)))
   for (const overlay of otherOverlays) {
     const target = collision(overlay)
     if (target) throw new LaneSandboxRefusal(`refusing late read-only overlay ${overlay}: it covers ${target}`)

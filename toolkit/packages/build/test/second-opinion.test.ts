@@ -577,4 +577,23 @@ describe('second-opinion advisor', () => {
     expect(process.listenerCount('exit')).toBe(baselineExitListeners)
     expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
   })
+
+  it('removes abort and exit listeners when spawn reports an error after sandbox planning', async () => {
+    const f = fixture(true)
+    const baselineExitListeners = process.listenerCount('exit')
+    const signal = { aborted: false, reason: undefined, addEventListener: vi.fn(), removeEventListener: vi.fn() }
+    const adapter = {
+      platform: process.platform,
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
+    }
+    const deps = createSecondOpinionDependencies(adapter, {
+      resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', wrap: () => [join(f.repo, 'missing-executable'), []] }),
+    })
+    deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra', signal }, deps, f.env)).toBe(1)
+    expect(signal.addEventListener).toHaveBeenCalledWith('abort', expect.any(Function), { once: true })
+    expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(process.listenerCount('exit')).toBe(baselineExitListeners)
+  })
 })
