@@ -98,8 +98,12 @@ async function waitFor<T>(read: () => T | null | Promise<T | null>, timeoutMs = 
   throw new Error(`timed out waiting for condition; predicate=${JSON.stringify(read.toString())}`)
 }
 
+function serverStateDir(stateHome: string) {
+  return join(stateHome, 'wt-artifact-server')
+}
+
 function statePath(stateHome: string) {
-  return join(stateHome, 'wt-artifact-server', 'server.json')
+  return join(serverStateDir(stateHome), 'server.json')
 }
 
 function registrationsPath(stateHome: string) {
@@ -282,9 +286,11 @@ async function detachedServerMatches(expected: Discovery) {
   }
 }
 
-async function stopDetached(record: DetachedProcess) {
-  const pid = record.identity?.pid ?? record.state?.pid
-  if (!pid) return
+async function stopDetached(pid: number, record: DetachedProcess) {
+  if (!pidAlive(pid)) {
+    detachedProcesses.delete(pid)
+    return
+  }
   const processMatches = record.identity ? detachedIdentityMatches(record.identity) : false
   // A loaded hosted Windows runner can time out the PowerShell identity refresh. The live server's
   // authenticated protocol identity is the bounded fallback; no identity evidence still means no kill.
@@ -310,17 +316,30 @@ async function stopDetached(record: DetachedProcess) {
   detachedProcesses.delete(pid)
 }
 
-afterEach(async () => {
+// Every process that can write into, or hold as its cwd, a directory this test created must have EXITED
+// before the directory is removed. A detached server started by an ensure monitor outlives the monitor:
+// its next registration poll rewrites server.json (atomicWriteJson recreates the state directory), which
+// made the recursive removal fail with ENOTEMPTY on macOS whenever the test never called waitForState.
+async function stopTestProcesses() {
+  // Monitors first: a live monitor can still spawn a server, so the spawn logs are final only afterwards.
+  for (const child of [...children]) {
+    children.delete(child)
+    await stopChild(child)
+  }
   for (const [file, record] of serverProcessLogs) {
     clearInterval(record.timer)
     captureSpawnedServers(file, record.captured)
   }
   serverProcessLogs.clear()
-  for (const child of [...children]) {
-    children.delete(child)
-    await stopChild(child)
+  for (const stateHome of ensureOutputs.keys()) {
+    const state = readState(stateHome)
+    if (state && pidAlive(state.pid)) trackDetached(state.pid, state)
   }
-  for (const record of [...detachedProcesses.values()]) await stopDetached(record)
+  for (const [pid, record] of [...detachedProcesses]) await stopDetached(pid, record)
+}
+
+afterEach(async () => {
+  await stopTestProcesses()
   for (const dir of temporaryDirs.splice(0)) {
     rmSync(dir, { recursive: true, force: true, ...(process.platform === 'win32' ? WINDOWS_TEMP_REMOVE_RETRIES : {}) })
   }
@@ -329,7 +348,8 @@ afterEach(async () => {
 
 function spawnEnsure(cwd: string, env: NodeJS.ProcessEnv) {
   const stateHome = env.XDG_STATE_HOME
-  const processLog = process.platform === 'win32' && stateHome ? join(stateHome, 'server-processes.log') : null
+  // Every platform: teardown must know each server pid a monitor spawned, even one the test never discovered.
+  const processLog = stateHome ? join(stateHome, 'server-processes.log') : null
   const child = spawn(process.execPath, [ENSURE], {
     cwd,
     env: processLog ? { ...env, WT_ARTIFACT_SERVER_TEST_SERVER_PROCESS_LOG: processLog } : env,
@@ -433,6 +453,25 @@ describe('review test infrastructure', () => {
   it('refuses to stop a recycled detached PID', () => {
     const expected: ProcessIdentity = { pid: 123, argv: ['node', SERVER, 'serve'], startTime: 10 }
     expect(detachedIdentityMatches(expected, () => ({ ...expected, startTime: 11 }))).toBe(false)
+  })
+
+  it('stops a monitor-spawned server the test never discovered before its directories are deleted', async () => {
+    const { project } = projectWithRoots('undiscovered-server')
+    const stateHome = temporaryDir('undiscovered-server-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    // A slow registration poll keeps the server alive long after its monitor exits, so only teardown
+    // itself can have stopped it by the time the directories are removed.
+    spawnEnsure(project, baseEnv(stateHome, {
+      WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '60000',
+    }))
+    const state = await waitFor(() => readState(stateHome))
+    expect(pidAlive(state.pid)).toBe(true)
+
+    await stopTestProcesses()
+
+    expect(pidAlive(state.pid)).toBe(false)
   })
 
   it('uses taskkill to stop the verified Windows process tree', () => {
@@ -552,6 +591,19 @@ describe('owner decision 2: discovery and one instance', () => {
     expect((await health(state)).version).toBe(state.version)
     expect((await health(state)).uid).toBe(typeof process.getuid === 'function' ? process.getuid() : userInfo().username)
     if (process.platform !== 'win32') expect(statSync(statePath(stateHome)).mode & 0o777).toBe(0o600)
+  })
+
+  it.skipIf(process.platform === 'win32')('runs the shared server from its state directory, never the starting session project [requires a readable process cwd]', async () => {
+    const { project } = projectWithRoots('server-cwd')
+    const stateHome = temporaryDir('server-cwd-state')
+    const reservation = await reservePort()
+    const port = reservation.port
+    await closeServer(reservation.server)
+    spawnEnsure(project, baseEnv(stateHome, { WT_ARTIFACT_SERVER_PORT: String(port) }))
+    const state = await waitForState(stateHome)
+
+    const server = inspectProcess(state.pid, { captureCwd: true, spawnSync: spawnSync.bind(null) }) as ProcessIdentity | null
+    expect(server?.cwd).toBe(realpathSync(serverStateDir(stateHome)))
   })
 
   it('starts exactly one server when concurrent monitors ensure an empty state', async () => {
@@ -1474,10 +1526,15 @@ describe('owner decision 3: session lifetime and operator controls', () => {
       expect(pidAlive(first.pid)).toBe(true)
     }
 
-    const restarted = spawnSync(process.execPath, [SERVER, 'restart', '--force'], { encoding: 'utf8', env, timeout: 5_000 })
+    const restarted = spawnSync(process.execPath, [SERVER, 'restart', '--force'], { cwd: project, encoding: 'utf8', env, timeout: 5_000 })
     expect(restarted.status).toBe(0)
     const second = await waitForState(stateHome, (state) => state.pid !== first.pid)
     expect(second.pid).not.toBe(first.pid)
+    // The restarted server must not inherit the operator's cwd either (process cwd is unreadable on Windows).
+    if (process.platform !== 'win32') {
+      const restartedServer = inspectProcess(second.pid, { captureCwd: true, spawnSync: spawnSync.bind(null) }) as ProcessIdentity | null
+      expect(restartedServer?.cwd).toBe(realpathSync(serverStateDir(stateHome)))
+    }
 
     const stopped = spawnSync(process.execPath, [SERVER, 'stop', '--force'], { encoding: 'utf8', env, timeout: 5_000 })
     expect(stopped.status).toBe(0)
@@ -1736,6 +1793,8 @@ describe('owner decision 5: Tailscale access', () => {
             : 'No serve config'
     // execFileSync cannot directly execute a Windows .cmd file. Every case pins Node as the real
     // executable and places its command scripts in the fixture cwd, preserving the Tailscale argv.
+    // A spawned server runs from its state directory, so server-level cases pass that directory.
+    mkdirSync(cwd, { recursive: true, mode: 0o700 })
     const failed = 'process.exitCode = 1\n'
     writeFileSync(join(cwd, 'ip'), mode === 'absent' ? failed : mode === 'no-tailnet' ? '' : "process.stdout.write('127.0.0.1\\n')\n")
     writeFileSync(join(cwd, 'status'), mode === 'absent' ? failed : "process.stdout.write(JSON.stringify({ Self: { DNSName: 'host.tailnet.ts.net.' } }))\n")
@@ -1776,7 +1835,7 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const { bin, env: tailscaleEnv } = tailscaleStub('present', project)
+    const { bin, env: tailscaleEnv } = tailscaleStub('present', serverStateDir(stateHome))
     spawnEnsure(project, baseEnv(stateHome, {
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
@@ -1799,7 +1858,7 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const { bin, env: tailscaleEnv } = tailscaleStub('absent', project)
+    const { bin, env: tailscaleEnv } = tailscaleStub('absent', serverStateDir(stateHome))
     spawnEnsure(project, baseEnv(stateHome, {
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
@@ -1816,7 +1875,8 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-timeout-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    writeFileSync(join(project, 'ip'), 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000)\n')
+    mkdirSync(serverStateDir(stateHome), { recursive: true, mode: 0o700 })
+    writeFileSync(join(serverStateDir(stateHome), 'ip'), 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000)\n')
     spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
       WT_ARTIFACT_SERVER_PORT: String(reservation.port),
@@ -1835,7 +1895,7 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const { bin, env: tailscaleEnv } = tailscaleStub('no-tailnet', project)
+    const { bin, env: tailscaleEnv } = tailscaleStub('no-tailnet', serverStateDir(stateHome))
     spawnEnsure(project, baseEnv(stateHome, { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(port) }))
     const state = await waitForState(stateHome)
     expect(state.remoteUrl).toBeNull()
@@ -1850,7 +1910,7 @@ describe('owner decision 5: Tailscale access', () => {
     const reservation = await reservePort()
     const port = reservation.port
     await closeServer(reservation.server)
-    const { bin, env: tailscaleEnv } = tailscaleStub('https', project)
+    const { bin, env: tailscaleEnv } = tailscaleStub('https', serverStateDir(stateHome))
     spawnEnsure(project, baseEnv(stateHome, {
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(port),
     }))
@@ -1868,7 +1928,7 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-https-path-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const { bin, env: tailscaleEnv } = tailscaleStub('https-path', project)
+    const { bin, env: tailscaleEnv } = tailscaleStub('https-path', serverStateDir(stateHome))
     spawnEnsure(project, baseEnv(stateHome, {
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
@@ -1881,7 +1941,7 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-https-port-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const { bin, env: tailscaleEnv } = tailscaleStub('https-port', project)
+    const { bin, env: tailscaleEnv } = tailscaleStub('https-port', serverStateDir(stateHome))
     spawnEnsure(project, baseEnv(stateHome, {
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
@@ -1894,7 +1954,7 @@ describe('owner decision 5: Tailscale access', () => {
     const stateHome = temporaryDir('tailscale-hijack-state')
     const reservation = await reservePort()
     await closeServer(reservation.server)
-    const { bin, env: tailscaleEnv } = tailscaleStub('hijack', project)
+    const { bin, env: tailscaleEnv } = tailscaleStub('hijack', serverStateDir(stateHome))
     spawnEnsure(project, baseEnv(stateHome, {
       PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, ...tailscaleEnv, WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
