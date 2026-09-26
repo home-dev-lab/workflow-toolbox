@@ -9,6 +9,29 @@ export const LANE_LOG_TAIL_BYTES = 4096
 export const PROCESS_SCAN_MAX_ENTRIES = 5000
 export const ACTIVITY_SKIP_DIRS = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
 
+// The recorded child of a SANDBOXED lane is the outer bwrap; the lane's own processes (the inner
+// bwrap, the bootstrap shell, opencode) are its descendants, in a PID namespace of their own whose
+// host PIDs the host process table still shows with their host parent. Every descendant of a child
+// the caller VERIFIED running (pid + argv + start time) belongs to that lane. `processes` rows carry
+// { pid, ppid }; a row without a ppid simply has no parent here.
+export function laneDescendantPids(rootPids, processes) {
+  const children = new Map()
+  for (const row of processes) {
+    if (!Number.isSafeInteger(row?.ppid)) continue
+    if (!children.has(row.ppid)) children.set(row.ppid, [])
+    children.get(row.ppid).push(row.pid)
+  }
+  const owned = new Set()
+  const pending = [...rootPids].filter((pid) => Number.isSafeInteger(pid) && pid > 1)
+  while (pending.length) {
+    const pid = pending.pop()
+    if (owned.has(pid)) continue
+    owned.add(pid)
+    pending.push(...(children.get(pid) ?? []))
+  }
+  return owned
+}
+
 export function reportableOpencodeArgv(argv, { tmpRoot = tmpdir(), realpath = realpathSync } = {}) {
   if (!Array.isArray(argv)) return false
   const opencodeIndex = argv.findIndex((arg, index) => /^(?:opencode|opencode\.exe|opencode\.cmd)$/i.test(String(arg).split(/[\\/]/).at(-1)) && argv[index + 1] === 'run')

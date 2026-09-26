@@ -1,7 +1,8 @@
-import { spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { detectOrphanWatchers, terminateOrphanWatchers } from '../../../../plugin/bin/lib/lane-watcher-orphans.mjs'
@@ -9,10 +10,38 @@ import { detectOrphanWatchers, terminateOrphanWatchers } from '../../../../plugi
 import { classifyIdleHelper, IDLE_HELPER_SAFE_TO_STOP_SECONDS } from '../../../../plugin/bin/lib/resolved-binary.mjs'
 
 const WATCHER = resolve(__dirname, '../../../../plugin/bin/wt-lane-orphan-watch.mjs')
+const LIB = resolve(__dirname, '../../../../plugin/bin/lib')
+const load = async <T>(file: string): Promise<T> => (await import(pathToFileURL(join(LIB, file)).href)) as T
+const { laneDescendantPids } = await load<{ laneDescendantPids: (roots: number[], rows: Array<{ pid: number, ppid?: number }>) => Set<number> }>('lane-live-scan.mjs')
+const { inspectProcess } = await load<{ inspectProcess: (pid: number | undefined) => { argv: string[], startTime: number } }>('lane-supervisor-core.mjs')
+const sandbox = await load<{ resolveLaneSandbox: (request: Record<string, unknown>) => { kind: string, line: string, wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void } }>('host/lane-sandbox.mjs')
+const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0 && spawnSync('sh', ['-c', 'command -v socat'], { stdio: 'ignore' }).status === 0
 
 function withTempDir(run: (root: string) => void) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lane-orphan-watch-'))
   try { return run(root) } finally { rmSync(root, { recursive: true, force: true }) }
+}
+
+async function withTempDirAsync(run: (root: string) => Promise<void>) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-orphan-watch-')))
+  try { await run(root) } finally { rmSync(root, { recursive: true, force: true }) }
+}
+
+// Host PIDs whose command line contains `needle` (read from /proc; Linux-only callers).
+function pidsMatching(needle: string): number[] {
+  return readdirSync('/proc').filter((name) => /^\d+$/.test(name)).flatMap((name) => {
+    try { return readFileSync(`/proc/${name}/cmdline`, 'utf8').split('\0').join(' ').includes(needle) ? [Number(name)] : [] } catch { return [] }
+  })
+}
+
+async function waitFor(read: () => number[], timeoutMs = 10_000): Promise<number[]> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const found = read()
+    if (found.length >= 3) return found
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return read()
 }
 
 function processFixture(procRoot: string, pid: number, { argv, cwd, ppid = 1, startTime = pid }: { argv: string[], cwd: string, ppid?: number, startTime?: number }) {
@@ -126,6 +155,52 @@ describe('lane orphan watcher self-detection', () => {
     expect(result.reports).toMatchObject([{ pid: 301, reason: 'cwd unreadable; no signal sent' }])
     expect(signaled).toEqual([])
   }))
+
+  // Round 3, defect 3 (card 1871036638205838753): a sandboxed lane's recorded child is the OUTER
+  // bwrap, and its opencode runs as a descendant in a new PID namespace. Real processes, both
+  // directions: the sandboxed lane is attributed with no warning; a genuine unowned opencode in the
+  // same worktree is still warned about.
+  it.skipIf(!BWRAP_WORKS)('attributes a live sandboxed lane through its bwrap descendants and still warns on an unowned opencode', async () => withTempDirAsync(async (root) => {
+    const wt = join(root, 'wt'); const bin = join(wt, 'bin'); const fake = join(bin, 'opencode')
+    for (const dir of [bin, join(root, 'home'), join(root, 'run'), join(root, 'othertmp'), join(root, 'config')]) mkdirSync(dir, { recursive: true })
+    writeFileSync(fake, '#!/bin/sh\nsleep 60\n'); chmodSync(fake, 0o755)
+    const plan = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: fake, args: ['run', 'sandboxed', '--dir', wt], cwd: wt, env: { HOME: join(root, 'home'), PATH: process.env.PATH }, runtimeParent: join(root, 'run'), optionEnv: { PATH: process.env.PATH } })
+    expect(plan.kind).toBe('bwrap')
+    const [command, args] = plan.wrap(fake, ['run', 'sandboxed', '--dir', wt])
+    const lane = spawn(command, args, { cwd: wt, detached: true, stdio: 'ignore' })
+    const unowned = spawn('/bin/sh', [fake, 'run', 'unowned', '--dir', wt], { cwd: wt, detached: true, stdio: 'ignore' })
+    try {
+      const inner = await waitFor(() => pidsMatching('opencode run sandboxed'))
+      const child = inspectProcess(lane.pid); const worker = inspectProcess(process.pid)
+      const supervision = join(wt, '.lane', 'supervision')
+      mkdirSync(supervision, { recursive: true })
+      writeFileSync(join(supervision, 'current.json'), JSON.stringify({ version: 1, runId: '11-22' }))
+      writeFileSync(join(supervision, '11-22.json'), JSON.stringify({
+        version: 1, runId: '11-22', state: 'running', owner: 'session', ownerSessionId: 'another-session', worktree: wt, log: join(wt, '.lane', 'run.log'),
+        workerPid: process.pid, workerArgv: worker.argv, workerStartTime: worker.startTime,
+        childPid: lane.pid, childArgv: child.argv, childStartTime: child.startTime, sandbox: plan.line,
+      }))
+      const result = spawnSync(process.execPath, [WATCHER, '--project', wt, '--once'], {
+        encoding: 'utf8', timeout: 60_000,
+        // TMPDIR moves the watcher's "temp-hosted executable = test fake" exclusion off this fixture.
+        env: { ...process.env, TMPDIR: join(root, 'othertmp'), XDG_STATE_HOME: join(root, 'state'), CLAUDE_CONFIG_DIR: join(root, 'config'), CLAUDE_PLUGIN_DATA: '', CLAUDE_CODE_SESSION_ID: 'watcher-session' },
+      })
+      expect(result.status, result.stderr).toBe(0)
+      const warned = [...result.stdout.matchAll(/WARNING: unattributed opencode pid=(\d+)/g)].map((m) => Number(m[1]))
+      for (const pid of inner) expect(warned, `sandboxed lane process ${pid} warned: ${result.stdout}`).not.toContain(pid)
+      expect(warned).toContain(unowned.pid)
+    } finally {
+      for (const p of [lane, unowned]) { try { process.kill(-p.pid!, 'SIGKILL') } catch { /* gone */ } }
+      plan.dispose()
+    }
+  }))
+
+  it('laneDescendantPids follows ppid links from verified roots only', () => {
+    const rows = [{ pid: 10, ppid: 1 }, { pid: 11, ppid: 10 }, { pid: 12, ppid: 11 }, { pid: 13, ppid: 12 }, { pid: 20, ppid: 1 }, { pid: 21, ppid: 20 }, { pid: 30 }]
+    expect([...laneDescendantPids([10], rows)].sort()).toEqual([10, 11, 12, 13])
+    expect([...laneDescendantPids([], rows)]).toEqual([])
+    expect([...laneDescendantPids([1], rows)]).toEqual([])
+  })
 
   it('returns unavailable rather than zero orphans without Linux procfs', () => {
     expect(detectOrphanWatchers({ platform: 'darwin' })).toEqual({

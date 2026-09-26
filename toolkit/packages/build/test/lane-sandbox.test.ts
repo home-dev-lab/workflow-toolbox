@@ -243,10 +243,10 @@ describe('lane sandbox plan — codex home (H3)', () => {
 })
 
 describe('lane sandbox plan — network endpoints (H4)', () => {
-  it('reads loopback baseURLs from the opencode config and isolates the network with a bridge', () => {
+  it('reads the MODEL provider loopback baseURL from the opencode config and isolates the network with a bridge', () => {
     const config = `${HOME}/.config/opencode`
     const fs = fakeFs({ [`${config}/opencode.jsonc`]: '{ "provider": { "x": { "options": { "baseURL": "http://127.0.0.1:8317/v1" } } } }' }, [config, HOME, '/work/tree'])
-    const p = plan({ fs })
+    const p = plan({ fs, args: ['run', 'x', '--model', 'x/m'] })
     expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8317 }])
     expect(p.line).toContain('network isolated, bridged to 127.0.0.1:8317')
     const [, args] = p.wrap('opencode', ['run'])
@@ -258,9 +258,101 @@ describe('lane sandbox plan — network endpoints (H4)', () => {
   it('states the isolation honestly when socat is absent (no bridge)', () => {
     const config = `${HOME}/.config/opencode`
     const fs = fakeFs({ [`${config}/opencode.jsonc`]: '{ "provider": { "x": { "options": { "baseURL": "http://127.0.0.1:8317/v1" } } } }' }, [config, HOME, '/work/tree'])
-    const p = plan({ fs, socat: null })
+    const p = plan({ fs, socat: null, args: ['run', 'x', '--model', 'x/m'] })
     expect(p.endpoints).toEqual([])
     expect(p.line).toContain('network isolated (socat absent, no bridge)')
+  })
+})
+
+// Round 3, defect 1: a remote provider (openai/* on OAuth) was unreachable because only loopback
+// baseURLs were bridged. Invariant: a lane reaches exactly the endpoints ITS model needs.
+describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
+  const config = `${HOME}/.config/opencode`
+  const share = `${HOME}/.local/share/opencode`
+  const CLIPROXY = '{ // comment with a URL-like // inside\n "provider": { "antigravity": { "options": { "baseURL": "http://127.0.0.1:8317/v1", }, }, }, }'
+  type Spawned = Array<{ command: string, args: string[] }>
+  function egressPlan(model: string | null, auth: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+    const spawned: Spawned = []
+    const fs = fakeFs({ [`${config}/opencode.jsonc`]: CLIPROXY, [`${share}/auth.json`]: JSON.stringify(auth) }, [config, share, HOME, '/work/tree'])
+    const p = plan({ fs, args: ['run', 'x', ...(model ? ['--model', model] : [])], spawnFn: (command: string, args: string[]) => { spawned.push({ command, args }); return { kill() {}, pid: 1 } }, ...extra }) as SandboxPlan & { egressHosts?: string[] }
+    return { p, spawned, args: p.wrap('opencode', ['run'])[1] }
+  }
+  const setenv = (args: string[], name: string) => args.flatMap((v, i) => (v === '--setenv' && args[i + 1] === name ? [args[i + 2]!] : []))
+
+  it('an openai/* OAuth lane gets an egress proxy allowing ONLY chatgpt.com and auth.openai.com, reached through the bridge', () => {
+    const { p, spawned, args } = egressPlan('openai/gpt-5.6-luna', { openai: { type: 'oauth' } })
+    expect(p.egressHosts).toEqual(['chatgpt.com', 'auth.openai.com'])
+    const proxy = spawned.find((s) => s.args.some((a) => a.endsWith('lane-egress-proxy.mjs')))
+    expect(proxy, JSON.stringify(spawned)).toBeDefined()
+    expect(proxy!.args[proxy!.args.indexOf('--allow') + 1]).toBe('chatgpt.com,auth.openai.com')
+    // The unrelated loopback provider (CLIProxy) is NOT bridged for an openai lane: exactly what its model needs.
+    expect(p.endpoints).toEqual([])
+    expect(spawned.some((s) => s.args.some((a) => a.includes('TCP4:127.0.0.1:8317')))).toBe(false)
+    expect(args).toContain('--unshare-all')
+    for (const name of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) expect(setenv(args, name)).toEqual(['http://127.0.0.1:3128'])
+    expect(setenv(args, 'NO_PROXY')).toEqual(['127.0.0.1,localhost,::1'])
+    expect(p.line).toContain('egress proxy to chatgpt.com, auth.openai.com only (HTTPS CONNECT, port 443)')
+  })
+
+  it('an API-key openai lane is allowed api.openai.com only', () => {
+    expect(egressPlan('openai/gpt-5.6-luna', { openai: { type: 'api' } }).p.egressHosts).toEqual(['api.openai.com'])
+  })
+
+  it('a loopback provider model is relayed, gets no proxy and no proxy variables', () => {
+    const { p, spawned, args } = egressPlan('antigravity/some-model', {})
+    expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8317 }])
+    expect(p.egressHosts).toEqual([])
+    expect(spawned.some((s) => s.args.some((a) => a.endsWith('lane-egress-proxy.mjs')))).toBe(false)
+    expect(setenv(args, 'HTTPS_PROXY')).toEqual([])
+  })
+
+  it('a provider with no known hosts and a lane without a model get NO egress, and the line says so', () => {
+    const unknown = egressPlan('mystery/model', {})
+    expect(unknown.p.egressHosts).toEqual([])
+    expect(unknown.p.line).toContain('no egress: provider mystery has no known hosts')
+    const none = egressPlan(null, { openai: { type: 'oauth' } })
+    expect(none.p.egressHosts).toEqual([])
+    expect(none.spawned).toEqual([])
+  })
+
+  it('a codex lane signed in with ChatGPT gets the OpenAI OAuth hosts', () => {
+    const spawned: Spawned = []
+    const codexHome = `${HOME}/.codex`
+    const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: JSON.stringify({ OPENAI_API_KEY: null, tokens: { a: 1 } }) }, [HOME, '/work/tree', codexHome])
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', args: [], cwd: '/work/tree', env: { HOME, PATH: '/usr/local/bin' }, optionEnv: {}, platform: 'linux', execPath: '/usr/bin/node', bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: okProbe, spawnFn: (command: string, args: string[]) => { spawned.push({ command, args }); return { kill() {}, pid: 1 } }, runtimeParent: '/run/lane', fs }) as SandboxPlan & { egressHosts?: string[] }
+    expect(p.egressHosts).toEqual(['chatgpt.com', 'auth.openai.com'])
+  })
+
+  it('names the egress log only when the operator asks for one, as a host path', () => {
+    const logged = egressPlan('openai/gpt-5.6-luna', { openai: { type: 'oauth' } }, { optionEnv: { WT_LANE_EGRESS_LOG: '/var/log/egress.jsonl' } })
+    const proxy = logged.spawned.find((s) => s.args.includes('--allow'))!
+    expect(proxy.args[proxy.args.indexOf('--log') + 1]).toBe('/var/log/egress.jsonl')
+    const quiet = egressPlan('openai/gpt-5.6-luna', { openai: { type: 'oauth' } })
+    expect(quiet.spawned.find((s) => s.args.includes('--allow'))!.args).not.toContain('--log')
+  })
+})
+
+describe('JSONC reader used for the OpenCode config (round 3)', () => {
+  it('keeps URLs and comment markers inside strings, drops comments and trailing commas, and returns null on garbage', async () => {
+    const { parseJsonc } = await load<{ parseJsonc: (text: unknown) => unknown }>('jsonc.mjs')
+    const text = '{\n // line comment "x": 1\n "a": "http://127.0.0.1:8317/v1", /* block, } */ "b": "say \\"//hi\\" /* no */",\n "c": [1, 2, /* x */ ],\n "d": { "e": 3, // tail\n },\n}'
+    expect(parseJsonc(text)).toEqual({ a: 'http://127.0.0.1:8317/v1', b: 'say "//hi" /* no */', c: [1, 2], d: { e: 3 } })
+    expect(parseJsonc('{ "a": ')).toBeNull()
+    expect(parseJsonc(null)).toBeNull()
+  })
+})
+
+// Round 3, defect 2: only ~/.opencode/bin was bound, so OpenCode (not --pure) ran an npm install of
+// its plugin package into ~/.opencode on every start and the 30 s discovery probe timed out.
+describe('lane sandbox plan — OpenCode global home (round 3, defect 2)', () => {
+  it('binds the installed plugin packages READ-ONLY, never ~/.opencode whole and never writable', () => {
+    const oc = `${HOME}/.opencode`
+    const [, args] = plan({ fs: fakeFs({ [`${oc}/package.json`]: '{}', [`${oc}/package-lock.json`]: '{}', [`${oc}/opencode.db`]: 'sessions' }, [HOME, '/work/tree', oc, `${oc}/node_modules`]) }).wrap('opencode', ['run'])
+    const ro = flat(args, '--ro-bind-try')
+    for (const name of ['node_modules', 'package.json', 'package-lock.json']) expect(ro).toContain(`${oc}/${name}`)
+    expect(everyBind(args)).not.toContain(oc)
+    expect(everyBind(args)).not.toContain(`${oc}/opencode.db`)
+    expect([...flat(args, '--bind'), ...flat(args, '--bind-try')].filter((b) => b.startsWith(oc))).toEqual([])
   })
 })
 
@@ -390,6 +482,41 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
         } catch (error) { reject(error as Error) }
       })
     })
+  })
+
+  // Round 3, defect 1, on a real sandbox: the lane's only way out is the host proxy named by
+  // HTTPS_PROXY; a host outside the allow-list is refused BY THE PROXY (403, logged) and a direct
+  // connection has no route. The allowed host is a reserved .invalid name, so no test ever reaches
+  // the internet: its log line proves the allowed branch was taken, then resolution fails.
+  it('routes egress through the host proxy only: allowed host reaches the proxy allow branch, others are refused', () => {
+    const root = tempRoot('egress')
+    const home = join(root, 'home'); const w = join(root, 'w'); const log = join(root, 'egress.jsonl')
+    mkdirSync(w, { recursive: true })
+    mkdirSync(join(home, '.config/opencode'), { recursive: true })
+    writeFileSync(join(home, '.config/opencode/opencode.jsonc'), '{ "provider": { "remote": { "options": { "baseURL": "https://lane-egress-probe.invalid/v1" } } } }')
+    const connect = (host: string) => `printf 'CONNECT ${host}:443 HTTP/1.1\\r\\nHost: ${host}\\r\\n\\r\\n' | timeout 10 socat -t 8 - "TCP4:\${HTTPS_PROXY#http://}" 2>&1 | head -1 | sed 's/^/${host}:/'`
+    const probe = [
+      'echo "proxy=$HTTPS_PROXY"',
+      connect('example.com'),
+      connect('lane-egress-probe.invalid'),
+      'timeout 5 socat - TCP4:1.1.1.1:443 </dev/null 2>&1 | head -1 | sed "s/^/direct:/"',
+    ].join('\n')
+    const prev = process.env.WT_LANE_EGRESS_LOG
+    process.env.WT_LANE_EGRESS_LOG = log
+    try {
+      const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe, 'probe', '--model', 'remote/m'], { cwd: w, env: { PATH: process.env.PATH, HOME: home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+      const out = String(r.stdout)
+      expect(r.laneSandbox?.kind).toBe('bwrap')
+      expect(out).toContain('proxy=http://127.0.0.1:3128')
+      expect(out).toMatch(/^example\.com:HTTP\/1\.1 403/m)
+      expect(out).toMatch(/^lane-egress-probe\.invalid:HTTP\/1\.1 403/m)
+      expect(out).toMatch(/^direct:.*(unreachable|refused|Network)/im)
+      const records = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { host: string, decision: string, reason: string })
+      expect(records).toEqual(expect.arrayContaining([
+        expect.objectContaining({ host: 'example.com', decision: 'denied', reason: 'host is not in the lane egress allow-list' }),
+        expect.objectContaining({ host: 'lane-egress-probe.invalid', decision: 'denied', reason: expect.stringMatching(/^resolution failed/) }),
+      ]))
+    } finally { if (prev === undefined) delete process.env.WT_LANE_EGRESS_LOG; else process.env.WT_LANE_EGRESS_LOG = prev }
   })
 
   it('the git pointer files are read-only inside, so a planted fsmonitor cannot be written (H1)', () => {
