@@ -16,7 +16,8 @@ import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-cor
 import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
-import { decisionVerdict, DOD_DECISION_WAIT_MS } from './lifecycle-dod-dispute.mjs'
+import { DOD_DECISION_WAIT_MS, FALLBACK_RULE } from './lifecycle-dod-dispute.mjs'
+import { initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest } from './host/pilot-decision-store.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -305,26 +306,21 @@ function describeExecutorVariants(models, env) {
 }
 // The run's parent (orchestrator or launching session) is reached through two files: the lifecycle
 // writes a decision request into the lane and the run log names it; the parent answers in the mailbox.
-function parentDecisionChannel(mailbox, { exists, readFile, log, overrides = {} }) {
+function parentDecisionChannel({ runId, stateFile, cli, log, overrides = {} }) {
   const minutes = Math.ceil((overrides.waitMs ?? DOD_DECISION_WAIT_MS) / 60_000)
+  const readDecisions = overrides.readDecisions ?? (() => readPilotDecisions(stateFile))
+  const command = pilotDecisionCommand(cli, runId)
   return {
-    mailbox,
-    readDecisions: () => (exists(mailbox) ? readFile(mailbox, 'utf8') : ''),
+    readDecisions,
+    decisionCommand: command,
     onDecisionRequest: ({ file, criteria, requestId }) => {
+      registerPilotDecisionRequest(stateFile, { requestId, criteria })
       const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
-      log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent appends to ${mailbox} one line "DECISION ${requestId} DoD <n>: <reading>" per criterion within ${minutes} min (only a line quoting this request id, appended after this request, binds; the latest one wins), else the runner's fallback rule binds (all [missing]: the plan's recorded reading; all [overbuild]: the critic's reading; otherwise the card's literal words only)`)
+      log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes ${command} --dod <n> --reading <text> within ${minutes} min; otherwise ${FALLBACK_RULE}`)
     },
-    onIgnoredDecision: ({ line, reason }) => log(`decision ignored: ${reason}: ${line}`),
     ...overrides,
+    readDecisions,
   }
-}
-// A mailbox line is presented to the pilot as the parent's binding decision only when it answers a
-// decision request of this run; every other line stays an ordinary, untrusted mailbox message.
-function mailboxMessage(line, disputes) {
-  const verdict = decisionVerdict(line, disputes)
-  if (verdict?.decision) return `Binding decision from the run's parent on DoD ${verdict.decision.criterion} (runner-owned, trusted): ${verdict.decision.reading}. Keep the plan to this reading; the next critic round is bound to it.`
-  if (verdict?.ignored) return `Message from the owner (not a binding decision: ${verdict.ignored}): ${line}`
-  return `Message from the owner: ${line}`
 }
 function completedPilotExitCode(completed, partial, deferred) {
   if (!completed) return 1
@@ -372,6 +368,11 @@ export async function runPilot(options, dependencies) {
   const transcriptPath = join(options.dir, '.lane', 'sdk-transcript.json')
   const started = now()
   const runId = `${options.card}-${started}`
+  const decisionStoreOptions = { env, ...(dependencies.decisionStateRoot ? { root: dependencies.decisionStateRoot } : {}) }
+  const decisionStateRoot = resolve(dependencies.decisionStateRoot ?? pilotDecisionStateRoot({ env }))
+  if (confinedToWorktree(options.dir, decisionStateRoot)) throw new Error(`SDK pilot preflight failed: decision state must be outside the lane-writable worktree: ${decisionStateRoot}`)
+  const decisionStateFile = initializePilotDecisionStore(runId, decisionStoreOptions)
+  const decisionCli = pilotDecisionCli()
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   const turns = []
   const messages = []
@@ -380,6 +381,7 @@ export async function runPilot(options, dependencies) {
   const tools = []
   let turnTools = []
   let mailboxLines = 0
+  const injectedDecisions = new Set()
   let completed = false
   let injectedTurns = 0
   let silenceInjections = 0
@@ -422,7 +424,8 @@ export async function runPilot(options, dependencies) {
   const abortController = new AbortController()
   let timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: parentDecisionChannel(options.mailbox, { exists, readFile, log, overrides: lifecycleOptions.dodDecisions }), onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
+  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, overrides: lifecycleOptions.dodDecisions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: totals.input + totals.cache_creation + totals.output, tool_names: [...new Set(tools)] })
   const persistUsage = () => atomicWrite(usagePath, `${JSON.stringify(currentUsage(), null, 2)}\n`, writeFile)
   const timeoutTimer = setTimer(() => {
@@ -467,12 +470,26 @@ export async function runPilot(options, dependencies) {
       }
       const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
       if (lines.length > mailboxLines) {
-        const content = mailboxMessage(lines[mailboxLines++], lifecycleServer.dodDisputes())
+        const content = `Message from the owner: ${lines[mailboxLines++]}`
         injectedTurns += 1
         log(`injected: mailbox message ${content}`)
         yield { type: 'user', message: { role: 'user', content } }
       }
-      else await sleep(POLL_MS)
+      else {
+        const disputes = lifecycleServer.dodDisputes()
+        const decision = decisionChannel.readDecisions().find((candidate) => {
+          if (injectedDecisions.has(`${candidate.requestId}:${candidate.criterion}`)) return false
+          const dispute = disputes.find((entry) => entry.requestId === candidate.requestId && entry.criterion === candidate.criterion)
+          return dispute && (!dispute.resolution || dispute.resolution.source === 'parent')
+        })
+        if (decision) {
+          injectedDecisions.add(`${decision.requestId}:${decision.criterion}`)
+          const content = `Binding decision from the run's parent on DoD ${decision.criterion} (runner-owned, trusted): ${decision.reading}. Keep the plan to this reading; the next critic round is bound to it.`
+          injectedTurns += 1
+          log(`injected: parent decision ${content}`)
+          yield { type: 'user', message: { role: 'user', content } }
+        } else await sleep(POLL_MS)
+      }
     }
   }
 

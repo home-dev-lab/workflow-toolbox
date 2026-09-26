@@ -90,8 +90,8 @@ describe('raw host primitive quality ratchet', () => {
     // The grounding CLI, two hooks, and pure public re-export add four perimeter files;
     // their host operations stay behind bin/lib/host, so the primitive ceiling is unchanged. The Java pack's
     // wt-jdtls.mjs launcher adds one more; its JVM discovery and spawn live in bin/lib/host/jdtls-java.mjs.
-    // bin/lib/lifecycle-dod-dispute.mjs adds one more with zero primitives: it performs no I/O, its callers
-    // read the mailbox and write the request file, so the primitive ceiling is unchanged.
+    // The decision store keeps its filesystem operations behind bin/lib/host, so neither perimeter
+    // count nor primitive ceiling increases.
     expect(result.perimeterFiles).toBe(233)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })

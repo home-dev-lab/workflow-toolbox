@@ -49,6 +49,9 @@ Base: develop f7d8d7e9. Sources read: `plugin/hooks-modules/sdk-pilot-lifecycle/
 ## Gates
 Per lane, from `<worktree>/toolkit`, detached, each with an `EXIT=` last line: `pnpm typecheck`, `pnpm lint`, `pnpm test`; `node plugin/bin/wt-plugin-validate.mjs --strict` (or the `claude plugin validate` equivalent used today); `git diff --check`. Every lock proven red first, archived at `.lane/red/<task>-<lock>.log` with its `EXIT=` line. Test-union: total after each lane strictly greater than before. Review: Sol on a repository-free diff bundle after lane A and after lane B; refutation lane; dispositions on the card; main's diff-read and one recorded gate on develop after the merge.
 
+## Card terms: reading chosen
+- none: every term has one reading
+
 ## Acceptance
 - exercise the lifecycle fixture
   Proof: e2e mechanical lifecycle test

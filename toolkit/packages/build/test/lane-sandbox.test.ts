@@ -642,6 +642,18 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     expect(String(r.stdout)).toMatch(/LEAK \.ssh/)
   })
 
+  it('does not let a real sandboxed lane write the host-only pilot decision store', () => {
+    const f = homeFixture()
+    const decision = join(f.home, '.local', 'state', 'workflow-toolbox', 'pilot-runs', 'run-1', 'dod-decisions.json')
+    mkdirSync(dirname(decision), { recursive: true })
+    writeFileSync(decision, 'trusted\n')
+    const probe = `printf forged > ${JSON.stringify(decision)} 2>/dev/null && echo WROTE || echo DENIED`
+    const r = fence.spawnOpencode(spawnSync, '/bin/sh', ['-c', probe], { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+    expect(r.laneSandbox?.kind).toBe('bwrap')
+    expect(String(r.stdout).trim()).toBe('DENIED')
+    expect(readFileSync(decision, 'utf8')).toBe('trusted\n')
+  })
+
   it('isolates the network so NO host loopback service is reachable (the H4 security invariant)', () => {
     const root = tempRoot('net')
     const home = join(root, 'home'); const w = join(root, 'w')

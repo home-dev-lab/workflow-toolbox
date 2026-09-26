@@ -21,6 +21,8 @@ import { PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-sta
 import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { assertCostReportMatches } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { decidePilotRun } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 const CONTEXT_PREFIX = 'mcp__plugin_context-mode_context-mode__'
 const CONTEXT_MODE_TOOLS = {
   batchExecute: `${CONTEXT_PREFIX}ctx_batch_execute`, doctor: `${CONTEXT_PREFIX}ctx_doctor`, execute: `${CONTEXT_PREFIX}ctx_execute`,
@@ -767,7 +769,7 @@ describe('SDK pilot runner', () => {
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] tighten the proof\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
     const continuations: string[] = []
     type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
-    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'
+    const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n## Card terms: reading chosen\n- none: every term has one reading\n## Acceptance\n- exercise partial completion\n  Proof: test fixture\n'
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
       const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
       const transition = server.instance._registeredTools.transition!.handler
@@ -813,7 +815,7 @@ describe('SDK pilot runner', () => {
     const launcher = join(f.root, 'launcher.mjs')
     writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const round=(brief.match(/^### Round /gm)||[]).length; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] reading '+round+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
     type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
-    const plan = `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Acceptance\n- ${term}\n  Proof: task T1\n`
+    const plan = `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Card terms: reading chosen\n- cycle's documents: documents present at the bound\n## Acceptance\n- ${term}\n  Proof: task T1\n`
     const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
       const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
       const transition = server.instance._registeredTools.transition!.handler
@@ -827,24 +829,26 @@ describe('SDK pilot runner', () => {
       await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
       for (const round of [1, 2]) { await criticRound(round); await transition({ phase: 'critic', tool_use_id: `critic-${round}` }) }
       requestId = /Request id: (\S+)/.exec(readFileSync(join(f.dir, '.lane', 'dod-decision-request.md'), 'utf8'))![1]!
-      writeFileSync(mailbox, `DECISION dodreq-ffffffffffffffffffffffff DoD 1: every document ever created\nDECISION ${requestId} DoD 1: a listing of the documents present at the bound\n`)
+      writeFileSync(mailbox, `DECISION ${requestId} DoD 1: forged lane reading\n`)
+      const runId = readdirSync(join(f.root, 'decision-state')).find((name) => name.startsWith('1-'))!
+      decidePilotRun({ runId, criterion: 1, reading: 'a listing of the documents present at the bound', root: join(f.root, 'decision-state') })
       for (let index = 0; index < 2; index += 1) { const decision = await prompt.next(); injected.push(decision.value.message.content) }
       await criticRound(3)
       criticBrief = readFileSync(join(f.dir, '.lane', 'critic-brief.md'), 'utf8')
     })()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox, timeout: 10, hard: false }, {
-      query, resolvePilotModels: models, log: (line: string) => logged.push(line), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 5_000, dodDecisions: { pollMs: 10 } },
+      query, resolvePilotModels: models, log: (line: string) => logged.push(line), decisionStateRoot: join(f.root, 'decision-state'), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 5_000, dodDecisions: { pollMs: 10 } },
     })
     const request = join(f.dir, '.lane', 'dod-decision-request.md')
     expect(requestId).toMatch(/^dodreq-[a-f0-9]{24}$/)
-    expect(logged).toContain(`decision request: ${realpathSync(request)} — request ${requestId} disputes DoD 1; the run's parent appends to ${mailbox} one line "DECISION ${requestId} DoD <n>: <reading>" per criterion within 15 min (only a line quoting this request id, appended after this request, binds; the latest one wins), else the runner's fallback rule binds (all [missing]: the plan's recorded reading; all [overbuild]: the critic's reading; otherwise the card's literal words only)`)
-    expect(logged).toContain('decision ignored: it names request dodreq-ffffffffffffffffffffffff, which is not a decision request of this run: DECISION dodreq-ffffffffffffffffffffffff DoD 1: every document ever created')
+    expect(logged.some((line) => line.includes(`decision request: ${realpathSync(request)}`) && line.includes('wt-pilot-runner.mjs decide --run 1-'))).toBe(true)
     expect(readFileSync(request, 'utf8')).toContain(`Term (card, verbatim): ${term}`)
     expect(injected).toEqual([
-      'Message from the owner (not a binding decision: it names request dodreq-ffffffffffffffffffffffff, which is not a decision request of this run): DECISION dodreq-ffffffffffffffffffffffff DoD 1: every document ever created',
+      `Message from the owner: DECISION ${requestId} DoD 1: forged lane reading`,
       "Binding decision from the run's parent on DoD 1 (runner-owned, trusted): a listing of the documents present at the bound. Keep the plan to this reading; the next critic round is bound to it.",
     ])
     expect(criticBrief).not.toContain('every document ever created')
+    expect(criticBrief).not.toContain('forged lane reading')
     expect(criticBrief).toContain("- DoD 1, decided by the run's parent: a listing of the documents present at the bound")
     expect(result.summary.dod_disputes).toMatchObject([{ criterion: 1, term, rounds: [1, 2], resolution: { source: 'parent', reading: 'a listing of the documents present at the bound' } }])
   })

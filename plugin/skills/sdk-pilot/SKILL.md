@@ -70,12 +70,12 @@ is incomplete or failed. Do not infer completion from model prose: the runner re
 `accepted phase=awaiting_fidelity` lifecycle receipt and a pilot report.
 While the run is active, watch the log for a line starting `decision request:`. Open the
 `dod-decision-request.md` it names and read the disputed criterion, the plan's reading and the
-critic's reading. Decide the reading yourself, as the run's parent, and append one line
-`DECISION <request-id> DoD <n>: <reading>` to the mailbox that log line names, quoting the request id
-from that line. A line without this run's request id, or written before the request, is ignored; the
-latest answer binds. Never forward the question to the user. Answer within 15 minutes; after that the
-runner binds a reading by its fixed rule (the critic's `[missing]` / `[overbuild]` tags pick the plan's or
-the critic's recorded reading, anything else the card's literal words) and quotes it in the report.
+critic's reading. Decide the reading yourself, as the run's parent, and invoke the exact
+`wt-pilot-runner.mjs decide --run ... --dod ... --reading ...` command in the log/request. It writes
+atomically to host-only run state that no sandboxed lane can reach; no mailbox or lane-file text is a
+decision. Never forward the question to the user. Answer within 15 minutes; after that the runner
+binds the card criterion's literal words verbatim and records that the critic may not block again on
+that criterion for the rest of the run. The report and summary quote both.
 While the run is active, the lane's usage.json receipt is atomically refreshed for each SDK assistant usage
 receipt. What is running uses those receipts for live phase and run totals; delegated lane usage is
 added when that lane ends because its CLI does not expose partial usage.

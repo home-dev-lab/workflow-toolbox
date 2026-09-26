@@ -7,12 +7,38 @@ import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution
 import { recordSessionEnvLog } from './lib/session-env-log.mjs'
 import { pilotAdmission } from './lib/pilot-admission.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
+import { decidePilotRun } from './lib/host/pilot-decision-store.mjs'
 
 function usage() {
-  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [--board-contract <json file>] [--knowledge-base-index <path>] [--archive-root <project root>] [--plugin-dir <absolute-path>]... [--profile-env <settings.json>] [--contract <path>] [--hard] [--mailbox <path>] [--timeout <seconds>]'
+  return 'Usage: node wt-pilot-runner.mjs --card <id> --dir <worktree> --card-file <path> [...]\n       node wt-pilot-runner.mjs decide --run <id> --dod <n> --reading <text>'
+}
+
+function decisionArgs(argv) {
+  const out = { runId: null, criterion: null, reading: null }
+  for (let index = 1; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--run') out.runId = argv[++index] ?? null
+    else if (arg === '--dod') out.criterion = Number(argv[++index])
+    else if (arg === '--reading') out.reading = argv[++index] ?? null
+    else return { error: `unknown decide argument: ${arg}` }
+  }
+  if (!out.runId || !out.reading || !Number.isSafeInteger(out.criterion) || out.criterion < 1) return { error: 'decide requires --run <id> --dod <positive integer> --reading <text>' }
+  return out
 }
 
 async function main() {
+  if (process.argv[2] === 'decide') {
+    const args = decisionArgs(process.argv.slice(2))
+    if (args.error) { process.stderr.write(`wt-pilot-runner: ${args.error}\n${usage()}\n`); return 2 }
+    try {
+      const result = decidePilotRun(args)
+      process.stdout.write(`decided run=${args.runId} dod=${args.criterion} state=${result.file}\n`)
+      return 0
+    } catch (error) {
+      process.stderr.write(`wt-pilot-runner: ${error instanceof Error ? error.message : String(error)}\n`)
+      return 1
+    }
+  }
   const options = parsePilotRunnerArgs(process.argv.slice(2))
   if (options.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (options.error) { process.stderr.write(`wt-pilot-runner: ${options.error}\n${usage()}\n`); return 2 }

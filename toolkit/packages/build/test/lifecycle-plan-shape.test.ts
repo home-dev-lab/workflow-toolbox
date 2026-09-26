@@ -17,16 +17,19 @@ Rejected: exercising the parser only through lifecycle transitions.
 ## Gates
 - pnpm test
 
+## Card terms: reading chosen
+- none: every term has one reading
+
 ## Acceptance
 - Parser behavior is locked.
   Proof: lifecycle-plan-shape.test.ts
 `
 
 describe('lifecycle plan shape parser', () => {
-  it('asks every plan for a mandatory Card terms section, without refusing a plan that lacks it yet', () => {
+  it('enforces the mandatory Card terms section', () => {
     expect(PLAN_SHAPE_DESCRIPTION).toContain('a mandatory `## Card terms: reading chosen` section with one `- <card term, verbatim>: <the reading this plan chose>` line for each card Definition-of-done term open to more than one reading')
-    expect(validPlan).not.toContain('Card terms')
     expect(containsPlanShape(validPlan, true)).toBe(true)
+    expect(containsPlanShape(validPlan.replace(/\n## Card terms:[\s\S]*?(?=\n## Acceptance)/, ''), true)).toBe(false)
   })
 
   it('stops the ADR block at the next level-two heading', () => {

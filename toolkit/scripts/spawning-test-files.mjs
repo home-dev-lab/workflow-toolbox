@@ -95,6 +95,7 @@ export const spawningTestFiles = [
   'packages/build/test/outbound-guard-hooks.test.ts',
   'packages/build/test/pgrep-env-dump-guard-hook.test.ts',
   'packages/build/test/pilot-card-reconcile.test.ts',
+  'packages/build/test/pilot-decision-store.test.ts',
   'packages/build/test/pilot-guard.test.ts',
   'packages/build/test/pilot-model-config.test.ts',
   'packages/build/test/pilot-runner.test.ts',

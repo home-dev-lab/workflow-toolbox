@@ -46,6 +46,6 @@ export function containsPlanShape(content, requireAcceptance) {
           .some((line) => new RegExp(`^\\s*(?:${PLAN_SHAPE.taskDodLabels.join('|')}):`, 'i').test(line)),
     ) &&
     Boolean(planSection(content, PLAN_SHAPE.gatesHeading)) &&
-    (!requireAcceptance || Boolean(acceptanceSection(content)))
+    (!requireAcceptance || (Boolean(planSection(content, PLAN_SHAPE.cardTermsHeading)) && Boolean(acceptanceSection(content))))
   )
 }

@@ -112,7 +112,7 @@ form and Node path APIs for resolution and real-path containment on each host.
 | Edge | Required evidence |
 | --- | --- |
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
-| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing/reworded criterion is refused with an example. The plan shape also asks for a mandatory `## Card terms: reading chosen` section (one `- <term>: <reading>` line per ambiguous card term); a plan without it is not yet refused, and a decision request then records the section as absent. |
+| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, mandatory `## Card terms: reading chosen` (one `- <term>: <reading>` line per ambiguous card term, or the documented `none` line), and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing section or missing/reworded criterion is refused with an example. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. `CONTEST routed card <id>:` gets exactly one plan round; a repeated maintained scope disagreement proceeds and is reported. A fourth other changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd -> verify | Attested lane receipt and non-empty report. The initial FULL `tdd-brief.md` has the plan `## Tasks` block byte-identically; later TDD fix briefs carry runner-owned review findings and focused-gate instructions. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
@@ -132,31 +132,22 @@ loop continues to another plan round. Each criterion is escalated at most once p
 
 - **Upward.** The lifecycle writes `.lane/dod-decision-request.md` with an unguessable request id,
   the criterion verbatim, the critic rounds, the plan's reading (its `Card terms: reading chosen`
-  entry; the term's `## Acceptance` entry only when the plan has no such section, and the request
-  says which), each critic finding, the mailbox to answer in, and a deadline. Terms match across
-  whitespace, case and quotes. The runner prints one `decision request: <file> — request <id> …` line
-  to its run log, which is what the parent watches.
-- **Downward.** The parent appends `DECISION <request-id> DoD <n>: <reading>` to the runner mailbox
-  (`--mailbox`, default `.lane/pilot-mailbox.txt`). A line binds only when it quotes a request id of
-  this run and one of that request's criteria, and was appended after the request was written (the
-  lifecycle records the mailbox's byte length at request time). Every other `DECISION` line is
-  ignored and logged as `decision ignored: <reason>: <line>`. When several lines answer the same
-  criterion, the latest binds. The runner injects the binding answer into the pilot as a runner-owned
+  entry), each critic finding, the parent command, and a deadline. Terms match across whitespace,
+  case, straight quotes, and curly quotes; a shorter Card-terms label can identify words inside the
+  full criterion. The runner prints one `decision request: <file> — request <id> …` line to its log.
+- **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --dod <n> --reading
+  <text>`. The command atomically writes the SDK runner's per-run state under the host state directory
+  (`XDG_STATE_HOME` or the platform equivalent), outside every lane sandbox bind. Mailbox and lane-file
+  prose is never parsed for decisions. One shared reader supplies both the lifecycle and pilot. The runner injects the binding answer into the pilot as a runner-owned
   decision, and the next critic brief carries it under
   `## Binding decisions on disputed Definition-of-done terms (runner-owned, trusted)`.
 - **Bounded wait.** The next critic launch waits up to 15 minutes from the request for the decision.
-  With no answer the runner binds one reading by a fixed rule, never by a model. The critic tags every
-  plan-stage blocking finding `[missing]`, `[overbuild]` or `[unverifiable]`. When every disputed
-  finding for the criterion is `[missing]`, the plan's recorded reading from its `Card terms: reading
-  chosen` section binds; when every one is `[overbuild]`, the critic's latest reading binds (the
-  narrower side there). Mixed or untagged findings, or a chosen side with no recorded reading, bind
-  the card's literal words only, and no wider reading may be demanded. An Acceptance entry is a proof
-  line, never a recorded reading. The wait is zero when the lifecycle has no mailbox reader or a stop
-  was already requested. A parent answer that arrives later still replaces the fallback.
+  With no answer the runner binds the card criterion's literal words verbatim, without selecting an
+  interpretation from model output, and records the hard rule that the critic may not block again on
+  that criterion for the rest of the run. The wait is zero when no decision reader exists or a stop
+  was already requested. A timeout binding is final.
 - **Record.** The pilot report gains `## Disputed Definition-of-done terms` with one line per
-  criterion quoting the applied reading and the rule that chose it, for example
-  `term DoD 1 ("…"): parent silent, rule card-words (…): the card's literal words "…" only; no wider
-  reading may be demanded`. The run summary carries the same record, with `rule` and `reading`, under
+  criterion quoting the verbatim binding and no-reblock rule. The run summary carries the same record under
   `dod_disputes`.
 
 ## Evidence and identity

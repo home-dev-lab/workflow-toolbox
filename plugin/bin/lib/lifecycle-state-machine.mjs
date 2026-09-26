@@ -943,18 +943,28 @@ export function createLifecycleStateMachine({
           return (!id || !repeatedContests.has(id)) && verdict.findingDetails[index].blocks
         })
         const findingDetails = verdict.findingDetails.filter((_finding, index) => blockingFindings.includes(verdict.findings[index]))
-        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings, findingDetails })
-        state.planRound += 1
-        const decision = adaptiveRoundDecision(state.priorCriticRounds, FIXED_CRITIC_ROUNDS, MAX_CRITIC_ROUNDS, state.criticPlateauUsed)
-        state.criticPlateauUsed = decision.plateauUsed
-        if (decision.continue) { next = 'plan'; resultDetail = dodEscalation.escalate() }
-        else {
-          const reason = `plan not approved after ${state.planRound} critic rounds`
-          state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
-          state.verifySnapshot = { tree: treeSignature(root), gates: {} }
-          audit()
-          next = 'report'
-          resultDetail = ` (round bound reached: partial run, ${reason})`
+        const priorCriticRounds = structuredClone(state.priorCriticRounds)
+        const priorPlanRound = state.planRound
+        const priorPlateauUsed = state.criticPlateauUsed
+        try {
+          state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings, findingDetails })
+          state.planRound += 1
+          const decision = adaptiveRoundDecision(state.priorCriticRounds, FIXED_CRITIC_ROUNDS, MAX_CRITIC_ROUNDS, state.criticPlateauUsed)
+          state.criticPlateauUsed = decision.plateauUsed
+          if (decision.continue) { next = 'plan'; resultDetail = dodEscalation.escalate() }
+          else {
+            const reason = `plan not approved after ${state.planRound} critic rounds`
+            state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
+            state.verifySnapshot = { tree: treeSignature(root), gates: {} }
+            audit()
+            next = 'report'
+            resultDetail = ` (round bound reached: partial run, ${reason})`
+          }
+        } catch (error) {
+          state.priorCriticRounds = priorCriticRounds
+          state.planRound = priorPlanRound
+          state.criticPlateauUsed = priorPlateauUsed
+          throw error
         }
       } else if (!next) {
         return refusal('critic->next', 'admissible outcome', path.join(laneDir, 'critic-report.md'))
