@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Lane sandbox (Linux): `wt-second-opinion.mjs --route astra` failed on every run since 0.188.0 with `CODEX_HOME points to "/run/user/<uid>/wt-lane-sandbox-…/codex-home", but that path does not exist`. The Codex child was handed its per-run private home by its HOST path, under the runtime directory the sandbox hides by design; it now receives the path that home is bound at inside the sandbox (`~/.codex`). `~/.codex` on the host stays read-only, the refreshed `auth.json` is still written back, and a user-set `CODEX_HOME` is unchanged. A new test asserts, for the Codex and OpenCode profiles, that every path passed with `--setenv` lies under a bind, remap, tmpfs or created directory inside the sandbox.
+
 ## [0.188.0] - 2026-09-26
 
 ### Added
