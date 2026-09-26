@@ -638,20 +638,25 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     } finally { if (prev === undefined) delete process.env.WT_LANE_SANDBOX; else process.env.WT_LANE_SANDBOX = prev }
   }
 
-  it('preserves a symlinked executable so it resolves and runs a sibling helper (skips when bwrap is unavailable)', () => {
+  it('preserves PATH priority for a symlinked executable and its sibling helper (skips when bwrap is unavailable)', () => {
     const root = tempRoot('exe-link')
     const home = join(root, 'home'); const worktree = join(root, 'worktree')
-    const realBin = join(root, 'real/bin'); const linkBin = join(root, 'link')
-    for (const dir of [home, worktree, realBin, linkBin]) mkdirSync(dir, { recursive: true })
-    const tool = join(realBin, 'tool'); const helper = join(realBin, 'helper'); const invoked = join(linkBin, 'tool')
+    const realBin = join(home, '.codex/releases/current/bin'); const first = join(home, '.local/bin'); const second = join(root, 'second')
+    for (const dir of [home, worktree, realBin, first, second]) mkdirSync(dir, { recursive: true })
+    const tool = join(realBin, 'codex'); const helper = join(realBin, 'helper'); const invoked = join(first, 'codex')
     writeFileSync(tool, '#!/bin/sh\nreal=$(readlink -f "$0")\nexec "$(dirname "$real")/helper"\n')
-    writeFileSync(helper, '#!/bin/sh\nprintf "helper-found\\n"\n')
-    chmodSync(tool, 0o755); chmodSync(helper, 0o755)
-    symlinkSync('../real/bin/tool', invoked)
-    const result = fence.spawnOpencode(spawnSync, invoked, [], { cwd: worktree, env: { PATH: process.env.PATH, HOME: home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
-    expect(result.status, String(result.stderr)).toBe(0)
-    expect(result.laneSandbox?.kind).toBe('bwrap')
-    expect(String(result.stdout)).toBe('helper-found\n')
+    writeFileSync(helper, '#!/bin/sh\nprintf "NEW\\n"\n')
+    writeFileSync(join(second, 'codex'), '#!/bin/sh\nprintf "OLD\\n"\n')
+    for (const file of [tool, helper, join(second, 'codex')]) chmodSync(file, 0o755)
+    symlinkSync('../../.codex/releases/current/bin/codex', invoked)
+    const pathValue = `${first}:${second}:${process.env.PATH}`
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { PATH: pathValue, HOME: home }, paths: { readable: [second] } })
+    const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
+    const result = spawnSync(command, args, { cwd: worktree, env: { PATH: pathValue, HOME: home }, encoding: 'utf8', timeout: 30_000 })
+    try {
+      expect(result.status, String(result.stderr)).toBe(0)
+      expect(String(result.stdout)).toBe('NEW\n')
+    } finally { p.dispose() }
   })
 
   it('exposes NOTHING under $HOME beyond the named allow-list (invariant canary)', () => {

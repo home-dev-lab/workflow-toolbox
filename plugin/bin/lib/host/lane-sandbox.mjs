@@ -265,7 +265,7 @@ const PROFILES = {
     fs.copy(path.join(codexHome, 'auth.json'), path.join(privHome, 'auth.json'))
     fs.copy(path.join(codexHome, 'config.toml'), path.join(privHome, 'config.toml'))
     return {
-      readable: executableBinds(findOnPath('codex', env.PATH, fs), fs),
+      executableReadable: executableBinds(findOnPath('codex', env.PATH, fs), fs),
       executableSymlinks: executableSymlinks(findOnPath('codex', env.PATH, fs), fs),
       writableRemap: [{ inside: codexHome, outside: privHome }],
       writable: [...absolute(env.CLAUDE_PLUGIN_DATA)],
@@ -301,9 +301,11 @@ function toolchainPaths({ env, execPath, fs }) {
   const nodeReal = fs.realpath(execPath) ?? execPath
   const executables = ['node', 'pnpm', 'npm', 'git'].map((name) => findOnPath(name, env.PATH, fs))
   return {
-    readable: [
+    executableReadable: [
       path.dirname(path.dirname(nodeReal)),
       ...executables.flatMap((invoked) => executableBinds(invoked, fs)),
+    ],
+    readable: [
       ...(absolute(env.COREPACK_HOME).length ? absolute(env.COREPACK_HOME) : [path.join(xdg(env, 'XDG_CACHE_HOME', '.cache'), 'node', 'corepack')]),
       path.join(xdg(env, 'XDG_DATA_HOME', '.local/share'), 'pnpm'),
     ],
@@ -557,10 +559,12 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   fs.ensureDir(suiteLockDir(env))
   // A read-only role (observer, second-opinion) gets its working directory bound read-only (H5).
   const toolchain = toolchainPaths({ env, execPath, fs })
-  const rawReadable = [...toolchain.readable, ...executableBinds(bin, fs), ...selected.readable, ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
+  const executableReadable = [...toolchain.executableReadable, ...executableBinds(bin, fs), ...(selected.executableReadable ?? [])]
+  const rawReadable = [...toolchain.readable, ...executableReadable, ...(selected.readable ?? []), ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
   const rawWritable = [...(readonlyCwd ? [] : workdir), ...selected.writable, ...git.writable, suiteLockDir(env), ...(paths.writable ?? []), ...extras.writable]
   // The root/$HOME/ancestor refusal covers EVERY computed bind, not only the operator extras (H2).
   const readable = rawReadable.filter((item) => item && !isForbiddenPath(item, env, fs))
+  const executableOverlays = executableReadable.filter((item) => item && !isForbiddenPath(item, env, fs))
   const writable = rawWritable.filter((item) => item && !isForbiddenPath(item, env, fs))
   const executableLinks = [...toolchain.executableSymlinks, ...executableSymlinks(bin, fs), ...(selected.executableSymlinks ?? [])]
     .filter(({ target, link }) => !isForbiddenPath(target, env, fs) && !isForbiddenPath(link, env, fs))
@@ -587,8 +591,9 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const prefix = sandboxArguments({
     readable, writable, writableRemap: selected.writableRemap ?? [],
     executableSymlinks: executableLinks,
-    // git pointer/config overlays (H1) land read-only on top of the writable gitdir.
-    readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo],
+    // Executable directories land after writable remaps too. A private tool home may be an ancestor
+    // of the host binary (for example ~/.codex), and must not hide that binary or its sibling helpers.
+    readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...executableOverlays],
     readOnlyOverlaysRemap: selected.readOnlyOverlaysRemap ?? [],
     env, chdir: workdir[0] ?? home(env), fs, socketDir,
   })
