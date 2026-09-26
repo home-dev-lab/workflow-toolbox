@@ -210,9 +210,11 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     const [, args] = plan({ bin: invoked, fs }).wrap(invoked, [])
     const linkIndex = args.indexOf('--symlink')
     expect(args.slice(linkIndex + 1, linkIndex + 3)).toEqual([real, invoked])
-    expect(flat(args, '--dir')).toContain(dirname(invoked))
-    expect(flat(args, '--ro-bind-try')).toContain(dirname(real))
-    expect(fs.isFile(join(dirname(args[linkIndex + 1]!), 'helper'))).toBe(true)
+    // These paths are fake-fs POSIX strings, not real filesystem paths — dirname/join must use
+    // path.posix explicitly, or win32's backslash-joined key never matches the fake fs (round 3).
+    expect(flat(args, '--dir')).toContain(posix.dirname(invoked))
+    expect(flat(args, '--ro-bind-try')).toContain(posix.dirname(real))
+    expect(fs.isFile(posix.join(posix.dirname(args[linkIndex + 1]!), 'helper'))).toBe(true)
     expect(args.slice(args.indexOf('--') + 1)[0]).toBe(invoked)
   })
 
