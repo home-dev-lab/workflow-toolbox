@@ -264,7 +264,9 @@ const PROFILES = {
       writable: [...absolute(env.CLAUDE_PLUGIN_DATA)],
       readOnlyOverlaysRemap: [],
       readOnlyOverlays: [],
-      codexHome: env.CODEX_HOME ? undefined : privHome,
+      // The INSIDE path of the remap above. privHome lives under the runtime dir (/run/user/<uid>),
+      // which the sandbox never binds, so naming it here made codex exit on a missing CODEX_HOME.
+      codexHome: env.CODEX_HOME ? undefined : codexHome,
       authWriteback: { from: path.join(privHome, 'auth.json'), to: path.join(codexHome, 'auth.json') },
       network: () => codexNetwork(absolute(env.CODEX_HOME)[0] ?? codexHome, fs),
       protectedPaths: [codexHome, ...absolute(env.CODEX_HOME)],
