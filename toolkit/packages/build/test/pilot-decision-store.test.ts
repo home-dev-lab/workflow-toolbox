@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { join } from 'node:path'
+import { dirname, join, posix, win32 } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { bindPilotDecision, decidePilotRun, initializePilotDecisionStore, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
@@ -24,18 +24,30 @@ describe('pilot parent decision store', () => {
   })
 
   it('writes through the public decide CLI', () => {
-    const stateHome = mkdtempSync(join(tmpdir(), 'wt-pilot-cli-'))
-    const file = initializePilotDecisionStore('card-456', { env: { XDG_STATE_HOME: stateHome }, platform: 'linux', home: stateHome })
+    const root = mkdtempSync(join(tmpdir(), 'wt-pilot-cli-'))
+    const file = initializePilotDecisionStore('card-456', { root })
     registerPilotDecisionRequest(file, { requestId: 'request-2', criteria: [1], deadline: Date.now() + 60_000 })
-    const result = spawnSync(process.execPath, [CLI, 'decide', '--run', 'card-456', '--dod', '1', '--reading', 'parent via cli'], { env: { ...process.env, XDG_STATE_HOME: stateHome }, encoding: 'utf8' })
+    const result = spawnSync(process.execPath, [CLI, 'decide', '--run', 'card-456', '--dod', '1', '--reading', 'parent via cli', '--state-root', root], { encoding: 'utf8' })
     expect(result.status, result.stderr).toBe(0)
+    expect(file).toBe(join(root, 'card-456', 'dod-decisions.json'))
     expect(readPilotDecisions(file)[0]).toMatchObject({ criterion: 1, reading: 'parent via cli' })
   })
 
+  it('creates the lock directory for a first decision in a fresh state root', () => {
+    const root = join(mkdtempSync(join(tmpdir(), 'wt-pilot-fresh-')), 'new-state')
+    expect(existsSync(root)).toBe(false)
+    expect(existsSync(join(root, 'first'))).toBe(false)
+    const file = initializePilotDecisionStore('first', { root })
+    registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: Date.now() + 60_000 })
+    // The store, not the CLI or caller, prepares the directory before taking its first lock.
+    expect(decidePilotRun({ runId: 'first', criterion: 1, reading: 'first answer', root }).file).toBe(file)
+    expect(existsSync(dirname(file))).toBe(true)
+  })
+
   it('resolves host state roots on Linux, macOS, and Windows', () => {
-    expect(pilotDecisionStateRoot({ platform: 'linux', env: { XDG_STATE_HOME: '/state' }, home: '/home/u' })).toBe('/state/workflow-toolbox/pilot-runs')
-    expect(pilotDecisionStateRoot({ platform: 'darwin', env: {}, home: '/Users/u' })).toBe('/Users/u/Library/Application Support/workflow-toolbox/pilot-runs')
-    expect(pilotDecisionStateRoot({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, home: 'C:\\Users\\u' })).toContain('workflow-toolbox')
+    expect(pilotDecisionStateRoot({ platform: 'linux', env: { XDG_STATE_HOME: '/state' }, home: '/home/u' })).toBe(posix.join('/state', 'workflow-toolbox', 'pilot-runs'))
+    expect(pilotDecisionStateRoot({ platform: 'darwin', env: {}, home: '/Users/u' })).toBe(posix.join('/Users/u', 'Library', 'Application Support', 'workflow-toolbox', 'pilot-runs'))
+    expect(pilotDecisionStateRoot({ platform: 'win32', env: { LOCALAPPDATA: 'C:\\Users\\u\\AppData\\Local' }, home: 'C:\\Users\\u' })).toBe(win32.join('C:\\Users\\u\\AppData\\Local', 'workflow-toolbox', 'pilot-runs'))
   })
 
   it('refuses a run id that could escape the state root', () => {
@@ -64,11 +76,11 @@ describe('pilot parent decision store', () => {
   })
 
   it('preserves both decisions from simultaneous CLI processes', async () => {
-    const stateHome = mkdtempSync(join(tmpdir(), 'wt-pilot-concurrent-'))
-    const file = initializePilotDecisionStore('concurrent', { env: { XDG_STATE_HOME: stateHome } })
+    const root = mkdtempSync(join(tmpdir(), 'wt-pilot-concurrent-'))
+    const file = initializePilotDecisionStore('concurrent', { root })
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1, 2], deadline: Date.now() + 60_000 })
     const run = (number: number) => new Promise<number | null>((resolve) => {
-      const child = spawn(process.execPath, [CLI, 'decide', '--run', 'concurrent', '--dod', String(number), '--reading', `answer ${number}`], { env: { ...process.env, XDG_STATE_HOME: stateHome } })
+      const child = spawn(process.execPath, [CLI, 'decide', '--run', 'concurrent', '--dod', String(number), '--reading', `answer ${number}`, '--state-root', root])
       child.on('exit', resolve)
     })
     expect(await Promise.all([run(1), run(2)])).toEqual([0, 0])

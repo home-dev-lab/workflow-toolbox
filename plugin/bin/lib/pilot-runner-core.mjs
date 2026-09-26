@@ -19,7 +19,7 @@ import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecyc
 import { DOD_DECISION_WAIT_MS, FALLBACK_RULE } from './lifecycle-dod-dispute.mjs'
 import { bindPilotDecision, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
 import { laneUnsandboxedAtStart } from './host/lane-sandbox.mjs'
-import { sandboxExtraPaths } from './host/sandbox-extra-paths.mjs'
+import { sandboxWritablePaths } from './host/sandbox-extra-paths.mjs'
 import { pathWithin } from './host/path-within.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
@@ -345,7 +345,10 @@ function completedPilotExitCode(completed, partial, deferred) {
 
 function assertDecisionStateOutsideWritable(dir, stateRoot, writableEnv, home) {
   if (confinedToWorktree(dir, stateRoot)) throw new Error(`SDK pilot preflight failed: decision state must be outside the lane-writable worktree: ${stateRoot}`)
-  for (const writable of sandboxExtraPaths(writableEnv)) {
+  // The worktree check holds on every platform; only the bwrap extra-write overlap is Linux-only.
+  const writablePaths = sandboxWritablePaths(writableEnv)
+  if (writablePaths === null) return
+  for (const writable of writablePaths) {
     const absolute = resolve(writable.startsWith(`~${sep}`) ? join(home, writable.slice(2)) : writable)
     if (confinedToWorktree(stateRoot, absolute) || confinedToWorktree(absolute, stateRoot)) throw new Error(`SDK pilot preflight failed: decision state overlaps WT_LANE_SANDBOX_WRITE: ${absolute}`)
   }

@@ -10,7 +10,7 @@ import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot as rawRunPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { resolveAgentSdk, resolveAgentSdkRequire, resolvedAgentSdkCodePaths } from '../../../../plugin/bin/lib/sdk-resolution.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -56,6 +56,11 @@ const initMessage = (model?: string) => ({
   skills: ['wt-sdk-pilot:stale-card-sweep', 'wt-sdk-pilot:deep-grounding'],
 })
 const roots: string[] = []
+// All pilot fixtures must keep the parent-owned decision store inside their disposable parent directory.
+const runPilot = (options: { dir: string; [key: string]: unknown }, dependencies: { decisionStateRoot?: string; [key: string]: unknown }) => rawRunPilot(options, {
+  ...dependencies,
+  decisionStateRoot: dependencies.decisionStateRoot ?? join(options.dir, '..', 'decision-state'),
+})
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'wt-pilot-runner-')); roots.push(root)
   // The card tree is a real WORKTREE of the project, as in production: the runner's default archive
@@ -293,7 +298,7 @@ describe('SDK pilot runner', () => {
     expect(queried).toBe(false)
   })
 
-  it('refuses extra writable binds at, above, and below the decision state root before query', async () => {
+  it.skipIf(process.platform === 'win32')('refuses extra writable binds at, above, and below the decision state root before query', async () => {
     const f = fixture()
     const state = join(f.root, 'decision-state')
     const query = () => { throw new Error('query must not start') }

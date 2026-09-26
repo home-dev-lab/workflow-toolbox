@@ -6,8 +6,15 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { confinedToWorktree, lifecycleCanUseTool, loadBoardContract } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { pathWithin } from '../../../../plugin/bin/lib/host/path-within.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { sandboxWritablePaths } from '../../../../plugin/bin/lib/host/sandbox-extra-paths.mjs'
 
 const roots: string[] = []
+
+it('does not parse Windows drive letters as Linux bwrap writable paths', () => {
+  expect(sandboxWritablePaths('/state:C:\\work', 'win32')).toBeNull()
+  expect(sandboxWritablePaths('/state:/more', 'linux')).toEqual(['/state', '/more'])
+})
 
 it('refuses a cross-drive Windows path for both direct reads and wildcard prefix containment', () => {
   expect(confinedToWorktree('D:\\repo', 'C:\\Users\\u\\state', win32)).toBe(false)

@@ -1,5 +1,5 @@
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, posix, win32 } from 'node:path'
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -8,9 +8,9 @@ const RUN_ID = /^[A-Za-z0-9._-]+$/
 let serial = 0
 
 export function pilotDecisionStateRoot({ env = process.env, platform = process.platform, home = homedir() } = {}) {
-  if (platform === 'win32') return join(env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'workflow-toolbox', 'pilot-runs')
-  if (platform === 'darwin') return join(home, 'Library', 'Application Support', 'workflow-toolbox', 'pilot-runs')
-  return join(env.XDG_STATE_HOME || join(home, '.local', 'state'), 'workflow-toolbox', 'pilot-runs')
+  if (platform === 'win32') return win32.join(env.LOCALAPPDATA || win32.join(home, 'AppData', 'Local'), 'workflow-toolbox', 'pilot-runs')
+  if (platform === 'darwin') return posix.join(home, 'Library', 'Application Support', 'workflow-toolbox', 'pilot-runs')
+  return posix.join(env.XDG_STATE_HOME || posix.join(home, '.local', 'state'), 'workflow-toolbox', 'pilot-runs')
 }
 
 export function pilotDecisionStateFile(runId, options = {}) {
@@ -54,6 +54,7 @@ function releaseOwnedLock(lock, token) {
 }
 
 function withLock(file, update) {
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   const lock = `${file}.lock`
   const start = Date.now()
   let fd
@@ -91,7 +92,6 @@ function withLock(file, update) {
 
 export function initializePilotDecisionStore(runId, options = {}) {
   const file = pilotDecisionStateFile(runId, options)
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   withLock(file, () => atomicJson(file, { version: 1, runId, requests: {}, decisions: {}, bindings: {} }))
   return file
 }
