@@ -5,8 +5,23 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.188.1] - 2026-09-26
+
 ### Fixed
 - Lane sandbox (Linux): `wt-second-opinion.mjs --route astra` failed on every run since 0.188.0 with `CODEX_HOME points to "/run/user/<uid>/wt-lane-sandbox-…/codex-home", but that path does not exist`. The Codex child was handed its per-run private home by its HOST path, under the runtime directory the sandbox hides by design; it now receives the path that home is bound at inside the sandbox (`~/.codex`). `~/.codex` on the host stays read-only, the refreshed `auth.json` is still written back, and a user-set `CODEX_HOME` is unchanged. A new test asserts, for the Codex and OpenCode profiles, that every path passed with `--setenv` lies under a bind, remap, tmpfs or created directory inside the sandbox.
+
+### Quality
+
+Patch release: measured on the release tree against the 0.188.0 baseline (`pnpm quality:delta`). No ratchet moved beyond noise: duplication fell marginally (2.6450 % -> 2.6449 %), every other judge is unchanged, and line coverage moved -0.01 point with the one-line fix and its new test (thresholds still met).
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 127 -> 127 | 0 |
+| Cognitive complexity | 266 -> 266 | 0 |
+| ESLint warnings | 685 -> 685 | 0 |
+| Duplication % | 2.6449833645758702 -> 2.6449314476951313 | 0 |
+| Knip issues | 220 -> 220 | 0 |
+| Coverage lines % | 81.66 -> 81.65 | -0.01 |
 
 ## [0.188.0] - 2026-09-26
 

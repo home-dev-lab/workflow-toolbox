@@ -254,7 +254,7 @@
           "value": 31.57
         }
       ],
-      "value": 71.99
+      "value": 71.98
     },
     "coverageFunctions": {
       "detail": "",
@@ -362,7 +362,7 @@
           "value": 33.33
         }
       ],
-      "value": 83.14
+      "value": 83.12
     },
     "coverageLines": {
       "detail": "",
@@ -470,7 +470,7 @@
           "value": 30.5
         }
       ],
-      "value": 81.66
+      "value": 81.65
     },
     "coverageStatements": {
       "detail": "",
@@ -578,7 +578,7 @@
           "value": 27.69
         }
       ],
-      "value": 78.69
+      "value": 78.68
     },
     "cyclomaticComplexity": {
       "detail": "",
@@ -677,10 +677,10 @@
           "value": 53
         },
         {
-          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:514 Function 'resolveLaneSandbox' has a complexity of 51. Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:516 Function 'resolveLaneSandbox' has a complexity of 51. Maximum allowed is 0.",
           "file": "plugin/bin/lib/host/lane-sandbox.mjs",
           "function": "resolveLaneSandbox",
-          "line": 514,
+          "line": 516,
           "value": 51
         },
         {
@@ -1000,7 +1000,7 @@
           "value": 77
         }
       ],
-      "value": 2.6449833645758702
+      "value": 2.6449314476951313
     },
     "eslintWarnings": {
       "detail": "685 warnings",
@@ -1663,5 +1663,5 @@
       "value": 7
     }
   },
-  "releaseTag": "workflow-toolbox--v0.187.2"
+  "releaseTag": "workflow-toolbox--v0.188.0"
 }
