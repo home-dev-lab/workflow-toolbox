@@ -96,8 +96,6 @@ Observe an assumption about the host before building anything on it; treat the o
 evidence, not the assumption as a premise. A delivery without the required output says `e2e not
 run` with a reason instead of being presented as ready.
 
-Rationale and field cases: `docs/wt/wt-sdlc.md` §Real sources expose integration failures.
-
 ## Proportionality
 
 | Change range | Required judgment shape |

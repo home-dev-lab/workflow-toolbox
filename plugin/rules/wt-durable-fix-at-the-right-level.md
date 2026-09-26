@@ -40,7 +40,7 @@ pick second. Only first available → say so, don't present as closed.
 Mechanism could prevent problem permanently → build it **same pass** — before moving on,
 reporting, next task. Mechanism is part of the deliverable; task unfinished without it.
 
-Enforced by `wt-guard-recurrence-hook.mjs` (SessionStart: surfaces a guard's weekly firing count past the threshold, points at `wt-guard-journal-scan.mjs` for the full picture). Rationale and field cases: `docs/wt/wt-durable-fix-at-the-right-level.md` §The trigger is a COUNT, never a judgement.
+Enforced by `wt-guard-recurrence-hook.mjs` (SessionStart: surfaces a guard's weekly firing count past the threshold, points at `wt-guard-journal-scan.mjs` for the full picture).
 
 ⚠ Read what a rising count MATCHED before acting. Guard firing on correct work writes the same
 record as one catching a real recurrence — "fix the guard" is as legitimate an outcome as

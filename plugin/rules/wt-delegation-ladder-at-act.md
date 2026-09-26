@@ -24,8 +24,7 @@ requires the guard or proves case impossible — never files as harmless scope n
 
 Every hand-written executor-lane brief requires `## Lessons for the memory` in its report, with
 `None.` legitimate, alongside gate evidence. At that lane's integration, harvest that one report;
-never defer reports into an end-of-run pile. Rationale and field cases:
-`docs/wt/wt-delegation-ladder-at-act.md` §Executor report lessons.
+never defer reports into an end-of-run pile.
 
 State INVARIANT executor must reach, not mechanism you guessed reaches it. Prescribing *how*
 caps executor at briefer's own knowledge of a layer executor actually reads. State what must be
