@@ -268,8 +268,8 @@ describe('adopt installer refactor pins', () => {
 
   it.each(['toString', 'constructor', '__proto__'])('U4 ignores inherited object-property argv token %s', (token) => {
     const cwd = tempDir()
-    const expected = run(['--set', 'docs', '--check', '--dir', join(cwd, 'target')], { cwd })
-    const actual = run(['--set', 'docs', '--check', '--dir', join(cwd, 'target'), token], { cwd })
+    const expected = run(['--set', 'autonomy', '--check', '--dir', join(cwd, 'target')], { cwd })
+    const actual = run(['--set', 'autonomy', '--check', '--dir', join(cwd, 'target'), token], { cwd })
     expect(actual).toEqual(expected)
   })
 
@@ -312,7 +312,7 @@ describe('adopt installer refactor pins', () => {
   })
 
   it('U8 keeps ordinary and fatal diagnostics on stdout with stderr empty', () => {
-    const success = run(['--set', 'docs', '--check', '--dir', tempDir()])
+    const success = run(['--set', 'autonomy', '--check', '--dir', tempDir()])
     const failure = run(['--audit-overlap'])
     expect(success.status).toBe(0)
     expect(success.stdout).toContain('adopt: workflow-toolbox')

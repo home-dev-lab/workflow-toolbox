@@ -15,6 +15,12 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Split the six large shipped rules into reasoning-focused core files and reviewed `-at-act` halves with adjacent trigger specs; adopt still installs both halves statically when no on-demand engine is present.
 - Keep decision-time and report-time obligations in the always-loaded halves, preserve whole paragraphs across the split, and scope on-demand triggers to real command and brief-writing acts.
 - Refuse each governed act once before execution, and use one shell-aware command-head pattern across Bash triggers so wrappers, assignments, separators, and quoted command-like text are handled consistently.
+- `wt-memory-hygiene`: rationale and field cases are no longer kept beside a rule behind a pointer; the repository history is the record.
+
+### Removed
+- The shipped rules' rationale pointer lines (six, in `wt-answer-first-reporting`, `wt-delegation-ladder-at-act`, `wt-durable-fix-at-the-right-level`, `wt-sdlc` and `wt-verify-by-ground-truth-at-act`) and the `plugin/docs/rules-rationale/` bundle they pointed into. Every always-loaded rule gets shorter; the removed text stays in the repository history.
+- The adopt `docs` set: `--set all` no longer installs anything under `docs/wt/`, and `--set docs` exits with an explanation. A `<config-dir>/docs/wt/` copy adopted earlier is left untouched and may be deleted.
+- The one-off `toolkit/scripts/verify-rules-rationale-split.mjs` verifier and the referential test over the bundle, replaced by an inverse lock: no shipped rule points into a rationale file.
 
 ## [0.187.2] - 2026-09-25
 
