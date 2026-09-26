@@ -1,10 +1,12 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
 // Card 1871036638205838753, round 2: external lanes run in a bubblewrap sandbox on Linux that is
 // isolated in its own filesystem, PID table AND network namespace. The unit half pins the
@@ -652,6 +654,20 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     expect(r.laneSandbox?.kind).toBe('bwrap')
     expect(String(r.stdout).trim()).toBe('DENIED')
     expect(readFileSync(decision, 'utf8')).toBe('trusted\n')
+  })
+
+  it('refuses the real decide CLI executed inside bwrap even with a valid request id', () => {
+    const f = homeFixture()
+    const stateRoot = join(f.home, '.local', 'state', 'workflow-toolbox', 'pilot-runs')
+    const file = initializePilotDecisionStore('run-1', { root: stateRoot })
+    registerPilotDecisionRequest(file, { requestId: 'visible-in-lane', criteria: [1], deadline: Date.now() + 60_000 })
+    cpSync(join(ROOT, 'plugin'), join(f.worktree, 'plugin'), { recursive: true })
+    const args = [join(f.worktree, 'plugin', 'bin', 'wt-pilot-runner.mjs'), 'decide', '--run', 'run-1', '--dod', '1', '--reading', 'forged', '--state-root', stateRoot]
+    const r = fence.spawnOpencode(spawnSync, process.execPath, args, { cwd: f.worktree, env: { PATH: process.env.PATH, HOME: f.home }, encoding: 'utf8', timeout: 30_000 }, 'linux')
+    expect(r.laneSandbox?.kind).toBe('bwrap')
+    expect(r.status).not.toBe(0)
+    expect(String(r.stderr)).toContain('dod-decisions.json')
+    expect(readFileSync(file, 'utf8')).not.toContain('forged')
   })
 
   it('isolates the network so NO host loopback service is reachable (the H4 security invariant)', () => {

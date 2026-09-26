@@ -1,5 +1,6 @@
 // Owns lifecycle phases, transitions, and MCP tool registration; it must not launch work or commit reports.
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -314,6 +315,16 @@ function findingPolicyOptions(phase, state, dodBullets, laneDir, readRegularFile
     priorFindingCount: priorRounds.reduce((total, round) => total + round.findings.length, 0),
   }
 }
+function criticFindingAfterNoReblock(finding, state, dodBullets, log) {
+  if (!finding.blocks) return
+  const ignored = state.dodDisputes.find((dispute) => dispute.resolution?.source === 'fallback' &&
+    (new RegExp(`^dod\\s+${dispute.criterion}$`, 'i').test(finding.anchor ?? '') ||
+      normalizedTerm(finding.text).includes(normalizedTerm(dodBullets?.[dispute.criterion - 1] ?? dispute.term))))
+  if (ignored) {
+    finding.blocks = false
+    log?.(`ignored-by-no-reblock rule: DoD ${ignored.criterion}: ${finding.text}`)
+  }
+}
 function refusal(edge, missing, file) {
   return `edge refused: ${edge}; missing ${missing}: ${file}`
 }
@@ -479,6 +490,49 @@ function initialLifecycleState() {
   }
 }
 
+function defaultTimelineWriter(file, content) {
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
+  try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { removeFile(temporary) }
+}
+
+function createLaneDirAssertion({ laneDir, root, archiveRoot }) {
+  return (archive = false) => {
+    const required = [laneDir]
+    if (archive) {
+      if (typeof archiveRoot !== 'string' || !path.isAbsolute(archiveRoot)) throw new Error('lifecycle archiveRoot must be an absolute path')
+      fs.mkdirSync(path.join(archiveRoot, '.claude', 'reports'), { recursive: true })
+      required.push(archiveRoot, path.join(archiveRoot, '.claude'), path.join(archiveRoot, '.claude', 'reports'))
+    }
+    for (const directory of required) {
+      let stat; try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      const expectedRoot = directory === laneDir ? root : archiveRoot
+      let resolvedDirectory; let resolvedRoot
+      try { [resolvedDirectory, resolvedRoot] = [fs.realpathSync(directory), fs.realpathSync(expectedRoot)] } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      if (!stat.isDirectory() || stat.isSymbolicLink() || path.relative(resolvedRoot, resolvedDirectory).startsWith('..')) throw new Error(`lane directory replaced: ${directory}`)
+    }
+    if (archive) {
+      try {
+        execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], { cwd: archiveRoot, stdio: 'ignore' })
+      } catch {
+        throw new Error('lifecycle archiveRoot .claude/reports must be git-ignored')
+      }
+    }
+  }
+}
+
+function guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun) {
+  return (args) => {
+    if (state.stopped) return stoppedRefusal()
+    return dodEscalation.beforeLane(args).then(() => state.stopped || state.pendingStop ? stoppedRefusal() : lifecycleRun(args))
+  }
+}
+
+async function holdPlanForBoundDecision(state, dodEscalation) {
+  if (state.phase !== 'plan' || !state.dodDisputes.some((dispute) => !dispute.resolution)) return null
+  await dodEscalation.awaitDecisions()
+  return `plan revision held for bound DoD decision: ${bindingDecisionsSection(state.dodDisputes)}. Revise the plan to that binding before asking for the next critic.`
+}
+
 function snapshotWorkingTree(root, laneDir, git) {
   const index = path.join(laneDir, 'review-base.index')
   const options = { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_INDEX_FILE: index } }
@@ -628,6 +682,7 @@ export function createLifecycleStateMachine({
   }
   const root = fs.realpathSync(worktree)
   const dodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText) : undefined
+  const rawDodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText, { raw: true }) : undefined
   const activeRules = rules ?? loadRules({ projectRoot: root })
   let constructionBase = 'HEAD'
   try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
@@ -640,28 +695,7 @@ export function createLifecycleStateMachine({
   } else {
     fs.mkdirSync(laneDir, { recursive: true })
   }
-  function assertLaneDir(archive = false) {
-    const required = [laneDir]
-    if (archive) {
-      if (typeof archiveRoot !== 'string' || !path.isAbsolute(archiveRoot)) throw new Error('lifecycle archiveRoot must be an absolute path')
-      fs.mkdirSync(path.join(archiveRoot, '.claude', 'reports'), { recursive: true })
-      required.push(archiveRoot, path.join(archiveRoot, '.claude'), path.join(archiveRoot, '.claude', 'reports'))
-    }
-    for (const directory of required) {
-      let stat; try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
-      const expectedRoot = directory === laneDir ? root : archiveRoot
-      let resolvedDirectory; let resolvedRoot
-      try { [resolvedDirectory, resolvedRoot] = [fs.realpathSync(directory), fs.realpathSync(expectedRoot)] } catch { throw new Error(`lane directory replaced: ${directory}`) }
-      if (!stat.isDirectory() || stat.isSymbolicLink() || path.relative(resolvedRoot, resolvedDirectory).startsWith('..')) throw new Error(`lane directory replaced: ${directory}`)
-    }
-    if (archive) {
-      try {
-        execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], { cwd: archiveRoot, stdio: 'ignore' })
-      } catch {
-        throw new Error('lifecycle archiveRoot .claude/reports must be git-ignored')
-      }
-    }
-  }
+  const assertLaneDir = createLaneDirAssertion({ laneDir, root, archiveRoot })
   assertLaneDir()
   // Preflight, before any phase runs: a misconfigured archive root must fail here, not after hours of work.
   assertArchiveOutsideWorktree({ root, archiveRoot })
@@ -702,10 +736,7 @@ export function createLifecycleStateMachine({
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
   const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
-  const atomicTimelineWriter = timelineWriter ?? ((file, content) => {
-    const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
-    try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { removeFile(temporary) }
-  })
+  const atomicTimelineWriter = timelineWriter ?? defaultTimelineWriter
   const persistTimeline = () => {
     try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch { /* Cost evidence is best-effort and cannot alter lifecycle acceptance. */ }
   }
@@ -819,11 +850,8 @@ export function createLifecycleStateMachine({
     },
   })
   const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop })
-  const dodEscalation = createDodEscalation({ state, dodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
-  function run(args) {
-    if (state.stopped) return stoppedRefusal()
-    return dodEscalation.beforeLane(args).then(() => lifecycleRun(args))
-  }
+  const dodEscalation = createDodEscalation({ state, dodBullets: rawDodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, dodBullets?.[criterion - 1] ?? term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
+  const run = guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun)
   const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
   function transition(event) {
     if (state.stopped) return stoppedRefusal()
@@ -863,6 +891,7 @@ export function createLifecycleStateMachine({
       next = frozenRoute === 'LITE' ? 'tdd' : 'plan'
     } else if (state.phase === 'plan') {
       const plan = path.join(laneDir, 'plan.md')
+      if (state.dodDisputes.some((dispute) => !dispute.resolution)) return refusal('plan->critic', 'bound DoD decision before revising the plan', plan)
       const planContent = readRegularFile(plan)
       if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
         return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
@@ -902,7 +931,9 @@ export function createLifecycleStateMachine({
       }
       const effectiveFindingDetails = verdict.findingDetails.filter((_finding, index) => {
         const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(verdict.findings[index])?.[1]
-        return !id || !repeatedContests.has(id)
+        if (id && repeatedContests.has(id)) return false
+        criticFindingAfterNoReblock(verdict.findingDetails[index], state, dodBullets, dodDecisions.log)
+        return true
       })
       if (repeatedContests.size > 0 && !/(?:^|\s)(?:\.?\.?[/\\])?[A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)*:\d+(?:-\d+)?\b/.test(laneBriefContexts.get('critic') ?? '')) {
         return refusal('critic->next', 'pilot citation supporting maintained L4 reason', path.join(laneDir, 'critic-brief.md'))
@@ -915,10 +946,6 @@ export function createLifecycleStateMachine({
       if (emptyCritic?.reason) {
         next = 'report'
         resultDetail = ` (failed critic retry: partial run, ${emptyCritic.reason})`
-      }
-      if (contestedThisRound.size > 0) {
-        for (const id of contestedThisRound) timeline.routed_cards.find((card) => card.id === id).contested = true
-        persistTimeline()
       }
       const newNonBlockingFindings = verdict.findings.filter((_finding, index) => !verdict.findingDetails[index].blocks)
       for (const finding of newNonBlockingFindings) {
@@ -968,6 +995,10 @@ export function createLifecycleStateMachine({
         }
       } else if (!next) {
         return refusal('critic->next', 'admissible outcome', path.join(laneDir, 'critic-report.md'))
+      }
+      if (contestedThisRound.size > 0) {
+        for (const id of contestedThisRound) timeline.routed_cards.find((card) => card.id === id).contested = true
+        persistTimeline()
       }
     } else if (state.phase === 'tdd') {
       const receipt = laneEvidence(state.phase)
@@ -1081,6 +1112,10 @@ export function createLifecycleStateMachine({
   }
   async function artifact({ kind, content }) {
     if (state.stopped) return stoppedRefusal()
+    if (kind === 'plan') {
+      const held = await holdPlanForBoundDecision(state, dodEscalation)
+      if (held) return held
+    }
     try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     const spec = ARTIFACTS[kind]
     if (!spec) {
@@ -1314,6 +1349,6 @@ export function createLifecycleStateMachine({
     }),
   })
   Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })
-  Object.defineProperties(server, { requestStop: { value: requestStop }, dodDisputes: { value: () => structuredClone(state.dodDisputes) } })
+  Object.defineProperties(server, { requestStop: { value: requestStop }, dodDisputes: { value: () => structuredClone(state.dodDisputes) }, awaitDodDecisions: { value: dodEscalation.awaitDecisions } })
   return server
 }

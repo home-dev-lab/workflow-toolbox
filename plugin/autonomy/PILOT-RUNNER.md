@@ -133,19 +133,24 @@ loop continues to another plan round. Each criterion is escalated at most once p
 - **Upward.** The lifecycle writes `.lane/dod-decision-request.md` with an unguessable request id,
   the criterion verbatim, the critic rounds, the plan's reading (its `Card terms: reading chosen`
   entry), each critic finding, the parent command, and a deadline. Terms match across whitespace,
-  case, straight quotes, and curly quotes; a shorter Card-terms label can identify words inside the
-  full criterion. The runner prints one `decision request: <file> — request <id> …` line to its log.
+  case, straight quotes, and curly quotes; a shorter Card-terms label must start on a word boundary
+  and end at a word boundary (the sentinel `none` never identifies a longer criterion). The runner
+  prints one `decision request: <file> — request <id> …` line to its log.
 - **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --dod <n> --reading
   <text>`. The command atomically writes the SDK runner's per-run state under the host state directory
   (`XDG_STATE_HOME` or the platform equivalent), outside every lane sandbox bind. Mailbox and lane-file
-  prose is never parsed for decisions. One shared reader supplies both the lifecycle and pilot. The runner injects the binding answer into the pilot as a runner-owned
+  prose is never parsed for decisions. Each request/criterion is write-once, including a timeout binding.
+  The pilot receives the lifecycle's bound resolution as a runner-owned
   decision, and the next critic brief carries it under
   `## Binding decisions on disputed Definition-of-done terms (runner-owned, trusted)`.
-- **Bounded wait.** The next critic launch waits up to 15 minutes from the request for the decision.
+- **Bounded wait.** Before the pilot revises the plan and before the next critic launch, the run waits up to 15 minutes from the request for the decision.
   With no answer the runner binds the card criterion's literal words verbatim, without selecting an
   interpretation from model output, and records the hard rule that the critic may not block again on
   that criterion for the rest of the run. The wait is zero when no decision reader exists or a stop
   was already requested. A timeout binding is final.
+  On unsandboxed Linux (`WT_LANE_SANDBOX=off`), macOS, and Windows, another process under the
+  runner's OS user can invoke `decide`: OS user identity cannot distinguish the parent from a lane.
+  The sandbox is the authority boundary; the runner warns at startup when it is unsandboxed.
 - **Record.** The pilot report gains `## Disputed Definition-of-done terms` with one line per
   criterion quoting the verbatim binding and no-reblock rule. The run summary carries the same record under
   `dod_disputes`.

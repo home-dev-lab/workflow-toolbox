@@ -1,11 +1,18 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { confinedToWorktree, loadBoardContract } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+import { confinedToWorktree, lifecycleCanUseTool, loadBoardContract } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 
 const roots: string[] = []
+
+it('refuses a cross-drive Windows path for both direct reads and wildcard prefix containment', () => {
+  expect(confinedToWorktree('D:\\repo', 'C:\\Users\\u\\state', win32)).toBe(false)
+  expect(confinedToWorktree('D:\\repo', 'D:\\repo\\src', win32)).toBe(true)
+  expect(lifecycleCanUseTool('D:\\repo', 'Read', { file_path: 'C:\\Users\\u\\state' }, { pathOps: win32 }).behavior).toBe('deny')
+  expect(lifecycleCanUseTool('D:\\repo', 'Glob', { path: 'C:\\Users\\u', pattern: 'state\\*.json' }, { pathOps: win32 }).behavior).toBe('deny')
+})
 
 function fixture() {
   const parent = mkdtempSync(join(tmpdir(), 'wt-pilot-confinement-'))

@@ -73,7 +73,9 @@ While the run is active, watch the log for a line starting `decision request:`. 
 critic's reading. Decide the reading yourself, as the run's parent, and invoke the exact
 `wt-pilot-runner.mjs decide --run ... --dod ... --reading ...` command in the log/request. It writes
 atomically to host-only run state that no sandboxed lane can reach; no mailbox or lane-file text is a
-decision. Never forward the question to the user. Answer within 15 minutes; after that the runner
+ decision. On unsandboxed Linux, macOS, or Windows, another process of the same OS user can invoke
+ `decide`; only a sandbox boundary isolates a lane from host state. The runner warns on unsandboxed
+ runs. Never forward the question to the user. Answer within 15 minutes; after that the runner
 binds the card criterion's literal words verbatim and records that the critic may not block again on
 that criterion for the rest of the run. The report and summary quote both.
 While the run is active, the lane's usage.json receipt is atomically refreshed for each SDK assistant usage

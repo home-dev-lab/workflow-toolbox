@@ -15,7 +15,7 @@ const CARD_TERMS_SECTION = CARD_TERMS_HEADING
 export const FALLBACK_RULE = "the card's literal words bind verbatim, and the critic may not block again on that DoD criterion for the rest of the run"
 const CARD_TERMS_LINE = /^(?:#{1,6}[ \t]*)?(?:\*\*)?Card terms:[ \t]*reading chosen(?:\*\*)?:?$/i
 
-// A request id is unguessable, so a mailbox line quoting it can only have been written after the request.
+// Request ids correlate records; authority comes from the host-only state path.
 function newDodRequestId() {
   return `dodreq-${randomBytes(12).toString('hex')}`
 }
@@ -43,6 +43,12 @@ function cardTermsEntries(plan) {
   return entries
 }
 
+function wholeWordLabel(label, term) {
+  if (label === term) return true
+  if (label === 'none') return false
+  return term.split(' ').some((_part, index, words) => words.slice(index).join(' ').startsWith(`${label} `) || words.slice(index).join(' ') === label)
+}
+
 function readingAfterLabel(entry, term, criterion) {
   const collapsed = entry.replace(/[’‘]/g, "'").replace(/[`"“”]/g, '').replace(/\s+/g, ' ').trim()
   const dod = new RegExp(`^dod\\s+${criterion}(?!\\d)[\\s.,;:=>→—–-]+`, 'i').exec(collapsed)
@@ -52,7 +58,7 @@ function readingAfterLabel(entry, term, criterion) {
     if (!split) continue
     const label = normalizedTerm(collapsed.slice(0, split.index))
     const normalizedCardTerm = normalizedTerm(term)
-    if (label !== normalizedCardTerm && !normalizedCardTerm.includes(label)) continue
+    if (!wholeWordLabel(label, normalizedCardTerm)) continue
     return collapsed.slice(split.index + split[0].length).replace(/^reading(?: chosen)?:\s*/i, '').trim() || null
   }
   return null
@@ -99,7 +105,7 @@ function newDodDisputes({ rounds, known, dodBullets, planReading, requestedAt, r
   const previous = blockingDodFindings(previousRound)
   const latest = blockingDodFindings(latestRound)
   return [...latest.keys()]
-    .filter((criterion) => previous.has(criterion) && !known.some((dispute) => dispute.criterion === criterion))
+    .filter((criterion) => dodBullets?.[criterion - 1] != null && previous.has(criterion) && !known.some((dispute) => dispute.criterion === criterion))
     .sort((a, b) => a - b)
     .map((criterion) => {
       const term = dodBullets?.[criterion - 1] ?? null
@@ -123,7 +129,7 @@ function parentDecisions(records, disputes) {
   const decisions = new Map()
   for (const decision of records ?? []) {
     const dispute = disputes.find((candidate) => candidate.requestId === decision?.requestId && candidate.criterion === decision?.criterion)
-    if (dispute && typeof decision.reading === 'string' && decision.reading.trim()) decisions.set(dispute, decision)
+    if (dispute && !decisions.has(dispute) && typeof decision.reading === 'string' && decision.reading.trim()) decisions.set(dispute, decision)
   }
   return decisions
 }
@@ -136,15 +142,17 @@ function fallbackResolution(dispute) {
   }
 }
 
-function resolveDodDisputes({ disputes, decisionRecords, now, waitMs }) {
+function resolveDodDisputes({ disputes, decisionRecords, now, waitMs, stopped, log }) {
   const decisions = parentDecisions(decisionRecords, disputes)
   let changed = false
   for (const dispute of disputes) {
     const decision = decisions.get(dispute)
-    if (decision) {
+    const deadline = dispute.requestedAt + waitMs
+    if (decision && Date.parse(decision.decidedAt) > deadline) log(`late: DoD ${dispute.criterion} decision after ${new Date(deadline).toISOString()}`)
+    if (decision && Date.parse(decision.decidedAt) <= deadline && !stopped) {
       if (dispute.resolution) continue
       dispute.resolution = { source: 'parent', reading: decision.reading, requestId: decision.requestId, at: new Date(now).toISOString() }
-    } else if (!dispute.resolution && now - dispute.requestedAt >= waitMs) dispute.resolution = { source: 'fallback', ...fallbackResolution(dispute), at: new Date(now).toISOString() }
+    } else if (!dispute.resolution && (stopped || now >= deadline)) dispute.resolution = { source: stopped ? 'stopped' : 'fallback', ...fallbackResolution(dispute), at: new Date(now).toISOString() }
     else continue
     changed = true
   }
@@ -155,7 +163,7 @@ function statusLine(dispute) {
   if (!dispute.resolution) return "awaiting the run's parent"
   return dispute.resolution.source === 'parent'
     ? `decided by the run's parent: ${dispute.resolution.reading}`
-    : `parent silent; binding (card, verbatim): ${dispute.resolution.reading}; rule: ${dispute.resolution.criticRule}`
+    : `${dispute.resolution.source === 'stopped' ? 'stopped' : 'parent silent'}; binding (card, verbatim): ${dispute.resolution.reading}; rule: ${dispute.resolution.criticRule}`
 }
 
 function dodDecisionRequest({ disputes, decisionCommand, waitMs }) {
@@ -217,28 +225,50 @@ export function withDisputedDodTermsSection(content, disputes) {
 
 // The lifecycle's side of the channel, kept out of the state-machine factory. The upward half runs at
 // the critic->plan edge; the downward half makes the next critic launch wait, bounded, for the parent.
-export function createDodEscalation({ state, dodBullets, requestPath, planReading, writeRequest, now }, { readDecisions = null, onDecisionRequest = null, decisionCommand = 'wt-pilot-runner decide --run <run-id>', waitMs = DOD_DECISION_WAIT_MS, pollMs = DOD_DECISION_POLL_MS, newRequestId = newDodRequestId } = {}) {
+export function createDodEscalation({ state, dodBullets, requestPath, planReading, writeRequest, now }, { readDecisions = null, onDecisionRequest = null, onPublished = null, rollbackDecisionRequest = null, onBound = null, log = () => {}, decisionCommand = 'wt-pilot-runner decide --run <run-id>', waitMs = DOD_DECISION_WAIT_MS, pollMs = DOD_DECISION_POLL_MS, newRequestId = newDodRequestId } = {}) {
   // No decision channel, or a stop already requested, leaves nobody to wait for: resolve at once.
   const effectiveWaitMs = () => (typeof readDecisions === 'function' && !state.pendingStop ? waitMs : 0)
-  const write = () => writeRequest(requestPath, dodDecisionRequest({ disputes: state.dodDisputes, decisionCommand, waitMs: effectiveWaitMs() }))
-  const read = () => (typeof readDecisions === 'function' ? readDecisions() : [])
+  const write = (disputes = state.dodDisputes) => writeRequest(requestPath, dodDecisionRequest({ disputes, decisionCommand, waitMs: effectiveWaitMs() }))
+  const read = () => { try { return typeof readDecisions === 'function' ? readDecisions() : [] } catch (error) { log(`decision store read error: ${error.message}`); return [] } }
   function escalate() {
     const requestId = newRequestId()
     const disputes = newDodDisputes({ rounds: state.priorCriticRounds, known: state.dodDisputes, dodBullets, planReading, requestedAt: now(), requestId })
     if (disputes.length === 0) return ''
     const criteria = disputes.map((dispute) => dispute.criterion)
-    if (typeof onDecisionRequest === 'function') onDecisionRequest({ file: requestPath, criteria, requestId })
-    state.dodDisputes.push(...disputes)
-    try { write() } catch (error) { state.dodDisputes.splice(-disputes.length); throw error }
+    const request = { file: requestPath, criteria, requestId, deadline: disputes[0].requestedAt + effectiveWaitMs() }
+    try {
+      write([...state.dodDisputes, ...disputes])
+      if (typeof onDecisionRequest === 'function') onDecisionRequest(request)
+      state.dodDisputes.push(...disputes)
+      onPublished?.(request)
+    } catch (error) {
+      if (state.dodDisputes.at(-1)?.requestId === requestId) state.dodDisputes.splice(-disputes.length)
+      try { rollbackDecisionRequest?.(request) } catch (rollbackError) { log(`decision store rollback error: ${rollbackError.message}`) }
+      try { write() } catch (rollbackError) { log(`decision request rollback error: ${rollbackError.message}`) }
+      throw error
+    }
     const named = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
     const minutes = Math.ceil(effectiveWaitMs() / 60_000)
     return ` (disputed Definition-of-done term escalated to the run's parent: ${named}; request .lane/${DOD_DECISION_REQUEST_FILE}; the next critic round waits up to ${minutes} min for the parent's decision, then applies the fallback rule: ${FALLBACK_RULE})`
   }
-  // Reads the mailbox at every critic launch, so a later answer replaces an earlier one.
   async function awaitDecisions() {
     if (state.dodDisputes.length === 0) return
     for (;;) {
-      if (resolveDodDisputes({ disputes: state.dodDisputes, decisionRecords: read(), now: now(), waitMs: effectiveWaitMs() })) write()
+      const pending = state.dodDisputes.filter((dispute) => !dispute.resolution)
+      const candidates = structuredClone(state.dodDisputes)
+      if (resolveDodDisputes({ disputes: candidates, decisionRecords: read(), now: now(), waitMs: effectiveWaitMs(), stopped: !!state.pendingStop, log })) {
+        for (const dispute of pending) {
+          const bound = candidates.find((candidate) => candidate.requestId === dispute.requestId && candidate.criterion === dispute.criterion)
+          if (bound?.resolution) {
+            try { onBound?.(bound) } catch (error) {
+              if (bound.resolution.source === 'parent') throw error
+              log(`decision store binding error: ${error.message}`)
+            }
+          }
+        }
+        write(candidates)
+        for (let index = 0; index < candidates.length; index += 1) state.dodDisputes[index].resolution = candidates[index].resolution
+      }
       if (state.dodDisputes.every((dispute) => dispute.resolution)) return
       await new Promise((resolve) => setTimeout(resolve, pollMs))
     }
@@ -247,5 +277,5 @@ export function createDodEscalation({ state, dodBullets, requestPath, planReadin
   async function beforeLane(args) {
     if (args?.kind === 'lane' && args.phase === 'critic' && state.phase === 'critic') await awaitDecisions()
   }
-  return { escalate, beforeLane }
+  return { escalate, beforeLane, awaitDecisions }
 }

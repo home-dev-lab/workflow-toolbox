@@ -380,6 +380,12 @@ function sandboxAvailability({ optionEnv, platform, bwrap, probe, fs }) {
   return probed.ok ? { ok: true } : { refuse: probed.reason }
 }
 
+export function laneUnsandboxedAtStart(optionEnv = process.env, platform = process.platform) {
+  if (optionEnv[LANE_SANDBOX_SWITCH_ENV] === 'off' || platform !== 'linux') return true
+  const binary = findOnPath('bwrap', optionEnv.PATH, realFs) ?? '/usr/bin/bwrap'
+  return !realFs.exists(binary)
+}
+
 // Host-side bridges, each listening on a unix socket bound into the sandbox: a socat relay per
 // allowed loopback endpoint, and the egress proxy when the model has remote hosts. The sandbox has
 // its own empty loopback (--unshare-net), so nothing else on the host is reachable; the bootstrap

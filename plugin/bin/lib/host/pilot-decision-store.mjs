@@ -1,6 +1,6 @@
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const RUN_ID = /^[A-Za-z0-9._-]+$/
@@ -13,12 +13,13 @@ export function pilotDecisionStateRoot({ env = process.env, platform = process.p
 }
 
 export function pilotDecisionStateFile(runId, options = {}) {
-  if (!RUN_ID.test(String(runId ?? ''))) throw new Error(`invalid pilot run id: ${String(runId)}`)
+  if (!RUN_ID.test(String(runId ?? '')) || runId === '.' || runId === '..') throw new Error(`invalid pilot run id: ${String(runId)}`)
   return join(resolve(options.root ?? pilotDecisionStateRoot(options)), runId, 'dod-decisions.json')
 }
 
-export function pilotDecisionCommand(cli, runId, execPath = process.execPath) {
-  return `${execPath} ${cli} decide --run ${runId}`
+export function pilotDecisionCommand(cli, runId, execPath = process.execPath, root = null, platform = process.platform) {
+  const quote = (value) => platform === 'win32' ? `'${String(value).replaceAll("'", "''")}'` : `'${String(value).replaceAll("'", "'\\''")}'`
+  return `${platform === 'win32' ? '& ' : ''}${quote(execPath)} ${quote(cli)} decide --run ${quote(runId)}${root ? ` --state-root ${quote(root)}` : ''}`
 }
 
 export function pilotDecisionCli() {
@@ -42,16 +43,53 @@ function readState(file) {
   return state
 }
 
+function withLock(file, update) {
+  const lock = `${file}.lock`
+  const start = Date.now()
+  let fd
+  for (;;) {
+    try { fd = openSync(lock, 'wx', 0o600); break } catch (error) {
+      if (error.code !== 'EEXIST') throw error
+      try { if (Date.now() - statSync(lock).mtimeMs > 30_000) rmSync(lock, { force: true }) } catch (statError) { if (statError.code !== 'ENOENT') throw statError }
+      if (Date.now() - start > 35_000) throw new Error(`pilot decision lock timed out: ${lock}`)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+    }
+  }
+  try { return update() } finally { closeSync(fd); rmSync(lock, { force: true }) }
+}
+
 export function initializePilotDecisionStore(runId, options = {}) {
   const file = pilotDecisionStateFile(runId, options)
-  atomicJson(file, { version: 1, runId, requests: {}, decisions: {} })
+  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+  withLock(file, () => atomicJson(file, { version: 1, runId, requests: {}, decisions: {}, bindings: {} }))
   return file
 }
 
-export function registerPilotDecisionRequest(file, { requestId, criteria }) {
-  const state = readState(file)
-  for (const criterion of criteria) state.requests[String(criterion)] = requestId
-  atomicJson(file, state)
+export function registerPilotDecisionRequest(file, { requestId, criteria, deadline }) {
+  withLock(file, () => {
+    const state = readState(file)
+    for (const criterion of criteria) state.requests[String(criterion)] = { requestId, deadline }
+    atomicJson(file, state)
+  })
+}
+
+export function unregisterPilotDecisionRequest(file, { requestId, criteria }) {
+  withLock(file, () => {
+    const state = readState(file)
+    for (const criterion of criteria) if (state.requests[String(criterion)]?.requestId === requestId) delete state.requests[String(criterion)]
+    atomicJson(file, state)
+  })
+}
+
+export function bindPilotDecision(file, { requestId, criterion, source, at }) {
+  withLock(file, () => {
+    const state = readState(file)
+    const key = String(criterion)
+    if (state.requests[key]?.requestId !== requestId || state.bindings?.[key]) return
+    state.bindings ??= {}
+    state.bindings[key] = { requestId, source, boundAt: new Date(at).toISOString() }
+    atomicJson(file, state)
+  })
 }
 
 // This is the sole decision reader. Both the lifecycle and the pilot use it, so they cannot
@@ -65,10 +103,19 @@ export function decidePilotRun({ runId, criterion, reading, decidedAt = Date.now
   if (!Number.isSafeInteger(criterion) || criterion < 1) throw new Error('--dod must be a positive integer')
   if (typeof reading !== 'string' || !reading.trim()) throw new Error('--reading must be non-empty')
   const file = pilotDecisionStateFile(runId, options)
-  const state = readState(file)
-  const requestId = state.requests[String(criterion)]
-  if (!requestId) throw new Error(`run ${runId} has no open decision request for DoD ${criterion}`)
-  state.decisions[String(criterion)] = { requestId, criterion, reading: reading.trim(), decidedAt: new Date(decidedAt).toISOString() }
-  atomicJson(file, state)
-  return { file, decision: state.decisions[String(criterion)] }
+  return withLock(file, () => {
+    const state = readState(file)
+    const key = String(criterion)
+    const request = state.requests[key]
+    if (!request) throw new Error(`run ${runId} has no open decision request for DoD ${criterion}`)
+    if (state.bindings?.[key]) throw new Error(`already bound (${state.bindings[key].source}) at ${state.bindings[key].boundAt}`)
+    if (state.decisions[key]) throw new Error(`already bound (parent) at ${state.decisions[key].decidedAt}`)
+    if (decidedAt > request.deadline) throw new Error(`late: deadline ${new Date(request.deadline).toISOString()}`)
+    const decision = { requestId: request.requestId, criterion, reading: reading.trim(), decidedAt: new Date(decidedAt).toISOString(), boundAt: new Date(decidedAt).toISOString() }
+    state.decisions[key] = decision
+    state.bindings ??= {}
+    state.bindings[key] = { requestId: request.requestId, source: 'parent', boundAt: decision.boundAt }
+    atomicJson(file, state)
+    return { file, decision }
+  })
 }
