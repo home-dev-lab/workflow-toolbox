@@ -6,7 +6,7 @@ describePackContract({
   pack: 'java',
   extensions: ['.java'],
   files: ['pom.xml'],
-  consumerTrigger: '/\\.(?:java|groovy|gradle)$/i.test(editPath(e))',
+  consumerRules: ['java-lint-typecheck-build.md', 'tdd-junit.md'],
   // The plugin's own launcher starts jdtls on a JVM >= 21 whatever the session's JAVA_HOME (jdtls-launcher.test.ts).
   declaration: { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/wt-jdtls.mjs'], extensionToLanguage: { '.java': 'java' }, diagnostics: true, startupTimeout: 23000 },
 })

@@ -21,7 +21,7 @@ const packDir = path.resolve(testDir, '../../../../plugin/packs/typescript')
 describePackContract({
   pack: 'typescript',
   extensions: ['.ts', '.tsx'],
-  consumerTrigger: '/\\.(?:ts|tsx)$/i.test(editPath(e))',
+  consumerRules: ['lint-typecheck-build.md', 'tdd-vitest.md'],
   declaration: {
     command: 'typescript-language-server',
     args: ['--stdio'],
