@@ -23,6 +23,17 @@ const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$
 const PROCESS_CAPTURE_RETRY_MS = 10
 const PROCESS_CAPTURE_SCHEDULING_MARGIN_MS = 100
 const DARWIN_PROVIDER_MISS_TTL_MS = 100
+const RECURRENT_STALL_MINUTES = 1
+const RECURRENT_POLL_SECONDS = 0.1
+const RECURRENT_POLL_MS = RECURRENT_POLL_SECONDS * 1000
+const RECURRENT_POLL_MULTIPLIER = 20
+const RECURRENT_PLATFORM_MARGIN_MS = process.platform === 'darwin' ? 15_000 : 5_000
+const RECURRENT_EVENT_WAIT_MS = RECURRENT_STALL_MINUTES * 60_000 + RECURRENT_POLL_MS * RECURRENT_POLL_MULTIPLIER + RECURRENT_PLATFORM_MARGIN_MS
+const RECURRENT_EVENT_COUNT = 3
+const RECURRENT_TEST_MARGIN_MS = 60_000
+const RECURRENT_TEST_TIMEOUT_MS = RECURRENT_EVENT_COUNT * RECURRENT_EVENT_WAIT_MS + RECURRENT_TEST_MARGIN_MS
+const RECURRENT_WORKER_SECONDS = Math.ceil((RECURRENT_TEST_TIMEOUT_MS + 60_000) / 1000)
+const RECURRENT_LAUNCH_TIMEOUT_SECONDS = RECURRENT_WORKER_SECONDS + 60
 const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
 const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
 afterEach(async () => {
@@ -871,9 +882,9 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     }
   }, 60_000)
   it('journals a stalled episode again after it clears and recurs for the same runId', () => {
-    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 120')
+    const f = fixture(`echo $$ > "$PWD/opencode.pid"; sleep ${RECURRENT_WORKER_SECONDS}`)
     isolateWatcherHostCensus(f)
-    const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
+    const res = run(f, ['--timeout', String(RECURRENT_LAUNCH_TIMEOUT_SECONDS)]); expect(res.status).toBe(0)
     const status = currentStateFile(f.dir); waitForFile(join(f.dir, 'opencode.pid'))
     const state = JSON.parse(readFileSync(status, 'utf8'))
     const marker = join(f.dir, 'activity')
@@ -887,29 +898,31 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       }
     }
     writeFileSync(marker, 'old'); ageTree(f.dir); utimesSync(f.dir, old, old)
+    expect(statSync(join(f.dir, '.lane', 'run.log')).mtimeMs).toBeLessThanOrEqual(old.getTime())
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     const sweepLog = join(f.root, 'sweeps.log')
     const trace = join(f.root, 'watch-trace.jsonl')
-    const watcher = spawnWatcher(['--project', f.dir, '--poll', '0.1'], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: '1', WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog, WT_LANE_WATCH_TRACE: trace } })
+    const watcher = spawnWatcher(['--project', f.dir, '--poll', String(RECURRENT_POLL_SECONDS)], { stdio: 'ignore', env: { ...f.env, WT_LANE_STALL_MINUTES: String(RECURRENT_STALL_MINUTES), WT_LANE_WATCH_TEST_SWEEP_LOG: sweepLog, WT_LANE_WATCH_TRACE: trace } })
     const watcherIdentity = inspectProcess(watcher.pid!)
     if (!watcherIdentity) throw new Error('watcher identity did not become readable')
     const evidence = { trace, status, journal, dir: f.dir }
-    stalledWaitWithEvidence(journal, /"event":"stalled"/, evidence)
+    stalledWaitWithEvidence(journal, /"event":"stalled"/, evidence, RECURRENT_EVENT_WAIT_MS)
     writeFileSync(marker, 'fresh')
-    stalledWaitWithEvidence(sweepLog, new RegExp(`${state.runId}:stalled:cleared`), evidence)
+    stalledWaitWithEvidence(sweepLog, new RegExp(`${state.runId}:stalled:cleared`), evidence, RECURRENT_EVENT_WAIT_MS)
     killIdentity(watcherIdentity, 'SIGSTOP')
     try {
       ageTree(f.dir); utimesSync(f.dir, old, old)
+      expect(statSync(join(f.dir, '.lane', 'run.log')).mtimeMs).toBeLessThanOrEqual(old.getTime())
     } finally {
       killIdentity(watcherIdentity, 'SIGCONT')
     }
-    stalledWaitWithEvidence(journal, /"event":"stalled".*\n.*"event":"stalled"/s, evidence)
+    stalledWaitWithEvidence(journal, /"event":"stalled".*\n.*"event":"stalled"/s, evidence, RECURRENT_EVENT_WAIT_MS)
     killIdentity(watcherIdentity, 'SIGTERM')
     expect(journalEvents(journal, 'stalled')).toHaveLength(2)
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.runId))).toEqual(new Set([state.runId]))
     expect(new Set(journalEvents(journal, 'stalled').map((item) => item.episodeStartedAt)).size).toBe(2)
     killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
-  }, 60_000)
+  }, RECURRENT_TEST_TIMEOUT_MS)
   it('traces each watcher record only when opted in, including stalled predicates and write path', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)

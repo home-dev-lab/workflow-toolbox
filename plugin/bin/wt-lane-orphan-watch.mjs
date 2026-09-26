@@ -197,10 +197,12 @@ async function main() {
       ? listProcessTable(hostAdapter)
       : {
           supported: true,
-          processes: helperFixture.map((item) => ({
-            ...item,
-            command: typeof item.command === 'string' ? item.command : Array.isArray(item.argv) ? item.argv.join(' ') : '',
-          })),
+          processes: helperFixture.map((item) => {
+            let command = ''
+            if (typeof item.command === 'string') command = item.command
+            else if (Array.isArray(item.argv)) command = item.argv.join(' ')
+            return { ...item, command }
+          }),
         }
     let helperRows = table.supported ? table.processes : []
     let helperAges = new Map()
@@ -254,7 +256,10 @@ async function main() {
         notified.delete(stalledKey)
         episodeStarts.delete(stalledKey)
       }
-      const decision = !stalled ? 'clear' : wasJournaled ? 'already-journaled' : journaled.has(stalledKey) ? 'journaled' : 'journal-failed'
+      let decision = 'clear'
+      if (stalled && wasJournaled) decision = 'already-journaled'
+      else if (stalled && journaled.has(stalledKey)) decision = 'journaled'
+      else if (stalled) decision = 'journal-failed'
       trace({ time: new Date().toISOString(), runId: record.runId, verdict: verdict.status, childInspectable: inspectable, latestWorktreeWrite: activity ? { path: activity.path ?? null, mtimeMs: activity.at, status: activity.status, bounded: activity.bounded } : null, ageMs, stallThresholdMs: stallMinutes * 60_000, predicates, decision })
       const cleanKey = `${record.runId}:would-clean`
       const cleanupCandidate = verdict.status === 'worker-gone-child-alive' && ['exited', 'abandoned'].includes(record.state) && processRecord
