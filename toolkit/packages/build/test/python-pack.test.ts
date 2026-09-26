@@ -3,7 +3,7 @@ import { describePackContract } from './helpers/pack-contract.js'
 describePackContract({
   pack: 'python',
   extensions: ['.py', '.pyi'],
-  consumerTrigger: '/\\.(?:py|pyi)$/i.test(editPath(e))',
+  consumerRules: ['python-lint-typecheck-build.md', 'tdd-pytest.md'],
   declaration: {
     command: 'pyright-langserver',
     args: ['--stdio'],

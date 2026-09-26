@@ -6,7 +6,7 @@ describePackContract({
   pack: 'java',
   extensions: ['.java'],
   files: ['pom.xml'],
-  consumerTrigger: '/\\.(?:java|groovy|gradle)$/i.test(editPath(e))',
+  consumerRules: ['java-lint-typecheck-build.md', 'tdd-junit.md'],
   declaration: { command: 'jdtls', args: [], extensionToLanguage: { '.java': 'java' }, diagnostics: true, startupTimeout: 23000 },
 })
 
