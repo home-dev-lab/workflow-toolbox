@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -428,12 +428,43 @@ describe('sessionBackgroundTaskInFlight', () => {
     const realOutput = path.join(realTasksDir, 'task.output')
     mkdirSync(realTasksDir, { recursive: true })
 
-    const start = (command: string, args: string[], stdio: Parameters<typeof spawn>[2]['stdio'], session = realSessionId) => {
+    // The fixture must not depend on how many descriptors other processes hold (card 1871442113510508198).
+    // Two machine dependencies are removed. First, the probe's /proc listing is scoped to the fixture's own
+    // children, so an unrelated same-uid process over the fd cap cannot turn an expected 'none' into
+    // 'unknown'. Second, every child closes the descriptors it INHERITED from whatever launched the suite
+    // (non-CLOEXEC, so they survive exec) before signalling ready on fd 3; otherwise a launcher holding
+    // more than 1,024 of them caps the writer itself and 'in-flight' reads 'unknown'.
+    const shedInherited = [
+      "for (const name of fs.readdirSync('/proc/self/fd')) {",
+      '  const fd = Number(name)',
+      '  if (fd <= 3) continue',
+      '  let info',
+      "  try { info = fs.readFileSync('/proc/self/fdinfo/' + name, 'utf8') } catch { continue }",
+      '  const flags = /^flags:\\s*([0-7]+)$/m.exec(info)',
+      '  if (flags && (Number.parseInt(flags[1], 8) & 0o2000000) === 0) try { fs.closeSync(fd) } catch {}',
+      '}',
+      "fs.writeSync(3, 'ready')",
+      'setInterval(() => {}, 1000)',
+    ].join('\n')
+    const childScript = `const fs = require('node:fs')\n${shedInherited}`
+    const fixturePids = new Set<string>()
+    const scopedReaddir = (dir: string, options: { withFileTypes: true }) => dir === '/proc'
+      ? readdirSync(dir, options).filter((entry) => fixturePids.has(entry.name))
+      : readdirSync(dir, options)
+    const start = async (command: string, args: string[], stdio: Array<'ignore' | number>, session = realSessionId) => {
       const child = spawn(command, args, {
         env: { CLAUDE_CODE_SESSION_ID: session },
-        stdio,
+        stdio: [...stdio, 'pipe'],
       })
       realProcessChildren.push(child)
+      if (child.pid === undefined) throw new Error('fixture child did not start')
+      fixturePids.add(String(child.pid))
+      const ready = child.stdio[3]
+      if (!ready) throw new Error('fixture child has no ready pipe')
+      await new Promise<void>((resolve, reject) => {
+        ready.once('data', () => resolve())
+        child.once('exit', (code, signal) => reject(new Error(`fixture child exited before ready: ${code ?? signal}`)))
+      })
       return child
     }
     const stop = async (child: ChildProcess) => {
@@ -442,31 +473,35 @@ describe('sessionBackgroundTaskInFlight', () => {
       child.kill('SIGKILL')
       await exited
     }
-    const probe = (candidateSessionId = realSessionId) => sessionBackgroundTaskInFlight({
+    const probe = (candidateSessionId = realSessionId, maxFds?: number) => sessionBackgroundTaskInFlight({
       projectDir: realProjectDir,
       sessionId: candidateSessionId,
       platform: 'linux',
       tmpdirImpl: () => root,
+      readdirImpl: scopedReaddir,
+      ...(maxFds === undefined ? {} : { maxFds }),
     })
 
     let fd = openSync(realOutput, 'w')
-    const writer = start(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], ['ignore', fd, fd])
+    const writer = await start(process.execPath, ['-e', childScript], ['ignore', fd, fd])
     closeSync(fd)
     expect(probe().status).toBe('in-flight')
+    // The production fail-safe stays: a writer holding more descriptors than the cap reads 'unknown'.
+    expect(probe(realSessionId, 3)).toEqual({ status: 'unknown', reason: 'process fd scan capped at 3' })
     expect(probe(randomUUID()).status).toBe('none')
     await stop(writer)
     expect(probe()).toEqual({ status: 'none' })
 
     fd = openSync(realOutput, 'r')
-    const reader = start(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], [fd, 'ignore', 'ignore'])
+    const reader = await start(process.execPath, ['-e', childScript], [fd, 'ignore', 'ignore'])
     closeSync(fd)
     expect(probe().status).toBe('none')
     await stop(reader)
 
     const monitor = path.join(root, 'wt-wake-floor.mjs')
-    writeFileSync(monitor, 'setInterval(() => {}, 1000)\n')
+    writeFileSync(monitor, `import fs from 'node:fs'\n${shedInherited}\n`)
     fd = openSync(realOutput, 'w')
-    const monitorChild = start(process.execPath, [monitor], ['ignore', fd, fd])
+    const monitorChild = await start(process.execPath, [monitor], ['ignore', fd, fd])
     closeSync(fd)
     expect(probe().status).toBe('none')
     await stop(monitorChild)
