@@ -1,3 +1,5 @@
+import { DOD_ANCHOR } from './lifecycle-dod-dispute.mjs'
+
 const MAX_REPORT_FINDINGS = 50
 const MAX_FINDING_CHARACTERS = 2000
 const FORWARD_SLASH = String.fromCharCode(47)
@@ -16,7 +18,7 @@ const normalizedLocationFile = (location) => {
   return normalized.replace(/:\d+(?::\d+)?(?:-\d+)?$/, '')
 }
 const normalizedAnchor = (anchor) => {
-  const dod = /^dod(?:\s+(?:criterion|item))?\s*#?(\d+)$/i.exec(anchor)
+  const dod = DOD_ANCHOR.exec(anchor)
   if (dod) return `dod ${dod[1]}`
   const task = /^(?:plan\s+task\s+)?([a-z]+\d+)$/i.exec(anchor)
   return task ? `plan task ${task[1].toLowerCase()}` : normalizedFinding(anchor)

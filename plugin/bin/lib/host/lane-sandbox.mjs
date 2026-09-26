@@ -9,6 +9,7 @@ import { posix as path } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseJsonc } from './jsonc.mjs'
 import { processStartTime } from './pid-namespace.mjs'
+import { sandboxExtraPaths } from './sandbox-extra-paths.mjs'
 
 // External lanes (opencode, codex) run as the owner with a shell. The environment allow-list keeps
 // secrets out of their ENVIRONMENT; this sandbox keeps them out of their FILESYSTEM, process table
@@ -326,7 +327,7 @@ function gitPaths(directory, env, fs) {
 
 function operatorExtras(optionEnv, env, fs) {
   const refused = []
-  const accepted = (name) => String(optionEnv[name] ?? '').split(path.delimiter).map((item) => item.trim()).filter(Boolean)
+  const accepted = (name) => sandboxExtraPaths(optionEnv[name])
     .map((item) => (item.startsWith('~/') ? path.join(home(env), item.slice(2)) : item))
     .filter((item) => {
       const ok = path.isAbsolute(item) && !isForbiddenPath(item, env, fs)

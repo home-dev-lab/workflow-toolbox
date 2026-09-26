@@ -1,6 +1,6 @@
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve, delimiter, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
@@ -19,6 +19,8 @@ import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecyc
 import { DOD_DECISION_WAIT_MS, FALLBACK_RULE } from './lifecycle-dod-dispute.mjs'
 import { bindPilotDecision, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
 import { laneUnsandboxedAtStart } from './host/lane-sandbox.mjs'
+import { sandboxExtraPaths } from './host/sandbox-extra-paths.mjs'
+import { pathWithin } from './host/path-within.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -138,11 +140,6 @@ function textFrom(value) {
 }
 
 // Resolve through existing symlinks before comparing, so lexical `..` and links cannot escape.
-function pathWithin(root, requested, paths = { relative, isAbsolute, sep }) {
-  const rel = paths.relative(root, requested)
-  return rel === '' || (!paths.isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${paths.sep}`))
-}
-
 function resolvedExisting(absolute) {
   let probe = absolute
   const suffix = []
@@ -330,7 +327,7 @@ function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {
     },
     rollbackDecisionRequest: ({ criteria, requestId }) => unregisterPilotDecisionRequest(stateFile, { criteria, requestId }),
     onBound: (dispute) => {
-      try { bindPilotDecision(stateFile, { requestId: dispute.requestId, criterion: dispute.criterion, source: dispute.resolution.source, at: dispute.resolution.at }) }
+      try { return bindPilotDecision(stateFile, { requestId: dispute.requestId, criterion: dispute.criterion, source: dispute.resolution.source, at: dispute.resolution.at, resolution: dispute.resolution }) }
       catch (error) {
         if (dispute.resolution.source === 'parent') throw error
         log(`decision store binding error: ${error.message}`)
@@ -348,7 +345,7 @@ function completedPilotExitCode(completed, partial, deferred) {
 
 function assertDecisionStateOutsideWritable(dir, stateRoot, writableEnv, home) {
   if (confinedToWorktree(dir, stateRoot)) throw new Error(`SDK pilot preflight failed: decision state must be outside the lane-writable worktree: ${stateRoot}`)
-  for (const writable of String(writableEnv ?? '').split(delimiter).filter(Boolean)) {
+  for (const writable of sandboxExtraPaths(writableEnv)) {
     const absolute = resolve(writable.startsWith(`~${sep}`) ? join(home, writable.slice(2)) : writable)
     if (confinedToWorktree(stateRoot, absolute) || confinedToWorktree(absolute, stateRoot)) throw new Error(`SDK pilot preflight failed: decision state overlaps WT_LANE_SANDBOX_WRITE: ${absolute}`)
   }
@@ -420,7 +417,8 @@ export async function runPilot(options, dependencies) {
   const started = now()
   const runId = `${options.card}-${started}`
   const decisionStoreOptions = { env, ...(dependencies.decisionStateRoot ? { root: dependencies.decisionStateRoot } : {}) }
-  const decisionStateRoot = resolve(dependencies.decisionStateRoot ?? pilotDecisionStateRoot({ env }))
+  const defaultDecisionStateRoot = pilotDecisionStateRoot({ env })
+  const decisionStateRoot = resolve(dependencies.decisionStateRoot ?? defaultDecisionStateRoot)
   assertDecisionStateOutsideWritable(options.dir, decisionStateRoot, effectiveEnv.WT_LANE_SANDBOX_WRITE, effectiveEnv.HOME ?? effectiveEnv.USERPROFILE ?? '')
   announceDecisionBoundary(effectiveEnv, log)
   const decisionStateFile = initializePilotDecisionStore(runId, decisionStoreOptions)
@@ -476,7 +474,7 @@ export async function runPilot(options, dependencies) {
   const abortController = new AbortController()
   let timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
-  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: dependencies.decisionStateRoot ?? null, overrides: lifecycleOptions.dodDecisions })
+  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: decisionStateRoot === defaultDecisionStateRoot ? null : decisionStateRoot, overrides: lifecycleOptions.dodDecisions })
   const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: totals.input + totals.cache_creation + totals.output, tool_names: [...new Set(tools)] })
   const persistUsage = () => atomicWrite(usagePath, `${JSON.stringify(currentUsage(), null, 2)}\n`, writeFile)

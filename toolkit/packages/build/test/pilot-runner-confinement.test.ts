@@ -4,6 +4,8 @@ import { join, win32 } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { confinedToWorktree, lifecycleCanUseTool, loadBoardContract } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { pathWithin } from '../../../../plugin/bin/lib/host/path-within.mjs'
 
 const roots: string[] = []
 
@@ -12,6 +14,12 @@ it('refuses a cross-drive Windows path for both direct reads and wildcard prefix
   expect(confinedToWorktree('D:\\repo', 'D:\\repo\\src', win32)).toBe(true)
   expect(lifecycleCanUseTool('D:\\repo', 'Read', { file_path: 'C:\\Users\\u\\state' }, { pathOps: win32 }).behavior).toBe('deny')
   expect(lifecycleCanUseTool('D:\\repo', 'Glob', { path: 'C:\\Users\\u', pattern: 'state\\*.json' }, { pathOps: win32 }).behavior).toBe('deny')
+})
+
+it('uses one cross-drive-aware containment predicate for lifecycle directories and citations', () => {
+  expect(pathWithin('D:\\repo', 'C:\\escape', win32)).toBe(false)
+  expect(pathWithin('D:\\repo', 'D:\\repo\\.lane', win32)).toBe(true)
+  expect(pathWithin('D:\\repo', 'D:\\repo', win32)).toBe(true)
 })
 
 function fixture() {

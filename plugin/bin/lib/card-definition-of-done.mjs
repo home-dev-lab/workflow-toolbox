@@ -8,7 +8,8 @@ function closesFence(line, fence) {
 }
 
 export function cardDefinitionOfDone(content, { raw = false } = {}) {
-  const lines = (typeof content === 'string' ? content : '').split(/\n/)
+  const rawLines = (typeof content === 'string' ? content : '').split('\n')
+  const lines = rawLines.map((line) => line.endsWith('\r') ? line.slice(0, -1) : line)
   let fence = null
   let sectionStart = -1
   let legacySectionStart = -1
@@ -32,7 +33,7 @@ export function cardDefinitionOfDone(content, { raw = false } = {}) {
     fence = null
     const finish = () => {
       if (criterion) {
-        if (raw) while (criterion.at(-1) === '') criterion.pop()
+        if (raw) while (criterion.at(-1) === '' || criterion.at(-1) === '\r') criterion.pop()
         criteria.push(raw ? criterion.join('\n') : criterion.filter((line) => line.trim() && !fenceMarker(line)).map((line) => line.trim()).join(' '))
       }
       criterion = null
@@ -41,19 +42,19 @@ export function cardDefinitionOfDone(content, { raw = false } = {}) {
       const line = lines[index]
       const marker = fenceMarker(line)
       if (fence) {
-        if (raw && criterion) criterion.push(line)
+        if (raw && criterion) criterion.push(rawLines[index])
         if (closesFence(line, fence)) fence = null
         continue
       }
       if (marker) {
         fence = marker
-        if (raw && criterion) criterion.push(line)
+        if (raw && criterion) criterion.push(rawLines[index])
         continue
       }
       if (/^[ \t]{0,3}#{1,6}(?:[ \t]+|$)/.test(line)) break
       const item = /^(?:[-*][ \t]+|\d+\.[ \t]+)(\S.*)$/.exec(line)
-      if (item) { finish(); criterion = [item[1]]; continue }
-      if (criterion && (line.trim() || raw)) criterion.push(line)
+      if (item) { finish(); criterion = [raw ? rawLines[index].slice(item[0].length - item[1].length) : item[1]]; continue }
+      if (criterion && (raw || /^[ \t]+\S/.test(line))) criterion.push(raw ? rawLines[index] : line)
     }
     finish()
     return criteria

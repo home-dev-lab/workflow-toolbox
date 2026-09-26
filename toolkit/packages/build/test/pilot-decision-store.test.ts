@@ -54,7 +54,7 @@ describe('pilot parent decision store', () => {
 
   it('quotes both shell dialects and includes a non-default state root', () => {
     expect(pilotDecisionCommand('/a b/runner.mjs', 'run 1', '/a b/node', '/state dir', 'linux')).toContain("'/a b/node' '/a b/runner.mjs' decide --run 'run 1' --state-root '/state dir'")
-    expect(pilotDecisionCommand('C:\\Program Files\\runner.mjs', 'run', 'C:\\Program Files\\node.exe', 'D:\\state dir', 'win32')).toMatch(/^& 'C:\\Program Files\\node.exe' /)
+    expect(pilotDecisionCommand('C:\\Program Files\\runner.mjs', 'run', 'C:\\Program Files\\node.exe', 'D:\\state dir', 'win32')).toMatch(/^'C:\\Program Files\\node.exe' .*--state-root 'D:\\state dir'\nPowerShell: & 'C:\\Program Files\\node.exe' /)
     const root = mkdtempSync(join(tmpdir(), 'wt-state root-'))
     const file = initializePilotDecisionStore('quoted', { root })
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: Date.now() + 60_000 })
@@ -85,5 +85,22 @@ describe('pilot parent decision store', () => {
     registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: Date.now() + 60_000 })
     expect(existsSync(lock)).toBe(false)
     expect(decidePilotRun({ runId: 'stale', criterion: 1, reading: 'preserved', root }).decision.reading).toBe('preserved')
+  })
+  it('keeps a replacement lock owned by another process when releasing', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-owner-lock-'))
+    const file = initializePilotDecisionStore('owner', { root })
+    registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: 100 })
+    decidePilotRun({ runId: 'owner', criterion: 1, reading: 'answer', root, now: () => {
+      writeFileSync(`${file}.lock`, 'new-owner-token')
+      return 50
+    } })
+    expect(readFileSync(`${file}.lock`, 'utf8')).toBe('new-owner-token')
+  })
+  it('returns the previously recorded binding rather than overwriting it', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-winner-'))
+    const file = initializePilotDecisionStore('winner', { root })
+    registerPilotDecisionRequest(file, { requestId: 'r', criteria: [1], deadline: 100 })
+    decidePilotRun({ runId: 'winner', criterion: 1, reading: 'parent', root, now: () => 100 })
+    expect(bindPilotDecision(file, { requestId: 'r', criterion: 1, source: 'fallback', at: 101 })).toMatchObject({ source: 'parent', reading: 'parent' })
   })
 })

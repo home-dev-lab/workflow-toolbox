@@ -1,6 +1,7 @@
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 
 const RUN_ID = /^[A-Za-z0-9._-]+$/
@@ -18,8 +19,13 @@ export function pilotDecisionStateFile(runId, options = {}) {
 }
 
 export function pilotDecisionCommand(cli, runId, execPath = process.execPath, root = null, platform = process.platform) {
-  const quote = (value) => platform === 'win32' ? `'${String(value).replaceAll("'", "''")}'` : `'${String(value).replaceAll("'", "'\\''")}'`
-  return `${platform === 'win32' ? '& ' : ''}${quote(execPath)} ${quote(cli)} decide --run ${quote(runId)}${root ? ` --state-root ${quote(root)}` : ''}`
+  const posix = (value) => `'${String(value).replaceAll("'", "'\\''")}'`
+  const powershell = (value) => `'${String(value).replaceAll("'", "''")}'`
+  const command = (quote) => {
+    const stateRoot = root ? ' --state-root ' + quote(root) : ''
+    return `${quote(execPath)} ${quote(cli)} decide --run ${quote(runId)}${stateRoot}`
+  }
+  return platform === 'win32' ? `${command(posix)}\nPowerShell: & ${command(powershell)}` : command(posix)
 }
 
 export function pilotDecisionCli() {
@@ -43,19 +49,44 @@ function readState(file) {
   return state
 }
 
+function releaseOwnedLock(lock, token) {
+  try { if (readFileSync(lock, 'utf8') === token) rmSync(lock) } catch (error) { if (error.code !== 'ENOENT') throw error }
+}
+
 function withLock(file, update) {
   const lock = `${file}.lock`
   const start = Date.now()
   let fd
+  const token = randomUUID()
   for (;;) {
-    try { fd = openSync(lock, 'wx', 0o600); break } catch (error) {
+    try { fd = openSync(lock, 'wx', 0o600); writeFileSync(fd, token); break } catch (error) {
+      if (fd !== undefined) { closeSync(fd); throw error }
       if (error.code !== 'EEXIST') throw error
-      try { if (Date.now() - statSync(lock).mtimeMs > 30_000) rmSync(lock, { force: true }) } catch (statError) { if (statError.code !== 'ENOENT') throw statError }
-      if (Date.now() - start > 35_000) throw new Error(`pilot decision lock timed out: ${lock}`)
+      try {
+        const observed = statSync(lock)
+        if (Date.now() - observed.mtimeMs > 30_000) {
+          const stale = `${lock}.${token}.stale`
+          renameSync(lock, stale)
+          let reclaimed = true
+          try {
+            const moved = statSync(stale)
+            if (moved.ino !== observed.ino || moved.dev !== observed.dev) {
+              // Another contender replaced the observed lock. Do not reclaim its work.
+              reclaimed = false
+              if (!existsSync(lock)) renameSync(stale, lock)
+            }
+          } finally { if (reclaimed) rmSync(stale, { force: true }) }
+        }
+      } catch (statError) { if (statError.code !== 'ENOENT') throw statError }
+      if (Date.now() - start > 35_000) throw new Error(`pilot decision lock timed out: ${lock}`, { cause: error })
+      // The CLI's synchronous public API cannot yield an async retry without changing its callers.
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
     }
   }
-  try { return update() } finally { closeSync(fd); rmSync(lock, { force: true }) }
+  try { return update() } finally {
+    closeSync(fd)
+    releaseOwnedLock(lock, token)
+  }
 }
 
 export function initializePilotDecisionStore(runId, options = {}) {
@@ -81,29 +112,37 @@ export function unregisterPilotDecisionRequest(file, { requestId, criteria }) {
   })
 }
 
-export function bindPilotDecision(file, { requestId, criterion, source, at }) {
-  withLock(file, () => {
+export function bindPilotDecision(file, { requestId, criterion, source, at, resolution }) {
+  return withLock(file, () => {
     const state = readState(file)
     const key = String(criterion)
-    if (state.requests[key]?.requestId !== requestId || state.bindings?.[key]) return
+    if (state.bindings?.[key]) {
+      const binding = state.bindings[key]
+      return binding.source === 'parent'
+        ? { source: 'parent', reading: state.decisions[key].reading, requestId: binding.requestId, at: binding.boundAt }
+        : binding.resolution
+    }
+    if (state.requests[key]?.requestId !== requestId) throw new Error(`no open decision request for DoD ${criterion}`)
     state.bindings ??= {}
-    state.bindings[key] = { requestId, source, boundAt: new Date(at).toISOString() }
+    const bound = resolution ?? { source, at: new Date(at).toISOString() }
+    state.bindings[key] = { requestId, source, boundAt: new Date(at).toISOString(), resolution: bound }
     atomicJson(file, state)
+    return bound
   })
 }
 
-// This is the sole decision reader. Both the lifecycle and the pilot use it, so they cannot
-// disagree about parsing, precedence, or provenance.
+// The lifecycle reads parent answers here; bindings are recorded separately under the same lock.
 export function readPilotDecisions(file) {
   const state = readState(file)
   return Object.values(state.decisions).map((decision) => ({ ...decision }))
 }
 
-export function decidePilotRun({ runId, criterion, reading, decidedAt = Date.now(), ...options }) {
+export function decidePilotRun({ runId, criterion, reading, now = Date.now, decidedAt: injectedAt, ...options }) {
   if (!Number.isSafeInteger(criterion) || criterion < 1) throw new Error('--dod must be a positive integer')
   if (typeof reading !== 'string' || !reading.trim()) throw new Error('--reading must be non-empty')
   const file = pilotDecisionStateFile(runId, options)
   return withLock(file, () => {
+    const decidedAt = injectedAt === undefined ? now() : injectedAt
     const state = readState(file)
     const key = String(criterion)
     const request = state.requests[key]

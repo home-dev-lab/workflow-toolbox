@@ -5,9 +5,11 @@ import { join } from 'node:path'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { cardDefinitionOfDone } from '../../../../plugin/bin/lib/card-definition-of-done.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { createDodEscalation, planReadingOfTerm } from '../../../../plugin/bin/lib/lifecycle-dod-dispute.mjs'
+import { createDodEscalation, DOD_ANCHOR, planReadingOfTerm } from '../../../../plugin/bin/lib/lifecycle-dod-dispute.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { writeRegularFile } from '../../../../plugin/bin/lib/lifecycle-launch.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { bindPilotDecision, decidePilotRun, initializePilotDecisionStore, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
 const card = '## Definition of done\n- Return exactly this body:\n  ```json\n  {"ok": true}\n  ```\n'
 type Dispute = { resolution: { source: string, reading: string } | null }
@@ -22,6 +24,19 @@ function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe('DoD dispute publication', () => {
+  it('shares the anchor grammar across every DoD spelling', () => {
+    for (const spelling of ['DoD 1', 'DoD #1', 'DoD1', 'DoD criterion 1', 'DoD item 1']) expect(DOD_ANCHOR.exec(spelling)?.[1]).toBe('1')
+  })
+  it('parses CRLF structure identically to LF while retaining raw fenced block bytes', () => {
+    const crlf = card.replaceAll('\n', '\r\n')
+    expect(cardDefinitionOfDone(crlf)).toEqual(cardDefinitionOfDone(card))
+    expect(cardDefinitionOfDone(crlf)).toHaveLength(1)
+    expect(cardDefinitionOfDone(crlf, { raw: true })[0]).toContain('```json\r\n  {"ok": true}\r\n  ```')
+    expect(cardDefinitionOfDone(`${crlf}\r\n`, { raw: true })[0]).not.toMatch(/\r\n\r$/)
+  })
+  it('does not append unindented reviewer metadata to a plain criterion', () => {
+    expect(cardDefinitionOfDone('## DoD\n- Tests pass\n\nReviewer: Bob\n')).toEqual(['Tests pass'])
+  })
   it('replaces a dangling symlink rather than writing through it', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-request-link-'))
     const outside = join(root, 'outside')
@@ -66,6 +81,30 @@ describe('DoD dispute publication', () => {
     await escalation.awaitDecisions()
     expect(state.dodDisputes[0]!.resolution).toMatchObject({ source: 'stopped' })
     expect(writes.at(-1)).toContain('Status: stopped; binding')
+  })
+  it('adopts the store winner when a parent answer arrives between reading and fallback binding, even during stop', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-bind-interleave-'))
+    const file = initializePilotDecisionStore('interleave', { root })
+    const { escalation, state, writes } = fixture({
+      readDecisions: () => [],
+      onDecisionRequest: ({ requestId, criteria, deadline }: { requestId: string, criteria: number[], deadline: number }) => {
+        registerPilotDecisionRequest(file, { requestId, criteria, deadline })
+        decidePilotRun({ runId: 'interleave', criterion: 1, reading: 'parent wins', root, now: () => deadline })
+      },
+      onBound: (dispute: { requestId: string, criterion: number, resolution: { source: string, at: string } }) => bindPilotDecision(file, { requestId: dispute.requestId, criterion: dispute.criterion, source: dispute.resolution.source, at: dispute.resolution.at, resolution: dispute.resolution }),
+    })
+    escalation.escalate()
+    state.pendingStop = 'timeout'
+    await escalation.awaitDecisions()
+    expect(state.dodDisputes[0]!.resolution).toMatchObject({ source: 'parent', reading: 'parent wins' })
+    expect(writes.at(-1)).toContain("Status: decided by the run's parent: parent wins")
+  })
+  it('keeps the original deadline when stopped after an on-time parent answer', async () => {
+    const { escalation, state } = fixture({ readDecisions: () => [{ requestId: 'r', criterion: 1, reading: 'on time', decidedAt: new Date(25).toISOString() }] })
+    escalation.escalate() // clock 20; original deadline 30
+    state.pendingStop = 'timeout'
+    await escalation.awaitDecisions() // clock 40; stop must not shrink deadline to 20
+    expect(state.dodDisputes[0]!.resolution).toMatchObject({ source: 'parent', reading: 'on time' })
   })
 
   it('refuses substring labels while accepting whole-word prefixes', () => {

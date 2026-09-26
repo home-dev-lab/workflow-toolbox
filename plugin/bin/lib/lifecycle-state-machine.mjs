@@ -15,7 +15,8 @@ import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { adaptiveRoundDecision, hasPerSectionAttackAccount, reviewConvergenceDecision, verdictFromReport } from './lifecycle-review-policy.mjs'
 import { detectFailedTestFramework } from './host/test-framework-detection.mjs'
-import { bindingDecisionsSection, createDodEscalation, DOD_DECISION_REQUEST_FILE, normalizedTerm, planReadingOfTerm, withDisputedDodTermsSection } from './lifecycle-dod-dispute.mjs'
+import { bindingDecisionsSection, createDodEscalation, criticFindingAfterNoReblock, DOD_DECISION_REQUEST_FILE, normalizedTerm, planReadingOfTerm, withDisputedDodTermsSection } from './lifecycle-dod-dispute.mjs'
+import { pathWithin } from './host/path-within.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -267,7 +268,7 @@ function planCoverageCitationResult(content, root) {
       const absolute = path.resolve(root, citedPath)
       let resolved = absolute
       try { resolved = fs.realpathSync(absolute) } catch {}
-      if (path.relative(root, resolved).startsWith('..')) {
+      if (!pathWithin(root, resolved)) {
         warnings.push(`"${claim}" cites \`${citedPath}:${citation[2]}\`, which is outside the worktree.`)
         continue
       }
@@ -313,16 +314,6 @@ function findingPolicyOptions(phase, state, dodBullets, laneDir, readRegularFile
   return {
     validAnchors: validFindingAnchors(dodBullets, readRegularFile(path.join(laneDir, 'plan.md'))),
     priorFindingCount: priorRounds.reduce((total, round) => total + round.findings.length, 0),
-  }
-}
-function criticFindingAfterNoReblock(finding, state, dodBullets, log) {
-  if (!finding.blocks) return
-  const ignored = state.dodDisputes.find((dispute) => dispute.resolution?.source === 'fallback' &&
-    (new RegExp(`^dod\\s+${dispute.criterion}$`, 'i').test(finding.anchor ?? '') ||
-      normalizedTerm(finding.text).includes(normalizedTerm(dodBullets?.[dispute.criterion - 1] ?? dispute.term))))
-  if (ignored) {
-    finding.blocks = false
-    log?.(`ignored-by-no-reblock rule: DoD ${ignored.criterion}: ${finding.text}`)
   }
 }
 function refusal(edge, missing, file) {
@@ -508,7 +499,7 @@ function createLaneDirAssertion({ laneDir, root, archiveRoot }) {
       const expectedRoot = directory === laneDir ? root : archiveRoot
       let resolvedDirectory; let resolvedRoot
       try { [resolvedDirectory, resolvedRoot] = [fs.realpathSync(directory), fs.realpathSync(expectedRoot)] } catch { throw new Error(`lane directory replaced: ${directory}`) }
-      if (!stat.isDirectory() || stat.isSymbolicLink() || path.relative(resolvedRoot, resolvedDirectory).startsWith('..')) throw new Error(`lane directory replaced: ${directory}`)
+      if (!stat.isDirectory() || stat.isSymbolicLink() || !pathWithin(resolvedRoot, resolvedDirectory)) throw new Error(`lane directory replaced: ${directory}`)
     }
     if (archive) {
       try {

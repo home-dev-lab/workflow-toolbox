@@ -9,7 +9,7 @@ export const DOD_DECISION_REQUEST_FILE = 'dod-decision-request.md'
 // bounded, and silence resolves through FALLBACK_RULE instead of stalling the plan loop.
 export const DOD_DECISION_WAIT_MS = 15 * 60_000
 const DOD_DECISION_POLL_MS = 1_000
-const DOD_ANCHOR = /^dod(?:\s+(?:criterion|item))?\s*#?(\d+)$/i
+export const DOD_ANCHOR = /^dod(?:\s+(?:criterion|item))?\s*#?(\d+)$/i
 const DISPUTES_SECTION = '## Disputed Definition-of-done terms'
 const CARD_TERMS_SECTION = CARD_TERMS_HEADING
 export const FALLBACK_RULE = "the card's literal words bind verbatim, and the critic may not block again on that DoD criterion for the rest of the run"
@@ -25,6 +25,29 @@ export function normalizedTerm(text) {
   let term = String(text ?? '').replace(/[’‘]/g, "'").replace(/[`"“”]/g, '').replace(/\s+/g, ' ').trim()
   while (term.length > 0 && '.;,'.includes(term.at(-1))) term = term.slice(0, -1)
   return term.trimEnd().toLowerCase()
+}
+
+function termQuotedWholeWord(text, term) {
+  const quote = normalizedTerm(term)
+  if (quote.split(/\s+/).filter(Boolean).length < 3) return false
+  const words = normalizedTerm(text)
+  let position = words.indexOf(quote)
+  while (position !== -1) {
+    if (!/\w/.test(words[position - 1] ?? '') && !/\w/.test(words[position + quote.length] ?? '')) return true
+    position = words.indexOf(quote, position + 1)
+  }
+  return false
+}
+
+export function criticFindingAfterNoReblock(finding, state, dodBullets, log) {
+  if (!finding.blocks) return
+  const anchor = DOD_ANCHOR.exec(String(finding.anchor ?? '').trim())
+  const ignored = state.dodDisputes.find((dispute) => dispute.resolution?.source === 'fallback' &&
+    (anchor ? Number(anchor[1]) === dispute.criterion : termQuotedWholeWord(finding.text, dodBullets?.[dispute.criterion - 1] ?? dispute.term)))
+  if (ignored) {
+    finding.blocks = false
+    log?.(`ignored-by-no-reblock rule: DoD ${ignored.criterion}: ${finding.text}`)
+  }
 }
 
 function cardTermsEntries(plan) {
@@ -149,7 +172,7 @@ function resolveDodDisputes({ disputes, decisionRecords, now, waitMs, stopped, l
     const decision = decisions.get(dispute)
     const deadline = dispute.requestedAt + waitMs
     if (decision && Date.parse(decision.decidedAt) > deadline) log(`late: DoD ${dispute.criterion} decision after ${new Date(deadline).toISOString()}`)
-    if (decision && Date.parse(decision.decidedAt) <= deadline && !stopped) {
+    if (decision && Date.parse(decision.decidedAt) <= deadline) {
       if (dispute.resolution) continue
       dispute.resolution = { source: 'parent', reading: decision.reading, requestId: decision.requestId, at: new Date(now).toISOString() }
     } else if (!dispute.resolution && (stopped || now >= deadline)) dispute.resolution = { source: stopped ? 'stopped' : 'fallback', ...fallbackResolution(dispute), at: new Date(now).toISOString() }
@@ -224,7 +247,7 @@ export function withDisputedDodTermsSection(content, disputes) {
 }
 
 // The lifecycle's side of the channel, kept out of the state-machine factory. The upward half runs at
-// the critic->plan edge; the downward half makes the next critic launch wait, bounded, for the parent.
+// the critic->plan edge; the downward half holds the next plan revision and critic launch, bounded, for the parent.
 export function createDodEscalation({ state, dodBullets, requestPath, planReading, writeRequest, now }, { readDecisions = null, onDecisionRequest = null, onPublished = null, rollbackDecisionRequest = null, onBound = null, log = () => {}, decisionCommand = 'wt-pilot-runner decide --run <run-id>', waitMs = DOD_DECISION_WAIT_MS, pollMs = DOD_DECISION_POLL_MS, newRequestId = newDodRequestId } = {}) {
   // No decision channel, or a stop already requested, leaves nobody to wait for: resolve at once.
   const effectiveWaitMs = () => (typeof readDecisions === 'function' && !state.pendingStop ? waitMs : 0)
@@ -256,11 +279,14 @@ export function createDodEscalation({ state, dodBullets, requestPath, planReadin
     for (;;) {
       const pending = state.dodDisputes.filter((dispute) => !dispute.resolution)
       const candidates = structuredClone(state.dodDisputes)
-      if (resolveDodDisputes({ disputes: candidates, decisionRecords: read(), now: now(), waitMs: effectiveWaitMs(), stopped: !!state.pendingStop, log })) {
+       if (resolveDodDisputes({ disputes: candidates, decisionRecords: read(), now: now(), waitMs: typeof readDecisions === 'function' ? waitMs : 0, stopped: !!state.pendingStop, log })) {
         for (const dispute of pending) {
           const bound = candidates.find((candidate) => candidate.requestId === dispute.requestId && candidate.criterion === dispute.criterion)
           if (bound?.resolution) {
-            try { onBound?.(bound) } catch (error) {
+            try {
+              const recorded = onBound?.(bound)
+              if (recorded) bound.resolution = recorded
+            } catch (error) {
               if (bound.resolution.source === 'parent') throw error
               log(`decision store binding error: ${error.message}`)
             }

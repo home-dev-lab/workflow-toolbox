@@ -23,6 +23,10 @@ import { inspectProcess, sameIdentity } from '../../../../plugin/bin/lib/lane-su
 import { loadRules } from '../../../../plugin/bin/lib/rules-manifest.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { withDisputedDodTermsSection } from '../../../../plugin/bin/lib/lifecycle-dod-dispute.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { cardDefinitionOfDone } from '../../../../plugin/bin/lib/card-definition-of-done.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { criticFindingAfterNoReblock } from '../../../../plugin/bin/lib/lifecycle-dod-dispute.mjs'
 
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n'
 const FIXTURE_LANE_TIMEOUT_SECONDS = 10
@@ -1078,6 +1082,9 @@ printf 'report\n' > "$report"
       '- outside fake',
       '',
     ].join('\r\n')
+    // A zero-criterion parse would make every Acceptance check below pass vacuously.
+    expect(cardDefinitionOfDone(cardText).length).toBeGreaterThan(0)
+    expect(cardDefinitionOfDone(cardText)).toEqual(cardDefinitionOfDone(cardText.replaceAll('\r\n', '\n')))
     expect(deriveRoute(cardText)).toMatchObject({ route: 'FULL', reasons: ['human Route: FULL'] })
     const lifecycle = testLifecycle('FULL', [], null, null, { cardText })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
@@ -1457,6 +1464,27 @@ printf 'report\n' > "$report"
       expect(await criticRound(lifecycle, 3)).toMatch(/^accepted phase=tdd/)
       expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
     })
+    it('honors every DoD anchor spelling on the fallback criterion', async () => {
+      const logs: string[] = []
+      const { lifecycle } = await disputed({ readDecisions: () => [], waitMs: 1, pollMs: 1, log: (line: string) => logs.push(line) }, plan, [rounds[0]!, rounds[1]!, ['- [blocking][anchor: DoD #1] inventory still missing']])
+      expect(await criticRound(lifecycle, 3)).toMatch(/^accepted phase=tdd/)
+      expect(logs.join('\n')).toContain('ignored-by-no-reblock rule')
+    })
+    it('keeps other DoD anchors blocking even when they quote the timed-out criterion; empty criteria match nothing', () => {
+      const state = { dodDisputes: [{ criterion: 1, resolution: { source: 'fallback' }, term }] }
+      const other = { blocks: true, anchor: 'DoD 2', text: `${term} is still omitted` }
+      criticFindingAfterNoReblock(other, state, [term, 'other'])
+      expect(other.blocks).toBe(true)
+      const empty = { blocks: true, anchor: 'plan task T1', text: 'anything at all' }
+      criticFindingAfterNoReblock(empty, { dodDisputes: [{ criterion: 1, resolution: { source: 'fallback' }, term: '' }] }, [''])
+      expect(empty.blocks).toBe(true)
+      const substring = { blocks: true, anchor: 'plan task T1', text: `prefix${term}suffix` }
+      criticFindingAfterNoReblock(substring, state, [term])
+      expect(substring.blocks).toBe(true)
+      const short = { blocks: true, anchor: 'plan task T1', text: 'Tests pass' }
+      criticFindingAfterNoReblock(short, { dodDisputes: [{ criterion: 1, resolution: { source: 'fallback' }, term: 'Tests pass' }] }, ['Tests pass'])
+      expect(short.blocks).toBe(true)
+    })
     it('downgrades a plan-task re-anchor that quotes the timed-out criterion', async () => {
       const logs: string[] = []
       const { lifecycle } = await disputed({ readDecisions: () => [], waitMs: 1, pollMs: 1, log: (line: string) => logs.push(line) }, plan, [rounds[0]!, rounds[1]!, [`- [blocking][anchor: plan task T1] ${term} is still omitted`]])
@@ -1483,14 +1511,16 @@ printf 'report\n' > "$report"
 
   it('allows exactly one plan round for a routed-card contest, then escalates the maintained disagreement', async () => {
     const finding = '[blocking] CONTEST routed card 42: this is in scope'
+    const snapshots: Array<{ phases: Array<{ phase: string }>, routed_cards: Array<{ contested?: boolean }> }> = []
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }
-    const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher([[`- ${finding}`], [`- ${finding}`]]), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { boardContract, routeFinding: async () => ({ id: '42', title: 'L4 item' }) })
+    const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher([[`- ${finding}`], [`- ${finding}`]]), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { boardContract, routeFinding: async () => ({ id: '42', title: 'L4 item' }), timelineWriter: (file: string, content: string) => { snapshots.push(JSON.parse(content)); writeFileSync(file, content) } })
     const plan = '## ADR\nDecision: x\nRejected: y\n## Tasks\n- task. DoD: green\n## Gates\n- test\n'
     await lifecycle.routeFinding({ title: 'L4 item', l4Reason: 'different subsystem', risk: 'P1', effort: 'M' })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
     await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-1' })
     await lifecycle.artifact({ kind: 'critic-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-1' }))).toBe('accepted phase=plan')
+    expect(snapshots.some((snapshot) => snapshot.phases.at(-1)?.phase === 'critic' && snapshot.routed_cards[0]?.contested === true)).toBe(true)
     await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan-2' })
     await lifecycle.artifact({ kind: 'critic-brief', content: 'maintain L4 with citation src/other.ts:1' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     expect(await text(lifecycle.transition({ phase: 'critic', tool_use_id: 'critic-2' }))).toBe('accepted phase=tdd')
