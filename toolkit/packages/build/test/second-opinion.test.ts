@@ -601,18 +601,38 @@ describe('second-opinion advisor', () => {
     const core = process.env.WT_LANE_SECOND_OPINION_TEST_LIB
       ? await import(pathToFileURL(join(process.env.WT_LANE_SECOND_OPINION_TEST_LIB, 'second-opinion-core.mjs')).href)
       : { createSecondOpinionDependencies, runSecondOpinion }
-    for (const reason of ['no executable selected', 'parent traversal in a readable bind', 'codex realpath is covered']) {
+    const sandbox = await import(pathToFileURL(join(process.env.WT_LANE_SANDBOX_TEST_LIB ?? resolve(__dirname, '../../../../plugin/bin/lib'), 'host/lane-sandbox.mjs')).href)
+    for (const reason of ['no executable selected', 'parent traversal in a readable bind', 'codex realpath is covered'] as const) {
       const f = fixture(true)
       const ownershipRoot = mkdtempSync(join(f.repo, 'broker-ownership-'))
       const stop = vi.fn(() => { rmSync(ownershipRoot, { recursive: true, force: true }); return [] })
       const baseline = process.listenerCount('exit')
+      const codex = '/opt/good/bin/codex'
+      const env = { ...f.env, HOME: f.home, XDG_STATE_HOME: join(f.home, 'state'), PATH: reason === 'no executable selected' ? '' : '/opt/good/bin' }
       const adapter = {
         platform: 'linux',
-        createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop }),
+        createCodexBrokerOwnership: () => ({ env, capture: vi.fn(), stop }),
       }
-      const deps = core.createSecondOpinionDependencies(adapter, { resolveSandbox: () => { throw new Error(`refusing ${reason}`) } })
+      const fs = {
+        exists: () => true,
+        realpath: (file: string) => file,
+        isFile: (file: string) => file === codex,
+        isExecutable: (file: string) => file === codex,
+        isDir: (file: string) => reason !== 'codex realpath is covered' || !['/opt/good/bin', '/opt/good', '/opt', '/usr', '/usr/bin', '/usr/local/bin'].includes(file),
+        readText: (file: string) => file === join(f.home, '.codex', 'auth.json') ? '{"tokens":{}}' : null,
+        ensureDir: () => {}, ensureFile: () => {}, copy: () => {},
+      }
+      const resolveSandbox = vi.fn((request: Record<string, unknown>) => sandbox.resolveLaneSandbox({
+        ...request,
+        paths: { readable: [...(request.paths as { readable: string[] }).readable, ...(reason === 'parent traversal in a readable bind' ? ['/data/a/../b'] : [])] },
+        fs, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: () => ({ ok: true }),
+        runtimeParent: f.home, spawnFn: () => { throw new Error('bridge started before refusal') },
+      }))
+      const deps = core.createSecondOpinionDependencies(adapter, { resolveSandbox })
       deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
       expect(await core.runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+      expect(resolveSandbox).toHaveBeenCalledOnce()
+      expect(lines(f.out).join('\n')).toMatch(reason === 'no executable selected' ? /no executable selected/ : reason === 'parent traversal in a readable bind' ? /parent traversal in a bind/ : /realpath is covered/)
       expect(stop).toHaveBeenCalledOnce()
       expect(existsSync(ownershipRoot)).toBe(false)
       expect(process.listenerCount('exit')).toBe(baseline)

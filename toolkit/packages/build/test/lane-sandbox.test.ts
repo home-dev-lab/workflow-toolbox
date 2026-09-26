@@ -228,6 +228,15 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(() => plan({ paths: { readable: ['/data/x/../x'] } })).toThrow(/refusing path \/data\/x\/\.\.\/x: .*parent traversal/)
   })
 
+  it('drops a readable spelling resolving to HOME without refusing the OpenCode launch', () => {
+    const discarded = `${HOME}/a/..`
+    const p = plan({ paths: { readable: [discarded] }, fs: fakeFs({}, [HOME, '/work/tree']) })
+    expect(p.kind).toBe('bwrap')
+    expect(p.readable).not.toContain(discarded)
+    expect(everyBind(p.wrap('opencode', [])[1])).not.toContain(discarded)
+    p.dispose()
+  })
+
   it('constructs codex PATH with a late symlink to the selected realpath, discarding relative and empty entries', () => {
     const real = '/opt/good/bin/codex'
     const first = '/usr/local/bin/codex'
@@ -471,12 +480,14 @@ describe('lane sandbox plan — codex home (H3)', () => {
 // The fake plan deliberately forces the Linux bwrap path; its real temporary root must use POSIX
 // paths. Windows verifies the normal unsandboxed branch in the availability suite above.
 describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans leave no acquired resources', () => {
-  function fixture() {
+  function fixture(socketReady = true) {
     const root = tempRoot('refusal')
     const runtimeParent = join(root, 'run')
     mkdirSync(runtimeParent)
-    const credential = `${HOME}/.codex/auth.json`
-    const fake = fakeFs({ '/opt/good/bin/codex': 'binary', [credential]: '{"tokens":{}}' }, [HOME, '/work/tree', '/opt/good/bin', `${HOME}/.codex`])
+    const home = join(root, 'home')
+    const env = { HOME: home, XDG_STATE_HOME: join(root, 'state'), PATH: '/opt/good/bin' }
+    const credential = `${home}/.codex/auth.json`
+    const fake = fakeFs({ '/opt/good/bin/codex': 'binary', [credential]: '{"tokens":{}}' }, [home, '/work/tree', '/opt/good/bin', `${home}/.codex`])
     const fs = {
       ...fake,
       ensureDir: (dir: string) => { mkdirSync(dir, { recursive: true }); fake.ensureDir(dir) },
@@ -488,22 +499,22 @@ describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans le
     const relays: Array<{ alive: boolean, kill: () => void }> = []
     const spawnFn = (_command: string, args: string[]) => {
       const sock = socketOf(args)
-      if (sock) fs.ensureFile(sock)
+      if (sock && socketReady) fs.ensureFile(sock)
       const relay = { alive: true, kill() { this.alive = false } }
       relays.push(relay)
       return relay
     }
-    const refuse = (overrides: Record<string, unknown>, error: string | (new (message: string) => Error) = sandbox.LaneSandboxRefusal) => {
-      expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/good/bin' }, fs, runtimeParent, spawnFn, ...overrides })).toThrow(error)
+    const refuse = (overrides: Record<string, unknown>, error: string | RegExp | (new (message: string) => Error) = sandbox.LaneSandboxRefusal) => {
+      expect(() => plan({ profile: 'codex', env, fs, runtimeParent, spawnFn, ...overrides })).toThrow(error)
       expect(readdirSync(runtimeParent)).toEqual([])
       expect(relays.every((relay) => !relay.alive)).toBe(true)
     }
-    return { fs, relays, refuse }
+    return { fs, relays, refuse, env }
   }
 
   it('selects codex before copying auth when no executable is on PATH', () => {
-    const { fs, relays, refuse } = fixture()
-    refuse({ env: { HOME, PATH: '' } })
+    const { fs, relays, refuse, env } = fixture()
+    refuse({ env: { ...env, PATH: '' } })
     expect(fs.copied).toEqual([])
     expect(relays).toEqual([])
   })
@@ -523,17 +534,12 @@ describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans le
     expect(relays).toEqual([])
   })
 
-  it('kills a bridge that fails to open its socket and removes the credential', () => {
-    const { fs, refuse } = fixture()
-    const relays: Array<{ alive: boolean, kill: () => void }> = []
-    refuse({ spawnFn: () => {
-      const relay = { alive: true, kill() { this.alive = false } }
-      relays.push(relay)
-      return relay
-    } }, sandbox.LaneSandboxRefusal)
+  it('kills a bridge that fails to open its socket without copying the credential', () => {
+    const { fs, relays, refuse } = fixture(false)
+    refuse({}, /did not start within 3 s/)
     expect(relays).toHaveLength(1)
     expect(relays[0]!.alive).toBe(false)
-    expect(fs.copied.map(([source]) => source)).toContain(`${HOME}/.codex/auth.json`)
+    expect(fs.copied).toEqual([])
   })
 })
 

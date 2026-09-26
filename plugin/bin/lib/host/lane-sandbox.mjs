@@ -635,13 +635,14 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const executableMounts = [...toolchain.executableMounts, ...executableMount(bin, fs), ...(codexReal ? [executableMount(codexReal, fs)[0]] : [])]
   const rawReadable = [...toolchain.readable, ...(selected.readable ?? []), ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
   const rawWritable = [...(readonlyCwd ? [] : workdir), ...selected.writable, ...git.writable, suiteLockDir(env), ...(paths.writable ?? []), ...extras.writable]
-  // Validate every supplied bind before bridges start, including readable extras that would
-  // otherwise fail only while building the bwrap argv.
-  for (const item of [...rawReadable, ...rawWritable, ...(selected.writableRemap ?? []).flatMap(({ inside, outside }) => [inside, outside]), ...(selected.readOnlyOverlaysRemap ?? []).flatMap(({ inside, outside }) => [inside, outside]), ...(selected.readOnlyOverlays ?? []), ...git.overlaysRo]) {
+  // Validate only paths that survive the same forbidden-path filtering as the bwrap argv.
+  // Discarded paths (including a spelling that resolves to HOME) are not binds.
+  const keptReadable = rawReadable.filter((item) => item && !isForbiddenPath(item, env, fs))
+  const writable = rawWritable.filter((item) => item && !isForbiddenPath(item, env, fs))
+  for (const item of [...keptReadable, ...writable, ...(selected.writableRemap ?? []).flatMap(({ inside, outside }) => [inside, outside]), ...(selected.readOnlyOverlaysRemap ?? []).flatMap(({ inside, outside }) => [inside, outside]), ...(selected.readOnlyOverlays ?? []), ...git.overlaysRo]) {
     if (item) bindPath(item)
   }
   // The root/$HOME/ancestor refusal covers EVERY computed bind, not only the operator extras (H2).
-  const writable = rawWritable.filter((item) => item && !isForbiddenPath(item, env, fs))
   const executableLinks = [...toolchain.executableSymlinks, ...executableSymlinks(bin, fs)]
     .filter(({ target, link }) => {
       if (isForbiddenPath(link, env, fs)) return false
@@ -663,14 +664,14 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const otherOverlays = [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...(selected.readOnlyOverlaysRemap ?? []).map(({ inside }) => inside)]
   const guarded = [...writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), ...(selected.protectedPaths ?? []), ...(socketDir ? [socketDir] : [])]
   if (codexReal) {
-    const collision = [...guarded, ...rawReadable, ...otherOverlays].find((item) => {
+    const collision = [...guarded, ...keptReadable, ...otherOverlays].find((item) => {
       const a = canonicalPath(item, fs); const b = canonicalPath(CODEX_PATH_DIR, fs)
       return withinOnDisk(a, b) || withinOnDisk(b, a)
     })
     if (collision) throw new LaneSandboxRefusal(`refusing executable ${codexReal}: dedicated PATH directory ${CODEX_PATH_DIR} overlaps ${collision}`)
   }
   const executableOverlays = safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs)
-  const readable = [...rawReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
+  const readable = [...keptReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
   const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
   const prefix = sandboxArguments({
     readable, writable, writableRemap: selected.writableRemap ?? [],
@@ -684,8 +685,9 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   if (codexReal) refuseCoveredCodex(prefix, codexReal, fs)
   if (selected.codexHome) prefix.push('--setenv', 'CODEX_HOME', selected.codexHome)
   prefix.push(...proxyEnvironment(bridges.find((item) => item.proxy)))
-  selected.prepare()
   bridge = startBridges({ bridges, fs, spawnFn, socat: socatPath, diagnostics, state: bridgeState })
+  // Bridge readiness needs only the network plan and socket directory, never a copied profile file.
+  selected.prepare()
 
   const refusedNote = extras.refused.length ? `; refused ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV} entries ${extras.refused.join(', ')}` : ''
   const netNote = networkNote({ network, bridges, socat: socatPath })
