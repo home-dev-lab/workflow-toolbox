@@ -75,7 +75,7 @@
       ]
     },
     {
-      "source": "rules/wt-sdlc.md",
+      "source": "rules/wt-sdlc-at-act.md",
       "heading": "## Independent review and refutation",
       "recipients": [
         "pilot",
@@ -135,13 +135,15 @@
       ]
     },
     {
-      "source": "rules/wt-step-back-architectural.md",
+      "source": "rules/wt-distributed-twins-at-act.md",
       "heading": "## A fix whose defect has a TWIN elsewhere is carried in the same pass",
       "recipients": [
-        "pilot"
+        "pilot",
+        "tdd"
       ],
       "triggers": [
-        "phase:plan"
+        "phase:plan",
+        "lane:tdd"
       ]
     },
     {
@@ -157,7 +159,7 @@
       ]
     },
     {
-      "source": "rules/wt-verify-by-ground-truth.md",
+      "source": "rules/wt-verify-by-ground-truth-at-act.md",
       "heading": "## Delegate green report is input, not proof",
       "recipients": [
         "pilot"
