@@ -24,3 +24,23 @@ comments saying same thing.
 
 Archive Done cards; never hard-delete. Closed card is durable record of how work went — thin
 pointer note isn't a substitute — deleting it destroys that history.
+
+That check covers one direction only: not starting too early. Says nothing about moment
+dependency closes — nothing moves dependent out of Blocked on its own, card can sit there fully
+unblocked, unnoticed. Closing a card sweeps cards naming it in a `Depends-on:` line, releases
+ones with no remaining blocker — same discipline removal sweep below applies to retired concept,
+applied here to satisfied dependency. Periodic sweep over whole Blocked list runs identical
+check without waiting for closure to trigger it: resolve each blocked card's dependency ids,
+read their list — deterministic check, not judgment call.
+
+Sweep's output is candidate list, never verdict. Card can be legitimately blocked on something
+no `Depends-on:` line expresses — external gate, locked credential, decision only a human can
+make — so releasing every candidate on mechanical signal alone is wrong; read each one before
+releasing. And card with no `Depends-on:` line at all isn't evidence of nothing to report: it's
+sweep's largest blind spot, blocker lives in prose no check can confirm or refute — reporting
+only parseable cards while staying silent about the rest reads as full coverage when it's not.
+
+Reversals reconcile at removal time. Recording "X was removed" in ONE place leaves every other
+card, note still presenting X as live. Removal/rename card must name its blast radius (items
+referencing retired concept), sweep them: fix open ones, add "superseded by #<id>" pointer to
+closed ones without rewriting their history.
