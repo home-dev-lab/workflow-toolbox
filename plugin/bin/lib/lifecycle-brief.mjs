@@ -20,7 +20,7 @@ function fenced(content) {
   return `${fence}text\n${content}${content.endsWith('\n') ? '' : '\n'}${fence}`
 }
 
-export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none' }) {
+export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none', bindingDecisions = '' }) {
   const verdict = phase === 'critic' ? 'approved|changes-requested' : 'clear|changes-requested'
   const severityPolicy = phase === 'critic' ? PLAN_STAGE_SEVERITY_POLICY : `
 Severity policy:
@@ -52,7 +52,7 @@ You are the independent ${INDEPENDENT_ROLES[phase]}. Judge the artefacts named b
 ${knowledgeBaseLine}
 Knowledge-base fiches are claims to verify against the current code, never evidence by themselves. A finding that rests only on a fiche is not a finding.
 « on ne diffère pas »: a plan task, DoD criterion, or review finding is fixed in this run unless it genuinely cannot be because it is more than one hop from the changed files, belongs to a different module/subsystem, needs a separate planning session or unavailable dependency, or the owner explicitly agreed. Then it must be routed immediately with that L4 reason to a card created in the run and named in the report. Accept \`Outcome: deferred: card <id> — <L4 reason>\` when the id is runner-recorded; refuse every bare deferred outcome. To contest an L4 claim as in-scope, emit one blocking finding shaped \`CONTEST routed card <id>: <evidence>\`. A maintained pilot/critic disagreement is escalated after that single plan round, never repeated.
-${rules ? `\n## Rules that apply to this role (authoritative)\n\n${rules}\n` : ''}${priorRoundsSection}
+${rules ? `\n## Rules that apply to this role (authoritative)\n\n${rules}\n` : ''}${priorRoundsSection}${bindingDecisions}
 
 ## Artefacts to judge
 

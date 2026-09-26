@@ -123,6 +123,28 @@ form and Node path APIs for resolution and real-path containment on each host.
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
 
+### Disputed Definition-of-done terms
+
+A run is automated: a question about what a card criterion means goes to the run's parent (the
+orchestrator, or the session that launched the runner), never to a person. The trigger is mechanical:
+a blocking critic finding anchored to the same `DoD <n>` in two consecutive critic rounds, while the
+loop continues to another plan round. Each criterion is escalated at most once per run.
+
+- **Upward.** The lifecycle writes `.lane/dod-decision-request.md` with the criterion verbatim, the
+  critic rounds, the plan's reading (its `## Acceptance` entry), each critic finding, the mailbox to
+  answer in, and a deadline. The runner prints one `decision request: <file> …` line to its run log,
+  which is what the parent watches.
+- **Downward.** The parent appends `DECISION DoD <n>: <reading>` to the runner mailbox (`--mailbox`,
+  default `.lane/pilot-mailbox.txt`). The first decision line for a criterion binds. The runner
+  injects it into the pilot as a runner-owned binding decision, and the next critic brief carries it
+  under `## Binding decisions on disputed Definition-of-done terms (runner-owned, trusted)`.
+- **Bounded wait.** The next critic launch waits up to 15 minutes from the request for the decision.
+  With no answer, the runner applies the narrowest reading that satisfies the card's words and
+  continues. The wait is zero when the lifecycle has no mailbox reader or a stop was already requested.
+- **Record.** The pilot report gains `## Disputed Definition-of-done terms` with one line per
+  criterion, for example `term DoD 1 ("…"): parent silent, narrowest reading applied`. The run
+  summary carries the same record under `dod_disputes`.
+
 ## Evidence and identity
 
 A lane launch pre-creates `.lane/<phase>-run.<nonce>.log` with `LANE_NONCE=` and names

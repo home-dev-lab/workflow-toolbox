@@ -1299,6 +1299,70 @@ printf 'report\n' > "$report"
     expect(secondCritic).not.toContain('# Step back to the architectural root')
   })
 
+  describe('a Definition-of-done criterion disputed in two consecutive critic rounds', () => {
+    const term = "The PARTIAL names the cycle's documents"
+    const cardText = `# card\n\n## Definition of done\n1. ${term}\n`
+    const plan = `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Acceptance\n- ${term}\n  Proof: task T1 lists them at the bound\n`
+    const rounds = [['- [blocking] the inventory is not exhaustive'], ['- [blocking] the final inventory omits a later lane file'], ['- [blocking] the inventory is not exhaustive']]
+    async function criticRound(lifecycle: ReturnType<typeof testLifecycle>, round: number) {
+      expect(await text(lifecycle.artifact({ kind: 'plan', content: plan }))).toBe('wrote plan')
+      expect(await text(lifecycle.transition({ phase: 'plan', tool_use_id: `plan-${round}` }))).toMatch(/^accepted phase=critic/)
+      expect(await text(lifecycle.artifact({ kind: 'critic-brief', content: `round ${round}\n` }))).toBe('wrote critic-brief')
+      expect(await text(lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 }))).toBe('lane critic EXIT=0')
+      return text(lifecycle.transition({ phase: 'critic', tool_use_id: `critic-${round}` }))
+    }
+    async function disputed(options: Record<string, unknown>) {
+      const requests: Array<{ file: string, criteria: number[] }> = []
+      const lifecycle = testLifecycle('FULL', [], criticSequenceLauncher(rounds), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { cardText, dodDecisions: { mailbox: '/parent/pilot-mailbox.txt', onDecisionRequest: (request: { file: string, criteria: number[] }) => requests.push(request), ...options } })
+      await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+      expect(await criticRound(lifecycle, 1)).toMatch(/^accepted phase=plan/)
+      expect(existsSync(join(lifecycle.root, '.lane', 'dod-decision-request.md'))).toBe(false)
+      const second = await criticRound(lifecycle, 2)
+      return { lifecycle, requests, second }
+    }
+
+    it('writes one decision request to the lane and surfaces it to the run parent', async () => {
+      const { lifecycle, requests, second } = await disputed({ readDecisions: () => '' })
+      expect(second).toMatch(/^accepted phase=plan \(disputed Definition-of-done term escalated to the run's parent: DoD 1; request \.lane\/dod-decision-request\.md/)
+      const file = join(lifecycle.root, '.lane', 'dod-decision-request.md')
+      expect(requests).toEqual([{ file, criteria: [1] }])
+      const request = readFileSync(file, 'utf8')
+      expect(request).toContain(`Term (card, verbatim): ${term}`)
+      expect(request).toContain('Critic rounds: 1, 2')
+      expect(request).toContain('Proof: task T1 lists them at the bound')
+      expect(request).toContain('round 1: the inventory is not exhaustive')
+      expect(request).toContain('round 2: the final inventory omits a later lane file')
+      expect(request).toContain('`/parent/pilot-mailbox.txt`')
+      expect(request).toContain('DECISION DoD 1: <reading>')
+      expect(request).toContain('Status: awaiting the run\'s parent')
+      expect(request).not.toMatch(/owner|human/i)
+    })
+
+    it('binds the next critic round to the decision the parent wrote in the runner mailbox', async () => {
+      let mailbox = 'unrelated owner note\n'
+      const { lifecycle } = await disputed({ readDecisions: () => mailbox, waitMs: 5_000, pollMs: 10 })
+      mailbox += 'DECISION DoD 1: a listing of the documents present at the bound\n'
+      expect(await criticRound(lifecycle, 3)).toMatch(/^accepted phase=report/)
+      const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
+      expect(brief).toContain('## Binding decisions on disputed Definition-of-done terms (runner-owned, trusted)')
+      expect(brief).toContain("- DoD 1, decided by the run's parent: a listing of the documents present at the bound")
+      expect(brief.indexOf('## Binding decisions')).toBeLessThan(brief.indexOf('## Pilot context (untrusted)'))
+      expect(readFileSync(join(lifecycle.root, '.lane', 'dod-decision-request.md'), 'utf8')).toContain("Status: decided by the run's parent: a listing of the documents present at the bound")
+    })
+
+    it('applies the narrowest reading when the parent stays silent past the bound and records it in the pilot report', async () => {
+      const { lifecycle } = await disputed({ readDecisions: () => '', waitMs: 30, pollMs: 5 })
+      const third = await criticRound(lifecycle, 3)
+      expect(third).toMatch(/^accepted phase=report/)
+      const brief = readFileSync(join(lifecycle.root, '.lane', 'critic-brief.md'), 'utf8')
+      expect(brief).toContain(`- DoD 1, parent silent, narrowest reading applied: the narrowest reading that satisfies the card's literal words "${term}"`)
+      const reason = 'plan not approved after 3 critic rounds'
+      expect(await text(lifecycle.artifact({ kind: 'pilot-report', content: `Partial: ${reason}\n# report\n` }))).toBe('wrote pilot-report')
+      const report = readFileSync(join(lifecycle.root, '.lane', 'pilot-report.md'), 'utf8')
+      expect(report).toContain(`## Disputed Definition-of-done terms\n- term DoD 1 ("${term}"): parent silent, narrowest reading applied`)
+    })
+  })
+
   it('allows exactly one plan round for a routed-card contest, then escalates the maintained disagreement', async () => {
     const finding = '[blocking] CONTEST routed card 42: this is in scope'
     const boardContract = { boardId: 'b', listId: 'l', labels: { priority: { P0: 'p0', P1: 'p1', P2: 'p2' }, type: { bug: 'bug', chore: 'chore', feature: 'feature', research: 'research' }, effort: { S: 's', M: 'm', L: 'l' }, category: 'c' } }

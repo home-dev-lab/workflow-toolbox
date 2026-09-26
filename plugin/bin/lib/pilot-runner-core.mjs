@@ -16,6 +16,7 @@ import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-cor
 import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
+import { DOD_DECISION_WAIT_MS, parentDecision } from './lifecycle-dod-dispute.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -302,6 +303,26 @@ function describeExecutorVariants(models, env) {
     }
   }))
 }
+// The run's parent (orchestrator or launching session) is reached through two files: the lifecycle
+// writes a decision request into the lane and the run log names it; the parent answers in the mailbox.
+function parentDecisionChannel(mailbox, { exists, readFile, log, overrides = {} }) {
+  const minutes = Math.ceil((overrides.waitMs ?? DOD_DECISION_WAIT_MS) / 60_000)
+  return {
+    mailbox,
+    readDecisions: () => (exists(mailbox) ? readFile(mailbox, 'utf8') : ''),
+    onDecisionRequest: ({ file, criteria }) => {
+      const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
+      log(`decision request: ${file} — disputed ${disputed}; the run's parent answers in ${mailbox} with one line "DECISION DoD <n>: <reading>" within ${minutes} min, else the narrowest reading that satisfies the card's words applies`)
+    },
+    ...overrides,
+  }
+}
+function mailboxMessage(line) {
+  const decision = parentDecision(line)
+  return decision
+    ? `Binding decision from the run's parent on DoD ${decision.criterion} (runner-owned, trusted): ${decision.reading}. Keep the plan to this reading; the next critic round is bound to it.`
+    : `Message from the owner: ${line}`
+}
 function completedPilotExitCode(completed, partial, deferred) {
   if (!completed) return 1
   return partial || deferred ? 2 : 0
@@ -398,7 +419,7 @@ export async function runPilot(options, dependencies) {
   const abortController = new AbortController()
   let timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: parentDecisionChannel(options.mailbox, { exists, readFile, log, overrides: lifecycleOptions.dodDecisions }), onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: totals.input + totals.cache_creation + totals.output, tool_names: [...new Set(tools)] })
   const persistUsage = () => atomicWrite(usagePath, `${JSON.stringify(currentUsage(), null, 2)}\n`, writeFile)
   const timeoutTimer = setTimer(() => {
@@ -443,9 +464,9 @@ export async function runPilot(options, dependencies) {
       }
       const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
       if (lines.length > mailboxLines) {
-        const content = `Message from the owner: ${lines[mailboxLines++]}`
+        const content = mailboxMessage(lines[mailboxLines++])
         injectedTurns += 1
-        log(`injected: owner message ${content}`)
+        log(`injected: mailbox message ${content}`)
         yield { type: 'user', message: { role: 'user', content } }
       }
       else await sleep(POLL_MS)
@@ -548,7 +569,7 @@ export async function runPilot(options, dependencies) {
   const { partial, deferred } = lifecycleDelivery(lifecycleSummary, lifecycleServer.state())
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
-  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)

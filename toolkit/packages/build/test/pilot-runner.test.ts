@@ -789,7 +789,7 @@ describe('SDK pilot runner', () => {
       yield { type: 'result', usage: { input_tokens: 1, output_tokens: 1 } }
     })()
     const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 2, hard: false }, {
-      query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
+      query, resolvePilotModels: models, lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 100, dodDecisions: { waitMs: 0 }, git: (_program: string, args: string[]) => args[0] === 'rev-parse' ? `${++heads === 1 ? 'base' : 'next'}\n` : '' }, sleep: async () => {},
     })
     expect(continuations).toEqual([`The run is partial (${reason}): write the pilot report with the line "Partial: ${reason}", then transition report.`])
     expect(result).toMatchObject({ exitCode: 2, summary: { completed: true, partial: { phase: 'critic', round: FIXED_CRITIC_ROUNDS, reason, findings: ['tighten the proof'] } } })
@@ -803,6 +803,43 @@ describe('SDK pilot runner', () => {
       expiry: { boardId: null, removeWhen: 'card is absent or in Done or NotDoing' },
     })
     expect(readdirSync(join(f.dir, '.lane')).filter((name) => name.endsWith('.tmp'))).toEqual([])
+  })
+
+  it('surfaces a disputed DoD term to the run parent and injects its mailbox decision into the pilot and the next critic round', async () => {
+    const f = fixture(); const injected: string[] = []; const logged: string[] = []; let criticBrief = ''
+    const term = "The PARTIAL names the cycle's documents"
+    writeFileSync(f.cardFile, `Route: FULL\n## Definition of done\n- ${term}\n`)
+    const mailbox = join(f.root, 'pilot-mailbox.txt')
+    const launcher = join(f.root, 'launcher.mjs')
+    writeFileSync(launcher, "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'; const args=process.argv; const log=args[args.indexOf('--log')+1]; const brief=readFileSync(args[args.indexOf('--brief')+1],'utf8'); const report=/Write the report to `([^`]+)`/.exec(brief)[1]; const digest=/plan sha256: ([a-f0-9]{64})/.exec(brief)[1]; const round=(brief.match(/^### Round /gm)||[]).length; writeFileSync(report,'VERDICT: changes-requested\\nFINDINGS:\\n- [blocking][anchor: DoD 1][location: plan.md:1] reading '+round+'\\nplan sha256: '+digest+'\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); process.stdout.write('pid='+process.pid+'\\n')")
+    type RegisteredServer = { instance: { _registeredTools: Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }> } }
+    const plan = `## ADR\nDecision: x\nRejected: y\n## Tasks\n- T1 list the documents. DoD: green\n## Gates\n- test\n## Acceptance\n- ${term}\n  Proof: task T1\n`
+    const query = ({ prompt, options }: { prompt: AsyncGenerator<{ message: { content: string } }>, options: { mcpServers: Record<string, unknown> } }) => (async function* () {
+      const server = options.mcpServers[LIFECYCLE_MCP_KEY] as RegisteredServer
+      const transition = server.instance._registeredTools.transition!.handler
+      const artifact = server.instance._registeredTools.write_artifact!.handler
+      const run = server.instance._registeredTools.run!.handler
+      const criticRound = async (round: number) => {
+        await artifact({ kind: 'plan', content: plan }); await transition({ phase: 'plan', tool_use_id: `plan-${round}` })
+        await artifact({ kind: 'critic-brief', content: `critic ${round}` }); await run({ kind: 'lane', phase: 'critic', timeout: 1 })
+      }
+      yield initMessage(); await prompt.next()
+      await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
+      for (const round of [1, 2]) { await criticRound(round); await transition({ phase: 'critic', tool_use_id: `critic-${round}` }) }
+      writeFileSync(mailbox, 'DECISION DoD 1: a listing of the documents present at the bound\n')
+      const decision = await prompt.next(); injected.push(decision.value.message.content)
+      await criticRound(3)
+      criticBrief = readFileSync(join(f.dir, '.lane', 'critic-brief.md'), 'utf8')
+    })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, knowledgeBaseProjectRoot: f.root, contract: f.contract, mailbox, timeout: 10, hard: false }, {
+      query, resolvePilotModels: models, log: (line: string) => logged.push(line), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 5_000, dodDecisions: { pollMs: 10 } },
+    })
+    const request = join(f.dir, '.lane', 'dod-decision-request.md')
+    expect(logged).toContain(`decision request: ${realpathSync(request)} — disputed DoD 1; the run's parent answers in ${mailbox} with one line "DECISION DoD <n>: <reading>" within 15 min, else the narrowest reading that satisfies the card's words applies`)
+    expect(readFileSync(request, 'utf8')).toContain(`Term (card, verbatim): ${term}`)
+    expect(injected).toEqual(["Binding decision from the run's parent on DoD 1 (runner-owned, trusted): a listing of the documents present at the bound. Keep the plan to this reading; the next critic round is bound to it."])
+    expect(criticBrief).toContain("- DoD 1, decided by the run's parent: a listing of the documents present at the bound")
+    expect(result.summary.dod_disputes).toMatchObject([{ criterion: 1, term, rounds: [1, 2], resolution: { source: 'parent', reading: 'a listing of the documents present at the bound' } }])
   })
 
   it('re-prompts after a tdd-lane end_turn and completes on the next turn', async () => {

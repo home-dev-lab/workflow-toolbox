@@ -14,6 +14,7 @@ import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { adaptiveRoundDecision, hasPerSectionAttackAccount, reviewConvergenceDecision, verdictFromReport } from './lifecycle-review-policy.mjs'
 import { detectFailedTestFramework } from './host/test-framework-detection.mjs'
+import { bindingDecisionsSection, createDodEscalation, DOD_DECISION_REQUEST_FILE, withDisputedDodTermsSection } from './lifecycle-dod-dispute.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -201,6 +202,16 @@ function withFindingsToRouteSection(content, findings) {
   const insertAt = match.index + match[0].length
   // eslint-disable-next-line sonarjs/super-linear-regex
   return `${content.slice(0, insertAt).replace(/\s*$/, '')}\n${additions.join('\n')}\n${content.slice(insertAt).replace(/^\s*/, '')}`
+}
+// Every section the runner appends to a pilot report, in one place: the pilot never authors these.
+function withRunnerOwnedReportSections(content, routedCards, state) {
+  const routed = withFindingsToRouteSection(withRoutedCardsSection(content, routedCards), state.findingsToRoute)
+  const questioned = state.partial?.question ? withQuestionForParent(routed, state.partial.question) : routed
+  return withDisputedDodTermsSection(questioned, state.dodDisputes)
+}
+function planAcceptanceReading(laneDir, term) {
+  if (term === null) return null
+  return acceptanceEntries(readRegularFile(path.join(laneDir, 'plan.md')) ?? '').get(term)?.[0]?.join(' ') || null
 }
 function withQuestionForParent(content, question) {
   // eslint-disable-next-line sonarjs/super-linear-regex
@@ -459,7 +470,7 @@ function initialLifecycleState() {
     reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewBase: null, pendingReviewBase: null, findingsToRoute: [], reviewWarnings: [], unresolvedFindings: [], criticEmptyRetries: 0,
     handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
     resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
-    pendingStop: null, stopped: false,
+    pendingStop: null, stopped: false, dodDisputes: [],
   }
 }
 
@@ -535,7 +546,8 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
     timeline.ended_at = endedAt
     const routed = state.findingsToRoute.length > 0 ? `\n## Findings to route\n${state.findingsToRoute.map(routedFindingRow).join('\n')}\n` : ''
     const unresolved = state.partial.findings.length > 0 ? `Unresolved findings: ${state.partial.findings.join('; ')}\n` : ''
-    const report = `# SDK pilot partial report\n\nPartial: ${state.partial.reason}\nPhase reached: ${phase}\nReason: ${state.partial.reason}\nFinalization: ${reason}\n${unresolved}${routed}`
+    const partialReport = `# SDK pilot partial report\n\nPartial: ${state.partial.reason}\nPhase reached: ${phase}\nReason: ${state.partial.reason}\nFinalization: ${reason}\n${unresolved}${routed}`
+    const report = withDisputedDodTermsSection(partialReport, state.dodDisputes)
     writeRegularFile(path.join(laneDir, 'pilot-report.md'), report)
     state.pilotReportDigest = sha256(report)
     persistTimeline()
@@ -600,6 +612,7 @@ export function createLifecycleStateMachine({
   routeFinding = null,
   resolveRoutedFinding = null,
   onBoundaryStop = null,
+  dodDecisions = {},
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
@@ -757,7 +770,7 @@ export function createLifecycleStateMachine({
       : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
     const priorRounds = phase === 'critic' ? state.priorCriticRounds : state.priorReviewReports
     const briefBase = phase === 'review' && state.priorReviewReports.length > 0 && state.reviewBase ? state.reviewBase : constructionBase
-    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine }
+    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine, bindingDecisions: phase === 'critic' ? bindingDecisionsSection(state.dodDisputes) : '' }
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
@@ -801,9 +814,10 @@ export function createLifecycleStateMachine({
     },
   })
   const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop })
+  const dodEscalation = createDodEscalation({ state, dodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term) => planAcceptanceReading(laneDir, term), writeRequest: writeRegularFile, now }, dodDecisions)
   function run(args) {
     if (state.stopped) return stoppedRefusal()
-    return lifecycleRun(args)
+    return dodEscalation.beforeLane(args).then(() => lifecycleRun(args))
   }
   const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
   function transition(event) {
@@ -928,7 +942,7 @@ export function createLifecycleStateMachine({
         state.planRound += 1
         const decision = adaptiveRoundDecision(state.priorCriticRounds, FIXED_CRITIC_ROUNDS, MAX_CRITIC_ROUNDS, state.criticPlateauUsed)
         state.criticPlateauUsed = decision.plateauUsed
-        if (decision.continue) next = 'plan'
+        if (decision.continue) { next = 'plan'; resultDetail = dodEscalation.escalate() }
         else {
           const reason = `plan not approved after ${state.planRound} critic rounds`
           state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
@@ -1080,9 +1094,7 @@ export function createLifecycleStateMachine({
           }
         }
       }
-      content = withRoutedCardsSection(content, timeline.routed_cards)
-      content = withFindingsToRouteSection(content, state.findingsToRoute)
-      if (state.partial?.question) content = withQuestionForParent(content, state.partial.question)
+      content = withRunnerOwnedReportSections(content, timeline.routed_cards, state)
     }
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let laneContext = content
@@ -1287,6 +1299,6 @@ export function createLifecycleStateMachine({
     }),
   })
   Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })
-  Object.defineProperty(server, 'requestStop', { value: requestStop })
+  Object.defineProperties(server, { requestStop: { value: requestStop }, dodDisputes: { value: () => structuredClone(state.dodDisputes) } })
   return server
 }

@@ -68,6 +68,11 @@ Inspect the .lane/summary.json, .lane/usage.json, .lane/cost.json, .lane/sdk-tra
 .lane/pilot-report.md files. Exit 0 is a completed full run, exit 2 is a completed partial run, and exit 1
 is incomplete or failed. Do not infer completion from model prose: the runner requires its correlated
 `accepted phase=awaiting_fidelity` lifecycle receipt and a pilot report.
+While the run is active, watch the log for a line starting `decision request:`. Open the
+`dod-decision-request.md` it names and read the disputed criterion, the plan's reading and the
+critic's reading. Decide the reading yourself, as the run's parent, and append one line
+`DECISION DoD <n>: <reading>` to the mailbox that log line names. Never forward the question to the
+user. Answer within 15 minutes; after that the runner applies the narrowest reading and records it.
 While the run is active, the lane's usage.json receipt is atomically refreshed for each SDK assistant usage
 receipt. What is running uses those receipts for live phase and run totals; delegated lane usage is
 added when that lane ends because its CLI does not expose partial usage.
