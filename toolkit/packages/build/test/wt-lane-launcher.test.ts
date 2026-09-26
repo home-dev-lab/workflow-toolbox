@@ -1267,19 +1267,14 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       '',
     ])
   })
-  it('hands the lane child an executable WT_SUITE_LOCK_CMD for the plugin suite-lock CLI', () => {
+  it('hands the lane child an executable WT_SUITE_LOCK_CMD for the plugin suite-lock runner', () => {
     const f = fixture('suite-lock-cmd')
     const res = run(f, ['--timeout', '1']); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     const command = readFileSync(join(f.dir, 'suite-lock-cmd'), 'utf8')
-    const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock.cmd' : 'wt-suite-lock.mjs')
+    const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs')
     expect(command).toBe(cli)
     expect(existsSync(cli)).toBe(true)
-    const help = process.platform === 'win32'
-      ? spawnSync(cli, ['--help'], { encoding: 'utf8', shell: true })
-      : spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' })
-    expect(help.status, help.stderr).toBe(0)
-    expect(help.stdout).toContain('wt-suite-lock.mjs run')
   })
   it.skipIf(!ZSH_WORKS)('runs WT_SUITE_LOCK_CMD as one executable under zsh (skips: zsh unavailable)', () => {
     const f = fixture('suite-lock-run-zsh')

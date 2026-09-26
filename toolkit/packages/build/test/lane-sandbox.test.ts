@@ -196,8 +196,8 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(fs.ensured).toContain(lockRoot)
   })
 
-  it('resolves the suite-lock CLI a lane runs to the plugin bin/ file that exists, and refuses when it is absent', () => {
-    const cli = join(ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs')
+  it('resolves the suite-lock runner a lane runs to the plugin bin/ file that exists, and refuses when it is absent', () => {
+    const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs')
     expect(sandbox.suiteLockCli()).toBe(cli)
     expect(sandbox.suiteLockCli({ isFile: (file) => file === cli })).toBe(cli)
     expect(() => sandbox.suiteLockCli({ isFile: () => false })).toThrow(`the suite-lock CLI is missing at ${cli}; update or reinstall workflow-toolbox`)

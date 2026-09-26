@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +9,7 @@ import { acquireSuiteLock, readSuiteLock, releaseSuiteLock, spawnNeedsShell, win
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
+const RUNNER = join(ROOT, 'plugin/bin/wt-suite-lock-run.mjs')
 const roots: string[] = []
 
 afterEach(() => {
@@ -125,6 +126,34 @@ describe('wt-suite-lock CLI', () => {
     expect(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8')).toContain(`"pid": ${process.pid}`)
     expect(cli(['release', '--force'], root).status).toBe(0)
     expect(releaseSuiteLock(lease)).toBe(true)
+  })
+
+  it.skipIf(process.platform === 'win32')('runs commands named status and run literally through WT_SUITE_LOCK_CMD in zsh', () => {
+    const root = tempRoot('literal-zsh')
+    const bin = join(root, 'bin')
+    const stub = '#!/bin/sh\nprintf "literal command: %s\\n" "$0"\nexit 7\n'
+    writeFileSync(join(root, 'status'), stub)
+    writeFileSync(join(root, 'run'), stub)
+    chmodSync(join(root, 'status'), 0o755)
+    chmodSync(join(root, 'run'), 0o755)
+    for (const command of ['status', 'run']) {
+      const result = spawnSync('zsh', ['-c', '"$WT_SUITE_LOCK_CMD" "$1"', 'zsh', command], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${root}${delimiter}${process.env.PATH}`, WT_SUITE_LOCK_CMD: RUNNER, WT_SUITE_LOCK_DIR: bin },
+      })
+      expect(result.status).toBe(7)
+      expect(result.stdout).toContain(`literal command: ${join(root, command)}`)
+    }
+  })
+
+  it('rejects an unknown subcommand with usage and does not run it', () => {
+    const root = tempRoot('unknown-subcommand')
+    const marker = join(root, 'statsu-ran')
+    const result = cli(['statsu', process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran')`], root)
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('unknown subcommand: statsu')
+    expect(result.stderr).toContain('Usage:')
+    expect(existsSync(marker)).toBe(false)
   })
 })
 

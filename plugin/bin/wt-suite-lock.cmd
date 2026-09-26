@@ -1,2 +1,2 @@
 @echo off
-node "%~dp0wt-suite-lock.mjs" run -- %*
+node "%~dp0wt-suite-lock.mjs" %*

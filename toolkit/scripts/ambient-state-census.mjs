@@ -36,6 +36,7 @@ export const ambientStateAllowList = new Map([
   ["packages/build/test/lane-saturation-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case runs a controlled fixture process used only for saturation identity'],
   ["packages/build/test/lane-saturation-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {#2", 'case runs a controlled fixture process used only for saturation identity'],
   ["packages/build/test/lane-saturation-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {#3", 'case runs a controlled fixture process used only for saturation identity'],
+  ["packages/build/test/suite-lock.test.ts:inherited-env-to-child:const result = spawnSync('zsh', ['-c', '\"$WT_SUITE_LOCK_CMD\" \"$1\"', 'zsh', command], {", 'zsh regression fixture supplies its lock root, runner, and PATH stubs explicitly; inherited plugin-location state is not read'],
   ["packages/build/test/lsp-root.test.ts:short-negative-output-match:expect(output).not.toContain('//')", 'assertion is over generated fixture output, not ambient process output'],
   ["packages/build/test/merge-chain-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case pins the hook payload and suite journal; no plugin-location lookup occurs'],
   ["packages/build/test/merge-target-guard-hook.test.ts:inherited-env-to-child:const res = spawnSync(process.execPath, [HOOK], {", 'case pins the hook payload and suite journal; no plugin-location lookup occurs'],
