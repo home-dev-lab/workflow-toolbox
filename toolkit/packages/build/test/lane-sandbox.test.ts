@@ -203,6 +203,20 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(late).not.toContain(`${HOME}/.config`)
   })
 
+  it('compares overlapping mounts with case folding only on a case-insensitive filesystem', () => {
+    const bin = '/srv/Tools/cli'
+    const fs = Object.assign(fakeFs({ [bin]: 'cli' }, [HOME, '/work/tree', '/srv', '/srv/Tools', '/srv/tools/state']), { caseInsensitive: (file: string) => file.startsWith('/srv/') })
+    const [, args] = plan({ bin, fs, paths: { readable: ['/srv'] }, optionEnv: { WT_LANE_SANDBOX_WRITE: '/srv/tools/state' } }).wrap(bin, [])
+    const ro = flat(args, '--ro-bind-try')
+    expect(ro).toContain(bin)
+    expect(ro).not.toContain('/srv/Tools')
+  })
+
+  it('refuses a bind spelling with symlink/.. before lexical normalization can conceal its target', () => {
+    const fs = fakeFs({ '/opt/tools/cli': 'cli' }, [HOME, '/work/tree', '/mnt/links', '/opt/tools', '/opt/tools/deep', '/opt/tools/state'], { '/mnt/links/jump': '/opt/tools/deep' })
+    expect(() => plan({ bin: '/opt/tools/cli', fs, paths: { readable: ['/mnt/links'] }, optionEnv: { WT_LANE_SANDBOX_WRITE: '/mnt/links/jump/../state' } })).toThrow(/refusing path .*parent traversal/)
+  })
+
   it('recreates a symlinked executable inside the sandbox so its real directory and sibling helper are visible', () => {
     const invoked = '/links/tool'
     const real = '/real/bin/tool'
@@ -765,6 +779,30 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
       expect(result.stdout).toBe('BINARY_OK\n')
     } finally { p.dispose() }
   })
+
+  for (const aliasHome of [false, true]) {
+    it(`PATH reaches the selected codex directly inside the private home (${aliasHome ? 'symlinked HOME' : 'symlinked executable'})`, () => {
+      const root = tempRoot('private-path')
+      const actualHome = join(root, 'home'); const home = aliasHome ? join(root, 'alias') : actualHome
+      const worktree = join(root, 'worktree'); const second = join(root, 'second')
+      const codexHome = join(actualHome, '.codex')
+      for (const dir of [codexHome, worktree, second]) mkdirSync(dir, { recursive: true })
+      if (aliasHome) symlinkSync(actualHome, home)
+      const actual = join(codexHome, aliasHome ? 'codex' : 'actual')
+      writeFileSync(actual, '#!/bin/sh\nprintf "NEW\\n"\n'); chmodSync(actual, 0o755)
+      if (!aliasHome) symlinkSync('actual', join(codexHome, 'codex'))
+      const fallback = join(second, 'codex')
+      writeFileSync(fallback, '#!/bin/sh\nprintf "OLD\\n"\n'); chmodSync(fallback, 0o755)
+      const pathValue = `${join(home, '.codex')}:${second}:${process.env.PATH}`
+      const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue }, paths: { readable: [second] } })
+      const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
+      const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
+      try {
+        expect(result.status, String(result.stderr)).toBe(0)
+        expect(String(result.stdout)).toBe('NEW\n')
+      } finally { p.dispose() }
+    })
+  }
 
   it('exposes NOTHING under $HOME beyond the named allow-list (invariant canary)', () => {
     const f = homeFixture()

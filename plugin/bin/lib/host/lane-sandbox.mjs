@@ -59,11 +59,21 @@ export class LaneSandboxRefusal extends Error {}
 
 const realFs = {
   exists: (file) => existsSync(file),
-  realpath: (file) => { try { return realpathSync(file) } catch { return null } },
+  realpath: (file) => { try { return realpathSync.native(file) } catch { return null } },
+  caseInsensitive: (file) => {
+    let probe = file
+    while (!existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe)
+    const name = path.basename(probe)
+    const index = name.search(/[a-z]/i)
+    if (index < 0) return false
+    const letter = name[index]
+    const other = path.join(path.dirname(probe), name.slice(0, index) + (letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase()) + name.slice(index + 1))
+    try { const a = statSync(probe); const b = statSync(other); return a.dev === b.dev && a.ino === b.ino } catch { return false }
+  },
   isFile: (file) => { try { return statSync(file).isFile() } catch { return false } },
   // Windows has no execute bit to check (a .cmd is invoked by name resolution, never by mode); the
   // check is POSIX-only, and always true on win32.
-  isExecutable: (file) => { if (process.platform === 'win32') return true; try { accessSync(file, constants.X_OK); return true } catch { return false } },
+  isExecutable: (file) => { if (process.platform === 'win32') { return true } try { accessSync(file, constants.X_OK); return true } catch { return false } },
   isDir: (file) => { try { return statSync(file).isDirectory() } catch { return false } },
   readText: (file) => { try { return readFileSync(file, 'utf8') } catch { return null } },
   ensureDir: (directory) => { try { mkdirSync(directory, { recursive: true, mode: 0o700 }) } catch { /* bind-try then leaves it private */ } },
@@ -412,8 +422,9 @@ function sandboxAvailability({ optionEnv, platform, bwrap, probe, fs }) {
 // The realpath of the deepest existing ancestor, with the rest appended: a path that does not exist
 // yet (a log file) is still compared by where it would really land.
 function canonicalPath(candidate, fs) {
+  if (candidate.split('/').includes('..')) throw new LaneSandboxRefusal(`refusing path ${candidate}: parent traversal in a bind cannot be checked safely`)
   const suffix = []
-  let probe = path.resolve(candidate)
+  let probe = candidate
   while (true) {
     const real = fs.realpath(probe)
     if (real) return path.join(real, ...suffix)
@@ -425,10 +436,14 @@ function canonicalPath(candidate, fs) {
 }
 
 const within = (child, parent) => child === parent || child.startsWith(`${parent}${path.sep}`)
+const withinOnDisk = (child, parent, fs) => {
+  const insensitive = fs.caseInsensitive?.(child) || fs.caseInsensitive?.(parent)
+  return within(insensitive ? child.toLowerCase() : child, insensitive ? parent.toLowerCase() : parent)
+}
 
 function laneWritablePredicate(roots, fs) {
   const canonicalRoots = roots.map((root) => canonicalPath(root, fs))
-  return (candidate) => canonicalRoots.some((root) => within(canonicalPath(candidate, fs), root))
+  return (candidate) => canonicalRoots.some((root) => withinOnDisk(canonicalPath(candidate, fs), root, fs))
 }
 
 // A writable bind that contains (or sits inside) a CLI's config/auth location would override its
@@ -439,7 +454,7 @@ function refuseProtectedOverlap(writable, protectedPaths, fs) {
     const root = canonicalPath(bind, fs)
     for (const guarded of protectedPaths) {
       const target = canonicalPath(guarded, fs)
-      if (within(target, root) || within(root, target)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
+      if (withinOnDisk(target, root, fs) || withinOnDisk(root, target, fs)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
     }
   }
 }
@@ -448,7 +463,7 @@ function refuseProtectedOverlap(writable, protectedPaths, fs) {
 // private remap target, or protected location. Narrow only executable mounts; other late overlays
 // (git pointer files and private cache packages) must already satisfy the same invariant.
 function safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs) {
-  const collision = (overlay) => guarded.find((target) => within(canonicalPath(target, fs), canonicalPath(overlay, fs)))
+  const collision = (overlay) => guarded.find((target) => withinOnDisk(canonicalPath(target, fs), canonicalPath(overlay, fs), fs))
   for (const overlay of otherOverlays) {
     const target = collision(overlay)
     if (target) throw new LaneSandboxRefusal(`refusing late read-only overlay ${overlay}: it covers ${target}`)
@@ -463,6 +478,56 @@ function safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs) {
     }
     return fallback
   })
+}
+
+// A bind at the real target does not recreate an invocation beneath a private remap (nor
+// beneath an aliased HOME). Mount the selected entry point at its PATH spelling last.
+function privateExecutableOverlays(selected, env, fs) {
+  if (!selected || !path.isAbsolute(selected)) return []
+  const privateHome = path.join(home(env), '.codex')
+  if (!within(selected, privateHome)) return []
+  const source = fs.realpath(selected)
+  return source && fs.isFile(source) ? [{ inside: selected, outside: source }] : []
+}
+
+// Evaluate the first PATH hit from the ordered, emitted mounts. A bind-try with no source
+// contributes nothing; a later private remap hides an earlier executable unless a later file
+// overlay restores it. Resolve host symlinks at the source, not at the sandbox destination.
+function refuseUnreachableExecutable(prefix, selected, env, fs) {
+  if (!selected) return
+  const name = path.basename(selected)
+  const expected = fs.realpath(selected) ?? selected
+  const mountedSource = (candidate, seen = new Set()) => {
+    if (seen.has(candidate)) return null
+    seen.add(candidate)
+    let source = null
+    let boundAt = -1
+    let fileBind = false
+    for (let i = 0; i < prefix.length; i += 1) {
+      if (!['--bind', '--bind-try', '--ro-bind', '--ro-bind-try'].includes(prefix[i])) continue
+      const from = prefix[i + 1]; const to = prefix[i + 2]
+      if (!within(candidate, to) || (!fs.isFile(from) && !fs.isDir(from) && !SYSTEM_READ_ONLY.includes(from))) continue
+      source = path.join(from, path.relative(to, candidate))
+      boundAt = i
+      fileBind = fs.isFile(from)
+    }
+    const linkAt = prefix.findIndex((item, i) => item === '--symlink' && prefix[i + 2] === candidate)
+    if (linkAt > boundAt) return mountedSource(prefix[linkAt + 1], seen)
+    // A directory bind preserves symlinks in its source; their target must be mounted too.
+    // A file bind instead dereferences its source at mount time.
+    const real = source && fs.realpath(source)
+    if (real && real !== source && !fileBind) return mountedSource(real, seen)
+    return source
+  }
+  for (const directory of String(env.PATH ?? '').split(path.delimiter)) {
+    if (!path.isAbsolute(directory)) continue
+    const candidate = path.join(directory, name)
+    const source = mountedSource(candidate)
+    if (!source || !fs.isFile(source)) continue
+    if ((fs.realpath(source) ?? source) === expected) return
+    throw new LaneSandboxRefusal(`refusing executable ${selected}: PATH first reaches ${candidate} from ${source}, not the selected executable`)
+  }
+  throw new LaneSandboxRefusal(`refusing executable ${selected}: PATH cannot reach the selected executable through the emitted mounts`)
 }
 
 // The egress log is written by the host-side proxy; a path the lane can write (or plant a symlink
@@ -580,6 +645,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   fs.ensureDir(runtimeDir)
 
   const selected = PROFILES[profile]({ env, args, fs, runtimeDir, readonlyCwd, base })
+  const selectedCommand = profile === 'codex' ? findOnPath('codex', env.PATH, fs) : null
   const extras = operatorExtras(optionEnv, env, fs)
   const git = workdir.length ? gitPaths(workdir[0], env, fs) : { readable: [], writable: [], overlaysRo: [] }
   for (const overlay of git.overlaysRo) fs.ensureFile(overlay)
@@ -613,6 +679,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const otherOverlays = [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...(selected.readOnlyOverlaysRemap ?? []).map(({ inside }) => inside)]
   const guarded = [...writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), ...(selected.protectedPaths ?? []), ...(socketDir ? [socketDir] : [])]
   const executableOverlays = safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs)
+  const privateOverlays = privateExecutableOverlays(selectedCommand, env, fs)
   const readable = [...rawReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
   const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
   const bridgeState = { disposed: false }
@@ -627,9 +694,10 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
     executableSymlinks: executableLinks,
     // Executable directories land late only if they cannot cover a writable/private/protected path.
     readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...executableOverlays],
-    readOnlyOverlaysRemap: selected.readOnlyOverlaysRemap ?? [],
+    readOnlyOverlaysRemap: [...(selected.readOnlyOverlaysRemap ?? []), ...privateOverlays],
     env, chdir: workdir[0] ?? home(env), fs, socketDir,
   })
+  refuseUnreachableExecutable(prefix, selectedCommand, env, fs)
   if (selected.codexHome) prefix.push('--setenv', 'CODEX_HOME', selected.codexHome)
   prefix.push(...proxyEnvironment(bridges.find((item) => item.proxy)))
 
