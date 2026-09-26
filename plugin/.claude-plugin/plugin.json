@@ -225,14 +225,14 @@
       "title": "Executor code model",
       "default": "",
       "required": false,
-      "description": "Per-phase override. Empty: claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-astra. Environment fallback: WT_EXECUTOR_CODE_MODEL."
+      "description": "Per-phase override. Empty: claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-sol. Environment fallback: WT_EXECUTOR_CODE_MODEL."
     },
     "executor_review_model": {
       "type": "string",
       "title": "Executor review model",
       "default": "",
       "required": false,
-      "description": "Per-phase override. Empty: claude-sdk opus / hard opus; gpt-lane openai/gpt-6-astra (reviews Sol's code) / hard openai/gpt-6-sol. Environment fallback: WT_EXECUTOR_REVIEW_MODEL."
+      "description": "Per-phase override. Empty: claude-sdk opus / hard opus; gpt-lane openai/gpt-6-astra (reviews Sol's code) / hard openai/gpt-6-astra. Environment fallback: WT_EXECUTOR_REVIEW_MODEL."
     },
     "executor_refutation_model": {
       "type": "string",
@@ -242,20 +242,20 @@
       "description": "Per-phase override. Empty: claude-sdk opus in every cell; gpt-lane openai/gpt-6-astra in every cell. Environment fallback: WT_EXECUTOR_REFUTATION_MODEL."
     },
     "executor_critic_variant": {
-      "type": "string", "title": "Executor critic variant", "default": "max", "required": false,
-      "description": "Reasoning variant for critic executors. Environment fallback: WT_EXECUTOR_CRITIC_VARIANT."
+      "type": "string", "title": "Executor critic variant", "default": "", "required": false,
+      "description": "Empty: claude-sdk xhigh; gpt-lane max. Environment fallback: WT_EXECUTOR_CRITIC_VARIANT."
     },
     "executor_code_variant": {
       "type": "string", "title": "Executor code variant", "default": "", "required": false,
-      "description": "Reasoning variant for code executors. Empty selects xhigh for GPT-5.6 Sol implementation and high otherwise. Environment fallback: WT_EXECUTOR_CODE_VARIANT."
+      "description": "Empty: claude-sdk medium; gpt-lane high (GPT-5.6 Sol code uses xhigh). Environment fallback: WT_EXECUTOR_CODE_VARIANT."
     },
     "executor_review_variant": {
-      "type": "string", "title": "Executor review variant", "default": "medium", "required": false,
-      "description": "Reasoning variant for review executors. Environment fallback: WT_EXECUTOR_REVIEW_VARIANT."
+      "type": "string", "title": "Executor review variant", "default": "", "required": false,
+      "description": "Empty: claude-sdk xhigh; gpt-lane medium. Environment fallback: WT_EXECUTOR_REVIEW_VARIANT."
     },
     "executor_refutation_variant": {
-      "type": "string", "title": "Executor refutation variant", "default": "medium", "required": false,
-      "description": "Reasoning variant for refutation executors. Environment fallback: WT_EXECUTOR_REFUTATION_VARIANT."
+      "type": "string", "title": "Executor refutation variant", "default": "", "required": false,
+      "description": "Empty: claude-sdk xhigh; gpt-lane medium. Environment fallback: WT_EXECUTOR_REFUTATION_VARIANT."
     },
     "configDir": {
       "type": "string",

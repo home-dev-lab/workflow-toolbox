@@ -100,7 +100,36 @@ describe('workflow-toolbox plugin option resolver', () => {
 
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_code_model: '' } } } }))
     const defaultRow = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest }).find((row: { option: string }) => row.option === 'executor_code_model')
-    expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-astra', source: 'default' })
+    expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-sol', source: 'default' })
+  })
+
+  it('describes every empty executor model option using the resolved standard and hard defaults', () => {
+    const f = fixture({})
+    const rows = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest })
+    for (const role of ['critic', 'code', 'review', 'refutation'] as const) {
+      const cells = ['claude-sdk', 'gpt-lane'].map((family) => [false, true].map((hard) => resolveExecutorProfile({
+        worktree: f.project, route: 'FULL', hard, env: f.env, settingsEnv: {},
+        resolveConsentImpl: () => ({ outcome: family === 'gpt-lane' ? 'true' : 'not_true' }),
+      }).models[role]))
+      expect(rows.find((row: { option: string }) => row.option === `executor_${role}_model`)).toMatchObject({
+        effective: `claude-sdk ${cells[0]![0]} / hard ${cells[0]![1]}; gpt-lane ${cells[1]![0]} / hard ${cells[1]![1]}`,
+        source: 'default',
+      })
+    }
+  })
+
+  it('describes both executor effort families when no variant override is set', () => {
+    const f = fixture({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_critic_variant: '' } } } })
+    const rows = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest })
+    const profiles = ['not_true', 'true'].map((outcome) => resolveExecutorProfile({
+      worktree: f.project, route: 'FULL', env: f.env, settingsEnv: {}, resolveConsentImpl: () => ({ outcome }),
+    }))
+    for (const role of ['critic', 'code', 'review', 'refutation'] as const) {
+      expect(rows.find((row: { option: string }) => row.option === `executor_${role}_variant`)).toMatchObject({
+        effective: `claude-sdk ${profiles[0].variants[role]}; gpt-lane ${profiles[1].variants[role]}`,
+        source: 'default', defaultValue: '',
+      })
+    }
   })
 
   it('reports the same fallback source as both model resolvers for every empty model option', () => {

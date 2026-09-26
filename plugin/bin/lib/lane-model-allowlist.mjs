@@ -1,4 +1,5 @@
 import { readWorkflowToolboxPluginOption, resolveWorkflowToolboxOption } from './plugin-options.mjs'
+import { EXECUTOR_VARIANT_BASES } from './executor-defaults.mjs'
 
 export const DEFAULT_LANE_MODELS = Object.freeze([
   'openai/gpt-5.6-luna',
@@ -14,10 +15,9 @@ const KNOWN_VARIANTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
 
 // Owner decision 2026-09-24 (wt-suite #4039): pilots and implementation run at medium. Hard pilots
 // and orchestrators keep high.
-// Owner decision 2026-09-26 12:17 +01:00 (GPT lane executor role table): critic max, code high,
-// review medium, refutation medium. Astra reviews Sol's code (avoids same-model self-review);
-// Artificial Analysis ranks Astra medium above Sol max for +45% cost, and our own bench found Sol
-// already correct at medium-to-high on a hard task, with high->xhigh the worst-value step.
+// Executor role bases split by model family: openai/* uses the 2026-09-26 GPT table
+// (critic max, code high, review/refutation medium); Claude aliases and claude-* retain
+// critic/review/refutation xhigh and code medium (#4039). Pilot bases are unchanged.
 const VARIANT_ROLES = Object.freeze({
   pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'medium'],
   pilotHard: ['pilot_hard_variant', 'WT_PILOT_HARD_VARIANT', 'high'],
@@ -25,10 +25,10 @@ const VARIANT_ROLES = Object.freeze({
   sdkPilot: ['sdk_pilot_variant', 'WT_SDK_PILOT_VARIANT', 'medium'],
   sdkPilotHard: ['sdk_pilot_hard_variant', 'WT_SDK_PILOT_HARD_VARIANT', 'high'],
   sdkOrchestrator: ['sdk_orchestrator_variant', 'WT_SDK_ORCHESTRATOR_VARIANT', 'high'],
-  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT', 'max'],
-  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT', 'high'],
-  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT', 'medium'],
-  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT', 'medium'],
+  critic: ['executor_critic_variant', 'WT_EXECUTOR_CRITIC_VARIANT'],
+  code: ['executor_code_variant', 'WT_EXECUTOR_CODE_VARIANT'],
+  review: ['executor_review_variant', 'WT_EXECUTOR_REVIEW_VARIANT'],
+  refutation: ['executor_refutation_variant', 'WT_EXECUTOR_REFUTATION_VARIANT'],
 })
 
 export function variantRefusal(variant, model) {
@@ -39,7 +39,8 @@ export function variantRefusal(variant, model) {
 export function resolveRoleVariant(role, model, { env = process.env, settingsEnv = {}, readPluginOption = readWorkflowToolboxPluginOption } = {}) {
   const definition = VARIANT_ROLES[role]
   if (!definition) throw new Error(`unknown variant role: ${String(role)}`)
-  const [option, envKey, base] = definition
+  const [option, envKey, pilotBase] = definition
+  const base = pilotBase ?? EXECUTOR_VARIANT_BASES[model.startsWith('openai/') ? 'openai' : 'claude'][role]
   const plugin = readPluginOption(option, { env })
   for (const [bag, source] of [[plugin.present && plugin.value ? { [envKey]: plugin.value } : {}, 'plugin option'], [env, 'env'], [settingsEnv, 'settings']]) {
     if (!Object.prototype.hasOwnProperty.call(bag, envKey)) continue
