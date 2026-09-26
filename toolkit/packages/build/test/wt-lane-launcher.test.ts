@@ -293,12 +293,34 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     )
   }, 15_000)
 
-  it('launches a model in the default lane model allow-list', () => {
+  it.each(['openai/gpt-6-sol', 'openai/gpt-6-luna'])('launches allowed GPT-6 lane model %s', (model) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
-    expect(run(f).status).toBe(0)
+    expect(run(f, [], model).status).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     expect(readFileSync(join(f.dir, 'spawned'), 'utf8')).toBe('spawned')
     expect(JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8')).state).not.toBe('launching')
+  })
+  it.each([
+    ['openai/gpt-6-sol', 'critic', 'max', 'role base'],
+    ['openai/gpt-6-sol', 'code', 'high', 'role base'],
+    ['openai/gpt-5.6-luna', 'critic', 'xhigh', 'role base (clamped from max)'],
+  ])('passes --role %s/%s through to the real opencode argv at %s', (model, role, effort, origin) => {
+    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"')
+    const result = run(f, ['--role', role], model)
+    expect(result.status, result.stderr).toBe(0)
+    const argvFile = join(f.dir, 'argv')
+    waitForFile(argvFile)
+    const argv = readFileSync(argvFile, 'utf8').trim().split('\n')
+    expect(argv.slice(argv.indexOf('--variant'), argv.indexOf('--variant') + 2)).toEqual(['--variant', effort])
+    waitFor(join(f.dir, '.lane', 'run.log'))
+    expect(readFileSync(join(f.dir, '.lane', 'run.log'), 'utf8')).toContain(`variant=${effort} origin=${origin}`)
+  })
+  it('refuses an explicit Luna max even with the unknown-variant escape hatch', () => {
+    const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"')
+    const result = run(f, ['--role', 'critic', '--variant', 'max', '--allow-unknown-variant'])
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('variant max is above the xhigh ceiling')
+    expect(existsSync(join(f.dir, 'argv'))).toBe(false)
   })
   it('refuses to launch when available memory is below the configured threshold', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
@@ -310,11 +332,11 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(result.stderr).toMatch(/^wt-lane: Refused: available memory \d+ MiB is below the required \d+ MiB; lower WT_LANE_MIN_AVAILABLE_MIB only after freeing or deliberately budgeting memory\.\n$/)
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
-  it.each(['google/gemini-3.6-flash', 'openai/gpt-5.6-sol-fast'])('refuses unlisted model %s before spawn', (model) => {
+  it.each(['google/gemini-3.6-flash', 'openai/gpt-5.6-sol-fast', 'openai/gpt-6-sol-fast'])('refuses unlisted model %s before spawn', (model) => {
     const f = fixture('printf spawned > "$PWD/spawned"')
     const res = run(f, [], model)
     expect(res.status).toBe(1)
-    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-astra); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
+    expect(res.stderr).toBe('wt-lane: Refused: model ' + model + ' is not in the lane model allow-list (openai/gpt-5.6-luna, openai/gpt-5.6-terra, openai/gpt-5.6-sol, openai/gpt-6-luna, openai/gpt-6-sol, openai/gpt-6-astra); set WT_LANE_MODELS to the full list to allow (it replaces the default).\n')
     expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
   it('honours a comma- or whitespace-separated WT_LANE_MODELS override with exact matching', () => {

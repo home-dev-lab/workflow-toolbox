@@ -13,7 +13,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const cases = [
   { option: 'lane_skills', envKey: 'WT_LANE_SKILLS', optionValue: 'option-skill', envValue: 'env-skill', defaultValue: '' },
-  { option: 'lane_models', envKey: 'WT_LANE_MODELS', optionValue: 'option/model', envValue: 'env/model', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-astra' },
+  { option: 'lane_models', envKey: 'WT_LANE_MODELS', optionValue: 'option/model', envValue: 'env/model', defaultValue: 'openai/gpt-5.6-luna,openai/gpt-5.6-terra,openai/gpt-5.6-sol,openai/gpt-6-luna,openai/gpt-6-sol,openai/gpt-6-astra' },
   { option: 'artifact_server', envKey: 'WT_ARTIFACT_SERVER', optionValue: false, envValue: '1', defaultValue: true },
   { option: 'artifact_server_roots', envKey: 'WT_ARTIFACT_SERVER_ROOTS', optionValue: 'option=/root', envValue: 'env=/root', defaultValue: null },
   { option: 'artifact_server_port', envKey: 'WT_ARTIFACT_SERVER_PORT', optionValue: 49123, envValue: '49124', defaultValue: null },
@@ -100,7 +100,48 @@ describe('workflow-toolbox plugin option resolver', () => {
 
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_code_model: '' } } } }))
     const defaultRow = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest }).find((row: { option: string }) => row.option === 'executor_code_model')
-    expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-5.6-sol / hard openai/gpt-6-astra', source: 'default' })
+    expect(defaultRow).toMatchObject({ effective: 'claude-sdk sonnet / hard opus; gpt-lane openai/gpt-6-sol / hard openai/gpt-6-sol', source: 'default' })
+  })
+
+  it('describes every empty executor model option using the resolved standard and hard defaults', () => {
+    const f = fixture({})
+    const rows = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest })
+    for (const role of ['critic', 'code', 'review', 'refutation'] as const) {
+      const cells = ['claude-sdk', 'gpt-lane'].map((family) => [false, true].map((hard) => resolveExecutorProfile({
+        worktree: f.project, route: 'FULL', hard, env: f.env, settingsEnv: {},
+        resolveConsentImpl: () => ({ outcome: family === 'gpt-lane' ? 'true' : 'not_true' }),
+      }).models[role]))
+      expect(rows.find((row: { option: string }) => row.option === `executor_${role}_model`)).toMatchObject({
+        effective: `claude-sdk ${cells[0]![0]} / hard ${cells[0]![1]}; gpt-lane ${cells[1]![0]} / hard ${cells[1]![1]}`,
+        source: 'default',
+      })
+    }
+  })
+
+  it('describes both executor effort families when no variant override is set', () => {
+    const f = fixture({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_critic_variant: '' } } } })
+    const rows = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest })
+    const profiles = ['not_true', 'true'].map((outcome) => resolveExecutorProfile({
+      worktree: f.project, route: 'FULL', env: f.env, settingsEnv: {}, resolveConsentImpl: () => ({ outcome }),
+    }))
+    for (const role of ['critic', 'code', 'review', 'refutation'] as const) {
+      expect(rows.find((row: { option: string }) => row.option === `executor_${role}_variant`)).toMatchObject({
+        effective: `claude-sdk ${profiles[0].variants[role]}; gpt-lane ${profiles[1].variants[role]}${role === 'code' ? ' (GPT-5.6 Sol code uses xhigh)' : ''}`,
+        source: 'default', defaultValue: '',
+      })
+    }
+  })
+
+  it('keeps every executor manifest description aligned with its derived default models and efforts', () => {
+    const f = fixture({})
+    const rows = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest })
+    for (const [option, schema] of Object.entries(manifest.userConfig)) {
+      if (!/^executor_.*_(model|variant)$/.test(option)) continue
+      const derived = String(rows.find((row: { option: string }) => row.option === option)?.effective)
+      // Manifest prose adds rationale and abbreviates repeated hard cells; names suffice.
+      const words = new Set(derived.match(/(?:openai\/gpt-[\w.-]+|opus|sonnet|haiku|fable|xhigh|medium|high|max)/g) ?? [])
+      for (const word of words) expect(schema.description, `${option}: missing ${word}`).toContain(word)
+    }
   })
 
   it('reports the same fallback source as both model resolvers for every empty model option', () => {

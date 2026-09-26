@@ -1,6 +1,7 @@
 import { resolveConsent } from './lane-consent-check-core.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { hasModelPluginValue, readWorkflowToolboxPluginOption } from './plugin-options.mjs'
+import { EXECUTOR_DEFAULTS } from './executor-defaults.mjs'
 
 // Owner decision 2026-09-22: every harness and SDK pilot/orchestrator cell runs on Opus. The 0.3.280
 // SDK floor makes the alias resolve to Opus 5.5, so hard cards no longer need a separate Fable route.
@@ -90,17 +91,6 @@ const EXECUTOR_KEYS = {
   review: ['executor_review_model', 'WT_EXECUTOR_REVIEW_MODEL'],
   refutation: ['executor_refutation_model', 'WT_EXECUTOR_REFUTATION_MODEL'],
 }
-const EXECUTOR_DEFAULTS = {
-  'gpt-lane': {
-    standard: { critic: 'openai/gpt-5.6-sol', code: 'openai/gpt-5.6-sol', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' },
-    hard: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-astra', review: 'openai/gpt-5.6-sol', refutation: 'openai/gpt-6-astra' },
-  },
-  'claude-sdk': {
-    standard: { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' },
-    hard: { critic: 'opus', code: 'opus', review: 'opus', refutation: 'opus' },
-  },
-}
-
 function assertProviderModel(value) {
   if (typeof value !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(value)) {
     throw new Error(`executor GPT override must be a provider model (provider/model); refused model value: ${String(value)}`)
