@@ -173,6 +173,8 @@ item" resumes nothing: nothing hands control back until whoever's waiting speaks
 promises next turn that doesn't exist. Nothing to do with willingness to keep going — exactly why
 it slips past every rule about deciding, announcing, not quietly narrowing scope — those govern
 what gets said, never fact that saying it and stopping IS the stop.
+Where the harness delivers a watcher's emission to an idle session, the watcher IS the engine in
+practice; verify that delivery before relying on it to resume work.
 
 **Operative rule: chain within same turn.** Verify last result, integrate it, pick next item,
 start it — only THEN say what needs saying, and only at a real milestone, not after every

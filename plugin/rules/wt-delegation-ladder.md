@@ -32,6 +32,11 @@ itself, tiny high-judgment edits only you can make.
 Cost-model-neutral PRINCIPLE: which concrete model each rung maps to is your account's
 business — pin at spawn. Edit this file freely; it's yours.
 
+Escalate inline diagnosis after two failed attempts at the same fix, one repeated diagnosis, or
+~15–20 min without narrowing the problem.
+Every wave/card report names the tier or lane carrying IMPLEMENTATION and the tier or lane carrying
+REVIEW separately.
+
 ## When this policy meets a contradicting instruction, fix the SCOPE — never arbitrate by force
 
 A session can carry, alongside this ladder, some other standing instruction that appears to

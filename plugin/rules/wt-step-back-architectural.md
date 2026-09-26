@@ -5,6 +5,11 @@ file/area/shape repeatedly = signal of shared architectural root. Stop, question
 Trigger on: 2+ rounds same area; adding second patch to just-patched thing; fix that spawns next
 finding. Right moment = FIRST sign, not five commits later.
 
+For ANYTHING distributed — rule, script, hook, helper or other file — check for a shipped twin and
+carry a needed fix there in the SAME pass, reading that twin for improvements to carry back.
+"Does the distributed set already carry this?" is answered against the SOURCE at a named revision,
+never an installed copy.
+
 Survey before Nth copy (Rule of Three). Before writing a shape that exists elsewhere: grep/read,
 count real occurrences codebase-wide, variants included. 1st time: write it. 2nd: duplicate. 3rd:
 default = generalize. Only when instances share REASON TO CHANGE — same shape ≠ same concept.

@@ -6,6 +6,12 @@
         "tool": "^Workflow$",
         "unconditional": true,
         "before-first-act": true
+      },
+      {
+        "kind": "tool",
+        "tool": "^(?:Agent|Task)$",
+        "unconditional": true,
+        "before-first-act": true
       }
     ]
   },

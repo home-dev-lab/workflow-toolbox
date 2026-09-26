@@ -30,6 +30,8 @@ taking the margin.
 
 ## Verify claims against their actual evidence
 
+**ANY surprise — good, bad, novel, first occurrence, mid-flow, off-task, harmless-looking — is an anomaly to EXPLAIN before labelling it.**
+
 **UI claim = RENDERED PIXELS.** Not API payload. Field can sit in JSON and be dropped before DOM.
 Drive real browser.
 
@@ -104,6 +106,8 @@ found. Fastest guard against explanation built from quote that say opposite of c
 from it.
 
 ## High-impact mechanisms require three answers
+
+**Shipping anything requires an explicit CROSS-PLATFORM verdict:** classify each dependency as throwing, degrading to a named `unknown`, or silently returning a plausible value.
 
 **High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
 published surface — answer all three:**

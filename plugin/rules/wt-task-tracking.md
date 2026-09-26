@@ -14,6 +14,9 @@ are what queue is ordered by, not decoration. Trackers without native dependency
 written convention (e.g. `Depends-on: #<id>` in description) plus mechanical check that only
 proposes or starts a card once all dependencies Done.
 
+Periodically sweep the whole Blocked list for satisfied dependencies without waiting for a closure;
+report cards with no `Depends-on:` line as the sweep's blind spot, not as confirmed unblocked.
+
 Queue spans categories trading off against each other (e.g. process/tooling infrastructure vs.
 product features)? State category priority explicitly, apply it when composing a batch — not
 case by case. Pick rule (e.g. "drain higher-priority category before starting the other"), treat

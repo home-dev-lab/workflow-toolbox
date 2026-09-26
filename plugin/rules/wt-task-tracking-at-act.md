@@ -25,7 +25,7 @@ comments saying same thing.
 Archive Done cards; never hard-delete. Closed card is durable record of how work went — thin
 pointer note isn't a substitute — deleting it destroys that history.
 
-That check covers one direction only: not starting too early. Says nothing about moment
+The dependency-start check covers one direction only: not starting too early. Says nothing about moment
 dependency closes — nothing moves dependent out of Blocked on its own, card can sit there fully
 unblocked, unnoticed. Closing a card sweeps cards naming it in a `Depends-on:` line, releases
 ones with no remaining blocker — same discipline removal sweep below applies to retired concept,

@@ -176,6 +176,28 @@ describe('shipped split rules', () => {
     }
   })
 
+  it('makes unconditional duties available without an act trigger and serves fan-out details on either route', () => {
+    const staticRule = (name: string) => readFileSync(join(ROOT, 'plugin/rules', `${name}.md`), 'utf8')
+    for (const [name, duties] of Object.entries({
+      'wt-verify-by-ground-truth': ['ANY surprise', 'first occurrence, mid-flow, off-task', 'Shipping anything requires an explicit CROSS-PLATFORM verdict', 'silently returning a plausible value'],
+      'wt-workflows-as-reasoning': ['ANY multi-agent fan-out', 'many fresh-context agents OR a Workflow'],
+      'wt-step-back-architectural': ['ANYTHING distributed', 'SOURCE at a named revision', 'never an installed copy'],
+      'wt-delegation-ladder': ['two failed attempts', 'one repeated diagnosis', '~15–20 min', 'IMPLEMENTATION', 'REVIEW separately'],
+      'wt-task-tracking': ['Periodically sweep the whole Blocked list', 'without waiting for a closure', 'no `Depends-on:` line'],
+      'wt-memory-hygiene': ['every disk fact is reachable AND every index/hub reference resolves', 'deliberate', 'operative principle and the invariant', 'no narrative, incident stories'],
+      'wt-answer-first-reporting': ["nothing hands control back", "watcher's emission to an idle session", 'watcher IS the engine'],
+    })) for (const duty of duties) expect(staticRule(name), `${name}: ${duty}`).toContain(duty)
+
+    const triggers = JSON.parse(readFileSync(join(ROOT, 'plugin/rules/wt-workflows-as-reasoning-at-act.spec.json'), 'utf8'))['on-demand'].triggers as Trigger[]
+    for (const tool of ['Workflow', 'Agent', 'Task']) {
+      expect(triggers.some((trigger) => trigger.kind === 'tool' && trigger['before-first-act'] && new RegExp(trigger.tool ?? '').test(tool)), tool).toBe(true)
+    }
+    expect(readFileSync(join(ROOT, 'plugin/rules/wt-workflows-as-reasoning-at-act.md'), 'utf8'))
+      .toContain('give COMPLETE listings')
+    expect(readFileSync(join(ROOT, 'plugin/rules/wt-task-tracking-at-act.md'), 'utf8'))
+      .toContain('The dependency-start check covers one direction only')
+  })
+
   it('restores the original in-file control and red-proof references', () => {
     expect(readFileSync(join(ROOT, 'plugin/rules/wt-verify-by-ground-truth.md'), 'utf8'))
       .toContain('Same family as control readable in both outcomes')
