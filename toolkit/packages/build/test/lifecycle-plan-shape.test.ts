@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acceptanceSection, containsPlanShape } from '../../../../plugin/bin/lib/lifecycle-plan-shape.mjs'
+import { acceptanceSection, containsPlanShape, PLAN_SHAPE_DESCRIPTION } from '../../../../plugin/bin/lib/lifecycle-plan-shape.mjs'
 
 const validPlan = `# Parser plan
 
@@ -23,6 +23,12 @@ Rejected: exercising the parser only through lifecycle transitions.
 `
 
 describe('lifecycle plan shape parser', () => {
+  it('asks every plan for a mandatory Card terms section, without refusing a plan that lacks it yet', () => {
+    expect(PLAN_SHAPE_DESCRIPTION).toContain('a mandatory `## Card terms: reading chosen` section with one `- <card term, verbatim>: <the reading this plan chose>` line for each card Definition-of-done term open to more than one reading')
+    expect(validPlan).not.toContain('Card terms')
+    expect(containsPlanShape(validPlan, true)).toBe(true)
+  })
+
   it('stops the ADR block at the next level-two heading', () => {
     const content = validPlan
       .replace('Rejected: exercising the parser only through lifecycle transitions.\n', '')

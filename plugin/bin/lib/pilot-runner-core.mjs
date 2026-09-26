@@ -16,7 +16,7 @@ import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-cor
 import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
-import { DOD_DECISION_WAIT_MS, parentDecision } from './lifecycle-dod-dispute.mjs'
+import { decisionVerdict, DOD_DECISION_WAIT_MS } from './lifecycle-dod-dispute.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -310,18 +310,21 @@ function parentDecisionChannel(mailbox, { exists, readFile, log, overrides = {} 
   return {
     mailbox,
     readDecisions: () => (exists(mailbox) ? readFile(mailbox, 'utf8') : ''),
-    onDecisionRequest: ({ file, criteria }) => {
+    onDecisionRequest: ({ file, criteria, requestId }) => {
       const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
-      log(`decision request: ${file} — disputed ${disputed}; the run's parent answers in ${mailbox} with one line "DECISION DoD <n>: <reading>" within ${minutes} min, else the narrowest reading that satisfies the card's words applies`)
+      log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent appends to ${mailbox} one line "DECISION ${requestId} DoD <n>: <reading>" per criterion within ${minutes} min (only a line quoting this request id, appended after this request, binds; the latest one wins), else the runner's fallback rule binds (all [missing]: the plan's recorded reading; all [overbuild]: the critic's reading; otherwise the card's literal words only)`)
     },
+    onIgnoredDecision: ({ line, reason }) => log(`decision ignored: ${reason}: ${line}`),
     ...overrides,
   }
 }
-function mailboxMessage(line) {
-  const decision = parentDecision(line)
-  return decision
-    ? `Binding decision from the run's parent on DoD ${decision.criterion} (runner-owned, trusted): ${decision.reading}. Keep the plan to this reading; the next critic round is bound to it.`
-    : `Message from the owner: ${line}`
+// A mailbox line is presented to the pilot as the parent's binding decision only when it answers a
+// decision request of this run; every other line stays an ordinary, untrusted mailbox message.
+function mailboxMessage(line, disputes) {
+  const verdict = decisionVerdict(line, disputes)
+  if (verdict?.decision) return `Binding decision from the run's parent on DoD ${verdict.decision.criterion} (runner-owned, trusted): ${verdict.decision.reading}. Keep the plan to this reading; the next critic round is bound to it.`
+  if (verdict?.ignored) return `Message from the owner (not a binding decision: ${verdict.ignored}): ${line}`
+  return `Message from the owner: ${line}`
 }
 function completedPilotExitCode(completed, partial, deferred) {
   if (!completed) return 1
@@ -464,7 +467,7 @@ export async function runPilot(options, dependencies) {
       }
       const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
       if (lines.length > mailboxLines) {
-        const content = mailboxMessage(lines[mailboxLines++])
+        const content = mailboxMessage(lines[mailboxLines++], lifecycleServer.dodDisputes())
         injectedTurns += 1
         log(`injected: mailbox message ${content}`)
         yield { type: 'user', message: { role: 'user', content } }

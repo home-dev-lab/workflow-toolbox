@@ -5,9 +5,12 @@ const PLAN_SHAPE = Object.freeze({
   taskDodLabels: Object.freeze(['DoD', 'Definition of done']),
   gatesHeading: 'Gates',
   acceptanceHeading: 'Acceptance',
+  cardTermsHeading: 'Card terms: reading chosen',
 })
 
-export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, and a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every folded card Definition-of-done criterion exactly with a following \`Proof:\` line naming a task, test, e2e, test file, or gate`
+export const CARD_TERMS_HEADING = PLAN_SHAPE.cardTermsHeading
+
+export const PLAN_SHAPE_DESCRIPTION = `a \`## ${PLAN_SHAPE.adrHeading}\` section containing ${PLAN_SHAPE.adrTerms.join(' and ')}, a \`## ${PLAN_SHAPE.tasksHeading}\` section whose every item (a column-0 \`- \` / \`1. \` line, or a \`### \` heading with no such line under it) has ${PLAN_SHAPE.taskDodLabels.map((label) => `\`${label}:\``).join(' or ')}, a \`## ${PLAN_SHAPE.gatesHeading}\` section, a \`## ${PLAN_SHAPE.acceptanceHeading}\` section quoting every folded card Definition-of-done criterion exactly with a following \`Proof:\` line naming a task, test, e2e, test file, or gate, and a mandatory \`## ${PLAN_SHAPE.cardTermsHeading}\` section with one \`- <card term, verbatim>: <the reading this plan chose>\` line for each card Definition-of-done term open to more than one reading (write \`- none: every term has one reading\` when none is)`
 
 function planSection(content, heading) {
   return new RegExp(`(?:^|\\n)## ${heading}\\b[\\s\\S]*?(?=\\n## |$)`, 'i').exec(content)?.[0] ?? ''

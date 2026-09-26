@@ -806,7 +806,7 @@ describe('SDK pilot runner', () => {
   })
 
   it('surfaces a disputed DoD term to the run parent and injects its mailbox decision into the pilot and the next critic round', async () => {
-    const f = fixture(); const injected: string[] = []; const logged: string[] = []; let criticBrief = ''
+    const f = fixture(); const injected: string[] = []; const logged: string[] = []; let criticBrief = ''; let requestId = ''
     const term = "The PARTIAL names the cycle's documents"
     writeFileSync(f.cardFile, `Route: FULL\n## Definition of done\n- ${term}\n`)
     const mailbox = join(f.root, 'pilot-mailbox.txt')
@@ -826,8 +826,9 @@ describe('SDK pilot runner', () => {
       yield initMessage(); await prompt.next()
       await transition({ phase: 'discovery', record: DISCOVERY_RECORD, tool_use_id: 'discovery' })
       for (const round of [1, 2]) { await criticRound(round); await transition({ phase: 'critic', tool_use_id: `critic-${round}` }) }
-      writeFileSync(mailbox, 'DECISION DoD 1: a listing of the documents present at the bound\n')
-      const decision = await prompt.next(); injected.push(decision.value.message.content)
+      requestId = /Request id: (\S+)/.exec(readFileSync(join(f.dir, '.lane', 'dod-decision-request.md'), 'utf8'))![1]!
+      writeFileSync(mailbox, `DECISION dodreq-ffffffffffffffffffffffff DoD 1: every document ever created\nDECISION ${requestId} DoD 1: a listing of the documents present at the bound\n`)
+      for (let index = 0; index < 2; index += 1) { const decision = await prompt.next(); injected.push(decision.value.message.content) }
       await criticRound(3)
       criticBrief = readFileSync(join(f.dir, '.lane', 'critic-brief.md'), 'utf8')
     })()
@@ -835,9 +836,15 @@ describe('SDK pilot runner', () => {
       query, resolvePilotModels: models, log: (line: string) => logged.push(line), lifecycleOptions: { laneLauncher: launcher, laneWaitMs: 5_000, dodDecisions: { pollMs: 10 } },
     })
     const request = join(f.dir, '.lane', 'dod-decision-request.md')
-    expect(logged).toContain(`decision request: ${realpathSync(request)} — disputed DoD 1; the run's parent answers in ${mailbox} with one line "DECISION DoD <n>: <reading>" within 15 min, else the narrowest reading that satisfies the card's words applies`)
+    expect(requestId).toMatch(/^dodreq-[a-f0-9]{24}$/)
+    expect(logged).toContain(`decision request: ${realpathSync(request)} — request ${requestId} disputes DoD 1; the run's parent appends to ${mailbox} one line "DECISION ${requestId} DoD <n>: <reading>" per criterion within 15 min (only a line quoting this request id, appended after this request, binds; the latest one wins), else the runner's fallback rule binds (all [missing]: the plan's recorded reading; all [overbuild]: the critic's reading; otherwise the card's literal words only)`)
+    expect(logged).toContain('decision ignored: it names request dodreq-ffffffffffffffffffffffff, which is not a decision request of this run: DECISION dodreq-ffffffffffffffffffffffff DoD 1: every document ever created')
     expect(readFileSync(request, 'utf8')).toContain(`Term (card, verbatim): ${term}`)
-    expect(injected).toEqual(["Binding decision from the run's parent on DoD 1 (runner-owned, trusted): a listing of the documents present at the bound. Keep the plan to this reading; the next critic round is bound to it."])
+    expect(injected).toEqual([
+      'Message from the owner (not a binding decision: it names request dodreq-ffffffffffffffffffffffff, which is not a decision request of this run): DECISION dodreq-ffffffffffffffffffffffff DoD 1: every document ever created',
+      "Binding decision from the run's parent on DoD 1 (runner-owned, trusted): a listing of the documents present at the bound. Keep the plan to this reading; the next critic round is bound to it.",
+    ])
+    expect(criticBrief).not.toContain('every document ever created')
     expect(criticBrief).toContain("- DoD 1, decided by the run's parent: a listing of the documents present at the bound")
     expect(result.summary.dod_disputes).toMatchObject([{ criterion: 1, term, rounds: [1, 2], resolution: { source: 'parent', reading: 'a listing of the documents present at the bound' } }])
   })

@@ -47,6 +47,25 @@ function routedBecause(phase, severity, severityBlocks, anchorMatch, suppliedAnc
   return `explicit anchor ${suppliedAnchor}${suffix}`
 }
 
+// The critic tags a plan-stage blocking finding with the direction of its disagreement. The tag is read
+// only from the leading run of bracket groups, so a bracketed word inside the finding text never counts.
+const CRITIC_FINDING_CATEGORIES = Object.freeze(['missing', 'overbuild', 'unverifiable'])
+function leadingCategory(finding) {
+  let position = 0
+  let category = null
+  let end = 0
+  for (;;) {
+    while (finding[position] === ' ' || finding[position] === '\t') position += 1
+    if (finding[position] !== '[') break
+    const close = finding.indexOf(']', position)
+    if (close === -1) break
+    const tag = finding.slice(position + 1, close).trim().toLowerCase()
+    if (CRITIC_FINDING_CATEGORIES.includes(tag)) { category = tag; end = close + 1 }
+    position = close + 1
+  }
+  return { category, end }
+}
+
 function findingDetail(phase, finding, { legacy = false, validAnchors = [], priorFindingCount = 0 } = {}) {
   const severityToken = severityAtStart(phase, finding, legacy)
   if (!severityToken) return { problem: 'has no recognized severity in its severity field' }
@@ -65,7 +84,8 @@ function findingDetail(phase, finding, { legacy = false, validAnchors = [], prio
   let location = /\[location:\s*([^\]]+)\]/i.exec(finding)?.[1]?.trim() ?? null
   // eslint-disable-next-line sonarjs/super-linear-regex
   if (!location) location = /(?:`)?((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+:\d+(?:-\d+)?)(?:`)?/.exec(finding)?.[1] ?? null
-  const metadataEnd = [...finding.matchAll(/\[(?:anchor|location):[^\]]*\]/gi)].reduce((end, match) => Math.max(end, (match.index ?? 0) + match[0].length), severityToken.end)
+  const tagged = phase === 'critic' ? leadingCategory(finding) : { category: null, end: 0 }
+  const metadataEnd = [...finding.matchAll(/\[(?:anchor|location):[^\]]*\]/gi)].reduce((end, match) => Math.max(end, (match.index ?? 0) + match[0].length), Math.max(severityToken.end, tagged.end))
   const text = finding.slice(metadataEnd).trim() || finding
   const extendsPrior = Number(/\bextends prior finding\s+(\d+)\b/i.exec(finding)?.[1]) || null
   if (extendsPrior !== null && extendsPrior > priorFindingCount) {
@@ -73,7 +93,7 @@ function findingDetail(phase, finding, { legacy = false, validAnchors = [], prio
     return { problem: `extends nonexistent prior finding ${extendsPrior}` }
   }
   return {
-    raw: finding, text, severity: severityToken.severity, anchor, location, extendsPrior,
+    raw: finding, text, severity: severityToken.severity, anchor, location, extendsPrior, category: tagged.category,
     blocks: severityBlocks && anchor !== null,
     routeReason,
     missingRequiredAnchor,

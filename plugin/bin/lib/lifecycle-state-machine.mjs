@@ -14,7 +14,7 @@ import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { adaptiveRoundDecision, hasPerSectionAttackAccount, reviewConvergenceDecision, verdictFromReport } from './lifecycle-review-policy.mjs'
 import { detectFailedTestFramework } from './host/test-framework-detection.mjs'
-import { bindingDecisionsSection, createDodEscalation, DOD_DECISION_REQUEST_FILE, withDisputedDodTermsSection } from './lifecycle-dod-dispute.mjs'
+import { bindingDecisionsSection, createDodEscalation, DOD_DECISION_REQUEST_FILE, normalizedTerm, planReadingOfTerm, withDisputedDodTermsSection } from './lifecycle-dod-dispute.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -209,9 +209,14 @@ function withRunnerOwnedReportSections(content, routedCards, state) {
   const questioned = state.partial?.question ? withQuestionForParent(routed, state.partial.question) : routed
   return withDisputedDodTermsSection(questioned, state.dodDisputes)
 }
-function planAcceptanceReading(laneDir, term) {
-  if (term === null) return null
-  return acceptanceEntries(readRegularFile(path.join(laneDir, 'plan.md')) ?? '').get(term)?.[0]?.join(' ') || null
+function planReadingOfDisputedTerm(laneDir, term, criterion) {
+  const plan = readRegularFile(path.join(laneDir, 'plan.md')) ?? ''
+  const acceptanceReading = (wanted) => {
+    const entries = acceptanceEntries(plan)
+    const key = [...entries.keys()].find((criterionText) => normalizedTerm(criterionText) === normalizedTerm(wanted))
+    return key === undefined ? null : entries.get(key)[0]?.join(' ') || null
+  }
+  return planReadingOfTerm({ plan, term, criterion, acceptanceReading })
 }
 function withQuestionForParent(content, question) {
   // eslint-disable-next-line sonarjs/super-linear-regex
@@ -814,7 +819,7 @@ export function createLifecycleStateMachine({
     },
   })
   const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop })
-  const dodEscalation = createDodEscalation({ state, dodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term) => planAcceptanceReading(laneDir, term), writeRequest: writeRegularFile, now }, dodDecisions)
+  const dodEscalation = createDodEscalation({ state, dodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
   function run(args) {
     if (state.stopped) return stoppedRefusal()
     return dodEscalation.beforeLane(args).then(() => lifecycleRun(args))

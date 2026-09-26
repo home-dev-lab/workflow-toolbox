@@ -2,7 +2,8 @@
 const INDEPENDENT_ROLES = { critic: 'critic', review: 'reviewer', refutation: 'refuter' }
 const PLAN_STAGE_SEVERITY_POLICY = `
 Severity policy:
-- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking][anchor: DoD 1][location: plan.md:20] The plan omits the required rollback test.\`
+- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking][missing][anchor: DoD 1][location: plan.md:20] The plan omits the required rollback test.\`
+- Tag every \`[blocking]\` finding with the direction of the disagreement, right after the severity: \`[missing]\` when the plan misses or under-reads an explicit DoD item, \`[overbuild]\` when the plan builds more than, or other than, the card asks, \`[unverifiable]\` when the plan cannot be verified. The runner reads the tag when a DoD criterion stays disputed and its parent does not answer: all \`[missing]\` binds the plan's recorded reading, all \`[overbuild]\` binds your reading, anything else binds the card's literal words only. An untagged finding stays valid and counts as an unknown direction.
 - A defect that a test the plan already schedules would catch is non-blocking. Use \`[non-blocking]\` for it and for optional wording, style, or polish that changes nothing the DoD checks. Non-blocking example: \`[non-blocking] Rephrase the introduction for brevity.\`
 - The anchor field is mandatory for every \`[blocking]\` finding. Omitting it makes the whole report invalid. Use \`[anchor: none]\` explicitly when no anchor resolves; that finding is routed instead of blocking.
 - You MUST find issues. If one plan section yields no finding, account for what you attacked and why nothing holds under \`## No-finding attack account\`, with one non-empty bullet named \`ADR\`, \`Tasks\`, and \`Gates\`. A zero-finding approval requires that account from every critic lane; otherwise it is a failed critic round and is re-run once.
@@ -72,7 +73,7 @@ ${severityPolicy}
 
 VERDICT: <${verdict}>
 FINDINGS:
-${phase === 'critic' ? '- [blocking|non-blocking][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>' : '- [CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>'}
+${phase === 'critic' ? '- [blocking|non-blocking][missing|overbuild|unverifiable][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>' : '- [CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>'}
 ${planDigest ? `\nThe critic report must include this line verbatim: plan sha256: ${planDigest}\n` : ''}`
 }
 
