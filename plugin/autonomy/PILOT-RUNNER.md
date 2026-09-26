@@ -166,8 +166,11 @@ Tree signature v3 is a filesystem signature over names from HEAD, the index, and
 untracked files. It includes entry type, mode, contents, or symlink target. Staging a deletion or
 rename does not change it; recorded v2 signatures do not compare.
 
-TDD and critic lanes use `openai/gpt-6-sol`; review and refutation use
-`openai/gpt-6-astra` (Astra reviews Sol's code so the same model never judges itself).
+GPT lanes use `openai/gpt-6-sol` for code and standard critic (`high` / `max`);
+hard critic, review and refutation use `openai/gpt-6-astra` (`max` / `medium` / `medium`).
+Astra reviews Sol's code so the same model never judges itself. Claude SDK executors
+use `opus` for critic, review and refutation at `xhigh`; standard code uses `sonnet`
+at `medium`, hard code `opus` at `medium`. Explicit effort overrides take precedence.
 Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
 toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
 A lane must not rely on background processes surviving its receipt: the reported process group contains

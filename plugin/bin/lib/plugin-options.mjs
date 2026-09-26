@@ -155,7 +155,7 @@ const EXECUTOR_DEFAULT_DESCRIPTIONS = Object.fromEntries(
 const EXECUTOR_VARIANT_DESCRIPTIONS = Object.fromEntries(
   Object.keys(EXECUTOR_DEFAULTS['gpt-lane'].standard).map((role) => [
     `executor_${role}_variant`,
-    `claude-sdk ${EXECUTOR_VARIANT_BASES.claude[role]}; gpt-lane ${EXECUTOR_VARIANT_BASES.openai[role]}`,
+    `claude-sdk ${EXECUTOR_VARIANT_BASES.claude[role]}; gpt-lane ${EXECUTOR_VARIANT_BASES.openai[role]}${role === 'code' ? ' (GPT-5.6 Sol code uses xhigh)' : ''}`,
   ]),
 )
 

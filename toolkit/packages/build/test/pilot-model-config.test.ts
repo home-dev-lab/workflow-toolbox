@@ -117,6 +117,53 @@ describe('pilot model configuration', () => {
     expect(resolveRoleVariant('review', 'openai/gpt-6-astra', { env: { WT_EXECUTOR_REVIEW_VARIANT: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override' })
   })
 
+  it.each([
+    ['true', { critic: 'max', code: 'high', review: 'medium', refutation: 'medium' }],
+    ['not_true', { critic: 'xhigh', code: 'medium', review: 'xhigh', refutation: 'xhigh' }],
+  ])('resolves hard-profile efforts for %s', (outcome, variants) => {
+    expect(resolveExecutorProfile({ worktree: '/worktree', route: 'FULL', hard: true, env: {}, settingsEnv: {},
+      resolveConsentImpl: () => ({ outcome }), })).toMatchObject({ variants })
+  })
+
+  it('requires a model before reading overrides and matches OpenAI provider case-insensitively', () => {
+    expect(() => resolveRoleVariant('critic', undefined, { env: { WT_EXECUTOR_CRITIC_VARIANT: 'high' }, readPluginOption: noPluginOption })).toThrow('executor role critic: model is required')
+    expect(() => resolveRoleVariant('code', 42, { env: {}, readPluginOption: noPluginOption })).toThrow('executor role code: model is required')
+    expect(resolveRoleVariant('critic', 'OPENAI/gpt-6-sol', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'max' })
+    expect(resolveRoleVariant('critic', 'other/model', { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh' })
+  })
+
+  it('refuses max for every Claude alias and full Claude id from every override source', () => {
+    for (const model of ['opus', 'sonnet', 'haiku', 'fable', 'claude-sonnet-5']) {
+      const envKey = 'WT_EXECUTOR_CRITIC_VARIANT'
+      for (const options of [
+        { env: { [envKey]: 'max' }, readPluginOption: noPluginOption },
+        { env: {}, settingsEnv: { [envKey]: 'max' }, readPluginOption: noPluginOption },
+        { env: {}, readPluginOption: () => ({ present: true, value: 'max' }) },
+      ]) expect(() => resolveRoleVariant('critic', model, options)).toThrow(`model ${model}: max is never used on Claude; use xhigh`)
+    }
+  })
+
+  it('refuses --variant max at the Claude executor CLI before resolving an SDK', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-claude-max-')); roots.push(root)
+    mkdirSync(join(root, '.lane'))
+    const brief = join(root, 'brief.md'); writeFileSync(brief, `# Critic\nWrite the report to \`${join(root, '.lane', 'critic-report.test.md')}\`\n`)
+    const result = spawnSync(process.execPath, [join(REPO_ROOT, 'plugin/bin/wt-claude-executor.mjs'), '--dir', root, '--brief', brief, '--model', 'opus', '--role', 'critic', '--variant', 'max'], { encoding: 'utf8' })
+    expect(result.status).toBe(2)
+    expect(result.stderr).toContain('model opus: max is never used on Claude; use xhigh')
+  })
+
+  it('clamps the Luna critic base and refuses explicit max while preserving lower overrides', () => {
+    const model = 'openai/gpt-5.6-luna'
+    expect(resolveRoleVariant('critic', model, { env: {}, readPluginOption: noPluginOption })).toMatchObject({ value: 'xhigh', origin: 'role base (clamped from max)' })
+    for (const options of [
+      { env: { WT_EXECUTOR_CRITIC_VARIANT: 'max' }, readPluginOption: noPluginOption },
+      { env: {}, settingsEnv: { WT_EXECUTOR_CRITIC_VARIANT: 'max' }, readPluginOption: noPluginOption },
+      { env: {}, readPluginOption: () => ({ present: true, value: 'max' }) },
+    ]) expect(() => resolveRoleVariant('critic', model, options)).toThrow('variant max is above the xhigh ceiling')
+    expect(resolveRoleVariant('critic', model, { env: { WT_EXECUTOR_CRITIC_VARIANT: 'high' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'high', origin: 'override' })
+    expect(resolveRoleVariant('critic', model, { env: { WT_EXECUTOR_CRITIC_VARIANT: 'none' }, readPluginOption: noPluginOption })).toMatchObject({ value: 'none', origin: 'override' })
+  })
+
   // Owner decision 2026-09-24 (wt-suite #4039, card 1871089222002148813): pilots and implementation
   // run at medium.
   it.each([
@@ -190,6 +237,12 @@ describe('pilot model configuration', () => {
     writeFileSync(join(config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_critic_variant: 'high' } } } }))
     expect(readWorkflowToolboxPluginOption('executor_critic_variant', { env })).toEqual({ present: true, value: 'high' })
     expect(resolveRoleVariant('critic', 'opus', { env })).toMatchObject({ value: 'high', origin: 'override', source: 'plugin option' })
+  })
+
+  it('honours an explicitly saved effort even when a newer family base differs', () => {
+    const config = mkdtempSync(join(tmpdir(), 'wt-saved-effort-')); roots.push(config)
+    writeFileSync(join(config, 'settings.json'), JSON.stringify({ pluginConfigs: { 'workflow-toolbox@local': { options: { executor_critic_variant: 'high' } } } }))
+    expect(resolveRoleVariant('critic', 'openai/gpt-6-sol', { env: { CLAUDE_CONFIG_DIR: config } })).toMatchObject({ value: 'high', origin: 'override', source: 'plugin option' })
   })
 
   it('ships pilot effort defaults and empty executor options so model-family bases decide', () => {

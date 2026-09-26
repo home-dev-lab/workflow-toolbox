@@ -126,9 +126,21 @@ describe('workflow-toolbox plugin option resolver', () => {
     }))
     for (const role of ['critic', 'code', 'review', 'refutation'] as const) {
       expect(rows.find((row: { option: string }) => row.option === `executor_${role}_variant`)).toMatchObject({
-        effective: `claude-sdk ${profiles[0].variants[role]}; gpt-lane ${profiles[1].variants[role]}`,
+        effective: `claude-sdk ${profiles[0].variants[role]}; gpt-lane ${profiles[1].variants[role]}${role === 'code' ? ' (GPT-5.6 Sol code uses xhigh)' : ''}`,
         source: 'default', defaultValue: '',
       })
+    }
+  })
+
+  it('keeps every executor manifest description aligned with its derived default models and efforts', () => {
+    const f = fixture({})
+    const rows = describeWorkflowToolboxOptions({ env: f.env, projectDir: f.project, manifest })
+    for (const [option, schema] of Object.entries(manifest.userConfig)) {
+      if (!/^executor_.*_(model|variant)$/.test(option)) continue
+      const derived = String(rows.find((row: { option: string }) => row.option === option)?.effective)
+      // Manifest prose adds rationale and abbreviates repeated hard cells; names suffice.
+      const words = new Set(derived.match(/(?:openai\/gpt-[\w.-]+|opus|sonnet|haiku|fable|xhigh|medium|high|max)/g) ?? [])
+      for (const word of words) expect(schema.description, `${option}: missing ${word}`).toContain(word)
     }
   })
 

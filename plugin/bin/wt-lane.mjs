@@ -280,9 +280,9 @@ function resolveLaunchConfiguration(opts, modules, env) {
   const modelRefusal = modules.laneModelRefusal(opts.model, { env })
   if (modelRefusal) return { refusal: modelRefusal, variant: null }
   if (opts.variant) {
-    const refusal = modules.variantRefusal(opts.variant, opts.model)
-    if (refusal && !opts.allowUnknownVariant) return { refusal, variant: null }
-    return { refusal: null, variant: { value: opts.variant, origin: 'override', forced: Boolean(refusal) } }
+    const unknown = modules.variantRefusal(opts.variant, opts.model)
+    if (unknown && (!opts.allowUnknownVariant || !unknown.includes(' is unknown for model '))) return { refusal: unknown, variant: null }
+    return { refusal: null, variant: { value: opts.variant, origin: 'override', forced: Boolean(unknown) } }
   }
   if (!opts.role) return { refusal: null, variant: null }
   try {
