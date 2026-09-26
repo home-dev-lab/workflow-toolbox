@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { constants, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +19,7 @@ interface ProxyModule {
   createEgressProxy: (options: Record<string, unknown>) => net.Server
   readClientHello: (buffer: Buffer) => { need?: true, ok?: boolean, sni?: string, reason?: string, bytes?: number }
   egressLogWriter: (file: string, options?: Record<string, unknown>) => (record: Record<string, unknown>) => void
+  loggableHost: (host: string | null) => string | null
   parentAlive: (pid: number, startTicks: number | null, deps?: Record<string, unknown>) => boolean
   processStartTicks: (pid: number) => number | null
 }
@@ -239,14 +240,27 @@ describe('SNI must equal the CONNECT host (real TLS client, round 4 HIGH 1)', ()
 })
 
 describe('egress log hardening (round 4, MED 2)', () => {
-  it('never follows a symlink, logs only DNS names, and stops at its size cap', () => {
+  // Runs on every host: the no-follow guarantee holds everywhere (Windows has no O_NOFOLLOW, so the
+  // writer writes nothing there rather than following the link).
+  it('never follows a symlink planted at the log path', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-egress-log-'))
     try {
       const victim = join(root, 'victim'); writeFileSync(victim, 'original\n')
       const link = join(root, 'egress.jsonl'); symlinkSync(victim, link)
       proxy.egressLogWriter(link)({ host: 'example.com', port: 443, decision: 'denied', reason: 'x' })
       expect(readFileSync(victim, 'utf8')).toBe('original\n')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
 
+  it('reduces any non-DNS host to a placeholder (pure, every host)', () => {
+    expect(proxy.loggableHost('chatgpt.com')).toBe('chatgpt.com')
+    expect(proxy.loggableHost('$(touch /tmp/pwned)`id`<x')).toBe('<non-dns host>')
+    expect(proxy.loggableHost(null)).toBe(null)
+  })
+
+  it.skipIf(!constants.O_NOFOLLOW)('writes DNS names only and stops at its size cap (skipped where O_NOFOLLOW does not exist, e.g. Windows: the writer writes nothing there)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-egress-log-'))
+    try {
       const file = join(root, 'real.jsonl')
       const write = proxy.egressLogWriter(file, { limit: 400 })
       write({ host: '$(touch /tmp/pwned)`id`<x', port: 443, decision: 'denied', reason: 'x' })

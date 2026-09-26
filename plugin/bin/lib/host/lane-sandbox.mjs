@@ -2,7 +2,10 @@ import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import os from 'node:os'
-import path from 'node:path'
+// POSIX paths, not the host's native ones: every path here names a location inside a Linux bwrap
+// sandbox or on the Linux host that builds it. The plan is never built elsewhere (see
+// sandboxAvailability), and on a Windows host `node:path` would rewrite `/home/x` into `\\home\\x`.
+import { posix as path } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseJsonc } from './jsonc.mjs'
 import { processStartTime } from './pid-namespace.mjs'

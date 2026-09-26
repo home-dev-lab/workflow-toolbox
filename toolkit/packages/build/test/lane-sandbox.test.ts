@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
-import { delimiter, dirname, join } from 'node:path'
+import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 
@@ -29,6 +29,10 @@ interface SuiteLockModule {
   operatorReleaseSuiteLock: (options: Record<string, unknown>) => { released: boolean, reason?: string }
 }
 interface FenceModule { spawnOpencode: (spawnFn: typeof spawnSync, bin: string, args: string[], options: Record<string, unknown>, platform?: string) => ReturnType<typeof spawnSync> & { laneSandbox?: { kind: string, line: string } } }
+
+// The sandbox plan is a Linux command line, so its operator path lists split on the POSIX delimiter
+// on every host (the module uses path.posix); the fixtures say so rather than borrowing the host's.
+const { delimiter } = posix
 
 const load = async <T>(file: string): Promise<T> => (await import(pathToFileURL(join(LIB, file)).href)) as T
 const sandbox = await load<SandboxModule>('host/lane-sandbox.mjs')
@@ -115,6 +119,18 @@ describe('lane sandbox plan — availability and pass-through', () => {
     }
   })
 
+  // Runs on every non-Linux host (the Windows and macOS CI jobs) with the REAL platform, no override:
+  // the unavailable branch must say so and pass the command through, unsandboxed.
+  it.runIf(process.platform !== 'linux')('on this non-Linux host, a real lane plan is unsandboxed, says why, and passes the command through', () => {
+    const lines: string[] = []
+    const real = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: 'opencode', args: ['run', 'x', '--model', 'openai/m'], cwd: tmpdir(), env: { HOME: tmpdir() }, optionEnv: {} })
+    sandbox.announceUnsandboxedLane(real, (text) => lines.push(text))
+    expect(real.kind).toBe('none')
+    expect(real.line).toBe(`lane sandbox: none (bubblewrap sandbox is Linux-only; this host is ${process.platform}); running with the environment allow-list only`)
+    expect(real.wrap('opencode', ['run', 'x'])).toEqual(['opencode', ['run', 'x']])
+    expect(lines).toEqual([`workflow-toolbox: ${real.line}\n`])
+  })
+
   it('REFUSES the launch when a present bwrap probe fails — never falling open to unsandboxed (M3)', () => {
     expect(() => plan({ probe: () => ({ ok: false, reason: 'No permissions' }) })).toThrow(sandbox.LaneSandboxRefusal)
     // Only the explicit off switch runs unsandboxed instead of refusing.
@@ -169,7 +185,9 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(ro).not.toContain(`${HOME}/missing`)
   })
 
-  it('shares only the machine-wide suite lock directory that the suite lock itself resolves', () => {
+  // Linux-only by nature: it compares the plan's POSIX bind with suite-lock.mjs's own resolution, which
+  // uses the HOST's native path module (backslashes on Windows, where no plan is ever built).
+  it.skipIf(process.platform !== 'linux')('shares only the machine-wide suite lock directory that the suite lock itself resolves (Linux-only: compares with the host-native suite-lock path)', () => {
     const fs = fakeFs()
     const [, args] = plan({ fs }).wrap('opencode', [])
     const lockRoot = suiteLock.readSuiteLock({ env: {}, home: HOME, platform: 'linux' }).root

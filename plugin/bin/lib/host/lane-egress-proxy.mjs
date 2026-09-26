@@ -261,12 +261,13 @@ export function createEgressProxy({ allow, log = () => {}, resolve = lookup, con
 /**
  * Appends one JSON line per record to `file`. The final path component is opened with O_NOFOLLOW
  * (a symlink planted there is refused, never followed), hosts are reduced to plain DNS names, and
- * the file stops growing at `limit` bytes.
+ * the file stops growing at `limit` bytes. Where the platform has no O_NOFOLLOW (Windows) nothing is
+ * written at all: the no-follow guarantee is kept by writing nothing, never by writing unprotected.
  */
 export function egressLogWriter(file, { limit = EGRESS_LOG_LIMIT_BYTES, now = () => new Date() } = {}) {
   let capped = false
   return (record) => {
-    if (!file || capped) return
+    if (!file || capped || !constants.O_NOFOLLOW) return
     let fd
     try {
       fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
