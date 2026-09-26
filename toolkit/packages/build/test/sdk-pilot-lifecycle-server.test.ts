@@ -28,6 +28,19 @@ const PLUGIN_ROOT = fileURLToPath(new URL('../../../../plugin', import.meta.url)
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
 
+// The fixture records a descendant's PID inside the launched lane. Inside another bwrap PID
+// namespace that number does not identify the descendant to this test process; kill(pid, 0)
+// can probe an unrelated process instead. Detect the namespace from its init, not an env flag.
+const inBwrapPidNamespace = process.platform === 'linux' && (() => {
+  try {
+    const argv = readFileSync('/proc/1/cmdline', 'utf8').split('\0')
+    return /(?:^|\/)bwrap$/.test(argv[0] ?? '') && argv.includes('--unshare-all')
+  } catch { return false }
+})()
+const descendantSkipReason = inBwrapPidNamespace
+  ? 'descendant PIDs are namespace-local inside a bwrap PID namespace'
+  : 'requires POSIX process groups and modes'
+
 function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, signal = process.kill) {
   if (inspect(pid) !== null) return true
   try { signal(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? false : null }
@@ -912,7 +925,7 @@ printf 'report\n' > "$report"
     expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].group).toBe('worker-owned')
   })
 
-  it.skipIf(process.platform === 'win32')('the shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]', async () => {
+  it.skipIf(process.platform === 'win32' || inBwrapPidNamespace)(`the shipped launcher keeps ordinary descendants in the terminated lane group [${descendantSkipReason}]`, async () => {
     const bin = mkdtempSync(join(tmpdir(), 'wt-h10-bin-')); roots.push(bin)
     const config = mkdtempSync(join(tmpdir(), 'wt-h10-config-')); roots.push(config)
     const watcher = join(bin, 'watcher.mjs')
