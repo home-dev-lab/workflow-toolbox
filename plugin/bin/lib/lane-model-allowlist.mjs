@@ -11,8 +11,8 @@ export const DEFAULT_LANE_MODELS = Object.freeze([
 const KNOWN_VARIANTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max'])
 
 // Owner decision 2026-09-24 (wt-suite #4039): pilots and implementation run at medium. Hard pilots
-// and orchestrators keep high. Card 1872363600346089413: critics, reviewers and refuters default
-// to xhigh instead.
+// and orchestrators keep high. Critics, reviewers and refuters default to xhigh: on a known-defect
+// plan, high found the defect 0 times in 5 and xhigh 2 times plus 2 partial.
 const VARIANT_ROLES = Object.freeze({
   pilot: ['pilot_variant', 'WT_PILOT_VARIANT', 'medium'],
   pilotHard: ['pilot_hard_variant', 'WT_PILOT_HARD_VARIANT', 'high'],
