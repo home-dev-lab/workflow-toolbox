@@ -24,6 +24,7 @@ const PROCESS_CAPTURE_RETRY_MS = 10
 const PROCESS_CAPTURE_SCHEDULING_MARGIN_MS = 100
 const DARWIN_PROVIDER_MISS_TTL_MS = 100
 const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
+const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
   const exits = children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => new Promise<void>((resolve, reject) => {
@@ -1266,22 +1267,25 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       '',
     ])
   })
-  it('hands the lane child a WT_SUITE_LOCK_CMD that runs the plugin suite-lock CLI', () => {
+  it('hands the lane child an executable WT_SUITE_LOCK_CMD for the plugin suite-lock runner', () => {
     const f = fixture('suite-lock-cmd')
     const res = run(f, ['--timeout', '1']); expect(res.status, res.stderr).toBe(0)
     waitFor(join(f.dir, '.lane', 'run.log'))
     const command = readFileSync(join(f.dir, 'suite-lock-cmd'), 'utf8')
-    const cli = join(ROOT, 'plugin', 'bin', 'wt-suite-lock.mjs')
-    expect(command).toBe(`node '${cli}' run --`)
+    const cli = join(ROOT, 'plugin', 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs')
+    expect(command).toBe(cli)
     expect(existsSync(cli)).toBe(true)
-    const help = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8' })
-    expect(help.status, help.stderr).toBe(0)
-    expect(help.stdout).toContain('wt-suite-lock.mjs run')
   })
+  it.skipIf(!ZSH_WORKS)('runs WT_SUITE_LOCK_CMD as one executable under zsh (skips: zsh unavailable)', () => {
+    const f = fixture('suite-lock-run-zsh')
+    const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)
+    waitFor(join(f.dir, '.lane', 'run.log'), 30_000)
+    expect(readFileSync(join(f.dir, 'suite-lock-run'), 'utf8')).toBe('status=0\ngate ran\n')
+  }, 60_000)
   // The real sandbox binds only named paths: the CLI (and the plugin files it reads at import) must be
   // visible inside it, and the lock directory writable. The lock root is the fixture's own state dir.
-  it.skipIf(!BWRAP_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips without a working bwrap)', () => {
-    const f = fixture('suite-lock-run')
+  it.skipIf(!BWRAP_WORKS || !ZSH_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips without working bwrap or zsh)', () => {
+    const f = fixture('suite-lock-run-zsh')
     delete f.env.WT_LANE_SANDBOX
     f.env.WT_LANE_SANDBOX_READ = join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures')
     const res = run(f, ['--timeout', '30']); expect(res.status, res.stderr).toBe(0)
