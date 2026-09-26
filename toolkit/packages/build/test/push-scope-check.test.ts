@@ -1,26 +1,30 @@
-// wt-push-scope-check must authorize exactly the commits a push would TRANSFER: those not
-// reachable from any ref the remote advertises at push time.
+// wt-push-scope-check must authorize exactly the commits a push would put where they were not:
+//   - a NEW destination ref: commits not reachable from any branch or tag the remote advertises;
+//   - an EXISTING destination ref: commits not reachable from that ref's current tip (the remote
+//     sha git hands the pre-push hook), whatever the remote holds elsewhere.
 //
 // Measured 2026-09-25 and 2026-09-26: pushing a new card branch to `public` was refused with 40+
 // "UNAUTHORIZED COMMIT" lines, every one of them already on the remote through another live card
-// branch, because the guard measured against `<remote>/main` only. The one genuinely new commit was
-// buried among commits that disclose nothing.
+// branch, because the guard measured against `<remote>/main` only. The first fix excluded every
+// advertised commit for every push, which let `git push public card/x:main` land a live card
+// branch's history on main with an empty scope (review, round 2). Both directions are locked here.
 //
-// Every case builds REAL throwaway repositories with a local bare repository as the fake remote:
-// the guard's whole job is asking git what the remote holds, so a stubbed git would test the mock.
+// Every case builds REAL throwaway repositories with local bare repositories as fake remotes: the
+// guard's whole job is asking git what the remote holds, so a stubbed git would test the mock.
 // Hermetic: `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, so no machine signing setting
 // reaches these repositories, and HOME / state / config dirs sealed under a throwaway root.
 
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const GUARD = join(REPO_ROOT, 'plugin/bin/wt-push-scope-check.mjs')
+const ZERO = '0'.repeat(40)
 
 const SEAL_ROOT = mkdtempSync(join(tmpdir(), 'wt-push-scope-seal-'))
 const SEALED = sealedPluginCliEnv(SEAL_ROOT, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' })
@@ -47,7 +51,7 @@ function commit(cwd: string, name: string): string {
 /**
  * A local clone whose remote `fake` is a bare repository holding:
  *   main    -> A
- *   other   -> A-B   (a live card branch: B is already published)
+ *   other   -> A-B   (a live card branch: B is already published, but NOT on main)
  *   gone    -> deleted on the remote AFTER it was fetched, so `fake/gone` -> A-D is a STALE
  *              remote-tracking ref: D is not on the remote any more.
  *   foreign -> A-E   pushed from another clone, never fetched here (E is unknown locally)
@@ -62,7 +66,7 @@ function fixture() {
   git(root, 'init', '-q', '--bare', '-b', 'main', bare)
   git(root, 'init', '-q', '-b', 'main', local)
   git(local, 'remote', 'add', 'fake', bare)
-  commit(local, 'A')
+  const A = commit(local, 'A')
   git(local, 'push', '-q', 'fake', 'main')
   git(local, 'checkout', '-q', '-b', 'other')
   const B = commit(local, 'B')
@@ -75,33 +79,35 @@ function fixture() {
   git(local, 'checkout', '-q', '-b', 'card', 'other')
   const C = commit(local, 'C')
   git(root, 'clone', '-q', bare, other)
-  commit(other, 'E')
+  const E = commit(other, 'E')
   git(other, 'push', '-q', 'origin', 'HEAD:refs/heads/foreign')
-  return { root, local, B, C, D }
+  return { root, bare, local, A, B, C, D, E }
 }
 
-function run(cwd: string, root: string, scope: unknown, ref: string, remote = 'fake') {
-  const auth = join(root, `auth-${Math.random().toString(36).slice(2)}.json`)
+type Opts = { remote?: string; remoteSha?: string; url?: string; branch?: string; env?: NodeJS.ProcessEnv }
+
+function run(f: { root: string; local: string }, scope: unknown, ref: string, o: Opts = {}) {
+  const auth = join(f.root, `auth-${Math.random().toString(36).slice(2)}.json`)
   writeFileSync(auth, JSON.stringify(scope))
-  const res = spawnSync(process.execPath, [GUARD, '--remote', remote, '--branch', 'main', '--ref', ref, '--authorized', auth], {
-    cwd,
-    encoding: 'utf8',
-    env: SEALED,
-  })
+  const args = [GUARD, '--remote', o.remote ?? 'fake', '--ref', ref, '--authorized', auth]
+  if (o.branch !== undefined) args.push('--branch', o.branch)
+  if (o.remoteSha !== undefined) args.push('--remote-sha', o.remoteSha)
+  if (o.url !== undefined) args.push('--url', o.url)
+  const res = spawnSync(process.execPath, args, { cwd: f.local, encoding: 'utf8', env: o.env ?? SEALED })
   return { status: res.status, out: `${res.stdout}\n${res.stderr}` }
 }
 
-describe('wt-push-scope-check: the outgoing set is what the remote does not already hold', () => {
+describe('wt-push-scope-check: a NEW destination ref carries what the remote does not already hold', () => {
   it('passes when the scope names only the commit new to the remote, although another commit is absent from <remote>/main', () => {
     const f = fixture()
-    const r = run(f.local, f.root, { commits: [f.C] }, 'card')
+    const r = run(f, { commits: [f.C] }, 'card', { remoteSha: ZERO, branch: 'main' })
     expect(r.out).not.toContain(`UNAUTHORIZED COMMIT: ${f.B.slice(0, 7)}`)
     expect(r.status, r.out).toBe(0)
   })
 
   it('refuses a genuinely new commit that the scope does not name, and names only that commit', () => {
     const f = fixture()
-    const r = run(f.local, f.root, { commits: [] }, 'card')
+    const r = run(f, { commits: [] }, 'card', { remoteSha: ZERO, branch: 'main' })
     expect(r.status, r.out).toBe(1)
     expect(r.out).toContain(`UNAUTHORIZED COMMIT: ${f.C.slice(0, 7)}`)
     expect(r.out).not.toContain(f.B.slice(0, 7))
@@ -110,30 +116,151 @@ describe('wt-push-scope-check: the outgoing set is what the remote does not alre
 
   it('counts only the new commit against maxCount', () => {
     const f = fixture()
-    expect(run(f.local, f.root, { maxCount: 1 }, 'card').status).toBe(0)
-    expect(run(f.local, f.root, { maxCount: 0 }, 'card').status).toBe(1)
+    expect(run(f, { maxCount: 1 }, 'card', { remoteSha: ZERO, branch: 'main' }).status).toBe(0)
+    expect(run(f, { maxCount: 0 }, 'card', { remoteSha: ZERO, branch: 'main' }).status).toBe(1)
   })
 
   it('trusts what the remote ADVERTISES, never a stale remote-tracking ref for a branch the remote deleted', () => {
     const f = fixture()
     git(f.local, 'checkout', '-q', '-b', 'card2', 'gone')
-    const r = run(f.local, f.root, { commits: [] }, 'card2')
+    const r = run(f, { commits: [] }, 'card2', { remoteSha: ZERO, branch: 'main' })
     expect(r.status, r.out).toBe(1)
     expect(r.out).toContain(`UNAUTHORIZED COMMIT: ${f.D.slice(0, 7)}`)
   })
 
-  it('reports nothing to push when every commit is already on the remote', () => {
+  it('passes a new card branch with an empty scope when the remote already holds every commit', () => {
     const f = fixture()
-    const r = run(f.local, f.root, { commits: [] }, 'other')
+    const r = run(f, { commits: [] }, 'other', { remoteSha: ZERO })
     expect(r.status, r.out).toBe(0)
     expect(r.out).toContain('no commits to push')
   })
 
-  it('fails closed when the remote cannot be queried', () => {
+  it('does not let a commit reachable only from a non-branch, non-tag remote ref (refs/pull/*) count as published', () => {
+    const f = fixture()
+    git(f.local, 'checkout', '-q', '-b', 'pr', 'main')
+    const P = commit(f.local, 'P')
+    git(f.local, 'push', '-q', 'fake', 'pr:refs/pull/1/head')
+    const r = run(f, { commits: [] }, 'pr', { remoteSha: ZERO })
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain(`UNAUTHORIZED COMMIT: ${P.slice(0, 7)}`)
+  })
+})
+
+describe('wt-push-scope-check: an EXISTING destination ref carries what its current tip does not hold', () => {
+  it('refuses card/x:main with an empty scope although the remote holds card/x on another branch', () => {
+    const f = fixture()
+    const r = run(f, { commits: [] }, 'other', { remoteSha: f.A, branch: 'main' })
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain(`UNAUTHORIZED COMMIT: ${f.B.slice(0, 7)}`)
+  })
+
+  it('resolves the destination tip from --branch when no --remote-sha is given', () => {
+    const f = fixture()
+    const r = run(f, { commits: [] }, 'other', { branch: 'main' })
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain(`UNAUTHORIZED COMMIT: ${f.B.slice(0, 7)}`)
+  })
+
+  it('counts a force-push that REPLACES main with remote-held history as everything not on the old main', () => {
+    const f = fixture()
+    git(f.local, 'checkout', '-q', '-b', 'mainM', 'main')
+    const M = commit(f.local, 'M')
+    git(f.local, 'push', '-q', 'fake', 'mainM:main')
+    const refused = run(f, { commits: [] }, 'card', { remoteSha: M })
+    expect(refused.status, refused.out).toBe(1)
+    expect(refused.out).toContain(`UNAUTHORIZED COMMIT: ${f.B.slice(0, 7)}`)
+    expect(refused.out).toContain(`UNAUTHORIZED COMMIT: ${f.C.slice(0, 7)}`)
+    expect(refused.out).toContain('2 unauthorized commit(s) out of 2')
+    expect(run(f, { commits: [f.B, f.C] }, 'card', { remoteSha: M }).status).toBe(0)
+  })
+
+  it('fails closed when the destination tip is not in this clone', () => {
+    const f = fixture()
+    const r = run(f, { commits: [f.C] }, 'card', { remoteSha: f.E })
+    expect(r.status, r.out).toBe(2)
+    expect(r.out).toContain('not in this clone')
+  })
+
+  it('requires --remote-sha or --branch', () => {
+    const f = fixture()
+    const r = run(f, { commits: [f.C] }, 'card')
+    expect(r.status, r.out).toBe(2)
+    expect(r.out).toContain('--remote-sha')
+  })
+})
+
+describe('wt-push-scope-check: what git actually sends, whatever the local configuration says', () => {
+  it('lists the PUSH url given by --url, not the fetch url of the remote name', () => {
+    const f = fixture()
+    const pushBare = join(f.root, 'push-only.git')
+    git(f.root, 'clone', '-q', '--bare', '--single-branch', '-b', 'main', f.bare, pushBare)
+    const r = run(f, { commits: [f.C] }, 'card', { remoteSha: ZERO, url: pushBare })
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain(`UNAUTHORIZED COMMIT: ${f.B.slice(0, 7)}`)
+  })
+
+  it('uses the configured pushurl when --url is not given', () => {
+    const f = fixture()
+    const pushBare = join(f.root, 'push-only.git')
+    git(f.root, 'clone', '-q', '--bare', '--single-branch', '-b', 'main', f.bare, pushBare)
+    git(f.local, 'config', 'remote.fake.pushurl', pushBare)
+    const r = run(f, { commits: [f.C] }, 'card', { remoteSha: ZERO })
+    expect(r.status, r.out).toBe(1)
+    expect(r.out).toContain(`UNAUTHORIZED COMMIT: ${f.B.slice(0, 7)}`)
+  })
+
+  it('does not let a replace graft hide a new commit behind a published one', () => {
+    const f = fixture()
+    // N is new (A-N). The graft makes published B claim N as a parent, so under replace refs
+    // "not reachable from B" would drop N although git sends it. (Replacing the TIP does not
+    // hide it: rev-list still lists the tip's own id — measured, that mutation survived.)
+    git(f.local, 'checkout', '-q', '-b', 'sneak', 'main')
+    const N = commit(f.local, 'N')
+    git(f.local, 'replace', '--graft', f.B, f.A, N)
+    const newRef = run(f, { commits: [] }, 'sneak', { remoteSha: ZERO })
+    expect(newRef.status, newRef.out).toBe(1)
+    expect(newRef.out).toContain(`UNAUTHORIZED COMMIT: ${N.slice(0, 12)}`)
+    const existing = run(f, { commits: [] }, 'sneak', { remoteSha: f.B })
+    expect(existing.status, existing.out).toBe(1)
+    expect(existing.out).toContain(`UNAUTHORIZED COMMIT: ${N.slice(0, 12)}`)
+  })
+
+  it('refuses a ref that is not a commit', () => {
+    const f = fixture()
+    const tree = git(f.local, 'rev-parse', 'card^{tree}')
+    const r = run(f, { commits: [] }, tree, { remoteSha: ZERO })
+    expect(r.status, r.out).toBe(2)
+    expect(r.out).toContain('not a commit')
+  })
+
+  it('rejects a scope entry too short to name one commit', () => {
+    const f = fixture()
+    const r = run(f, { commits: [f.C.slice(0, 1)] }, 'card', { remoteSha: ZERO })
+    expect(r.status, r.out).toBe(2)
+    expect(r.out).toContain('at least 7 hex')
+  })
+})
+
+describe('wt-push-scope-check: fails closed when it cannot measure', () => {
+  it('when the remote cannot be listed', () => {
     const f = fixture()
     git(f.local, 'remote', 'add', 'dead', join(f.root, 'does-not-exist.git'))
-    const r = run(f.local, f.root, { commits: [f.C] }, 'card', 'dead')
+    const r = run(f, { commits: [f.C] }, 'card', { remote: 'dead', remoteSha: ZERO, branch: 'main' })
     expect(r.status, r.out).toBe(2)
     expect(r.out).toContain('could not list the refs')
+  })
+
+  it('when git cat-file fails', () => {
+    const f = fixture()
+    const bin = join(f.root, 'bin')
+    mkdirSync(bin)
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: SEALED }).stdout.trim()
+    const shim = join(bin, 'git')
+    writeFileSync(shim, `#!/bin/sh\nfor a in "$@"; do [ "$a" = cat-file ] && { echo "shim: cat-file refused" >&2; exit 128; }; done\nexec "${realGit}" "$@"\n`)
+    chmodSync(shim, 0o755)
+    const env = { ...SEALED, PATH: `${bin}${delimiter}${SEALED.PATH ?? ''}` }
+    const r = run(f, { commits: [f.C] }, 'card', { remoteSha: ZERO, env })
+    expect(r.status, r.out).toBe(2)
+    expect(r.out).toContain('could not check which advertised objects')
   })
 })
