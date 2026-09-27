@@ -38,11 +38,38 @@ function colonExtension(block) {
   const lines = block.split(/\r?\n/)
   let changed = false
   for (let i = 0; i < lines.length; i++) {
-    const match = /^(\s*[^\s#:'"\[\]{}][^\n:]*?:[ \t]+)([^\n]*)$/.exec(lines[i])
-    if (!match || match[1].startsWith(' ') || match[1].startsWith('\t')) continue
-    const value = match[2].replace(/[ \t]+#.*$/, '').trimEnd()
-    if (!value || /^[-?:,\[\]{}#&*!|>'"%@`]/.test(value) || /[\x00-\x1f\x7f]/.test(value) || !value.includes(': ') || /\S/.test(lines[i + 1] ?? '') && /^[ \t]+\S/.test(lines[i + 1])) continue
-    lines[i] = match[1] + JSON.stringify(value)
+    const line = lines[i]
+    let start = 0
+    while (start < line.length && /\s/.test(line[start])) start++
+    if (start === line.length || "#:'\"[]{}".includes(line[start])) continue
+    const colon = line.indexOf(':', start + 1)
+    if (colon < 0 || line[colon + 1] !== ' ' && line[colon + 1] !== '\t') continue
+    let end = colon + 2
+    while (line[end] === ' ' || line[end] === '\t') end++
+    const prefix = line.slice(0, end)
+    if (prefix.startsWith(' ') || prefix.startsWith('\t')) continue
+    let value = line.slice(end)
+    for (let hash = value.indexOf('#'); hash >= 0; hash = value.indexOf('#', hash + 1)) {
+      if (hash === 0 || value[hash - 1] !== ' ' && value[hash - 1] !== '\t') continue
+      let internalBreak = false
+      for (let index = hash + 1; index < value.length; index++) {
+        const code = value.charCodeAt(index)
+        if (code === 10 || code === 13 || code === 0x2028 || code === 0x2029) { internalBreak = true; break }
+      }
+      if (internalBreak) continue
+      let cut = hash - 1
+      while (cut > 0 && (value[cut - 1] === ' ' || value[cut - 1] === '\t')) cut--
+      value = value.slice(0, cut)
+      break
+    }
+    value = value.trimEnd()
+    let hasControl = false
+    for (let index = 0; index < value.length; index++) {
+      const code = value.charCodeAt(index)
+      if (code <= 31 || code === 127) { hasControl = true; break }
+    }
+    if (!value || "-?:,[]{}#&*!|>'\"%@`".includes(value[0]) || hasControl || !value.includes(': ') || /\S/.test(lines[i + 1] ?? '') && /^[ \t]+\S/.test(lines[i + 1])) continue
+    lines[i] = prefix + JSON.stringify(value)
     changed = true
   }
   return changed ? lines.join('\n') : null

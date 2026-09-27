@@ -124,7 +124,8 @@ function agentRoots(root, budget, errors, context, marketplace, name, registryDi
     else if (typeof paths === 'string') paths = [paths]
     if (!Array.isArray(paths) || paths.some((item) => typeof item !== 'string')) throw Error('invalid agents manifest')
     return [...new Set(paths.map((item) => path.resolve(root, item)))]
-  } catch (error) {
+  } catch {
+    // Only the source and category are retained; exception details are not used here.
     errors.push({ path: root, code: marketplace ? 'MARKETPLACE' : 'MANIFEST' })
     return []
   }
