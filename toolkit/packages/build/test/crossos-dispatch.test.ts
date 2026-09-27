@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -10,7 +10,7 @@ import { spawningTestFiles } from '../../../scripts/spawning-test-files.mjs'
 // @ts-expect-error host adapter is a JS module
 import { commandIO } from '../../../../plugin/bin/lib/host/command-io.mjs'
 // @ts-expect-error JS plugin entrypoint
-import { dispatch, matchesHostPath } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
+import { ciBranchFor, dispatch, matchesHostPath, verdictFromEvidence } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
 
 const root = resolve(import.meta.dirname, '../../../..')
 const fixtureDir = join(import.meta.dirname, 'fixtures/crossos-dispatch')
@@ -74,7 +74,17 @@ function fakeGh(f: ReturnType<typeof fixture>, conclusion = 'success', status = 
        else if (args.includes('--job')) return { status: 0, stdout: readFileSync(join(fixtureDir, 'sample-job-log-excerpt.txt'), 'utf8'), stderr: '' }
        else {
          const sample = JSON.parse(readFileSync(join(fixtureDir, 'sample-run-view.json'), 'utf8'))
-         value = { ...sample, status, conclusion, jobs: [{ databaseId: 42, name: 'matrix (macos-latest)', conclusion }] }
+          // The platform reports the run's own head: the commit whose record names this run id, else the fixture's host commit.
+          const runId = Number(args[2])
+          const store = join(f.dir, '.git/wt-crossos')
+          const owner = existsSync(store) ? readdirSync(store).filter((name) => name.endsWith('.json'))
+            .map((name) => JSON.parse(readFileSync(join(store, name), 'utf8'))).find((record) => record.runId === runId) : undefined
+          const headSha = owner?.sha ?? f.host
+          value = { ...sample, event: 'workflow_dispatch', headBranch: `card/ci-${headSha.slice(0, 12)}`, headSha, status, conclusion, jobs: [
+            { databaseId: 42, name: 'matrix (macos-latest)', conclusion },
+            { databaseId: 43, name: 'matrix (ubuntu-latest)', conclusion: 'success' },
+            { databaseId: 44, name: 'matrix (windows-latest)', conclusion: 'success' },
+          ] }
        }
       return { status: 0, stdout: JSON.stringify(value), stderr: '' }
     },
@@ -256,10 +266,10 @@ describe('cross-OS dispatch', () => {
     writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
     const push = spawnSync('git', ['push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`], { cwd: f.dir, env, encoding: 'utf8' })
     expect(push.status, push.stderr).toBe(0)
-    rmSync(auth)
+    rmSync(auth, { force: true })
     const refused = spawnSync('git', ['push', 'public', `${f.docs}:refs/heads/card/ci-${f.docs.slice(0, 12)}`], { cwd: f.dir, env, encoding: 'utf8' })
     expect(refused.status).not.toBe(0)
-    expect(refused.stderr).toContain('no authorized scope')
+    expect(refused.stderr).toMatch(/no authorized scope|no live authorization/)
   })
 
   it('runs the real public pre-push hook with exclusive authorization, then rejects a missing authorization', () => {
@@ -301,7 +311,7 @@ describe('cross-OS dispatch', () => {
   it('marks an unfinished newest recorded host commit pending, and a later success supersedes a red', async () => {
     const f = publicFixture(); const out = output()
     const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
-    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, status: 'in_progress' }))
+    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'cross-os.yml', status: 'in_progress' }))
     const fake = fakeGh(f, 'failure', 'completed')
     const args = ['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs]
     expect(await dispatch(args, { io: fake.io, print: out.print })).toBe(1)
@@ -322,9 +332,9 @@ describe('cross-OS dispatch', () => {
     git(f.dir, 'commit', '-qam', 'second host change')
     const latest = git(f.dir, 'rev-parse', 'HEAD')
     const args = ['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', latest]
-    const record = (sha: string, runId: number, conclusion: string) => writeFileSync(join(store, `${sha}.json`), JSON.stringify({ sha, runId, status: 'completed', conclusion }))
+    const record = (sha: string, runId: number, conclusion: string) => writeFileSync(join(store, `${sha}.json`), JSON.stringify({ sha, runId, workflow: 'cross-os.yml', status: 'completed', conclusion }))
     record(f.host, 10, 'success'); record(latest, 11, 'failure')
-    expect(await dispatch(args, { io: fakeGh(f).io, print: out.print })).toBe(1)
+    expect(await dispatch(args, { io: fakeGh(f, 'failure').io, print: out.print })).toBe(1)
     expect(out.lines.at(-1)).toBe('RESULT: red run=11')
     out.lines.length = 0
     record(f.host, 10, 'failure'); record(latest, 11, 'success')
@@ -338,5 +348,158 @@ describe('cross-OS dispatch', () => {
     expect(workflow).toContain("tags: ['workflow-toolbox--v*']")
     expect(workflow).toContain('group: cross-os-${{ github.ref }}')
     expect(workflow).toContain('cancel-in-progress: false')
+  })
+
+  it('refuses a non-public remote before pushing even when it points to the public repository', async () => {
+    const f = publicFixture(); git(f.dir, 'remote', 'add', 'other', git(f.dir, 'remote', 'get-url', 'public'))
+    const out = output()
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo', '--remote', 'other'], { io: fakeGh(f).io, print: out.print })).toBe(2)
+    expect(git(f.dir, 'ls-remote', '--heads', 'other', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
+    expect(out.lines.join('\n')).toContain('only public')
+  })
+
+  it('refuses collection through a non-public remote without deleting a branch', async () => {
+    const f = publicFixture(); git(f.dir, 'remote', 'add', 'other', git(f.dir, 'remote', 'get-url', 'public'))
+    const out = output()
+    expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo', '--remote', 'other'], { io: fakeGh(f).io, print: out.print })).toBe(2)
+    expect(out.lines.join('\n')).toContain('only public')
+  })
+
+  it('never creates a record for a dry-run when none exists', async () => {
+    const f = publicFixture(); const out = output()
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo', '--dry-run'], { io: fakeGh(f).io, print: out.print })).toBe(0)
+    expect(existsSync(join(f.dir, '.git/wt-crossos', `${f.host}.json`))).toBe(false)
+  })
+
+  it('always refreshes cached success and reports failure, pending, or a gh error', async () => {
+    const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'cross-os.yml', status: 'completed', conclusion: 'success' }))
+    const args = ['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs]
+    expect(await dispatch(args, { io: fakeGh(f, 'failure').io, print: output().print })).toBe(1)
+    expect(await dispatch(args, { io: fakeGh(f, '', 'in_progress').io, print: output().print })).toBe(5)
+    const fake = fakeGh(f)
+    const io = { ...fake.io, run(program: string, argv: string[], opts: { cwd: string }) {
+      if (program === 'gh' && argv[1] === 'view') return { status: 1, stdout: '', stderr: 'unavailable' }
+      return fake.io.run(program, argv, opts)
+    } }
+    expect(await dispatch(args, { io, print: output().print })).toBe(2)
+  })
+
+  it.each([
+    ['empty jobs', []],
+    ['missing windows', [{ name: 'ubuntu', conclusion: 'success' }, { name: 'macos', conclusion: 'success' }]],
+    ['skipped job', [{ name: 'ubuntu', conclusion: 'success' }, { name: 'macos', conclusion: 'success' }, { name: 'windows', conclusion: 'skipped' }]],
+  ])('rejects a successful conclusion with %s in release-check and collect', async (_reason, jobs) => {
+    const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'cross-os.yml', branch: `card/ci-${f.host.slice(0, 12)}`, url: 'https://github.com/owner/repo/actions/runs/23' }))
+    const fake = fakeGh(f); const out = output()
+    const io = { ...fake.io, run(program: string, argv: string[], opts: { cwd: string }) {
+      if (program === 'gh' && argv[1] === 'view' && !argv.includes('--job')) return { status: 0, stdout: JSON.stringify({ event: 'workflow_dispatch', headBranch: `card/ci-${f.host.slice(0, 12)}`, headSha: f.host, status: 'completed', conclusion: 'success', jobs }), stderr: '' }
+      return fake.io.run(program, argv, opts)
+    } }
+    expect(await dispatch(['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs], { io, print: out.print })).toBe(1)
+    expect(out.lines.join('\n')).toContain('MATRIX INCOMPLETE:')
+    const auth = join(f.dir, '.git/wt-push-authorized.json')
+    writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth)
+    expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: output().print })).toBe(1)
+  })
+
+  it('ignores a verdict recorded for another workflow', async () => {
+    const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'other.yml' }))
+    const out = output()
+    expect(await dispatch(['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs], { io: fakeGh(f).io, print: out.print })).toBe(0)
+    expect(out.lines.at(-1)).toContain('RESULT: unchecked')
+  })
+
+  it('does not overwrite run evidence on skip or dry-run', async () => {
+    const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+    for (const [sha, flags] of [[f.docs, []], [f.host, ['--dry-run']]] as const) {
+      const path = join(store, `${sha}.json`); writeFileSync(path, JSON.stringify({ sha, runId: 23 }))
+      expect(await dispatch(['run', '--merge', sha, '--repo', f.dir, '--repo-slug', 'owner/repo', ...flags], { io: fakeGh(f).io, print: output().print })).toBe(0)
+      expect(JSON.parse(readFileSync(path, 'utf8')).runId).toBe(23)
+    }
+  })
+
+  it('deletes a completed branch even when evidence persistence fails', async () => {
+    const f = publicFixture(); const fake = fakeGh(f); const out = output()
+    const io = { ...fake.io, writeText(path: string, text: string, exclusive?: boolean) {
+      if (path.endsWith(`${f.host}.json`)) throw new Error('evidence write failed')
+      return commandIO.writeText(path, text, exclusive)
+    } }
+    // Start from a recorded run and a remotely existing branch.
+    const auth = join(f.dir, '.git/wt-push-authorized.json'); writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth)
+    const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, branch: `card/ci-${f.host.slice(0, 12)}`, url: 'https://github.com/owner/repo/actions/runs/23' }))
+    expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(2)
+    expect(out.lines.join('\n')).toContain('evidence write failed')
+    expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
+  })
+
+  it('cleans up an authorization created by a failed exclusive write', async () => {
+    const f = publicFixture(); const auth = join(f.dir, '.git/wt-push-authorized.json')
+    const fake = fakeGh(f)
+    const io = { ...fake.io, writeText(path: string, text: string, exclusive?: boolean) {
+      commandIO.writeText(path, text, exclusive)
+      if (path === auth && exclusive) throw new Error('write failed after create')
+    } }
+    expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: output().print })).toBe(2)
+    expect(existsSync(auth)).toBe(false)
+  })
+})
+
+describe('green only from positive evidence', () => {
+  const sha = 'a'.repeat(40)
+  const positive = () => ({
+    event: 'workflow_dispatch', headBranch: ciBranchFor(sha), headSha: sha, status: 'completed', conclusion: 'success',
+    jobs: ['ubuntu-latest', 'windows-latest', 'macos-latest'].map((os) => ({ name: `matrix (${os})`, conclusion: 'success' })),
+  })
+  // Every way the evidence can be absent, partial, foreign or stale: one field replaced at a time.
+  const variants: Record<string, unknown[]> = {
+    event: [undefined, null, 'push', 'schedule', ''],
+    headBranch: [undefined, null, 'main', 'card/ci-' + 'b'.repeat(12), ''],
+    headSha: [undefined, null, 'b'.repeat(40), sha.slice(0, 12), ''],
+    status: [undefined, null, 'queued', 'in_progress', 'waiting', ''],
+    conclusion: [undefined, null, 'failure', 'cancelled', 'skipped', 'timed_out', 'neutral', ''],
+    jobs: [undefined, null, [], [{ name: 'matrix (ubuntu-latest)', conclusion: 'success' }]],
+  }
+  it('the control is green, so a non-green below is the evidence, not a broken judge', () => {
+    expect(verdictFromEvidence(positive(), sha).verdict).toBe('green')
+  })
+  it('no absent, partial or mismatched field yields green', () => {
+    for (const [field, values] of Object.entries(variants)) {
+      for (const value of values) {
+        const run = { ...positive(), [field]: value }
+        expect(verdictFromEvidence(run, sha).verdict, `${field}=${JSON.stringify(value)}`).not.toBe('green')
+      }
+    }
+    for (const missing of [undefined, null, {}, 'success', 0]) expect(verdictFromEvidence(missing, sha).verdict).not.toBe('green')
+  })
+  it('no single job that is missing or not successful yields green', () => {
+    for (let index = 0; index < 3; index += 1) {
+      const dropped = positive(); dropped.jobs.splice(index, 1)
+      expect(verdictFromEvidence(dropped, sha).verdict).not.toBe('green')
+      for (const conclusion of ['failure', 'cancelled', 'skipped', null, undefined]) {
+        const run = positive(); run.jobs[index] = { ...run.jobs[index], conclusion } as never
+        expect(verdictFromEvidence(run, sha).verdict).not.toBe('green')
+      }
+    }
+  })
+  it('random combinations of two or more degraded fields never yield green', () => {
+    let seed = 20260927
+    const next = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed }
+    const fields = Object.keys(variants)
+    for (let round = 0; round < 500; round += 1) {
+      const run: Record<string, unknown> = positive()
+      const count = 2 + (next() % (fields.length - 1))
+      for (let k = 0; k < count; k += 1) { const field = fields[next() % fields.length]; const values = variants[field]; run[field] = values[next() % values.length] }
+      expect(verdictFromEvidence(run, sha).verdict, JSON.stringify(run)).not.toBe('green')
+    }
+  })
+  it('a stored record claiming success is not evidence: release-check reads the platform', () => {
+    // Stored evidence for another commit is foreign even when everything else is perfect.
+    expect(verdictFromEvidence({ ...positive(), headSha: 'c'.repeat(40), headBranch: ciBranchFor('c'.repeat(40)) }, sha).verdict).toBe('unchecked')
   })
 })
