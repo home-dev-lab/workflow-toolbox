@@ -87,6 +87,9 @@ export function parse(argv) {
   out.requestedDir = out.dir
   try { out.dir = realpathSync(out.dir) } catch { /* preserve the existing not-a-directory diagnostic */ }
   out.brief = path.resolve(out.brief)
+  for (const [flag, candidate] of [['--brief-cleanup-dir', out.briefCleanupDir], ['--log', out.log]]) {
+    if (candidate && (!path.isAbsolute(candidate) || candidate.split(/[\\/]/).includes('..'))) return { error: `${flag} must be absolute and contain no parent traversal` }
+  }
   if (out.briefCleanupDir) out.briefCleanupDir = path.resolve(out.briefCleanupDir)
   let writable
   try { writable = laneWritableForLaunch({ cwd: out.dir, args: ['--dir', out.dir], env: process.env, optionEnv: process.env }) } catch (error) { return { error: `cannot validate lane writable roots: ${error.message}` } }
