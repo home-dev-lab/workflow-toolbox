@@ -2,15 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { qualityDataDir } from '../scripts/rule-lifecycle-lib.mjs';
 import { qualityCheck } from '../scripts/quality-check.mjs';
 import { fileURLToPath } from 'node:url';
 const ownRoot = fileURLToPath(new URL('..', import.meta.url));
 
 test('quality data path selects persistent plugin data when supplied, otherwise profile default', () => {
-  assert.equal(qualityDataDir('/config', { CLAUDE_PLUGIN_DATA: '/wt-rules-on-demand-data', CLAUDE_PLUGIN_ROOT: ownRoot }), '/wt-rules-on-demand-data/quality');
-  assert.equal(qualityDataDir('/config', {}), '/config/plugins/data/wt-rules-on-demand/quality');
+  assert.equal(qualityDataDir('/config', { CLAUDE_PLUGIN_DATA: '/wt-rules-on-demand-data', CLAUDE_PLUGIN_ROOT: ownRoot }), resolve('/wt-rules-on-demand-data', 'quality'));
+  assert.equal(qualityDataDir('/config', {}), resolve('/config', 'plugins', 'data', 'wt-rules-on-demand', 'quality'));
 });
 test('quality reader and failure writer share plugin data location', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'rod-quality-location-'));
