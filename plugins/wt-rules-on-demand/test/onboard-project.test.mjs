@@ -53,6 +53,8 @@ async function snapshot(root) {
   return result;
 }
 const expectOk = (result) => assert.equal(result.status, 0, result.stderr || result.stdout);
+const withoutVerdict = (files) => Object.fromEntries(Object.entries(files).filter(([path]) =>
+  path !== '.claude/rules-on-demand-verdicts.json' && path !== '.claude/rules-on-demand-verdicts.json.lock'));
 
 test('out inside project is refused before any write', async (t) => {
   const f = await fixture(t);
@@ -127,9 +129,7 @@ test('report code span round-trips backticks and pipes in trigger', async (t) =>
   expectOk(f.run('prove', ['--transcripts', f.transcripts]));
   const row = (await readFile(join(f.out, 'onboard-report.md'), 'utf8')).split('\n').find((line) => line.startsWith('| nested/alpha.md'));
   assert.equal((row.match(/(?<!\\)\|/g) ?? []).length, 6);
-  const span = row.match(/(`{2,}) (.*?) \1/);
-  assert.ok(span, 'trigger needs a CommonMark code span with a longer fence');
-  assert.equal(span[2].replaceAll('\\|', '|'), regex);
+  assert.ok(row.includes('`` deploy\\|ship` ``'), 'trigger needs a CommonMark code span with a longer fence');
 });
 
 test('dry apply does not touch project', async (t) => {
@@ -190,13 +190,17 @@ test('eight parallel followed registrations retain all roots', async (t) => {
   assert.deepEqual(new Set((await json(join(f.config, 'rules-on-demand', 'followed-projects.json'))).map((row) => row.root)), new Set(roots));
 });
 
-test('propose and prove never write within project', async (t) => {
+test('propose writes nothing in project; prove changes only the verdict record', async (t) => {
   const f = await fixture(t);
+  await writeFile(join(f.project, '.claude', 'rules', 'unfit.md'), 'Unfit.\n');
   const before = await snapshot(f.project);
   expectOk(f.run('propose'));
   await f.proposal();
-  expectOk(f.run('prove', ['--transcripts', f.transcripts]));
   assert.deepEqual(await snapshot(f.project), before);
+  await writeFile(join(f.out, 'items', 'unfit', 'decision.json'), JSON.stringify({ decision: 'static', reason: 'unfit' }));
+  assert.equal(f.run('prove', ['--transcripts', f.transcripts]).status, 1);
+  assert.ok((await snapshot(f.project))['.claude/rules-on-demand-verdicts.json']);
+  assert.deepEqual(withoutVerdict(await snapshot(f.project)), before);
 });
 
 test('prove stages symlinked rules without changing any project bytes', async (t) => {
@@ -205,11 +209,14 @@ test('prove stages symlinked rules without changing any project bytes', async (t
   const sibling = join(f.project, '.claude', 'stored-rules');
   await rename(rules, sibling);
   await symlink(sibling, rules);
+  await writeFile(join(sibling, 'unfit.md'), 'Unfit.\n');
   const before = await snapshot(f.project);
   expectOk(f.run('propose'));
   await f.proposal([{ kind: 'prompt', regex: 'deploy' }], 'split');
-  expectOk(f.run('prove', ['--transcripts', f.transcripts]));
-  assert.deepEqual(await snapshot(f.project), before);
+  await writeFile(join(f.out, 'items', 'unfit', 'decision.json'), JSON.stringify({ decision: 'static', reason: 'unfit' }));
+  assert.equal(f.run('prove', ['--transcripts', f.transcripts]).status, 1);
+  assert.ok((await snapshot(f.project))['.claude/rules-on-demand-verdicts.json']);
+  assert.deepEqual(withoutVerdict(await snapshot(f.project)), before);
   assert.equal((await json(join(f.out, 'onboard-report.json'))).counts.proven, 1);
 });
 

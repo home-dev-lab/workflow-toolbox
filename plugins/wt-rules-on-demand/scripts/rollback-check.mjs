@@ -3,6 +3,7 @@ import { readFile, readdir, mkdir, realpath, stat, writeFile } from 'node:fs/pro
 import { dirname, join, resolve } from 'node:path';
 import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDataDir, splitRuleIdentity } from './rule-lifecycle-lib.mjs';
 import { configDirectory, ruleDirectories } from '../paths.js';
+import { verdictPath, readVerdicts, pendingRules, recordRollback } from './verdict-record.mjs';
 
 const args = process.argv.slice(2);
 const options = { project: process.cwd(), stores: [], verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
@@ -25,6 +26,8 @@ const configDir = resolve(options.configDir || configDirectory(process.env) || (
 // In-hook verdict archives are store keys; quality scan verdicts live under qualityDataDir(configDir).
 const lifecycleRoot = scope === 'user' ? configDir : project;
 const rulesDir = scope === 'user' ? ruleDirectories(project, configDir).user : ruleDirectories(project, configDir).project;
+const hasRecord = scope === 'project' && await readFile(verdictPath(project)).then(() => true, (error) => { if (error.code === 'ENOENT') { return false; } throw error; });
+if (hasRecord) await readVerdicts(project);
 
 // Never report "nothing to roll back" over a directory that was never there: that exit 0 checked nothing.
 let names;
@@ -173,7 +176,10 @@ for (const name of names) {
   results.push(result);
   log(`${options.dryRun ? 'would revert' : 'reverted'} ${name}: ${reason}`);
    if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
-  if (!options.dryRun) await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
+  if (!options.dryRun) {
+    const reverted = await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
+    if (hasRecord && reverted.changed) await recordRollback(project, reverted.source, { reason, rate, followed, applicable: applicable.length });
+  }
 }
 
 if (rateSummary.length && !options.dryRun) {
@@ -184,6 +190,11 @@ if (rateSummary.length && !options.dryRun) {
   log(`summary ${path}`);
 }
 
+const pending = hasRecord ? await pendingRules(project) : [];
+for (const row of pending) {
+  const priorState = row.priorState ? `changed since ${row.priorState}` : 'new';
+  console.error(`rollback-check: pending ${row.rule}: ${priorState}`);
+}
 if (options.json) console.log(JSON.stringify(results));
 
 // A refused revert is not a clean run: the rollback it would have made did not happen.

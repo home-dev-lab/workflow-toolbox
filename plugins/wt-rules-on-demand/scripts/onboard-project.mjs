@@ -8,6 +8,7 @@ import { configDirectory } from '../paths.js';
 import { frontmatter, readSpec } from './rule-lifecycle-lib.mjs';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { addFollowed, removeFollowed } from './followed-projects.mjs';
+import { readVerdicts, updateVerdicts, sha256, validateParts } from './verdict-record.mjs';
 
 const defaultEngine = fileURLToPath(new URL('./rules.mjs', import.meta.url));
 // `WT_ROD_ONBOARD_ENGINE` is a test-only seam: production never sets it, and `cleanEnv` in the
@@ -15,7 +16,7 @@ const defaultEngine = fileURLToPath(new URL('./rules.mjs', import.meta.url));
 const enginePath = () => process.env.WT_ROD_ONBOARD_ENGINE || defaultEngine;
 const readJson = async (path) => JSON.parse(await readFile(path, 'utf8'));
 const save = async (path, data) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, `${JSON.stringify(data, null, 2)}\n`); };
-const exists = async (path) => readFile(path).then(() => true, (error) => { if (error.code === 'ENOENT') return false; throw error; });
+const exists = async (path) => readFile(path).then(() => true, (error) => { if (error.code === 'ENOENT') { return false; } throw error; });
 const within = (root, path) => {
   const rel = relative(root, path);
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
@@ -71,19 +72,41 @@ async function canonicalTarget(path) {
 async function propose(project, out) {
   const rules = await files(join(project, '.claude', 'rules'));
   const selected = [];
+  const skipped = [];
+  const changedSince = {};
+  const record = await readVerdicts(project);
+  const candidates = [];
   for (const rule of rules.filter((name) => name.endsWith('.md'))) {
     const name = basename(rule);
     if (name.endsWith('-at-act.md') && await exists(join(project, '.claude', 'rules-on-demand', name))) continue;
     const source = staticPath(project, rule);
     const body = await readFile(source);
+    const digest = hash(body);
+    const previous = record.rules[rule];
+    if (previous?.sha256 === digest) {
+      skipped.push({ rule, state: previous.state, reason: previous.reason, date: previous.date, rate: previous.rate });
+      continue;
+    }
+    candidates.push({ rule, body, digest, previous, source });
+  }
+  const directories = new Map();
+  for (const { rule } of candidates) {
     const dir = itemDir(out, rule);
-    await save(join(dir, 'item.json'), { rule, source, bytes: body.length, sha256: hash(body) });
+    if (directories.has(dir)) throw Object.assign(new Error(`item directory collision: ${directories.get(dir)} and ${rule}`), { usage: true });
+    directories.set(dir, rule);
+  }
+  for (const { rule, body, digest, previous, source } of candidates) {
+    if (previous) changedSince[rule] = { state: previous.state, date: previous.date };
+    const dir = itemDir(out, rule);
+    const old = await readJson(join(dir, 'item.json')).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+    if (old && old.sha256 !== digest) await rm(dir, { recursive: true, force: true });
+    await save(join(dir, 'item.json'), { rule, source, bytes: body.length, sha256: digest });
     if (/^---(?:\r?\n|$)/.test(body.toString('utf8')) && !await exists(join(dir, 'decision.json'))) {
       await save(join(dir, 'decision.json'), { decision: 'static', reason: 'source has frontmatter' });
     }
     selected.push(rule);
   }
-  await save(join(out, 'propose-manifest.json'), { project, generatedAt: new Date().toISOString(), rules: selected });
+  await save(join(out, 'propose-manifest.json'), { project, generatedAt: new Date().toISOString(), rules: selected, skipped, changedSince });
   console.log(`proposed ${selected.length} rules`);
 }
 
@@ -93,16 +116,21 @@ async function assessed(out) {
   for (const rule of manifest.rules) {
     const dir = itemDir(out, rule);
     const row = { rule, decision: 'static', reason: 'no proposal', triggers: [], compliance: {}, proof: null };
-    if (/^---(?:\r?\n|$)/.test(await readFile(staticPath(manifest.project, rule), 'utf8'))) {
-      row.reason = 'source has frontmatter';
-      rows.push(row);
-      continue;
-    }
+    const hasFrontmatter = /^---(?:\r?\n|$)/.test(await readFile(staticPath(manifest.project, rule), 'utf8'));
     let decision;
-    try { decision = await readJson(join(dir, 'decision.json')); } catch { rows.push(row); continue; }
+    try { decision = await readJson(join(dir, 'decision.json')); }
+    catch { if (hasFrontmatter) { Object.assign(row, { reason: 'source has frontmatter', declared: true }); } rows.push(row); continue; }
     if (!['split', 'whole', 'static'].includes(decision?.decision) || (decision.decision === 'static' && (typeof decision.reason !== 'string' || !decision.reason.trim()))) { rows.push(row); continue; }
+    if (decision.parts !== undefined) {
+      try { validateParts(decision.parts); row.parts = decision.parts; }
+      catch (error) { row.reason = `invalid parts: ${error.message}`; rows.push(row); continue; }
+    }
+    if (hasFrontmatter) { Object.assign(row, { reason: 'source has frontmatter', declared: true }); rows.push(row); continue; }
     row.decision = decision.decision;
     row.reason = decision.decision === 'static' ? decision.reason : '';
+    // A declared unfitness (author's static, or frontmatter) is a verdict prove records; a failed proof or an
+    // invalid spec is not, because its cause can be transient (wrong transcripts dir, authoring error).
+    if (decision.decision === 'static') row.declared = true;
     if (decision.decision !== 'static') {
       try {
         const spec = await readSpec(join(dir, 'spec.json'));
@@ -142,9 +170,11 @@ async function proofFor(project, transcripts, row, output, out, spawnFn = child)
 
 async function report(project, out, previous = null) {
   const data = previous ?? await readJson(join(out, 'onboard-report.json'));
+  const manifest = await readJson(join(out, 'propose-manifest.json'));
+  data.skipped = manifest.skipped ?? [];
   data.project = project;
   data.generatedAt = new Date().toISOString();
-  data.counts = { proposed: data.rows.length, proven: data.rows.filter((row) => row.decision !== 'static' && !row.reason).length, static: data.rows.filter((row) => row.decision === 'static' || row.reason).length };
+  data.counts = { proposed: data.rows.length, proven: data.rows.filter((row) => row.decision !== 'static' && !row.reason).length, static: data.rows.filter((row) => row.decision === 'static' || row.reason).length, skipped: data.skipped.length };
   await save(join(out, 'onboard-report.json'), data);
   const cell = (value) => String(value ?? '').replaceAll('\\', '\\\\').replaceAll('|', '\\|').replace(/\r?\n/g, ' ');
   const code = (value) => {
@@ -154,18 +184,29 @@ async function report(project, out, previous = null) {
     const padded = text.startsWith('`') || text.endsWith('`') ? ` ${text} ` : text;
     return `${fence}${padded.replaceAll('|', '\\|')}${fence}`;
   };
-  const lines = [`# Onboard report`, '', `Project: ${project}`, `Transcripts: ${data.transcripts ?? '—'}`, `GeneratedAt: ${data.generatedAt}`, `Counts: proposed ${data.counts.proposed}, proven ${data.counts.proven}, static ${data.counts.static}`, '', '| rule | proof | proposed trigger | check | verdict |', '| --- | --- | --- | --- | --- |'];
+  const lines = [`# Onboard report`, '', `Project: ${project}`, `Transcripts: ${data.transcripts ?? '—'}`, `GeneratedAt: ${data.generatedAt}`, `Counts: proposed ${data.counts.proposed}, proven ${data.counts.proven}, static ${data.counts.static}, skipped ${data.counts.skipped}`, '', '| rule | proof | proposed trigger | check | verdict |', '| --- | --- | --- | --- | --- |'];
   for (const row of data.rows) {
     const proof = row.proof?.byTrigger?.map((entry) => `${entry.trigger.kind} ${entry.matches}`).join(', ') || '—';
     const triggers = row.triggers.map((trigger) => `${cell(trigger.kind)} ${code(trigger.regex ?? trigger.tool)}`).join('; ') || '—';
     const check = [row.compliance.kind, row.compliance.check].filter(Boolean).join(' ') || '—';
-    lines.push(`| ${cell(row.rule)} | ${cell(proof)} | ${triggers} | ${cell(check)} | ${cell(row.reason || row.decision === 'static' ? `static: ${row.reason}` : 'migrate')} |`);
+    const verdict = row.reason || row.decision === 'static' ? `static: ${row.reason}` : 'migrate';
+    lines.push(`| ${cell(row.rule)} | ${cell(proof)} | ${triggers} | ${cell(check)} | ${cell(verdict)} |`);
+    for (const part of row.parts ?? []) if (part.part === 'mechanise') lines.push(`  - ${code(row.rule)}: mechanise ${cell(part.what)} (${cell(part.how)})`);
   }
+  lines.push('', '## Skipped unchanged rules', '');
+  for (const row of data.skipped) {
+    const reason = row.reason ? ` — ${cell(row.reason)}` : '';
+    const rate = row.rate !== undefined ? ` (rate ${row.rate})` : '';
+    const date = row.date ? `; ${cell(row.date)}` : '';
+    lines.push(`- ${code(row.rule)}: ${cell(row.state)}${reason}${rate}${date}`);
+  }
+  if (!data.skipped.length) lines.push('None.');
   await writeFile(join(out, 'onboard-report.md'), `${lines.join('\n')}\n`);
   return data;
 }
 
 async function prove(project, out, transcripts, concurrency = 2) {
+  await readVerdicts(project);
   const started = Date.now();
   const rows = await assessed(out);
   const stage = join(out, 'stage');
@@ -185,19 +226,39 @@ async function prove(project, out, transcripts, concurrency = 2) {
   const pending = rows.filter((row) => row.decision !== 'static');
   await runPool(pending, concurrency, (row) => proofFor(stage, transcripts, row, join(itemDir(out, row.rule), 'proof.json'), out, childAsync));
   const data = await report(project, out, { transcripts, transcriptFiles: (await files(transcripts)).filter((name) => name.endsWith('.jsonl')).length, elapsedMs: Date.now() - started, rows });
+  const staticRows = rows.filter((row) => row.declared && row.reason);
+  if (staticRows.length) await updateVerdicts(project, async (record) => {
+    let changed = false;
+    for (const row of staticRows) {
+      const item = await readJson(join(itemDir(out, row.rule), 'item.json'));
+      const current = await readFile(staticPath(project, row.rule)).catch((error) => error.code === 'ENOENT' ? null : Promise.reject(error));
+      if (!current || sha256(current) !== item.sha256) {
+        console.log(`skipped static verdict ${row.rule}: source changed since propose`);
+        continue;
+      }
+      record.rules[row.rule] = { sha256: item.sha256, state: 'static', reason: row.reason, date: new Date().toISOString(), ...(row.parts === undefined ? {} : { parts: row.parts }) };
+      changed = true;
+    }
+    return changed;
+  });
   console.log(`proven ${data.counts.proven}, static ${data.counts.static} (${data.transcriptFiles} transcripts, ${data.elapsedMs} ms)`);
   if (rows.some((row) => row.reason && row.reason !== 'no proposal' && !row.reason.includes('frontmatter'))) process.exitCode = 1;
 }
 
 async function apply(project, out, configDir, confirm, io = { writeFile }) {
   const data = await readJson(join(out, 'onboard-report.json'));
+  await readVerdicts(project);
   const candidates = data.rows.filter((row) => row.decision !== 'static' && !row.reason);
   if (!confirm) {
-    for (const row of candidates) console.log(`${row.rule}: backup ${join(out, 'backup', row.rule)}; migrate ${subjectOf(row)}${row.decision === 'split' ? `; write ${staticPath(project, row.rule)} and ${staticPath(project, subjectOf(row))}` : ''}`);
+    for (const row of candidates) {
+      const splitWrite = row.decision === 'split' ? `; write ${staticPath(project, row.rule)} and ${staticPath(project, subjectOf(row))}` : '';
+      console.log(`${row.rule}: backup ${join(out, 'backup', row.rule)}; migrate ${subjectOf(row)}${splitWrite}`);
+    }
     return;
   }
   const appliedPath = join(out, 'applied.json');
   const applied = await readJson(appliedPath).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
+  const newlyApplied = [];
   let failed = false;
   for (const row of candidates) {
     if (applied.some((entry) => entry.rule === row.rule)) continue;
@@ -232,8 +293,12 @@ async function apply(project, out, configDir, confirm, io = { writeFile }) {
       const run = child('migrate', subject, '--project', project, '--spec', join(itemDir(out, row.rule), 'spec.json'), '--proof', proof);
       if (run.status !== 0) throw new Error((run.stderr || run.stdout).trim().split('\n')[0]);
       migrated = true;
-      applied.push({ rule: row.rule, subject, decision: row.decision, backup });
+      const entry = { rule: row.rule, subject, decision: row.decision, backup,
+        verdictSha256: row.decision === 'split' ? sha256(await readFile(source)) : item.sha256,
+        ...(row.parts === undefined ? {} : { parts: row.parts }) };
+      applied.push(entry);
       await save(appliedPath, applied);
+      newlyApplied.push(entry);
     } catch (error) {
       failed = true;
       row.reason = `apply failed: ${error.message}`;
@@ -243,14 +308,24 @@ async function apply(project, out, configDir, confirm, io = { writeFile }) {
   }
   if (applied.length) await addFollowed(configDir, project);
   await report(project, out, data);
+  if (!failed) {
+    const entries = [];
+    for (const entry of newlyApplied) if (entry.verdictSha256) entries.push([entry.rule, { sha256: entry.verdictSha256, state: 'migrated', subject: entry.subject, out,
+      date: new Date().toISOString(), ...(entry.parts === undefined ? {} : { parts: entry.parts }) }]);
+    if (entries.length) await updateVerdicts(project, (record) => {
+      for (const [rule, entry] of entries) record.rules[rule] = entry;
+    });
+  }
   console.log(`applied ${applied.length}, failed ${failed ? 'at least one' : 'none'}`);
   if (failed) process.exitCode = 1;
 }
 
 async function revert(project, out, configDir) {
+  await readVerdicts(project);
   const path = join(out, 'applied.json');
   const applied = await readJson(path).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error));
   const remaining = [...applied];
+  const reverted = [];
   let failed = false;
   for (const entry of [...applied].reverse()) {
     const demand = join(project, '.claude', 'rules-on-demand', basename(entry.subject));
@@ -263,6 +338,7 @@ async function revert(project, out, configDir) {
         await mkdir(dirname(staticPath(project, entry.rule)), { recursive: true });
         await writeFile(staticPath(project, entry.rule), await readFile(entry.backup));
         remaining.splice(remaining.indexOf(entry), 1);
+        reverted.push(entry);
         await save(path, remaining);
         console.log(`already reverted: ${entry.rule}`);
       } else {
@@ -278,8 +354,19 @@ async function revert(project, out, configDir) {
     await mkdir(dirname(staticPath(project, entry.rule)), { recursive: true });
     await writeFile(staticPath(project, entry.rule), await readFile(entry.backup));
     remaining.splice(remaining.indexOf(entry), 1);
+    reverted.push(entry);
     await save(path, remaining);
   }
+  if (reverted.length) await updateVerdicts(project, (record) => {
+    let changed = false;
+    for (const entry of reverted) if (record.rules[entry.rule]?.state === 'migrated'
+      && record.rules[entry.rule].subject === entry.subject && record.rules[entry.rule].sha256 === entry.verdictSha256
+      && record.rules[entry.rule].out === out) {
+      delete record.rules[entry.rule];
+      changed = true;
+    }
+    return changed;
+  });
   if (!remaining.length) await removeFollowed(configDir, project);
   console.log(`reverted ${applied.length - remaining.length}`);
   if (failed) process.exitCode = 1;

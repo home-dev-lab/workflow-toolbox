@@ -11,7 +11,7 @@ export async function readFollowed(configDir) {
   const path = fileOf(configDir);
   let text;
   try { text = await readFile(path, 'utf8'); }
-  catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+  catch (error) { if (error.code === 'ENOENT') { return []; } throw error; }
   try {
     const rows = JSON.parse(text);
     if (!Array.isArray(rows)) throw new Error('expected an array');
@@ -47,7 +47,7 @@ async function locked(configDir, update) {
           continue;
         }
       } catch (statError) { if (statError.code !== 'ENOENT') throw statError; }
-      if (Date.now() >= deadline) throw new Error(`timed out waiting for ${lock}`);
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for ${lock}`, { cause: error });
       await new Promise((settle) => setTimeout(settle, 50));
     }
   }
@@ -87,7 +87,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     }
     const configDir = resolve(options['--config-dir'] || configDirectory(process.env));
     if (!['list', 'add', 'remove'].includes(action) || (action !== 'list' && !options['--project'])) throw new Error('usage: followed-projects.mjs list|add|remove [--config-dir <dir>] [--project <dir>]');
-    const rows = action === 'list' ? await readFollowed(configDir) : await (action === 'add' ? addFollowed : removeFollowed)(configDir, options['--project']);
+    const change = action === 'add' ? addFollowed : removeFollowed;
+    const rows = action === 'list' ? await readFollowed(configDir) : await change(configDir, options['--project']);
     console.log(JSON.stringify(rows, null, 2));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }
