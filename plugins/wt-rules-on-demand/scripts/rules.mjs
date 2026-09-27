@@ -3,11 +3,11 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { basename, dirname, join, resolve } from 'node:path';
-import { migrateRule, readSpec, revertRule, retireRule, triggersHash } from './rule-lifecycle-lib.mjs';
+import { migrateRule, migrationPreflight, readSpec, revertRule, retireRule, triggersHash } from './rule-lifecycle-lib.mjs';
 import { configDirectory, ruleDirectories } from '../paths.js';
 import { createHash } from 'node:crypto';
-import { performance } from 'node:perf_hooks';
-import { argumentEvidence, bounded, safeRegex } from '../hooks/evidence.js';
+import { Worker } from 'node:worker_threads';
+import { argumentEvidence, bounded } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { discoverFiles } from './discover-files.mjs';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
@@ -39,22 +39,26 @@ function usage() {
   process.exit(2);
 }
 
-function timedPatterns(rule, corpus, boundMs) {
+async function timedPatterns(rule, corpus, boundMs) {
   const patterns = [];
-  for (const [index, trigger] of rule.triggers.entries()) for (const [key, regex] of Object.entries({ regex: trigger.regex, tool: trigger.tool, input: trigger.input }))
-    if (regex && (trigger.kind === 'bash' || trigger.kind === 'tool')) patterns.push([`trigger-${index}-${key}`, regex]);
+  for (const [index, trigger] of rule.triggers.entries()) for (const [key, regex] of Object.entries(trigger))
+    if (regex instanceof RegExp) patterns.push([`trigger-${index}-${key}`, regex]);
   const compliance = rule.compliance;
   if (compliance) for (const [key, regex] of Object.entries(compliance)) {
     if (regex instanceof RegExp) patterns.push([`compliance-${key}`, regex]);
     if (Array.isArray(regex)) for (const [index, part] of regex.entries()) if (part instanceof RegExp) patterns.push([`compliance-${key}-${index}`, part]);
   }
   const slow = [];
-  for (const [patternId, regex] of patterns) for (const command of corpus) {
-    regex.lastIndex = 0;
-    const start = performance.now();
-    regex.test(command);
-    const ms = performance.now() - start;
-    if (ms > boundMs) slow.push({ status: 'slow', patternId, ms });
+  for (const [patternId, regex] of patterns) {
+    if (!corpus.length) break;
+    const ms = await new Promise((done) => {
+      const worker = new Worker(new URL('./regex-timing-worker.mjs', import.meta.url), { workerData: { source: regex.source, flags: regex.flags, corpus, boundMs } });
+      const timer = setTimeout(() => { void worker.terminate(); done(boundMs); }, Math.max(500, boundMs * 5, corpus.length / 10));
+      worker.once('message', (value) => { clearTimeout(timer); done(value); });
+      worker.once('error', () => { clearTimeout(timer); void worker.terminate(); done(boundMs); });
+      worker.once('exit', (code) => { if (code !== 0) { clearTimeout(timer); done(boundMs); } });
+    });
+    if (ms !== null && ms >= boundMs) slow.push({ status: 'slow', patternId, ms });
   }
   return slow;
 }
@@ -80,7 +84,7 @@ async function checkRules() {
       try {
         const rule = parseRuntimeRule(name, await readFile(file, 'utf8'));
         rows.push({ file, status: rule.compliance?.kind === 'unregistered' ? 'degraded' : 'ok', ...(rule.compliance?.reason && rule.compliance.kind === 'unregistered' ? { reason: rule.compliance.reason } : {}) });
-        rows.push(...timedPatterns(rule, corpus, boundMs).map((slow) => ({ file, ...slow })));
+         rows.push(...(await timedPatterns(rule, corpus, boundMs)).map((slow) => ({ file, ...slow })));
       } catch (error) { rows.push({ file, status: 'skipped', reason: error.message }); }
     }
   }
@@ -113,18 +117,13 @@ function candidates(row) {
   return found;
 }
 
-const matches = (trigger, item) => {
-  const compiled = { kind: trigger.kind, regex: safeRegex('spec', trigger.regex ?? '', trigger.flags ?? ''),
-    tool: safeRegex('spec', trigger.tool ?? ''), input: trigger['input-regex'] ? safeRegex('spec', trigger['input-regex'], trigger.flags ?? '') : null,
-    onMention: String(trigger.mentions) === 'true' };
-  return triggerMatches(compiled, item);
-};
-
 async function prove() {
   if (!subject || !options.spec || !options.transcripts) usage();
   const transcripts = resolve(String(options.transcripts));
   if (!(await stat(transcripts).then((info) => info.isDirectory(), () => false))) throw new Error(`transcripts directory does not exist: ${transcripts}`);
   const spec = await readSpec(resolve(String(options.spec)));
+  const { body, rendered: migrationText } = await migrationPreflight(lifecycleRoot, subject, spec, scope);
+  const compiled = parseRuntimeRule(basename(subject), migrationText).triggers;
   const byTrigger = spec.triggers.map((trigger) => ({ trigger, matches: 0 }));
   const examples = [];
   let inspected = 0;
@@ -139,7 +138,7 @@ async function prove() {
       for (const item of candidates(row)) {
         inspected += 1;
         for (let index = 0; index < spec.triggers.length; index += 1) {
-          if (!matches(spec.triggers[index], item)) continue;
+           if (!triggerMatches(compiled[index], item)) continue;
           byTrigger[index].matches += 1;
           if (examples.length < 5) examples.push({ file: basename(file), line: lineNumber, channel: item.channel, tool: item.tool || null, sample: (item.text || item.path || item.input || '').slice(0, 160) });
         }
@@ -147,7 +146,7 @@ async function prove() {
     }
   }
   const report = {
-    rule: basename(subject), scope, scopeRoot: lifecycleRoot, bodyHash: createHash('sha256').update(await readFile(resolve(lifecycleRoot, scope === 'user' ? 'rules' : join('.claude', 'rules'), subject))).digest('hex'), triggersHash: triggersHash(spec.triggers), inspected,
+     rule: basename(subject), scope, scopeRoot: lifecycleRoot, bodyHash: createHash('sha256').update(body).digest('hex'), triggersHash: triggersHash(spec.triggers), inspected,
     matches: byTrigger.reduce((sum, row) => sum + row.matches, 0), byTrigger, examples,
     skipped: skippedLinks.length, skippedFiles: skippedLinks.map((path) => basename(path)),
     generatedAt: new Date().toISOString(),

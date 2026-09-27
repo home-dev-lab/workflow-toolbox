@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, cp, symlink, readlink, stat, utimes } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, cp, symlink, readlink, stat, utimes, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,10 +28,12 @@ test('transcript evidence before last migration cannot trigger mechanical rollba
   await writeFile(join(root, 'rules-on-demand-ledger.jsonl'), JSON.stringify({ action: 'migrate', rule: 'sample.md', time: cutoff }) + '\n');
   const verdicts = join(root, 'verdicts.jsonl');
   const rows = (at) => Array.from({ length: 5 }, (_, index) => JSON.stringify({ rule: 'sample.md', scope: 'user', rulesDir: directory, verdict: 'not followed', at, line: index + 1 })).join('\n') + '\n';
+  // Static baseline measured before the migration: the rule was followed then, so a lower on-demand rate reverts.
+  const baseline = Array.from({ length: 5 }, (_, index) => JSON.stringify({ rule: 'sample.md', scope: 'user', rulesDir: directory, phase: 'before', verdict: 'static baseline', checkVerdict: 'followed', at: new Date(Date.now() - 259200000).toISOString(), line: 100 + index })).join('\n') + '\n';
   const run = () => spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url)), '--user', '--config-dir', root, '--verdicts', verdicts, '--mechanical-only', '--dry-run', '--json'], { encoding: 'utf8' });
-  await writeFile(verdicts, rows(new Date(Date.now() - 172800000).toISOString()));
+  await writeFile(verdicts, baseline + rows(new Date(Date.now() - 172800000).toISOString()));
   assert.equal(JSON.parse(run().stdout)[0].action, 'none');
-  await writeFile(verdicts, rows(new Date().toISOString()));
+  await writeFile(verdicts, baseline + rows(new Date().toISOString()));
   assert.equal(JSON.parse(run().stdout)[0].action, 'would revert');
 });
 test('rollback reads bounded external verdict archives by rule identity', async (t) => {
@@ -40,13 +42,17 @@ test('rollback reads bounded external verdict archives by rule identity', async 
   const directory = join(root, 'rules-on-demand');
   await mkdir(directory);
   await writeFile(join(directory, 'sample.md'), "---\non-demand:\n  triggers:\n    - kind: tool\n      tool: ^Agent$\n      unconditional: true\n  compliance:\n    kind: model\n    model: haiku\n    window: 1\n    on-close: not applicable\n---\nReview.\n");
+  await writeFile(join(root, 'rules-on-demand-ledger.jsonl'), JSON.stringify({ action: 'migrate', rule: 'sample.md', time: new Date(Date.now() - 86400000).toISOString() }) + '\n');
   const archive = join(root, 'plugins', 'data', 'wt-rules-on-demand', 'quality');
   await mkdir(archive, { recursive: true });
   const id = `user:${directory}:sample.md`;
   await writeFile(join(archive, 'compliance-verdicts-archive-1000-1.jsonl'), Array.from({ length: 5 }, () => JSON.stringify({ rule: 'sample.md', ruleIdentity: id, verdict: 'not followed', decidedAt: new Date().toISOString() })).join('\n') + '\n');
   const store = join(root, 'store.json');
   await writeFile(store, JSON.stringify({ 'compliance-verdicts-jsonl': '' }));
-  const run = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url)), '--user', '--config-dir', root, '--store', store, '--dry-run', '--json'], { encoding: 'utf8' });
+  // A model-judged rule keeps reading store and archive verdicts; the transcript file only carries the static baseline.
+  const baseline = join(root, 'baseline.jsonl');
+  await writeFile(baseline, Array.from({ length: 5 }, (_, index) => JSON.stringify({ rule: 'sample.md', scope: 'user', rulesDir: directory, phase: 'before', verdict: 'static baseline', checkVerdict: 'followed', at: new Date(Date.now() - 259200000).toISOString(), line: index + 1 })).join('\n') + '\n');
+  const run = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url)), '--user', '--config-dir', root, '--store', store, '--verdicts', baseline, '--dry-run', '--json'], { encoding: 'utf8' });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(JSON.parse(run.stdout)[0].action, 'would revert');
 });
@@ -243,10 +249,15 @@ test('manual rollback publishes its report under owned plugin data', async (t) =
   const store = join(root, 'store.json');
   const ruleIdentity = `project:${join(project, '.claude/rules-on-demand')}:sample.md`;
   await writeFile(store, JSON.stringify({ 'compliance-verdicts-jsonl': Array.from({ length: 5 }, () => JSON.stringify({ rule: 'sample.md', ruleIdentity, verdict: 'not followed', decidedAt: new Date().toISOString() })).join('\n') }));
-   const result = spawnSync(process.execPath, [rollback, '--project', project, '--store', store, '--json'], { encoding: 'utf8', env: cleanEnv({ CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: data, CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) }) });
+  const verdictFile = join(root, 'verdicts.jsonl');
+  const rulesDir = join(project, '.claude/rules-on-demand');
+  const row = (phase, verdict, at, line) => JSON.stringify({ rule: 'sample.md', scope: 'project', rulesDir, phase, verdict, checkVerdict: verdict === 'static baseline' ? 'followed' : undefined, at, line });
+  await writeFile(verdictFile, [...Array.from({ length: 5 }, (_, i) => row('before', 'static baseline', new Date(Date.now() - 259200000).toISOString(), i + 1)),
+    ...Array.from({ length: 5 }, (_, i) => row('after', 'not followed', new Date(Date.now() + 1000).toISOString(), i + 10))].join('\n') + '\n');
+   const result = spawnSync(process.execPath, [rollback, '--project', project, '--store', store, '--verdicts', verdictFile, '--json'], { encoding: 'utf8', env: cleanEnv({ CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: data, CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) }) });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout)[0].action, 'reverted');
-   const digest = createHash('sha256').update(project).digest('hex').slice(0, 12);
+   const digest = createHash('sha256').update(await realpath(project)).digest('hex').slice(0, 12);
    assert.equal(JSON.parse(await readFile(join(data, `quality/rollback-project-${digest}-latest.json`), 'utf8')).reverted[0].rule, 'sample.md');
 });
 
@@ -365,6 +376,10 @@ test('automatic quality pipeline reports would-revert but leaves entire rule tre
   const ledgerBefore = await readFile(ledgerFile);
   const treeBefore = await tree(join(project, '.claude'));
   const at = new Date().toISOString();
+  const staticAt = new Date(Date.now() - 86400000).toISOString();
+  // Static era, before the migration, in its own session: the rule was followed (a model was chosen) — the baseline.
+  const staticRecords = Array.from({ length: 6 }, (_, i) => ({ type: 'assistant', cwd: project, timestamp: staticAt, message: { content: [{ type: 'tool_use', id: `static-${i}`, name: 'Agent', input: { prompt: 'work', model: 'sonnet' } }] } }));
+  await writeFile(join(config, 'projects/static.jsonl'), staticRecords.map((row) => JSON.stringify(row)).join('\n') + '\n');
   const records = [
     { type: 'attachment', cwd: project, timestamp: at, attachment: { type: 'hook_additional_context', content: '<rule name="sample.md">\nChoose a model.\n</rule>', toolUseID: 'fixture-context' } },
     ...Array.from({ length: 8 }, (_, i) => ({ type: 'assistant', cwd: project, timestamp: at, message: { content: [{ type: 'tool_use', id: `fixture-${i}`, name: 'Agent', input: { prompt: 'work' } }] } })),

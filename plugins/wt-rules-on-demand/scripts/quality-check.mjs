@@ -8,7 +8,7 @@ import { assertSafeDataDir, qualityDataDir } from './rule-lifecycle-lib.mjs';
 import { readFile } from 'node:fs/promises';
 import { scanTranscripts, summarise } from './transcript-verdicts.mjs';
 
-export async function qualityCheck({ configDirs, projectsDirs, project, dataDir, days = 7, since, verdictPath: privateVerdictPath }) {
+export async function qualityCheck({ configDirs, projectsDirs, project, followedRoots = [], dataDir, days = 7, since, verdictPath: privateVerdictPath }) {
   const target = await assertSafeDataDir(dataDir ?? qualityDataDir(configDirs[0]));
   await mkdir(target, { recursive: true });
   const latest = join(target, 'latest.json');
@@ -31,10 +31,13 @@ export async function qualityCheck({ configDirs, projectsDirs, project, dataDir,
       if ((await readdir(resolved)).some((name) => name.endsWith('.md')))
         scopes.push({ scope: 'user', rulesDir: resolved, configDir: resolve(resolved, '..'), configDirs: [...new Set([configDir, resolve(resolved, '..')])], ledgerRoots: [resolve(resolved, '..')] });
     }
-    const candidate = ruleDirectories(project, configDirs[0]).project;
-     if ((await readdir(candidate).catch(() => [])).some((name) => name.endsWith('.md')) && !physical.has(await realpath(candidate))) {
-       scopes.push({ scope: 'project', projectRoot: project, rulesDir: candidate, ledgerRoots: [project] });
-     }
+    for (const root of new Set([project, ...followedRoots])) {
+      const candidate = ruleDirectories(root, configDirs[0]).project;
+      if ((await readdir(candidate).catch(() => [])).some((name) => name.endsWith('.md'))) {
+        const resolved = await realpath(candidate);
+        scopes.push({ scope: 'project', projectRoot: root, rulesDir: resolved, ledgerRoots: [root] });
+      }
+    }
       const initial = await scanTranscripts({ projectsDirs, scopes, days, since, discoverProjects: true, nonProofNames: process.env.WT_ROD_NON_PROOF_NAMES?.split(',').filter(Boolean) ?? [] });
     if (!initial.stats.filesRead) throw new Error(`0 transcript files read; skipped ${initial.stats.skipped.length}: ${initial.stats.skipped.join('; ')}`);
     const rows = initial.rows;

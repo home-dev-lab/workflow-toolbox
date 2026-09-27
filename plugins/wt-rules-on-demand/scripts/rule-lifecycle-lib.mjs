@@ -53,20 +53,24 @@ export function rollbackDecision({ triggerMiss = false, triggerMissUnmatched = 0
   const hasMiss = triggerMiss || missed > 0;
   const rate = applicable ? followed / applicable : null;
   const beforeRate = beforeApplicable ? beforeFollowed / beforeApplicable : null;
-  const underFollowed = !hasMiss && applicable >= minimum && rate < threshold && beforeApplicable >= minimum && rate >= beforeRate;
+  // Owner decision: the only revert criterion is comparative. A migrated rule goes back to static only when it is
+  // followed LESS on demand than it was static, each measured on at least `minimum` samples. Without a static
+  // baseline it is flagged for attention and never reverted. `threshold` is kept for callers and reports only.
+  const measured = !hasMiss && applicable >= minimum;
+  const noBaseline = measured && beforeApplicable < minimum;
+  const worse = measured && !noBaseline && rate < beforeRate;
+  const pct = (value) => `${(value * 100).toFixed(1)}%`;
   let reason = '';
   if (hasMiss) reason = 'trigger miss (governed acts, never served)';
-  else if (applicable >= minimum && rate < threshold) {
-    const staticRate = beforeRate === null ? 'unknown' : `${(beforeRate * 100).toFixed(1)}%`;
-    reason = `follow rate ${(rate * 100).toFixed(1)}% below ${(threshold * 100).toFixed(1)}% (${applicable} samples); static ${staticRate}, on demand ${(rate * 100).toFixed(1)}%`;
-  }
+  else if (noBaseline) reason = `no static baseline (${beforeApplicable} static samples, minimum ${minimum}); on demand ${pct(rate)} over ${applicable} samples`;
+  else if (worse) reason = `on-demand follow rate ${pct(rate)} below static ${pct(beforeRate)} (${applicable} on-demand, ${beforeApplicable} static samples)`;
   let recommendation = '';
   if (triggerMissUnmatched) recommendation = `fix the trigger: it does not select ${triggerMissUnmatched} governed act(s), e.g. ${triggerMissEvidence[0] ?? 'unknown act'}`;
   else if (triggerMissMatched) recommendation = 'the trigger matched but nothing was served: engine defect (serve-once / refusal channel), investigate before any revert';
   else if (triggerMiss) recommendation = 'Fix the trigger or reinstate as static after reviewing the acts';
-  else if (underFollowed) recommendation = `under-followed in both regimes (static ${(beforeRate * 100).toFixed(1)} %, on demand ${(rate * 100).toFixed(1)} %): strengthen the rule or its gesture; reverting would not help`;
-  else if (reason) recommendation = 'Review the rule and reinstate as static or correct the check';
-  return { reason, recommendation, followed, applicable, rate, beforeRate, attention: underFollowed };
+  else if (noBaseline) recommendation = 'measure the static regime first; never reverted without a baseline';
+  else if (worse) recommendation = 'Review the rule and reinstate as static or correct the check';
+  return { reason, recommendation, followed, applicable, rate, beforeRate, attention: noBaseline, threshold };
 }
 
 const scalar = (value) => {
@@ -157,6 +161,15 @@ export function frontmatter(spec) {
   return `${lines.join('\n')}\n---\n`;
 }
 
+export async function migrationPreflight(root, rule, spec, scope = 'project') {
+  const paths = rulePaths(root, rule, scope);
+  const body = await readFile(paths.source, 'utf8');
+  if (body.startsWith('---\n') || body.startsWith('---\r\n')) throw new Error('source rule already has frontmatter; refusing to alter its body');
+  const rendered = `${frontmatter(spec)}${body}`;
+  parseRuntimeRule(paths.name, rendered);
+  return { paths, body, rendered };
+}
+
 export function stripGeneratedFrontmatter(text) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/.exec(text);
   if (!match || !/^on-demand:\r?\n {2}triggers:/m.test(match[1])) throw new Error('rule has no generated on-demand frontmatter');
@@ -169,6 +182,10 @@ const ledgerPathOf = (root, scope) => resolve(root, scope === 'user' ? 'rules-on
 // `rule` is a path RELATIVE TO THE STATIC DIRECTORY: `name.md` or `wt/name.md`. The on-demand destination is always
 // FLAT (`<demand>/name.md`) because the runtime loader reads only the top level of the on-demand directory
 // (hooks.js loadRuleDirectory skips every non-file entry); the origin subfolder is recorded in the ledger instead.
+// Ledger paths are written with forward slashes on every OS, so a ledger reads the same wherever it was written
+// (Windows relative() would otherwise record backslashes; locked by the three-OS run of the lifecycle test).
+const ledgerPath = (root, path) => relative(root, path).split(sep).join('/');
+
 export function rulePaths(root, rule, scope = 'project') {
   const name = basename(rule);
   if (!name.endsWith('.md')) throw new Error('rule must be a .md file');
@@ -217,7 +234,7 @@ export async function lastLifecycleTime(root, name, scope = 'project') {
     if (!line.trim()) continue;
     let row;
     try { row = JSON.parse(line); } catch { continue; }
-    if ((row.action === 'migrate' || row.action === 'revert') && row.rule === name && typeof row.time === 'string' && (!found || row.time > found)) found = row.time;
+    if ((row.action === 'migrate' || row.action === 'revert') && row.rule === name && Number.isFinite(Date.parse(row.time)) && (!found || Date.parse(row.time) > Date.parse(found))) found = row.time;
   }
   return found;
 }
@@ -418,15 +435,11 @@ async function withScopeLock(root, scope, fn) {
 
 export async function migrateRule(root, rule, spec, proof, { scope = 'project', mirrorDirs = [], io } = {}) {
  return withScopeLock(root, scope, async () => {
-   const paths = rulePaths(root, rule, scope);
-  const body = await readFile(paths.source, 'utf8');
-  if (body.startsWith('---\n') || body.startsWith('---\r\n')) throw new Error('source rule already has frontmatter; refusing to alter its body');
-  const rendered = `${frontmatter(spec)}${body}`;
-  parseRuntimeRule(paths.name, rendered);
+    const { paths, rendered } = await migrationPreflight(root, rule, spec, scope);
    const mirrorPlans = await planMirrors(root, paths.source, paths.destination, mirrorDirs, scope, 'migrate', paths.name);
     await transaction(root, scope, paths.source, paths.destination, rendered, mirrorPlans, { entry: {
     action: 'migrate', scope, rule: paths.name,
-    from: relative(root, paths.source), to: relative(root, paths.destination),
+    from: ledgerPath(root, paths.source), to: ledgerPath(root, paths.destination),
     mirrors: mirrorPlans.map((plan) => ({ from: plan.from, to: plan.to })),
     triggersHash: triggersHash(spec.triggers), ...proof,
      }, io });
@@ -446,7 +459,7 @@ export async function revertRule(root, rule, reason = 'manual', { scope = 'proje
    const mirrorPlans = await planMirrors(root, paths.destination, paths.source, mirrorDirs, scope, 'revert', paths.name);
     await transaction(root, scope, paths.destination, paths.source, body, mirrorPlans, { entry: {
     action: 'revert', scope, rule: paths.name,
-    from: relative(root, paths.destination), to: relative(root, paths.source),
+    from: ledgerPath(root, paths.destination), to: ledgerPath(root, paths.source),
     mirrors: mirrorPlans.map((plan) => ({ from: plan.from, to: plan.to })), reason,
     } });
     return { ...paths, changed: true };
@@ -467,7 +480,7 @@ export async function retireRule(root, rule, reason, { scope = 'project', mirror
   if (!archive.startsWith(`${archiveRoot}${sep}`)) throw new Error('archive path escapes rules archive');
   const plans = await planMirrors(root, source, archive, mirrorDirs, scope, 'retire', paths.name);
    await transaction(root, scope, source, archive, body, plans, { entry: {
-     action: 'retire', scope, rule: paths.name, from: relative(root, source), reason, archivedTo: relative(root, archive), mirrors: plans.map((plan) => ({ from: plan.from, to: plan.to })),
+     action: 'retire', scope, rule: paths.name, from: ledgerPath(root, source), reason, archivedTo: ledgerPath(root, archive), mirrors: plans.map((plan) => ({ from: plan.from, to: plan.to })),
    } });
    return archive;
  });

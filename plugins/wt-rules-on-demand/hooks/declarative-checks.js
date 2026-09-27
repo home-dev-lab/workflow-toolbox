@@ -69,7 +69,7 @@ function bashValues(compliance, command, id) {
   command = bounded(command);
   const output = [];
   for (const segment of executableSegments(maskReadOnlyMentions(bounded(command)))) {
-    if (!test(compliance.act, segment.text) || !segment.text.includes(id)) continue;
+     if (!compliance.act || !test(compliance.act, segment.text) || !segment.text.includes(id)) continue;
     output.push(...values(compliance.value, segment.text));
   }
   // Shell loops expose one tool call but several invocations; the result confirms the whole loop succeeded.
@@ -77,7 +77,7 @@ function bashValues(compliance, command, id) {
   const rest = loop ? command.slice(loop.index + loop[0].length) : '';
   const separator = rest.indexOf(';');
   const body = separator < 0 ? '' : rest.slice(separator + 1).split(/\bdone\b/, 1)[0];
-  if (loop && separator >= 0 && /\bdo\b/.test(body) && test(compliance.act, body) && body.includes(id) && new RegExp(String.raw`\$\{?${loop[1]}\b`).test(body))
+   if (compliance.act && loop && separator >= 0 && /\bdo\b/.test(body) && test(compliance.act, body) && body.includes(id) && new RegExp(String.raw`\$\{?${loop[1]}\b`).test(body))
     output.push(...rest.slice(0, separator).trim().split(/\s+/));
   return output;
 }

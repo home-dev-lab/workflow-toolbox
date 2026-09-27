@@ -17,12 +17,12 @@ on-demand:
     - kind: 'bash'
       regex: 'git\s+push\b'
       flags: 'i'
-      mentions: 'false'
-      before-first-act: 'true'
+      mentions: false
+      before-first-act: true
     - kind: 'tool'
       tool: '^Agent$'
       input-regex: '"model"'
-      unconditional: 'false'
+      unconditional: false
     - kind: 'path'
       tool: '^(Edit|Write)$'
       regex: '\.ts$'

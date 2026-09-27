@@ -43,7 +43,11 @@ test('aliased verdict identities still count toward a rollback decision', async 
   await writeFile(store, JSON.stringify({ 'compliance-verdicts-jsonl': Array.from({ length: 5 }, line).join('\n') }));
   const result = spawnSync(process.execPath, [rollback, '--project', f.real, '--store', store, '--dry-run', '--json'], { encoding: 'utf8', env: cleanEnv() });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(result.stdout)[0].action, 'would revert');
+  // The aliased rows are counted; store-only evidence has no static baseline, so the rule is flagged, never reverted.
+  const [row] = JSON.parse(result.stdout);
+  assert.equal(row.applicable, 5);
+  assert.equal(row.action, 'attention');
+  assert.match(row.reason, /no static baseline/);
 });
 
 test('a Windows rule identity splits on its outer separators, not the drive colon', () => {

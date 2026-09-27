@@ -133,6 +133,7 @@ test('rollback ignores another project and legacy unattributed rows', async (t) 
   for (const project of [projectA, projectB]) {
     await mkdir(join(project, '.claude/rules-on-demand'), { recursive: true });
     await writeFile(join(project, '.claude/rules-on-demand/sample.md'), rule);
+    await writeFile(join(project, '.claude/rules-on-demand-ledger.jsonl'), JSON.stringify({ action: 'migrate', rule: 'sample.md', time: new Date(Date.now() - 86400000).toISOString() }) + '\n');
   }
   const store = join(root, 'store.json');
   await writeFile(store, JSON.stringify({ 'compliance-verdicts-jsonl': [...Array(5)].map((_, i) => JSON.stringify({ rule: 'sample.md', ruleIdentity: i === 0 ? undefined : `project:${join(projectA, '.claude/rules-on-demand')}:sample.md`, verdict: 'not followed', decidedAt: new Date().toISOString() })).join('\n') }));

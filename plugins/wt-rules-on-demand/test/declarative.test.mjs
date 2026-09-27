@@ -74,7 +74,7 @@ test('command-head finds wrapped launches but excludes quoted mentions and commi
 });
 
 test('safe regex accepts disambiguated option alternatives and rejects ambiguous repetitions', () => {
-  assert.doesNotThrow(() => rule('    kind: none\n    reason: no check', '    - kind: bash\n      regex: "\\\\b(?:pnpm|npm|yarn)\\\\s+(?:(?:-C|--dir|--filter|-F|--prefix|-w|--workspace)\\\\s+\\\\S+\\\\s+|-r\\\\s+|--recursive\\\\s+)*(?:run\\\\s+)?(?:test|typecheck|lint|build|e2e|check)\\\\b"'));
+  assert.doesNotThrow(() => rule('    kind: none\n    reason: no check', '    - kind: bash\n      regex: "\\\\b(?:pnpm|npm|yarn)\\\\s+(?:(?:-C|--dir|--filter|-F|--prefix|-w|--workspace)\\\\s+\\\\S+\\\\s+|-r\\\\s+|--recursive\\\\s+){0,8}(?:run\\\\s+)?(?:test|typecheck|lint|build|e2e|check)\\\\b"'));
   for (const source of ['(a+)+', '(?:\\d*)*', '(a|ab)*']) assert.throws(() => rule('    kind: none\n    reason: no check', `    - kind: bash\n      regex: '${source}'`), /regex has/);
 });
 

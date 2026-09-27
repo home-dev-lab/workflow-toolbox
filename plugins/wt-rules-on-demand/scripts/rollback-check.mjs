@@ -122,8 +122,8 @@ for (const name of names) {
   // files physically live in (a profile whose on-demand directory is a symlink ledgers nothing of its own). Sessions
   // and acts older than it ran under the rule's previous state and are ignored (HIGH 1).
   const ledgerRoots = [...new Set([lifecycleRoot, scope === 'user' ? dirname(realRulesDir) : lifecycleRoot])];
-  const cutoff = (await Promise.all(ledgerRoots.map((root) => lastLifecycleTime(root, name, scope)))).filter(Boolean).sort().at(-1) ?? '';
-  const current = (time) => !cutoff || (typeof time === 'string' && time >= cutoff);
+   const cutoff = (await Promise.all(ledgerRoots.map((root) => lastLifecycleTime(root, name, scope)))).filter(Boolean).sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? '';
+   const current = (time) => !!cutoff && Number.isFinite(Date.parse(time)) && Date.parse(time) > Date.parse(cutoff);
   const identity = `${scope}:${realRulesDir}:${name}`;
   const rows = transcriptRows.filter((row) => row.rule === name && row.scope === scope && row.rulesDir && physicalOf.get(row.rulesDir) === realRulesDir);
   // A scan that contains no rows for a rule is still the authoritative window when --verdicts is supplied.
@@ -155,8 +155,12 @@ for (const name of names) {
      triggerMissEvidence: afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).map((row) => `${row.file}:${row.line}`),
     followed, applicable: applicable.length, beforeFollowed: before.filter((row) => row.checkVerdict === 'followed').length,
     beforeApplicable: before.length, threshold, minimum });
-   const result = { rule: name, scope, action: 'none', reason, recommendation, followed, applicable: applicable.length, triggerMissEvidence: evidence,
-     ...(rows.length && rows[0].window ? { window: rows[0].window } : {}) };
+    const result = { rule: name, scope, action: 'none', reason, recommendation, followed, applicable: applicable.length, triggerMissEvidence: evidence,
+      ...(rows.length && rows[0].window ? { window: rows[0].window } : {}) };
+    if (!cutoff) {
+      result.action = 'attention'; result.reason = 'migration instant unknown; automatic rollback unavailable';
+      results.push(result); log(`${name}: attention: ${result.reason}`); continue;
+    }
    if (options.mechanicalOnly && !measured) {
      result.action = 'attention';
      result.reason = 'transcript check unavailable; store-only evidence cannot authorize automatic rollback';
@@ -192,8 +196,10 @@ for (const name of names) {
   log(`${options.dryRun ? 'would revert' : 'reverted'} ${name}: ${reason}`);
    if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
    if (!options.dryRun) {
-     const moved = await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
-     if (moved.changed && options.journal) await appendFile(options.journal, JSON.stringify({ ...result, at: new Date().toISOString(), ...(scope === 'project' ? { root: project } : {}) }) + '\n');
+      const notification = { ...result, at: new Date().toISOString(), ...(scope === 'project' ? { root: project } : {}) };
+      if (options.journal) await appendFile(options.journal, JSON.stringify({ ...notification, state: 'pending' }) + '\n');
+      const moved = await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
+      if (moved.changed && options.journal) await appendFile(options.journal, JSON.stringify({ ...notification, state: 'reverted' }) + '\n');
    }
 }
 

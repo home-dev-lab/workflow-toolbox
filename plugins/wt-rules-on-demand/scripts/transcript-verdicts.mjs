@@ -15,6 +15,7 @@ import { triggerMatches } from '../hooks/trigger-match.js';
 import { toolInputVerdict, bashSegments, segmentVerdict, correlateTurn } from '../hooks/declarative-checks.js';
 
 const RULE_BLOCK = /<rule name="([^"]+\.md)"(\s+source="[^"]*")?>/g;
+const REFUSAL = 'wt-rules-on-demand: read the rule below before this action';
 const watched = /"(?:tool_use|hook_additional_context|compact_boundary|tool_result)"|"cwd"|"timestamp"/;
 const exec = promisify(execFile);
 
@@ -43,7 +44,7 @@ async function firstMigration(root, name, scope) {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return '';
     throw error;
   });
-  return text.split('\n').flatMap((line) => { try { const row = JSON.parse(line); return row.action === 'migrate' && row.rule === name && !Number.isNaN(Date.parse(row.time)) ? [row.time] : []; } catch { return []; } }).sort()[0] ?? null;
+  return text.split('\n').flatMap((line) => { try { const row = JSON.parse(line); return row.action === 'migrate' && row.rule === name && Number.isFinite(Date.parse(row.time)) ? [row.time] : []; } catch { return []; } }).sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? null;
 }
 
 async function filesIn(directory, stats) {
@@ -81,7 +82,7 @@ async function loadScopes(scopes, migrationDate, lastChange, stats) {
       catch (error) { stats.scopeErrors.push(`${path}: ${error.message}`); continue; }
       const dated = async (read) => { try { return await read(scope.rulesDir, name); } catch (error) { stats.coverage.gitErrors.push(`${scope.scope} ${name}: ${error.message}`); return null; } };
       const gitDate = await dated(migrationDate);
-      const ledgerDate = gitDate ? null : (await Promise.all((scope.ledgerRoots ?? []).map((root) => firstMigration(root, name, scope.scope)))).filter(Boolean).sort()[0];
+       const ledgerDate = gitDate ? null : (await Promise.all((scope.ledgerRoots ?? []).map((root) => firstMigration(root, name, scope.scope)))).filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
       const migrated = gitDate || ledgerDate || null;
       if (['check', 'bash-command', 'tool-input', 'turn-correlation', 'unregistered'].includes(rule.compliance?.kind)) {
         stats.coverage.checkableRules++;
@@ -153,7 +154,7 @@ export function normalize(record, line, cwd = '') {
     const results = Array.isArray(content) ? content.filter((part) => part?.type === 'tool_result') : [];
     const events = results.map((part) => ({ ...base, kind: 'result', id: part.tool_use_id, isError: part.is_error === true,
        text: bounded(textOf(part.content)) }));
-    for (const result of events) if (result.text) for (const block of blocks(result.text).filter((item) => !item.fallback))
+    for (const result of events.filter((event) => event.kind === 'result')) if (result.text.includes(REFUSAL)) for (const block of blocks(result.text).filter((item) => !item.fallback))
       events.push({ ...base, kind: 'delivery', name: block.name, provenance: { kind: 'refusal', toolUseId: result.id, line, at } });
     if (!results.length && (typeof content === 'string' || Array.isArray(content) && content.some((part) => part?.type === 'text')) && !record.isMeta && !record.isCompactSummary)
       events.push({ ...base, kind: 'turn' });
@@ -181,16 +182,25 @@ export function resolveContext(context, scopes, { nonProofNames = [] } = {}) {
 export function judge(context, resolved, path, stats, seen, now) {
   const rows = [];
   const checked = new Map();
-  const correlated = new Map(resolved.effective.filter(({ rule }) => rule.compliance?.kind === 'turn-correlation').map(({ rule }) =>
-    [rule, new Map(correlateTurn(rule.compliance, context.events).map((item) => [item.id, [item]]))]));
-  for (const act of checkLines(context.events)) if (act.toolUseId) checked.set(act.toolUseId, [...checked.get(act.toolUseId) ?? [], act]);
-  const refused = new Set(context.events.filter((event) => event.kind === 'result' && event.text).map((event) => event.id));
+   const correlated = new Map();
+   for (const { rule } of resolved.effective) if (rule.compliance?.kind === 'turn-correlation') {
+     try { correlated.set(rule, new Map(correlateTurn(rule.compliance, context.events).map((item) => [item.id, [item]]))); }
+     catch (error) { stats.coverage.ruleErrors ??= []; stats.coverage.ruleErrors.push(`${rule.name}: ${error.message}`); }
+   }
+   for (const act of checkLines(context.events)) {
+     if (act.toolUseId) checked.set(act.toolUseId, [...checked.get(act.toolUseId) ?? [], act]);
+   }
+   const refused = new Set(context.events.filter((event) => event.kind === 'result' && event.text.includes(REFUSAL)).map((event) => event.id));
   for (const call of resolved.calls.values()) {
     if (refused.has(call.id)) continue;
     const time = Date.parse(call.at ?? '');
     if (!Number.isFinite(time)) { stats.coverage.missingTimestamps++; continue; }
     if (time < now - stats.days * 86400000 || time > now) { stats.skippedOutsideWindow++; continue; }
-    for (const { rule, scope } of resolved.effective) for (const [index, evaluated] of toolVerdict(rule, { name: call.name, id: call.id, input: call.input }, checked, correlated).entries()) {
+     for (const { rule, scope } of resolved.effective) {
+       let evaluations;
+       try { evaluations = toolVerdict(rule, { name: call.name, id: call.id, input: call.input }, checked, correlated); }
+        catch (error) { stats.coverage.ruleErrors ??= []; stats.coverage.ruleErrors.push(`${rule.name}: ${error.message}`); continue; }
+       for (const [index, evaluated] of evaluations.entries()) {
        // An act whose outcome the transcript cannot decide is counted, never a row.
        if (evaluated.verdict === 'unresolved') { const key = `${scope.scope} ${rule.name}`; stats.coverage.unresolvedActs ??= {}; stats.coverage.unresolvedActs[key] = (stats.coverage.unresolvedActs[key] ?? 0) + 1; }
        const contextKey = /(?:^|[\\/])subagents(?:[\\/]|$)/.test(path) ? path : call.sessionId ?? '';
@@ -207,11 +217,12 @@ export function judge(context, resolved, path, stats, seen, now) {
           if (served) verdict = evaluated.verdict;
          else verdict = time < rule.lastChange ? 'trigger miss (superseded)' : 'trigger miss';
        }
-      rows.push({ rule: rule.name, scope: scope.scope, rulesDir: scope.rulesDir, migrated: rule.migrated, phase,
+       rows.push({ rule: rule.name, scope: scope.scope, rulesDir: scope.rulesDir, migrated: rule.migrated, phase,
          checkVerdict: evaluated.verdict, triggerMatched: matches(rule, { name: call.name, input: call.input, argumentEvidence: call.argumentEvidence }), verdict, served,
         file: path, line: call.line, toolUseId: call.id, at: call.at, sessionId: call.sessionId, source: 'transcript',
         detail: evaluated.detail ?? '', ...(evaluated.segment !== undefined ? { segment: evaluated.segment } : {}), window: `${stats.days}d`,
         ...(!rule.migrated ? { note: 'no migration date' } : {}) });
+        }
     }
   }
   return rows;
@@ -296,7 +307,10 @@ export async function scanTranscripts({ projectsDirs, scopes, days = 7, since, n
   delete stats.tmpProjects;
   delete stats.visited;
   Object.assign(stats.coverage, { filesRead: stats.filesRead, filesFailed: stats.filesFailed, badLines: stats.badLines });
+  stats.coverage.missingScopeEvidence = loaded.filter((scope) => scope.scope === 'project' && !stats.projects.includes(scope.projectRoot))
+    .map((scope) => `${scope.scope} ${scope.projectRoot}: no transcript evidence`);
   const complete = stats.filesRead > 0 && stats.coverage.checkableRules > 0 && !stats.filesFailed && !stats.scopeErrors.length && !stats.coverage.unknownMigrationDates.length
+     && !stats.coverage.missingScopeEvidence.length && !stats.coverage.ruleErrors?.length
     && !stats.coverage.gitErrors.length && !stats.coverage.unownedProjectsDirs.length;
   return { rows, stats, coverage: stats.coverage, complete, scopes: loaded.map(({ scope, rulesDir, projectRoot }) => ({ scope, rulesDir, projectRoot })) };
 }

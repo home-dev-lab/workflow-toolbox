@@ -38,7 +38,7 @@ const context = async ($, loop) => {
         contexts.delete(oldest);
       }
     }
-    contexts.set(loop, { rules: null, served: new Map(), pending: [], refusing: new Map(), prompting: new Set(), correlation: [] });
+     contexts.set(loop, { rules: null, served: new Map(), pending: [], refusing: new Map(), prompting: new Map(), correlation: [] });
   }
   return contexts.get(loop);
 };
@@ -103,7 +103,7 @@ async function load($, cwd) {
         const physical = await $.fs.stat(dir, { resolve: true }).then((stat) => stat.realPath ?? dir).catch(() => dir);
         rules.push({ ...parseRuntimeRule(entry.name, text), identity: `${scope}:${physical}:${entry.name}` });
       }
-      catch (error) { await notice($, `skipped ${file}: ${error.message}`); }
+       catch (error) { await notice($, `skipped ${file}: ${error.message}`).catch(() => {}); }
     }
   }
   return [...new Map(rules.map((rule) => [rule.name, rule])).values()];
@@ -228,8 +228,10 @@ function inject(ctx, rules, trigger) {
 }
 async function closeCorrelation($, ctx, loop) {
   const events = [...ctx.correlation, { kind: 'turn' }];
-  for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation')
-    for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail);
+   for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation') {
+     try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail); }
+     catch (error) { await notice($, `${rule.name}: correlation failed: ${error.message}`).catch(() => {}); }
+   }
   ctx.correlation = [];
 }
 const eligible = (ctx, rule) => {
@@ -272,7 +274,7 @@ export const register = (on, options) => {
           ctx.rules = null;
           ctx.loading = null;
           ctx.served.clear();
-          ctx.prompting = new Set();
+           ctx.prompting = new Map();
        }
      }
     return result;
@@ -282,18 +284,29 @@ export const register = (on, options) => {
     const ctx = await context($, MAIN);
      await rulesFor($, ctx, e.cwd ?? '.');
     const prompting = ctx.prompting;
-    const chosen = selected(ctx.rules, e, true).filter((rule) => eligible(ctx, rule) && !prompting.has(rule.name));
-    for (const rule of chosen) prompting.add(rule.name);
-    let result;
-    try { result = await next(chosen.length ? { ...e, context: [...(e.context ?? []), ...chosen.map(block)] } : e); }
-    finally { for (const rule of chosen) prompting.delete(rule.name); }
-     if (result && ('deny' in result || 'drop' in result) || !chosen.length) return result;
-     if (ctx.prompting !== prompting) return result;
-     const ride = chosen.filter((rule) => eligible(ctx, rule));
-     if (!ride.length) return result;
-     claim(ctx, ride); const injected = inject(ctx, ride, 'prompt.submit'); await journal($, ride, MAIN, [], ride, injected, 'prompt.submit');
-     for (const rule of ride) await $.ui.log(`wt-rules-on-demand: serving ${rule.name}`).catch(() => {});
-     return result;
+     const candidates = selected(ctx.rules, e, true);
+     while (true) {
+       const conflicts = candidates.filter((rule) => eligible(ctx, rule)).map((rule) => prompting.get(rule.name)).filter(Boolean);
+       if (!conflicts.length) break;
+       await Promise.all(conflicts);
+     }
+     const chosen = candidates.filter((rule) => eligible(ctx, rule));
+     let release;
+     const reservation = new Promise((resolve) => { release = resolve; });
+     for (const rule of chosen) prompting.set(rule.name, reservation);
+     let result;
+     try {
+       result = await next(chosen.length ? { ...e, context: [...(e.context ?? []), ...chosen.map(block)] } : e);
+       if (result && ('deny' in result || 'drop' in result) || !chosen.length || ctx.prompting !== prompting) return result;
+       const ride = chosen.filter((rule) => eligible(ctx, rule));
+       if (!ride.length) return result;
+       claim(ctx, ride); const injected = inject(ctx, ride, 'prompt.submit'); await journal($, ride, MAIN, [], ride, injected, 'prompt.submit');
+       for (const rule of ride) await $.ui.log(`wt-rules-on-demand: serving ${rule.name}`).catch(() => {});
+       return result;
+     } finally {
+       for (const rule of chosen) if (prompting.get(rule.name) === reservation) prompting.delete(rule.name);
+       release();
+     }
   });
   on('turn.complete', async ($, e, next) => {
     const result = await next(e);

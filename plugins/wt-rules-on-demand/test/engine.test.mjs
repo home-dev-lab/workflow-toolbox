@@ -57,11 +57,61 @@ test('concurrent matching prompts deliver only one claimed context', async () =>
   const delivered = [];
   const submit = () => f.handlers.get('prompt.submit')(f.$, { text: 'ready', cwd: '/sample-project' }, async (input) => { delivered.push(input.context ?? []); await waiting; return {}; });
   const one = submit(), two = submit();
-  while (delivered.length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+  while (delivered.length < 1) await new Promise((resolve) => setTimeout(resolve, 0));
   release();
   await Promise.all([one, two]);
   assert.deepEqual(delivered.map((context) => context.length).sort(), [0, 1]);
   assert.equal(f.stored.get('served')['sample.md'].count, 1);
+});
+
+test('competing prompt waits for rejected reservation, but does not double-serve accepted reservation', async () => {
+  for (const firstOutcome of [{ deny: 'blocked' }, {}]) {
+    const f = fixture();
+    f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n      before-first-act: 'false'", "kind: 'prompt'\n      regex: 'ready'"));
+    let release, entered;
+    const waiting = new Promise((resolve) => { release = resolve; });
+    const started = new Promise((resolve) => { entered = resolve; });
+    const handler = f.handlers.get('prompt.submit');
+    const contexts = [];
+    const first = handler(f.$, { text: 'ready', cwd: '/sample-project' }, async (input) => { contexts.push(input.context ?? []); entered(); await waiting; return firstOutcome; });
+    await started;
+    const second = handler(f.$, { text: 'ready', cwd: '/sample-project' }, async (input) => { contexts.push(input.context ?? []); return {}; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(contexts.length, 1);
+    release(); await Promise.all([first, second]);
+    assert.deepEqual(contexts.map((item) => item.length), 'deny' in firstOutcome ? [1, 1] : [1, 0]);
+    assert.equal(f.stored.get('served')['sample.md'].count, 1);
+  }
+});
+
+test('competing prompt reselects after first host callback throws', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n      before-first-act: 'false'", "kind: 'prompt'\n      regex: 'ready'"));
+  const handler = f.handlers.get('prompt.submit');
+  let release, entered;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { entered = resolve; });
+  const first = handler(f.$, { text: 'ready', cwd: '/sample-project' }, async () => { entered(); await waiting; throw new Error('host failed'); });
+  await started;
+  let received;
+  const second = handler(f.$, { text: 'ready', cwd: '/sample-project' }, async (event) => { received = event.context; return {}; });
+  release();
+  await assert.rejects(first, /host failed/);
+  await second;
+  assert.equal(received.length, 1);
+  assert.equal(f.stored.get('served')['sample.md'].count, 1);
+});
+
+test('failed skip diagnostic cannot prevent a valid neighbor rule loading', async () => {
+  const f = fixture({ userNames: ['broken.md', 'sample.md'] });
+  f.files.set('/sample-config/rules-on-demand/broken.md', 'not frontmatter');
+  const log = f.$.ui.log;
+  f.$.ui.log = async (message) => {
+    if (message.includes('skipped')) throw new Error('logging unavailable');
+    return log(message);
+  };
+  const result = await f.call({ tool: 'Agent' });
+  assert.match(result.deny, /sample\.md/);
 });
 
 test('full context map closes pending verdicts on eviction', async () => {
