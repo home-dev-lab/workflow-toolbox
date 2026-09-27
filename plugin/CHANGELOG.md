@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- The autonomy watch no longer repeats "AUTONOMY MANDATE CLOSING" (or an identical wake) at every poll when other sessions, in other projects or config dirs, run the same watcher. Those watchers share the machine-wide state dir and used to judge this session's per-session records against their own project directory, find no transcript, and delete them each minute. Records now carry their owner's transcript path, and only its absence expires them; records written by older versions keep the previous rule until their owner rewrites them.
+
 ### Changed
 - Restored unconditional anomaly, fan-out, distributed-twin, escalation, reporting, board-sweep, memory-integrity and cross-platform shipping duties to always-loaded rules; fan-out now loads its companion before Agent as well as Workflow calls.
 - Slimmed the always-loaded plugin rules by moving memory maintenance, delegation routing and addressing, board sweeps, distributed-twin checks, monitoring, Workflow fan-out, review/refutation, and gate-log guidance into pre-act companions. Split the oversized delegation and memory companions to fit the fallback delivery limit. The rules' operative-order inventory and static private-rule anchors remain checked; adoption registry now includes the new companions.

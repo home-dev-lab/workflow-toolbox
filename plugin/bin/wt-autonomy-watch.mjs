@@ -292,8 +292,12 @@ function readMarker(markerPath) {
   }
 }
 
-function writeMarker(markerPath, payload) {
-  writeFileSync(markerPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+// ⚠ Both per-session records carry the OWNER's transcript path. The state dir is swept by every
+// session's watcher on the machine, whatever its project; without this field a neighbour in another
+// project judged this session "gone" and deleted its records at every poll (see
+// lib/queue-gate-marker-expiry.mjs).
+function writeMarker(context, payload) {
+  writeFileSync(context.markerPath, `${JSON.stringify({ ...payload, transcriptPath: context.transcriptPath }, null, 2)}\n`, 'utf8')
 }
 
 function readMandateState(mandateStatePath) {
@@ -323,8 +327,8 @@ function readMandateState(mandateStatePath) {
   }
 }
 
-function writeMandateState(mandateStatePath, payload) {
-  writeFileSync(mandateStatePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+function writeMandateState(context, payload) {
+  writeFileSync(context.mandateStatePath, `${JSON.stringify({ ...payload, transcriptPath: context.transcriptPath }, null, 2)}\n`, 'utf8')
 }
 
 function clearMandateState(mandateStatePath) {
@@ -349,7 +353,7 @@ function poll(context) {
   expireMarker('mandate', context.mandatePath, now, { mandateFreshnessMs: context.mandateFreshnessMs })
   const previousMandateState = readMandateState(context.mandateStatePath)
   if (mandate.kind === 'unknown') {
-    writeMandateState(context.mandateStatePath, {
+    writeMandateState(context, {
       observedAt: new Date(now).toISOString(),
       lastMandateKind: 'unknown',
       lastMandateDeclaredAtMs: null,
@@ -368,7 +372,7 @@ function poll(context) {
       mandate.declaredBy === context.sessionId &&
       now - mandate.declaredAtMs <= BOOTSTRAP_OBSERVATION_GRACE_MS
     ) {
-      writeMandateState(context.mandateStatePath, {
+      writeMandateState(context, {
         observedAt: new Date(now).toISOString(),
         lastMandateKind: 'live',
         lastMandateDeclaredAtMs: mandate.declaredAtMs,
@@ -381,7 +385,7 @@ function poll(context) {
       previousMandateState?.lastMandateKind === 'live' &&
       previousMandateState.lastMandateDeclaredAtMs === mandate.declaredAtMs &&
       previousMandateState.expiryNotifiedForDeclaredAtMs !== mandate.declaredAtMs
-    writeMandateState(context.mandateStatePath, {
+    writeMandateState(context, {
       observedAt: new Date(now).toISOString(),
       lastMandateKind: 'expired',
       lastMandateDeclaredAtMs: mandate.declaredAtMs,
@@ -399,7 +403,7 @@ function poll(context) {
   const warningDue = now - mandate.declaredAtMs >= context.mandateFreshnessMs * 0.85
   const warningAlreadyNotified = previousMandateState?.warningNotifiedForDeclaredAtMs === mandate.declaredAtMs
   const warningNotifiedForDeclaredAtMs = warningDue || warningAlreadyNotified ? mandate.declaredAtMs : null
-  writeMandateState(context.mandateStatePath, {
+  writeMandateState(context, {
     observedAt: new Date(now).toISOString(),
     lastMandateKind: 'live',
     lastMandateDeclaredAtMs: mandate.declaredAtMs,
@@ -432,7 +436,7 @@ function poll(context) {
     if (previousMarker?.kind === 'mission-finished' && sameQueue) return
     // A changed zero snapshot is a fresh finding, but it cannot repeat faster than the idle period.
     if (previousMarker?.kind === 'mission-finished' && previousMarker.emittedAtMs !== null && now - previousMarker.emittedAtMs < context.idleMs) return
-    writeMarker(context.markerPath, {
+    writeMarker(context, {
       emittedAt: new Date(now).toISOString(),
       transcriptMtimeMs,
       mandateDeclaredAtMs: mandate.declaredAtMs,
@@ -456,7 +460,7 @@ function poll(context) {
     ? ` (inherited from session ${mandate.declaredBy}, mandate declared ${ageMin}min ago)`
     : ''
 
-  writeMarker(context.markerPath, {
+  writeMarker(context, {
     emittedAt: new Date(now).toISOString(),
     transcriptMtimeMs,
     mandateDeclaredAtMs: mandate.declaredAtMs,
@@ -600,7 +604,7 @@ const mandateAtArming = classifyMandate(context.mandatePath, context.mandateFres
 if (mandateAtArming.kind === 'live') {
   const previousMandateState = readMandateState(context.mandateStatePath)
   const sameDeclaration = previousMandateState?.lastMandateDeclaredAtMs === mandateAtArming.declaredAtMs
-  writeMandateState(context.mandateStatePath, {
+  writeMandateState(context, {
     observedAt: new Date(nowAtArming).toISOString(),
     lastMandateKind: 'live',
     lastMandateDeclaredAtMs: mandateAtArming.declaredAtMs,
