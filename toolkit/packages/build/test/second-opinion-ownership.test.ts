@@ -461,6 +461,20 @@ describe('second-opinion Codex broker ownership', () => {
     expect(end).not.toHaveBeenCalled()
   })
 
+  it('names the discovery failure, not an identity change, when private state names a broker that cannot be looked up', () => {
+    const end = vi.fn()
+    const ownership = createCodexBrokerOwnership({
+      readProcessSnapshot: () => ({ supported: false, processes: [], reason: 'process discovery unavailable on this platform' }),
+      endProcessFamily: end,
+      forceEndProcessFamily: end,
+    }, {})
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    recordBroker(ownership.env.CLAUDE_PLUGIN_DATA, 2132)
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable: broker not captured; process discovery unavailable on this platform'])
+    expect(end).not.toHaveBeenCalled()
+  })
+
   it('orders a Linux broker by wall-clock start, not by its boot-relative tick identity, when the companion left the snapshot', () => {
     // Linux rows carry startIdentity in clock ticks since boot and startTime in epoch ms.
     const linuxBroker = { ...broker(2132, 1, 1_000, 101_000), startIdentity: 5_000 }

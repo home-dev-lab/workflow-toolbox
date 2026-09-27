@@ -156,10 +156,11 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     if (identity || brokerPidIsNamespaced) return
     const statePid = brokerFromState(root)
     if (!statePid) return
-    claimedPid = statePid
     const observedAt = now()
     const result = snapshot()
+    // Unreadable process table: stop() names the discovery failure rather than an identity change.
     if (!result) return
+    claimedPid = statePid
     if (claim(result.processes.find((item) => item.pid === statePid), ownershipStartedAt, observedAt)) captureWindowsDescendants(result.processes, observedAt)
   }
 
