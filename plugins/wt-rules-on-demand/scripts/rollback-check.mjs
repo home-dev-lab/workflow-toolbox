@@ -87,39 +87,31 @@ for (const name of names) {
   const ledgerRoots = [...new Set([lifecycleRoot, scope === 'user' ? dirname(realRulesDir) : lifecycleRoot])];
   const cutoff = (await Promise.all(ledgerRoots.map((root) => lastLifecycleTime(root, name, scope)))).filter(Boolean).sort().at(-1) ?? '';
   const current = (time) => !cutoff || (typeof time === 'string' && time >= cutoff);
-  // A trigger miss: a session held GOVERNED acts for the rule (the engine was serving these rules) and the rule never
-  // reached it. "Reached" is a serve (any channel, the before-act refusal included), a serve suppressed because the
-  // rule was already in that context, or a compliance injection (MED 3: a suppressed serve is a reached rule).
-  // OBSERVED acts (the engine ran in embedded mode and never serves these files) say the PROFILE is not serving
-  // on-demand rules: reported, never a reason to revert (HIGH 1).
-  let triggerMiss = false;
-  let unattributedDelivery = false;
-  for (const session of Object.values(store.sessions ?? {})) {
-    if (!current(session.last)) continue;
-    const contexts = Object.values(session.contexts ?? {});
-     const ofRule = (field) => contexts.flatMap((context) => context[field] ?? []).filter((act) => act.ruleIdentity === `${scope}:${realRulesDir}:${name}` && current(act.last ?? act.at ?? session.last));
-     const injections = contexts.flatMap((context) => context.complianceInjected ?? []).filter((item) => item.ruleIdentity === `${scope}:${realRulesDir}:${name}`);
-     const reached = injections.length > 0 || contexts.some((context) => ['servedIdentity', 'suppressedIdentity'].some((field) => (context[field]?.[`${scope}:${realRulesDir}:${name}`] ?? 0) > 0));
-     if (reached || !ofRule('governedActs').length) continue;
-     // A legacy name-only delivery (or no identity-bearing delivery records at all) cannot prove that
-     // this rule was never served. Only an identity-aware delivery window can support a store miss.
-     const attributed = contexts.some((context) => context.servedIdentity || context.suppressedIdentity ||
-       (context.complianceInjected ?? []).some((item) => item.ruleIdentity));
-     if (contexts.some((context) => (context.served?.[name] ?? 0) > 0) || !attributed) unattributedDelivery = true;
-     else triggerMiss = true;
-  }
   const identity = `${scope}:${realRulesDir}:${name}`;
   const rows = transcriptRows.filter((row) => row.rule === name && row.scope === scope && row.rulesDir && physicalOf.get(row.rulesDir) === realRulesDir);
   // A scan that contains no rows for a rule is still the authoritative window when --verdicts is supplied.
   const kind = /^\s{4}kind:\s*['"]?([^'"\s]+)/m.exec(await readFile(join(rulesDir, name), 'utf8'))?.[1];
   const measured = options.verdictFiles.length && ['check', 'bash-command'].includes(kind);
+  // Only transcripts can establish non-delivery. In store-only mode, a governed act without
+  // a delivery record for this identity in its context is unknown, regardless of other fields.
+  // When transcript verdicts are supplied, the scan window decides independently of old sessions.
+  let unprovenMiss = false;
+  if (!options.verdictFiles.length) for (const session of Object.values(store.sessions ?? {})) {
+    if (!current(session.last)) continue;
+    for (const context of Object.values(session.contexts ?? {})) {
+      const governed = (context.governedActs ?? []).some((act) => act.ruleIdentity === identity && current(act.last ?? act.at ?? session.last));
+      const delivered = (context.complianceInjected ?? []).some((item) => item.ruleIdentity === identity) ||
+        ['servedIdentity', 'suppressedIdentity'].some((field) => (context[field]?.[identity] ?? 0) > 0);
+      if (governed && !delivered) unprovenMiss = true;
+    }
+  }
   const scanRows = measured ? rows : verdicts.filter((row) => row.ruleIdentity === identity);
   const applicable = scanRows.filter((row) => row.rule === name && ['followed', 'not followed'].includes(row.verdict) && (measured || current(row.decidedAt)));
   const followed = applicable.filter((row) => row.verdict === 'followed').length;
   const { threshold, minimum } = policy(await readFile(join(rulesDir, name), 'utf8'));
   const evidence = rows.filter((row) => row.verdict === 'trigger miss').map((row) => `${row.file}:${row.line}`);
   const before = rows.filter((row) => row.phase === 'before' && ['followed', 'not followed'].includes(row.checkVerdict));
-  const { reason, recommendation, rate, attention } = rollbackDecision({ triggerMiss: !measured && triggerMiss,
+  const { reason, recommendation, rate, attention } = rollbackDecision({ triggerMiss: false,
     triggerMissUnmatched: options.verdictFiles.length ? rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).length : 0,
     triggerMissMatched: options.verdictFiles.length ? rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched !== false).length : 0,
     triggerMissEvidence: rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).map((row) => `${row.file}:${row.line}`),
@@ -127,18 +119,19 @@ for (const name of names) {
     beforeApplicable: before.length, threshold, minimum });
   const result = { rule: name, scope, action: 'none', reason, recommendation, followed, applicable: applicable.length, triggerMissEvidence: evidence,
     ...(rows.length && rows[0].window ? { window: rows[0].window } : {}) };
-   if (unattributedDelivery) {
-     result.reason = 'delivery evidence unattributed';
-     result.action = 'attention';
-     results.push(result);
-     continue;
+    if (unprovenMiss) {
+      result.reason = 'trigger miss unproven: store cannot show non-delivery';
+      result.action = 'attention';
+      results.push(result);
+      log(`${name}: attention: ${result.reason}`);
+      continue;
    }
    if (!reason) {
     log(`${name}: no rollback (${applicable.length} applicable verdicts; minimum ${minimum})`);
     results.push(result);
     continue;
   }
-  if (attention) { result.action = 'attention'; results.push(result); continue; }
+   if (attention) { result.action = 'attention'; results.push(result); log(`${name}: attention: ${reason}`); continue; }
   // A file that physically lives in another profile's directory (a symlinked on-demand directory or file) is not this
   // profile's to revert: the revert would delete the file the other profile serves (HIGH 1).
   const realFile = await realOr(join(rulesDir, name));
@@ -152,7 +145,7 @@ for (const name of names) {
   result.action = options.dryRun ? 'would revert' : 'reverted';
   results.push(result);
   log(`${options.dryRun ? 'would revert' : 'reverted'} ${name}: ${reason}`);
-  if (!(options.verdictFiles.length ? evidence.length : triggerMiss)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
+   if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
   if (!options.dryRun) await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
 }
 

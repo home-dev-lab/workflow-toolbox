@@ -338,8 +338,9 @@ async function transaction(root, scope, source, destination, rendered, plans, { 
   }
 }
 
-// A scope owns one ledger. Hold the lock through planning, writes and rollback, including
-// the ledger snapshot: no other process can append while it is being restored.
+// Lifecycle commands must be single-writer per scope. This lock is a best-effort guard
+// against accidental overlap, not an exclusivity guarantee across processes or hosts.
+// Keep it through planning, writes, rollback and the ledger snapshot.
 async function withScopeLock(root, scope, fn) {
   const dir = resolve(root, scope === 'user' ? '.' : '.claude');
   await mkdir(dir, { recursive: true });
@@ -379,21 +380,21 @@ async function withScopeLock(root, scope, fn) {
         }
         try {
           if (await readFile(moved, 'utf8') !== recorded) {
-            // Do not overwrite the newer lock if another reclaimer has already acquired it.
+            // Avoid overwriting a newer lock observed after reclaim; this does not fence other writers.
             try { await link(moved, path); await unlink(moved); }
             catch (failure) { if (failure.code !== 'EEXIST') throw failure; }
             continue;
           }
-          console.warn(`rules-on-demand: reclaimed stale lifecycle lock ${path} (${Math.round(age / 1000)}s old)`);
+           console.warn(`rules-on-demand: reclaimed apparently stale lifecycle lock ${path} (${Math.round(age / 1000)}s old); run lifecycle commands single-writer per scope (best-effort guard, not cross-process or cross-host exclusivity)`);
         } finally {
           if (await readFile(moved, 'utf8').catch(() => null) === recorded) await rm(moved, { force: true });
         }
       }
-      if (attempt === 99) throw new Error(`lifecycle lock held by ${owner?.hostname ?? 'unknown'}:${owner?.pid ?? 'unknown'} at ${path}; retry when the other operation finishes`, { cause: error });
+       if (attempt === 99) throw new Error(`lifecycle lock held by ${owner?.hostname ?? 'unknown'}:${owner?.pid ?? 'unknown'} at ${path}; run lifecycle commands single-writer per scope and retry when the other operation finishes (best-effort guard, not cross-process or cross-host exclusivity)`, { cause: error });
       await wait();
     }
   }
-  if (!handle) throw new Error(`lifecycle lock held by unknown at ${path}; retry when the other operation finishes`);
+   if (!handle) throw new Error(`lifecycle lock held by unknown at ${path}; run lifecycle commands single-writer per scope and retry when the other operation finishes (best-effort guard, not cross-process or cross-host exclusivity)`);
   try { return await fn(); }
   finally {
     await handle.close();

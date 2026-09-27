@@ -130,7 +130,7 @@ test('EEXIST at destination creation never removes another invocation’s file',
   assert.ok(await readFile(join(root, '.claude/rules/wt', name)));
 });
 
-test('two concurrent migrations serialize their ledger entries', async (t) => {
+test('a held local lock makes a second migration wait in the common case', async (t) => {
   const root = await sandbox(t);
   const spec = await readSpec(realSpec);
   await writeFile(join(root, '.claude/rules/wt/second.md'), 'Second\n');
@@ -167,7 +167,7 @@ test('stale lifecycle lock is reclaimed and reported', async (t) => {
   console.warn = (message) => warnings.push(message);
   try { await migrateRule(root, `wt/${name}`, await readSpec(realSpec), {}); }
   finally { console.warn = warn; }
-  assert.match(warnings.join('\n'), /reclaimed stale lifecycle lock/);
+  assert.match(warnings.join('\n'), /reclaimed apparently stale lifecycle lock/);
 });
 
 test('revert user rule succeeds after the engine is disabled', async (t) => {

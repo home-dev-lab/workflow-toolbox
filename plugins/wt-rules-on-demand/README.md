@@ -48,6 +48,9 @@ decidable literal character (such as `(a|ab)*`), are rejected at parse time.
 The check covers exactly those two shapes; other nested repetition, ambiguous
 character classes, and repeated adjacent atoms are not checked. This is a
 heuristic, **not** a proof of regex safety; other catastrophic patterns remain
-possible. Further hardening is tracked separately. Lifecycle CLI operations hold
-an exclusive per-scope lock; a dead local owner or a remote owner older than
-five minutes is reclaimed with a warning, and a held lock is reported after two seconds.
+possible. Further hardening is tracked separately. Run lifecycle commands
+(`migrate`, `revert`, `retire`) single-writer per scope: do not run them concurrently
+on the same scope. The lock file is a best-effort guard against accidental
+overlap, not an exclusivity guarantee across processes or hosts. An apparently
+dead local owner or remote owner older than five minutes may be reclaimed with
+a warning; a held lock is reported after two seconds.

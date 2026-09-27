@@ -97,7 +97,7 @@ test('live old owner cannot be reclaimed; dead same-host owner can', async (t) =
   await migrateRule(root, 'sample.md', spec, {});
 });
 
-test('two reclaimers never own one scope simultaneously', async (t) => {
+test('second local migration waits behind a held lock after dead-owner reclaim', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'rod-reclaimers-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, '.claude/rules'), { recursive: true });
