@@ -1,0 +1,10 @@
+{
+  "on-demand": {
+    "triggers": [
+      { "kind": "tool", "tool": "^(?:Agent|SendMessage|Workflow)$", "unconditional": true, "before-first-act": true },
+      { "kind": "path", "tool": "^(?:Write|Edit|MultiEdit)$", "regex": "(?:^|/)brief[^/]*\\.md$", "before-first-act": true },
+      { "kind": "bash", "regex": "\\b(?:runner|worker)\\s+start\\b", "before-first-act": true }
+    ]
+  },
+  "compliance": { "kind": "none", "reason": "Lifecycle test fixture" }
+}

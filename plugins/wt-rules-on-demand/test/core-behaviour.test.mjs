@@ -110,10 +110,19 @@ test('rollback decision threshold, minimum and trigger miss precedence', () => {
   const insufficient = rollbackDecision({ followed: 0, applicable: 4, threshold: 0.8, minimum: 5 });
   assert.equal(insufficient.reason, '');
   assert.equal(insufficient.recommendation, '');
-  const low = rollbackDecision({ followed: 2, applicable: 5, threshold: 0.8, minimum: 5 });
-  assert.match(low.reason, /40\.0%/);
-  assert.match(low.recommendation, /reinstate as static/);
-  assert.equal(rollbackDecision({ followed: 4, applicable: 5, threshold: 0.8, minimum: 5 }).reason, '');
+  // Owner decision: revert ONLY when on demand is followed less than static, both measured on the minimum samples.
+  const noBaseline = rollbackDecision({ followed: 0, applicable: 5, beforeFollowed: 0, beforeApplicable: 4, threshold: 0.8, minimum: 5 });
+  assert.equal(noBaseline.attention, true);
+  assert.match(noBaseline.reason, /no static baseline/);
+  const worse = rollbackDecision({ followed: 2, applicable: 5, beforeFollowed: 4, beforeApplicable: 5, threshold: 0.8, minimum: 5 });
+  assert.equal(worse.attention, false);
+  assert.match(worse.reason, /40\.0% below static 80\.0%/);
+  assert.match(worse.recommendation, /reinstate as static/);
+  // Below the old arbitrary 80% threshold, but better than static: kept, no revert, no attention.
+  const betterThanStatic = rollbackDecision({ followed: 3, applicable: 5, beforeFollowed: 1, beforeApplicable: 5, threshold: 0.8, minimum: 5 });
+  assert.equal(betterThanStatic.reason, '');
+  assert.equal(betterThanStatic.attention, false);
+  assert.equal(rollbackDecision({ followed: 2, applicable: 5, beforeFollowed: 2, beforeApplicable: 5, minimum: 5 }).reason, '');
   const miss = rollbackDecision({ triggerMiss: true, followed: 1, applicable: 10, beforeFollowed: 2, beforeApplicable: 10 });
   assert.match(miss.reason, /trigger miss/);
   assert.match(miss.recommendation, /Fix the trigger/);
