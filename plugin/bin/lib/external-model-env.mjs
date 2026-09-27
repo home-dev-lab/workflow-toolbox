@@ -36,23 +36,66 @@ function configuredExtraNames(env) {
   return String(env.WT_EXTERNAL_MODEL_ENV_ALLOW ?? '').split(',').map((name) => name.trim()).filter(Boolean)
 }
 
+const URL_TOKEN_NAME = /(token|secret|passw|pwd|signature|credential|apikey|api_key|api-key)/i
+const URL_TOKEN_EXACT_NAME = new Set(['key', 'sig', 'auth', 'authorization', 'code_verifier'])
+const HEADER_CREDENTIAL_NAME = /(auth|api-key|api_key|apikey|token|secret|password|cookie|session|signature|credential)/i
+
+function credentialInValue(value) {
+  const text = String(value)
+  if (/\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*@/i.test(text)) return 'url-userinfo'
+  for (const match of text.matchAll(/[?&;#]([^=?&;#\s]+)=/g)) {
+    const name = match[1]
+    if (URL_TOKEN_NAME.test(name) || URL_TOKEN_EXACT_NAME.has(name.toLowerCase())) return 'url-token-parameter'
+  }
+  for (const item of text.split(/[,;\n]/)) {
+    const name = /^\s*([A-Za-z0-9_.-]+)\s*[=:]\s*\S/.exec(item)?.[1]
+    if (name && HEADER_CREDENTIAL_NAME.test(name)) return 'header-credential'
+  }
+  if (/\b(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i.test(text)) return 'bearer-token'
+  return null
+}
+
+function configuredExtraRefusal(name) {
+  if (!NAME.test(name)) return 'invalid-name'
+  if (CREDENTIAL_NAME.test(name)) return 'credential-name'
+  if (EXECUTION_HOOK_NAME.test(name)) return 'execution-hook'
+  if (CONFIGURATION_CARRIER.test(name)) return 'configuration-carrier'
+  return null
+}
+
 /**
  * Builds the complete environment for an external model CLI. Unknown parent variables are absent.
- * WT_EXTERNAL_MODEL_ENV_ALLOW can add harmless non-credential, non-execution names.
- * Callers can pass credential names explicitly in code; the three session Anthropic credentials
- * are never eligible.
+ * WT_EXTERNAL_MODEL_ENV_ALLOW can add harmless non-credential, non-execution names. Admitted values
+ * that resemble embedded credentials are refused with a name-and-reason-only warning. Callers can
+ * pass provider credential names explicitly in code without value inspection; explicit non-credential
+ * names are inspected. The three session Anthropic credentials are never eligible.
  */
-export function externalModelEnv(env = process.env, extraNames = [], platform = runtimePlatform) {
+export function externalModelEnv(env = process.env, extraNames = [], platform = runtimePlatform, { warn = console.error } = {}) {
   const normalize = platform === 'win32' ? (name) => name.toUpperCase() : (name) => name
   const exactNames = new Set([...EXACT_NAMES].map(normalize))
-  const configuredNames = new Set(configuredExtraNames(env).filter((name) => NAME.test(name) && !CREDENTIAL_NAME.test(name) && !EXECUTION_HOOK_NAME.test(name) && !CONFIGURATION_CARRIER.test(name)).map(normalize))
+  const configured = configuredExtraNames(env)
+  const configuredNames = new Set(configured.filter((name) => configuredExtraRefusal(name) === null).map(normalize))
   const explicitNames = new Set(extraNames.filter((name) => NAME.test(name)).map(normalize))
+  const explicitCredentialNames = new Set(extraNames.filter((name) => NAME.test(name) && CREDENTIAL_NAME.test(name)).map(normalize))
+  const environmentNames = new Set(Object.keys(env).map(normalize))
+  for (const name of configured) {
+    const reason = configuredExtraRefusal(name)
+    if (reason && environmentNames.has(normalize(name)) && !NEVER_PASS.has(name.toUpperCase())) {
+      warn(`workflow-toolbox: external-model child environment refused configured extra ${name} (${reason})`)
+    }
+  }
   const child = {}
   for (const [name, value] of Object.entries(env)) {
     const matchedName = normalize(name)
     if (value === undefined || NEVER_PASS.has(name.toUpperCase())) continue
     const allowedByConfig = !CONFIGURATION_CARRIER.test(name) && !CREDENTIAL_NAME.test(name) && (exactNames.has(matchedName) || PREFIXES.some((prefix) => matchedName.startsWith(prefix)) || /^LC_[A-Z]+$/.test(matchedName) || configuredNames.has(matchedName))
-    if (explicitNames.has(matchedName) || allowedByConfig) child[name] = value
+    if (!explicitNames.has(matchedName) && !allowedByConfig) continue
+    const reason = explicitCredentialNames.has(matchedName) ? null : credentialInValue(value)
+    if (reason) {
+      warn(`workflow-toolbox: external-model child environment refused ${name} (${reason}); its value is not passed`)
+      continue
+    }
+    child[name] = value
   }
   return child
 }

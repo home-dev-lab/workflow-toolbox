@@ -30,7 +30,7 @@ function knownCredentialOwner(name) {
   return null;
 }
 
-function providerEnvironmentNames(model, source, warn) {
+export function providerEnvironmentNames(model, source, warn) {
   const provider = String(model ?? '').split('/', 1)[0].toLowerCase();
   if (!provider || !String(model).includes('/')) return [];
   // Case-insensitive: a registry (or fallback) name that matches a deny-listed credential by

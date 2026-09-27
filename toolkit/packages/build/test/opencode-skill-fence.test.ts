@@ -185,6 +185,35 @@ describe('OpenCode Claude-skill fence', () => {
     expect(observed).toEqual({ PATH: '/bin' })
   })
 
+  it('drops credential-bearing values through the real launcher path', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const cases = [
+      {
+        env: {
+          OPENAI_API_KEY: 'selected',
+          GOOGLE_GENERATIVE_AI_API_KEY: 'unrelated',
+          OPENAI_BASE_URL: 'https://other:secret@api.example/v1',
+        },
+        expected: { OPENAI_API_KEY: 'selected' },
+      },
+      {
+        env: {
+          OPENAI_API_KEY: 'selected',
+          WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS',
+          OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer other-service-secret',
+        },
+        expected: { OPENAI_API_KEY: 'selected', WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS' },
+      },
+    ]
+
+    for (const { env, expected } of cases) {
+      let observed: Record<string, string> | undefined
+      spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env }, 'linux', ['OPENAI_API_KEY'])
+      expect(observed).toEqual(expected)
+    }
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('OTEL_EXPORTER_OTLP_HEADERS'))
+  })
+
   it('admits a configured harmless variable without admitting credentials or execution hooks', () => {
     expect(externalModelEnv({
       WT_EXTERNAL_MODEL_ENV_ALLOW: 'EDITOR,GITHUB_TOKEN,NODE_OPTIONS',
