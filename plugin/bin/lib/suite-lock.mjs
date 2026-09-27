@@ -4,6 +4,7 @@ import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
+import { heartbeatTicket, queuedTickets, readTicket, removeDirectoryOlderThan, removeTicket, takeTicket } from './host/suite-lock-queue.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
@@ -62,100 +63,206 @@ function foreignNamespaceStale(lock, options, reclaimMs) {
   return (options.namespaceHasProcesses ?? pidNamespaceHasProcesses)(holderNamespace) === false
 }
 
+const platformOf = (options) => options.platform ?? process.platform
+
+// Positive proof, from the PID alone, that the recorded process is gone: the PID is dead, or it is a
+// DIFFERENT process (PID reuse: the recorded start time no longer matches; only on the host, where
+// /proc start times are comparable).
+function pidProvesGone(holder, options) {
+  if (!pidAlive(holder.pid)) return true
+  if (platformOf(options) === 'win32' || !Number.isFinite(holder.startTime)) return false
+  const start = (options.processStartTime ?? processStartTime)(holder.pid)
+  return start !== null && start !== holder.startTime
+}
+
 function holderIsStale(lock, options = {}) {
   if (!lock.held || !Number.isSafeInteger(lock.holder?.pid) || lock.holder.pid <= 0) return false
-  const platform = options.platform ?? process.platform
+  const platform = platformOf(options)
   const staleMs = positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000
   const waitMs = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s') * 1000
   // A sandboxed reader that cannot see the host holder reclaims within its own wait window, not
   // after a longer bound it would never reach.
   const foreign = foreignNamespaceStale(lock, options, Math.min(staleMs, waitMs))
   if (foreign !== null) return foreign
-  if (!pidAlive(lock.holder.pid)) return true
-  // A live PID that is a DIFFERENT process (PID reuse) is stale: the recorded start time no longer
-  // matches. Only checked on the host, where /proc start times are comparable.
-  if (platform !== 'win32' && Number.isFinite(lock.holder.startTime)) {
-    const start = (options.processStartTime ?? processStartTime)(lock.holder.pid)
-    if (start !== null && start !== lock.holder.startTime) return true
-  }
+  if (pidProvesGone(lock.holder, options)) return true
   // Windows signalability does not prove process identity: after this conservative age bound,
   // reclaiming avoids a recycled PID making a crashed holder permanent. POSIX never uses age alone.
   return platform === 'win32' && lock.ageMs !== null && lock.ageMs >= staleMs
 }
 
+// A holder record is read from a file any local process can write, then printed on a terminal and
+// into logs: control characters (escape sequences, newlines, C1, bidi overrides) are replaced and the
+// command is capped, so a crafted argv cannot forge or hide a line.
+const ARGV_DISPLAY_MAX = 80
+// C0 and C1 controls, DEL, and the bidi marks/overrides/isolates that can reorder a terminal line.
+const DISPLAY_UNSAFE_RANGES = [[0x00, 0x1f], [0x7f, 0x9f], [0x200e, 0x200f], [0x2028, 0x2029], [0x202a, 0x202e], [0x2066, 0x2069]]
+const displaySafe = (character) => {
+  const code = character.codePointAt(0)
+  return DISPLAY_UNSAFE_RANGES.some(([low, high]) => code >= low && code <= high) ? '?' : character
+}
+
+function displayArgv(argv) {
+  if (!Array.isArray(argv)) return 'unknown command'
+  const text = argv.slice(0, 2).map((value) => Array.from(String(value), displaySafe).join('')).join(' ')
+  return text.length > ARGV_DISPLAY_MAX ? `${text.slice(0, ARGV_DISPLAY_MAX - 3)}...` : text
+}
+
 export function formatSuiteLockHolder(holder) {
-  if (!holder) return 'holder unknown'
-  const argv = Array.isArray(holder.argv) ? holder.argv.slice(0, 2).join(' ') : 'unknown command'
+  if (!holder || typeof holder !== 'object') return 'holder unknown'
+  const pid = Number.isSafeInteger(holder.pid) ? holder.pid : 'unknown'
   const started = new Date(holder.startedAt)
   const since = Number.isNaN(started.valueOf())
     ? 'unknown time'
     : started.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
-  return `holder pid ${holder.pid} (${argv}) since ${since}`
+  return `holder pid ${pid} (${displayArgv(holder.argv)}) since ${since}`
+}
+
+// FIFO queue. Without it every waiter polled `mkdir lock.d` and the first poller after a release
+// won, so a waiter asleep between polls starved behind arrivals that kept coming. Each waiter now
+// takes a numbered ticket in queue.d (file layer: host/suite-lock-queue.mjs) and only the LOWEST live
+// ticket may try to take the lock. A ticket is judged by the SAME rule as the holder (holderIsStale:
+// pid, start time, pid namespace), its age read as the time since its last heartbeat.
+const UNREADABLE_TICKET_GRACE_MS = 10_000
+// The head of the queue polls fast: the hand-over after a release takes a tenth of a second, and a
+// launcher from an older release, which takes no ticket and polls every two seconds, rarely gets in first.
+const HEAD_OF_QUEUE_POLL_MS = 100
+
+// A ticket is stale on SILENCE or on PROOF, never on the caller's own bounds. Silence: a live waiter
+// refreshes its record at least every TICKET_HEARTBEAT_MAX_MS, so a record silent for
+// TICKET_SILENCE_MS has nobody behind it, in every view (host, sandbox, Windows) and whatever a
+// populated namespace suggests; no caller's --wait-s/--stale-s can shorten that. Proof: the holder's
+// own namespace and PID evidence (foreignNamespaceStale with no age branch, pidProvesGone). A waiter
+// that was merely suspended puts its record back under the same number.
+const TICKET_SILENCE_MS = 120_000
+const TICKET_HEARTBEAT_MAX_MS = TICKET_SILENCE_MS / 4
+
+function ticketIsStale(ticket, options) {
+  if (!Number.isSafeInteger(ticket.holder?.pid) || ticket.holder.pid <= 0) return ticket.ageMs >= UNREADABLE_TICKET_GRACE_MS
+  if (ticket.ageMs >= TICKET_SILENCE_MS) return true
+  const foreign = foreignNamespaceStale(ticket, options, Infinity)
+  return foreign ?? pidProvesGone(ticket.holder, options)
+}
+
+// Reclaims dead tickets and returns my place: how many live tickets are ahead, and how many in all.
+function queuePlace(queueDir, mine, options) {
+  let ahead = 0
+  let total = 0
+  for (const number of queuedTickets(queueDir)) {
+    if (number !== mine) {
+      const ticket = readTicket(queueDir, number)
+      if (!ticket) continue
+      if (ticketIsStale(ticket, options)) {
+        removeTicket(queueDir, number)
+        continue
+      }
+      if (number < mine) ahead += 1
+    }
+    total += 1
+  }
+  return { ahead, total: Math.max(total, ahead + 1) }
+}
+
+function tryTakeLock(lockDir, holder) {
+  try {
+    mkdirSync(lockDir)
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false
+    throw error
+  }
+  try {
+    writeFileSync(path.join(lockDir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+  } catch (error) {
+    rmSync(lockDir, { recursive: true, force: true })
+    throw error
+  }
+  return true
+}
+
+// A reclaimer holds reclaim.d for a few milliseconds; one older than this was abandoned by a reclaimer
+// that died inside the critical section, and is itself removed so the stale holder stays reclaimable.
+const RECLAIM_DIR_STALE_MS = 60_000
+
+// Returns true only when it removed the stale holder, so the caller retries at once; otherwise the
+// caller's timeout check and sleep run (no spin behind another reclaimer's, or an abandoned, reclaim.d).
+function reclaimStaleHolder(root, lockDir, options) {
+  const reclaimDir = path.join(root, 'reclaim.d')
+  let ownsReclaim = false
+  try {
+    mkdirSync(reclaimDir)
+    ownsReclaim = true
+    const confirmed = readSuiteLock({ root })
+    if (!holderIsStale(confirmed, options)) return false
+    rmSync(lockDir, { recursive: true, force: true })
+    return true
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+    removeDirectoryOlderThan(reclaimDir, RECLAIM_DIR_STALE_MS)
+    return false
+  } finally {
+    if (ownsReclaim) rmSync(reclaimDir, { recursive: true, force: true })
+  }
+}
+
+function waiterRecord(options) {
+  return {
+    pid: process.pid,
+    argv: options.argv ?? process.argv,
+    cwd: options.cwd ?? process.cwd(),
+    startedAt: new Date().toISOString(),
+    platform: options.platform ?? process.platform,
+    pidNamespace: options.pidNamespace ?? currentPidNamespace(),
+    startTime: options.startTime ?? processStartTime(process.pid),
+  }
+}
+
+function describeWait(place, current) {
+  const holder = current.held ? formatSuiteLockHolder(current.holder) : 'holder none (handing over)'
+  return `position ${place.ahead + 1} of ${place.total}, ${holder}`
 }
 
 export async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
   const root = options.root ?? suiteLockDir(env, options.home, options.platform)
   const lockDir = path.join(root, 'lock.d')
-  const reclaimDir = path.join(root, 'reclaim.d')
+  const queueDir = path.join(root, 'queue.d')
   const waitMs = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s') * 1000
   const pollMs = options.pollMs ?? 2000
   const noticeMs = options.noticeMs ?? 30_000
   const startedWaiting = Date.now()
   let nextNoticeAt = startedWaiting
   mkdirSync(root, { recursive: true, mode: 0o700 })
+  const record = waiterRecord(options)
+  const ticket = takeTicket(queueDir, record)
 
-  while (true) {
-    try {
-      mkdirSync(lockDir)
-      const holder = {
-        pid: process.pid,
-        argv: options.argv ?? process.argv,
-        cwd: options.cwd ?? process.cwd(),
-        startedAt: new Date().toISOString(),
-        platform: options.platform ?? process.platform,
-        pidNamespace: options.pidNamespace ?? currentPidNamespace(),
-        startTime: options.startTime ?? processStartTime(process.pid),
+  try {
+    while (true) {
+      heartbeatTicket(queueDir, ticket, record)
+      const place = queuePlace(queueDir, ticket, options)
+      if (place.ahead === 0) {
+        const holder = { ...record, startedAt: new Date().toISOString() }
+        if (tryTakeLock(lockDir, holder)) return { root, lockDir, holder }
       }
-      try {
-        writeFileSync(path.join(lockDir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
-      } catch (error) {
-        rmSync(lockDir, { recursive: true, force: true })
-        throw error
-      }
-      return { root, lockDir, holder }
-    } catch (error) {
-      if (error?.code !== 'EEXIST') throw error
-    }
 
-    const current = readSuiteLock({ root })
-    if (!current.held) continue
-    if (holderIsStale(current, options)) {
-      let ownsReclaim = false
-      try {
-        mkdirSync(reclaimDir)
-        ownsReclaim = true
-        const confirmed = readSuiteLock({ root })
-        if (holderIsStale(confirmed, options)) rmSync(lockDir, { recursive: true, force: true })
-      } catch (error) {
-        if (error?.code !== 'EEXIST') throw error
-      } finally {
-        if (ownsReclaim) rmSync(reclaimDir, { recursive: true, force: true })
+      const current = readSuiteLock({ root })
+      // First in line and the holder released between my attempt and this read: try again now.
+      if (place.ahead === 0 && !current.held) continue
+      if (current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) continue
+      const now = Date.now()
+      if (now - startedWaiting >= waitMs) {
+        const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
+        timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
+        timeout.holder = current.holder
+        throw timeout
       }
-      continue
+      if (now >= nextNoticeAt) {
+        options.onWait?.(`waiting for suite lock: ${describeWait(place, current)}`)
+        nextNoticeAt = now + noticeMs
+      }
+      const delay = Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, pollMs)
+      await sleep(Math.min(delay, Math.max(1, waitMs - (now - startedWaiting))))
     }
-    const now = Date.now()
-    if (now - startedWaiting >= waitMs) {
-      const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
-      timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
-      timeout.holder = current.holder
-      throw timeout
-    }
-    if (now >= nextNoticeAt) {
-      options.onWait?.(`waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
-      nextNoticeAt = now + noticeMs
-    }
-    await sleep(Math.min(pollMs, Math.max(1, waitMs - (now - startedWaiting))))
+  } finally {
+    removeTicket(queueDir, ticket)
   }
 }
 
