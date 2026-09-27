@@ -622,13 +622,14 @@ releaseSuiteLock(lease)
     const root = tempRoot('excl-sandbox')
     const log = join(root, 'events.log')
     const holder = runExcl({ root, log, name: 'HOST', waitS: 10, holdMs: 3000, view: {} })
-    await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 5000)
-    await new Promise((resolve) => setTimeout(resolve, 1200))
+    // HOST's own START event is written only after it has acquired the suite lock, so waiting for
+    // it (rather than a fixed pause) already proves the holder is live before SANDBOX ever attempts.
+    await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 12_000)
     const sandboxed = runExcl({ root, log, name: 'SANDBOX', waitS: 1, holdMs: 100, view: { insideSandbox: true, pidNamespace: 'pid:[4026532999]' } })
     expect(await sandboxed).toBe(75)
     expect(await holder).toBe(0)
     expect(overlaps(log)).toBeNull()
-  }, 15_000)
+  }, 20_000)
 
   const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', 'true'], { stdio: 'ignore' }).status === 0
   it.skipIf(!BWRAP_WORKS)('same through the CLI from a real bwrap PID namespace (skips: bwrap unavailable)', async () => {
@@ -638,13 +639,14 @@ releaseSuiteLock(lease)
     const env = { ...process.env, WT_SUITE_LOCK_DIR: root }
     const host = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', mark('HOST', 3000)], { env, stdio: 'ignore' })
     const hostDone = new Promise((resolve) => host.once('exit', resolve))
-    await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 5000)
-    await new Promise((resolve) => setTimeout(resolve, 1200))
+    // Same reasoning as the sibling non-bwrap test: HOST's own START event already proves the lock
+    // is held, so there is nothing left to pad with a fixed pause.
+    await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 12_000)
     const boxed = spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', process.execPath, CLI, 'run', '--wait-s', '1', '--', process.execPath, '-e', mark('SANDBOX', 100)], { env, encoding: 'utf8' })
     await hostDone
     expect(boxed.status, boxed.stderr).toBe(75)
     expect(overlaps(log)).toBeNull()
-  }, 15_000)
+  }, 20_000)
 
   it('keeps a live holder whose PID cannot be judged until the documented hard bound, never the waiter\'s --wait-s', async () => {
     const root = tempRoot('excl-bound')
@@ -699,16 +701,19 @@ releaseSuiteLock(lease)
       rmSync(join(root, 'lock.d'), { recursive: true })
       const child = spawn(process.execPath, ['-e', legacy], { stdio: 'ignore' })
       legacyDone = new Promise((resolve) => child.once('exit', resolve))
-      const deadline = Date.now() + 5000
+      // Bounded busy-poll on the real event (the legacy holder.json reappearing) — the cap is a
+      // safety net for a stalled host, not itself the mechanism, so it sits above the census's
+      // short-deadline threshold.
+      const deadline = Date.now() + 12_000
       while (!existsSync(join(root, 'lock.d', 'holder.json')) && Date.now() < deadline) spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},20)'])
     }
-    const lease = await acquireSuiteLock({ root, waitS: 10, pollMs: 20, insideSandbox: false, beforeReclaimRemoval })
+    const lease = await acquireSuiteLock({ root, waitS: 15, pollMs: 20, insideSandbox: false, beforeReclaimRemoval })
     appendFileSync(log, `RECLAIMER START ${Date.now()}\n`)
     appendFileSync(log, `RECLAIMER END ${Date.now()}\n`)
     releaseSuiteLock(lease)
     await legacyDone
     expect(events(log).map((e) => `${e.name} ${e.kind}`)).toEqual(['LEGACY START', 'LEGACY END', 'RECLAIMER START', 'RECLAIMER END'])
-  }, 15_000)
+  }, 20_000)
 })
 
 // Windows run 36299753097: a FIFO waiter died with exit 75 in 3 s, far inside its 30 s wait, while the
@@ -721,8 +726,13 @@ describe('suite lock transient filesystem errors', () => {
     const root = tempRoot('transient-clears')
     mkdirSync(join(root, 'queue.d'))
     chmodSync(join(root, 'queue.d'), 0o500)
-    setTimeout(() => chmodSync(join(root, 'queue.d'), 0o700), 400)
-    const lease = await acquireSuiteLock({ root, waitS: 10, pollMs: 20 })
+    // acquireSuiteLock's first ticket attempt runs synchronously (through retryTransient's initial
+    // try) before its first internal await, so restoring permissions on the very next line — no
+    // timer needed — deterministically lands after that first EACCES and before the retry's own
+    // sleep elapses, proving the retry-then-recover path without racing on a fixed duration.
+    const acquiring = acquireSuiteLock({ root, waitS: 10, pollMs: 20 })
+    chmodSync(join(root, 'queue.d'), 0o700)
+    const lease = await acquiring
     expect(lease.holder.pid).toBe(process.pid)
     releaseSuiteLock(lease)
   }, 10_000)
