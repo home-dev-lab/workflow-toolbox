@@ -4,7 +4,7 @@ import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
-import { heartbeatTicket, queuedTickets, readTicket, removeTicket, takeTicket } from './host/suite-lock-queue.mjs'
+import { heartbeatTicket, queuedTickets, readTicket, removeDirectoryOlderThan, removeTicket, takeTicket } from './host/suite-lock-queue.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
@@ -63,22 +63,28 @@ function foreignNamespaceStale(lock, options, reclaimMs) {
   return (options.namespaceHasProcesses ?? pidNamespaceHasProcesses)(holderNamespace) === false
 }
 
+const platformOf = (options) => options.platform ?? process.platform
+
+// Positive proof, from the PID alone, that the recorded process is gone: the PID is dead, or it is a
+// DIFFERENT process (PID reuse: the recorded start time no longer matches; only on the host, where
+// /proc start times are comparable).
+function pidProvesGone(holder, options) {
+  if (!pidAlive(holder.pid)) return true
+  if (platformOf(options) === 'win32' || !Number.isFinite(holder.startTime)) return false
+  const start = (options.processStartTime ?? processStartTime)(holder.pid)
+  return start !== null && start !== holder.startTime
+}
+
 function holderIsStale(lock, options = {}) {
   if (!lock.held || !Number.isSafeInteger(lock.holder?.pid) || lock.holder.pid <= 0) return false
-  const platform = options.platform ?? process.platform
+  const platform = platformOf(options)
   const staleMs = positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000
   const waitMs = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s') * 1000
   // A sandboxed reader that cannot see the host holder reclaims within its own wait window, not
   // after a longer bound it would never reach.
   const foreign = foreignNamespaceStale(lock, options, Math.min(staleMs, waitMs))
   if (foreign !== null) return foreign
-  if (!pidAlive(lock.holder.pid)) return true
-  // A live PID that is a DIFFERENT process (PID reuse) is stale: the recorded start time no longer
-  // matches. Only checked on the host, where /proc start times are comparable.
-  if (platform !== 'win32' && Number.isFinite(lock.holder.startTime)) {
-    const start = (options.processStartTime ?? processStartTime)(lock.holder.pid)
-    if (start !== null && start !== lock.holder.startTime) return true
-  }
+  if (pidProvesGone(lock.holder, options)) return true
   // Windows signalability does not prove process identity: after this conservative age bound,
   // reclaiming avoids a recycled PID making a crashed holder permanent. POSIX never uses age alone.
   return platform === 'win32' && lock.ageMs !== null && lock.ageMs >= staleMs
@@ -121,18 +127,20 @@ const UNREADABLE_TICKET_GRACE_MS = 10_000
 // launcher from an older release, which takes no ticket and polls every two seconds, rarely gets in first.
 const HEAD_OF_QUEUE_POLL_MS = 100
 
-// A live waiter refreshes its record at every poll, so a ticket silent this long has nobody behind it
-// even where its PID cannot prove it: another PID namespace seen from inside a sandbox, or a recycled
-// PID on Windows. The rule stays holderIsStale; only its age bound is shorter, because the holder
-// never heartbeats and a ticket does. A waiter that was merely suspended restores its record.
-const TICKET_SILENCE_FLOOR_S = 120
-const TICKET_SILENCE_POLLS = 60
+// A ticket is stale on SILENCE or on PROOF, never on the caller's own bounds. Silence: a live waiter
+// refreshes its record at least every TICKET_HEARTBEAT_MAX_MS, so a record silent for
+// TICKET_SILENCE_MS has nobody behind it, in every view (host, sandbox, Windows) and whatever a
+// populated namespace suggests; no caller's --wait-s/--stale-s can shorten that. Proof: the holder's
+// own namespace and PID evidence (foreignNamespaceStale with no age branch, pidProvesGone). A waiter
+// that was merely suspended puts its record back under the same number.
+const TICKET_SILENCE_MS = 120_000
+const TICKET_HEARTBEAT_MAX_MS = TICKET_SILENCE_MS / 4
 
 function ticketIsStale(ticket, options) {
   if (!Number.isSafeInteger(ticket.holder?.pid) || ticket.holder.pid <= 0) return ticket.ageMs >= UNREADABLE_TICKET_GRACE_MS
-  const silenceS = Math.max(TICKET_SILENCE_FLOOR_S, TICKET_SILENCE_POLLS * ((options.pollMs ?? 2000) / 1000))
-  const staleS = Math.min(positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s'), silenceS)
-  return holderIsStale(ticket, { ...options, staleS })
+  if (ticket.ageMs >= TICKET_SILENCE_MS) return true
+  const foreign = foreignNamespaceStale(ticket, options, Infinity)
+  return foreign ?? pidProvesGone(ticket.holder, options)
 }
 
 // Reclaims dead tickets and returns my place: how many live tickets are ahead, and how many in all.
@@ -170,6 +178,12 @@ function tryTakeLock(lockDir, holder) {
   return true
 }
 
+// A reclaimer holds reclaim.d for a few milliseconds; one older than this was abandoned by a reclaimer
+// that died inside the critical section, and is itself removed so the stale holder stays reclaimable.
+const RECLAIM_DIR_STALE_MS = 60_000
+
+// Returns true only when it removed the stale holder, so the caller retries at once; otherwise the
+// caller's timeout check and sleep run (no spin behind another reclaimer's, or an abandoned, reclaim.d).
 function reclaimStaleHolder(root, lockDir, options) {
   const reclaimDir = path.join(root, 'reclaim.d')
   let ownsReclaim = false
@@ -177,9 +191,13 @@ function reclaimStaleHolder(root, lockDir, options) {
     mkdirSync(reclaimDir)
     ownsReclaim = true
     const confirmed = readSuiteLock({ root })
-    if (holderIsStale(confirmed, options)) rmSync(lockDir, { recursive: true, force: true })
+    if (!holderIsStale(confirmed, options)) return false
+    rmSync(lockDir, { recursive: true, force: true })
+    return true
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error
+    removeDirectoryOlderThan(reclaimDir, RECLAIM_DIR_STALE_MS)
+    return false
   } finally {
     if (ownsReclaim) rmSync(reclaimDir, { recursive: true, force: true })
   }
@@ -228,10 +246,7 @@ export async function acquireSuiteLock(options = {}) {
       const current = readSuiteLock({ root })
       // First in line and the holder released between my attempt and this read: try again now.
       if (place.ahead === 0 && !current.held) continue
-      if (current.held && holderIsStale(current, options)) {
-        reclaimStaleHolder(root, lockDir, options)
-        continue
-      }
+      if (current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) continue
       const now = Date.now()
       if (now - startedWaiting >= waitMs) {
         const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
@@ -243,7 +258,7 @@ export async function acquireSuiteLock(options = {}) {
         options.onWait?.(`waiting for suite lock: ${describeWait(place, current)}`)
         nextNoticeAt = now + noticeMs
       }
-      const delay = place.ahead === 0 ? Math.min(pollMs, HEAD_OF_QUEUE_POLL_MS) : pollMs
+      const delay = Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, pollMs)
       await sleep(Math.min(delay, Math.max(1, waitMs - (now - startedWaiting))))
     }
   } finally {

@@ -38,17 +38,26 @@ export function queuedTickets(queueDir) {
   return listTickets(queueDir).records
 }
 
-/** Allocates the next number past every marker still on disk and publishes the record under it. */
-export function takeTicket(queueDir, record) {
+/**
+ * Allocates the next number past every marker still on disk and publishes the record under it. The
+ * number is mine only if BOTH exclusive creates succeed: a record already there (published by a waiter
+ * whose marker was pruned, or seen through a stale listing) means it is someone else's, so allocate
+ * again. Markers are pruned only below the lowest live record, never under a waiter still queued.
+ * `seams.list` replaces the directory listing (tests reproduce a stale listing through it).
+ */
+export function takeTicket(queueDir, record, seams = {}) {
+  const list = seams.list ?? listTickets
   mkdirSync(queueDir, { recursive: true, mode: 0o700 })
-  const { markers, records } = listTickets(queueDir)
-  let number = Math.max(0, ...markers, ...records) + 1
-  while (!createExclusive(`${ticketBase(queueDir, number)}.ticket`, '')) number += 1
-  for (const old of markers) {
-    if (old <= number - TICKET_MARKERS_KEPT) rmSync(`${ticketBase(queueDir, old)}.ticket`, { force: true })
+  while (true) {
+    const { markers, records } = list(queueDir)
+    let number = Math.max(0, ...markers, ...records) + 1
+    while (!createExclusive(`${ticketBase(queueDir, number)}.ticket`, '')) number += 1
+    const pruneBelow = Math.min(number - TICKET_MARKERS_KEPT + 1, ...records)
+    for (const old of markers) {
+      if (old < pruneBelow) rmSync(`${ticketBase(queueDir, old)}.ticket`, { force: true })
+    }
+    if (createExclusive(recordFile(queueDir, number), `${JSON.stringify(record)}\n`)) return number
   }
-  createExclusive(recordFile(queueDir, number), `${JSON.stringify(record)}\n`)
-  return number
 }
 
 /** Refreshes the record's mtime; a record someone removed is put back under the same number. */
@@ -71,4 +80,13 @@ export function readTicket(queueDir, number) {
 
 export function removeTicket(queueDir, number) {
   rmSync(recordFile(queueDir, number), { force: true })
+}
+
+/** Removes a directory whose mtime is at least `ageMs` old; a missing one is not an error. */
+export function removeDirectoryOlderThan(directory, ageMs) {
+  try {
+    if (Date.now() - statSync(directory).mtimeMs >= ageMs) rmSync(directory, { recursive: true, force: true })
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
 }

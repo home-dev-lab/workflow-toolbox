@@ -487,3 +487,91 @@ describe('spawn shell decision (Windows shims only)', () => {
     expect(result.stdout).toContain('quoted ok')
   })
 })
+
+interface QueueModule {
+  takeTicket: (queueDir: string, record: unknown, seams?: { list?: (queueDir: string) => { markers: number[], records: number[] } }) => number
+}
+const queueModule = (await import(new URL('../../../../plugin/bin/lib/host/suite-lock-queue.mjs', import.meta.url).href)) as QueueModule
+
+// Round 2 (review of the first FIFO commit): each case is red on that commit.
+describe('suite lock queue — round 2', () => {
+  const pad = (number: number) => String(number).padStart(16, '0')
+  function seed(root: string, number: number, record: unknown, ageMs = 0, marker = true) {
+    const queue = join(root, 'queue.d')
+    mkdirSync(queue, { recursive: true })
+    if (marker) writeFileSync(join(queue, `${pad(number)}.ticket`), '')
+    const file = join(queue, `${pad(number)}.json`)
+    writeFileSync(file, JSON.stringify(record))
+    if (ageMs > 0) { const then = new Date(Date.now() - ageMs); utimesSync(file, then, then) }
+    return file
+  }
+  const record = (extra: Record<string, unknown> = {}) => ({ pid: process.pid, argv: ['x'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: null, startTime: null, ...extra })
+  const attempt = (options: Record<string, unknown>) => acquireSuiteLock({ waitS: 0.2, pollMs: 10, insideSandbox: false, ...options }).then(
+    (lease: { holder: unknown }) => { releaseSuiteLock(lease); return 'acquired' },
+    (error: { code?: string }) => error.code,
+  )
+  const HOST = 'pid:[4026531836]'
+  const SANDBOX = 'pid:[4026532999]'
+
+  // F1: a populated namespace proves nothing about the ticket's owner; silence past the bound wins.
+  it('reclaims a silent foreign-namespace ticket from the host even while its namespace is populated', async () => {
+    const root = tempRoot('r2-f1')
+    seed(root, 1, record({ pid: 7, pidNamespace: SANDBOX }), 180_000)
+    expect(await attempt({ root, pidNamespace: HOST, namespaceHasProcesses: () => true })).toBe('acquired')
+  })
+
+  // F3: the caller's --wait-s / --stale-s never shorten another waiter's grace below the fixed floor.
+  it('keeps a recently beating ticket whatever the newcomer\'s wait or stale bound, in every view', async () => {
+    const sandboxView = tempRoot('r2-f3-sandbox')
+    seed(sandboxView, 1, record({ pid: 7, pidNamespace: HOST }), 500)
+    expect(await attempt({ root: sandboxView, pidNamespace: SANDBOX, insideSandbox: true, waitS: 0.2 })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    const windows = tempRoot('r2-f3-windows')
+    seed(windows, 1, record({ platform: 'win32' }), 10_000)
+    expect(await attempt({ root: windows, platform: 'win32', pidNamespace: null, staleS: 1 })).toBe('WT_SUITE_LOCK_TIMEOUT')
+  })
+
+  // F5: a lost race on <n>.json means the number is not mine.
+  it('never returns a number whose record another waiter already published', () => {
+    const root = tempRoot('r2-f5-owner')
+    const queue = join(root, 'queue.d')
+    const theirs = seed(root, 1, record({ argv: ['theirs'] }), 0, false)
+    let stale = true
+    const list = (dir: string) => {
+      if (stale) { stale = false; return { markers: [], records: [] } }
+      const names = readdirSync(dir)
+      const numbers = (suffix: string) => names.filter((name) => name.endsWith(suffix)).map((name) => Number(name.slice(0, 16)))
+      return { markers: numbers('.ticket'), records: numbers('.json') }
+    }
+    const mine = queueModule.takeTicket(queue, record({ argv: ['mine'] }), { list })
+    expect(mine).not.toBe(1)
+    expect(JSON.parse(readFileSync(theirs, 'utf8')).argv).toEqual(['theirs'])
+    expect(JSON.parse(readFileSync(join(queue, `${pad(mine)}.json`), 'utf8')).argv).toEqual(['mine'])
+  })
+
+  it('prunes allocation markers only below the lowest live ticket', () => {
+    const root = tempRoot('r2-f5-prune')
+    const queue = join(root, 'queue.d')
+    seed(root, 1, record())
+    writeFileSync(join(queue, `${pad(300)}.ticket`), '')
+    expect(queueModule.takeTicket(queue, record())).toBe(301)
+    expect(existsSync(join(queue, `${pad(1)}.ticket`)), 'marker of a live ticket survives').toBe(true)
+  })
+
+  // F8: an abandoned reclaim.d must neither spin the loop past its wait nor block reclaim forever.
+  it('times out on schedule behind an abandoned reclaim.d, and reclaims one older than its bound', async () => {
+    const seedStaleHolder = (root: string, reclaimAgeMs: number) => {
+      mkdirSync(join(root, 'lock.d'), { recursive: true })
+      writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ ...record({ pid: 2_147_483_647 }) }))
+      mkdirSync(join(root, 'reclaim.d'))
+      if (reclaimAgeMs > 0) { const then = new Date(Date.now() - reclaimAgeMs); utimesSync(join(root, 'reclaim.d'), then, then) }
+    }
+    const fresh = tempRoot('r2-f8-fresh')
+    seedStaleHolder(fresh, 0)
+    const started = Date.now()
+    expect(await attempt({ root: fresh })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    expect(Date.now() - started).toBeLessThan(2000)
+    const abandoned = tempRoot('r2-f8-abandoned')
+    seedStaleHolder(abandoned, 120_000)
+    expect(await attempt({ root: abandoned })).toBe('acquired')
+  }, 10_000)
+})
