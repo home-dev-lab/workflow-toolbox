@@ -954,6 +954,17 @@ printf 'report\n' > "$report"
     expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].group).toBe('worker-owned')
   })
 
+  it('names the launcher exit code and its stderr when a lane launch prints no pid', async () => {
+    const launcher = rawLauncher("process.stderr.write('wt-lane: Refused: another lane launch owns the current supervision pointer\\n'); process.exitCode = 1")
+    const lifecycle = testLifecycle('LITE', [], launcher, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    const refused = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))
+    expect(refused).toMatch(/^edge refused: tdd->next; missing launcher pid: /)
+    expect(refused).toContain('launcher exit 1')
+    expect(refused).toContain('wt-lane: Refused: another lane launch owns the current supervision pointer')
+  })
+
   it.skipIf(process.platform === 'win32' || inBwrapPidNamespace)(`the shipped launcher keeps ordinary descendants in the terminated lane group [${descendantSkipReason}]`, async () => {
     const bin = mkdtempSync(join(tmpdir(), 'wt-h10-bin-')); roots.push(bin)
     const config = mkdtempSync(join(tmpdir(), 'wt-h10-config-')); roots.push(config)
