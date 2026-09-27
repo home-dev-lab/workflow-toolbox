@@ -1,10 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
 import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
@@ -42,6 +43,13 @@ function fakeSdk(root: string) {
   mkdirSync(packageDir, { recursive: true })
   writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-agent-sdk', version: '0.3.280', main: 'index.cjs' }))
   writeFileSync(join(packageDir, 'index.cjs'), 'module.exports = { query() {} }\n')
+}
+
+function gateLogs(dir: string): string[] {
+  return readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    // The wave's own card directory, not the copy the report emit makes under <report-dir>/cards/.
+    .filter((name) => /^[^/]+\/cards\/[^/]+\/(typecheck|lint|test)\.log$/.test(name))
+    .map((name) => join(dir, name))
 }
 
 function waveFixture(bullets = 1) {
@@ -256,6 +264,36 @@ describe('orchestrator driver', () => {
 
   it('refuses a slash in an explicit card id at parse time', () => {
     expect(parseOrchestratorArgs(['--cards', '1/2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r'])).toEqual({ error: 'invalid card id' })
+  })
+
+  // Card 1873173639063406158: the host gates the orchestrator runs over a delivery must not see a
+  // variable the operator set for the runner. The default gate path (no injected gates) runs a fake
+  // `pnpm` that prints the environment it received into each gate log.
+  it.skipIf(process.platform === 'win32')('runs the default host gates without the runner-only WT_* variables and keeps what a gate needs', async () => {
+    const f = repoFixture()
+    const bin = join(f.root, 'fake-bin'); mkdirSync(bin)
+    writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'for (const [k, v] of Object.entries(process.env)) console.log(k + "=" + v)'\n`)
+    chmodSync(join(bin, 'pnpm'), 0o755)
+    const gatePath = `${bin}:${process.env.PATH}`
+    vi.stubEnv('PATH', gatePath)
+    vi.stubEnv('WT_AGENT_SDK_PATH', createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'))
+    vi.stubEnv('WT_EXECUTOR_CODE_MODEL', 'runner-only-model')
+    vi.stubEnv('WT_PLANKA_MCP_URL', 'http://runner-only.invalid/mcp')
+    vi.stubEnv('WT_SUITE_LOCK_DIR', '/tmp/wt-gate-env-lock')
+    try {
+      const runPilot: typeof f.runPilot = async (options, dependencies) => { mkdirSync(join(options.dir, 'toolkit'), { recursive: true }); return f.runPilot(options, dependencies) }
+      const result = await runOrchestrator(f.options, { ...f, runPilot, gates: undefined })
+      expect(result.rows[0], `stopReason=${result.stopReason}`).toMatchObject({ gates: '0/0/0' })
+      const logs = gateLogs(f.worktreesDir)
+      expect(logs.map((file) => file.split('/').pop()).sort()).toEqual(['lint.log', 'test.log', 'typecheck.log'])
+      for (const file of logs) {
+        const seen = readFileSync(file, 'utf8').split('\n')
+        expect(seen.filter((line) => /^WT_(AGENT_SDK_PATH|EXECUTOR_CODE_MODEL|PLANKA_MCP_URL)=/.test(line))).toEqual([])
+        expect(seen).toEqual(expect.arrayContaining([`PATH=${gatePath}`, 'WT_SUITE_LOCK_DIR=/tmp/wt-gate-env-lock']))
+      }
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('runs the complete happy path, writes receipts, moves only to In Progress, and never invokes forbidden git operations', async () => {
