@@ -424,6 +424,58 @@ describe('second-opinion Codex broker ownership', () => {
     expect(existsSync(root)).toBe(false)
   })
 
+  const recordBroker = (root: string, pid: number) => {
+    const stateDir = join(root, 'state', 'workspace')
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid }))
+  }
+
+  it.each(['linux', 'darwin', 'win32'])('stops the broker named in private state when the companion exited before any capture saw it (%s)', (platform) => {
+    // The companion is gone (reparented broker, ppid 1); no capture() ever ran while it lived.
+    let processes = [broker(2132, 1), { pid: 2139, ppid: 2132, elapsedMs: 3_000, startTime: 102_000, command: 'codex app-server' }]
+    const end = vi.fn(() => { processes = []; return { status: 'ended' } })
+    const ownership = createCodexBrokerOwnership({
+      platform,
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: end,
+      forceEndProcessFamily: end,
+    }, {}, { now: () => 100_500, stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    recordBroker(ownership.env.CLAUDE_PLUGIN_DATA, 2132)
+
+    expect(ownership.stop()).toEqual(['stopped broker/app-server process family pid 2132 started by this call'])
+    expect(end).toHaveBeenCalledWith(2132)
+  })
+
+  it('refuses a private-state broker PID that started before this call when the companion is gone', () => {
+    const end = vi.fn()
+    const ownership = createCodexBrokerOwnership({
+      readProcessSnapshot: () => ({ supported: true, processes: [broker(2132, 1, 60_000, 40_000)] }),
+      endProcessFamily: end,
+      forceEndProcessFamily: end,
+    }, {}, { now: () => 100_500, stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    recordBroker(ownership.env.CLAUDE_PLUGIN_DATA, 2132)
+
+    expect(ownership.stop()).toEqual(['app-server cleanup unavailable for owned broker pid 2132: broker identity changed before cleanup'])
+    expect(end).not.toHaveBeenCalled()
+  })
+
+  it('orders a Linux broker by wall-clock start, not by its boot-relative tick identity, when the companion left the snapshot', () => {
+    // Linux rows carry startIdentity in clock ticks since boot and startTime in epoch ms.
+    const linuxBroker = { ...broker(2132, 1, 1_000, 101_000), startIdentity: 5_000 }
+    const ownership = createCodexBrokerOwnership({
+      platform: 'linux',
+      readProcessSnapshot: () => ({ supported: true, processes: [linuxBroker] }),
+      endProcessFamily: vi.fn(),
+      forceEndProcessFamily: vi.fn(),
+    }, {}, { now: () => 102_000 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    recordBroker(ownership.env.CLAUDE_PLUGIN_DATA, 2132)
+
+    expect(ownership.capture(2125)).toBe(2132)
+  })
+
   it('names the degraded path when neither private state nor process discovery can identify the broker', () => {
     const ownership = createCodexBrokerOwnership({
       readProcessSnapshot: () => ({ supported: false, processes: [], reason: 'process discovery unavailable on this platform' }),

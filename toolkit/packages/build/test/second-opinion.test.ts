@@ -49,7 +49,27 @@ const BROKER_SEEN_MARKER = 'broker-seen-by-parent'
 // The ownership tests below read broker PIDs the fake companion writes from inside its process, so
 // they run the UNSANDBOXED path (macOS, Windows, no bwrap); inside the sandbox those would be
 // namespace PIDs. The sandboxed end of the family is locked by the namespace test further down.
-function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang', sandbox = 'off') {
+// 'fast' is a companion that records its broker in broker.json (as the real one does once the broker is
+// ready) and exits at once, before any parent snapshot has had a chance to see the broker.
+function companionEnd(mode: 'hang' | 'normal' | 'error' | 'fast') {
+  if (mode === 'fast') {
+    return [
+      "writeFileSync(join(process.cwd(), 'companion.pid'), String(process.pid))",
+      "const ready = setInterval(() => { if (!existsSync(join(process.cwd(), 'app-server.pid'))) return; clearInterval(ready); mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })); process.exit(0) }, 5)",
+    ]
+  }
+  return [
+    `setTimeout(() => { mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })) }, 1500)`,
+    // A finishing companion ends only once the parent's process snapshot has SEEN the broker and its
+    // app-server (the harness below drops BROKER_SEEN_MARKER): ownership captures the broker only
+    // while the companion lives, so a fixed 100 ms lifetime raced a slow `ps` on loaded macOS runners.
+    mode === 'hang'
+      ? 'setInterval(() => {}, 1000)'
+      : `const until = Date.now() + 10_000; const tick = setInterval(() => { if (existsSync(join(process.cwd(), ${JSON.stringify(BROKER_SEEN_MARKER)})) || Date.now() > until) { clearInterval(tick); process.exit(${mode === 'normal' ? 0 : 7}) } }, 10)`,
+  ]
+}
+
+function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' | 'fast' = 'hang', sandbox = 'off') {
   const fixtureBase = fixture(true)
   const f = { ...fixtureBase, env: { ...fixtureBase.env, WT_LANE_SANDBOX: sandbox } }
   const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
@@ -73,13 +93,7 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang', sandb
     'child.unref()',
     "writeFileSync(join(process.cwd(), 'broker.pid'), String(child.pid))",
     "const stateDir = join(process.env.CLAUDE_PLUGIN_DATA, 'state', 'fixture')",
-    "setTimeout(() => { mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })) }, 1500)",
-    // A finishing companion ends only once the parent's process snapshot has SEEN the broker and its
-    // app-server (the harness below drops BROKER_SEEN_MARKER): ownership captures the broker only
-    // while the companion lives, so a fixed 100 ms lifetime raced a slow `ps` on loaded macOS runners.
-    mode === 'hang'
-      ? 'setInterval(() => {}, 1000)'
-      : `const until = Date.now() + 10_000; const tick = setInterval(() => { if (existsSync(join(process.cwd(), ${JSON.stringify(BROKER_SEEN_MARKER)})) || Date.now() > until) { clearInterval(tick); process.exit(${mode === 'normal' ? 0 : 7}) } }, 10)`,
+    ...companionEnd(mode),
   ].join('\n'))
   return { ...f, companionDir, appPidFile, brokerPidFile }
 }
@@ -506,6 +520,57 @@ describe('second-opinion advisor', () => {
       expect(result.status, result.stderr).toBe(expectedStatus)
       if (passThrough) expect(lines(f.out)).toContain(`lane sandbox: none (bubblewrap sandbox is Linux-only; this host is ${adapterPlatform}); running with the environment allow-list only`)
       expect(lines(f.out).join('\n')).toMatch(/stopped broker\/app-server process family pid \d+ started by this call/)
+      expect(waitFor(() => !processExists(appPid))).toBe(true)
+      expect(waitFor(() => !processExists(brokerPid))).toBe(true)
+    } finally {
+      if (brokerPid && processExists(brokerPid)) {
+        if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
+        else process.kill(-brokerPid, 'SIGKILL')
+      }
+      if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
+    }
+  }, 30_000)
+
+  // The companion records its broker in broker.json and exits at once; every process snapshot taken while
+  // it lives misses the broker (a `ps` too slow to list it yet). Ownership must still find the broker this
+  // call started — from the broker.json in its private CLAUDE_PLUGIN_DATA root — and stop it.
+  const fastCompanionAdapters = [...new Set([process.platform, ...(process.platform === 'win32' ? [] : ['darwin'])])]
+  it.each(fastCompanionAdapters)('stops the broker a companion recorded when it exits before any snapshot saw that broker (%s host adapter)', (adapterPlatform) => {
+    const passThrough = adapterPlatform !== 'linux'
+    const f = detachedBrokerFixture('fast', passThrough ? '' : 'off')
+    const harness = join(f.repo, 'fast-harness.mjs')
+    const coreUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/second-opinion-core.mjs')).href
+    const adapterUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/adapter.mjs')).href
+    writeFileSync(harness, [
+      "import { readFileSync } from 'node:fs'",
+      "import { join } from 'node:path'",
+      `import { createSecondOpinionDependencies, runSecondOpinion } from ${JSON.stringify(coreUrl)}`,
+      `import { createHostAdapter } from ${JSON.stringify(adapterUrl)}`,
+      `const repo = ${JSON.stringify(f.repo)}`,
+      "const pidIn = (name) => { try { return Number(readFileSync(join(repo, name), 'utf8')) } catch { return 0 } }",
+      // Alive or not yet reaped by this process: kill(pid, 0) fails only once the companion has been reaped.
+      "const companionUnreaped = () => { const pid = pidIn('companion.pid'); if (!pid) return true; try { process.kill(pid, 0); return true } catch { return false } }",
+      `const adapter = createHostAdapter({ platform: ${JSON.stringify(adapterPlatform)} })`,
+      'const readSnapshot = adapter.readProcessSnapshot',
+      'adapter.readProcessSnapshot = () => {',
+      '  const hide = companionUnreaped()',
+      '  const table = readSnapshot()',
+      "  const broker = pidIn('broker.pid')",
+      '  return hide && table.supported ? { ...table, processes: table.processes.filter((item) => item.pid !== broker) } : table',
+      '}',
+      `process.exitCode = await runSecondOpinion(${JSON.stringify({ ...f.options, route: 'astra' })}, createSecondOpinionDependencies(adapter), process.env)`,
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [harness], {
+      env: { ...process.env, ...f.env, HOME: f.home },
+      encoding: 'utf8',
+      timeout: 20_000,
+    })
+    expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
+    const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
+    const brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
+    try {
+      expect(result.status, result.stderr).toBe(0)
+      expect(lines(f.out).join('\n')).toContain(`stopped broker/app-server process family pid ${brokerPid} started by this call`)
       expect(waitFor(() => !processExists(appPid))).toBe(true)
       expect(waitFor(() => !processExists(brokerPid))).toBe(true)
     } finally {
