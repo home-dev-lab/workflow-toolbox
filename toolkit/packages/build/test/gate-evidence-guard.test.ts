@@ -211,7 +211,7 @@ describe('wt-release-push-evidence-guard-hook', () => {
     expect(existsSync(allowOnce)).toBe(true)
     const spent = JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput
     expect(spent.permissionDecision).toBe('deny')
-    expect(spent.permissionDecisionReason).toMatch(/already spent by tool call release-push-\d+/)
+    expect(spent.permissionDecisionReason).toMatch(/already spent by tool call "release-push-\d+"/)
     expect(existsSync(allowOnce)).toBe(false)
   })
 
@@ -322,6 +322,11 @@ describe('wt-release-push-evidence-guard-hook', () => {
     const rendered = output.permissionDecisionReason.match(/write (\{.*\}) to /)?.[1]
     expect(JSON.parse(rendered!)).toEqual({ command, reason: '<why>' })
     expect(output.permissionDecisionReason).toContain('its "reason" is empty')
+
+    writeFileSync(allowOnce, rendered!)
+    const copied = JSON.parse(runReleasePush(root, command).stdout).hookSpecificOutput
+    expect(copied.permissionDecision).toBe('deny')
+    expect(copied.permissionDecisionReason).toContain('placeholder')
   })
 
   it('explains that version-1 records predate version 2 and gives the refresh command', () => {
