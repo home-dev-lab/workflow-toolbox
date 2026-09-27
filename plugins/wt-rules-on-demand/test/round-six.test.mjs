@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir, mkdtemp, mkdir, writeFile, rm, stat, symlink } from 'node:fs/promises';
 import { tmpdir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { register, resetForSelftest } from '../hooks/hooks.js';
@@ -151,7 +151,7 @@ test('watchdog reaps group when leader exits on POSIX', async (t) => {
 });
 
 test('plugin data requires matching real plugin root, not a name prefix', () => {
-  const fallback = '/fixture-config/plugins/data/wt-rules-on-demand/quality';
+  const fallback = resolve('/fixture-config', 'plugins', 'data', 'wt-rules-on-demand', 'quality');
   assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/foreign/wt-rules-on-demand-helper' }), fallback);
   assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/foreign/wt-rules-on-demand-helper', CLAUDE_PLUGIN_ROOT: '/foreign/plugin' }), fallback);
 });

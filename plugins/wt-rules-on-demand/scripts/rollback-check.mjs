@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile, readdir, mkdir, realpath, stat, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDataDir } from './rule-lifecycle-lib.mjs';
+import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDataDir, splitRuleIdentity } from './rule-lifecycle-lib.mjs';
 import { configDirectory, ruleDirectories } from '../paths.js';
 
 const args = process.argv.slice(2);
@@ -70,6 +70,33 @@ const verdicts = verdictLines.join('\n').split('\n').filter(Boolean).map((line) 
 const transcriptRows = (await Promise.all(options.verdictFiles.map(async (path) => (await readFile(path, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line))))).flat();
 const rateSummary = [];
 const realOr = (path) => realpath(path).catch((error) => (error.code === 'ENOENT' || error.code === 'ENOTDIR' ? resolve(path) : Promise.reject(error)));
+// A recorded identity names the rules dir as the hook saw it; this check compares physical paths. Resolve each recorded
+// directory once, so an alias of the same directory (macOS /var vs /private/var, a Windows 8.3 short name, a symlink)
+// still names the same rule. An identity that does not parse is left as recorded and matches nothing.
+const canonicalDirs = new Map();
+async function canonicalIdentity(identity) {
+  const parts = splitRuleIdentity(identity);
+  if (!parts) return identity;
+  if (!canonicalDirs.has(parts.dir)) canonicalDirs.set(parts.dir, await realOr(parts.dir));
+  return `${parts.scope}:${canonicalDirs.get(parts.dir)}:${parts.name}`;
+}
+for (const row of verdicts) if (row.ruleIdentity) row.ruleIdentity = await canonicalIdentity(row.ruleIdentity);
+for (const session of Object.values(store.sessions ?? {})) {
+  for (const context of Object.values(session.contexts ?? {})) {
+    for (const item of [...(context.governedActs ?? []), ...(context.complianceInjected ?? [])]) {
+      if (item?.ruleIdentity) item.ruleIdentity = await canonicalIdentity(item.ruleIdentity);
+    }
+    for (const field of ['servedIdentity', 'suppressedIdentity']) {
+      if (!context[field] || typeof context[field] !== 'object') continue;
+      const merged = {};
+      for (const [key, count] of Object.entries(context[field])) {
+        const canonical = await canonicalIdentity(key);
+        merged[canonical] = (merged[canonical] ?? 0) + (Number(count) || 0);
+      }
+      context[field] = merged;
+    }
+  }
+}
 // Where this profile's on-demand files must physically live for a revert to be this profile's to make.
 const ownDemandDir = join(await realOr(lifecycleRoot), scope === 'user' ? 'rules-on-demand' : DEMAND_DIR);
 const realRulesDir = await realOr(rulesDir);

@@ -46,7 +46,7 @@ test('cross-scope static duplicate named; enabled startup records correct qualit
    await writeFile(join(s.project, '.claude/rules/wt/sample.md'), 'Sample\n');
   const run = start(s, { WT_ROD_ENABLED: '0', CLAUDE_PLUGIN_OPTION_ENABLED: 'true' });
   assert.equal(run.status, 0, run.stderr);
-  assert.match(run.stdout, /loaded twice: .*rules\/wt\/sample.md and .*rules-on-demand\/sample.md; the on-demand copy is not served/);
+  assert.match(run.stdout, /loaded twice: .*rules[\\/]wt[\\/]sample\.md and .*rules-on-demand[\\/]sample\.md; the on-demand copy is not served/);
   const record = JSON.parse(await readFile(join(s.config, 'plugins/data/wt-rules-on-demand/quality/spawn-record.json'), 'utf8'));
   assert.deepEqual(record.args.slice(1, 5), ['--project', s.project, '--config-dir', s.config]);
 });
