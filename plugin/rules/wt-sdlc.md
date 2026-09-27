@@ -62,6 +62,11 @@ possible gets one that:
 - Is repeatable with a script, or with a written procedure when no tool can drive the host.
 - Has its output pasted verbatim into the report.
 
+An agent or skill shipped to act on another project is e2e'd from that project's own session:
+deploy it to the copy that project runs, then have that session invoke it. A run driven from the
+builder's session proves the tool, not the agent; the builder never applies the agent's output to
+the other project itself.
+
 Observe an assumption about the host before building anything on it; treat the observation as
 evidence, not the assumption as a premise. A delivery without the required output says `e2e not
 run` with a reason instead of being presented as ready.
