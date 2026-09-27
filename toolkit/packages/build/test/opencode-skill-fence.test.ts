@@ -16,7 +16,7 @@ const roots: string[] = []
 // Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
 // the sandbox itself is locked in lane-sandbox.test.ts.
 beforeEach(() => { vi.stubEnv('WT_LANE_SANDBOX', 'off') })
-afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function stub(mode: 'honor' | 'ignore' | 'invisible-allow') {
   const root = mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-')); roots.push(root)
@@ -212,6 +212,9 @@ describe('OpenCode Claude-skill fence', () => {
       expect(observed).toEqual(expected)
     }
     expect(error).toHaveBeenCalledWith(expect.stringContaining('OTEL_EXPORTER_OTLP_HEADERS'))
+    const printed = error.mock.calls.map((call) => String(call[0])).join('\n')
+    expect(printed).not.toContain('other-service-secret')
+    expect(printed).not.toContain('other:secret')
   })
 
   it('admits a configured harmless variable without admitting credentials or execution hooks', () => {
