@@ -4,7 +4,8 @@
 # Cost discipline (CI minutes are finite; win runners cost x2, mac x10):
 # NOT on every push. Triggers: manual dispatch, a weekly cron (default branch
 # only, per GitHub semantics), and a push that touches THIS file (so landing or
-# editing the workflow self-triggers one validation run).
+# editing the workflow self-triggers one validation run). Develop host-layer
+# merges are dispatched by plugin/bin/wt-crossos-dispatch.mjs on the public repo.
 # Run 1 (2026-07-08) immediately caught a real macOS-only test-fixture bug
 # (/var → /private/var symlink vs realpath'd resolveDir) — the matrix earns its keep.
 # ci-trigger: win-fixes iteration 1
@@ -14,8 +15,16 @@ on:
   schedule:
     - cron: '23 6 * * 1' # Mondays 06:23 UTC (off-minute by design)
   push:
+    branches: [main]
+    tags: ['workflow-toolbox--v*']
     paths:
       - '.github/workflows/cross-os.yml'
+
+# Each card/ci-* branch is its own group; on main GitHub keeps one running
+# and one pending run per group, replacing an older PENDING run with a newer one.
+concurrency:
+  group: cross-os-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   matrix:
