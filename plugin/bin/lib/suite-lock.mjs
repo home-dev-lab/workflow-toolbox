@@ -4,6 +4,7 @@ import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
+import { connectSuiteLockBroker, createSuiteLockLeaseId, removeStaleSuiteLockReclaim } from './host/suite-lock-host.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
@@ -12,8 +13,24 @@ export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
 // same holder: a live process with that PID but a different start time is a DIFFERENT process, and
 // the lock is stale (M4 "dead locks kept", LOW 7).
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function abortError() {
+  const error = new Error('suite lock acquisition aborted')
+  error.code = 'ABORT_ERR'
+  return error
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError()
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(abortError()); return }
+    const timer = setTimeout(done, ms)
+    function done() { signal?.removeEventListener?.('abort', aborted); resolve() }
+    function aborted() { clearTimeout(timer); signal?.removeEventListener?.('abort', aborted); reject(abortError()) }
+    signal?.addEventListener?.('abort', aborted, { once: true })
+  })
 }
 
 function positiveSeconds(value, name) {
@@ -22,7 +39,7 @@ function positiveSeconds(value, name) {
   return number
 }
 
-function suiteLockDir(env = process.env, home = homedir(), platform = process.platform) {
+export function suiteLockDir(env = process.env, home = homedir(), platform = process.platform) {
   if (typeof env.WT_SUITE_LOCK_DIR === 'string' && env.WT_SUITE_LOCK_DIR.length > 0) {
     return path.resolve(env.WT_SUITE_LOCK_DIR)
   }
@@ -63,7 +80,9 @@ function foreignNamespaceStale(lock, options, reclaimMs) {
 }
 
 function holderIsStale(lock, options = {}) {
-  if (!lock.held || !Number.isSafeInteger(lock.holder?.pid) || lock.holder.pid <= 0) return false
+  if (!lock.held) return false
+  if (!lock.holder) return lock.ageMs !== null && lock.ageMs >= 30_000
+  if (!Number.isSafeInteger(lock.holder.pid) || lock.holder.pid <= 0) return false
   const platform = options.platform ?? process.platform
   const staleMs = positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000
   const waitMs = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s') * 1000
@@ -85,16 +104,22 @@ function holderIsStale(lock, options = {}) {
 
 export function formatSuiteLockHolder(holder) {
   if (!holder) return 'holder unknown'
-  const argv = Array.isArray(holder.argv) ? holder.argv.slice(0, 2).join(' ') : 'unknown command'
+  const clean = (value) => {
+    const text = String(value).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/gu, '')
+    return text.length > 80 ? `${text.slice(0, 80)}…` : text
+  }
+  const argv = Array.isArray(holder.argv) ? holder.argv.slice(0, 2).map(clean).join(' ') : 'unknown command'
   const started = new Date(holder.startedAt)
   const since = Number.isNaN(started.valueOf())
     ? 'unknown time'
     : started.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false })
-  return `holder pid ${holder.pid} (${argv}) since ${since}`
+  return `holder pid ${Number.isSafeInteger(holder.pid) ? holder.pid : 'unknown'} (${argv}) since ${since}`
 }
 
 export async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
+  const broker = typeof env.WT_SUITE_LOCK_BROKER === 'string' ? env.WT_SUITE_LOCK_BROKER.trim() : ''
+  if (broker) return acquireBrokerSuiteLock(broker, options)
   const root = options.root ?? suiteLockDir(env, options.home, options.platform)
   const lockDir = path.join(root, 'lock.d')
   const reclaimDir = path.join(root, 'reclaim.d')
@@ -106,19 +131,23 @@ export async function acquireSuiteLock(options = {}) {
   mkdirSync(root, { recursive: true, mode: 0o700 })
 
   while (true) {
+    options.onLoop?.()
+    throwIfAborted(options.signal)
     try {
       mkdirSync(lockDir)
       const holder = {
+        leaseId: createSuiteLockLeaseId(),
         pid: process.pid,
         argv: options.argv ?? process.argv,
         cwd: options.cwd ?? process.cwd(),
-        startedAt: new Date().toISOString(),
+        startedAt: options.startedAt ?? new Date().toISOString(),
         platform: options.platform ?? process.platform,
         pidNamespace: options.pidNamespace ?? currentPidNamespace(),
         startTime: options.startTime ?? processStartTime(process.pid),
       }
       try {
         writeFileSync(path.join(lockDir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
+        throwIfAborted(options.signal)
       } catch (error) {
         rmSync(lockDir, { recursive: true, force: true })
         throw error
@@ -128,8 +157,9 @@ export async function acquireSuiteLock(options = {}) {
       if (error?.code !== 'EEXIST') throw error
     }
 
-    const current = readSuiteLock({ root })
-    if (!current.held) continue
+    let current = readSuiteLock({ root })
+    removeStaleSuiteLockReclaim(reclaimDir)
+    if (!current.held) { await retryWait(); continue }
     if (holderIsStale(current, options)) {
       let ownsReclaim = false
       try {
@@ -142,27 +172,80 @@ export async function acquireSuiteLock(options = {}) {
       } finally {
         if (ownsReclaim) rmSync(reclaimDir, { recursive: true, force: true })
       }
+      await retryWait()
       continue
     }
-    const now = Date.now()
-    if (now - startedWaiting >= waitMs) {
-      const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
-      timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
-      timeout.holder = current.holder
-      throw timeout
+    await retryWait(current)
+
+    async function retryWait(observed = current) {
+      throwIfAborted(options.signal)
+      const now = Date.now()
+      if (now - startedWaiting >= waitMs) {
+        const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(observed?.holder)}`)
+        timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
+        timeout.holder = observed?.holder ?? null
+        throw timeout
+      }
+      if (observed?.held && now >= nextNoticeAt) {
+        options.onWait?.(`waiting for suite lock: ${formatSuiteLockHolder(observed.holder)}`)
+        nextNoticeAt = now + noticeMs
+      }
+      await sleep(Math.min(pollMs, Math.max(1, waitMs - (now - startedWaiting))), options.signal)
     }
-    if (now >= nextNoticeAt) {
-      options.onWait?.(`waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
-      nextNoticeAt = now + noticeMs
-    }
-    await sleep(Math.min(pollMs, Math.max(1, waitMs - (now - startedWaiting))))
   }
 }
 
+function acquireBrokerSuiteLock(socketPath, options) {
+  const waitS = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s')
+  return new Promise((resolve, reject) => {
+    const socket = connectSuiteLockBroker(socketPath)
+    let buffer = ''
+    let settled = false
+    let released = false
+    let resolveLost
+    const lost = new Promise((done) => { resolveLost = done })
+    const fail = (error) => {
+      if (settled) { if (!released) resolveLost(); return }
+      settled = true; clearTimeout(timer); reject(error)
+    }
+    const timer = setTimeout(() => {
+      const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}`)
+      timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
+      socket.destroy(); fail(timeout)
+    }, waitS * 1000)
+    const abort = () => { socket.destroy(); fail(abortError()) }
+    options.signal?.addEventListener?.('abort', abort, { once: true })
+    socket.once('connect', () => socket.write(`${JSON.stringify({ argv: options.argv ?? process.argv, waitS })}\n`))
+    socket.on('data', (chunk) => {
+      buffer += String(chunk)
+      while (buffer.includes('\n')) {
+        const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
+        if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
+        else if (line.startsWith('error ')) { socket.destroy(); fail(new Error(`suite lock broker ${socketPath}: ${line.slice(6)}`)) }
+        else if (line.startsWith('granted ') && !settled) {
+          settled = true; clearTimeout(timer); options.signal?.removeEventListener?.('abort', abort)
+          resolve({ broker: socketPath, socket, holder: { leaseId: line.slice(8) }, lost, markReleased: () => { released = true } })
+        }
+      }
+    })
+    socket.once('error', (error) => fail(new Error(`suite lock broker ${socketPath}: ${error.message}`)))
+    socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else if (!released) resolveLost() })
+    throwIfAborted(options.signal)
+  })
+}
+
 export function releaseSuiteLock(lease) {
+  if (lease?.broker) {
+    lease.markReleased?.()
+    if (!lease.socket.destroyed) lease.socket.end()
+    return true
+  }
   const current = readSuiteLock({ root: lease.root })
   if (!current.held) return true
-  if (current.holder?.pid !== lease.holder.pid || current.holder?.startedAt !== lease.holder.startedAt) return false
+  const same = current.holder?.leaseId && lease.holder?.leaseId
+    ? current.holder.leaseId === lease.holder.leaseId
+    : current.holder?.pid === lease.holder.pid && current.holder?.startedAt === lease.holder.startedAt
+  if (!same) return false
   rmSync(lease.lockDir, { recursive: true, force: true })
   return true
 }

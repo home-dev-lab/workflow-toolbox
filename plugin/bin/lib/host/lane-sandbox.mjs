@@ -32,6 +32,7 @@ const LANE_SANDBOX_SWITCH_ENV = 'WT_LANE_SANDBOX'
 // lane never sees it: it is written by the host-side proxy, outside the sandbox.
 const LANE_EGRESS_LOG_ENV = 'WT_LANE_EGRESS_LOG'
 const EGRESS_PROXY = fileURLToPath(new URL('./lane-egress-proxy.mjs', import.meta.url))
+const SUITE_LOCK_BROKER = fileURLToPath(new URL('./lane-suite-lock-broker.mjs', import.meta.url))
 const EGRESS_PROXY_PORT = 3128
 // A built-in provider's own hosts, by credential kind. Measured 2026-09-26 through the proxy with an
 // empty allow-list: an `openai/*` OpenCode lane on OAuth contacts chatgpt.com only; the token refresh
@@ -291,7 +292,9 @@ const PROFILES = {
 
 // The machine-wide suite lock (lib/suite-lock.mjs, Linux default location) serialises every test
 // suite on the host, a lane's included; it is shared read-write so a lane waits like anyone else.
-const suiteLockDir = (env) => path.join(xdg(env, 'XDG_STATE_HOME', '.local/state'), 'wt-suite-lock')
+const suiteLockDir = (env) => typeof env.WT_SUITE_LOCK_DIR === 'string' && env.WT_SUITE_LOCK_DIR.length > 0
+  ? path.resolve(env.WT_SUITE_LOCK_DIR)
+  : path.join(xdg(env, 'XDG_STATE_HOME', '.local/state'), 'wt-suite-lock')
 
 /**
  * The suite-lock runner a lane's WT_SUITE_LOCK_CMD runs, as a host-native path: it ships in the plugin's
@@ -376,7 +379,7 @@ function remapArgs(flag, remaps) {
   return remaps.flatMap(({ inside, outside }) => [flag, bindPath(outside), bindPath(inside)])
 }
 
-function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, executableSymlinks, codexReal, codexPath, env, chdir, fs, socketDir }) {
+function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, executableSymlinks, codexReal, codexPath, env, chdir, fs, socketDir, lockDir, lockEmpty, lockRoot }) {
   const etcTargets = ETC_LINK_TARGETS.map((file) => fs.realpath(file)).filter((file) => file && !file.startsWith('/etc/') && !file.startsWith('/usr/'))
   const mounted = [...SYSTEM_READ_ONLY, ...readable, ...writable, ...writableRemap.map(({ inside }) => inside)]
   const uniqueSymlinks = [...new Map(executableSymlinks.map((entry) => [entry.link, entry])).values()]
@@ -392,6 +395,8 @@ function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays,
     ...bindArgs('--bind-try', writable),
     ...remapArgs('--bind-try', writableRemap),
     ...(socketDir ? ['--bind', socketDir, socketDir] : []),
+    '--bind', lockDir, lockDir,
+    '--ro-bind', lockEmpty, lockRoot,
     // Read-only overlays land AFTER the writable binds they sit inside, so they win.
     ...bindArgs('--ro-bind-try', readOnlyOverlays),
     ...remapArgs('--ro-bind-try', readOnlyOverlaysRemap),
@@ -400,6 +405,7 @@ function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays,
     '--unsetenv', 'XDG_RUNTIME_DIR', '--unsetenv', 'DBUS_SESSION_BUS_ADDRESS', '--unsetenv', 'SSH_AUTH_SOCK',
     '--setenv', 'TMPDIR', '/tmp', '--setenv', 'TMP', '/tmp', '--setenv', 'TEMP', '/tmp',
     '--setenv', LANE_SANDBOX_SWITCH_ENV, 'bwrap',
+    '--setenv', 'WT_SUITE_LOCK_BROKER', path.join(lockDir, 'broker.sock'),
     ...(codexReal ? ['--setenv', 'PATH', codexPath] : []),
   ]
 }
@@ -456,12 +462,12 @@ function laneWritablePredicate(roots, fs) {
 // A writable bind that contains (or sits inside) a CLI's config/auth location would override its
 // read-only bind: bwrap applies binds in order and the writable ones come after. Refused, never
 // silently dropped, so the operator sees which entry did it.
-function refuseProtectedOverlap(writable, protectedPaths, fs) {
+function refuseProtectedOverlap(writable, protectedPaths, fs, description = 'which a lane must not be able to change') {
   for (const bind of writable) {
     const root = canonicalPath(bind, fs)
     for (const guarded of protectedPaths) {
       const target = canonicalPath(guarded, fs)
-      if (withinOnDisk(target, root) || withinOnDisk(root, target)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
+      if (withinOnDisk(target, root) || withinOnDisk(root, target)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, ${description}`)
     }
   }
 }
@@ -541,7 +547,7 @@ function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
   const relays = []
   try {
     for (const bridge of bridges) {
-      const relay = spawnFn(bridge.command, bridge.args, { stdio: ['ignore', 'ignore', typeof diagnostics === 'number' ? diagnostics : 'inherit'], detached: false })
+      const relay = spawnFn(bridge.command, bridge.args, { stdio: ['ignore', 'ignore', typeof diagnostics === 'number' ? diagnostics : 'inherit'], detached: false, ...(bridge.env ? { env: bridge.env } : {}) })
       relays.push(relay)
       if (typeof relay?.once === 'function') {
         relay.once('exit', (code, signal) => {
@@ -549,7 +555,7 @@ function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
         })
       }
     }
-    const insideCommands = bridges.map((bridge) => `${shPosix(socat)} TCP4-LISTEN:${bridge.port},bind=${bridge.host},fork,reuseaddr UNIX-CONNECT:${shPosix(bridge.sock)} >/dev/null 2>&1 &`)
+    const insideCommands = bridges.filter((bridge) => !bridge.hostOnly).map((bridge) => `${shPosix(socat)} TCP4-LISTEN:${bridge.port},bind=${bridge.host},fork,reuseaddr UNIX-CONNECT:${shPosix(bridge.sock)} >/dev/null 2>&1 &`)
   // A host bridge's unix socket appears asynchronously. Wait for it BEFORE the sandbox starts, or
   // the lane's first connection races the socket into existence and is refused (measured).
     const deadline = Date.now() + 3_000
@@ -558,7 +564,7 @@ function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
     }
     const missing = bridges.filter(({ sock }) => !fs.exists(sock))
     if (missing.length) {
-      const names = missing.map((bridge) => (bridge.proxy ? 'egress proxy' : 'relay to ' + bridge.host + ':' + bridge.port)).join(', ')
+      const names = missing.map((bridge) => (bridge.hostOnly ? 'suite-lock broker' : bridge.proxy ? 'egress proxy' : 'relay to ' + bridge.host + ':' + bridge.port)).join(', ')
       throw new LaneSandboxRefusal(`lane ${names} did not start within 3 s; refusing to launch a lane whose route does not exist`)
     }
     return { relays, insideCommands }
@@ -636,12 +642,16 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const git = workdir.length ? gitPaths(workdir[0], env, fs) : { readable: [], writable: [], overlaysRo: [] }
   for (const overlay of git.overlaysRo) fs.ensureFile(overlay)
 
-  fs.ensureDir(suiteLockDir(env))
+  const lockRoot = suiteLockDir(env)
+  const lockDir = path.join(runtimeDir, 'lock')
+  const lockEmpty = path.join(runtimeDir, 'lock-empty')
+  fs.ensureDir(lockDir)
+  fs.ensureDir(lockEmpty)
   // A read-only role (observer, second-opinion) gets its working directory bound read-only (H5).
   const toolchain = toolchainPaths({ env, execPath, fs })
   const executableMounts = [...toolchain.executableMounts, ...executableMount(bin, fs), ...(codexReal ? [executableMount(codexReal, fs)[0]] : [])]
   const rawReadable = [...toolchain.readable, ...(selected.readable ?? []), ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
-  const rawWritable = [...(readonlyCwd ? [] : workdir), ...selected.writable, ...git.writable, suiteLockDir(env), ...(paths.writable ?? []), ...extras.writable]
+  const rawWritable = [...(readonlyCwd ? [] : workdir), ...selected.writable, ...git.writable, ...(paths.writable ?? []), ...extras.writable]
   // Validate only paths that survive the same forbidden-path filtering as the bwrap argv.
   // Discarded paths (including a spelling that resolves to HOME) are not binds.
   const keptReadable = rawReadable.filter((item) => item && !isForbiddenPath(item, env, fs))
@@ -657,6 +667,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
       return true
     })
   refuseProtectedOverlap(writable, selected.protectedPaths ?? [], fs)
+  refuseProtectedOverlap(writable, [lockRoot], fs, 'which is the host suite lock root')
   // Everything the lane can write: its writable binds and the per-run runtime dir (private remaps,
   // bridge sockets). Configuration found there never feeds the allow-list, and no log goes there.
   const laneWritable = laneWritablePredicate([...writable, runtimeDir], fs)
@@ -669,7 +680,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const socketDir = endpoints.length || network.hosts.length ? path.join(runtimeDir, 'net') : null
   if (socketDir) fs.ensureDir(socketDir)
   const otherOverlays = [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...(selected.readOnlyOverlaysRemap ?? []).map(({ inside }) => inside)]
-  const guarded = [...writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), ...(selected.protectedPaths ?? []), ...(socketDir ? [socketDir] : [])]
+  const guarded = [...writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), ...(selected.protectedPaths ?? []), lockRoot, lockDir, lockEmpty, ...(socketDir ? [socketDir] : [])]
   if (codexReal) {
     const collision = [...guarded, ...keptReadable, ...otherOverlays].find((item) => {
       const a = canonicalPath(item, fs); const b = canonicalPath(CODEX_PATH_DIR, fs)
@@ -680,6 +691,8 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const executableOverlays = safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs)
   const readable = [...keptReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
   const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
+  const parentStart = processStartTime(process.pid)
+  bridges.push({ sock: path.join(lockDir, 'broker.sock'), hostOnly: true, command: execPath, args: [SUITE_LOCK_BROKER, '--socket', path.join(lockDir, 'broker.sock'), '--parent', String(process.pid), ...(parentStart === null ? [] : ['--parent-start', String(parentStart)]), '--label', path.basename(base ?? profile)], env: { ...process.env, WT_SUITE_LOCK_DIR: lockRoot } })
   const prefix = sandboxArguments({
     readable, writable, writableRemap: selected.writableRemap ?? [],
     executableSymlinks: executableLinks,
@@ -687,7 +700,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
     readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...executableOverlays],
     readOnlyOverlaysRemap: selected.readOnlyOverlaysRemap ?? [],
     codexReal, codexPath: codexReal ? [CODEX_PATH_DIR, ...String(env.PATH ?? '').split(path.delimiter).filter((entry) => path.isAbsolute(entry))].join(path.delimiter) : null,
-    env, chdir: workdir[0] ?? home(env), fs, socketDir,
+    env, chdir: workdir[0] ?? home(env), fs, socketDir, lockDir, lockEmpty, lockRoot,
   })
   if (codexReal) refuseCoveredCodex(prefix, codexReal, fs)
   if (selected.codexHome) prefix.push('--setenv', 'CODEX_HOME', selected.codexHome)
@@ -700,7 +713,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   const netNote = networkNote({ network, bridges, socat: socatPath })
   // Both the writable AND the readable sets are recorded: a secret leak would come from a readable
   // bind, so a reader can audit exactly what was exposed (LOW 2).
-  const line = `lane sandbox: bwrap (${profile}; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; ${netNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote})`
+  const line = `lane sandbox: bwrap (${profile}; suite lock via host broker; writable ${[...new Set(writable)].join(', ')}; readable ${[...new Set(readable)].join(', ')}; ${netNote}; extra paths via ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV}${refusedNote})`
 
   // Write the CLI's refreshed credential back to the shared home only if it actually changed inside
   // the per-run home; the shared file stayed read-only during the run (H3). Lives here (host

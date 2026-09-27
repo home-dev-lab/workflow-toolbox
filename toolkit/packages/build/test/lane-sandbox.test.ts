@@ -349,12 +349,23 @@ describe('lane sandbox plan — filesystem allow-list', () => {
 
   // Linux-only by nature: it compares the plan's POSIX bind with suite-lock.mjs's own resolution, which
   // uses the HOST's native path module (backslashes on Windows, where no plan is ever built).
-  it.skipIf(process.platform !== 'linux')('shares only the machine-wide suite lock directory that the suite lock itself resolves (Linux-only: compares with the host-native suite-lock path)', () => {
+  it.skipIf(process.platform !== 'linux')('routes suite locks through a host broker and masks the machine-wide lock root read-only', () => {
     const fs = fakeFs()
-    const [, args] = plan({ fs }).wrap('opencode', [])
+    const p = plan({ fs })
+    const [, args] = p.wrap('opencode', [])
     const lockRoot = suiteLock.readSuiteLock({ env: {}, home: HOME, platform: 'linux' }).root
-    expect(flat(args, '--bind-try')).toContain(lockRoot)
-    expect(fs.ensured).toContain(lockRoot)
+    expect(flat(args, '--bind-try')).not.toContain(lockRoot)
+    expect(args.slice(args.indexOf('WT_SUITE_LOCK_BROKER') - 1, args.indexOf('WT_SUITE_LOCK_BROKER') + 2)).toEqual(['--setenv', 'WT_SUITE_LOCK_BROKER', expect.stringMatching(/\/lock\/broker\.sock$/)])
+    const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
+    expect(ro).toContainEqual([expect.stringMatching(/\/lock-empty$/), lockRoot])
+    expect(p.line).toContain('suite lock via host broker')
+    p.dispose()
+  })
+
+  it('refuses any writable bind overlapping the canonical suite-lock root', () => {
+    for (const lockRoot of ['/work/tree/locks', '/work/tree', '/work/tree/locks/child']) {
+      expect(() => plan({ env: { HOME, PATH: '/usr/bin', WT_SUITE_LOCK_DIR: lockRoot } })).toThrow(/overlaps .*suite lock/i)
+    }
   })
 
   it('resolves the suite-lock runner a lane runs to the plugin bin/ file that exists, and refuses when it is absent', () => {
@@ -539,8 +550,8 @@ describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans le
   it('kills a bridge that fails to open its socket without copying the credential', () => {
     const { fs, relays, refuse } = fixture(false)
     refuse({}, /did not start within 3 s/)
-    expect(relays).toHaveLength(1)
-    expect(relays[0]!.alive).toBe(false)
+    expect(relays).toHaveLength(2)
+    expect(relays.every((relay) => !relay.alive)).toBe(true)
     expect(fs.copied).toEqual([])
   })
 })
@@ -687,7 +698,8 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     expect(unknown.p.line).toContain('no egress: provider mystery has no known hosts')
     const none = egressPlan(null, { openai: { type: 'oauth' } })
     expect(none.p.egressHosts).toEqual([])
-    expect(none.spawned).toEqual([])
+    expect(none.spawned.some((entry) => entry.args.some((arg) => arg.endsWith('lane-egress-proxy.mjs')))).toBe(false)
+    expect(none.spawned.some((entry) => entry.args.some((arg) => arg.endsWith('lane-suite-lock-broker.mjs')))).toBe(true)
   })
 
   it('a codex lane signed in with ChatGPT gets the OpenAI OAuth hosts', () => {
@@ -769,14 +781,17 @@ describe('lane sandbox plan — egress log path and bridge start (round 4)', () 
   const share = `${HOME}/.local/share/opencode`
   const files = () => ({ [`${share}/auth.json`]: JSON.stringify({ openai: { type: 'oauth' } }) })
   it('refuses an egress log under a path the lane can write, and accepts one outside', () => {
-    for (const log of ['/work/tree/.lane/egress.jsonl', `${HOME}/.local/state/wt-suite-lock/egress.jsonl`]) {
-      expect(() => plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/run/lane']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: log } }), log).toThrow(/refusing WT_LANE_EGRESS_LOG/)
-    }
+    expect(() => plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/run/lane']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: '/work/tree/.lane/egress.jsonl' } })).toThrow(/refusing WT_LANE_EGRESS_LOG/)
+    expect(plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/run/lane']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: `${HOME}/.local/state/wt-suite-lock/egress.jsonl` } }).kind).toBe('bwrap')
     expect(plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/var/log']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: '/var/log/egress.jsonl' } }).kind).toBe('bwrap')
   })
   it('refuses the launch when the egress proxy never opens its socket, and never claims the route', () => {
     const fs = fakeFs(files(), [config, share, HOME, '/work/tree'])
-    expect(() => plan({ fs, args: ['run', '--model', 'openai/m'], spawnFn: () => ({ kill() {}, pid: 1 }) })).toThrow(/egress proxy did not start within 3 s/)
+    const spawnFn = (_command: string, args: string[]) => {
+      if (args.some((arg) => arg.endsWith('lane-suite-lock-broker.mjs'))) fs.ensureFile(socketOf(args)!)
+      return { kill() {}, pid: 1 }
+    }
+    expect(() => plan({ fs, args: ['run', '--model', 'openai/m'], spawnFn })).toThrow(/egress proxy did not start within 3 s/)
   })
 })
 

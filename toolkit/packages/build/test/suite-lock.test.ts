@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acquireSuiteLock, readSuiteLock, releaseSuiteLock, spawnNeedsShell, windowsShimArgumentRefusal } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { acquireSuiteLock, formatSuiteLockHolder, readSuiteLock, releaseSuiteLock, spawnNeedsShell, windowsShimArgumentRefusal } from '../../../../plugin/bin/lib/suite-lock.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
@@ -63,6 +63,7 @@ describe('suite lock library', () => {
     const root = tempRoot('handoff')
     const first = await acquireSuiteLock({ root, argv: ['pnpm', 'test'] })
     expect(readSuiteLock({ root }).holder).toEqual({
+      leaseId: expect.any(String),
       pid: process.pid,
       argv: ['pnpm', 'test'],
       cwd: process.cwd(),
@@ -88,6 +89,57 @@ describe('suite lock library', () => {
     const replacement = await acquireSuiteLock({ root, waitS: 0.1, pollMs: 10 })
     expect(replacement.holder.pid).toBe(process.pid)
     expect(releaseSuiteLock(replacement)).toBe(true)
+  })
+
+  it('reclaims old unpublished locks and abandoned reclaim directories', async () => {
+    const root = tempRoot('unpublished')
+    mkdirSync(join(root, 'lock.d'), { recursive: true })
+    mkdirSync(join(root, 'reclaim.d'))
+    const old = new Date(Date.now() - 31_000)
+    utimesSync(join(root, 'lock.d'), old, old)
+    utimesSync(join(root, 'reclaim.d'), old, old)
+    const lease = await acquireSuiteLock({ root, waitS: 0.2, pollMs: 5 })
+    expect(lease.holder.pid).toBe(process.pid)
+    expect(existsSync(join(root, 'reclaim.d'))).toBe(false)
+    releaseSuiteLock(lease)
+  })
+
+  it('does not hot-loop when another reclaimer owns reclaim.d', async () => {
+    const root = tempRoot('reclaim-loop')
+    const seeded = await acquireSuiteLock({ root })
+    writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ ...seeded.holder, pid: 2_147_483_647 }))
+    mkdirSync(join(root, 'reclaim.d'))
+    let turns = 0
+    await expect(acquireSuiteLock({ root, waitS: 0.06, pollMs: 20, onLoop: () => { turns += 1 } })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    expect(turns).toBeLessThanOrEqual(5)
+  })
+
+  it('aborts before and immediately after publishing without leaving a lock', async () => {
+    for (const afterPublish of [false, true]) {
+      const root = tempRoot(`abort-${afterPublish}`)
+      let reads = 0
+      const signal = { get aborted() { reads += 1; return afterPublish ? reads >= 2 : true }, addEventListener() {}, removeEventListener() {} }
+      await expect(acquireSuiteLock({ root, signal })).rejects.toMatchObject({ code: 'ABORT_ERR' })
+      expect(existsSync(join(root, 'lock.d'))).toBe(false)
+    }
+  })
+
+  it('uses leaseId so a late release cannot remove a same-millisecond replacement', async () => {
+    const root = tempRoot('lease-id')
+    const startedAt = '2026-09-27T00:00:00.000Z'
+    const first = await acquireSuiteLock({ root, startedAt })
+    rmSync(first.lockDir, { recursive: true })
+    const second = await acquireSuiteLock({ root, startedAt })
+    expect(releaseSuiteLock(first)).toBe(false)
+    expect(readSuiteLock({ root }).holder?.leaseId).toBe(second.holder.leaseId)
+    releaseSuiteLock(second)
+  })
+
+  it('sanitises untrusted holder fields and caps argv elements', () => {
+    const output = formatSuiteLockHolder({ pid: '1\nX', argv: ['pnpm', `test\n\u001b[31mFAKE holder pid 1\u202e${'x'.repeat(100)}`], startedAt: 'bad' })
+    expect(output).toContain('holder pid unknown')
+    expect(output).not.toMatch(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/u)
+    expect(output).toContain('…')
   })
 })
 
