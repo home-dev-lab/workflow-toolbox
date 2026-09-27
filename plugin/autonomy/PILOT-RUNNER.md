@@ -206,6 +206,10 @@ use `opus` for critic, review and refutation at `xhigh`; standard code uses `son
 at `medium`, hard code `opus` at `medium`. Explicit effort overrides take precedence.
 Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
 toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
+The gate, like the orchestrator's host gates, runs without the runner's own `WT_*` configuration
+(`WT_AGENT_SDK_PATH`, `WT_EXECUTOR_*_MODEL`, `WT_PLANKA_MCP_URL`, ...), so how the runner was launched
+cannot change the delivery's verdict; only `WT_SUITE_LOCK*`, `WT_TEST_MODE` and `WT_VITEST_MAX_WORKERS`
+pass, with every non-`WT_*` variable (`gateEnvironment` in `plugin/bin/lib/gate-evidence.mjs`).
 A lane must not rely on background processes surviving its receipt: the reported process group contains
 the launcher worker, `opencode`, and its ordinary descendants, and the server terminates that group. A
 process that creates its own session escapes the lane process group and remains outside this contract.

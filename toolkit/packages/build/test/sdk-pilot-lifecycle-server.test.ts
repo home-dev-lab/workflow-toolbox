@@ -2,7 +2,7 @@ import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSy
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
-import { syncBuiltinESMExports } from 'node:module'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join as pathJoin, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1968,6 +1968,40 @@ printf 'report\n' > "$report"
     expect(spawnSync('git', ['init', '-q'], { cwd: archiveRoot }).status).toBe(0)
 
     expect(() => createLifecycleServer({ worktree, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', rules: [] })).not.toThrow()
+  })
+
+  // Card 1873173639063406158: WT_AGENT_SDK_PATH, set for the runner only, reached the run's own
+  // `pnpm test` gate and turned two correct tests red. The real default gate path (no gateRunner) runs a
+  // fake `pnpm` that prints the environment it received into the gate log.
+  it.skipIf(process.platform === 'win32')('runs a lifecycle gate without the runner-only WT_* variables and keeps what a gate needs', async () => {
+    const bin = realpathSync(mkdtempSync(join(tmpdir(), 'wt-gate-env-bin-'))); roots.push(bin)
+    writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'for (const [k, v] of Object.entries(process.env)) console.log(k + "=" + v)'\n`)
+    fs.chmodSync(join(bin, 'pnpm'), 0o755)
+    const gatePath = `${bin}:${process.env.PATH}`
+    vi.stubEnv('PATH', gatePath)
+    vi.stubEnv('HOME', '/tmp/wt-gate-env-home')
+    // The runner sets it to a real SDK entry (the lifecycle itself resolves the SDK through it).
+    const runnerSdk = createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk')
+    vi.stubEnv('WT_AGENT_SDK_PATH', runnerSdk)
+    vi.stubEnv('WT_EXECUTOR_CODE_MODEL', 'runner-only-model')
+    vi.stubEnv('WT_RUN_PIECES_TESTED', '1')
+    vi.stubEnv('WT_PLANKA_MCP_URL', 'http://runner-only.invalid/mcp')
+    vi.stubEnv('WT_SUITE_LOCK_DIR', '/tmp/wt-gate-env-lock')
+    vi.stubEnv('WT_TEST_MODE', 'blocking')
+    try {
+      const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { gateRunner: null })
+      mkdirSync(join(lifecycle.root, 'toolkit'))
+      expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))).toBe('accepted phase=tdd')
+      expect(await text(lifecycle.artifact({ kind: 'brief', content: 'brief\n' }))).toBe('wrote brief')
+      expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+      expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toBe('accepted phase=verify')
+      expect(await text(lifecycle.run({ kind: 'gate', name: 'test' }))).toBe('gate test EXIT=0')
+      const seen = readFileSync(join(lifecycle.root, '.lane', 'test.log'), 'utf8').split('\n')
+      expect(seen.filter((line) => /^WT_(AGENT_SDK_PATH|EXECUTOR_CODE_MODEL|RUN_PIECES_TESTED|PLANKA_MCP_URL)=/.test(line))).toEqual([])
+      expect(seen).toEqual(expect.arrayContaining([`PATH=${gatePath}`, 'HOME=/tmp/wt-gate-env-home', 'WT_SUITE_LOCK_DIR=/tmp/wt-gate-env-lock', 'WT_TEST_MODE=blocking']))
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 })
 

@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -113,6 +114,20 @@ function startServer(pollMs = '20', aliasSpool = false): {
 
 function send(child: ChildProcessWithoutNullStreams, message: object): void {
   child.stdin.write(`${JSON.stringify(message)}\n`)
+}
+
+// Deposit a wake the way the shipped producer does (wt-observer.mjs writeSpoolMessage): write a dot-file
+// the channel ignores, then rename it into place. A plain writeFileSync on the `.txt` name is open, then
+// write: when the host deschedules this process between the two, the watch event reaches the channel
+// with the file still empty, the channel consumes it as an empty wake, and the content lands in
+// `consumed/` with no notification ever emitted. Forcing that interleave reproduces the CI message
+// "timed out waiting for wake-channel output; child exit=running" exactly; that text alone cannot rule
+// out a dropped watch event, which this deposit does not address. Only the `.txt` suffix makes the
+// channel read a file, so the staged name is never consumed.
+function deposit(spool: string, name: string, body: string): void {
+  const staged = join(spool, `.${name}.staged`)
+  writeFileSync(staged, body, 'utf8')
+  renameSync(staged, join(spool, name))
 }
 
 async function waitForMessage(messages: JsonRpcMessage[], predicate: (message: JsonRpcMessage) => boolean, patienceMs = 45_000): Promise<JsonRpcMessage> {
@@ -232,7 +247,7 @@ describe('wt-wake-channel MCP server', () => {
   it.skipIf(process.platform === 'win32')('does not emit before initialized, then moves and emits one deposited message exactly once [requires reliable fs.watch directory delivery]', async () => {
     const { child, spool, messages, stderr } = startServer()
     mkdirSync(spool, { recursive: true })
-    writeFileSync(join(spool, 'wake.txt'), '  inspect the finished run  \n', 'utf8')
+    deposit(spool, 'wake.txt', '  inspect the finished run  \n')
     await sync(child, messages)
     expect(messages).toEqual([])
 
@@ -260,8 +275,8 @@ describe('wt-wake-channel MCP server', () => {
     const { child, spool, messages, stderr } = startServer()
     await initialize(child, messages)
     mkdirSync(join(spool, 'a-malformed.txt'))
-    writeFileSync(join(spool, 'b-empty.txt'), ' \n\t', 'utf8')
-    writeFileSync(join(spool, 'c-valid.txt'), 'later wake', 'utf8')
+    deposit(spool, 'b-empty.txt', ' \n\t')
+    deposit(spool, 'c-valid.txt', 'later wake')
 
     await waitForMessage(messages, (message) => message.method === 'notifications/claude/channel')
     await sync(child, messages)
@@ -277,13 +292,13 @@ describe('wt-wake-channel MCP server', () => {
 
   // Linux cannot produce a Windows 8.3 short name, so a symlink is its honest path-alias stand-in.
   // Keep polling beyond the test's patience: only the watcher can deliver this message.
-  it.skipIf(process.platform !== 'linux' || HOST_OVERLOADED)('canonicalises an aliased spool before watching and delivers post-init through the configured alias', async () => {
+  it.skipIf(process.platform !== 'linux')('canonicalises an aliased spool before watching and delivers post-init through the configured alias', async () => {
     const { child, spool, watchTarget, messages, stderr } = startServer('60_000', true)
     await initialize(child, messages)
 
     expect(spool).not.toBe(watchTarget)
     expect(stderr()).toBe(`[wt-wake-channel] watching ${watchTarget}\n`)
-    writeFileSync(join(spool, 'aliased.txt'), 'alias wake', 'utf8')
+    deposit(spool, 'aliased.txt', 'alias wake')
 
     await waitForPostInitDelivery(child, messages)
       .catch((error: unknown) => {
@@ -297,13 +312,13 @@ describe('wt-wake-channel MCP server', () => {
 
   // The channel promises fs.watch as a fast path and polling as the delivery backstop. This locks
   // the latter, so a host that drops watch events remains a valid test environment.
-  it.skipIf(HOST_OVERLOADED)('delivers a message deposited AFTER initialization within the configured poll interval plus margin', async () => {
+  it('delivers a message deposited AFTER initialization within the configured poll interval plus margin', async () => {
     expect(readFileSync(serverScript, 'utf8')).toContain('setInterval(drain, pollMs)')
     const { child, spool, messages, stderr } = startServer(String(POST_INITIALIZATION_POLL_MS))
     await initialize(child, messages)
     expect(channelMessages(messages)).toEqual([])
 
-    writeFileSync(join(spool, 'post-init.txt'), 'the observer speaks', 'utf8')
+    deposit(spool, 'post-init.txt', 'the observer speaks')
 
     await waitForPostInitDelivery(child, messages, POST_INITIALIZATION_DELIVERY_BOUND_MS)
       .catch((error: unknown) => {
@@ -321,7 +336,7 @@ describe('wt-wake-channel MCP server', () => {
     await initialize(child, messages)
 
     child.kill('SIGSTOP')
-    writeFileSync(join(spool, 'starved.txt'), 'delayed by scheduler starvation', 'utf8')
+    deposit(spool, 'starved.txt', 'delayed by scheduler starvation')
     const resume = setTimeout(() => child.kill('SIGCONT'), 250)
     try {
       await waitForPostInitDelivery(child, messages, 100)

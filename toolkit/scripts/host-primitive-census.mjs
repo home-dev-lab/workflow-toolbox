@@ -9,9 +9,11 @@ const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 
-// Lowered to 1915 after moving lane brief and lifecycle reads into the host directory helper.
+// Lowered by independent reductions: the suite lock's reclaim moved its file operations into
+// host/suite-lock-queue.mjs, the main-guard allow-once reads were consolidated into one helper, and
+// lane brief and lifecycle reads moved into the host lane directory helper.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1915
+export const HOST_PRIMITIVE_CEILING = 1913
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')

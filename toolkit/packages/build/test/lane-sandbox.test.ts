@@ -911,15 +911,17 @@ describe('suite lock across PID namespaces (M4)', () => {
     expect(suiteLock.operatorReleaseSuiteLock({ ...view, namespaceHasProcesses: () => true })).toMatchObject({ released: false, reason: 'live' })
     expect(suiteLock.operatorReleaseSuiteLock({ ...view, namespaceHasProcesses: () => false })).toMatchObject({ released: true })
   })
-  it('inside a sandbox, never reclaims a host holder by PID, only within its own wait window (no 45m/3h mismatch)', async () => {
+  // Card 1873134162710365740 reversed the earlier "within its own wait window" rule: a short --wait-s
+  // reclaimed a LIVE host holder and ran two suites at once. The bound is --stale-s alone.
+  it('inside a sandbox, never reclaims a host holder by PID, only at the --stale-s hard bound, never the --wait-s', async () => {
     for (const ns of ['pid:[4026531836]', null]) {
       const root = await held(`sandbox-${String(ns !== null)}`, ns)
       const hourAgo = new Date(Date.now() - 3_600_000)
       utimesSync(join(root, 'lock.d'), hourAgo, hourAgo)
       const view = { root, pidNamespace: 'pid:[4026532999]', insideSandbox: true, namespaceHasProcesses: () => false }
-      // staleS defaults to 3h; the reclaim bound is min(staleS, waitS), so a small waitS reclaims.
       expect(suiteLock.operatorReleaseSuiteLock({ ...view, waitS: 999999, staleS: 999999 })).toMatchObject({ released: false, reason: 'live' })
-      expect(suiteLock.operatorReleaseSuiteLock({ ...view, waitS: 60, staleS: 999999 })).toMatchObject({ released: true })
+      expect(suiteLock.operatorReleaseSuiteLock({ ...view, waitS: 60, staleS: 999999 })).toMatchObject({ released: false, reason: 'live' })
+      expect(suiteLock.operatorReleaseSuiteLock({ ...view, waitS: 999999, staleS: 1800 })).toMatchObject({ released: true })
     }
   })
   it('treats a reused PID with a different start time as stale (PID-reuse defence)', async () => {

@@ -1,4 +1,5 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 // The file layer of the suite lock's FIFO queue (policy: ../suite-lock.mjs). Two files per ticket,
@@ -78,8 +79,12 @@ export function readTicket(queueDir, number) {
   try { return { held: true, holder, ageMs: Date.now() - statSync(file).mtimeMs } } catch { return null }
 }
 
+// Windows refuses to unlink an entry another process holds open for a moment (EPERM/EBUSY);
+// `maxRetries` retries exactly those codes, and applies only with `recursive: true` (Node fs docs).
+const REMOVE_RETRY = { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }
+
 export function removeTicket(queueDir, number) {
-  rmSync(recordFile(queueDir, number), { force: true })
+  rmSync(recordFile(queueDir, number), REMOVE_RETRY)
 }
 
 /** Removes a directory whose mtime is at least `ageMs` old; a missing one is not an error. */
@@ -89,4 +94,41 @@ export function removeDirectoryOlderThan(directory, ageMs) {
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
   }
+}
+
+// Reclaiming the lock directory without deleting a NEWER instance: the reclaimer renames lock.d aside
+// (atomic; nobody can acquire into a renamed directory), reads the holder that actually moved, and
+// deletes it only if it is the instance it judged stale. Otherwise the directory is put back.
+
+/** Renames `lockDir` to a unique sibling; returns that path, or null when lock.d is already gone. */
+export function setLockAside(lockDir) {
+  const aside = `${lockDir}.reclaimed-${process.pid}-${randomUUID()}`
+  try {
+    renameSync(lockDir, aside)
+    return aside
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/** The holder recorded in a lock directory, or null when missing or unreadable. */
+export function readHolderIn(lockDir) {
+  try { return JSON.parse(readFileSync(path.join(lockDir, 'holder.json'), 'utf8')) } catch { return null }
+}
+
+/** Puts a lock directory moved aside back as `lockDir`; false (and the aside copy removed) when lock.d was re-created meanwhile. */
+export function putLockBack(aside, lockDir) {
+  try {
+    renameSync(aside, lockDir)
+    return true
+  } catch (error) {
+    if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error?.code)) throw error
+    rmSync(aside, { recursive: true, force: true })
+    return false
+  }
+}
+
+export function discardDirectory(directory) {
+  rmSync(directory, REMOVE_RETRY)
 }
