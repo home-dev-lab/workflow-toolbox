@@ -461,6 +461,40 @@ describe('second-opinion Codex broker ownership', () => {
     expect(end).not.toHaveBeenCalled()
   })
 
+  it('orders the late private-state broker against the companion start read from the SAME process table, not the wall clock', () => {
+    // Table starts (ps lstart, whole seconds from an integer boot time) can read seconds before Date.now().
+    let processes: Array<Record<string, unknown>> = [companion(2125, 0, 95_000)]
+    const end = vi.fn(() => { processes = []; return { status: 'ended' } })
+    const ownership = createCodexBrokerOwnership({
+      platform: 'darwin',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: end,
+      forceEndProcessFamily: end,
+    }, {}, { now: () => 100_000, stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+
+    expect(ownership.capture(2125)).toBeNull()
+    // The companion exits; its reparented broker started after it on the table's clock.
+    processes = [broker(2132, 1, 0, 95_000)]
+    recordBroker(ownership.env.CLAUDE_PLUGIN_DATA, 2132)
+    expect(ownership.stop()).toEqual(['stopped broker/app-server process family pid 2132 started by this call'])
+  })
+
+  it('allows a coarse process-table clock when no snapshot ever saw the companion', () => {
+    let processes = [broker(2132, 1, 0, 98_100)]
+    const end = vi.fn(() => { processes = []; return { status: 'ended' } })
+    const ownership = createCodexBrokerOwnership({
+      platform: 'darwin',
+      readProcessSnapshot: () => ({ supported: true, processes }),
+      endProcessFamily: end,
+      forceEndProcessFamily: end,
+    }, {}, { now: () => 100_000, stopTimeoutMs: 0 })
+    roots.push(ownership.env.CLAUDE_PLUGIN_DATA)
+    recordBroker(ownership.env.CLAUDE_PLUGIN_DATA, 2132)
+
+    expect(ownership.stop()).toEqual(['stopped broker/app-server process family pid 2132 started by this call'])
+  })
+
   it('names the discovery failure, not an identity change, when private state names a broker that cannot be looked up', () => {
     const end = vi.fn()
     const ownership = createCodexBrokerOwnership({

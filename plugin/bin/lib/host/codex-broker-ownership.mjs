@@ -5,6 +5,10 @@ import { externalModelEnv } from '../external-model-env.mjs'
 
 const BROKER_PATTERN = /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i
 const START_TIME_TOLERANCE_MS = 1_500
+// A process-table start can read up to ~2 s BEFORE the Date.now() instant it happened at: `ps` lstart
+// and etime are whole seconds, and Linux procps derives lstart from an integer-second boot time
+// (measured −940 to −1887 ms here). Applied only when no table-clock reference exists.
+const TABLE_CLOCK_SKEW_MS = 2_000
 
 function brokerFromState(root) {
   let entries
@@ -85,6 +89,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   const stopTimeoutMs = options.stopTimeoutMs ?? (adapter.platform === 'win32' ? 3_000 : 750)
   const pollMs = options.pollMs ?? 25
   let identity = null
+  // The companion's start as read from a process table: the same clock as its broker's table start.
+  let companionTableStart = null
   const capturedDescendants = new Map()
   let claimedPid = null
   let discoveryFailure = null
@@ -134,7 +140,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     const { processes } = result
     if (!identity) {
       const companion = processes.find((item) => item.pid === companionPid)
-      const companionStartedAt = wallClockStart(companion, observedAt) ?? ownershipStartedAt
+      companionTableStart ??= wallClockStart(companion, observedAt)
+      const companionStartedAt = companionTableStart ?? ownershipStartedAt
       const statePid = brokerPidIsNamespaced ? null : brokerFromState(root)
       if (statePid) claimedPid = statePid
       const family = descendants(processes, companionPid)
@@ -150,8 +157,10 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   // The broker this call started is named by the broker.json in this call's PRIVATE CLAUDE_PLUGIN_DATA
   // root: the companion writes it once its broker is ready and never removes it, so it identifies the
   // broker without the companion being alive — a companion that exits before any process snapshot saw
-  // its broker still leaves it here. A broker started before this ownership existed is refused.
-  // Skipped when the broker runs in the sandbox's PID namespace: that file then holds a namespace pid.
+  // its broker still leaves it here. A broker started before this call is refused: ordered against the
+  // companion's start from a process table when one saw it, else against the wall clock with the
+  // table-clock allowance. Skipped when the broker runs in the sandbox's PID namespace: that file then
+  // holds a namespace pid.
   function captureRecorded() {
     if (identity || brokerPidIsNamespaced) return
     const statePid = brokerFromState(root)
@@ -161,7 +170,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     // Unreadable process table: stop() names the discovery failure rather than an identity change.
     if (!result) return
     claimedPid = statePid
-    if (claim(result.processes.find((item) => item.pid === statePid), ownershipStartedAt, observedAt)) captureWindowsDescendants(result.processes, observedAt)
+    const notBefore = companionTableStart ?? ownershipStartedAt - TABLE_CLOCK_SKEW_MS
+    if (claim(result.processes.find((item) => item.pid === statePid), notBefore, observedAt)) captureWindowsDescendants(result.processes, observedAt)
   }
 
   function captureWindowsDescendants(processes, observedAt) {
