@@ -295,8 +295,9 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     f.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_ADOPTED_SEEN_FENCE'
     f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-    expect(launch(f).status).toBe(0)
-    const until = Date.now() + 3000
+    const started = launch(f)
+    expect(started.status, started.stderr).toBe(0)
+    const until = Date.now() + (process.platform === 'win32' ? 10_000 : 3000)
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     expect(readFileSync(seen, 'utf8')).toBe('true\n')
   })
@@ -315,8 +316,9 @@ printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
     f.env.WT_ADOPTED_SEEN_LOCK = seen
     f.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_ADOPTED_SEEN_LOCK'
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-    expect(launch(f).status).toBe(0)
-    const until = Date.now() + 3000
+    const started = launch(f)
+    expect(started.status, started.stderr).toBe(0)
+    const until = Date.now() + (process.platform === 'win32' ? 10_000 : 3000)
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     // Node resolves a module URL through symlinks, so the launcher reports the REAL path (macOS tmpdir is
     // /var -> /private/var); the expectation compares against the same real path.

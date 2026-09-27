@@ -250,6 +250,16 @@ describe('SNI must equal the CONNECT host (real TLS client, round 4 HIGH 1)', ()
 })
 
 describe('egress log hardening (round 4, MED 2)', () => {
+  it.skipIf(!constants.O_NOFOLLOW)('accepts a canonical parent reached through a directory alias without following a linked log leaf', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-egress-alias-'))
+    try {
+      const actual = join(root, 'actual'); mkdirSync(actual)
+      const alias = join(root, 'alias'); symlinkSync(actual, alias, 'dir')
+      const file = join(alias, 'egress.jsonl')
+      proxy.egressLogWriter(file)({ host: 'alias.example', decision: 'denied' })
+      expect(readFileSync(join(actual, 'egress.jsonl'), 'utf8')).toContain('alias.example')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
   it.skipIf(!constants.O_NOFOLLOW)('keeps writing to its original inode after its parent is swapped', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-egress-parent-'))
     try {

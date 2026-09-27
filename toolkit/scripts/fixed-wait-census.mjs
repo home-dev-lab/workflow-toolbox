@@ -100,6 +100,12 @@ function numberOf(input, depth = 0) {
     const right = numberOf(node.right, depth + 1)
     return left === undefined || right === undefined ? undefined : BINARY.get(node.operatorToken.kind)(left, right)
   }
+  // A platform- or mode-dependent bound is only as patient as its shortest branch: reading it that way keeps a
+  // conditional from hiding a fixed wait the literal form would have been flagged for.
+  if (ts.isConditionalExpression(node)) {
+    const branches = [numberOf(node.whenTrue, depth + 1), numberOf(node.whenFalse, depth + 1)].filter((value) => value !== undefined)
+    return branches.length === 0 ? undefined : Math.min(...branches)
+  }
   return undefined
 }
 

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -26,7 +27,7 @@ afterAll(() => {
 })
 
 function importerScriptFor(modulePath: string) {
-  const path = join(scratchDir, `${Buffer.from(modulePath).toString('hex')}.mjs`)
+  const path = join(scratchDir, `${createHash('sha256').update(modulePath).digest('hex')}.mjs`)
   const url = pathToFileURL(modulePath).href
   writeFileSync(
     path,
@@ -73,6 +74,11 @@ describe('plugin/bin modules imported by a test never run their entry on import'
     const root = 'D:\\repo\\plugin\\bin'
     expect(isWithinPluginBin('D:\\repo\\plugin\\bin\\wt-hook.mjs', root, path.win32)).toBe(true)
     expect(isWithinPluginBin('D:\\repo\\plugin\\binary\\wt-hook.mjs', root, path.win32)).toBe(false)
+  })
+
+  it('names its importer script within a filename limit whatever the checkout path length', () => {
+    const deepModule = path.join(path.sep, 'checkout'.repeat(40), 'plugin', 'bin', 'lib', 'module.mjs')
+    expect(path.basename(importerScriptFor(deepModule)).length).toBeLessThanOrEqual(255)
   })
 
   it('census finds at least the modules known to be imported today', () => {

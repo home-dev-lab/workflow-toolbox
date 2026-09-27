@@ -93,7 +93,7 @@ export function laneWritablePath(worktree, candidate) {
 
 // Anchor the walk at a trusted realpath and refuse *every* redirected component, not just the leaf.
 // Unsandboxed lanes already have the owner's access; only there may unsupported platforms use a plain read.
-export function readWorktreeRegular(file, encoding = 'utf8', root = null, { unsandboxed = false } = {}) {
+export function readWorktreeRegular(file, encoding = 'utf8', root = null, { unsandboxed = process.platform !== 'linux' || process.env.WT_LANE_SANDBOX === 'off' } = {}) {
   if (process.platform === 'win32' || !constants.O_NOFOLLOW || !constants.O_NONBLOCK) {
     if (!unsandboxed) return null
     try { return readFileSync(file, encoding === null ? undefined : encoding) } catch { return null }

@@ -52,7 +52,7 @@ it('never uses a lane-writable default log or accepts an explicit one', () => {
   expect(parse([...args, '--log', log]).error).toMatch(/log.*worktree|worktree.*log/i)
 })
 
-it('refuses explicit logs and cleanup roots in operator writable binds', () => {
+it.skipIf(process.platform === 'win32')('refuses explicit logs and cleanup roots in operator writable binds (POSIX sandbox planner)', () => {
   const { dir, worktree } = fixture()
   const extra = join(dir, 'extra'); mkdirSync(extra)
   const args = ['--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', join(worktree, 'brief.md')]
@@ -102,6 +102,7 @@ it('allows an ordinary brief read on simulated unsandboxed Windows', () => {
   const original = Object.getOwnPropertyDescriptor(process, 'platform')!
   try {
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    expect(readWorktreeRegular(join(worktree, 'brief.md'), null, worktree)?.toString()).toBe('# brief\n')
     expect(readWorktreeRegular(join(worktree, 'brief.md'), null, worktree, { unsandboxed: true })?.toString()).toBe('# brief\n')
     expect(readLifecycleRegular(join(worktree, 'brief.md'), worktree)).toBe('# brief\n')
   } finally { Object.defineProperty(process, 'platform', original) }
@@ -111,7 +112,7 @@ it.skipIf(process.platform === 'win32')('refuses a host state root that is not a
   expect(() => laneHostStateRoot({ platform: 'win32', env: {}, home: '\\home\\someone', insideSandbox: false })).toThrow(/not an absolute path on this host/)
 })
 
-it('refuses an explicit log in another worktree’s protected host directory', () => {
+it.skipIf(process.platform === 'win32')('refuses an explicit log in another worktree’s protected host directory (POSIX sandbox planner)', () => {
   const { dir, worktree } = fixture()
   const other = join(dir, 'other-worktree')
   mkdirSync(other)

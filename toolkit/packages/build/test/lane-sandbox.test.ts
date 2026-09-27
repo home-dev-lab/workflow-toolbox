@@ -165,7 +165,7 @@ describe('lane sandbox plan — availability and pass-through', () => {
 })
 
 describe('lane sandbox plan — filesystem allow-list', () => {
-  it.skipIf(process.platform !== 'linux')('masks sockets under aliased directory sources and single-socket binds', async () => {
+  it.skipIf(!BWRAP_WORKS)('masks sockets under aliased directory sources and single-socket binds (requires usable root-owned bwrap)', async () => {
     const root = tempRoot('socket-alias'); const home = join(root, 'home'); const work = join(root, 'work'); const source = join(root, 'source'); const alias = join(root, 'alias'); const run = join(root, 'run')
     for (const dir of [home, work, source, run]) mkdirSync(dir)
     symlinkSync(source, alias)
@@ -196,7 +196,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(spawnSync('/usr/bin/bwrap', args, { timeout: 10_000 }).status).toBe(0)
     } finally { p.dispose() }
   })
-  it.skipIf(process.platform !== 'linux')('rejects a real global-config symlink into the worktree and never binds its {file:} key', () => {
+  it.skipIf(!BWRAP_WORKS)('rejects a real global-config symlink into the worktree and never binds its {file:} key (requires usable root-owned bwrap)', () => {
     const root = tempRoot('config-target'); const home = join(root, 'home'); const work = join(root, 'work'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
     for (const dir of [home, work, run, config]) mkdirSync(dir, { recursive: true })
@@ -214,7 +214,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(p.readable).not.toContain(key)
     } finally { p.dispose() }
   })
-  it.skipIf(process.platform !== 'linux')('refuses egress from config beneath an additional writable --dir on the real filesystem', () => {
+  it.skipIf(!BWRAP_WORKS)('refuses egress from config beneath an additional writable --dir on the real filesystem (requires usable root-owned bwrap)', () => {
     const root = tempRoot('config-extra'); const home = join(root, 'home'); const work = join(root, 'work'); const extra = join(root, 'extra'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
     for (const dir of [work, extra, run, config]) mkdirSync(dir, { recursive: true })
@@ -503,7 +503,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /, relative, ${HOME}`)
   })
 
-  it.skipIf(sandbox.insideChildUserNamespace() === true)('never binds the host-owned lane state root, an ancestor of it, or anything beneath it (override ignored in child user namespace)', () => {
+  it.skipIf(process.platform === 'win32' || sandbox.insideChildUserNamespace() === true)('never binds the host-owned lane state root, an ancestor of it, or anything beneath it (POSIX planner; override ignored in child user namespace)', () => {
     const stateRoot = '/state/wt-lane-host'
     const env = { HOME, PATH: '/usr/bin', WT_LANE_HOST_STATE: stateRoot }
     const extras = [`${stateRoot}/abc/supervision`, stateRoot, '/state', '/scratch']
@@ -568,7 +568,7 @@ describe('lane sandbox plan — read-only roles and working directory (H5)', () 
 })
 
 describe('lane sandbox plan — codex home (H3)', () => {
-  it.skipIf(process.platform !== 'linux')('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh', () => {
+  it.skipIf(!BWRAP_WORKS)('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh (requires usable root-owned bwrap)', () => {
     const root = tempRoot('auth-writeback')
     const home = join(root, 'home'); const work = join(root, 'work'); const binDir = join(root, 'bin'); const run = join(root, 'run')
     for (const dir of [home, work, binDir, run, join(home, '.codex')]) mkdirSync(dir)
