@@ -48,7 +48,7 @@ test('real adjacent trigger spec migrates unchanged real rule body, reverts and 
   await revertRule(root, name);
   assert.equal(await readFile(source, 'utf8'), body);
   const archive = await retireRule(root, `wt/${name}`, 'superseded');
-  assert.match(archive, /rules-archive\/\d{4}-\d\d-\d\d-wt\/wt-delegation-ladder-at-act\.md$/);
+  assert.match(archive.replaceAll('\\', '/'), /rules-archive\/\d{4}-\d\d-\d\d-wt\/wt-delegation-ladder-at-act\.md$/);
   assert.equal(await readFile(archive, 'utf8'), body);
   assert.match(await readFile(join(root, '.claude/rules-on-demand-ledger.jsonl'), 'utf8'), /"action":"retire".*"time":/);
   await assert.rejects(() => retireRule(root, `wt/${name}`, ''), /requires --reason/);

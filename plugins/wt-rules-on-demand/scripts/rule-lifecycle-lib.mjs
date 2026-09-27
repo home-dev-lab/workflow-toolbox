@@ -12,6 +12,16 @@ export const STATIC_DIR = join('.claude', 'rules');
 export const DEMAND_DIR = join('.claude', 'rules-on-demand');
 export const LEDGER = join('.claude', 'rules-on-demand-ledger.jsonl');
 
+// A rule identity is `<scope>:<rules dir>:<basename>`. The directory may itself hold a colon (a Windows drive), so the
+// scope ends at the FIRST colon and the basename starts after the LAST one.
+export function splitRuleIdentity(identity) {
+  const text = String(identity ?? '');
+  const first = text.indexOf(':');
+  const last = text.lastIndexOf(':');
+  if (first < 1 || last <= first + 1 || last === text.length - 1) return null;
+  return { scope: text.slice(0, first), dir: text.slice(first + 1, last), name: text.slice(last + 1) };
+}
+
 const ownRoot = realpathSync(fileURLToPath(new URL('..', import.meta.url)));
 export function qualityDataDir(configDir, env = process.env) {
   let owned = false;

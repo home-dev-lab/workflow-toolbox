@@ -5,7 +5,7 @@ import { normalize } from '../scripts/transcript-verdicts.mjs';
 import { qualityDataDir, readSpec } from '../scripts/rule-lifecycle-lib.mjs';
 import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { cleanEnv } from './clean-env.mjs';
@@ -75,9 +75,9 @@ test('all shipped adjacent trigger specs parse', async () => {
   }
 });
 test('foreign plugin data dir ignored, own plugin data dir honored', () => {
-  assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/fixture/other-plugin' }), '/fixture-config/plugins/data/wt-rules-on-demand/quality');
-  assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/fixture/wt-rules-on-demand_xyz' }), '/fixture-config/plugins/data/wt-rules-on-demand/quality');
-  assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/fixture/owned', CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) }), '/fixture/owned/quality');
+  assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/fixture/other-plugin' }), resolve('/fixture-config', 'plugins', 'data', 'wt-rules-on-demand', 'quality'));
+  assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/fixture/wt-rules-on-demand_xyz' }), resolve('/fixture-config', 'plugins', 'data', 'wt-rules-on-demand', 'quality'));
+  assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/fixture/owned', CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) }), resolve('/fixture/owned', 'quality'));
 });
 test('transcript normalization keeps isolation argument for input-regex parity', () => {
   const [use] = normalize({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Agent', input: { isolation: 'worktree' } }] } }, 1);
