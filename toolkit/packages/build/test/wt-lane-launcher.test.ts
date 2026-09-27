@@ -1,14 +1,26 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { delimiter, dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { claimCurrentSupervision, classifyLane, inspectProcess, sameIdentity, supervisionPaths, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs launcher exports its bounded capture helper for provider-fixture coverage.
 import { assertLaunchMemory, identifySignalCause, inspectStartedProcess, parse } from '../../../../plugin/bin/wt-lane.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+
+const HOST_FILES = new Set(['supervision', 'run.log', 'pid', 'env.log', 'brief-snapshots'])
+function join(...segments: string[]): string {
+  const laneIndex = segments.indexOf('.lane')
+  if (laneIndex >= 0 && HOST_FILES.has(segments[laneIndex + 1] ?? '')) {
+    const worktree = pathJoin(...segments.slice(0, laneIndex))
+    return pathJoin(laneHostDir(worktree), ...segments.slice(laneIndex + 1))
+  }
+  return pathJoin(...segments)
+}
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LAUNCHER = join(ROOT, 'plugin/bin/wt-lane.mjs')
@@ -46,7 +58,12 @@ afterEach(async () => {
   for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
   for (const group of spawnedGroups.splice(0)) try { process.kill(-group, 'SIGKILL') } catch {}
   await Promise.all(exits)
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  for (const root of roots.splice(0)) {
+    for (const candidate of [pathJoin(root, 'worktree'), root]) {
+      try { rmSync(laneHostDir(candidate), { recursive: true, force: true }) } catch {}
+    }
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  }
 })
 
 // The switched-off sandbox announces itself on stderr (never silent); these assertions are about everything else.
@@ -91,6 +108,28 @@ function waitForContent(file: string, pattern: RegExp, ms = 30_000) {
     spawnSync('sleep', ['0.05'])
   }
   throw new Error(`timed out waiting for ${pattern} in ${file}`)
+}
+function watchForContent(file: string, pattern: RegExp): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const signal = AbortSignal.timeout(30_000)
+    const matches = () => existsSync(file) && pattern.test(readFileSync(file, 'utf8'))
+    let settled = false
+    const watcher = watch(dirname(file), { signal }, () => {
+      try { if (matches()) finish() } catch (error) { finish(error) }
+    })
+    const finish = (error?: unknown) => {
+      if (settled) return
+      settled = true
+      watcher.close()
+      signal.removeEventListener('abort', onAbort)
+      if (error) reject(error)
+      else resolve()
+    }
+    const onAbort = () => finish(new Error(`timed out waiting for ${pattern} in ${file}`))
+    signal.addEventListener('abort', onAbort, { once: true })
+    watcher.on('error', finish)
+    try { if (matches()) finish() } catch (error) { finish(error) }
+  })
 }
 function stalledWaitWithEvidence(file: string, pattern: RegExp, evidence: { trace: string, status: string, journal: string, dir: string }, ms = 30_000, offset = 0) {
   try {
@@ -647,11 +686,12 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     const second = spawnSync(process.execPath, [LAUNCHER, '--dir', f.dir, '--model', 'openai/gpt-5.6-luna', '--brief', join(f.dir, 'brief.md'), '--allow-no-git'], { encoding: 'utf8', env: { ...f.env, NODE_OPTIONS: `--require=${preload}` } })
     expect(second.status, second.stderr).toBe(0)
     const secondState = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))
-    killIdentity(inspectProcess(secondState.workerPid), 'SIGTERM')
+    const secondWorker = inspectProcess(secondState.workerPid)
+    if (secondWorker) killIdentity(secondWorker, 'SIGTERM')
   })
   it('supersedes and journals an unknown record only after its recorded hard bound', () => {
     const f = fixture('sleep 0.2')
-    const dir = join(f.dir, '.lane', 'supervision'); mkdirSync(dir)
+    const dir = join(f.dir, '.lane', 'supervision'); mkdirSync(dir, { recursive: true })
     const stale = { runId: '2-1', state: 'running', workerPid: 2, childPid: 3, worktree: f.dir, timeoutAt: new Date(Date.now() - 10_000).toISOString(), timeoutSeconds: 1, decisionGraceSeconds: 1, maxExtensions: 0, extensionCount: 0, decisionTransitionBoundMs: 0 }
     writeFileSync(join(dir, '2-1.json'), JSON.stringify(stale)); writeFileSync(join(dir, 'current.json'), JSON.stringify({ runId: stale.runId }))
     const result = run(f)
@@ -661,7 +701,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   })
   it('refuses an unreadable current pointer as unknown', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
-    const dir = join(f.dir, '.lane', 'supervision'); mkdirSync(dir)
+    const dir = join(f.dir, '.lane', 'supervision'); mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'current.json'), '{')
     const result = run(f)
     expect(result.status).toBe(1)
@@ -700,6 +740,30 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect((text.match(/"source":"grace-default"/g) ?? [])).toHaveLength(2)
     expect(text).toContain('"decision":"extend"')
     expect(text).toContain('"decision":"abandon"')
+  })
+  it.each(['deleted', 'rewritten'])('keeps the in-memory grace bound when its host record is %s', async (change) => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const launched = run(f, ['--timeout', '0.2', '--decision-grace', '1', '--max-extensions', '0'])
+    expect(launched.status, launched.stderr).toBe(0)
+    const record = currentStateFile(f.dir)
+    await watchForContent(record, /decision-needed/)
+    if (change === 'deleted') rmSync(record)
+    else writeFileSync(record, JSON.stringify({ runId: 'forged', state: 'running' }))
+    await watchForContent(record, /abandoned/)
+    expect(JSON.parse(readFileSync(record, 'utf8'))).toMatchObject({ state: 'abandoned', decisionSource: 'grace-default', exit: 126 })
+  })
+  it('ignores a decision planted in worktree supervision after launch', async () => {
+    const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
+    const launched = run(f, ['--timeout', '1', '--decision-grace', '1', '--max-extensions', '0'])
+    expect(launched.status, launched.stderr).toBe(0)
+    const record = currentStateFile(f.dir)
+    await watchForContent(record, /decision-needed/)
+    const state = JSON.parse(readFileSync(record, 'utf8'))
+    const legacy = pathJoin(f.dir, '.lane', 'supervision')
+    mkdirSync(legacy, { recursive: true })
+    writeFileSync(pathJoin(legacy, `${state.runId}.decision.json`), JSON.stringify({ runId: state.runId, timeoutAt: state.timeoutAt, decision: 'extend', extendSeconds: 2000000 }))
+    await watchForContent(record, /abandoned/)
+    expect(JSON.parse(readFileSync(record, 'utf8'))).toMatchObject({ state: 'abandoned', extensionCount: 0, exit: 126 })
   })
   it('ends the child at its extension ceiling even when Linux process inspection is unavailable', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
@@ -763,11 +827,12 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     waitForContent(status, /decision-needed/)
     const control = spawnSync(process.execPath, [CONTROL, '--dir', f.dir, '--decision', 'abandon'], { encoding: 'utf8', env: f.env })
     expect(control.status, control.stderr).toBe(0)
+    waitForContent(status, /abandoned/)
     expect(JSON.parse(readFileSync(status, 'utf8'))).toMatchObject({ state: 'abandoned' })
   })
   it('does not treat an old EXIT marker as an orphan while the current launcher is alive', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
-    writeFileSync(join(f.dir, '.lane', 'run.log'), 'old run\nEXIT=0\n')
+    mkdirSync(laneHostDir(f.dir), { recursive: true }); writeFileSync(join(f.dir, '.lane', 'run.log'), 'old run\nEXIT=0\n')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
@@ -907,7 +972,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
       }
     }
     writeFileSync(marker, 'old'); ageTree(f.dir); utimesSync(f.dir, old, old)
-    expect(statSync(join(f.dir, '.lane', 'run.log')).mtimeMs).toBeLessThanOrEqual(old.getTime())
+    expect(statSync(marker).mtimeMs).toBeLessThanOrEqual(old.getTime())
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     const sweepLog = join(f.root, 'sweeps.log')
     const trace = join(f.root, 'watch-trace.jsonl')
@@ -924,7 +989,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     killIdentity(watcherIdentity, 'SIGSTOP')
     try {
       ageTree(f.dir); utimesSync(f.dir, old, old)
-      expect(statSync(join(f.dir, '.lane', 'run.log')).mtimeMs).toBeLessThanOrEqual(old.getTime())
+      expect(statSync(marker).mtimeMs).toBeLessThanOrEqual(old.getTime())
     } finally {
       killIdentity(watcherIdentity, 'SIGCONT')
     }
@@ -1145,16 +1210,18 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(watcher.status, watcher.stderr).toBe(0)
     expect(watcher.stdout).not.toContain(`unattributed opencode pid=${child.pid}`)
   })
-  it.skipIf(process.platform !== 'linux')('reads supervision records from staging lanes when attributing opencode processes [requires Linux /proc orphan enumeration]', () => {
+  it.skipIf(process.platform !== 'linux')('ignores forged supervision records in staging lanes when attributing opencode processes [requires Linux /proc orphan enumeration]', () => {
     const f = fixture('true', true)
-    const supervision = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890', '.lane', 'supervision')
-    mkdirSync(supervision, { recursive: true }); writeFileSync(join(supervision, '..', 'brief.md'), '# brief\n')
+    const staging = join(f.dir, '.claude', 'worktrees', 'wirprobe-1234567890')
+    mkdirSync(join(staging, '.lane'), { recursive: true }); writeFileSync(join(staging, '.lane', 'brief.md'), '# brief\n')
+    const supervision = join(staging, '.lane', 'supervision')
+    mkdirSync(supervision, { recursive: true })
     const child = spawnChild(process.execPath, ['-e', 'setTimeout(() => {}, 30000)', 'opencode', 'run'], { cwd: f.dir, stdio: 'ignore' })
     writeFileSync(join(supervision, '1-1.json'), JSON.stringify({ runId: '1-1', state: 'launch-failed', childPid: child.pid }))
     spawnSync('sleep', ['0.1'])
     const watcher = spawnSync(process.execPath, [WATCHER, '--project', f.dir, '--once'], { encoding: 'utf8', env: f.env })
     expect(watcher.status, watcher.stderr).toBe(0)
-    expect(watcher.stdout).not.toContain(`unattributed opencode pid=${child.pid}`)
+    expect(watcher.stdout).toContain(`WARNING: unattributed opencode pid=${child.pid}`)
   })
   it.skipIf(process.platform !== 'linux').each([
     ['separate', (staging: string) => ['opencode', 'run', '--dir', staging]],
@@ -1266,7 +1333,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(control.status, control.stderr).toBe(0)
     const state = JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8'))
     if (decision === 'extend') killIdentity({ pid: state.workerPid, argv: state.workerArgv }, 'SIGTERM')
-    else expect(state.state).toBe('abandoned')
+    else { waitForContent(status, /abandoned/); expect(JSON.parse(readFileSync(status, 'utf8')).state).toBe('abandoned') }
   }, 60_000)
   it('single-quotes printed commands for spaces, apostrophes, and command substitutions', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
@@ -1324,22 +1391,19 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     while (Date.now() < until) { try { process.kill(opencodePid, 0) } catch { alive = false; break } spawnSync('sleep', ['0.05']) }
     expect(alive).toBe(false)
   })
-  it('an external SIGTERM after the lane wrote its own EXIT line does not append a second one (a lifecycle group kill used to turn EXIT=0 into EXIT=143)', () => {
+  it('ignores a lane-written EXIT=0 line and appends the host worker verdict after SIGTERM', async () => {
     const f = fixture('printf "lane done\\nEXIT=0\\n" >> "$PWD/.lane/run.log"; echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1])
     const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
     const log = join(f.dir, '.lane', 'run.log')
-    waitForContent(log, /^EXIT=0$/m, 4000)
+    await watchForContent(pathJoin(f.dir, '.lane', 'run.log'), /^EXIT=0$/m)
     process.kill(worker, 'SIGTERM')
     const until = Date.now() + 4000
     while (Date.now() < until) { try { process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0); spawnSync('sleep', ['0.05']) } catch { break } }
     const lines = readFileSync(log, 'utf8').trimEnd().split(/\r?\n/)
-    const exitIndex = lines.findIndex((line) => line === 'EXIT=0')
-    expect(exitIndex).toBeGreaterThanOrEqual(0)
-    expect(lines.filter((line) => /^EXIT=/.test(line))).toEqual(['EXIT=0'])
-    expect(lines.slice(exitIndex + 1).some((line) => /\bstage=/.test(line))).toBe(false)
-    expect(lines.at(-1)).toBe('EXIT=0')
+    expect(lines.at(-1)).toBe('EXIT=143')
+    expect(readFileSync(pathJoin(f.dir, '.lane', 'run.log'), 'utf8')).toContain('EXIT=0')
   })
   it('runs a known variant silently', () => {
     const f = fixture('printf "%s\\n" "$@" > "$PWD/argv"; printf "# Report\\n" > "$PWD/.lane/report.md"')
@@ -1368,7 +1432,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     waitFor(log)
     expect(readFileSync(join(f.dir, 'argv'), 'utf8')).toMatch(/--variant\nfuture-effort\n/)
     expect(readFileSync(log, 'utf8')).toContain('variant=future-effort origin=override forced=true')
-    expect(readFileSync(join(f.dir, '.lane', 'report.md'), 'utf8')).toContain('variant=future-effort origin=override forced=true')
+    expect(existsSync(join(f.dir, '.lane', 'report.md')) ? readFileSync(join(f.dir, '.lane', 'report.md'), 'utf8') : '').not.toContain('variant=future-effort')
   })
   it('refuses a malformed variant', () => {
     const malformed = run(fixture('true'), ['--variant', 'hi gh'])
@@ -1385,7 +1449,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(readFileSync(join(f.dir, 'claude-skills-fence'), 'utf8')).toBe('true\n')
     expect(readFileSync(join(f.dir, 'provider-keys'), 'utf8')).toBe('selected-key|unset|unset|unset\n')
     const argv = readFileSync(join(f.dir, 'argv'), 'utf8').split('\n')
-    expect(argv[1]).toMatch(/^Read and execute the complete brief at .+[/\\]\.lane[/\\]brief-snapshots[/\\]\d+-\d+\.md\.$/)
+    expect(argv[1]).toMatch(/^Read and execute the complete brief at .+[/\\]wt-lane-brief-[^/\\]+[/\\]brief\.md\.$/)
     expect(argv).toEqual([
       'run',
       argv[1],

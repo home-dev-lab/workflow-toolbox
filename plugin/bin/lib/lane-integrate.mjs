@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { assertArchiveOutsideWorktree, readWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
 import { hardenedGitArgs } from './host/hardened-git.mjs'
+import { laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
 import { readSuiteLock } from './suite-lock.mjs'
 
 const STEP_NAMES = ['preflight', 'commit', 'merge', 'archive', 'pre-remove-check', 'remove', 'ci-branch', 'push', 'dispatch']
@@ -253,8 +254,10 @@ function entries(root, relative = '') {
   }).sort()
 }
 
-function fileDigest(file) {
-  return createHash('sha256').update(fs.readFileSync(file)).digest('hex')
+function fileDigest(file, protectedSource = false) {
+  const bytes = protectedSource ? readWorktreeRegular(file, null) : fs.readFileSync(file)
+  if (bytes === null) throw new Error(`archive refuses unprotected input: ${file}`)
+  return createHash('sha256').update(bytes).digest('hex')
 }
 
 function verifyArchive(source, destination) {
@@ -272,9 +275,25 @@ function verifyArchive(source, destination) {
     const sourceStat = fs.lstatSync(from); const destinationStat = fs.lstatSync(to)
     if (sourceStat.isSymbolicLink()) {
       if (!destinationStat.isSymbolicLink() || fs.readlinkSync(from) !== fs.readlinkSync(to)) throw new Error(`archive verification failed: symlink differs for ${relative}`)
-    } else if (!sourceStat.isFile() || !destinationStat.isFile() || fileDigest(from) !== fileDigest(to)) throw new Error(`archive verification failed: bytes differ for ${relative}`)
+    } else if (!sourceStat.isFile() || !destinationStat.isFile() || fileDigest(from, source.includes(`${path.sep}.lane`)) !== fileDigest(to)) throw new Error(`archive verification failed: bytes differ for ${relative}`)
   }
   return sourceEntries.length
+}
+
+function copyLaneTree(source, destination) {
+  if (!fs.lstatSync(source).isDirectory()) throw new Error(`archive refuses non-directory lane: ${source}`)
+  fs.mkdirSync(destination, { recursive: true })
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    const from = path.join(source, entry.name)
+    const to = path.join(destination, entry.name)
+    if (entry.isDirectory()) copyLaneTree(from, to)
+    else if (entry.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(from), to)
+    else if (entry.isFile()) {
+      const bytes = readWorktreeRegular(from, null)
+      if (bytes === null) throw new Error(`archive refuses unprotected input: ${from}`)
+      fs.writeFileSync(to, bytes, { flag: 'wx', mode: fs.lstatSync(from).mode & 0o777 })
+    } else throw new Error(`archive refuses non-file input: ${from}`)
+  }
 }
 
 function archiveLane(options, copy) {
@@ -282,6 +301,13 @@ function archiveLane(options, copy) {
   fs.mkdirSync(path.dirname(options.archiveDestination), { recursive: true })
   copy(options.reportPath ? path.dirname(options.reportPath) : path.join(options.dir, '.lane'), options.archiveDestination)
   verifyArchive(path.join(options.dir, '.lane'), options.archiveDestination)
+  const hostState = laneHostDir(options.dir)
+  if (fs.existsSync(hostState)) {
+    const destination = `${options.archiveDestination}.host-state`
+    if (fs.existsSync(destination)) throw new Error(`archive destination already exists: ${destination}`)
+    copy(hostState, destination)
+    verifyArchive(hostState, destination)
+  }
 }
 
 function removeLane(options, runner) {
@@ -382,7 +408,9 @@ function dispatchWorkflow(options, runner, stdout, wait) {
 export async function integrateLane(input) {
   const options = { remote: 'public', wait: false, dryRun: false, keepWorktree: false, force: false, ...input }
   const runner = options.runner ?? defaultRunner
-  const copy = options.copy ?? ((source, destination) => fs.cpSync(source, destination, { recursive: true, dereference: false, errorOnExist: true, force: false, preserveTimestamps: true }))
+  const copy = options.copy ?? ((source, destination) => source === laneHostDir(options.dir)
+    ? fs.cpSync(source, destination, { recursive: true, dereference: false, errorOnExist: true, force: false, preserveTimestamps: true })
+    : copyLaneTree(source, destination))
   const stdout = options.stdout ?? ((line) => process.stdout.write(`${line}\n`))
   const stderr = options.stderr ?? ((line) => process.stderr.write(`wt-lane integrate: ${line}\n`))
   const wait = options.sleep ?? sleep

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { lookup } from 'node:dns'
-import { closeSync, constants, fstatSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync, rmSync, statSync, writeSync } from 'node:fs'
 import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
 
@@ -266,20 +266,28 @@ export function createEgressProxy({ allow, log = () => {}, resolve = lookup, con
  */
 export function egressLogWriter(file, { limit = EGRESS_LOG_LIMIT_BYTES, now = () => new Date() } = {}) {
   let capped = false
-  return (record) => {
-    if (!file || capped || !constants.O_NOFOLLOW) return
-    let fd
+  let fd
+  if (file && constants.O_NOFOLLOW) {
     try {
-      fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+      fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW, 0o600)
+      if (realpathSync.native(file) !== file) throw new Error('log path is not canonical')
+      const opened = fstatSync(fd); const named = statSync(file)
+      if (!opened.isFile() || opened.dev !== named.dev || opened.ino !== named.ino) throw new Error('log inode changed')
+    } catch {
+      if (fd !== undefined) closeSync(fd)
+      fd = undefined
+    }
+  }
+  return (record) => {
+    if (fd === undefined || capped) return
+    try {
       const line = `${JSON.stringify({ at: now().toISOString(), ...record, host: loggableHost(record.host) })}\n`
       if (fstatSync(fd).size + line.length > limit) {
         capped = true
         const reason = `egress log reached ${limit} bytes; later requests are not logged`
         writeSync(fd, `${JSON.stringify({ at: now().toISOString(), decision: 'log-capped', reason })}\n`)
       } else writeSync(fd, line)
-    } catch { /* the log is diagnostic only: a refused open (symlink, permissions) writes nothing */ } finally {
-      if (fd !== undefined) closeSync(fd)
-    }
+    } catch { /* the log is diagnostic only */ }
   }
 }
 

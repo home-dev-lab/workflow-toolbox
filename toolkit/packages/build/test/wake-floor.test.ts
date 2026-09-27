@@ -7,17 +7,21 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { inspectProcess } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const FLOOR = join(REPO_ROOT, 'plugin/bin/wt-wake-floor.mjs')
 const MONITORS_JSON = join(REPO_ROOT, 'plugin/monitors/monitors.json')
 const roots: string[] = []
+const hostDirs: string[] = []
 const children: ChildProcessWithoutNullStreams[] = []
 const FLOOR_LINE = 'FLOOR: 0.001 minutes elapsed on my interval. I measure only that — not whether you are idle, and not whether work remains. Check the queue yourself.'
 
 afterEach(() => {
   for (const child of children.splice(0)) child.kill()
+  for (const dir of hostDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -73,7 +77,9 @@ function writeLaneRecord(worktree: string, overrides: Record<string, unknown> = 
   const worker = sleeper()
   const child = sleeper()
   const runId = `${Date.now()}-${process.pid}`
-  const dir = join(worktree, '.lane', 'supervision')
+  const hostDir = laneHostDir(worktree)
+  hostDirs.push(hostDir)
+  const dir = join(hostDir, 'supervision')
   mkdirSync(dir, { recursive: true })
   const value = {
     version: 1,

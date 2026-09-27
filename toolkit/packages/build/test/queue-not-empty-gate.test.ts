@@ -9,6 +9,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // @ts-expect-error TS7016 -- lane-live-scan.mjs is a shipped plain-JS plugin script.
 import { registeredWorktrees, scanLiveLaneProcesses } from '../../../../plugin/bin/lib/lane-live-scan.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+// @ts-expect-error ESM runtime module
+import { inspectProcess } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = process.env.WT_QUEUE_GATE_HOOK || join(REPO_ROOT, 'plugin/bin/wt-queue-not-empty-gate-hook.mjs')
@@ -17,8 +21,20 @@ const LANE_LIVE_SCAN = join(REPO_ROOT, 'plugin/bin/lib/lane-live-scan.mjs')
 const roots: string[] = []
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'project')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) }
 })
+
+function liveHostRecord(worktree: string, name: string) {
+  const host = laneHostDir(worktree)
+  const supervision = join(host, 'supervision')
+  mkdirSync(supervision, { recursive: true })
+  const identity = inspectProcess(process.pid)
+  const runId = '1-1'
+  const log = join(host, name)
+  writeFileSync(log, 'working\n')
+  writeFileSync(join(supervision, 'current.json'), JSON.stringify({ runId }))
+  writeFileSync(join(supervision, `${runId}.json`), JSON.stringify({ runId, state: 'running', workerPid: process.pid, workerArgv: identity.argv, workerStartTime: identity.startTime, childPid: process.pid, childArgv: identity.argv, childStartTime: identity.startTime, log }))
+}
 
 function mkRoot(tag: string): string {
   const root = mkdtempSync(join(tmpdir(), `wt-queue-gate-${tag}-`))
@@ -443,8 +459,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
   it('stays silent for a fresh non-terminal lane run log', () => {
     const { env, payload, stateDir, cwd } = scaffold('active-lane-log')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
-    mkdirSync(join(cwd, '.lane'), { recursive: true })
-    writeFileSync(join(cwd, '.lane', 'run.log'), 'working\n', 'utf8')
+    liveHostRecord(cwd, 'run.log')
 
     const r = runHook(payload, env)
     expect(r.code).toBe(0)
@@ -474,8 +489,7 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
   it('stays silent for a fresh non-terminal launcher-owned nonce log', () => {
     const { env, payload, stateDir, cwd } = scaffold('active-named-lane-log')
     writeSnapshot(stateDir, cwd, { open: 4, at: Date.now(), next: 'CARD-4 lane-owned item' })
-    mkdirSync(join(cwd, '.lane'), { recursive: true })
-    writeFileSync(join(cwd, '.lane', 'critic-run.abc123.log'), 'working\n', 'utf8')
+    liveHostRecord(cwd, 'critic-run.abc123.log')
 
     expect(blockText(runHook(payload, env))).toBe('')
   })
@@ -489,10 +503,10 @@ describe('wt-queue-not-empty-gate-hook: emission shape', () => {
     expect(blockText(runHook(payload, env))).toContain('open work remains')
   })
 
-  it('reads only a bounded tail when checking launcher-owned logs', () => {
+  it('checks verified host records instead of trusting a lane log terminal line', () => {
     const source = readFileSync(LANE_LIVE_SCAN, 'utf8')
-    expect(source).toContain('export const LANE_LOG_TAIL_BYTES = 4096')
-    expect(source).toContain('readSync(')
+    expect(source).toContain('readCurrentSupervisions(worktree)')
+    expect(source).toContain('classifyLane(record)')
   })
 
   it.each(['wt-pilot-runner.mjs', 'wt-lane.mjs'])('stays silent for a detached %s process scoped to this project', (script) => {

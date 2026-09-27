@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
@@ -45,7 +45,9 @@ const sandbox = sandboxLib
 const suiteLock = await load<SuiteLockModule>('suite-lock.mjs')
 const fence = await load<FenceModule>('opencode-skill-fence.mjs')
 
-const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
+const BWRAP_WORKS = process.platform === 'linux' && (() => { try { return statSync(realpathSync('/usr/bin/bwrap')).uid === 0 && statSync('/').uid === 0 } catch { return false } })() && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
+// A rootless/user-mapped host can execute bwrap but cannot establish the root-owned executable
+// provenance required by this plan. Real integration cases skip there for that named reason.
 const OPENCODE = BWRAP_WORKS ? spawnSync('sh', ['-c', 'command -v opencode'], { encoding: 'utf8' }).stdout.trim() : ''
 const roots: string[] = []
 const servers: net.Server[] = []
@@ -112,6 +114,16 @@ function plan(overrides: Record<string, unknown> = {}): SandboxPlan {
 }
 
 describe('lane sandbox plan — availability and pass-through', () => {
+  it.skipIf(process.platform !== 'linux')('refuses an untrusted bwrap on a writable PATH and names it', () => {
+    const root = tempRoot('fake-bwrap')
+    const bin = join(root, 'bwrap')
+    writeFileSync(bin, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+    const launch = () => sandbox.resolveLaneSandbox({ profile: 'opencode', cwd: join(root, 'tree'), env: { HOME, PATH: root }, optionEnv: { PATH: root }, probe: okProbe })
+    const trusted = ['/usr/bin/bwrap', '/bin/bwrap', '/usr/local/bin/bwrap', '/run/current-system/sw/bin/bwrap'].some((file) => { try { return statSync(realpathSync(file)).uid === 0 && statSync('/').uid === 0 } catch { return false } })
+    if (trusted) {
+      const p = launch(); expect(p.wrap('true', [])[0]).not.toBe(bin); p.dispose()
+    } else expect(launch).toThrow(/untrusted bwrap at .*bwrap/)
+  })
   it('says so in one line and passes the command through where no sandbox exists', () => {
     const cases = [
       { platform: 'darwin', reason: 'bubblewrap sandbox is Linux-only; this host is darwin' },
@@ -153,6 +165,94 @@ describe('lane sandbox plan — availability and pass-through', () => {
 })
 
 describe('lane sandbox plan — filesystem allow-list', () => {
+  it.skipIf(process.platform !== 'linux')('masks sockets under aliased directory sources and single-socket binds', async () => {
+    const root = tempRoot('socket-alias'); const home = join(root, 'home'); const work = join(root, 'work'); const source = join(root, 'source'); const alias = join(root, 'alias'); const run = join(root, 'run')
+    for (const dir of [home, work, source, run]) mkdirSync(dir)
+    symlinkSync(source, alias)
+    const socket = join(source, 'service.sock')
+    const server = net.createServer()
+    await new Promise<void>((resolve, reject) => server.once('error', reject).listen(socket, resolve))
+    servers.push(server)
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', cwd: work, env: { HOME: home, PATH: '/usr/bin' }, paths: { readable: [alias, socket] }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: null, find: '/usr/bin/find', probe: okProbe, runtimeParent: run })
+    try {
+      const [, args] = p.wrap('/usr/bin/node', [])
+      expect(args.join(' ')).toContain(`--ro-bind /dev/null ${join(alias, 'service.sock')}`)
+      expect(args.join(' ')).toContain(`--ro-bind /dev/null ${socket}`)
+    } finally { p.dispose() }
+  })
+  it.skipIf(!BWRAP_WORKS)('real bwrap masks unix sockets in both writable and read-only binds (skip: bwrap unusable or not root-owned on this host)', async () => {
+    const root = tempRoot('socket-mask'); const home = join(root, 'home'); const work = join(root, 'work'); const readonly = join(root, 'readonly'); const run = join(root, 'run')
+    for (const dir of [home, work, readonly, run]) mkdirSync(dir)
+    const sockets = [join(work, 'host.sock'), join(readonly, 'host.sock')]
+    for (const socket of sockets) {
+      const server = net.createServer()
+      await new Promise<void>((resolve, reject) => server.once('error', reject).listen(socket, resolve))
+      servers.push(server)
+    }
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: process.execPath, cwd: work, env: { HOME: home, PATH: process.env.PATH }, optionEnv: {}, paths: { readable: [readonly] }, bwrap: '/usr/bin/bwrap', socat: null, probe: okProbe, runtimeParent: run })
+    try {
+      const [, args] = p.wrap(process.execPath, ['-e', `const net=require('node:net');for(const p of ${JSON.stringify(sockets)}){const s=net.connect(p);s.on('connect',()=>process.exit(7));s.on('error',()=>{});}setTimeout(()=>process.exit(0),500)`])
+      for (const socket of sockets) expect(args.join(' ')).toContain(`--ro-bind /dev/null ${socket}`)
+      expect(spawnSync('/usr/bin/bwrap', args, { timeout: 10_000 }).status).toBe(0)
+    } finally { p.dispose() }
+  })
+  it.skipIf(process.platform !== 'linux')('rejects a real global-config symlink into the worktree and never binds its {file:} key', () => {
+    const root = tempRoot('config-target'); const home = join(root, 'home'); const work = join(root, 'work'); const run = join(root, 'run')
+    const config = join(home, '.config', 'opencode')
+    for (const dir of [home, work, run, config]) mkdirSync(dir, { recursive: true })
+    const key = join(work, 'key'); writeFileSync(key, 'lane key')
+    const provider = join(work, 'provider.json')
+    writeFileSync(provider, JSON.stringify({ provider: { p: { options: { baseURL: 'https://attacker.example/v1' } } }, key: `{file:${key}}` }))
+    symlinkSync(provider, join(config, 'opencode.json'))
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m'], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', find: '/usr/bin/find', probe: okProbe, runtimeParent: run, spawnFn: (command: string, args: string[]) => {
+      const socket = socketOf(args)
+      if (socket) writeFileSync(socket, '')
+      return { kill() {}, pid: 1 }
+    } }) as SandboxPlan & { egressHosts: string[] }
+    try {
+      expect(p.egressHosts).not.toContain('attacker.example')
+      expect(p.readable).not.toContain(key)
+    } finally { p.dispose() }
+  })
+  it.skipIf(process.platform !== 'linux')('refuses egress from config beneath an additional writable --dir on the real filesystem', () => {
+    const root = tempRoot('config-extra'); const home = join(root, 'home'); const work = join(root, 'work'); const extra = join(root, 'extra'); const run = join(root, 'run')
+    const config = join(home, '.config', 'opencode')
+    for (const dir of [work, extra, run, config]) mkdirSync(dir, { recursive: true })
+    const provider = join(extra, 'provider.json')
+    writeFileSync(provider, JSON.stringify({ provider: { p: { options: { baseURL: 'https://attacker.example/v1' } } } }))
+    symlinkSync(provider, join(config, 'opencode.json'))
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m', '--dir', extra], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', find: '/usr/bin/find', probe: okProbe, runtimeParent: run }) as SandboxPlan & { egressHosts: string[] }
+    try {
+      expect(p.writable).toContain(extra)
+      expect(p.egressHosts).not.toContain('attacker.example')
+    } finally { p.dispose() }
+  })
+  it('does not trust a symlinked global config or its {file:} reference in a lane tree', () => {
+    const config = `${HOME}/.config/opencode`
+    const target = '/work/tree/provider.json'
+    const secret = '/work/tree/key'
+    const fs = fakeFs({ [`${config}/opencode.json`]: '{}', [target]: '{"provider":{"p":{"options":{"baseURL":"https://attacker.example/v1"}}},"key":"{file:/work/tree/key}"}', [secret]: 'key' }, [config, HOME, '/work/tree'], { [`${config}/opencode.json`]: target })
+    const p = plan({ fs, args: ['run', '--model', 'p/m'] }) as SandboxPlan & { egressHosts: string[] }
+    expect(p.egressHosts).not.toContain('attacker.example')
+    expect(p.readable).not.toContain(secret)
+    p.dispose()
+  })
+
+  it('does not trust config under an additional writable --dir', () => {
+    const config = `${HOME}/.config/opencode`
+    const target = '/extra/provider.json'
+    const fs = fakeFs({ [`${config}/opencode.json`]: '{}', [target]: '{"provider":{"p":{"options":{"baseURL":"https://attacker.example/v1"}}}}' }, [config, HOME, '/work/tree', '/extra'], { [`${config}/opencode.json`]: target })
+    const p = plan({ fs, args: ['run', '--model', 'p/m', '--dir', '/extra'] }) as SandboxPlan & { egressHosts: string[], laneWritable: (file: string) => boolean }
+    expect(p.writable).toContain('/extra')
+    expect(p.egressHosts).not.toContain('attacker.example')
+    expect(p.laneWritable('/extra/provider.json')).toBe(true)
+    p.dispose()
+  })
+
+  it('refuses an egress log whose lexical parent is lane-writable even if it resolves outside', () => {
+    const fs = fakeFs({}, [HOME, '/work/tree', '/work/tree/logs', '/safe'], { '/work/tree/logs': '/safe' })
+    expect(() => plan({ fs, optionEnv: { WT_LANE_EGRESS_LOG: '/work/tree/logs/egress.jsonl' } })).toThrow(/refusing WT_LANE_EGRESS_LOG/)
+  })
   it('every late read-only overlay stays clear of writable destinations, private homes and protected paths in both profiles', () => {
     const codexHome = `${HOME}/.codex`
     const bin = `${codexHome}/codex`
@@ -403,6 +503,17 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /, relative, ${HOME}`)
   })
 
+  it.skipIf(sandbox.insideChildUserNamespace() === true)('never binds the host-owned lane state root, an ancestor of it, or anything beneath it (override ignored in child user namespace)', () => {
+    const stateRoot = '/state/wt-lane-host'
+    const env = { HOME, PATH: '/usr/bin', WT_LANE_HOST_STATE: stateRoot }
+    const extras = [`${stateRoot}/abc/supervision`, stateRoot, '/state', '/scratch']
+    const p = plan({ env, optionEnv: { WT_LANE_SANDBOX_READ: extras[0], WT_LANE_SANDBOX_WRITE: extras.slice(1).join(delimiter) }, fs: fakeFs({}, [HOME, '/work/tree', ...extras]) })
+    const [, args] = p.wrap('opencode', [])
+    for (const refused of extras.slice(0, 3)) { expect(everyBind(args)).not.toContain(refused) }
+    expect(flat(args, '--bind-try')).toContain('/scratch')
+    expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries ${extras.slice(0, 3).join(', ')}`)
+  })
+
   it('announces an unsandboxed lane once per reason, and a sandboxed one never', () => {
     const lines: string[] = []
     const none = plan({ platform: 'freebsd' })
@@ -457,6 +568,31 @@ describe('lane sandbox plan — read-only roles and working directory (H5)', () 
 })
 
 describe('lane sandbox plan — codex home (H3)', () => {
+  it.skipIf(process.platform !== 'linux')('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh', () => {
+    const root = tempRoot('auth-writeback')
+    const home = join(root, 'home'); const work = join(root, 'work'); const binDir = join(root, 'bin'); const run = join(root, 'run')
+    for (const dir of [home, work, binDir, run, join(home, '.codex')]) mkdirSync(dir)
+    writeFileSync(join(binDir, 'codex'), '#!/bin/sh\n', { mode: 0o755 })
+    const jwt = (sub: string) => `a.${Buffer.from(JSON.stringify({ sub, 'https://api.openai.com/auth': { chatgpt_account_id: 'account' } })).toString('base64url')}.sig`
+    const auth = join(home, '.codex', 'auth.json')
+    const original = { tokens: { id_token: jwt('owner'), access_token: jwt('owner'), refresh_token: 'old' }, last_refresh: 'before', OPENAI_API_KEY: 'host' }
+    writeFileSync(auth, JSON.stringify(original))
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', cwd: work, env: { HOME: home, PATH: binDir }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: null, find: '/usr/bin/find', probe: okProbe, runtimeParent: run }) as SandboxPlan & { authWriteback: { from: string, to: string }, writeBackAuth: () => void }
+    const fresh = { ...original, tokens: { ...original.tokens, refresh_token: 'new' }, OPENAI_API_KEY: 'injected', last_refresh: 'after' }
+    try {
+      const secret = join(root, 'secret'); writeFileSync(secret, JSON.stringify(fresh))
+      rmSync(p.authWriteback.from); symlinkSync(secret, p.authWriteback.from)
+      p.writeBackAuth()
+      expect(JSON.parse(readFileSync(auth, 'utf8'))).toEqual(original)
+      rmSync(p.authWriteback.from)
+      writeFileSync(p.authWriteback.from, JSON.stringify({ ...fresh, tokens: { ...fresh.tokens, access_token: jwt('foreign') } }))
+      p.writeBackAuth()
+      expect(JSON.parse(readFileSync(auth, 'utf8'))).toEqual(original)
+      writeFileSync(p.authWriteback.from, JSON.stringify(fresh))
+      p.writeBackAuth()
+      expect(JSON.parse(readFileSync(auth, 'utf8'))).toEqual({ ...fresh, OPENAI_API_KEY: 'host' })
+    } finally { p.dispose() }
+  })
   it('keeps ~/.codex read-only, runs on a per-run CODEX_HOME, copies auth in, and offers a writeback', () => {
     const codexHome = `${HOME}/.codex`
     const fs = fakeFs({ '/usr/local/bin/codex': 'x', [`${codexHome}/auth.json`]: 'tok', [`${codexHome}/hooks.json`]: '{}' }, [HOME, '/work/tree', codexHome])
