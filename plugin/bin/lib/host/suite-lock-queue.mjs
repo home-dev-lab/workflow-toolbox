@@ -1,4 +1,5 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 
 // The file layer of the suite lock's FIFO queue (policy: ../suite-lock.mjs). Two files per ticket,
@@ -89,4 +90,41 @@ export function removeDirectoryOlderThan(directory, ageMs) {
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error
   }
+}
+
+// Reclaiming the lock directory without deleting a NEWER instance: the reclaimer renames lock.d aside
+// (atomic; nobody can acquire into a renamed directory), reads the holder that actually moved, and
+// deletes it only if it is the instance it judged stale. Otherwise the directory is put back.
+
+/** Renames `lockDir` to a unique sibling; returns that path, or null when lock.d is already gone. */
+export function setLockAside(lockDir) {
+  const aside = `${lockDir}.reclaimed-${process.pid}-${randomUUID()}`
+  try {
+    renameSync(lockDir, aside)
+    return aside
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null
+    throw error
+  }
+}
+
+/** The holder recorded in a lock directory, or null when missing or unreadable. */
+export function readHolderIn(lockDir) {
+  try { return JSON.parse(readFileSync(path.join(lockDir, 'holder.json'), 'utf8')) } catch { return null }
+}
+
+/** Puts a lock directory moved aside back as `lockDir`; false (and the aside copy removed) when lock.d was re-created meanwhile. */
+export function putLockBack(aside, lockDir) {
+  try {
+    renameSync(aside, lockDir)
+    return true
+  } catch (error) {
+    if (!['EEXIST', 'ENOTEMPTY', 'EPERM', 'EACCES'].includes(error?.code)) throw error
+    rmSync(aside, { recursive: true, force: true })
+    return false
+  }
+}
+
+export function discardDirectory(directory) {
+  rmSync(directory, { recursive: true, force: true })
 }

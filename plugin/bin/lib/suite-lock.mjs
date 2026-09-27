@@ -4,7 +4,7 @@ import path from 'node:path'
 import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
-import { heartbeatTicket, queuedTickets, readTicket, removeDirectoryOlderThan, removeTicket, takeTicket } from './host/suite-lock-queue.mjs'
+import { discardDirectory, heartbeatTicket, putLockBack, queuedTickets, readHolderIn, readTicket, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
@@ -54,8 +54,7 @@ function foreignNamespaceStale(lock, options, reclaimMs) {
   const foreign = namespace !== null && holderNamespace !== null && holderNamespace !== namespace
   if (!foreign && !(iAmSandboxed && holderNamespace === null)) return null
   if (iAmSandboxed) {
-    // Inside a sandbox the host holder is invisible: it can only be reclaimed once genuinely stuck,
-    // within the SAME window the caller is willing to wait (no 45-min/3-hour mismatch).
+    // Inside a sandbox the host holder is invisible: it can only be reclaimed at the hard bound.
     return lock.ageMs !== null && lock.ageMs >= reclaimMs
   }
   // On the host, the holder's namespace is visible and empties when its sandbox ends. Reclaim only
@@ -75,14 +74,19 @@ function pidProvesGone(holder, options) {
   return start !== null && start !== holder.startTime
 }
 
+// A lock.d with no valid holder.json was left by an acquirer that died between `mkdir` and publishing
+// its holder (a live one publishes within milliseconds): reclaimable once this old.
+const HALF_CREATED_LOCK_MS = 60_000
+
+// Stale = positive proof the holder is gone, or, where its PID proves nothing (a host holder seen from
+// inside a sandbox, a signalable PID on Windows), the hard bound --stale-s (3 h by default). Never the
+// waiter's own --wait-s: a short-wait waiter reclaiming a live holder ran two suites at once.
 function holderIsStale(lock, options = {}) {
-  if (!lock.held || !Number.isSafeInteger(lock.holder?.pid) || lock.holder.pid <= 0) return false
+  if (!lock.held) return false
+  if (!Number.isSafeInteger(lock.holder?.pid) || lock.holder.pid <= 0) return lock.ageMs !== null && lock.ageMs >= HALF_CREATED_LOCK_MS
   const platform = platformOf(options)
   const staleMs = positiveSeconds(options.staleS ?? DEFAULT_SUITE_LOCK_STALE_S, '--stale-s') * 1000
-  const waitMs = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s') * 1000
-  // A sandboxed reader that cannot see the host holder reclaims within its own wait window, not
-  // after a longer bound it would never reach.
-  const foreign = foreignNamespaceStale(lock, options, Math.min(staleMs, waitMs))
+  const foreign = foreignNamespaceStale(lock, options, staleMs)
   if (foreign !== null) return foreign
   if (pidProvesGone(lock.holder, options)) return true
   // Windows signalability does not prove process identity: after this conservative age bound,
@@ -172,6 +176,9 @@ function tryTakeLock(lockDir, holder) {
   try {
     writeFileSync(path.join(lockDir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
   } catch (error) {
+    // Reclaimed as half-created while this acquirer was suspended: the lock is no longer mine, and the
+    // lock.d now there may be someone else's.
+    if (error?.code === 'ENOENT') return false
     rmSync(lockDir, { recursive: true, force: true })
     throw error
   }
@@ -184,6 +191,25 @@ const RECLAIM_DIR_STALE_MS = 60_000
 
 // Returns true only when it removed the stale holder, so the caller retries at once; otherwise the
 // caller's timeout check and sleep run (no spin behind another reclaimer's, or an abandoned, reclaim.d).
+const sameInstance = (left, right) => (left === null || right === null)
+  ? left === right
+  : left?.pid === right?.pid && left?.startedAt === right?.startedAt
+
+// Removes the lock instance judged stale and nothing newer: lock.d is renamed aside, and deleted only
+// if the holder that moved is the one judged; a newer instance (a holder that acquired in between) is
+// put back. `options.beforeReclaimRemoval` is a test seam that runs between judgment and removal.
+function removeJudgedInstance(lockDir, judged, options) {
+  options.beforeReclaimRemoval?.()
+  const aside = setLockAside(lockDir)
+  if (aside === null) return true
+  if (sameInstance(readHolderIn(aside), judged)) {
+    discardDirectory(aside)
+    return true
+  }
+  putLockBack(aside, lockDir)
+  return false
+}
+
 function reclaimStaleHolder(root, lockDir, options) {
   const reclaimDir = path.join(root, 'reclaim.d')
   let ownsReclaim = false
@@ -192,8 +218,7 @@ function reclaimStaleHolder(root, lockDir, options) {
     ownsReclaim = true
     const confirmed = readSuiteLock({ root })
     if (!holderIsStale(confirmed, options)) return false
-    rmSync(lockDir, { recursive: true, force: true })
-    return true
+    return removeJudgedInstance(lockDir, confirmed.holder, options)
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error
     removeDirectoryOlderThan(reclaimDir, RECLAIM_DIR_STALE_MS)
@@ -246,7 +271,9 @@ export async function acquireSuiteLock(options = {}) {
       const current = readSuiteLock({ root })
       // First in line and the holder released between my attempt and this read: try again now.
       if (place.ahead === 0 && !current.held) continue
-      if (current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) continue
+      // Only the head of the queue reclaims: it is also the only waiter that acquires next, so no other
+      // ticket holder can create a lock.d between this judgment and the removal.
+      if (place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) continue
       const now = Date.now()
       if (now - startedWaiting >= waitMs) {
         const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
@@ -277,9 +304,13 @@ export function releaseSuiteLock(lease) {
 export function operatorReleaseSuiteLock(options = {}) {
   const current = readSuiteLock(options)
   if (!current.held) return { released: false, reason: 'free', holder: null }
-  if (!options.force && !holderIsStale(current, options)) return { released: false, reason: 'live', holder: current.holder }
-  rmSync(current.lockDir, { recursive: true, force: true })
-  return { released: true, reason: options.force ? 'forced' : 'stale', holder: current.holder }
+  if (options.force) {
+    rmSync(current.lockDir, { recursive: true, force: true })
+    return { released: true, reason: 'forced', holder: current.holder }
+  }
+  if (!holderIsStale(current, options)) return { released: false, reason: 'live', holder: current.holder }
+  const removed = removeJudgedInstance(current.lockDir, current.holder, options)
+  return removed ? { released: true, reason: 'stale', holder: current.holder } : { released: false, reason: 'live', holder: readSuiteLock(options).holder }
 }
 
 // Windows needs a SHELL only to launch a `.cmd`/`.bat` shim (spawning one directly fails EINVAL).
