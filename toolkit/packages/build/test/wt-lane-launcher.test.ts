@@ -433,6 +433,49 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     waitForContent(journal, /"event":"terminated"/)
     expect(journalEvents(journal, 'terminated')).toHaveLength(1)
   })
+  it('signals an ordinary descendant before publishing the close-path receipt or exited state [requires POSIX process groups]', () => {
+    const f = fixture('true')
+    const bin = join(f.root, 'bin', 'opencode')
+    const descendant = join(f.root, 'descendant.mjs')
+    const provider = join(f.root, 'provider.mjs')
+    const observed = join(f.root, 'observed.json')
+    const ready = join(f.root, 'descendant-ready')
+    const supervision = join(f.dir, '.lane', 'supervision')
+    const log = join(f.dir, '.lane', 'run.log')
+    writeFileSync(descendant, `import { readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+process.on('SIGTERM', () => {
+  const runId = JSON.parse(readFileSync(${JSON.stringify(join(supervision, 'current.json'))}, 'utf8')).runId
+  const state = JSON.parse(readFileSync(join(${JSON.stringify(supervision)}, runId + '.json'), 'utf8')).state
+  const exitVisible = /^EXIT=/m.test(readFileSync(${JSON.stringify(log)}, 'utf8'))
+  writeFileSync(${JSON.stringify(observed)}, JSON.stringify({ exitVisible, state }))
+  process.exit(0)
+})
+writeFileSync(${JSON.stringify(ready)}, 'ready')
+setInterval(() => {}, 1000)
+`)
+    writeFileSync(provider, `import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+const descendant = spawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: 'ignore' })
+descendant.unref()
+const interval = setInterval(() => {
+  if (existsSync(${JSON.stringify(ready)}) && existsSync(${JSON.stringify(join(supervision, 'current.json'))})) {
+    clearInterval(interval)
+    process.exit(0)
+  }
+}, 10)
+`)
+    writeFileSync(bin, `#!/bin/sh\nif [ "$1" = run ]; then exec ${JSON.stringify(process.execPath)} ${JSON.stringify(provider)}; fi\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(FAKE_OPENCODE)} opencode "$@"\n`)
+
+    const result = run(f)
+    expect(result.status, result.stderr).toBe(0)
+    waitForContent(observed, /"exitVisible":/)
+    const snapshot = JSON.parse(readFileSync(observed, 'utf8'))
+    expect(snapshot.exitVisible).toBe(false)
+    expect(snapshot.state).not.toBe('exited')
+    waitForContent(log, /^EXIT=0$/m)
+    expect(JSON.parse(readFileSync(currentStateFile(f.dir), 'utf8')).state).toBe('exited')
+  })
   it('records an externally signaled child as cause unknown instead of a timeout', () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const result = run(f, ['--timeout', '60'])

@@ -878,10 +878,13 @@ async function main() {
       const current = currentState
       if (['terminating', 'abandoned'].includes(current.state)) return
     } catch {}
+    // Signal the group before either terminal publication lets the next phase proceed.
+    // endGroup installs no-op handlers before signalling our own process group.
+    endGroup(exit, { writeReceipt: false })
     writeState({ state: 'exited', exit, ...(killedBy ? { killedBy } : {}), exitedAt: new Date().toISOString() })
     journal({ event: 'exited', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: killedBy ? `${killedBy.cause} ${signal}` : `exit ${exit}` })
     cleanupBrief()
-    endGroup(exit, { receiptLines: killedBy ? killedByLines(killedBy) : [] })
+    finish(exit, killedBy ? killedByLines(killedBy) : [])
   }
   child.on('close', onChildClose)
   if (earlyChildClose) onChildClose(...earlyChildClose)
