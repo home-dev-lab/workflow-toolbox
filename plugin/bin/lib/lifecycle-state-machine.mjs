@@ -1,5 +1,6 @@
 // Owns lifecycle phases, transitions, and MCP tool registration; it must not launch work or commit reports.
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -14,6 +15,8 @@ import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { adaptiveRoundDecision, hasPerSectionAttackAccount, reviewConvergenceDecision, verdictFromReport } from './lifecycle-review-policy.mjs'
 import { detectFailedTestFramework } from './host/test-framework-detection.mjs'
+import { bindingDecisionsSection, createDodEscalation, criticFindingAfterNoReblock, DOD_DECISION_REQUEST_FILE, normalizedTerm, planReadingOfTerm, withDisputedDodTermsSection } from './lifecycle-dod-dispute.mjs'
+import { pathWithin } from './host/path-within.mjs'
 
 export const LIFECYCLE_SERVER_NAME = 'sdk-pilot-lifecycle'
 export const LIFECYCLE_MCP_KEY = LIFECYCLE_SERVER_NAME
@@ -202,6 +205,21 @@ function withFindingsToRouteSection(content, findings) {
   // eslint-disable-next-line sonarjs/super-linear-regex
   return `${content.slice(0, insertAt).replace(/\s*$/, '')}\n${additions.join('\n')}\n${content.slice(insertAt).replace(/^\s*/, '')}`
 }
+// Every section the runner appends to a pilot report, in one place: the pilot never authors these.
+function withRunnerOwnedReportSections(content, routedCards, state) {
+  const routed = withFindingsToRouteSection(withRoutedCardsSection(content, routedCards), state.findingsToRoute)
+  const questioned = state.partial?.question ? withQuestionForParent(routed, state.partial.question) : routed
+  return withDisputedDodTermsSection(questioned, state.dodDisputes)
+}
+function planReadingOfDisputedTerm(laneDir, term, criterion) {
+  const plan = readRegularFile(path.join(laneDir, 'plan.md')) ?? ''
+  const acceptanceReading = (wanted) => {
+    const entries = acceptanceEntries(plan)
+    const key = [...entries.keys()].find((criterionText) => normalizedTerm(criterionText) === normalizedTerm(wanted))
+    return key === undefined ? null : entries.get(key)[0]?.join(' ') || null
+  }
+  return planReadingOfTerm({ plan, term, criterion, acceptanceReading })
+}
 function withQuestionForParent(content, question) {
   // eslint-disable-next-line sonarjs/super-linear-regex
   const match = /(?:^|\n)## Question for parent\s*\r?\n([\s\S]*?)(?=\r?\n## |$)/i.exec(content)
@@ -250,7 +268,7 @@ function planCoverageCitationResult(content, root) {
       const absolute = path.resolve(root, citedPath)
       let resolved = absolute
       try { resolved = fs.realpathSync(absolute) } catch {}
-      if (path.relative(root, resolved).startsWith('..')) {
+      if (!pathWithin(root, resolved)) {
         warnings.push(`"${claim}" cites \`${citedPath}:${citation[2]}\`, which is outside the worktree.`)
         continue
       }
@@ -459,8 +477,51 @@ function initialLifecycleState() {
     reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewBase: null, pendingReviewBase: null, findingsToRoute: [], reviewWarnings: [], unresolvedFindings: [], criticEmptyRetries: 0,
     handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
     resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
-    pendingStop: null, stopped: false,
+    pendingStop: null, stopped: false, dodDisputes: [],
   }
+}
+
+function defaultTimelineWriter(file, content) {
+  const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
+  try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { removeFile(temporary) }
+}
+
+function createLaneDirAssertion({ laneDir, root, archiveRoot }) {
+  return (archive = false) => {
+    const required = [laneDir]
+    if (archive) {
+      if (typeof archiveRoot !== 'string' || !path.isAbsolute(archiveRoot)) throw new Error('lifecycle archiveRoot must be an absolute path')
+      fs.mkdirSync(path.join(archiveRoot, '.claude', 'reports'), { recursive: true })
+      required.push(archiveRoot, path.join(archiveRoot, '.claude'), path.join(archiveRoot, '.claude', 'reports'))
+    }
+    for (const directory of required) {
+      let stat; try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      const expectedRoot = directory === laneDir ? root : archiveRoot
+      let resolvedDirectory; let resolvedRoot
+      try { [resolvedDirectory, resolvedRoot] = [fs.realpathSync(directory), fs.realpathSync(expectedRoot)] } catch { throw new Error(`lane directory replaced: ${directory}`) }
+      if (!stat.isDirectory() || stat.isSymbolicLink() || !pathWithin(resolvedRoot, resolvedDirectory)) throw new Error(`lane directory replaced: ${directory}`)
+    }
+    if (archive) {
+      try {
+        execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], { cwd: archiveRoot, stdio: 'ignore' })
+      } catch {
+        throw new Error('lifecycle archiveRoot .claude/reports must be git-ignored')
+      }
+    }
+  }
+}
+
+function guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun) {
+  return (args) => {
+    if (state.stopped) return stoppedRefusal()
+    return dodEscalation.beforeLane(args).then(() => state.stopped || state.pendingStop ? stoppedRefusal() : lifecycleRun(args))
+  }
+}
+
+async function holdPlanForBoundDecision(state, dodEscalation) {
+  if (state.phase !== 'plan' || !state.dodDisputes.some((dispute) => !dispute.resolution)) return null
+  await dodEscalation.awaitDecisions()
+  return `plan revision held for bound DoD decision: ${bindingDecisionsSection(state.dodDisputes)}. Revise the plan to that binding before asking for the next critic.`
 }
 
 function snapshotWorkingTree(root, laneDir, git) {
@@ -535,7 +596,8 @@ function createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, s
     timeline.ended_at = endedAt
     const routed = state.findingsToRoute.length > 0 ? `\n## Findings to route\n${state.findingsToRoute.map(routedFindingRow).join('\n')}\n` : ''
     const unresolved = state.partial.findings.length > 0 ? `Unresolved findings: ${state.partial.findings.join('; ')}\n` : ''
-    const report = `# SDK pilot partial report\n\nPartial: ${state.partial.reason}\nPhase reached: ${phase}\nReason: ${state.partial.reason}\nFinalization: ${reason}\n${unresolved}${routed}`
+    const partialReport = `# SDK pilot partial report\n\nPartial: ${state.partial.reason}\nPhase reached: ${phase}\nReason: ${state.partial.reason}\nFinalization: ${reason}\n${unresolved}${routed}`
+    const report = withDisputedDodTermsSection(partialReport, state.dodDisputes)
     writeRegularFile(path.join(laneDir, 'pilot-report.md'), report)
     state.pilotReportDigest = sha256(report)
     persistTimeline()
@@ -600,6 +662,7 @@ export function createLifecycleStateMachine({
   routeFinding = null,
   resolveRoutedFinding = null,
   onBoundaryStop = null,
+  dodDecisions = {},
   changelogSkillPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../skills/changelog/SKILL.md'),
 }) {
   if (!path.isAbsolute(worktree)) {
@@ -610,6 +673,7 @@ export function createLifecycleStateMachine({
   }
   const root = fs.realpathSync(worktree)
   const dodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText) : undefined
+  const rawDodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText, { raw: true }) : undefined
   const activeRules = rules ?? loadRules({ projectRoot: root })
   let constructionBase = 'HEAD'
   try { constructionBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() } catch {}
@@ -622,28 +686,7 @@ export function createLifecycleStateMachine({
   } else {
     fs.mkdirSync(laneDir, { recursive: true })
   }
-  function assertLaneDir(archive = false) {
-    const required = [laneDir]
-    if (archive) {
-      if (typeof archiveRoot !== 'string' || !path.isAbsolute(archiveRoot)) throw new Error('lifecycle archiveRoot must be an absolute path')
-      fs.mkdirSync(path.join(archiveRoot, '.claude', 'reports'), { recursive: true })
-      required.push(archiveRoot, path.join(archiveRoot, '.claude'), path.join(archiveRoot, '.claude', 'reports'))
-    }
-    for (const directory of required) {
-      let stat; try { stat = fs.lstatSync(directory) } catch { throw new Error(`lane directory replaced: ${directory}`) }
-      const expectedRoot = directory === laneDir ? root : archiveRoot
-      let resolvedDirectory; let resolvedRoot
-      try { [resolvedDirectory, resolvedRoot] = [fs.realpathSync(directory), fs.realpathSync(expectedRoot)] } catch { throw new Error(`lane directory replaced: ${directory}`) }
-      if (!stat.isDirectory() || stat.isSymbolicLink() || path.relative(resolvedRoot, resolvedDirectory).startsWith('..')) throw new Error(`lane directory replaced: ${directory}`)
-    }
-    if (archive) {
-      try {
-        execFileSync('git', ['check-ignore', '--no-index', '.claude/reports/archive'], { cwd: archiveRoot, stdio: 'ignore' })
-      } catch {
-        throw new Error('lifecycle archiveRoot .claude/reports must be git-ignored')
-      }
-    }
-  }
+  const assertLaneDir = createLaneDirAssertion({ laneDir, root, archiveRoot })
   assertLaneDir()
   // Preflight, before any phase runs: a misconfigured archive root must fail here, not after hours of work.
   assertArchiveOutsideWorktree({ root, archiveRoot })
@@ -684,10 +727,7 @@ export function createLifecycleStateMachine({
   const timelinePath = path.join(laneDir, 'lifecycle.json')
   const lifecycleStartedAt = now()
   const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
-  const atomicTimelineWriter = timelineWriter ?? ((file, content) => {
-    const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
-    try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { removeFile(temporary) }
-  })
+  const atomicTimelineWriter = timelineWriter ?? defaultTimelineWriter
   const persistTimeline = () => {
     try { atomicTimelineWriter(timelinePath, `${JSON.stringify(timeline, null, 2)}\n`) } catch { /* Cost evidence is best-effort and cannot alter lifecycle acceptance. */ }
   }
@@ -757,7 +797,7 @@ export function createLifecycleStateMachine({
       : `KNOWLEDGE_BASE_INDEX: none${knowledgeBase.checkedPath ? ` (no index exists at ${knowledgeBase.checkedPath})` : ''}`
     const priorRounds = phase === 'critic' ? state.priorCriticRounds : state.priorReviewReports
     const briefBase = phase === 'review' && state.priorReviewReports.length > 0 && state.reviewBase ? state.reviewBase : constructionBase
-    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine }
+    const options = { phase, context, reportPath, discovery, planDigest, constructionBase: phase === 'critic' ? null : briefBase, priorRounds, rules: roleRules, knowledgeBaseLine, bindingDecisions: phase === 'critic' ? bindingDecisionsSection(state.dodDisputes) : '' }
     return snapshotDir
       ? {
           canonical: independentBrief({ ...options, artifacts: canonicalArtifacts }),
@@ -801,10 +841,8 @@ export function createLifecycleStateMachine({
     },
   })
   const { requestStop, stopAtBoundary, stoppedRefusal } = createBoundaryStop({ state, laneDir, timeline, now, writeRegularFile, sha256, persistTimeline, onBoundaryStop })
-  function run(args) {
-    if (state.stopped) return stoppedRefusal()
-    return lifecycleRun(args)
-  }
+  const dodEscalation = createDodEscalation({ state, dodBullets: rawDodBullets, requestPath: path.join(laneDir, DOD_DECISION_REQUEST_FILE), planReading: (term, criterion) => planReadingOfDisputedTerm(laneDir, dodBullets?.[criterion - 1] ?? term, criterion), writeRequest: writeRegularFile, now }, dodDecisions)
+  const run = guardedLaneRun(state, stoppedRefusal, dodEscalation, lifecycleRun)
   const finalizePartial = createPartialFinalizer({ state, laneDir, timeline, now, persistTimeline, audit, constructionBase, git, root, archiveRoot, cardId, frozenRoute, evidencePath, sha256, assertLaneDir, copy, writeRegularFile, readRegularFile })
   function transition(event) {
     if (state.stopped) return stoppedRefusal()
@@ -844,6 +882,7 @@ export function createLifecycleStateMachine({
       next = frozenRoute === 'LITE' ? 'tdd' : 'plan'
     } else if (state.phase === 'plan') {
       const plan = path.join(laneDir, 'plan.md')
+      if (state.dodDisputes.some((dispute) => !dispute.resolution)) return refusal('plan->critic', 'bound DoD decision before revising the plan', plan)
       const planContent = readRegularFile(plan)
       if (!planContent || !containsPlanShape(planContent, dodBullets !== undefined))
         return refusal('plan->critic', `valid plan artifact matching ${PLAN_SHAPE_DESCRIPTION}`, plan)
@@ -883,7 +922,9 @@ export function createLifecycleStateMachine({
       }
       const effectiveFindingDetails = verdict.findingDetails.filter((_finding, index) => {
         const id = /\bCONTEST\s+routed\s+card\s+([A-Za-z0-9._-]+)\b/i.exec(verdict.findings[index])?.[1]
-        return !id || !repeatedContests.has(id)
+        if (id && repeatedContests.has(id)) return false
+        criticFindingAfterNoReblock(verdict.findingDetails[index], state, dodBullets, dodDecisions.log)
+        return true
       })
       if (repeatedContests.size > 0 && !/(?:^|\s)(?:\.?\.?[/\\])?[A-Za-z0-9_.-]+(?:[/\\][A-Za-z0-9_.-]+)*:\d+(?:-\d+)?\b/.test(laneBriefContexts.get('critic') ?? '')) {
         return refusal('critic->next', 'pilot citation supporting maintained L4 reason', path.join(laneDir, 'critic-brief.md'))
@@ -896,10 +937,6 @@ export function createLifecycleStateMachine({
       if (emptyCritic?.reason) {
         next = 'report'
         resultDetail = ` (failed critic retry: partial run, ${emptyCritic.reason})`
-      }
-      if (contestedThisRound.size > 0) {
-        for (const id of contestedThisRound) timeline.routed_cards.find((card) => card.id === id).contested = true
-        persistTimeline()
       }
       const newNonBlockingFindings = verdict.findings.filter((_finding, index) => !verdict.findingDetails[index].blocks)
       for (const finding of newNonBlockingFindings) {
@@ -924,21 +961,35 @@ export function createLifecycleStateMachine({
           return (!id || !repeatedContests.has(id)) && verdict.findingDetails[index].blocks
         })
         const findingDetails = verdict.findingDetails.filter((_finding, index) => blockingFindings.includes(verdict.findings[index]))
-        state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings, findingDetails })
-        state.planRound += 1
-        const decision = adaptiveRoundDecision(state.priorCriticRounds, FIXED_CRITIC_ROUNDS, MAX_CRITIC_ROUNDS, state.criticPlateauUsed)
-        state.criticPlateauUsed = decision.plateauUsed
-        if (decision.continue) next = 'plan'
-        else {
-          const reason = `plan not approved after ${state.planRound} critic rounds`
-          state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
-          state.verifySnapshot = { tree: treeSignature(root), gates: {} }
-          audit()
-          next = 'report'
-          resultDetail = ` (round bound reached: partial run, ${reason})`
+        const priorCriticRounds = structuredClone(state.priorCriticRounds)
+        const priorPlanRound = state.planRound
+        const priorPlateauUsed = state.criticPlateauUsed
+        try {
+          state.priorCriticRounds.push({ round: state.priorCriticRounds.length + 1, findings: [...verdict.findings], blockingFindings, findingDetails })
+          state.planRound += 1
+          const decision = adaptiveRoundDecision(state.priorCriticRounds, FIXED_CRITIC_ROUNDS, MAX_CRITIC_ROUNDS, state.criticPlateauUsed)
+          state.criticPlateauUsed = decision.plateauUsed
+          if (decision.continue) { next = 'plan'; resultDetail = dodEscalation.escalate() }
+          else {
+            const reason = `plan not approved after ${state.planRound} critic rounds`
+            state.partial = { phase: 'critic', round: state.planRound, reason, findings: verdict.findings }
+            state.verifySnapshot = { tree: treeSignature(root), gates: {} }
+            audit()
+            next = 'report'
+            resultDetail = ` (round bound reached: partial run, ${reason})`
+          }
+        } catch (error) {
+          state.priorCriticRounds = priorCriticRounds
+          state.planRound = priorPlanRound
+          state.criticPlateauUsed = priorPlateauUsed
+          throw error
         }
       } else if (!next) {
         return refusal('critic->next', 'admissible outcome', path.join(laneDir, 'critic-report.md'))
+      }
+      if (contestedThisRound.size > 0) {
+        for (const id of contestedThisRound) timeline.routed_cards.find((card) => card.id === id).contested = true
+        persistTimeline()
       }
     } else if (state.phase === 'tdd') {
       const receipt = laneEvidence(state.phase)
@@ -1052,6 +1103,10 @@ export function createLifecycleStateMachine({
   }
   async function artifact({ kind, content }) {
     if (state.stopped) return stoppedRefusal()
+    if (kind === 'plan') {
+      const held = await holdPlanForBoundDecision(state, dodEscalation)
+      if (held) return held
+    }
     try { assertLaneDir() } catch (error) { return refusal(`${state.phase}->next`, error.message, laneDir) }
     const spec = ARTIFACTS[kind]
     if (!spec) {
@@ -1080,9 +1135,7 @@ export function createLifecycleStateMachine({
           }
         }
       }
-      content = withRoutedCardsSection(content, timeline.routed_cards)
-      content = withFindingsToRouteSection(content, state.findingsToRoute)
-      if (state.partial?.question) content = withQuestionForParent(content, state.partial.question)
+      content = withRunnerOwnedReportSections(content, timeline.routed_cards, state)
     }
     const briefPhase = kind === 'brief' ? 'tdd' : kind.replace('-brief', '')
     let laneContext = content
@@ -1287,6 +1340,6 @@ export function createLifecycleStateMachine({
     }),
   })
   Object.defineProperty(server, 'finalizePartial', { value: finalizePartial })
-  Object.defineProperty(server, 'requestStop', { value: requestStop })
+  Object.defineProperties(server, { requestStop: { value: requestStop }, dodDisputes: { value: () => structuredClone(state.dodDisputes) }, awaitDodDecisions: { value: dodEscalation.awaitDecisions } })
   return server
 }

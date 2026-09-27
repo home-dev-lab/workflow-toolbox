@@ -1,6 +1,6 @@
 import { resolveWorkflowToolboxOption } from './plugin-options.mjs'
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { AWAITING_FIDELITY_RESULT, createLifecycleServer, LIFECYCLE_MCP_KEY, lifecycleToolName } from './sdk-pilot-lifecycle-server.mjs'
@@ -16,6 +16,11 @@ import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-cor
 import { createBoardClient } from './board-http-client.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { assertCostReportMatches, writeWorktreeRetentionMarker } from './lifecycle-report-edge.mjs'
+import { DOD_DECISION_WAIT_MS, FALLBACK_RULE } from './lifecycle-dod-dispute.mjs'
+import { bindPilotDecision, displayedDecisionStateRoot, initializePilotDecisionStore, pilotDecisionCli, pilotDecisionCommand, pilotDecisionStateRoot, readPilotBinding, readPilotDecisions, registerPilotDecisionRequest, unregisterPilotDecisionRequest } from './host/pilot-decision-store.mjs'
+import { laneUnsandboxedAtStart } from './host/lane-sandbox.mjs'
+import { sandboxWritablePaths } from './host/sandbox-extra-paths.mjs'
+import { pathWithin } from './host/path-within.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -135,16 +140,20 @@ function textFrom(value) {
 }
 
 // Resolve through existing symlinks before comparing, so lexical `..` and links cannot escape.
-export function confinedToWorktree(root, requested) {
-  const absolute = resolve(root, typeof requested === 'string' ? requested : '.')
+function resolvedExisting(absolute) {
   let probe = absolute
   const suffix = []
   while (!existsSync(probe)) { suffix.unshift(basename(probe)); probe = dirname(probe) }
-  const resolved = resolve(realpathSync(probe), ...suffix)
-  return relative(realpathSync(root), resolved) === '' || !relative(realpathSync(root), resolved).startsWith('..')
+  return resolve(realpathSync(probe), ...suffix)
 }
 
-export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true, knowledgeBaseIndex = null, profile = null } = {}) {
+export function confinedToWorktree(root, requested, paths = null) {
+  if (paths) return pathWithin(root, requested, paths)
+  const absolute = resolve(root, typeof requested === 'string' ? requested : '.')
+  return pathWithin(resolvedExisting(resolve(root)), resolvedExisting(absolute))
+}
+
+export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = true, knowledgeBaseIndex = null, profile = null, pathOps = null } = {}) {
   if (['transition', 'write_artifact', 'route_finding', 'run'].map(lifecycleToolName).includes(toolName)) return { behavior: 'allow' }
   if (toolName === 'mcp__planka__move_card' && !boardMoves) return { behavior: 'deny', message: 'board moves are the orchestrator\'s' }
   if (PLANKA_TOOLS.has(toolName)) return { behavior: 'allow' }
@@ -160,10 +169,10 @@ export function lifecycleCanUseTool(worktree, toolName, input, { boardMoves = tr
     const wildcard = segments.findIndex((segment) => /[*?[{]/.test(segment))
     const prefix = segments.slice(0, wildcard < 0 ? segments.length : wildcard).join('/') || '.'
     const base = input.path ?? worktree
-    const requestedPrefix = resolve(worktree, base, prefix)
-    if (!confinedToWorktree(worktree, requestedPrefix)) return { behavior: 'deny', message: `path outside worktree: ${pattern}` }
+    const requestedPrefix = (pathOps ?? { resolve }).resolve(worktree, base, prefix)
+    if (!confinedToWorktree(worktree, requestedPrefix, pathOps)) return { behavior: 'deny', message: `path outside worktree: ${pattern}` }
   }
-  return confinedToWorktree(worktree, requested) ? { behavior: 'allow' } : { behavior: 'deny', message: `path outside worktree: ${requested}` }
+  return confinedToWorktree(worktree, requested, pathOps) ? { behavior: 'allow' } : { behavior: 'deny', message: `path outside worktree: ${requested}` }
 }
 
 function usageOf(message) {
@@ -302,15 +311,81 @@ function describeExecutorVariants(models, env) {
     }
   }))
 }
+// The request is lane-visible; the answer and binding are host-state records.
+function parentDecisionChannel({ runId, stateFile, cli, log, root, overrides = {} }) {
+  const minutes = Math.ceil((overrides.waitMs ?? DOD_DECISION_WAIT_MS) / 60_000)
+  const readDecisions = overrides.readDecisions ?? (() => readPilotDecisions(stateFile))
+  const command = (suffix) => pilotDecisionCommand(cli, runId, process.execPath, root, undefined, suffix)
+  return {
+    decisionCommand: command,
+    onDecisionRequest: ({ criteria, requestId, deadline }) => {
+      registerPilotDecisionRequest(stateFile, { requestId, criteria, deadline })
+    },
+    onPublished: ({ file, criteria, requestId }) => {
+      const disputed = criteria.map((criterion) => `DoD ${criterion}`).join(', ')
+      const answer = command(` --request '${requestId}' --dod <n> --reading <text>`)
+      log(`decision request: ${file} — request ${requestId} disputes ${disputed}; the run's parent invokes within ${minutes} min (otherwise ${FALLBACK_RULE}):\n${answer}`)
+    },
+    rollbackDecisionRequest: ({ criteria, requestId }) => unregisterPilotDecisionRequest(stateFile, { criteria, requestId }),
+    onBound: (dispute) => {
+      try { return bindPilotDecision(stateFile, { requestId: dispute.requestId, criterion: dispute.criterion, source: dispute.resolution.source, at: dispute.resolution.at, resolution: dispute.resolution }) } catch (error) {
+        let winner
+        try { winner = readPilotBinding(stateFile, dispute.requestId, dispute.criterion) } catch (readError) {
+          throw new Error(`decision store binding failed: ${error.message}; winner unreadable: ${readError.message}`, { cause: readError })
+        }
+        if (winner) return winner
+        throw new Error(`decision store binding failed: ${error.message}; no readable winner`, { cause: error })
+      }
+    },
+    log,
+    ...overrides,
+    readDecisions,
+  }
+}
 function completedPilotExitCode(completed, partial, deferred) {
   if (!completed) return 1
   return partial || deferred ? 2 : 0
 }
 
+function assertDecisionStateOutsideWritable(dir, stateRoot, writableEnv, home) {
+  if (confinedToWorktree(dir, stateRoot)) throw new Error(`SDK pilot preflight failed: decision state must be outside the lane-writable worktree: ${stateRoot}`)
+  // The worktree check holds on every platform; only the bwrap extra-write overlap is Linux-only.
+  const writablePaths = sandboxWritablePaths(writableEnv)
+  if (writablePaths === null) return
+  for (const writable of writablePaths) {
+    const absolute = resolve(writable.startsWith(`~${sep}`) ? join(home, writable.slice(2)) : writable)
+    if (confinedToWorktree(stateRoot, absolute) || confinedToWorktree(absolute, stateRoot)) throw new Error(`SDK pilot preflight failed: decision state overlaps WT_LANE_SANDBOX_WRITE: ${absolute}`)
+  }
+}
+
+function announceDecisionBoundary(env, log) {
+  if (laneUnsandboxedAtStart(env)) log('warning: unsandboxed lane: same-user processes can submit parent decisions; sandbox isolation is the authority boundary')
+}
+
+function assertPluginDirs(pluginDirs) {
+  if ((pluginDirs ?? []).some((pluginDir) => !isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
+}
+
+function assertCardFile(cardFile) {
+  if (!cardFile) throw new Error('--card-file is required: the route is derived from the card')
+}
+
+function assertCardDefinitionOfDone(cardText) {
+  if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
+}
+
+async function waitForPlanBinding(lifecycleServer) {
+  if (lifecycleServer.state().phase === 'plan' && lifecycleServer.dodDisputes().some((dispute) => !dispute.resolution)) await lifecycleServer.awaitDodDecisions()
+}
+
+function bindingNotice(disputes) {
+  return disputes.map((dispute) => ` Binding decision on DoD ${dispute.criterion} (${dispute.resolution.source}, runner-owned): ${dispute.resolution.reading}; ${dispute.resolution.criticRule ?? ''}`).join('')
+}
+
 export async function runPilot(options, dependencies) {
   const { query, resolvePilotModels, now = () => Date.now(), sleep = (ms) => new Promise((done) => setTimeout(done, ms)), setTimer = setTimeout, clearTimer = clearTimeout, env = process.env, writeFile = writeFileSync, exists = existsSync, readFile = readFileSync, oldLifecycleHook = null, lifecycleOptions = {}, log = (line) => process.stdout.write(`${line}\n`) } = dependencies
   const profileEnv = loadProfileEnv(options.profileEnv)
-  if ((options.pluginDirs ?? []).some((pluginDir) => !isAbsolute(pluginDir))) throw new Error('--plugin-dir must be an absolute path')
+  assertPluginDirs(options.pluginDirs)
   const effectiveEnv = { ...env, ...profileEnv }
   const knowledgeBase = resolveKnowledgeBaseIndex({ promptValue: options.knowledgeBaseIndex, env: effectiveEnv, projectRoot: options.knowledgeBaseProjectRoot ?? options.dir, exists })
   const models = resolvePilotModels({ env, settingsEnv: profileEnv })
@@ -326,10 +401,10 @@ export async function runPilot(options, dependencies) {
   // from the same project root the knowledge-base index uses.
   const rules = dependencies.rules ?? loadRules({ projectRoot: options.knowledgeBaseProjectRoot ?? options.dir })
   const systemPrompt = composeStandingPrompt(contract, rules)
-  if (!options.cardFile) throw new Error('--card-file is required: the route is derived from the card')
+  assertCardFile(options.cardFile)
   const cardText = readFile(options.cardFile, 'utf8')
   const boardContract = loadBoardContract(options.boardContract, readFile)
-  if (cardDefinitionOfDone(cardText).length === 0) throw new Error('SDK pilot preflight failed: ask the owner to add a Definition of done to the card')
+  assertCardDefinitionOfDone(cardText)
   const routing = deriveRoute(cardText)
   const contractWarning = missingBoardContractWarning(boardContract, routing.route, contract)
   if (contractWarning) log(contractWarning)
@@ -348,6 +423,13 @@ export async function runPilot(options, dependencies) {
   const transcriptPath = join(options.dir, '.lane', 'sdk-transcript.json')
   const started = now()
   const runId = `${options.card}-${started}`
+  const decisionStoreOptions = { env, ...(dependencies.decisionStateRoot ? { root: dependencies.decisionStateRoot } : {}) }
+  const defaultDecisionStateRoot = pilotDecisionStateRoot({ env })
+  const decisionStateRoot = resolve(dependencies.decisionStateRoot ?? defaultDecisionStateRoot)
+  assertDecisionStateOutsideWritable(options.dir, decisionStateRoot, effectiveEnv.WT_LANE_SANDBOX_WRITE, effectiveEnv.HOME ?? effectiveEnv.USERPROFILE ?? '')
+  announceDecisionBoundary(effectiveEnv, log)
+  const decisionStateFile = initializePilotDecisionStore(runId, decisionStoreOptions)
+  const decisionCli = pilotDecisionCli()
   const totals = { input: 0, cache_creation: 0, cache_read: 0, output: 0 }
   const turns = []
   const messages = []
@@ -356,6 +438,7 @@ export async function runPilot(options, dependencies) {
   const tools = []
   let turnTools = []
   let mailboxLines = 0
+  const injectedDecisions = new Set()
   let completed = false
   let injectedTurns = 0
   let silenceInjections = 0
@@ -398,7 +481,8 @@ export async function runPilot(options, dependencies) {
   const abortController = new AbortController()
   let timeoutGraceTimer = null
   const archiveRoot = options.archiveRoot ?? defaultArchiveRoot({ dir: options.dir, projectRoot: options.knowledgeBaseProjectRoot })
-  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
+  const decisionChannel = parentDecisionChannel({ runId, stateFile: decisionStateFile, cli: decisionCli, log, root: displayedDecisionStateRoot(decisionStateRoot, defaultDecisionStateRoot, { env, injected: dependencies.decisionStateRoot !== undefined }), overrides: lifecycleOptions.dodDecisions })
+  const lifecycleServer = createLifecycleServer({ worktree: options.dir, archiveRoot, route: routing.route, reasons: routing.reasons, executor: executorProfile.executor, executorEnv: { ...env, ...profileEnv }, knowledgeBase, models: executorProfile.models, cardId: options.card, cardText, sessionTag: runId, rules, boardContract, routeFinding, resolveRoutedFinding, lsp: sdkRole.lsp, ...lifecycleOptions, dodDecisions: decisionChannel, onBoundaryStop: (stopped) => { timeoutBoundary = stopped; incompleteReason = stopped.reason; setImmediate(() => abortController.abort()) } })
   const currentUsage = () => ({ messages, result_totals: totals, model_usage: Object.keys(modelUsage).length > 0 ? modelUsage : undefined, turns, totals, fresh_tokens: totals.input + totals.cache_creation + totals.output, tool_names: [...new Set(tools)] })
   const persistUsage = () => atomicWrite(usagePath, `${JSON.stringify(currentUsage(), null, 2)}\n`, writeFile)
   const timeoutTimer = setTimer(() => {
@@ -420,18 +504,22 @@ export async function runPilot(options, dependencies) {
     yield { type: 'user', message: { role: 'user', content: withRepositoryGuide(options.dir, `${standing}\n\n## The card, verbatim\n\n${cardText}\n\ndo not re-read the card from the board; the text above is the card`) } }
     while (!completed && !timeoutBoundary) {
       if (awaitingFidelityReceipt && exists(report)) { completed = true; return }
+      await waitForPlanBinding(lifecycleServer)
       if (pendingTurnEnds > 0) {
         pendingTurnEnds -= 1
         if (acceptedLifecycleResults > acceptedAtLastContinuation) consecutiveContinuations = 0
         consecutiveContinuations += 1
-        acceptedAtLastContinuation = acceptedLifecycleResults
-        const lifecycleState = lifecycleServer.state()
+         acceptedAtLastContinuation = acceptedLifecycleResults
+         await waitForPlanBinding(lifecycleServer)
+         const lifecycleState = lifecycleServer.state()
         const phase = lifecycleState.phase
-        const content = lifecycleState.partial && phase === 'report'
+         const binding = lifecycleServer.dodDisputes().filter((dispute) => dispute.resolution && !injectedDecisions.has(`${dispute.requestId}:${dispute.criterion}`))
+         for (const dispute of binding) injectedDecisions.add(`${dispute.requestId}:${dispute.criterion}`)
+         const content = lifecycleState.partial && phase === 'report'
           ? lifecycleState.partial.reason.startsWith('route_finding refused: no board contract;')
             ? `The run is partial (${lifecycleState.partial.reason}): write the pilot report with "Partial: ${lifecycleState.partial.reason}" as its first line, then transition report.`
             : `The run is partial (${lifecycleState.partial.reason}): write the pilot report with the line "Partial: ${lifecycleState.partial.reason}", then transition report.`
-          : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.`
+           : `The run is not complete: current phase ${phase}; next: ${NEXT_BY_PHASE[phase] ?? 'continue the lifecycle'}. Continue.${bindingNotice(binding)}`
         injectedTurns += 1
         log(`injected: continuation ${content}`)
         if (consecutiveContinuations === MAX_UNPRODUCTIVE_TURNS) {
@@ -443,12 +531,22 @@ export async function runPilot(options, dependencies) {
       }
       const lines = exists(options.mailbox) ? readFile(options.mailbox, 'utf8').split(/\r?\n/).filter(Boolean) : []
       if (lines.length > mailboxLines) {
-        const content = `Message from the owner: ${lines[mailboxLines++]}`
+        const content = `Unauthenticated mailbox note (lane-writable; not an owner decision): ${lines[mailboxLines++]}`
         injectedTurns += 1
-        log(`injected: owner message ${content}`)
+        log(`injected: mailbox message ${content}`)
         yield { type: 'user', message: { role: 'user', content } }
       }
-      else await sleep(POLL_MS)
+      else {
+        const disputes = lifecycleServer.dodDisputes()
+         const decision = disputes.filter((dispute) => dispute.resolution && !injectedDecisions.has(`${dispute.requestId}:${dispute.criterion}`))[0]
+         if (decision) {
+           injectedDecisions.add(`${decision.requestId}:${decision.criterion}`)
+           const content = `Binding decision on DoD ${decision.criterion} (runner-owned, trusted; ${decision.resolution.source}): ${decision.resolution.reading}. ${decision.resolution.criticRule ?? ''} Keep the plan to this reading; the next critic round is bound to it.`
+          injectedTurns += 1
+          log(`injected: parent decision ${content}`)
+          yield { type: 'user', message: { role: 'user', content } }
+        } else await sleep(POLL_MS)
+      }
     }
   }
 
@@ -548,7 +646,7 @@ export async function runPilot(options, dependencies) {
   const { partial, deferred } = lifecycleDelivery(lifecycleSummary, lifecycleServer.state())
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
-  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)

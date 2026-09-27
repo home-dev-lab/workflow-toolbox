@@ -112,7 +112,7 @@ form and Node path APIs for resolution and real-path containment on each host.
 | Edge | Required evidence |
 | --- | --- |
 | discovery -> tdd (LITE) or plan (FULL) | Frozen runner route and the server-written `discovery.md` intake record. |
-| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing/reworded criterion is refused with an example. |
+| plan -> critic | `plan.md` has `## ADR` with a decision and rejected alternative, `## Tasks` top-level tasks each with inline or following DoD, `## Gates`, mandatory `## Card terms: reading chosen` (one `- <term>: <reading>` line per ambiguous card term, or the documented `none` line), and `## Acceptance` quoting every folded card Definition-of-done criterion exactly with a following `Proof:` naming a task, test, e2e, test file, or gate. A missing section or missing/reworded criterion is refused with an example. |
 | critic -> tdd, plan, or report | Attested critic lane receipt and report with `VERDICT:` / `FINDINGS:`; an approved report includes the plan SHA-256. `CONTEST routed card <id>:` gets exactly one plan round; a repeated maintained scope disagreement proceeds and is reported. A fourth other changes-requested verdict after three plan rounds reaches a partial report. |
 | tdd -> verify | Attested lane receipt and non-empty report. The initial FULL `tdd-brief.md` has the plan `## Tasks` block byte-identically; later TDD fix briefs carry runner-owned review findings and focused-gate instructions. |
 | verify -> report (LITE) or review (FULL) | `typecheck`, `lint`, and `test` receipts end `EXIT=0`, are newer than the latest lane receipt, match the current tree signature, and become a digest snapshot. |
@@ -122,6 +122,39 @@ form and Node path APIs for resolution and real-path containment on each host.
 
 Refusals name the edge, missing item, and path. Outcomes are parsed from the lane report, not
 declared by the pilot.
+
+### Disputed Definition-of-done terms
+
+A run is automated: a question about what a card criterion means goes to the run's parent (the
+orchestrator, or the session that launched the runner), never to a person. The trigger is mechanical:
+a blocking critic finding anchored to the same `DoD <n>` in two consecutive critic rounds, while the
+loop continues to another plan round. Each criterion is escalated at most once per run.
+
+- **Upward.** The lifecycle writes `.lane/dod-decision-request.md` with an unguessable request id,
+  the criterion verbatim, the critic rounds, the plan's reading (its `Card terms: reading chosen`
+  entry), each critic finding, the parent command, and a deadline. Terms match across whitespace,
+  case, straight quotes, and curly quotes; a shorter Card-terms label must start on a word boundary
+  and end at a word boundary (the sentinel `none` never identifies a longer criterion). The runner
+  prints one `decision request: <file> — request <id> …` line to its log.
+- **Downward.** The parent invokes `node wt-pilot-runner.mjs decide --run <id> --request <id> --dod <n> --reading
+  <text>`. The command atomically writes the SDK runner's per-run state under the host state directory
+  (`XDG_STATE_HOME` or the platform equivalent), outside every lane sandbox bind. Mailbox and lane-file
+   prose is never parsed for decisions. Each request/criterion is write-once, including a timeout binding.
+   If hard links are unavailable or the binding cannot be read, the dispute fails rather than accepting an unrecorded fallback.
+  The pilot receives the lifecycle's bound resolution as a runner-owned
+  decision, and the next critic brief carries it under
+  `## Binding decisions on disputed Definition-of-done terms (runner-owned, trusted)`.
+- **Bounded wait.** Before the pilot revises the plan and before the next critic launch, the run waits up to 15 minutes from the request for the decision.
+  With no answer the runner binds the card criterion's literal words verbatim, without selecting an
+  interpretation from model output, and records the hard rule that the critic may not block again on
+  that criterion for the rest of the run. The wait is zero when no decision reader exists or a stop
+  was already requested. A timeout binding is final.
+  On unsandboxed Linux (`WT_LANE_SANDBOX=off`), macOS, and Windows, another process under the
+  runner's OS user can invoke `decide`: OS user identity cannot distinguish the parent from a lane.
+  The sandbox is the authority boundary; the runner warns at startup when it is unsandboxed.
+- **Record.** The pilot report gains `## Disputed Definition-of-done terms` with one line per
+  criterion quoting the verbatim binding and no-reblock rule. The run summary carries the same record under
+  `dod_disputes`.
 
 ## Evidence and identity
 

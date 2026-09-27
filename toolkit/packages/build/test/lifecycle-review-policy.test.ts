@@ -5,6 +5,24 @@ import { adaptiveRoundDecision, reviewConvergenceDecision, verdictFromReport } f
 import { independentBrief } from '../../../../plugin/bin/lib/lifecycle-brief.mjs'
 
 describe('lifecycle review stop policy', () => {
+  it('reads a critic direction tag from the leading bracket groups only, and leaves an untagged finding valid', () => {
+    const verdict = verdictFromReport('critic', `VERDICT: changes-requested
+FINDINGS:
+- [blocking][missing][anchor: DoD 1][location: plan.md:1] under-reads the criterion
+- [blocking][anchor: DoD 1][location: plan.md:2][OVERBUILD] builds a second file
+- [blocking][anchor: DoD 1][location: plan.md:3] untagged, although the text says [missing]
+- [non-blocking][unverifiable] no proof named
+`, { validAnchors: ['DoD 1'] })
+    expect(verdict.findingDetails.map((finding: { category: string | null, text: string, blocks: boolean }) => [finding.category, finding.text, finding.blocks])).toEqual([
+      ['missing', 'under-reads the criterion', true],
+      ['overbuild', 'builds a second file', true],
+      [null, 'untagged, although the text says [missing]', true],
+      ['unverifiable', 'no proof named', false],
+    ])
+    const review = verdictFromReport('review', 'VERDICT: changes-requested\nFINDINGS:\n- [HIGH][missing][anchor: DoD 1][location: a.ts:1] defect\n', { validAnchors: ['DoD 1'] })
+    expect(review.findingDetails[0].category).toBeNull()
+  })
+
   it('blocks anchored CRITICAL, HIGH, and MEDIUM review findings but routes LOW', () => {
     const report = `VERDICT: changes-requested
 FINDINGS:

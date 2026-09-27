@@ -10,6 +10,7 @@ import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './li
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { classifyLane, shellQuote, supervisionPaths } from './lane-supervisor-core.mjs'
 import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
+import { writeLaneRegularFile } from './host/lifecycle-file-write.mjs'
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
@@ -163,8 +164,7 @@ export function readRegularFile(file) {
 }
 
 export function writeRegularFile(file, content, options = {}) {
-  if (fs.existsSync(file) && !regularFile(file)) throw new Error(`unsafe file: ${file}`)
-  fs.writeFileSync(file, content, options)
+  return writeLaneRegularFile(file, content, options)
 }
 
 export function readAttestation(file) {
