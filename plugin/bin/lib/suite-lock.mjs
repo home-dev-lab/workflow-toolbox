@@ -77,6 +77,9 @@ function pidProvesGone(holder, options) {
 // A lock.d with no valid holder.json was left by an acquirer that died between `mkdir` and publishing
 // its holder (a live one publishes within milliseconds): reclaimable once this old.
 const HALF_CREATED_LOCK_MS = 60_000
+// Windows refuses for a moment to remove an entry another process holds open (EPERM/EBUSY); `maxRetries`
+// retries exactly those codes, and applies only with `recursive: true` (Node fs docs).
+const REMOVE_WITH_RETRY = { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }
 
 // Stale = positive proof the holder is gone, or, where its PID proves nothing (a host holder seen from
 // inside a sandbox, a signalable PID on Windows), the hard bound --stale-s (3 h by default). Never the
@@ -224,7 +227,7 @@ function reclaimStaleHolder(root, lockDir, options) {
     removeDirectoryOlderThan(reclaimDir, RECLAIM_DIR_STALE_MS)
     return false
   } finally {
-    if (ownsReclaim) rmSync(reclaimDir, { recursive: true, force: true })
+    if (ownsReclaim) rmSync(reclaimDir, REMOVE_WITH_RETRY)
   }
 }
 
@@ -245,6 +248,44 @@ function describeWait(place, current) {
   return `position ${place.ahead + 1} of ${place.total}, ${holder}`
 }
 
+// Windows reports a file or directory that another process is deleting ("delete pending") as EPERM,
+// EACCES or EBUSY instead of ENOENT/EEXIST, and the lock's hot path meets exactly that when a holder
+// releases while waiters poll: an attempt that meets one is retried. One that persists for
+// TRANSIENT_FS_WINDOW_MS is a real permission problem and is thrown.
+const TRANSIENT_FS_CODES = new Set(['EPERM', 'EACCES', 'EBUSY'])
+const TRANSIENT_FS_WINDOW_MS = 5000
+
+async function retryTransient(operation, pauseMs) {
+  const since = Date.now()
+  while (true) {
+    try {
+      return operation()
+    } catch (error) {
+      if (!TRANSIENT_FS_CODES.has(error?.code) || Date.now() - since >= TRANSIENT_FS_WINDOW_MS) throw error
+      await sleep(pauseMs)
+    }
+  }
+}
+
+// One poll of the queue: `{ lease }` when acquired, `{ again: true }` to poll again at once, or
+// `{ place, current }` to wait.
+function pollQueue(state, options) {
+  const { root, lockDir, queueDir, ticket, record } = state
+  heartbeatTicket(queueDir, ticket, record)
+  const place = queuePlace(queueDir, ticket, options)
+  if (place.ahead === 0) {
+    const holder = { ...record, startedAt: new Date().toISOString() }
+    if (tryTakeLock(lockDir, holder)) return { lease: { root, lockDir, holder } }
+  }
+  const current = readSuiteLock({ root })
+  // First in line and the holder released between my attempt and this read: try again now.
+  if (place.ahead === 0 && !current.held) return { again: true }
+  // Only the head of the queue reclaims: it is also the only waiter that acquires next, so no other
+  // ticket holder can create a lock.d between this judgment and the removal.
+  if (place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) return { again: true }
+  return { place, current }
+}
+
 export async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
   const root = options.root ?? suiteLockDir(env, options.home, options.platform)
@@ -257,23 +298,15 @@ export async function acquireSuiteLock(options = {}) {
   let nextNoticeAt = startedWaiting
   mkdirSync(root, { recursive: true, mode: 0o700 })
   const record = waiterRecord(options)
-  const ticket = takeTicket(queueDir, record)
+  const ticket = await retryTransient(() => takeTicket(queueDir, record), HEAD_OF_QUEUE_POLL_MS)
+  const state = { root, lockDir, queueDir, ticket, record }
 
   try {
     while (true) {
-      heartbeatTicket(queueDir, ticket, record)
-      const place = queuePlace(queueDir, ticket, options)
-      if (place.ahead === 0) {
-        const holder = { ...record, startedAt: new Date().toISOString() }
-        if (tryTakeLock(lockDir, holder)) return { root, lockDir, holder }
-      }
-
-      const current = readSuiteLock({ root })
-      // First in line and the holder released between my attempt and this read: try again now.
-      if (place.ahead === 0 && !current.held) continue
-      // Only the head of the queue reclaims: it is also the only waiter that acquires next, so no other
-      // ticket holder can create a lock.d between this judgment and the removal.
-      if (place.ahead === 0 && current.held && holderIsStale(current, options) && reclaimStaleHolder(root, lockDir, options)) continue
+      const step = await retryTransient(() => pollQueue(state, options), HEAD_OF_QUEUE_POLL_MS)
+      if (step.lease) return step.lease
+      if (step.again) continue
+      const { place, current } = step
       const now = Date.now()
       if (now - startedWaiting >= waitMs) {
         const timeout = new Error(`timed out waiting for suite lock: ${formatSuiteLockHolder(current.holder)}`)
@@ -297,7 +330,7 @@ export function releaseSuiteLock(lease) {
   const current = readSuiteLock({ root: lease.root })
   if (!current.held) return true
   if (current.holder?.pid !== lease.holder.pid || current.holder?.startedAt !== lease.holder.startedAt) return false
-  rmSync(lease.lockDir, { recursive: true, force: true })
+  rmSync(lease.lockDir, REMOVE_WITH_RETRY)
   return true
 }
 

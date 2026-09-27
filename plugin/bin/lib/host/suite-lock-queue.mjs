@@ -79,8 +79,12 @@ export function readTicket(queueDir, number) {
   try { return { held: true, holder, ageMs: Date.now() - statSync(file).mtimeMs } } catch { return null }
 }
 
+// Windows refuses to unlink an entry another process holds open for a moment (EPERM/EBUSY);
+// `maxRetries` retries exactly those codes, and applies only with `recursive: true` (Node fs docs).
+const REMOVE_RETRY = { recursive: true, force: true, maxRetries: 10, retryDelay: 20 }
+
 export function removeTicket(queueDir, number) {
-  rmSync(recordFile(queueDir, number), { force: true })
+  rmSync(recordFile(queueDir, number), REMOVE_RETRY)
 }
 
 /** Removes a directory whose mtime is at least `ageMs` old; a missing one is not an error. */
@@ -126,5 +130,5 @@ export function putLockBack(aside, lockDir) {
 }
 
 export function discardDirectory(directory) {
-  rmSync(directory, { recursive: true, force: true })
+  rmSync(directory, REMOVE_RETRY)
 }

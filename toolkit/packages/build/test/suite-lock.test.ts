@@ -102,7 +102,8 @@ let lease
 try {
   lease = await acquireSuiteLock({ root: cfg.root, pollMs: cfg.pollMs, noticeMs: 60000, waitS: cfg.waitS, argv: [cfg.name], onWait: (line) => process.stdout.write(line + '\\n') })
 } catch (error) {
-  appendFileSync(cfg.order, 'TIMEOUT-' + cfg.name + '\\n')
+  // An error that is not a timeout names its code, so a failure on another OS says what it met.
+  appendFileSync(cfg.order, (error?.code === 'WT_SUITE_LOCK_TIMEOUT' ? 'TIMEOUT-' : 'ERROR-' + (error?.code ?? error?.message) + '-') + cfg.name + '\\n')
   process.exit(75)
 }
 appendFileSync(cfg.order, cfg.name + '\\n')
@@ -139,8 +140,9 @@ describe('suite lock FIFO queue (card 1873075570439357968)', () => {
     const third = startWaiter(root, order, 'A3', 10, 400)
     await waitFor(() => third.stdout().includes('waiting for suite lock'), 5000)
     expect(readOrder(order), 'the holder must still hold when the last arrival queues').toEqual(['H'])
-    for (const waiter of [holder, oldest, second, third]) expect(await waiter.done).toBe(0)
+    const exits = await Promise.all([holder, oldest, second, third].map((waiter) => waiter.done))
     expect(readOrder(order)).toEqual(['H', 'W1', 'A2', 'A3'])
+    expect(exits).toEqual([0, 0, 0, 0])
     expect(oldest.stdout()).toMatch(/waiting for suite lock: position 1 of 1, holder pid \d+ \(H\) since \d\d:\d\d/)
     expect(third.stdout()).toMatch(/waiting for suite lock: position 3 of 3, holder pid \d+ \(H\) since \d\d:\d\d/)
     expect(queueRecords(root)).toEqual([])
@@ -707,4 +709,33 @@ releaseSuiteLock(lease)
     await legacyDone
     expect(events(log).map((e) => `${e.name} ${e.kind}`)).toEqual(['LEGACY START', 'LEGACY END', 'RECLAIMER START', 'RECLAIMER END'])
   }, 15_000)
+})
+
+// Windows run 36299753097: a FIFO waiter died with exit 75 in 3 s, far inside its 30 s wait, while the
+// holder released and fast pollers raced it. Windows reports an entry another process is deleting as
+// EPERM/EACCES/EBUSY; the lock's hot path treated any such code as fatal. The class reproduced on Linux
+// with a permission error that clears (EACCES), and one that does not.
+const CAN_REVOKE_WRITE = process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0
+describe('suite lock transient filesystem errors', () => {
+  it.skipIf(!CAN_REVOKE_WRITE)('retries an EACCES that clears instead of failing the wait (skips: Windows or root)', async () => {
+    const root = tempRoot('transient-clears')
+    mkdirSync(join(root, 'queue.d'))
+    chmodSync(join(root, 'queue.d'), 0o500)
+    setTimeout(() => chmodSync(join(root, 'queue.d'), 0o700), 400)
+    const lease = await acquireSuiteLock({ root, waitS: 10, pollMs: 20 })
+    expect(lease.holder.pid).toBe(process.pid)
+    releaseSuiteLock(lease)
+  }, 10_000)
+
+  it.skipIf(!CAN_REVOKE_WRITE)('still throws a permission error that persists, within a bounded window (skips: Windows or root)', async () => {
+    const root = tempRoot('transient-persists')
+    mkdirSync(join(root, 'queue.d'))
+    chmodSync(join(root, 'queue.d'), 0o500)
+    const started = Date.now()
+    try {
+      await expect(acquireSuiteLock({ root, waitS: 60, pollMs: 20 })).rejects.toMatchObject({ code: 'EACCES' })
+      expect(Date.now() - started).toBeGreaterThanOrEqual(4500)
+      expect(Date.now() - started).toBeLessThan(15_000)
+    } finally { chmodSync(join(root, 'queue.d'), 0o700) }
+  }, 20_000)
 })
