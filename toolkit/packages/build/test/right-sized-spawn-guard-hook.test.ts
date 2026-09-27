@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,21 +15,38 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function runToolInput(tool_input: unknown) {
+function runToolInput(tool_input: unknown, setup?: (root: string) => void) {
   const root = mkdtempSync(join(tmpdir(), 'wt-right-sized-spawn-'))
   roots.push(root)
+  setup?.(root)
   const journal = join(root, 'journal')
   const result = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ tool_name: 'Agent', session_id: 's-1', tool_input }),
+    input: JSON.stringify({ tool_name: 'Agent', session_id: 's-1', cwd: root, tool_input }),
     encoding: 'utf8',
     env: sealedPluginCliEnv(root, { WT_GUARD_JOURNAL_DIR: journal, WT_GUARD_JOURNAL_NOW: '2026-09-25T12:00:00Z' }),
   })
   const journalPath = join(journal, '2026-W39.ndjson')
-  return { stdout: result.stdout, journal: existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : '' }
+  return { status: result.status, stdout: result.stdout, journal: existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : '' }
 }
 
-function run(subagent_type: unknown, prompt: unknown = '') {
-  return runToolInput({ ...(subagent_type === undefined ? {} : { subagent_type }), prompt })
+function run(subagent_type: unknown, prompt: unknown = '', model?: string) {
+  return runToolInput({ ...(subagent_type === undefined ? {} : { subagent_type }), prompt, ...(model === undefined ? {} : { model }) })
+}
+
+function expectModelWarning(result: ReturnType<typeof runToolInput>) {
+  expect(result.status).toBe(0)
+  expect(result.stdout).toContain('model pin')
+  expect(result.stdout).not.toContain('"permissionDecision":"deny"')
+  expect(result.journal).toContain('"class":"model-unpinned"')
+  expect(result.journal).toContain('"decision":"warned"')
+}
+
+function expectSilentModelPin(result: ReturnType<typeof runToolInput>) {
+  expect(result.status).toBe(0)
+  expect(result.stdout).toBe('')
+  expect(result.journal).not.toContain('model-unpinned')
+  // A positive control keeps this case red until the warning actually exists.
+  expectModelWarning(run('workflow-toolbox:leaf-readonly'))
 }
 
 describe('wt-right-sized-spawn-guard-hook', () => {
@@ -51,7 +68,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
   })
 
   it('allows and journals a line-scoped general-purpose reason', () => {
-    const result = run('general-purpose', 'This is unusual.\ngeneral-purpose because: it needs an unavailable specialist tool')
+    const result = run('general-purpose', 'This is unusual.\ngeneral-purpose because: it needs an unavailable specialist tool', 'sonnet')
     expect(result.stdout).toBe('')
     expect(result.journal).toContain('"class":"general-purpose-override"')
     expect(result.journal).toContain('unavailable specialist tool')
@@ -77,7 +94,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
     const result = run('general-purpose', [
       { type: 'text', text: 'This needs a special route.' },
       { type: 'text', text: 'general-purpose because: the required specialist is unavailable' },
-    ])
+    ], 'sonnet')
     expect(result.stdout).toBe('')
     expect(result.journal).toContain('required specialist is unavailable')
   })
@@ -90,6 +107,88 @@ describe('wt-right-sized-spawn-guard-hook', () => {
 
   it('sets an honest recovery expectation for newly created agents', () => {
     expect(run('general-purpose', 'Implement this.').stdout).toContain('start a new session')
+  })
+
+  it('warns when a known plugin agent has no model pin, without denying the spawn', () => {
+    expectModelWarning(run('workflow-toolbox:leaf-readonly'))
+  })
+
+  it('treats an explicit inherit model as unpinned', () => {
+    expectModelWarning(runToolInput({ subagent_type: 'workflow-toolbox:wt-chores', model: 'inherit', prompt: 'Read' }))
+  })
+
+  it('does not warn when the spawn pins its model', () => {
+    expectSilentModelPin(runToolInput({ subagent_type: 'workflow-toolbox:leaf-readonly', model: 'haiku', prompt: 'Read' }))
+  })
+
+  it('exempts fork even without a model pin', () => {
+    expectSilentModelPin(run('fork', 'Continue'))
+  })
+
+  it('reads a custom agent model pin from the active config directory', () => {
+    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, (root) => {
+      const agents = join(root, 'claude-config', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\nmodel: "sonnet"\n---\nRead.\n')
+    })
+    expectSilentModelPin(result)
+  })
+
+  it('warns for a custom agent with no frontmatter model pin', () => {
+    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, (root) => {
+      const agents = join(root, '.claude', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\n---\nRead.\n')
+    })
+    expectModelWarning(result)
+  })
+
+  it('treats a custom agent frontmatter model of inherit as unpinned', () => {
+    const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, (root) => {
+      const agents = join(root, '.claude', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\nmodel: inherit\n---\nRead.\n')
+    })
+    expectModelWarning(result)
+  })
+
+  it('resolves a third-party plugin agent through its installed definition', () => {
+    const result = runToolInput({ subagent_type: 'example-plugin:worker', prompt: 'Read' }, (root) => {
+      const plugin = join(root, 'plugin-install')
+      const config = join(root, 'claude-config', 'plugins')
+      mkdirSync(join(plugin, 'agents'), { recursive: true })
+      mkdirSync(config, { recursive: true })
+      writeFileSync(join(plugin, 'agents', 'worker.md'), '---\nname: worker\nmodel: opus\n---\nRead.\n')
+      writeFileSync(join(config, 'installed_plugins.json'), JSON.stringify({ plugins: { 'example-plugin@market': [{ installPath: plugin }] } }))
+    })
+    expectSilentModelPin(result)
+  })
+
+  it('warns for an installed third-party plugin agent without a frontmatter model pin', () => {
+    const result = runToolInput({ subagent_type: 'example-plugin:worker', prompt: 'Read' }, (root) => {
+      const plugin = join(root, 'plugin-install')
+      const config = join(root, 'claude-config', 'plugins')
+      mkdirSync(join(plugin, 'agents'), { recursive: true })
+      mkdirSync(config, { recursive: true })
+      writeFileSync(join(plugin, 'agents', 'worker.md'), '---\nname: worker\n---\nRead.\n')
+      writeFileSync(join(config, 'installed_plugins.json'), JSON.stringify({ plugins: { 'example-plugin@market': [{ installPath: plugin }] } }))
+    })
+    expectModelWarning(result)
+  })
+
+  it('fails open for a type with no resolvable definition', () => {
+    expectSilentModelPin(run('missing-agent-type', 'Read'))
+  })
+
+  it('warns rather than denies an unpinned general-purpose spawn with a reason', () => {
+    expectModelWarning(run('general-purpose', 'general-purpose because: no specialist fits'))
+  })
+
+  it('never replaces the existing general-purpose refusal with a model-pin warning', () => {
+    const result = run('general-purpose', 'Implement this.')
+    expect(result.stdout).not.toContain('model pin')
+    expect(result.journal).not.toContain('model-unpinned')
+    expectModelWarning(run('workflow-toolbox:leaf-readonly'))
   })
 
   it('is registered as a PreToolUse Agent hook', () => {
