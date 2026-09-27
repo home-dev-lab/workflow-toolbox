@@ -62,6 +62,10 @@ function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutM
     timeout: timeoutMs,
     killSignal: 'SIGKILL',
   })
+  // Every door that starts a lane (launch() and the direct launcher calls alike) announces its
+  // detached worker as pid=<n>; teardown waits for each one (ENOTEMPTY on macOS, run 36345651918).
+  const worker = /^pid=(\d+)$/m.exec(result.stdout ?? '')?.[1]
+  if (result.status === 0 && worker) workers.push(Number(worker))
   if (result.error) {
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim().split(/\r?\n/).at(-1) || '<no output>'
     const dirIndex = args.indexOf('--dir')
@@ -137,10 +141,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
 function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna', extra: string[] = []) {
   const brief = join(f.project, 'brief.md')
   writeFileSync(brief, '# brief\n')
-  const result = runChild('adopted wt-lane launcher', [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git', ...extra], f.env)
-  const worker = /^pid=(\d+)$/m.exec(result.stdout ?? '')?.[1]
-  if (result.status === 0 && worker) workers.push(Number(worker))
-  return result
+  return runChild('adopted wt-lane launcher', [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git', ...extra], f.env)
 }
 
 describe('adopted wt-lane consent resolver', () => {
@@ -303,6 +304,18 @@ describe('adopted wt-lane consent resolver', () => {
     const actual = runChild('adopted wt-lane help', [f.installed, '--help'], f.env)
     expect(actual.status, actual.stderr).toBe(0)
     expect(actual.stdout).toContain('Usage: node wt-lane.mjs')
+  })
+
+  it('records a detached worker that fails before its first stage in the lane log', async () => {
+    const f = fixture((source) => source.replace(
+      "  const worker = process.argv[2] === '--worker'\n",
+      "  const worker = process.argv[2] === '--worker'\n  if (worker) throw new Error('worker-early-failure-probe')\n",
+    ))
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const started = launch(f)
+    expect(started.status, started.stderr).toBe(0)
+    for (const pid of workers) await waitForWorkerExit(pid)
+    expect(laneLogTail(f.project, 40)).toContain('worker-early-failure-probe')
   })
 
   it('forces the fence in an adopted launcher child', () => {

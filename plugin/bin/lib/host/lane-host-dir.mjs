@@ -147,6 +147,13 @@ export function makeReadableLaneBrief(snapshot, worktree, { temporaryParent = os
   }
 }
 
+// Starts a detached process whose stderr appends to the host-owned lane log, so a process that
+// fails before writing its own stages still leaves its error where the operator reads the lane.
+export function spawnWithLaneLogStderr(log, start) {
+  const fd = openSync(log, 'a', 0o600)
+  try { return start(['ignore', 'ignore', fd]) } finally { closeSync(fd) }
+}
+
 export function removeReadableLaneBrief(directory) {
   rmSync(directory, { recursive: true, force: true })
 }

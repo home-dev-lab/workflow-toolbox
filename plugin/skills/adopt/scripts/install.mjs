@@ -667,6 +667,8 @@ async function loadAdoptedConsentModules() {
   // (plugin root missing, older or incompatible). The brief read that precedes that refusal only
   // hashes and prints the brief, so a plain read cannot lead the host to act on lane-written bytes.
   adopted = replaceExactlyOnce(adopted, "import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'\n", 'const { readWorktreeRegular } = laneHostModule ?? { readWorktreeRegular: (file, encoding) => readFileSync(file, encoding === null ? undefined : encoding) }\n')
+  // An installed plugin older than this helper starts the worker as before, with stderr discarded.
+  adopted = replaceExactlyOnce(adopted, "import { spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'\n", "const { spawnWithLaneLogStderr } = laneHostModule?.spawnWithLaneLogStderr ? laneHostModule : { spawnWithLaneLogStderr: (log, start) => start('ignore') }\n")
   adopted = replaceExactlyOnce(adopted, "import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'\n", `const sandboxModule = root ? await import(pathToFileURL(path.join(root, 'bin', 'lib', 'host', 'lane-sandbox.mjs')).href) : null
 const { laneUnsandboxedAtStart, laneWritableForLaunch } = sandboxModule ?? { laneUnsandboxedAtStart: () => false, laneWritableForLaunch: () => () => false }
 `)
