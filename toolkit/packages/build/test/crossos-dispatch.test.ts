@@ -10,7 +10,8 @@ import { spawningTestFiles } from '../../../scripts/spawning-test-files.mjs'
 // @ts-expect-error host adapter is a JS module
 import { commandIO } from '../../../../plugin/bin/lib/host/command-io.mjs'
 // @ts-expect-error JS plugin entrypoint
-import { ciBranchFor, dispatch, matchesHostPath, verdictFromEvidence } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
+import { crossosInternals, dispatch } from '../../../../plugin/bin/lib/crossos-dispatch.mjs'
+const { ciBranchFor, matchesHostPath, verdictFromEvidence } = crossosInternals
 
 const root = resolve(import.meta.dirname, '../../../..')
 const fixtureDir = join(import.meta.dirname, 'fixtures/crossos-dispatch')

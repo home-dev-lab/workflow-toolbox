@@ -6,7 +6,7 @@ const RESULTS = { 0: 'green', 1: 'red', 2: 'error', 3: 'mismatch', 4: 'timeout',
 const failure = (message, code = 2) => Object.assign(new Error(message), { code })
 const lines = (text) => text.trim().split('\n').filter(Boolean)
 
-export function matchesHostPath(file, glob) {
+function matchesHostPath(file, glob) {
   const escaped = glob.split('**').map((part) => part.split('*').map((literal) => literal.replace(new RegExp('[.*+?^${}()|[\\]\\\\]', 'g'), (match) => String.fromCharCode(92) + match)).join('[^/]*')).join('.*')
   return new RegExp(`^${escaped}$`).test(file)
 }
@@ -163,14 +163,14 @@ function matrixFailure(run) {
   return null
 }
 
-export const ciBranchFor = (sha) => `card/ci-${sha.slice(0, 12)}`
+const ciBranchFor = (sha) => `card/ci-${sha.slice(0, 12)}`
 const EVIDENCE_FIELDS = 'event,headBranch,headSha,status,conclusion,jobs'
 
 // The ONLY producer of a green verdict. Green needs positive evidence about exactly this commit: a dispatched run on
 // its own card/ci branch at its sha, completed, with a successful ubuntu, windows and macos job. Absent, foreign or
 // partial evidence is unchecked, pending or red, never green. Callers pass evidence read live from GitHub
 // (freshEvidence); a stored record is never evidence.
-export function verdictFromEvidence(run, sha) {
+function verdictFromEvidence(run, sha) {
   if (!run || typeof run !== 'object') return { verdict: 'unchecked', reason: 'no run evidence' }
   if (run.event !== 'workflow_dispatch' || run.headBranch !== ciBranchFor(sha) || run.headSha !== sha) {
     return { verdict: 'unchecked', reason: `evidence is not about ${sha}: event=${run.event} headBranch=${run.headBranch} headSha=${run.headSha}` }
@@ -359,3 +359,6 @@ export async function dispatch(argv, { io = commandIO, print = console.log } = {
     return code
   }
 }
+
+// Pure pieces the suite exercises directly (glob matching, branch naming, the single green producer).
+export const crossosInternals = { matchesHostPath, ciBranchFor, verdictFromEvidence }
