@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { dirname, join, posix, win32 } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
@@ -11,7 +11,8 @@ import { bindPilotDecision, decidePilotRun, displayedDecisionStateRoot, initiali
 
 const CLI = fileURLToPath(new URL('../../../../plugin/bin/wt-pilot-runner.mjs', import.meta.url))
 const PROCESS = fileURLToPath(new URL('./fixtures/pilot-decision-process.mjs', import.meta.url))
-const WITHDRAW = fileURLToPath(new URL('./fixtures/pilot-decision-withdraw.mjs', import.meta.url))
+// Node's --import takes a URL: a bare Windows path (d:\...) is read as the scheme 'd:'.
+const WITHDRAW = pathToFileURL(fileURLToPath(new URL('./fixtures/pilot-decision-withdraw.mjs', import.meta.url))).href
 
 describe('pilot parent decision store', () => {
   it('accepts only a registered criterion and exposes one shared atomic record', () => {
