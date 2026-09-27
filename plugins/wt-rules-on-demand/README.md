@@ -38,7 +38,16 @@ answers “not applicable”. The `agent-model` check counts a spawn without a
 `gate-background` recognises a fixed build-command vocabulary. A refusal on an
 Agent spawn inside a subagent was missed in one real session (under investigation).
 Store writes serialize within one process; concurrent sessions sharing a store
-may lose a measurement.
+ may lose a measurement.
+
+The first quality run reports "never" until a check finishes. Later startup
+messages name incomplete coverage, unchecked scopes and dry-run rollback reasons.
+The scanner can exclude historical delivery block names from runtime proof using
+`WT_ROD_NON_PROOF_NAMES` (comma-separated); its CLI also accepts repeatable
+`--non-proof-name`. This list is empty by default. Transcript-derived verdicts
+drive the daily rollback decision, which stays dry-run. Legacy store rows without
+a rule identity are counted and skipped by rollback. The report CLI accepts
+repeatable `--rules-dir` to inspect an alternate rule tree.
 
 Rule files are limited to 256 KiB and regex subjects to their first 16 KiB,
 identically in the hook and transcript/proof matching. Patterns with a repeated

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { basename, dirname, join, resolve } from 'node:path';
 import { migrateRule, readSpec, revertRule, retireRule, triggersHash } from './rule-lifecycle-lib.mjs';
@@ -64,12 +64,14 @@ const matches = (trigger, item) => {
 
 async function prove() {
   if (!subject || !options.spec || !options.transcripts) usage();
+  const transcripts = resolve(String(options.transcripts));
+  if (!(await stat(transcripts).then((info) => info.isDirectory(), () => false))) throw new Error(`transcripts directory does not exist: ${transcripts}`);
   const spec = await readSpec(resolve(String(options.spec)));
   const byTrigger = spec.triggers.map((trigger) => ({ trigger, matches: 0 }));
   const examples = [];
   let inspected = 0;
   const skippedLinks = [];
-  for (const [, file] of await discoverFiles(resolve(String(options.transcripts)), { recursive: true, suffix: '.jsonl', dangling: skippedLinks })) {
+   for (const [, file] of await discoverFiles(transcripts, { recursive: true, suffix: '.jsonl', dangling: skippedLinks })) {
     const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
     let lineNumber = 0;
     for await (const line of lines) {

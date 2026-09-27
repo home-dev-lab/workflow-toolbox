@@ -463,7 +463,7 @@ export async function retireRule(root, rule, reason, { scope = 'project', mirror
   if (!archive.startsWith(`${archiveRoot}${sep}`)) throw new Error('archive path escapes rules archive');
   const plans = await planMirrors(root, source, archive, mirrorDirs, scope, 'retire', paths.name);
    await transaction(root, scope, source, archive, body, plans, { entry: {
-    action: 'retire', scope, rule, reason, archivedTo: relative(root, archive), mirrors: plans.map((plan) => ({ from: plan.from, to: plan.to })),
+     action: 'retire', scope, rule: paths.name, from: relative(root, source), reason, archivedTo: relative(root, archive), mirrors: plans.map((plan) => ({ from: plan.from, to: plan.to })),
    } });
    return archive;
  });

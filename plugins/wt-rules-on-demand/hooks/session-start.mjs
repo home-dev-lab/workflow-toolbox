@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readdir, readFile, mkdir, writeFile, stat, rm } from 'node:fs/promises';
+import { readdir, readFile, mkdir, writeFile, stat, rm, realpath } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { delimiter, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,7 +39,11 @@ if (!enabled) {
 
 const now = process.env.WT_ROD_NOW ? Date.parse(process.env.WT_ROD_NOW) : Date.now();
 const dataDir = resolve(process.env.WT_ROD_QUALITY_DATA || qualityDataDir(config));
-try { await assertSafeDataDir(dataDir); } catch (error) { process.stdout.write(`rules-on-demand quality: refused data directory ${dataDir}: ${error.message}; no check started\n`); process.exit(0); }
+try { await assertSafeDataDir(dataDir); } catch (error) {
+  const label = error.code === 'UNSAFE_DATA_DIR' ? 'refused data directory' : 'error ' + (error.constructor?.name ?? 'Error') + ' at';
+  process.stdout.write(`rules-on-demand quality: ${label} ${dataDir}: ${error.message}; no check started\n`);
+  process.exit(0);
+}
 const latestPath = join(dataDir, 'latest.json');
 let latest;
 try { latest = JSON.parse(await readFile(latestPath, 'utf8')); } catch { /* No previous report yet. */ }
@@ -65,15 +69,37 @@ if ((!lastReport || now - lastReport >= 24 * 3600000) && !lastStarted) {
   } catch (error) { if (error.code !== 'EEXIST') await atomicLatest(latestPath, { ok: false, finishedAt: new Date().toISOString(), error: `start: ${error.message}` }); }
 }
 if (process.env.CLAUDE_CODE_ENTRYPOINT?.startsWith('sdk')) process.exit(0);
-if (latest && (!latest.ok || now - lastReport >= 36 * 3600000)) {
-  const errorDetail = latest.error ? ` (${latest.error})` : '';
-  process.stdout.write(`rules-on-demand quality: stale or failed since ${latest.finishedAt ?? 'never'}${errorDetail}; ${latestPath}\n`);
+if (!latest || !latest.ok || now - lastReport >= 36 * 3600000) {
+   const errorDetail = latest?.error ? ` (${latest.error})` : '';
+   process.stdout.write(`rules-on-demand quality: last successful check ${latest?.finishedAt ?? 'never'}; stale or failed${errorDetail}; ${latestPath}\n`);
 }
 else if (latest?.ok) {
-  const warnings = latest.rollback?.filter((item) => ['would revert', 'attention'].includes(item.action)) ?? [];
-  if (warnings.length) {
-    const names = warnings.map((item) => `${item.scope} ${item.rule} (${item.action})`).join(', ');
-    process.stdout.write(`rules-on-demand quality (dry run): ${names}; ${latestPath}; nothing was reverted.\n`);
-  }
-  if (latest.complete === false) process.stdout.write(`rules-on-demand quality: ${latest.coverage?.applicableSamples === 0 ? 'too few applicable samples' : 'coverage incomplete'}; ${latestPath}\n`);
+   const profiles = process.env.WT_ROD_CONFIG_DIRS?.split(delimiter).filter(Boolean) ?? [config];
+   const checked = new Set(await Promise.all((latest.scopes ?? []).map((scope) => realpath(scope.rulesDir).catch(() => resolve(scope.rulesDir)))));
+   const missing = [];
+   for (const dir of [...profiles.map((profile) => ruleDirectories(cwd, profile).user), paths.project]) {
+     if ((await discoverFiles(dir)).length && !checked.has(await realpath(dir).catch(() => resolve(dir)))) missing.push(dir);
+   }
+   if (latest.scopes && missing.length) process.stdout.write(`rules-on-demand quality: scopes not checked: ${missing.join(', ')}; ${latestPath}\n`);
+   const warnings = latest.rollback?.filter((item) => ['would revert', 'attention'].includes(item.action)) ?? [];
+   if (warnings.length) {
+     const suffix = `; ${latestPath}; nothing was reverted.`;
+     let line = 'rules-on-demand quality (dry run): ';
+     let shown = 0;
+     for (const item of warnings) {
+       const clause = `${item.scope} ${item.rule} (${item.action}: ${String(item.reason ?? '').slice(0, 80)})`;
+       if (line.length + clause.length + suffix.length + 20 > 400) break;
+       line += `${shown ? ', ' : ''}${clause}`;
+       shown++;
+     }
+     if (shown < warnings.length) line += `, +${warnings.length - shown} more`;
+     process.stdout.write(`${line}${suffix}\n`);
+   }
+   if (latest.complete === false) {
+     const coverage = latest.coverage ?? {};
+     const cause = coverage.unknownMigrationDates?.[0] ?? coverage.gitErrors?.[0] ?? coverage.unownedProjectsDirs?.[0] ?? coverage.missingProjectsDirs?.[0]
+       ?? (coverage.malformedLedgerLines ? `${coverage.malformedLedgerLines} malformed ledger lines` : null);
+      const detail = cause ? `: ${cause}` : '';
+      process.stdout.write(`rules-on-demand quality: ${coverage.applicableSamples === 0 ? 'too few applicable samples' : 'coverage incomplete'}${detail}; ${latestPath}\n`);
+   }
 }

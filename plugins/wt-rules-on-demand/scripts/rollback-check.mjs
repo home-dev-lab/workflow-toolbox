@@ -3,6 +3,7 @@ import { readFile, readdir, mkdir, realpath, stat, writeFile } from 'node:fs/pro
 import { dirname, join, resolve } from 'node:path';
 import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDataDir, splitRuleIdentity } from './rule-lifecycle-lib.mjs';
 import { configDirectory, ruleDirectories } from '../paths.js';
+import { createHash } from 'node:crypto';
 
 const args = process.argv.slice(2);
 const options = { project: process.cwd(), stores: [], verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
@@ -67,6 +68,7 @@ const store = { sessions: Object.assign({}, ...stores.map((item) => item.session
 const verdictLines = stores.map((item) => String(item['compliance-verdicts-jsonl'] ?? ''));
 for (const item of stores) for (const [name, text] of Object.entries(item)) if (name.startsWith('compliance-verdicts-archive-')) verdictLines.push(String(text));
 const verdicts = verdictLines.join('\n').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+let legacyRowsSkipped = verdicts.filter((row) => !row.ruleIdentity).length;
 const transcriptRows = (await Promise.all(options.verdictFiles.map(async (path) => (await readFile(path, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line))))).flat();
 const rateSummary = [];
 const realOr = (path) => realpath(path).catch((error) => (error.code === 'ENOENT' || error.code === 'ENOTDIR' ? resolve(path) : Promise.reject(error)));
@@ -83,6 +85,7 @@ async function canonicalIdentity(identity) {
 for (const row of verdicts) if (row.ruleIdentity) row.ruleIdentity = await canonicalIdentity(row.ruleIdentity);
 for (const session of Object.values(store.sessions ?? {})) {
   for (const context of Object.values(session.contexts ?? {})) {
+    legacyRowsSkipped += [...(context.governedActs ?? []), ...(context.complianceInjected ?? [])].filter((item) => !item?.ruleIdentity).length;
     for (const item of [...(context.governedActs ?? []), ...(context.complianceInjected ?? [])]) {
       if (item?.ruleIdentity) item.ruleIdentity = await canonicalIdentity(item.ruleIdentity);
     }
@@ -97,6 +100,7 @@ for (const session of Object.values(store.sessions ?? {})) {
     }
   }
 }
+if (legacyRowsSkipped) console.error(`rollback-check: legacy rows skipped: ${legacyRowsSkipped}`);
 // Where this profile's on-demand files must physically live for a revert to be this profile's to make.
 const ownDemandDir = join(await realOr(lifecycleRoot), scope === 'user' ? 'rules-on-demand' : DEMAND_DIR);
 const realRulesDir = await realOr(rulesDir);
@@ -178,7 +182,8 @@ for (const name of names) {
 
 if (rateSummary.length && !options.dryRun) {
   const report = { generatedAt: new Date().toISOString(), dryRun: options.dryRun, defaults: { threshold: 0.8, minimumSamples: 5 }, reverted: rateSummary };
-   const path = join(qualityDataDir(configDir), 'rollback-latest.json');
+    const suffix = scope === 'user' ? 'user' : `project-${createHash('sha256').update(await realOr(project)).digest('hex').slice(0, 12)}`;
+    const path = join(qualityDataDir(configDir), `rollback-${suffix}-latest.json`);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
   log(`summary ${path}`);

@@ -120,3 +120,106 @@ test('input-regex missing input is reported and cannot select', async () => {
   assert.deepEqual(await f.call({ tool_use_id: 'synthetic', consent: 'yes' }), {});
   assert.match(f.logs.join('\n'), /narrow.md: input-regex/);
 });
+
+test('concurrent ride-along serves once after the first result', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false));
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let entered = 0;
+  const next = async () => { entered++; await held; return {}; };
+  const first = f.call({}, next);
+  const second = f.call({}, next);
+  while (entered < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+  release();
+  const results = await Promise.all([first, second]);
+  assert.equal(results.filter((result) => result.context?.length).length, 1);
+});
+
+test('refusal explains unchanged retry and logs every serve', async () => {
+  const f = fixture();
+  assert.match((await f.call({})).deny, /retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context/i);
+  assert.match(f.logs.join('\n'), /serving sample.md/);
+});
+
+test('prompt delivery records its channel and governed act', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n      before-first-act: 'false'", "kind: 'prompt'\n      regex: 'ready'"));
+  const handlers = new Map();
+  // The fixture exposes handlers through the registration performed by register.
+  resetForSelftest();
+  register((name, handler) => handlers.set(name, handler), { enabled: true });
+  await handlers.get('prompt.submit')(f.$, { text: 'ready', cwd: '/sample-project' }, async () => ({}));
+  const ctx = f.stored.get('sessions')['sample-session'].contexts['0'];
+  assert.equal(f.stored.get('served')['sample.md'].byChannel['prompt.submit'], 1);
+  assert.equal(ctx.governedActs[0].rule, 'sample.md');
+});
+
+test('journal merges governed acts by identity', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false));
+  await f.call({});
+  await f.call({});
+  const acts = f.stored.get('sessions')['sample-session'].contexts['0'].governedActs;
+  assert.equal(acts.length, 1);
+  assert.equal(acts[0].count, 2);
+});
+
+test('empty deny result stops delivery', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false));
+  assert.deepEqual(await f.call({}, async () => ({ deny: '' })), { deny: '' });
+});
+
+test('model sees governed arguments while persisted verdict stores only a summary', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'none'\n    reason: 'no mechanical check'", "kind: 'model'\n    model: 'haiku'\n    prompt: 'Judge the call'\n    window: '1'\n    on-close: 'not applicable'"));
+  let prompt = '';
+  f.$.model = { classify: async (text) => { prompt = text; return 'followed'; } };
+  await f.call({ tool: 'Agent', input: { prompt: 'private argument', file_path: '/path/to/example.ts' } });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  await f.call({ tool: 'Agent', input: { prompt: 'different private argument', file_path: '/path/to/next.ts' } });
+  assert.match(prompt, /different private argument/);
+  const record = JSON.parse(f.stored.get('compliance-verdicts-jsonl'));
+  assert.doesNotMatch(JSON.stringify(record), /private argument/);
+  assert.equal(record.trigger, 'tool.call:Agent');
+  assert.notEqual(record.injectedAt, record.decidedAt);
+});
+
+test('turn closure records turn ended, not window closed', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'none'\n    reason: 'no mechanical check'", "kind: 'bash-command'\n    window: '2'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'"));
+  await f.call({});
+  const handlers = new Map();
+  resetForSelftest();
+  register((name, handler) => handlers.set(name, handler), { enabled: true });
+  await handlers.get('tool.call')(f.$, { tool: 'Agent', cwd: '/sample-project' }, async () => ({}));
+  await handlers.get('turn.complete')(f.$, {}, async () => ({}));
+  assert.equal(JSON.parse(f.stored.get('compliance-verdicts-jsonl')).reason, 'turn ended');
+});
+
+test('compaction closes pending verdict rather than losing it', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'none'\n    reason: 'no mechanical check'", "kind: 'bash-command'\n    window: '3'\n    on-close: 'not applicable'\n    act-regex: 'git push'\n    require-regex: 'origin'"));
+  const handlers = new Map();
+  resetForSelftest();
+  register((name, handler) => handlers.set(name, handler), { enabled: true });
+  await handlers.get('tool.call')(f.$, { tool: 'Agent', cwd: '/sample-project' }, async () => ({}));
+  await handlers.get('session.compact')(f.$, {}, async () => ({}));
+  assert.equal(JSON.parse(f.stored.get('compliance-verdicts-jsonl')).reason, 'compaction');
+});
+
+test('journal retries a size failure with fewer older sessions', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false));
+  f.stored.set('sessions', Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`old-${i}`, { last: '2020-01-01T00:00:00.000Z', contexts: {} }])));
+  const original = f.$.store.set;
+  const originalGet = f.$.store.get;
+  f.$.store.get = async (name) => name === 'sessions' ? structuredClone(await originalGet(name)) : originalGet(name);
+  f.$.store.set = async (name, value) => {
+    if (name === 'sessions' && Object.keys(value).length > 30) throw new Error('store size exceeded');
+    return original(name, value);
+  };
+  await f.call({});
+  assert.ok(f.stored.get('sessions')['sample-session']);
+});

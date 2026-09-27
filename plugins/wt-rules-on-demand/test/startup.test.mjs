@@ -123,3 +123,24 @@ test('hostile inherited plugin data cannot redirect startup writes', async (t) =
   assert.deepEqual(await readdir(foreign), []);
   assert.ok((await readdir(join(s.config, 'plugins/data/wt-rules-on-demand/quality'))).includes('spawn-record.json'));
 });
+test('first quality run is visible and missing scopes and causes are named', async (t) => {
+  const s = await scope(t);
+  await writeFile(join(s.config, 'rules-on-demand/sample.md'), sample);
+  assert.match(start(s, { CLAUDE_PLUGIN_OPTION_ENABLED: 'true' }).stdout, /last successful check never/);
+  const data = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  await writeFile(join(data, 'latest.json'), JSON.stringify({ ok: true, complete: false, finishedAt: new Date().toISOString(), scopes: [], coverage: { applicableSamples: 2, unknownMigrationDates: ['project sample.md'] }, rollback: [] }));
+  const output = start(s, { CLAUDE_PLUGIN_OPTION_ENABLED: 'true' }).stdout;
+  assert.match(output, /scopes not checked/);
+  assert.match(output, /project sample.md/);
+});
+test('rollback warnings retain short reasons and fit the line budget', async (t) => {
+  const s = await scope(t);
+  await writeFile(join(s.config, 'rules-on-demand/sample.md'), sample);
+  const data = join(s.config, 'plugins/data/wt-rules-on-demand/quality');
+  await mkdir(data, { recursive: true });
+  await writeFile(join(data, 'latest.json'), JSON.stringify({ ok: true, complete: true, finishedAt: new Date().toISOString(), rollback: Array.from({ length: 20 }, (_, i) => ({ scope: 'user', rule: `rule-${i}.md`, action: 'would revert', reason: 'follow rate below threshold' })) }));
+  const output = start(s, { CLAUDE_PLUGIN_OPTION_ENABLED: 'true' }).stdout;
+  assert.match(output, /follow rate below threshold/);
+  assert.match(output, /\+\d+ more/);
+  assert.ok(output.split('\n')[0].length <= 400);
+});

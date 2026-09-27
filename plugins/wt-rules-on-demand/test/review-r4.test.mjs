@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { register, resetForSelftest, parseRuntimeRule } from '../hooks/hooks.js';
-import { normalize } from '../scripts/transcript-verdicts.mjs';
+import { normalize, resolveContext } from '../scripts/transcript-verdicts.mjs';
 import { qualityDataDir, readSpec } from '../scripts/rule-lifecycle-lib.mjs';
 import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -86,6 +86,18 @@ test('transcript normalization keeps isolation argument for input-regex parity',
   assert.equal(triggerMatches(trigger, { channel: 'tool', tool: use.name, input: argumentEvidence(use.input) }), true);
   assert.equal(argumentEvidence({ long: 'x'.repeat(SUBJECT_CAP * 3), isolation: 'worktree' }).length <= SUBJECT_CAP, true);
   assert.match(argumentEvidence({ long: 'x'.repeat(SUBJECT_CAP * 3), isolation: 'worktree' }), /isolation/);
+  const [nested] = normalize({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Agent', input: { isolation: 'worktree', nested: { secret: 'z'.repeat(SUBJECT_CAP * 4) } } }] } }, 1);
+  assert.ok(JSON.stringify(nested).length < SUBJECT_CAP * 2);
+  assert.match(nested.argumentEvidence, /isolation/);
+});
+
+test('configured delivery names do not prove runtime activity', () => {
+  const rule = { name: 'sample.md' };
+  const scope = { scope: 'user', rulesDir: '/config/rules-on-demand', rules: [rule] };
+  const context = { events: [{ kind: 'delivery', name: 'sample.md', line: 1, provenance: { toolUseId: 'call' } }] };
+  const resolved = resolveContext(context, [scope], { nonProofNames: ['sample.md'] });
+  assert.equal(resolved.deliveries.length, 1);
+  assert.equal(resolved.runtimeProofs.length, 0);
 });
 
 test('large subject is truncated consistently before trigger regex', () => {

@@ -35,4 +35,12 @@ test('compliance aggregation counts served separately from verdicts and flags mi
   assert.equal(rows['b.md'].reasons['classifier unavailable'], 1);
   assert.equal(rows['a.md'].reasons['no governed act'], 1);
   assert.match(run().stdout, /^none\.md\t2\tno check declared\t/m);
+  const extra = join(root, 'extra');
+  await mkdir(extra);
+  await writeFile(join(extra, 'broken.md'), rule('check').replace("check: 'agent-model'", "check: 'unsupported'"));
+  await writeFile(join(extra, 'custom.md'), rule('check'));
+  await writeFile(store, JSON.stringify({ served: { 'broken.md': { count: 1 }, 'custom.md': { count: 1 } } }));
+  const overridden = JSON.parse(run('--rules-dir', extra, '--json').stdout);
+  assert.match(overridden['broken.md'].check, /^invalid: unknown compliance check/);
+  assert.equal(overridden['custom.md'].check, 'declared');
 });

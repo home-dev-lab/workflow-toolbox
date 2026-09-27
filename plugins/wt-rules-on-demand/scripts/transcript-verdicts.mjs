@@ -96,7 +96,7 @@ async function loadScopes(scopes, migrationDate, lastChange, stats) {
 function matches(rule, use) {
   const input = use.input ?? {};
   return rule.triggers.some((trigger) => triggerMatches(trigger, { channel: 'tool', tool: use.name,
-    command: input.command, path: input.file_path ?? input.path, input: argumentEvidence(input) }));
+     command: input.command, path: input.file_path ?? input.path, input: use.argumentEvidence ?? argumentEvidence(input) }));
 }
 
 function blocks(text) {
@@ -132,8 +132,15 @@ export function normalize(record, line, cwd = '') {
   const base = { line, at, cwd: record.cwd ?? cwd, sessionId: record.sessionId };
   if (record.type === 'system' && record.subtype === 'compact_boundary') return [{ ...base, kind: 'compact' }];
   if (record.type === 'assistant') return (Array.isArray(record.message?.content) ? record.message.content : [])
-    .filter((part) => part?.type === 'tool_use').map((part) => ({ ...base, kind: 'use', id: part.id, name: part.name,
-        input: part.input && typeof part.input === 'object' ? Object.fromEntries(Object.entries(part.input).map(([key, value]) => [key, typeof value === 'string' ? bounded(value) : value])) : {}, messageId: record.message?.id }));
+     .filter((part) => part?.type === 'tool_use').map((part) => {
+       const input = part.input && typeof part.input === 'object' ? part.input : {};
+       return { ...base, kind: 'use', id: part.id, name: part.name, argumentEvidence: argumentEvidence(input),
+         input: Object.fromEntries(Object.entries(input).flatMap(([key, value]) => {
+           if (value === null || typeof value !== 'object') return [[key, typeof value === 'string' ? bounded(value) : value]];
+           const serialized = JSON.stringify(value);
+           return serialized?.length <= 1024 ? [[key, value]] : [];
+         })), messageId: record.message?.id };
+     });
   if (record.type === 'attachment' && record.attachment?.type === 'hook_additional_context')
     return blocks(textOf(record.attachment.content)).filter((block) => !block.fallback)
       .map((block) => ({ ...base, kind: 'delivery', name: block.name, provenance: { kind: 'attachment', toolUseId: (record.attachment.toolUseID ?? '').replace(/-context$/, ''), line, at } }));
@@ -151,7 +158,7 @@ export function normalize(record, line, cwd = '') {
   return [];
 }
 
-export function resolveContext(context, scopes) {
+export function resolveContext(context, scopes, { nonProofNames = [] } = {}) {
   const project = scopes.find((scope) => scope.scope === 'project' && scope.projectRoot === context.cwd);
   // A user scope applies when one of its config dirs (every dir sharing its physical rules dir) owns the projects dir
   // the transcript came from; a scope with no config dir, or the only one, applies to unowned transcripts too.
@@ -164,7 +171,7 @@ export function resolveContext(context, scopes) {
   const byName = new Map(effective.map((item) => [item.rule.name, item]));
   const calls = new Map(context.events.filter((event) => event.kind === 'use').map((event) => [event.id, event]));
   const deliveries = context.events.filter((event) => event.kind === 'delivery').map((event) => ({ ...event, owner: byName.get(event.name) })).filter((event) => event.owner);
-   return { effective, deliveries, calls, runtimeProofs: deliveries };
+    return { effective, deliveries, calls, runtimeProofs: deliveries.filter((delivery) => !nonProofNames.includes(delivery.name)) };
 }
 
 export function judge(context, resolved, path, stats, seen, now) {
@@ -195,7 +202,7 @@ export function judge(context, resolved, path, stats, seen, now) {
          else verdict = time < rule.lastChange ? 'trigger miss (superseded)' : 'trigger miss';
        }
       rows.push({ rule: rule.name, scope: scope.scope, rulesDir: scope.rulesDir, migrated: rule.migrated, phase,
-        checkVerdict: evaluated.verdict, triggerMatched: matches(rule, { name: call.name, input: call.input }), verdict, served,
+         checkVerdict: evaluated.verdict, triggerMatched: matches(rule, { name: call.name, input: call.input, argumentEvidence: call.argumentEvidence }), verdict, served,
         file: path, line: call.line, toolUseId: call.id, at: call.at, sessionId: call.sessionId, source: 'transcript',
         detail: evaluated.detail ?? '', ...(evaluated.segment !== undefined ? { segment: evaluated.segment } : {}), window: `${stats.days}d`,
         ...(!rule.migrated ? { note: 'no migration date' } : {}) });
@@ -204,7 +211,7 @@ export function judge(context, resolved, path, stats, seen, now) {
   return rows;
 }
 
-async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPrefixes, owners, migrationDate, lastChange, now }) {
+async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPrefixes, owners, migrationDate, lastChange, now, nonProofNames }) {
   let context = { start: 0, cwd: '', events: [], owners }, cwd = '', valid = 0, lineNumber = 0;
   const badBefore = stats.badLines;
   const flush = async () => {
@@ -214,7 +221,7 @@ async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPref
       if (physical && !scopes.some((scope) => scope.rulesDir === physical) && (await readdir(physical)).some((name) => name.endsWith('.md')))
         scopes.push(...await loadScopes([{ scope: 'project', projectRoot: cwd, rulesDir: physical, ledgerRoots: [cwd] }], migrationDate, lastChange, stats));
     }
-    rows.push(...judge(context, resolveContext(context, scopes), path, stats, seen, now));
+     rows.push(...judge(context, resolveContext(context, scopes, { nonProofNames }), path, stats, seen, now));
   };
   try {
     for await (const line of createInterface({ input: createReadStream(path, { encoding: 'utf8' }), crlfDelay: Infinity })) {
@@ -257,7 +264,7 @@ async function ownersOf(dir, scopes) {
   return owners.length || attributable < 2 ? owners : null;
 }
 
-export async function scanTranscripts({ projectsDirs, scopes, days = 7, now = Date.now(), discoverProjects = false, skipCwdPrefixes = ['/tmp'], migrationDateOf: migrationDate = migrationDateOf, lastChangeOf: lastChange = lastChangeOf }) {
+export async function scanTranscripts({ projectsDirs, scopes, days = 7, now = Date.now(), discoverProjects = false, skipCwdPrefixes = ['/tmp'], nonProofNames = [], migrationDateOf: migrationDate = migrationDateOf, lastChangeOf: lastChange = lastChangeOf }) {
   if (!Number.isFinite(days) || days <= 0) throw new Error('days must be a positive number');
   const stats = { filesRead: 0, filesFailed: 0, linesRead: 0, skipped: [], skippedOutsideWindow: 0, errors: [], badLines: 0, days, projects: new Set(), tmpProjects: new Set(), scopeErrors: [],
     coverage: { rulesParsed: 0, checkableRules: 0, unmeasuredRules: [], filesRead: 0, filesFailed: 0, badLines: 0, missingTimestamps: 0, unknownMigrationDates: [], unresolvedActs: {}, gitErrors: [], missingProjectsDirs: [], unownedProjectsDirs: [] } };
@@ -272,7 +279,7 @@ export async function scanTranscripts({ projectsDirs, scopes, days = 7, now = Da
     for (const path of await filesIn(dir, stats)) {
     try {
        if ((await stat(path)).mtimeMs < now - days * 86400000) { stats.skippedOutsideWindow++; continue; }
-        await scanFile(path, loaded, rows, stats, seen, { discover: discoverProjects, skipCwdPrefixes, owners: owners ?? [], migrationDate, lastChange, now });
+         await scanFile(path, loaded, rows, stats, seen, { discover: discoverProjects, skipCwdPrefixes, owners: owners ?? [], migrationDate, lastChange, now, nonProofNames });
     } catch (error) { stats.filesFailed++; if (stats.errors.length < 50) stats.errors.push(`${path}: ${error.code ?? error.message}`); }
     }
   }
@@ -315,7 +322,7 @@ export function summarise(rows) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-     const options = { projectsDirs: [], configDirs: [], scopes: [], ledgerRoots: [], days: 7, summary: false };
+      const options = { projectsDirs: [], configDirs: [], scopes: [], ledgerRoots: [], days: 7, summary: false, nonProofNames: process.env.WT_ROD_NON_PROOF_NAMES?.split(',').filter(Boolean) ?? [] };
     for (let i = 2; i < process.argv.length; i++) {
       const arg = process.argv[i];
        if (arg === '--projects-dir') options.projectsDirs.push(resolve(process.argv[++i]));
@@ -327,7 +334,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
            ? { projectRoot: basename(dirname(rulesDir)) === '.claude' ? dirname(dirname(rulesDir)) : dirname(rulesDir) } : {}) });
       }
       else if (arg === '--ledger-root') options.ledgerRoots.push(resolve(process.argv[++i]));
-      else if (arg === '--days') options.days = Number(process.argv[++i]);
+       else if (arg === '--days') options.days = Number(process.argv[++i]);
+       else if (arg === '--non-proof-name') options.nonProofNames.push(process.argv[++i]);
       else if (arg === '--out') options.out = resolve(process.argv[++i]);
       else if (arg === '--summary') options.summary = true;
       else throw new Error(`unknown option: ${arg}`);

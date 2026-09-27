@@ -56,3 +56,7 @@ For the windowed kinds, `window: 3` and `on-close: not applicable` are required;
 Bash triggers mask read-only mentions by default; `mentions: true` opts out.
 A rule is served once per main or subagent context, with independent counters;
 compaction resets that loop. `time_reserve` explicitly opts into re-serving.
+Pending compliance windows close with a compaction reason before the reset.
+Verdicts retain the injection time and the delivery channel; model classification
+uses bounded call arguments, while persisted verdict evidence keeps only a
+command head or file basename.

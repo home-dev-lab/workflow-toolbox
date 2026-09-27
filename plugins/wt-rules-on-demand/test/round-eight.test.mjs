@@ -52,7 +52,7 @@ test('transcript verdicts remain authoritative over old unproven store acts', as
   const ledger = JSON.parse((await readFile(ledgerFile, 'utf8')).trim());
   await writeFile(ledgerFile, `${JSON.stringify({ ...ledger, time: '2026-01-01T00:00:00.000Z' })}\n`);
   await writeFile(f.store, JSON.stringify({ sessions: { old: { last: '2026-01-02T00:00:00.000Z', contexts: { '0': {
-    served: { 'sample.md': 1 }, governedActs: [{ ruleIdentity: f.identity, at: '2026-01-02T00:00:00.000Z' }],
+     served: { 'sample.md': 1 }, governedActs: [{ rule: 'sample.md', at: '2026-01-02T00:00:00.000Z' }],
   } } } } }));
   const verdictFile = join(f.root, 'verdicts.jsonl');
   await writeFile(verdictFile, Array.from({ length: 5 }, () => JSON.stringify({ rule: 'sample.md', scope: 'project', rulesDir: f.rulesDir,
@@ -60,6 +60,7 @@ test('transcript verdicts remain authoritative over old unproven store acts', as
   const result = f.run('--verdicts', verdictFile, '--json');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout)[0].action, 'would revert');
+  assert.match(result.stderr, /legacy rows skipped: 1/);
 });
 
 test('store-only attention is visible on plain stdout', async (t) => {

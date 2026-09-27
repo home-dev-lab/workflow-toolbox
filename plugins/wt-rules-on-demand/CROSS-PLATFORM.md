@@ -30,3 +30,11 @@ Node CLIs use native `node:path` for disk paths. The Function Hooks module and
 every transitive import avoid Node builtins, using host capabilities instead.
 On POSIX a relative `~` is not shell-expanded by Node: home comes from `HOME`
 or `USERPROFILE`; no script interprets a literal tilde path.
+
+Additional dependencies: the rollback summary uses Node `crypto` SHA-256 over
+the physical project path to keep separate scope filenames; Node provides it on
+Windows and macOS as on Linux. Startup compares rule directories with `realpath`
+before reporting unchecked scopes, accommodating macOS path aliases and Windows
+short names. The proof CLI uses `stat` (which follows directory links on all three
+platforms) to reject a missing transcripts directory. Verdict summaries split
+both Windows and POSIX path separators to retain only the file basename.

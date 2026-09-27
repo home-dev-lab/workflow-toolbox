@@ -20,11 +20,13 @@ let storePath = '';
 let json = false;
 let project = process.cwd();
 let configOverride = '';
+const overrides = [];
 for (let index = 0; index < args.length; index += 1) {
   if (args[index] === '--json') json = true;
   else if (args[index] === '--store') storePath = args[++index] ?? '';
   else if (args[index] === '--project') project = args[++index] ?? '';
   else if (args[index] === '--config-dir') configOverride = args[++index] ?? '';
+  else if (args[index] === '--rules-dir') overrides.push(args[++index] ?? '');
   else {
     console.error(`unknown option: ${args[index]}`);
     process.exit(2);
@@ -33,7 +35,7 @@ for (let index = 0; index < args.length; index += 1) {
 const configDir = configOverride || configDirectory(process.env);
 if (!configDir) throw new Error('HOME or USERPROFILE required to locate config directory');
 const locations = ruleDirectories(project, configDir);
-const rulesDirs = [locations.project, locations.user];
+const rulesDirs = overrides.length ? overrides : [locations.project, locations.user];
 
 // Same key the hook uses for its served counters (hooks.js keyOf).
 const keyOf = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
@@ -59,8 +61,8 @@ async function declaredChecks() {
       try {
         const rule = parseRuntimeRule(name, await readFile(join(directory, name), 'utf8'));
         if (!declared.has(keyOf(name))) declared.set(keyOf(name), { name, checkable: Boolean(rule.compliance) });
-      } catch {
-        // A file the hook would skip declares nothing the hook could check.
+       } catch (error) {
+         if (!declared.has(keyOf(name))) declared.set(keyOf(name), { name, invalid: error.message });
       }
     }
   }
@@ -102,7 +104,8 @@ for (const [name, counts] of Object.entries(report)) {
   const applicable = counts.followed + counts['not followed'];
   counts.followRate = applicable ? counts.followed / applicable : null;
   const checkable = declared.get(keyOf(name))?.checkable ?? counts.injections > 0;
-  counts.check = checkable ? 'declared' : 'no check declared';
+   counts.check = checkable ? 'declared' : 'no check declared';
+   if (declared.get(keyOf(name))?.invalid) counts.check = `invalid: ${declared.get(keyOf(name)).invalid}`;
   if (checkable && counts.served > 0 && counts.injections === 0) counts.note = 'served, but no verdict recorded';
 }
 

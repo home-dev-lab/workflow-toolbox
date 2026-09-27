@@ -51,6 +51,9 @@ test('real adjacent trigger spec migrates unchanged real rule body, reverts and 
   assert.match(archive.replaceAll('\\', '/'), /rules-archive\/\d{4}-\d\d-\d\d-wt\/wt-delegation-ladder-at-act\.md$/);
   assert.equal(await readFile(archive, 'utf8'), body);
   assert.match(await readFile(join(root, '.claude/rules-on-demand-ledger.jsonl'), 'utf8'), /"action":"retire".*"time":/);
+  const last = JSON.parse((await readFile(join(root, '.claude/rules-on-demand-ledger.jsonl'), 'utf8')).trim().split('\n').at(-1));
+  assert.equal(last.rule, name);
+  assert.equal(last.from, '.claude/rules/wt/' + name);
   await assert.rejects(() => retireRule(root, `wt/${name}`, ''), /requires --reason/);
 });
 
@@ -200,7 +203,8 @@ test('manual rollback publishes its report under owned plugin data', async (t) =
    const result = spawnSync(process.execPath, [rollback, '--project', project, '--store', store, '--json'], { encoding: 'utf8', env: cleanEnv({ CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: data, CLAUDE_PLUGIN_ROOT: fileURLToPath(new URL('..', import.meta.url)) }) });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout)[0].action, 'reverted');
-  assert.equal(JSON.parse(await readFile(join(data, 'quality/rollback-latest.json'), 'utf8')).reverted[0].rule, 'sample.md');
+   const digest = createHash('sha256').update(project).digest('hex').slice(0, 12);
+   assert.equal(JSON.parse(await readFile(join(data, `quality/rollback-project-${digest}-latest.json`), 'utf8')).reverted[0].rule, 'sample.md');
 });
 
 test('retire honours an explicit static subpath when an on-demand basename also exists', async (t) => {
@@ -289,16 +293,18 @@ test('quality report identifies explicitly unproven migrations without editing t
   const file = join(project, '.claude/rules-on-demand/sample.md');
   const before = await readFile(file);
   const ledgerBefore = await readFile(join(project, '.claude/rules-on-demand-ledger.jsonl'));
+  await writeFile(join(project, '.claude/rules-on-demand-ledger.jsonl'), Buffer.concat([ledgerBefore, Buffer.from('not-json\n')]));
   await writeFile(join(projects, 'sample.jsonl'), JSON.stringify({ type: 'assistant', cwd: project, timestamp: new Date().toISOString(), message: { content: [{ type: 'tool_use', id: 'fixture-agent', name: 'Agent', input: { model: 'sonnet' } }] } }) + '\n');
   const data = join(config, 'plugins/data/wt-rules-on-demand/quality');
    const run = spawnSync(process.execPath, [quality, '--project', project, '--config-dir', config, '--data-dir', data], { encoding: 'utf8', timeout: 60_000, env: cleanEnv() });
   assert.equal(run.status, 0, run.stderr);
   const report = JSON.parse(await readFile(join(data, 'latest.json'), 'utf8'));
   assert.equal(report.ok, true);
+  assert.equal(report.coverage.malformedLedgerLines, 1);
   assert.ok(!(await readdir(data)).some((name) => name.endsWith('.tmp')));
   assert.deepEqual(report.unproven, [{ scope: 'project', rule: 'sample.md', reason: 'no historical transcript' }]);
   assert.deepEqual(await readFile(file), before);
-  assert.deepEqual(await readFile(join(project, '.claude/rules-on-demand-ledger.jsonl')), ledgerBefore);
+  assert.deepEqual(await readFile(join(project, '.claude/rules-on-demand-ledger.jsonl')), Buffer.concat([ledgerBefore, Buffer.from('not-json\n')]));
 });
 
 test('automatic quality pipeline reports would-revert but leaves entire rule tree untouched', async (t) => {
