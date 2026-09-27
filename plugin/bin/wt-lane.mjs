@@ -83,6 +83,7 @@ export function parse(argv) {
   // opencode's built-in effort axis; an unknown name falls back SILENTLY to the default on the opencode side, so it is validated here.
   if (out.variant !== undefined && out.variant !== null && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(out.variant)) return { error: '--variant must be a plain variant name' }
   out.dir = path.resolve(out.dir)
+  out.requestedDir = out.dir
   try { out.dir = realpathSync(out.dir) } catch { /* preserve the existing not-a-directory diagnostic */ }
   out.brief = path.resolve(out.brief)
   if (out.briefCleanupDir) out.briefCleanupDir = path.resolve(out.briefCleanupDir)
@@ -151,9 +152,13 @@ function formatAge(ageMs) {
   return `${Math.floor(seconds / 60)}m${seconds % 60}s`
 }
 
-function readBriefEvidence(file, worktree) {
+function readBriefEvidence(file, worktree, requestedDir = worktree) {
   {
-    const bytes = readWorktreeRegular(file, null, laneWritablePath(worktree, file) ? worktree : path.dirname(file), { unsandboxed: laneUnsandboxedAtStart() })
+    let anchor = path.dirname(file)
+    if (laneWritablePath(worktree, file)) {
+      anchor = file.startsWith(`${requestedDir}${path.sep}`) ? requestedDir : worktree
+    }
+    const bytes = readWorktreeRegular(file, null, anchor, { unsandboxed: laneUnsandboxedAtStart() })
     if (bytes === null) throw new Error('brief must be a protected regular file')
     const stat = statSync(file)
     const heading = bytes.toString('utf8').split(/\r?\n/).find((line) => /^#(?:\s|$)/.test(line)) ?? '(no Markdown heading)'
@@ -417,7 +422,7 @@ async function main() {
     }
     process.once('beforeExit', () => { if (!workerSpawnedChild) rmSync(opts.brief, { force: true }) })
   } else {
-    try { briefEvidence = readBriefEvidence(opts.brief, opts.dir) } catch (error) {
+    try { briefEvidence = readBriefEvidence(opts.brief, opts.dir, opts.requestedDir) } catch (error) {
       process.stderr.write(`wt-lane: --brief is unreadable: ${opts.brief} (${error instanceof Error ? error.message : String(error)})\n`)
       return 2
     }

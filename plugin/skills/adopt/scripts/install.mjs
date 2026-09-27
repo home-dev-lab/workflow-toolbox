@@ -683,7 +683,7 @@ const { laneUnsandboxedAtStart, laneWritableForLaunch } = sandboxModule ?? { lan
   const integration = path.join(root, 'bin', 'lib', 'lane-integrate.mjs')
   return import(pathToFileURL(integration).href)
 }`)
-  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, closeSync, constants, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, closeSync, constants, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { fileURLToPath, pathToFileURL } from 'node:url'")
+  adopted = replaceExactlyOnce(adopted, "import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'", "import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'\nimport os from 'node:os'\nimport { fileURLToPath, pathToFileURL } from 'node:url'")
   const relativeRuntimeImport = adopted.match(/import .* from '\.\/lib\/(?:lane-consent-|opencode-skill-fence)[^']*'/)?.[0]
   if (relativeRuntimeImport) {
     fail(`launcher transformation left a relative runtime import in ${src}: ${relativeRuntimeImport.slice(0, 60)}`)

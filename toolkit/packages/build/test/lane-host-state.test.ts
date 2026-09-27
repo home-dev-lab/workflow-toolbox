@@ -77,6 +77,17 @@ it.skipIf(process.platform === 'win32')('refuses intermediate symlinks for workt
   expect(readLifecycleRegular(join(worktree, '.lane', 'report.md'))).toBeNull()
 })
 
+it.skipIf(process.platform === 'win32')('accepts an operator worktree alias but refuses symlinks below its anchor', () => {
+  const { dir, worktree } = fixture()
+  const alias = join(dir, 'alias')
+  symlinkSync(worktree, alias, 'dir')
+  expect(readWorktreeRegular(join(alias, 'brief.md'), 'utf8', alias)).toBe('# brief\n')
+  const outside = join(dir, 'outside'); mkdirSync(outside)
+  writeFileSync(join(outside, 'report.md'), 'HOST-ONLY FIXTURE CONTENT')
+  symlinkSync(outside, join(worktree, '.lane', 'planted'), 'dir')
+  expect(readWorktreeRegular(join(alias, '.lane', 'planted', 'report.md'), 'utf8', alias)).toBeNull()
+})
+
 it.skipIf(process.platform !== 'linux')('does not block on FIFO lifecycle plan or tdd brief', () => {
   const { worktree } = fixture()
   for (const name of ['plan.md', 'tdd-brief.md']) {

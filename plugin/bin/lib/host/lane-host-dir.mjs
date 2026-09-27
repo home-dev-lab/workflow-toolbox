@@ -102,9 +102,11 @@ export function readWorktreeRegular(file, encoding = 'utf8', root = null, { unsa
   try {
     const laneMarker = `${path.sep}.lane${path.sep}`
     const inferredRoot = path.resolve(file).indexOf(laneMarker)
-    const anchor = realpathSync.native(root ?? (inferredRoot < 0 ? path.dirname(file) : path.resolve(file).slice(0, inferredRoot)))
-    const relative = path.relative(anchor, path.resolve(file))
+    const requestedRoot = path.resolve(root ?? (inferredRoot < 0 ? path.dirname(file) : path.resolve(file).slice(0, inferredRoot)))
+    const relative = path.relative(requestedRoot, path.resolve(file))
     if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null
+    const anchor = realpathSync.native(requestedRoot)
+    const protectedFile = path.join(anchor, relative)
     let current = anchor
     const components = relative.split(path.sep)
     for (const part of components.slice(0, -1)) {
@@ -112,9 +114,9 @@ export function readWorktreeRegular(file, encoding = 'utf8', root = null, { unsa
       const info = lstatSync(current)
       if (info.isSymbolicLink() || !info.isDirectory()) return null
     }
-    const leaf = lstatSync(file)
+    const leaf = lstatSync(protectedFile)
     if (!leaf.isFile() || leaf.isSymbolicLink()) return null
-    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
+    fd = openSync(protectedFile, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
     const opened = fstatSync(fd)
     if (!opened.isFile() || opened.dev !== leaf.dev || opened.ino !== leaf.ino) return null
     return encoding === null ? readFileSync(fd) : readFileSync(fd, encoding)

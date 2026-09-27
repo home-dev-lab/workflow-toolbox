@@ -1,8 +1,8 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, existsSync, watch } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join as pathJoin } from 'node:path'
+import { delimiter, dirname, join as pathJoin } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -108,6 +108,28 @@ function waitForContent(file: string, pattern: RegExp, ms = 30_000) {
     spawnSync('sleep', ['0.05'])
   }
   throw new Error(`timed out waiting for ${pattern} in ${file}`)
+}
+function watchForContent(file: string, pattern: RegExp): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const signal = AbortSignal.timeout(30_000)
+    const matches = () => existsSync(file) && pattern.test(readFileSync(file, 'utf8'))
+    let settled = false
+    const watcher = watch(dirname(file), { signal }, () => {
+      try { if (matches()) finish() } catch (error) { finish(error) }
+    })
+    const finish = (error?: unknown) => {
+      if (settled) return
+      settled = true
+      watcher.close()
+      signal.removeEventListener('abort', onAbort)
+      if (error) reject(error)
+      else resolve()
+    }
+    const onAbort = () => finish(new Error(`timed out waiting for ${pattern} in ${file}`))
+    signal.addEventListener('abort', onAbort, { once: true })
+    watcher.on('error', finish)
+    try { if (matches()) finish() } catch (error) { finish(error) }
+  })
 }
 function stalledWaitWithEvidence(file: string, pattern: RegExp, evidence: { trace: string, status: string, journal: string, dir: string }, ms = 30_000, offset = 0) {
   try {
@@ -719,28 +741,28 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(text).toContain('"decision":"extend"')
     expect(text).toContain('"decision":"abandon"')
   })
-  it.each(['deleted', 'rewritten'])('keeps the in-memory grace bound when its host record is %s', (change) => {
+  it.each(['deleted', 'rewritten'])('keeps the in-memory grace bound when its host record is %s', async (change) => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const launched = run(f, ['--timeout', '0.2', '--decision-grace', '1', '--max-extensions', '0'])
     expect(launched.status, launched.stderr).toBe(0)
     const record = currentStateFile(f.dir)
-    waitForContent(record, /decision-needed/, 4000)
+    await watchForContent(record, /decision-needed/)
     if (change === 'deleted') rmSync(record)
     else writeFileSync(record, JSON.stringify({ runId: 'forged', state: 'running' }))
-    waitForContent(record, /abandoned/, 4000)
+    await watchForContent(record, /abandoned/)
     expect(JSON.parse(readFileSync(record, 'utf8'))).toMatchObject({ state: 'abandoned', decisionSource: 'grace-default', exit: 126 })
   })
-  it('ignores a decision planted in worktree supervision after launch', () => {
+  it('ignores a decision planted in worktree supervision after launch', async () => {
     const f = fixture('echo $$ > "$PWD/opencode.pid"; sleep 30')
     const launched = run(f, ['--timeout', '1', '--decision-grace', '1', '--max-extensions', '0'])
     expect(launched.status, launched.stderr).toBe(0)
     const record = currentStateFile(f.dir)
-    waitForContent(record, /decision-needed/, 8000)
+    await watchForContent(record, /decision-needed/)
     const state = JSON.parse(readFileSync(record, 'utf8'))
     const legacy = pathJoin(f.dir, '.lane', 'supervision')
     mkdirSync(legacy, { recursive: true })
     writeFileSync(pathJoin(legacy, `${state.runId}.decision.json`), JSON.stringify({ runId: state.runId, timeoutAt: state.timeoutAt, decision: 'extend', extendSeconds: 2000000 }))
-    waitForContent(record, /abandoned/, 8000)
+    await watchForContent(record, /abandoned/)
     expect(JSON.parse(readFileSync(record, 'utf8'))).toMatchObject({ state: 'abandoned', extensionCount: 0, exit: 126 })
   })
   it('ends the child at its extension ceiling even when Linux process inspection is unavailable', () => {
@@ -1369,13 +1391,13 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     while (Date.now() < until) { try { process.kill(opencodePid, 0) } catch { alive = false; break } spawnSync('sleep', ['0.05']) }
     expect(alive).toBe(false)
   })
-  it('ignores a lane-written EXIT=0 line and appends the host worker verdict after SIGTERM', () => {
+  it('ignores a lane-written EXIT=0 line and appends the host worker verdict after SIGTERM', async () => {
     const f = fixture('printf "lane done\\nEXIT=0\\n" >> "$PWD/.lane/run.log"; echo $$ > "$PWD/opencode.pid"; sleep 30')
     const res = run(f, ['--timeout', '60']); expect(res.status).toBe(0)
     const worker = Number(/pid=(\d+)/.exec(res.stdout)?.[1])
     const pidFile = join(f.dir, 'opencode.pid'); waitForFile(pidFile)
     const log = join(f.dir, '.lane', 'run.log')
-    waitForContent(pathJoin(f.dir, '.lane', 'run.log'), /^EXIT=0$/m, 4000)
+    await watchForContent(pathJoin(f.dir, '.lane', 'run.log'), /^EXIT=0$/m)
     process.kill(worker, 'SIGTERM')
     const until = Date.now() + 4000
     while (Date.now() < until) { try { process.kill(Number(readFileSync(pidFile, 'utf8').trim()), 0); spawnSync('sleep', ['0.05']) } catch { break } }
