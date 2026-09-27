@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error Function-hook modules ship as host-loaded JavaScript.
 import { COLLECTOR_TIMEOUT_MS, fileUrlPath, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
@@ -516,7 +518,9 @@ describe('What is running collector seam', () => {
       const lane = join(paths.suiteRoot, 'worktrees', 'queued-pilot', '.lane')
       mkdirSync(lane, { recursive: true })
       writeFileSync(join(lane, `card-${cardId}.md`), '# Queued SDK pilot\n')
-      writeFileSync(join(lane, 'admission.json'), JSON.stringify({
+      const host = laneHostDir(join(paths.suiteRoot, 'worktrees', 'queued-pilot'))
+      mkdirSync(host, { recursive: true })
+      writeFileSync(join(host, 'admission.json'), JSON.stringify({
         state: 'queued', cardId, position: 2, waiting: { kind: 'load', load: 14.5, cores: 12 },
       }))
 

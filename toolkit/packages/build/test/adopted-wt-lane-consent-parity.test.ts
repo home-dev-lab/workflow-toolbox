@@ -6,6 +6,8 @@ import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { resolveConsent } from '../../../../plugin/bin/lib/lane-consent-check-core.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const INSTALLER = join(REPO_ROOT, 'plugin/skills/adopt/scripts/install.mjs')
@@ -32,7 +34,7 @@ const CONSENT_MATRIX_TIMEOUT_MS = CHILD_TIMEOUT_MS * CONSENT_ACCOUNTS.length * C
 const SUITE_LOCK_CHILD_TIMEOUT_MS = CHILD_TIMEOUT_MS * 3 + 15_000
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'project')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
 })
 
 function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = CHILD_TIMEOUT_MS) {
@@ -46,7 +48,7 @@ function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutM
   if (result.error) {
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim().split(/\r?\n/).at(-1) || '<no output>'
     const dirIndex = args.indexOf('--dir')
-    const log = dirIndex >= 0 ? join(args[dirIndex + 1]!, '.lane', 'run.log') : null
+    const log = dirIndex >= 0 ? join(laneHostDir(args[dirIndex + 1]!), 'run.log') : null
     let laneTail = '<unavailable>'
     try { laneTail = readFileSync(log!, 'utf8').trim().split(/\r?\n/).slice(-8).join(' | ') || '<empty>' } catch {}
     throw new Error(`${name} failed after ${timeoutMs}ms: ${result.error.message}; last output: ${output}; lane log tail: ${laneTail}`)
@@ -138,7 +140,7 @@ describe('adopted wt-lane consent resolver', () => {
   it('includes the durable lane log tail when a launcher times out', () => {
     const project = mkdtempSync(join(tmpdir(), 'wt-adopted-timeout-')); roots.push(project)
     mkdirSync(join(project, '.lane'))
-    writeFileSync(join(project, '.lane', 'run.log'), 'first\n2026-09-17T00:00:00.000Z stage=inspect-launcher-start\n')
+    mkdirSync(laneHostDir(project), { recursive: true }); writeFileSync(join(laneHostDir(project), 'run.log'), 'first\n2026-09-17T00:00:00.000Z stage=inspect-launcher-start\n')
     expect(() => runChild(
       'fixture launcher',
       ['--input-type=module', '--eval', 'setTimeout(() => {}, 30_000)', '--', '--dir', project],

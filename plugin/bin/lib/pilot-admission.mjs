@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync
 import { availableParallelism, homedir, loadavg } from 'node:os'
 import { join } from 'node:path'
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
+import { ensureLaneHostDir } from './host/lane-host-dir.mjs'
 
 const POLL_MS = 2_000
 let writeSerial = 0
@@ -122,11 +123,10 @@ async function awaitPilotAdmission(options) {
   if (!Number.isSafeInteger(maxActive) || maxActive <= 0) throw new Error('sdk_pilot_max_active must be a positive integer')
   const root = options.root ?? defaultRoot(env)
   const entries = join(root, 'entries')
-  const statusFile = join(options.worktree, '.lane', 'admission.json')
+  const statusFile = join(ensureLaneHostDir(options.worktree), 'admission.json')
   const now = options.now ?? Date.now
   const isAlive = options.isAlive ?? pidAlive
   mkdirSync(entries, { recursive: true, mode: 0o700 })
-  mkdirSync(join(options.worktree, '.lane'), { recursive: true })
   const enqueuedAt = now()
   const id = `${String(options.card).replace(/[^A-Za-z0-9_-]/g, '_')}-${options.pid ?? process.pid}-${enqueuedAt}`
   const record = { id, cardId: String(options.card), pid: options.pid ?? process.pid, worktree: options.worktree, enqueuedAt, state: 'queued', position: null, waiting: { kind: 'fifo' }, statusFile, file: join(entries, `${id}.json`) }

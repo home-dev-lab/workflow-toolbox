@@ -3,6 +3,8 @@ import { rmSync } from 'node:fs'
 import path from 'node:path'
 import { appendSupervisorJournal, classifyLane, readCurrentSupervision, supervisionPaths, terminateLane, writeJsonAtomic } from './lib/lane-supervisor-core.mjs'
 import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
+import { laneHostDir } from './lib/host/lane-host-dir.mjs'
+import { legacySupervision } from './lib/lane-supervisor-core.mjs'
 
 function usage() {
   return 'Usage: node wt-lane-control.mjs --dir <worktree> [--slot <name>] --decision extend|abandon [--extend <seconds>] [--owner-token <token>] [--reason <text>]'
@@ -22,7 +24,7 @@ function parse(argv) {
   }
   if (!out.dir || !['extend', 'abandon'].includes(out.decision)) return { error: 'required --dir and --decision extend|abandon' }
   if (out.slot !== undefined && (typeof out.slot !== 'string' || !/^[A-Za-z0-9._-]+$/.test(out.slot))) return { error: '--slot must contain only letters, digits, dot, underscore, or hyphen' }
-  if (out.extendSeconds !== null && (!Number.isFinite(out.extendSeconds) || out.extendSeconds <= 0)) return { error: '--extend must be positive seconds' }
+  if (out.extendSeconds !== null && (!Number.isFinite(out.extendSeconds) || out.extendSeconds <= 0 || out.extendSeconds > 86400)) return { error: '--extend must be between 1 and 86400 seconds' }
   out.dir = path.resolve(out.dir)
   return out
 }
@@ -32,7 +34,7 @@ function main() {
   if (options.help) { process.stdout.write(`${usage()}\n`); return 0 }
   if (options.error) { process.stderr.write(`wt-lane-control: ${options.error}\n${usage()}\n`); return 2 }
   const state = readCurrentSupervision(options.dir, options.slot)
-  if (!state) { process.stderr.write(`wt-lane-control: no readable supervised lane at ${options.dir}\n`); return 1 }
+  if (!state) { process.stderr.write(legacySupervision(options.dir).length ? `wt-lane-control: legacy lane supervision in ${options.dir} ignored (written by a pre-upgrade launcher; it lives in lane-writable space)\n` : `wt-lane-control: no readable supervised lane at ${options.dir}\n`); return legacySupervision(options.dir).length ? 2 : 1 }
   if (!['session', 'pilot'].includes(state.owner)) { process.stderr.write('wt-lane-control: refused: lane owner is unknown\n'); return 1 }
   const ownsLane = state.owner === 'session'
     ? Boolean(state.ownerSessionId && process.env.CLAUDE_CODE_SESSION_ID === state.ownerSessionId)
@@ -40,22 +42,25 @@ function main() {
   if (!ownsLane) { process.stderr.write('wt-lane-control: refused: caller is not the recorded owner\n'); return 1 }
   const verdict = classifyLane(state)
   if (!['decision-needed', 'worker-gone-child-alive'].includes(verdict.status) || (verdict.status === 'decision-needed' && !state.timeoutAt)) { process.stderr.write(`wt-lane-control: refused: no current decision point (${verdict.status})\n`); return 1 }
+  if (verdict.status === 'decision-needed') {
+    writeJsonAtomic(supervisionPaths(options.dir, state.runId, options.slot).decision, { version: 1, runId: state.runId, timeoutAt: state.timeoutAt, decision: options.decision, extendSeconds: options.extendSeconds, reason: options.reason, decidedAt: new Date().toISOString() })
+    process.stdout.write(`decision=${options.decision}\nrun=${state.runId}\n`)
+    return 0
+  }
   if (options.decision === 'abandon') {
     const stateFile = supervisionPaths(options.dir, state.runId, options.slot).record
-    const abandoned = { ...state, state: 'abandoned', decision: 'abandon', decisionSource: 'owner', decidedAt: new Date().toISOString() }
+    const abandoned = { ...state, state: 'abandoned', decision: 'abandon', decisionSource: 'owner', exit: 126, decidedAt: new Date().toISOString() }
     const dataDir = path.join(resolvePluginDataDir({ env: process.env }).dir, 'lane-supervisor')
     const journal = (event) => { try { appendSupervisorJournal(dataDir, event) } catch {} }
     journal({ event: 'decision', runId: state.runId, decision: 'abandon', source: 'owner', pid: state.childPid, worktree: state.worktree, owner: state.owner, reason: options.reason ?? null })
     const result = terminateLane(state, { source: 'control', journal, recordWorktree: options.dir, markTerminal: (stage) => writeJsonAtomic(stateFile, stage === 'terminal' ? abandoned : { ...state, state: 'terminating', decision: 'abandon', decisionSource: 'owner', decidedAt: abandoned.decidedAt }) })
     if (!result.killed && result.reason !== 'already-gone') { process.stderr.write(`wt-lane-control: refused: ${result.reason}\n`); return 1 }
-    rmSync(path.join(options.dir, '.lane', 'brief-snapshots', `${state.runId}.md`), { force: true })
+    rmSync(path.join(laneHostDir(options.dir), 'brief-snapshots', `${state.runId}.md`), { force: true })
     process.stdout.write(`decision=abandon\nrun=${state.runId}\n`)
     return 0
   }
-  if (verdict.status !== 'decision-needed') { process.stderr.write('wt-lane-control: refused: launcher is gone; only abandon is available\n'); return 1 }
-  writeJsonAtomic(supervisionPaths(options.dir, state.runId, options.slot).decision, { version: 1, runId: state.runId, timeoutAt: state.timeoutAt, decision: options.decision, extendSeconds: options.extendSeconds, reason: options.reason, decidedAt: new Date().toISOString() })
-  process.stdout.write(`decision=${options.decision}\nrun=${state.runId}\n`)
-  return 0
+  process.stderr.write('wt-lane-control: refused: launcher is gone; only abandon is available\n')
+  return 1
 }
 
 process.exitCode = main()

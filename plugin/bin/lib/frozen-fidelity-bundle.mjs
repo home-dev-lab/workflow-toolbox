@@ -5,6 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { treeSignature } from './gate-evidence.mjs'
 import { PHASES } from './lifecycle-state-machine.mjs'
+import { laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
 
 const MANIFEST = 'fidelity-manifest.json'
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex')
@@ -100,6 +101,13 @@ function validBase(root, base) {
 }
 
 function readEntry(root, name, snapshot, otherFiles = new Set()) {
+  if (recognizedKind(name) === 'lane') {
+    const source = path.join(laneHostDir(root), path.basename(name))
+    const stat = fs.lstatSync(source)
+    if (!stat.isFile()) throw new Error(`fidelity bundle refuses non-file input: ${name}`)
+    const bytes = fs.readFileSync(source)
+    return { name, sha256: sha256(bytes), bytes: bytes.length, snapshot, ...receiptFields(name, bytes, otherFiles) }
+  }
   const rootReal = fs.realpathSync(root)
   const parentReal = fs.realpathSync(path.dirname(path.join(root, name)))
   if (!within(rootReal, parentReal)) throw new Error(`fidelity bundle input escapes root: ${name}`)
@@ -113,7 +121,8 @@ function readEntry(root, name, snapshot, otherFiles = new Set()) {
     return { name, kind: 'symlink', evidence, target, sha256: sha256(target), snapshot }
   }
   if (!stat.isFile()) throw new Error(`fidelity bundle refuses non-file input: ${name}`)
-  const bytes = fs.readFileSync(source)
+  const bytes = readWorktreeRegular(source, null)
+  if (bytes === null) throw new Error(`fidelity bundle refuses unprotected input: ${name}`)
   return { name, sha256: sha256(bytes), bytes: bytes.length, snapshot, ...receiptFields(name, bytes, otherFiles) }
 }
 
@@ -150,7 +159,8 @@ export function freezeFidelityBundle({ root, outDir, card, session, base, head, 
   const entries = [...files].sort().map((name) => readEntry(root, name, snapshot, explicitOther))
   for (const entry of entries) {
     if (entry.kind === 'symlink') continue
-    const bytes = fs.readFileSync(path.join(root, entry.name))
+    const bytes = entry.kind === 'lane' ? fs.readFileSync(path.join(laneHostDir(root), path.basename(entry.name))) : readWorktreeRegular(path.join(root, entry.name), null)
+    if (bytes === null) throw new Error(`fidelity bundle refuses unprotected input: ${entry.name}`)
     const target = path.join(outDir, entry.name)
     fs.mkdirSync(path.dirname(target), { recursive: true })
     fs.writeFileSync(target, bytes, { flag: 'wx' })

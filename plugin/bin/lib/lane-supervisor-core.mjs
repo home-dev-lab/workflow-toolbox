@@ -1,6 +1,7 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import { ensureLaneHostDir, laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 const DARWIN_PROCESS_TABLE_TTL_MS = 500
@@ -369,12 +370,15 @@ export const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}
 
 export function readLogTail(file, maxBytes = 2048) {
   try {
+    const fd = openSync(file, 'r')
+    try {
+    if (!statSync(file).isFile()) return ''
     const size = statSync(file).size
     const length = Math.min(size, maxBytes)
     const buffer = Buffer.alloc(length)
-    const fd = openSync(file, 'r')
-    try { readSync(fd, buffer, 0, length, size - length) } finally { closeSync(fd) }
+    readSync(fd, buffer, 0, length, size - length)
     return buffer.toString('utf8')
+    } finally { closeSync(fd) }
   } catch { return '' }
 }
 
@@ -445,7 +449,7 @@ export function claimCurrentSupervision(paths, runId, { writePointer = writeJson
 export function supervisionPaths(root, runId = null, requestedSlot = undefined) {
   const slot = requestedSlot === undefined ? process.env.WT_LANE_SUPERVISION_SLOT ?? null : requestedSlot
   if (slot !== null && !/^[A-Za-z0-9._-]+$/.test(slot)) throw new Error(`invalid supervision slot: ${slot}`)
-  const dir = path.join(root, '.lane', slot ? 'supervision-' + slot : 'supervision')
+  const dir = path.join(ensureLaneHostDir(root), slot ? 'supervision-' + slot : 'supervision')
   return {
     dir,
     pointer: path.join(dir, 'current.json'),
@@ -456,7 +460,7 @@ export function supervisionPaths(root, runId = null, requestedSlot = undefined) 
 
 export function supervisionSlots(root) {
   let names
-  names = directoryEntries(path.join(root, '.lane'))
+  try { names = directoryEntries(laneHostDir(root)) } catch { return [] }
   if (names === null) return []
   return names
     .filter((entry) => entry.isDirectory() && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))
@@ -465,6 +469,24 @@ export function supervisionSlots(root) {
       if (left === null) return -1
       if (right === null) return 1
       return left.localeCompare(right)
+    })
+}
+
+export function legacySupervision(root) {
+  try { if (lstatSync(path.join(root, '.lane')).isSymbolicLink()) return [{ slot: null, record: null }] } catch { return [] }
+  const entries = directoryEntries(path.join(root, '.lane')) ?? []
+  return entries.filter((entry) => /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))
+    .map((entry) => {
+      if (!entry.isDirectory()) return { slot: null, record: null }
+      const slot = entry.name === 'supervision' ? null : entry.name.slice('supervision-'.length)
+      const dir = path.join(root, '.lane', entry.name)
+      const pointer = readWorktreeRegular(path.join(dir, 'current.json'))
+      let record = null
+      try {
+        const id = JSON.parse(pointer).runId
+        if (/^\d+-\d+$/.test(id)) record = JSON.parse(readWorktreeRegular(path.join(dir, `${id}.json`)))
+      } catch {}
+      return { slot, record }
     })
 }
 
