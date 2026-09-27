@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { cleanEnv } from './clean-env.mjs';
 
 test('prove-triggers counts every trigger, ignores mentions, follows transcript symlinks', async () => {
@@ -32,5 +32,8 @@ test('prove-triggers counts every trigger, ignores mentions, follows transcript 
     assert.equal(report.matches, 2);
     assert.equal(report.skipped, 0);
     assert.equal(await readFile(join(rules, 'sample.md'), 'utf8'), 'Synthetic body.\n');
+    const missing = spawnSync(process.execPath, [script, 'prove-triggers', 'sample.md', '--project', root, '--spec', spec, '--transcripts', join(root, 'absent')], { encoding: 'utf8', env: cleanEnv() });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /transcripts directory does not exist/);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
