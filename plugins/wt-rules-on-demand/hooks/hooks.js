@@ -327,7 +327,7 @@ export const register = (on, options) => {
      await rulesFor($, ctx, e.cwd ?? '.');
     await evaluate($, ctx, e, loop);
     if (textOf(e) === null) for (const rule of ctx.rules) {
-      if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.tool.test(e.tool) && trigger.input))
+       if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.tool.test(bounded(e.tool)) && trigger.input))
         await notice($, `${rule.name}: input-regex trigger not fired, the ${e.tool} call carried no input`);
     }
     const chosen = selected(ctx.rules, e, false);

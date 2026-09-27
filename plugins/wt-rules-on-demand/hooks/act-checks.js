@@ -39,7 +39,7 @@ export function classify(name, input = {}) {
   }
   if (name === 'Bash' && typeof input.command === 'string') {
     const acts = [];
-    const segments = executableSegments(maskReadOnlyMentions(input.command));
+    const segments = executableSegments(maskReadOnlyMentions(bounded(input.command)));
     for (const [segment, item] of segments.entries()) {
     const cmd = item.text;
     const invocation = `${item.head} ${item.args.join(' ')}`;

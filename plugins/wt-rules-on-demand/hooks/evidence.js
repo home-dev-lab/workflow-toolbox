@@ -39,7 +39,14 @@ export function argumentEvidence(input) {
 // Alternatives must be told apart by a fixed-width prefix: at some position their character sets are disjoint.
 // Character-set disjointness is decided by sampling every code point 0-255, the code points each atom names (and
 // their neighbours, so range endpoints are covered) and a fixed set of non-ASCII representatives; an atom whose set
-// cannot be sampled (a property escape, a backreference) is treated as overlapping everything.
+// cannot be sampled (a property escape) is treated as overlapping everything. Under ignore-case, non-ASCII class
+// ranges are refused instead of relying on the samples to model Unicode folding.
+
+const PATTERN_CAP = 8192;
+const REPETITION_CAP = 1024;
+const DEPTH_CAP = 64;
+const ANALYSIS_CAP = 16384;
+const COMPARISON_CAP = 1_000_000;
 
 const quantifierAt = (text, at) => {
   const brace = /^\{(\d+)(?:(,)(\d*))?\}/.exec(text.slice(at));
@@ -48,9 +55,11 @@ const quantifierAt = (text, at) => {
   else if (text[at] === '+') [min, max, length] = [1, Infinity, 1];
   else if (text[at] === '?') [min, max, length] = [0, 1, 1];
   else if (brace) {
-    let upper = Number(brace[1]);
+    const lower = Number(brace[1]);
+    let upper = lower;
     if (brace[2]) upper = brace[3] === '' ? Infinity : Number(brace[3]);
-    [min, max, length] = [Number(brace[1]), upper, brace[0].length];
+    if (!Number.isSafeInteger(lower) || lower > REPETITION_CAP || upper !== Infinity && (!Number.isSafeInteger(upper) || upper > REPETITION_CAP)) throw new Error('repetition count exceeds analysis budget');
+    [min, max, length] = [lower, upper, brace[0].length];
   }
   else return { min: 1, max: 1, length: 0 };
   if (text[at + length] === '?') length++;
@@ -58,21 +67,22 @@ const quantifierAt = (text, at) => {
 };
 
 // Escape shapes, longest first; an escape matching none of them (a backslash before a line break) fails the parse.
-const ESCAPES = [/^\\u\{[\da-f]+\}/i, /^\\u[\da-f]{4}/i, /^\\x[\da-f]{2}/i, /^\\c[a-z]/i, /^\\k<[^>]+>/, /^\\[pP]\{[^}]+\}/,
+const ESCAPES = [/^\\u[\da-f]{4}/i, /^\\x[\da-f]{2}/i, /^\\c[a-z]/i, /^\\k<[^>]+>/, /^\\[pP]\{[^}]+\}/,
   /^\\[1-9]\d*/, /^\\./];
 
-function parseRegex(pattern) {
+function parseRegex(pattern, flags) {
   let i = 0;
-  const atom = () => {
+  const atom = (depth) => {
     const start = i;
     const c = pattern[i];
     if (c === '(') {
+      if (depth >= DEPTH_CAP) throw new Error('group nesting exceeds analysis budget');
       let kind = 'group';
       if (pattern.startsWith('(?:', i)) i += 3;
       else if (/^\(\?<?[=!]/.test(pattern.slice(i))) { kind = 'look'; i += pattern[i + 2] === '<' ? 4 : 3; }
       else if (pattern.startsWith('(?<', i)) i = pattern.indexOf('>', i) + 1;
       else i++;
-      const alt = alternation();
+      const alt = alternation(depth + 1);
       if (pattern[i] !== ')') throw new Error('unbalanced group');
       i++;
       return { type: kind, alt, source: pattern.slice(start, i) };
@@ -80,13 +90,19 @@ function parseRegex(pattern) {
     if (c === '[') {
       i++;
       if (pattern[i] === '^') i++;
-      if (pattern[i] === ']') i++;
+      // [] matches nothing; [^] matches any character. In both cases the initial ] closes the class.
+      if (pattern[i] === ']') { i++; return { type: 'char', source: pattern.slice(start, i) }; }
       while (i < pattern.length && pattern[i] !== ']') i += pattern[i] === '\\' ? 2 : 1;
+      if (i >= pattern.length) throw new Error('unclosed class');
       i++;
-      return { type: 'char', source: pattern.slice(start, i) };
+      const source = pattern.slice(start, i);
+      if (!flags.includes('u') && source.includes('\\u{')) throw new Error('unsupported legacy class escape');
+      return { type: 'char', source };
     }
     if (c === '\\') {
-      const escape = ESCAPES.map((shape) => shape.exec(pattern.slice(i))).find(Boolean)[0];
+      const shapes = flags.includes('u') ? [/^\\u\{[\da-f]+\}/i, ...ESCAPES] : ESCAPES;
+      const escape = shapes.map((shape) => shape.exec(pattern.slice(i))).find(Boolean)?.[0];
+      if (!escape) throw new Error('unsupported escape');
       i += escape.length;
       if (/^\\[bB]$/.test(escape)) return { type: 'assert', source: escape };
       if (/^\\(?:k<|[1-9])/.test(escape)) return { type: 'unknown', source: escape };
@@ -97,22 +113,22 @@ function parseRegex(pattern) {
     if (c === '^' || c === '$') return { type: 'assert', source: c };
     return { type: 'char', source: c };
   };
-  const sequence = () => {
+  const sequence = (depth) => {
     const items = [];
     while (i < pattern.length && pattern[i] !== '|' && pattern[i] !== ')') {
-      const node = atom();
+      const node = atom(depth);
       const quantifier = quantifierAt(pattern, i);
       i += quantifier.length;
       items.push({ node, min: quantifier.min, max: quantifier.max });
     }
     return items;
   };
-  const alternation = () => {
-    const branches = [sequence()];
-    while (pattern[i] === '|') { i++; branches.push(sequence()); }
+  const alternation = (depth) => {
+    const branches = [sequence(depth)];
+    while (pattern[i] === '|') { i++; branches.push(sequence(depth)); }
     return branches;
   };
-  const tree = alternation();
+  const tree = alternation(0);
   if (i !== pattern.length) throw new Error('unbalanced group');
   return tree;
 }
@@ -120,10 +136,13 @@ function parseRegex(pattern) {
 function characterSets(tree, flags) {
   const cleanFlags = flags.replace(/[gy]/g, '');
   const points = new Set([...Array(256).keys(), 0xa0, 0x1680, 0x2000, 0x2028, 0x2029, 0x3000, 0xfeff, 0xe9, 0x391, 0x3b1, 0x410, 0x430, 0x4e2d, 0x1f600]);
-  const visit = (branches) => {
+  const visit = (branches, depth = 0) => {
+    if (depth > DEPTH_CAP) throw new Error('analysis depth exceeded');
     for (const branch of branches) for (const { node } of branch) {
-      if (node.alt) visit(node.alt);
+      if (node.alt) visit(node.alt, depth + 1);
       if (node.type !== 'char') continue;
+      const nonAscii = [...node.source].some((char) => char.codePointAt(0) > 127);
+      if (flags.includes('i') && node.source.startsWith('[') && node.source.includes('-') && (nonAscii || node.source.includes('\\u') || node.source.includes('\\x'))) throw new Error('case folding of non-ASCII class ranges could not be analysed');
       for (const char of node.source) for (const near of [-1, 0, 1]) points.add(Math.max(0, char.codePointAt(0) + near));
       for (const match of node.source.matchAll(/\\u\{([\da-f]+)\}|\\u([\da-f]{4})|\\x([\da-f]{2})/gi)) {
         for (const near of [-1, 0, 1]) points.add(Math.max(0, parseInt(match[1] ?? match[2] ?? match[3], 16) + near));
@@ -134,6 +153,7 @@ function characterSets(tree, flags) {
   const samples = new Set([...points].filter((point) => point <= 0x10ffff).map((point) => String.fromCodePoint(point)));
   if (flags.includes('i')) for (const char of [...samples]) { samples.add(char.toLowerCase()); samples.add(char.toUpperCase()); }
   const cache = new Map();
+  let comparisons = 0;
   const matcher = (node) => {
     if (node.opaque) return null;
     if (!cache.has(node.source)) {
@@ -145,7 +165,12 @@ function characterSets(tree, flags) {
   };
   return (left, right) => {
     const a = matcher(left), b = matcher(right);
-    return Boolean(a && b) && [...samples].every((char) => !a.test(char) || !b.test(char));
+    if (!a || !b) return false;
+    for (const char of samples) {
+      if (++comparisons > COMPARISON_CAP) throw new Error('character-set comparisons exceed analysis budget');
+      if (a.test(char) && b.test(char)) return false;
+    }
+    return true;
   };
 }
 
@@ -208,19 +233,25 @@ function firstAtom(item) {
 const EXPANSION_CAP = 256;
 function expandOnceGroups(branches) {
   let current = branches;
-  for (;;) {
+  for (let rounds = 0; rounds <= ANALYSIS_CAP; rounds++) {
     let changed = false;
     const next = [];
+    let size = 0;
     for (const branch of current) {
       const at = branch.findIndex((item) => item.node.type === 'group' && item.min === 1 && item.max === 1);
-      if (at < 0) { next.push(branch); continue; }
+      if (at < 0) { next.push(branch); size += branch.length; continue; }
       changed = true;
-      for (const inner of branch[at].node.alt) next.push([...branch.slice(0, at), ...inner, ...branch.slice(at + 1)]);
-      if (next.length > EXPANSION_CAP) return null;
+      for (const inner of branch[at].node.alt) {
+        const length = branch.length - 1 + inner.length;
+        if (next.length >= EXPANSION_CAP || size + length > ANALYSIS_CAP) return null;
+        next.push([...branch.slice(0, at), ...inner, ...branch.slice(at + 1)]);
+        size += length;
+      }
     }
     if (!changed) return current;
     current = next;
   }
+  return null;
 }
 
 function iterationDeterministic(original, disjoint) {
@@ -244,24 +275,33 @@ function iterationDeterministic(original, disjoint) {
 
 export function safeRegex(rule, source, flags = '') {
   const pattern = String(source);
+  const refuse = (reason) => { throw new Error(`${rule}: regex could not be analysed for nested repetition (${reason}) in ${pattern}`); };
+  if (pattern.length > PATTERN_CAP) refuse('pattern length exceeds analysis budget');
+  if (flags.includes('v')) refuse('unsupported v-flag grammar');
   let tree;
-  try { tree = parseRegex(pattern); } catch { tree = null; }
+  try { tree = parseRegex(pattern, flags); } catch { tree = null; }
   if (!tree) {
     const regex = new RegExp(pattern, flags); // an invalid pattern keeps its own syntax error
     if (regex) throw new Error(`${rule}: regex could not be analysed for nested repetition in ${pattern}`);
   }
   {
-    const disjoint = characterSets(tree, flags);
-    const check = (branches) => {
+    let disjoint;
+    try { disjoint = characterSets(tree, flags); } catch (error) { refuse(error.message); }
+    const check = (branches, depth = 0) => {
+      if (depth > DEPTH_CAP) refuse('analysis depth exceeded');
       for (const branch of branches) for (const item of branch) {
+        if (item.node.type === 'unknown') refuse('backreference is unsupported');
         if (!item.node.alt) continue;
         if (item.max > 1 && !iterationDeterministic(item.node.alt, disjoint)) {
           throw new Error(`${rule}: regex has nested unbounded groups (an iteration can match the same input more than one way) in ${pattern}`);
         }
-        check(item.node.alt);
+        check(item.node.alt, depth + 1);
       }
     };
-    check(tree);
+    try { check(tree); } catch (error) {
+      if (error.message === 'character-set comparisons exceed analysis budget') refuse(error.message);
+      throw error;
+    }
   }
   return new RegExp(pattern, flags);
 }

@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
-import { safeRegex } from '../hooks/evidence.js';
+import { safeRegex, SUBJECT_CAP } from '../hooks/evidence.js';
+import { triggerMatches } from '../hooks/trigger-match.js';
+import { toolInputVerdict, segmentVerdict } from '../hooks/declarative-checks.js';
 
 const accepted = (source, flags = '') => {
   try {
@@ -12,6 +14,48 @@ const accepted = (source, flags = '') => {
     throw error;
   }
 };
+
+test('empty and inverted-empty classes do not hide repeated groups', () => {
+  for (const source of ['[](a+)+]', '[^](a+)+]']) assert.equal(accepted(source), false, source);
+});
+
+test('Unicode brace escape is parsed using the actual flag semantics', () => {
+  assert.equal(accepted('^(?:\\u{61}u+)+$'), false);
+  assert.equal(accepted('^(?:\\u{61}b+)+$', 'u'), true);
+  assert.equal(accepted('a', 'v'), false);
+});
+
+test('case-folded non-ASCII ranges are refused rather than sampled', () => {
+  assert.equal(accepted('^(?:[Ѐ-Ԁ]+[ᰀ-᳿])+$', 'iu'), false);
+  assert.throws(() => safeRegex('sample', '[Ѐ-Ԁ]', 'i'), /case folding/);
+});
+
+test('checker refuses repetitions beyond its finite safe budget', () => {
+  for (const source of ['(?:a{1000000})+', '(?:a{9007199254740992})+']) assert.equal(accepted(source), false);
+});
+test('checker refuses patterns beyond its source budget', () => {
+  assert.equal(accepted('a'.repeat(9000)), false);
+});
+test('checker refuses nesting beyond its traversal budget', () => {
+  assert.equal(accepted(`${'('.repeat(120)}a${')'.repeat(120)}`), false);
+});
+test('checker bounds total items produced by group expansion', () => {
+  assert.equal(accepted(`^(?:${Array(8).fill('(?:a|b)').join('')}${'a'.repeat(65)})+$`), false);
+});
+
+test('backreferences outside repeated groups are refused', () => {
+  for (const source of ['(a)\\1', '(?<x>a)\\k<x>']) assert.equal(accepted(source), false);
+});
+
+test('trigger and compliance regex subjects are capped at 16 KiB', () => {
+  const lengths = [];
+  const regex = { test: (text) => { lengths.push(text.length); return true; } };
+  triggerMatches({ kind: 'bash', commandHead: true, regex }, { channel: 'tool', tool: 'Bash', command: `bash -c '${'x'.repeat(SUBJECT_CAP * 2)}'` });
+  toolInputVerdict({ tool: regex, required: [], inputField: 'content', when: regex }, { tool: 'Edit', input: { content: 'x'.repeat(SUBJECT_CAP * 2) } });
+  segmentVerdict({ exempt: regex, requireAll: [] }, { head: 'git', args: ['x'.repeat(SUBJECT_CAP * 2)], text: 'x' });
+  assert.ok(lengths.length >= 3);
+  assert.ok(lengths.every((length) => length <= SUBJECT_CAP), lengths.join(','));
+});
 
 // One test per regression row of the third review round, so each row's lock is proven red on its own.
 test('row 1: the regex guard refuses ^(?:b+(?:a?b))+$ (an optional atom lets b+ and b share input)', () => {
@@ -104,7 +148,7 @@ function timeAccepted(patterns, units) {
   });
 }
 
-test('every generated nested-quantifier pattern the guard accepts runs fast on pumped adversarial input', async () => {
+test('every generated nested-quantifier pattern the guard accepts runs fast on pumped adversarial input', async (t) => {
   const make = generator(20260927);
   const units = [];
   const alphabet = ['a', 'b', 'c', ' '];
@@ -114,6 +158,7 @@ test('every generated nested-quantifier pattern the guard accepts runs fast on p
   const patterns = new Set(['^(?:b+(?:a?b))+$', '^(?:b+(?:a|aa)a?)+$']);
   while (patterns.size < 4000) patterns.add(make());
   const acceptedPatterns = [...patterns].filter((source) => accepted(source));
+  t.diagnostic(`${acceptedPatterns.length} of ${patterns.size} generated patterns accepted`);
   assert.deepEqual(await timeAccepted(acceptedPatterns, units), []);
   // A guard that refuses everything would pass the timing check vacuously.
   assert.ok(acceptedPatterns.length >= 200, `only ${acceptedPatterns.length} of ${patterns.size} generated patterns accepted`);

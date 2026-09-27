@@ -1,8 +1,8 @@
 import { argumentEvidence, bounded } from './evidence.js';
 import { executableSegments, maskReadOnlyMentions } from './bash-mention.js';
 
-const test = (regex, text) => { regex.lastIndex = 0; return regex.test(text); };
-const capture = (regex, text) => { regex.lastIndex = 0; return regex.exec(text)?.[1] ?? null; };
+const test = (regex, text) => { regex.lastIndex = 0; return regex.test(bounded(text)); };
+const capture = (regex, text) => { regex.lastIndex = 0; return regex.exec(bounded(text))?.[1] ?? null; };
 const values = (regex, text) => {
   const found = [];
   const matcher = new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`);
