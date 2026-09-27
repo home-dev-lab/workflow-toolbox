@@ -196,7 +196,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(spawnSync('/usr/bin/bwrap', args, { timeout: 10_000 }).status).toBe(0)
     } finally { p.dispose() }
   })
-  it.skipIf(!BWRAP_WORKS)('rejects a real global-config symlink into the worktree and never binds its {file:} key (requires usable root-owned bwrap)', () => {
+  it.skipIf(process.platform === 'win32')('rejects a real global-config symlink into the worktree and never binds its {file:} key (POSIX planner)', () => {
     const root = tempRoot('config-target'); const home = join(root, 'home'); const work = join(root, 'work'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
     for (const dir of [home, work, run, config]) mkdirSync(dir, { recursive: true })
@@ -214,7 +214,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(p.readable).not.toContain(key)
     } finally { p.dispose() }
   })
-  it.skipIf(!BWRAP_WORKS)('refuses egress from config beneath an additional writable --dir on the real filesystem (requires usable root-owned bwrap)', () => {
+  it.skipIf(process.platform === 'win32')('refuses egress from config beneath an additional writable --dir on the real filesystem (POSIX planner)', () => {
     const root = tempRoot('config-extra'); const home = join(root, 'home'); const work = join(root, 'work'); const extra = join(root, 'extra'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
     for (const dir of [work, extra, run, config]) mkdirSync(dir, { recursive: true })
@@ -568,7 +568,7 @@ describe('lane sandbox plan — read-only roles and working directory (H5)', () 
 })
 
 describe('lane sandbox plan — codex home (H3)', () => {
-  it.skipIf(!BWRAP_WORKS)('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh (requires usable root-owned bwrap)', () => {
+  it.skipIf(process.platform === 'win32')('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh (POSIX planner)', () => {
     const root = tempRoot('auth-writeback')
     const home = join(root, 'home'); const work = join(root, 'work'); const binDir = join(root, 'bin'); const run = join(root, 'run')
     for (const dir of [home, work, binDir, run, join(home, '.codex')]) mkdirSync(dir)

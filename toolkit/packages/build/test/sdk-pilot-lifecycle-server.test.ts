@@ -1965,6 +1965,7 @@ printf 'report\n' > "$report"
     roots.push(linked)
     symlinkSync(physical, linked, 'dir')
     const worktree = mkdtempSync(join(linked, 'worktree-'))
+    roots.push(worktree)
     const archiveRoot = mkdtempSync(join(linked, 'archive-'))
     mkdirSync(join(worktree, '.lane'))
     writeFileSync(join(worktree, '.gitignore'), '.lane/\n')
@@ -2011,7 +2012,20 @@ printf 'report\n' > "$report"
 })
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) })
+afterEach(() => {
+  const created = roots.splice(0)
+  const hostDirs = created.map((root) => laneHostDir(root))
+  // Detached fixtures can still finish writes as their workers exit. Retry the per-worktree
+  // removal rather than deleting the shared state root or swallowing ENOTEMPTY.
+  for (const dir of hostDirs) rmSync(dir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 })
+  for (const root of created) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  for (const dir of hostDirs) expect(existsSync(dir), `test left host state at ${dir}`).toBe(false)
+})
+it('uses a file URL for the host-dir module in spawned lifecycle fixture launchers', () => {
+  const source = readFileSync(rawLauncher('process.stdout.write("ready\\n")'), 'utf8')
+  const helper = new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url).href
+  expect(source).toContain(`from ${JSON.stringify(helper)}`)
+})
 // The win32 provider echoes the spawn-recorded argv (Get-Process has no command line); the POSIX providers
 // return the argv they OBSERVE (`/proc` on linux, `ps -o args` on darwin, where it is one string). Asserting the
 // recorded argv on every platform was red on the macOS shards from run 28 to run 34 while the job read green
@@ -2109,8 +2123,7 @@ function rawLauncher(source: string) {
     .replaceAll("path.join(root,'.lane','supervision')", 'process.env.WT_LANE_SUPERVISION_DIR')
     .replaceAll("join(root,'.lane','supervision')", 'process.env.WT_LANE_SUPERVISION_DIR')
     .replaceAll("root+'/.lane/supervision'", 'process.env.WT_LANE_SUPERVISION_DIR')
-  const helper = fileURLToPath(new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url))
-  const prefix = `import { laneHostDir as wtFixtureHostDir } from ${JSON.stringify(helper)}; import { join as wtFixtureJoin } from 'node:path'; process.env.WT_LANE_SUPERVISION_DIR = wtFixtureJoin(wtFixtureHostDir(process.argv[process.argv.indexOf('--dir') + 1]), 'supervision');\n`
+  const prefix = `import { laneHostDir as wtFixtureHostDir } from ${JSON.stringify(new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url).href)}; import { join as wtFixtureJoin } from 'node:path'; process.env.WT_LANE_SUPERVISION_DIR = wtFixtureJoin(wtFixtureHostDir(process.argv[process.argv.indexOf('--dir') + 1]), 'supervision');\n`
   const file = join(root, 'launcher.mjs'); writeFileSync(file, prefix + adjusted)
   return file
 }

@@ -9,6 +9,7 @@ import { legacySupervision } from './lib/lane-supervisor-core.mjs'
 
 const DEFAULT_POLL = 30
 const DEFAULT_TIMEOUT = 5400
+const TERMINAL_PUBLICATION_MS = 1_000
 
 function usage() {
   return 'Usage: node wt-lane-wait.mjs --dir <worktree> [--pid <n>] [--poll 30] [--timeout <s>]'
@@ -80,6 +81,7 @@ function main() {
   const log = path.join(hostDir, 'run.log')
   const deadline = Date.now() + opts.timeout * 1000
   let seenRecord = null
+  let goneSince = null
   while (true) {
     const currentRecord = readCurrentSupervisions(opts.dir).map((item) => item.record).find((item) => item.workerPid === pid) ?? null
     if (currentRecord) seenRecord = currentRecord
@@ -100,9 +102,15 @@ function main() {
     } else {
       const verdict = classifyLane(record)
       if (verdict.status === 'gone') {
-        process.stdout.write('LANE DIED exit=unknown\n')
-        return 1
-      }
+        // The worker may have exited after writing its log but before a detached publisher
+        // updates its host record. Only the host record can supply the exit; allow it a bounded
+        // window, never accepting a lane-written EXIT line as evidence by itself.
+        goneSince ??= Date.now()
+        if (!record || Date.now() >= Math.min(deadline, goneSince + TERMINAL_PUBLICATION_MS)) {
+          process.stdout.write('LANE DIED exit=unknown\n')
+          return 1
+        }
+      } else goneSince = null
       if (Date.now() >= deadline) {
         if (!record) { process.stdout.write('LANE DIED exit=unknown\n'); return 1 }
         break

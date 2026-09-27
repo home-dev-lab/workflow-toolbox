@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { constants, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { constants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -255,9 +255,25 @@ describe('egress log hardening (round 4, MED 2)', () => {
     try {
       const actual = join(root, 'actual'); mkdirSync(actual)
       const alias = join(root, 'alias'); symlinkSync(actual, alias, 'dir')
-      const file = join(alias, 'egress.jsonl')
+      // The launcher passes the canonical path established during validation, even when the
+      // operator supplied an alias such as macOS /var -> /private/var.
+      const file = join(realpathSync.native(alias), 'egress.jsonl')
       proxy.egressLogWriter(file)({ host: 'alias.example', decision: 'denied' })
       expect(readFileSync(join(actual, 'egress.jsonl'), 'utf8')).toContain('alias.example')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+  it.skipIf(!constants.O_NOFOLLOW)('refuses to append when a validated log parent is replaced before open', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-egress-before-open-'))
+    try {
+      const parent = join(root, 'validated'); const redirect = join(root, 'redirect')
+      mkdirSync(parent); mkdirSync(redirect)
+      const file = join(realpathSync.native(parent), 'egress.jsonl') // launch validation
+      renameSync(parent, join(root, 'moved'))
+      symlinkSync(redirect, parent, 'dir')
+      const target = join(redirect, 'egress.jsonl')
+      writeFileSync(target, 'fixture untouched\n') // only a disposable fixture can be reached
+      proxy.egressLogWriter(file)({ host: 'blocked.example', decision: 'denied' })
+      expect(readFileSync(target, 'utf8')).toBe('fixture untouched\n')
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
   it.skipIf(!constants.O_NOFOLLOW)('keeps writing to its original inode after its parent is swapped', () => {

@@ -111,7 +111,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   // inherit a developer's config, home, or lane settings into the child process.
   // Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
   // the sandbox itself is locked in lane-sandbox.test.ts.
-  const env: NodeJS.ProcessEnv = { WT_LANE_SANDBOX: 'off', CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: join(root, 'state') }
+  const env: NodeJS.ProcessEnv = { WT_LANE_SANDBOX: 'off', CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: join(root, 'state'), ...(process.env.WT_LANE_HOST_STATE ? { WT_LANE_HOST_STATE: process.env.WT_LANE_HOST_STATE } : {}) }
   if (install) {
     const result = runChild('adopt installer', [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], env)
     expect(result.status, result.stderr).toBe(0)
@@ -126,6 +126,14 @@ function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna', ex
 }
 
 describe('adopted wt-lane consent resolver', () => {
+  it('derives the same protected state for the adopted child and its supervising test', () => {
+    const f = fixture()
+    const helper = new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url).href
+    const child = runChild('adopted host-state reader', ['--input-type=module', '--eval', `import { laneHostDir } from ${JSON.stringify(helper)}; process.stdout.write(laneHostDir(process.argv[1], { insideSandbox: false }))`, f.project], f.env)
+    expect(child.status, child.stderr).toBe(0)
+    expect(child.stdout).toBe(laneHostDir(f.project, { insideSandbox: false }))
+  })
+
   it('names a timed-out child and includes its last output line', () => {
     expect(() => runChild(
       'fixture hanging child',
