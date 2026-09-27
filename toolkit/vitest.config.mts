@@ -46,6 +46,7 @@ const commonTestConfig = {
   // own headers for why this is two layers, not one.
   setupFiles: [
     './test-support/guard-journal-isolation.setup.ts',
+    './test-support/lane-host-state-isolation.setup.ts',
     './test-support/child-process-coverage.setup.ts',
   ],
   globalSetup: ['./test-support/guard-journal-isolation.global-setup.ts'],

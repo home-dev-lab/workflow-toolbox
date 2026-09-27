@@ -7,7 +7,7 @@ import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error ESM runtime module
 import { parse } from '../../../../plugin/bin/wt-lane.mjs'
 // @ts-expect-error ESM runtime module
-import { inspectProcess, supervisionPaths, supervisionSlots } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+import { inspectProcess, readCurrentSupervision, supervisionPaths, supervisionSlots } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error ESM runtime module
 import { makeReadableLaneBrief, readLifecycleRegular, readWorktreeRegular } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error ESM runtime module
@@ -33,6 +33,27 @@ it.skipIf(process.platform === 'win32')('keys canonical worktrees identically an
   expect(supervisionPaths(worktree, '1-1').record).not.toContain(join(worktree, '.lane'))
 })
 
+it.skipIf(process.platform === 'win32')('keeps the host-state key when a worktree disappears beneath an aliased parent', () => {
+  const { dir, worktree } = fixture()
+  const alias = join(dir, 'parent-alias')
+  symlinkSync(dir, alias, 'dir')
+  const options = { base: join(dir, 'state'), platform: 'darwin' }
+  const before = laneHostDir(worktree, options)
+  rmSync(worktree, { recursive: true })
+  expect(laneHostDir(join(alias, 'worktree'), options)).toBe(before)
+  expect(laneHostDir(worktree, options)).toBe(before)
+})
+
+it('reads an existing terminal host record after the worktree is removed', () => {
+  const { worktree } = fixture()
+  const paths = supervisionPaths(worktree, '1-1')
+  mkdirSync(paths.dir, { recursive: true })
+  writeFileSync(paths.pointer, JSON.stringify({ runId: '1-1' }))
+  writeFileSync(paths.record, JSON.stringify({ runId: '1-1', state: 'exited', exit: 7 }))
+  rmSync(worktree, { recursive: true })
+  expect(readCurrentSupervision(worktree)).toMatchObject({ runId: '1-1', exit: 7 })
+})
+
 it('ignores forged lane supervision records and decisions', () => {
   const { worktree } = fixture()
   const legacy = join(worktree, '.lane', 'supervision')
@@ -52,7 +73,7 @@ it('never uses a lane-writable default log or accepts an explicit one', () => {
   expect(parse([...args, '--log', log]).error).toMatch(/log.*worktree|worktree.*log/i)
 })
 
-it('refuses explicit logs and cleanup roots in operator writable binds', () => {
+it.skipIf(process.platform === 'win32')('refuses explicit logs and cleanup roots in operator writable binds (POSIX sandbox planner)', () => {
   const { dir, worktree } = fixture()
   const extra = join(dir, 'extra'); mkdirSync(extra)
   const args = ['--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', join(worktree, 'brief.md')]
@@ -102,16 +123,46 @@ it('allows an ordinary brief read on simulated unsandboxed Windows', () => {
   const original = Object.getOwnPropertyDescriptor(process, 'platform')!
   try {
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    expect(readWorktreeRegular(join(worktree, 'brief.md'), null, worktree)?.toString()).toBe('# brief\n')
     expect(readWorktreeRegular(join(worktree, 'brief.md'), null, worktree, { unsandboxed: true })?.toString()).toBe('# brief\n')
     expect(readLifecycleRegular(join(worktree, 'brief.md'), worktree)).toBe('# brief\n')
   } finally { Object.defineProperty(process, 'platform', original) }
+})
+
+function onSimulatedWindows(check: () => void) {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!
+  try {
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    check()
+  } finally { Object.defineProperty(process, 'platform', original) }
+}
+
+it.skipIf(process.platform === 'win32')('refuses a symlinked leaf on simulated unsandboxed Windows', () => {
+  const { dir, worktree } = fixture()
+  const outside = join(dir, 'outside.md'); writeFileSync(outside, 'outside')
+  const link = join(worktree, '.lane', 'report.md'); symlinkSync(outside, link)
+  onSimulatedWindows(() => expect(readWorktreeRegular(link, 'utf8', worktree)).toBeNull())
+})
+
+it.skipIf(process.platform === 'win32')('refuses a symlinked parent on simulated unsandboxed Windows', () => {
+  const { dir, worktree } = fixture()
+  const outside = join(dir, 'outside'); mkdirSync(outside)
+  writeFileSync(join(outside, 'report.md'), 'outside')
+  symlinkSync(outside, join(worktree, '.lane', 'redirect'), 'dir')
+  onSimulatedWindows(() => expect(readWorktreeRegular(join(worktree, '.lane', 'redirect', 'report.md'), 'utf8', worktree)).toBeNull())
+})
+
+it('refuses a file outside the supplied root on simulated unsandboxed Windows', () => {
+  const { dir, worktree } = fixture()
+  const outside = join(dir, 'outside.md'); writeFileSync(outside, 'outside')
+  onSimulatedWindows(() => expect(readWorktreeRegular(outside, 'utf8', worktree)).toBeNull())
 })
 
 it.skipIf(process.platform === 'win32')('refuses a host state root that is not absolute on this host instead of creating it under the working directory', () => {
   expect(() => laneHostStateRoot({ platform: 'win32', env: {}, home: '\\home\\someone', insideSandbox: false })).toThrow(/not an absolute path on this host/)
 })
 
-it('refuses an explicit log in another worktree’s protected host directory', () => {
+it.skipIf(process.platform === 'win32')('refuses an explicit log in another worktree’s protected host directory (POSIX sandbox planner)', () => {
   const { dir, worktree } = fixture()
   const other = join(dir, 'other-worktree')
   mkdirSync(other)

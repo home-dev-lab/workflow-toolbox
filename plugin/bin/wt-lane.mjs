@@ -18,6 +18,7 @@ import { hostAdapter } from './lib/host/adapter.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } from './lib/host/lane-host-dir.mjs'
 import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'
+import { spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'
 import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'
 
 const DEFAULT_TIMEOUT = 5400
@@ -637,7 +638,9 @@ async function main() {
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
       const spawnedAt = Date.now()
-      const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
+      // The worker's stderr goes to the host-owned lane log: a worker that refuses or throws before
+      // its first stage would otherwise vanish with the launcher already reporting success.
+      const child = spawnWithLaneLogStderr(opts.log, (stdio) => spawn(process.execPath, workerArgs, { detached: true, stdio }))
       writeLaneStage(opts.log, 'worker-identity-capture-start')
       const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: process.execPath, expectedArgv: child.spawnargs, spawnedAt })
       if (process.platform === 'win32' && !captured.identity) {
