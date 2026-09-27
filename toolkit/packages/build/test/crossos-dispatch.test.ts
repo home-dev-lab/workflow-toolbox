@@ -494,7 +494,7 @@ describe('green only from positive evidence', () => {
     for (let round = 0; round < 500; round += 1) {
       const run: Record<string, unknown> = positive()
       const count = 2 + (next() % (fields.length - 1))
-      for (let k = 0; k < count; k += 1) { const field = fields[next() % fields.length]; const values = variants[field]; run[field] = values[next() % values.length] }
+      for (let k = 0; k < count; k += 1) { const field = fields[next() % fields.length] as string; const values = variants[field] as unknown[]; run[field] = values[next() % values.length] }
       expect(verdictFromEvidence(run, sha).verdict, JSON.stringify(run)).not.toBe('green')
     }
   })

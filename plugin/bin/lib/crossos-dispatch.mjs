@@ -20,9 +20,9 @@ function extractFailedTests(log) {
     const marker = clean.indexOf('FAIL ')
     if (marker < 0) continue
     const body = clean.slice(marker + 5).trim()
-    const file = body.match(/[\w./-]+\.test\.[cm]?[jt]sx?/)
+    const file = body.split(' ').find((token) => /\.test\.[cm]?[jt]sx?$/.test(token))
     if (!file || !body.includes(' > ')) continue
-    failures.add(body.slice(body.indexOf(file[0])).split(' > ').map((part) => part.trim()).join(' > '))
+    failures.add(body.slice(body.indexOf(file)).split(' > ').map((part) => part.trim()).join(' > '))
   }
   return [...failures]
 }
