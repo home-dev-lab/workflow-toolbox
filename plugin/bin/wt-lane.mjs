@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // wt-lane.mjs -- detached, one-command external opencode lane launcher.
 
-import { appendFileSync, chmodSync, closeSync, constants, fstatSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, mkdirSync, openSync, existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { readFileSync as readLaneLog } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -17,6 +17,8 @@ import { resolvePluginDataDir } from './lib/plugin-data-dir.mjs'
 import { hostAdapter } from './lib/host/adapter.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } from './lib/host/lane-host-dir.mjs'
+import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'
+import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'
 
 const DEFAULT_TIMEOUT = 5400
 const GRACE_MS = 250
@@ -84,8 +86,10 @@ export function parse(argv) {
   try { out.dir = realpathSync(out.dir) } catch { /* preserve the existing not-a-directory diagnostic */ }
   out.brief = path.resolve(out.brief)
   if (out.briefCleanupDir) out.briefCleanupDir = path.resolve(out.briefCleanupDir)
-  if (out.briefCleanupDir && laneWritablePath(out.dir, out.briefCleanupDir)) return { error: '--brief-cleanup-dir must be outside the lane worktree' }
-  if (out.log && laneWritablePath(out.dir, out.log)) return { error: '--log must be outside the lane worktree' }
+  let writable
+  try { writable = laneWritableForLaunch({ cwd: out.dir, args: ['--dir', out.dir], env: process.env, optionEnv: process.env }) } catch (error) { return { error: `cannot validate lane writable roots: ${error.message}` } }
+  if (out.briefCleanupDir && (laneWritablePath(out.dir, out.briefCleanupDir) || writable(out.briefCleanupDir))) return { error: '--brief-cleanup-dir must be outside the lane worktree and every lane-writable root' }
+  if (out.log && (laneWritablePath(out.dir, out.log) || writable(out.log))) return { error: '--log must be outside the lane worktree and every lane-writable root' }
   const explicitLog = out.log && path.resolve(out.log)
   if (explicitLog && explicitLog.startsWith(`${laneHostStateRoot()}${path.sep}`) && !explicitLog.startsWith(`${laneHostDir(out.dir)}${path.sep}`)) return { error: '--log cannot target another worktree host directory' }
   out.log = path.resolve(out.log ?? path.join(laneHostDir(out.dir), 'run.log'))
@@ -147,19 +151,14 @@ function formatAge(ageMs) {
   return `${Math.floor(seconds / 60)}m${seconds % 60}s`
 }
 
-function readBriefEvidence(file) {
-  let fd
-  try {
-    if (process.platform === 'win32' || !constants.O_NOFOLLOW || !constants.O_NONBLOCK) throw new Error('protected brief reads are unavailable on this platform')
-    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
-    if (!fstatSync(fd).isFile()) throw new Error('brief must be a regular file')
-    const bytes = readFileSync(fd)
-    const stat = fstatSync(fd)
+function readBriefEvidence(file, worktree) {
+  {
+    const bytes = readWorktreeRegular(file, null, laneWritablePath(worktree, file) ? worktree : path.dirname(file), { unsandboxed: laneUnsandboxedAtStart() })
+    if (bytes === null) throw new Error('brief must be a protected regular file')
+    const stat = statSync(file)
     const heading = bytes.toString('utf8').split(/\r?\n/).find((line) => /^#(?:\s|$)/.test(line)) ?? '(no Markdown heading)'
     const ageMs = Math.max(0, Date.now() - stat.mtimeMs)
     return { bytes, path: file, ageMs, age: formatAge(ageMs), heading, sha256: createHash('sha256').update(bytes).digest('hex') }
-  } finally {
-    if (fd !== undefined) closeSync(fd)
   }
 }
 
@@ -418,7 +417,7 @@ async function main() {
     }
     process.once('beforeExit', () => { if (!workerSpawnedChild) rmSync(opts.brief, { force: true }) })
   } else {
-    try { briefEvidence = readBriefEvidence(opts.brief) } catch (error) {
+    try { briefEvidence = readBriefEvidence(opts.brief, opts.dir) } catch (error) {
       process.stderr.write(`wt-lane: --brief is unreadable: ${opts.brief} (${error instanceof Error ? error.message : String(error)})\n`)
       return 2
     }

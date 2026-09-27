@@ -995,8 +995,8 @@ export function createLifecycleStateMachine({
       const receipt = laneEvidence(state.phase)
       if (receipt) return receipt
       if (state.reviewRound === 0 && frozenRoute === 'FULL') {
-        const planTasks = tasksBlock(fs.readFileSync(path.join(laneDir, 'plan.md'), 'utf8'))
-        const briefTasks = tasksBlock(fs.readFileSync(path.join(laneDir, 'tdd-brief.md'), 'utf8'))
+        const planTasks = tasksBlock(readRegularFile(path.join(laneDir, 'plan.md')))
+        const briefTasks = tasksBlock(readRegularFile(path.join(laneDir, 'tdd-brief.md')))
         if (!planTasks || planTasks !== briefTasks) {
           return refusal('tdd->verify', 'byte-identical plan Tasks block', path.join(laneDir, 'tdd-brief.md'))
         }

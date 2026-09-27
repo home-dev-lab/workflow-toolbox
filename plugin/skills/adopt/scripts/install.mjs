@@ -663,6 +663,10 @@ async function loadAdoptedConsentModules() {
 }`)
   adopted = replaceExactlyOnce(adopted, "import { hostAdapter } from './lib/host/adapter.mjs'\n", '')
   adopted = replaceExactlyOnce(adopted, "import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } from './lib/host/lane-host-dir.mjs'\n", `const root = pluginRoot()\nconst laneHostModule = root ? await import(pathToFileURL(path.join(root, 'bin', 'lib', 'host', 'lane-host-dir.mjs')).href) : null\nconst { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } = laneHostModule ?? { ensureLaneHostDir: () => { throw new Error('installed workflow-toolbox plugin is unavailable') }, laneHostDir: () => path.join(os.tmpdir(), 'wt-lane-unavailable'), laneHostStateRoot: () => path.join(os.tmpdir(), 'wt-lane-unavailable'), laneWritablePath: () => false, makeReadableLaneBrief: () => { throw new Error('installed workflow-toolbox plugin is unavailable') }, removeReadableLaneBrief: () => {} }\n`)
+  adopted = replaceExactlyOnce(adopted, "import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'\n", 'const { readWorktreeRegular } = laneHostModule ?? { readWorktreeRegular: (file, encoding) => readFileSync(file, encoding === null ? undefined : encoding) }\n')
+  adopted = replaceExactlyOnce(adopted, "import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'\n", `const sandboxModule = root ? await import(pathToFileURL(path.join(root, 'bin', 'lib', 'host', 'lane-sandbox.mjs')).href) : null
+const { laneUnsandboxedAtStart, laneWritableForLaunch } = sandboxModule ?? { laneUnsandboxedAtStart: () => false, laneWritableForLaunch: () => () => false }
+`)
   adopted = replaceExactlyOnce(adopted, "import { isInvokedDirectly } from './lib/host/entry-guard.mjs'\n", `function isInvokedDirectly(importMetaUrl, argvPath = process.argv[1]) {
   if (!argvPath) return false
   try {

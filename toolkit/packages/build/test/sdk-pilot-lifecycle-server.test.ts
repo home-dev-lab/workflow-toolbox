@@ -665,7 +665,7 @@ printf 'report\n' > "$report"
     expect(publish('absent')()).toHaveProperty('archive.path')
     expect(publish('cost-only')).toThrow(/missing Measured Run Cost block/)
     expect(publish('report-only')).toThrow(/cost\.json is missing/)
-    expect(publish('unreadable')).toThrow(/cost\.json: not a regular file/)
+    expect(publish('unreadable')).toThrow(/(?:cost\.json: not a regular file|archive source is not a protected regular file: .*cost\.json)/)
   })
 
   it('retries an archive failure without making a second commit', async () => {

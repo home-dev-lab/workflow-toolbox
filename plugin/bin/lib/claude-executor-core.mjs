@@ -87,7 +87,7 @@ export function parseExecutorArgs(argv) {
 }
 
 export function executorBrief(options) {
-  const protectedRead = (file) => laneWritablePath(options.dir, file) ? readWorktreeRegular(file) : fs.readFileSync(file, 'utf8')
+  const protectedRead = (file) => laneWritablePath(options.dir, file) ? readWorktreeRegular(file, 'utf8', options.dir) : fs.readFileSync(file, 'utf8')
   const brief = protectedRead(options.brief)
   if (brief === null) throw new Error('brief is not a protected regular file')
   const match = /Write the report to `([^`]+)`/.exec(brief)

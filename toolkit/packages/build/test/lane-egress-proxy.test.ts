@@ -24,6 +24,16 @@ interface ProxyModule {
   processStartTicks: (pid: number) => number | null
 }
 const proxy = (await import(pathToFileURL(join(LIB, 'lane-egress-proxy.mjs')).href)) as ProxyModule
+it.skipIf(process.platform !== 'linux')('does not block opening an existing FIFO egress log', () => {
+  const root = mkdtempSync(join(tmpdir(), 'egress-fifo-'))
+  try {
+    const fifo = join(root, 'log')
+    expect(spawnSync('mkfifo', [fifo]).status).toBe(0)
+    const result = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(pathToFileURL(join(LIB, 'lane-egress-proxy.mjs')).href)}).then(m => { m.egressLogWriter(${JSON.stringify(fifo)})({ host: 'example.com' }) })`], { timeout: 2000, encoding: 'utf8' })
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
 const servers: net.Server[] = []
 afterEach(() => { for (const s of servers.splice(0)) s.close() })
 

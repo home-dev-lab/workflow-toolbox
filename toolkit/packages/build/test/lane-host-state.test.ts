@@ -9,9 +9,9 @@ import { parse } from '../../../../plugin/bin/wt-lane.mjs'
 // @ts-expect-error ESM runtime module
 import { inspectProcess, supervisionPaths, supervisionSlots } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error ESM runtime module
-import { makeReadableLaneBrief, readWorktreeRegular } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+import { makeReadableLaneBrief, readLifecycleRegular, readWorktreeRegular } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error ESM runtime module
-import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+import { laneHostDir, laneHostStateRoot } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const dirs: string[] = []
 afterEach(() => { for (const dir of dirs.splice(0)) { rmSync(laneHostDir(join(dir, 'worktree')), { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true }) } })
@@ -50,6 +50,54 @@ it('never uses a lane-writable default log or accepts an explicit one', () => {
   const log = join(worktree, '.lane', 'run.log')
   expect(parse(args).log).not.toBe(log)
   expect(parse([...args, '--log', log]).error).toMatch(/log.*worktree|worktree.*log/i)
+})
+
+it('refuses explicit logs and cleanup roots in operator writable binds', () => {
+  const { dir, worktree } = fixture()
+  const extra = join(dir, 'extra'); mkdirSync(extra)
+  const args = ['--dir', worktree, '--model', 'openai/gpt-5.6-luna', '--brief', join(worktree, 'brief.md')]
+  const previous = process.env.WT_LANE_SANDBOX_WRITE
+  process.env.WT_LANE_SANDBOX_WRITE = extra
+  try {
+    expect(parse([...args, '--log', join(extra, 'run.log')]).error).toMatch(/--log.*outside/)
+    expect(parse([...args, '--brief-cleanup-dir', extra]).error).toMatch(/--brief-cleanup-dir.*outside/)
+  } finally {
+    if (previous === undefined) delete process.env.WT_LANE_SANDBOX_WRITE
+    else process.env.WT_LANE_SANDBOX_WRITE = previous
+  }
+})
+
+it.skipIf(process.platform === 'win32')('refuses intermediate symlinks for worktree reads', () => {
+  const { dir, worktree } = fixture()
+  const outside = join(dir, 'outside'); mkdirSync(outside)
+  writeFileSync(join(outside, 'report.md'), 'HOST-ONLY FIXTURE CONTENT')
+  rmSync(join(worktree, '.lane'), { recursive: true })
+  symlinkSync(outside, join(worktree, '.lane'))
+  expect(readWorktreeRegular(join(worktree, '.lane', 'report.md'), 'utf8', worktree)).toBeNull()
+  expect(readLifecycleRegular(join(worktree, '.lane', 'report.md'))).toBeNull()
+})
+
+it.skipIf(process.platform !== 'linux')('does not block on FIFO lifecycle plan or tdd brief', () => {
+  const { worktree } = fixture()
+  for (const name of ['plan.md', 'tdd-brief.md']) {
+    const file = join(worktree, '.lane', name)
+    expect(spawnSync('mkfifo', [file]).status).toBe(0)
+    expect(readLifecycleRegular(file)).toBeNull()
+  }
+})
+
+it('allows an ordinary brief read on simulated unsandboxed Windows', () => {
+  const { worktree } = fixture()
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!
+  try {
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    expect(readWorktreeRegular(join(worktree, 'brief.md'), null, worktree, { unsandboxed: true })?.toString()).toBe('# brief\n')
+    expect(readLifecycleRegular(join(worktree, 'brief.md'), worktree)).toBe('# brief\n')
+  } finally { Object.defineProperty(process, 'platform', original) }
+})
+
+it.skipIf(process.platform === 'win32')('refuses a host state root that is not absolute on this host instead of creating it under the working directory', () => {
+  expect(() => laneHostStateRoot({ platform: 'win32', env: {}, home: '\\home\\someone', insideSandbox: false })).toThrow(/not an absolute path on this host/)
 })
 
 it('refuses an explicit log in another worktree’s protected host directory', () => {

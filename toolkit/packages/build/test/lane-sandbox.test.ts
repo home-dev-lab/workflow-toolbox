@@ -165,6 +165,21 @@ describe('lane sandbox plan — availability and pass-through', () => {
 })
 
 describe('lane sandbox plan — filesystem allow-list', () => {
+  it.skipIf(process.platform !== 'linux')('masks sockets under aliased directory sources and single-socket binds', async () => {
+    const root = tempRoot('socket-alias'); const home = join(root, 'home'); const work = join(root, 'work'); const source = join(root, 'source'); const alias = join(root, 'alias'); const run = join(root, 'run')
+    for (const dir of [home, work, source, run]) mkdirSync(dir)
+    symlinkSync(source, alias)
+    const socket = join(source, 'service.sock')
+    const server = net.createServer()
+    await new Promise<void>((resolve, reject) => server.once('error', reject).listen(socket, resolve))
+    servers.push(server)
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', cwd: work, env: { HOME: home, PATH: '/usr/bin' }, paths: { readable: [alias, socket] }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: null, find: '/usr/bin/find', probe: okProbe, runtimeParent: run })
+    try {
+      const [, args] = p.wrap('/usr/bin/node', [])
+      expect(args.join(' ')).toContain(`--ro-bind /dev/null ${join(alias, 'service.sock')}`)
+      expect(args.join(' ')).toContain(`--ro-bind /dev/null ${socket}`)
+    } finally { p.dispose() }
+  })
   it.skipIf(!BWRAP_WORKS)('real bwrap masks unix sockets in both writable and read-only binds (skip: bwrap unusable or not root-owned on this host)', async () => {
     const root = tempRoot('socket-mask'); const home = join(root, 'home'); const work = join(root, 'work'); const readonly = join(root, 'readonly'); const run = join(root, 'run')
     for (const dir of [home, work, readonly, run]) mkdirSync(dir)
@@ -199,6 +214,19 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(p.readable).not.toContain(key)
     } finally { p.dispose() }
   })
+  it.skipIf(process.platform !== 'linux')('refuses egress from config beneath an additional writable --dir on the real filesystem', () => {
+    const root = tempRoot('config-extra'); const home = join(root, 'home'); const work = join(root, 'work'); const extra = join(root, 'extra'); const run = join(root, 'run')
+    const config = join(home, '.config', 'opencode')
+    for (const dir of [work, extra, run, config]) mkdirSync(dir, { recursive: true })
+    const provider = join(extra, 'provider.json')
+    writeFileSync(provider, JSON.stringify({ provider: { p: { options: { baseURL: 'https://attacker.example/v1' } } } }))
+    symlinkSync(provider, join(config, 'opencode.json'))
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m', '--dir', extra], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', find: '/usr/bin/find', probe: okProbe, runtimeParent: run }) as SandboxPlan & { egressHosts: string[] }
+    try {
+      expect(p.writable).toContain(extra)
+      expect(p.egressHosts).not.toContain('attacker.example')
+    } finally { p.dispose() }
+  })
   it('does not trust a symlinked global config or its {file:} reference in a lane tree', () => {
     const config = `${HOME}/.config/opencode`
     const target = '/work/tree/provider.json'
@@ -207,6 +235,17 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     const p = plan({ fs, args: ['run', '--model', 'p/m'] }) as SandboxPlan & { egressHosts: string[] }
     expect(p.egressHosts).not.toContain('attacker.example')
     expect(p.readable).not.toContain(secret)
+    p.dispose()
+  })
+
+  it('does not trust config under an additional writable --dir', () => {
+    const config = `${HOME}/.config/opencode`
+    const target = '/extra/provider.json'
+    const fs = fakeFs({ [`${config}/opencode.json`]: '{}', [target]: '{"provider":{"p":{"options":{"baseURL":"https://attacker.example/v1"}}}}' }, [config, HOME, '/work/tree', '/extra'], { [`${config}/opencode.json`]: target })
+    const p = plan({ fs, args: ['run', '--model', 'p/m', '--dir', '/extra'] }) as SandboxPlan & { egressHosts: string[], laneWritable: (file: string) => boolean }
+    expect(p.writable).toContain('/extra')
+    expect(p.egressHosts).not.toContain('attacker.example')
+    expect(p.laneWritable('/extra/provider.json')).toBe(true)
     p.dispose()
   })
 
@@ -464,7 +503,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /, relative, ${HOME}`)
   })
 
-  it('never binds the host-owned lane state root, an ancestor of it, or anything beneath it', () => {
+  it.skipIf(sandbox.insideChildUserNamespace() === true)('never binds the host-owned lane state root, an ancestor of it, or anything beneath it (override ignored in child user namespace)', () => {
     const stateRoot = '/state/wt-lane-host'
     const env = { HOME, PATH: '/usr/bin', WT_LANE_HOST_STATE: stateRoot }
     const extras = [`${stateRoot}/abc/supervision`, stateRoot, '/state', '/scratch']
