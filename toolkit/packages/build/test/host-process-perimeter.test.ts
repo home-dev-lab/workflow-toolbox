@@ -24,7 +24,7 @@ describe('pid to parent-pid host perimeter', () => {
     // their process access stays behind HOST_ROOT. The Java pack's `wt-jdtls.mjs` launcher adds one more
     // (its JVM discovery and spawn live in host/jdtls-java.mjs).
     // Shared executor defaults and the suite-lock runner add two modules, the pure DoD dispute module adds one,
-    // and the cross-OS CLI and dispatcher add two; none of them adds a process-table primitive.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 226, violations: [] })
+    // and the cross-OS CLI, dispatcher and verdict module add three; none of them adds a process-table primitive.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 227, violations: [] })
   })
 })

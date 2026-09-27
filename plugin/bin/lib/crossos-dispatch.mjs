@@ -1,15 +1,11 @@
 import { commandIO } from './host/command-io.mjs'
+import { EVIDENCE_FIELDS, ciBranchFor, matchesHostPath, verdictFromEvidence } from './crossos-verdict.mjs'
 import { isAbsolute } from 'node:path'
 
 const LIST = '.github/cross-os-host-layer.json'
 const RESULTS = { 0: 'green', 1: 'red', 2: 'error', 3: 'mismatch', 4: 'timeout', 5: 'pending' }
 const failure = (message, code = 2) => Object.assign(new Error(message), { code })
 const lines = (text) => text.trim().split('\n').filter(Boolean)
-
-function matchesHostPath(file, glob) {
-  const escaped = glob.split('**').map((part) => part.split('*').map((literal) => literal.replace(new RegExp('[.*+?^${}()|[\\]\\\\]', 'g'), (match) => String.fromCharCode(92) + match)).join('[^/]*')).join('.*')
-  return new RegExp(`^${escaped}$`).test(file)
-}
 
 function extractFailedTests(log) {
   const failures = new Set()
@@ -150,34 +146,6 @@ function removeBranch(ctx, record) {
 
 function runList(ctx, branch) {
   return gh(ctx, 'run', 'list', '-R', ctx.slug, '--workflow', ctx.args.workflow, '--branch', branch, '--json', 'databaseId,url,event,headBranch,headSha,status,conclusion')
-}
-
-function matrixFailure(run) {
-  if (run.conclusion !== 'success') return `conclusion ${run.conclusion}`
-  if (!run.jobs?.length) return 'no jobs'
-  const failed = run.jobs.find((job) => job.conclusion !== 'success')
-  if (failed) return `job ${failed.name}: ${failed.conclusion}`
-  for (const os of ['ubuntu', 'windows', 'macos']) {
-    if (!run.jobs.some((job) => job.name.toLowerCase().includes(os))) return `missing ${os}`
-  }
-  return null
-}
-
-const ciBranchFor = (sha) => `card/ci-${sha.slice(0, 12)}`
-const EVIDENCE_FIELDS = 'event,headBranch,headSha,status,conclusion,jobs'
-
-// The ONLY producer of a green verdict. Green needs positive evidence about exactly this commit: a dispatched run on
-// its own card/ci branch at its sha, completed, with a successful ubuntu, windows and macos job. Absent, foreign or
-// partial evidence is unchecked, pending or red, never green. Callers pass evidence read live from GitHub
-// (freshEvidence); a stored record is never evidence.
-function verdictFromEvidence(run, sha) {
-  if (!run || typeof run !== 'object') return { verdict: 'unchecked', reason: 'no run evidence' }
-  if (run.event !== 'workflow_dispatch' || run.headBranch !== ciBranchFor(sha) || run.headSha !== sha) {
-    return { verdict: 'unchecked', reason: `evidence is not about ${sha}: event=${run.event} headBranch=${run.headBranch} headSha=${run.headSha}` }
-  }
-  if (run.status !== 'completed' || !run.conclusion) return { verdict: 'pending', reason: `status ${run.status}` }
-  const incomplete = matrixFailure(run)
-  return incomplete ? { verdict: 'red', reason: incomplete } : { verdict: 'green', reason: 'ubuntu, windows and macos jobs succeeded' }
 }
 
 function freshEvidence(ctx, runId) {
@@ -360,5 +328,3 @@ export async function dispatch(argv, { io = commandIO, print = console.log } = {
   }
 }
 
-// Pure pieces the suite exercises directly (glob matching, branch naming, the single green producer).
-export const crossosInternals = { matchesHostPath, ciBranchFor, verdictFromEvidence }
