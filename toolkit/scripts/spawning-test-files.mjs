@@ -142,6 +142,7 @@ export const spawningTestFiles = [
   'packages/build/test/shipped-deep-search.test.ts',
   'packages/build/test/shipped-private-plugins.test.ts',
   'packages/build/test/shipped-rule-splits.test.ts',
+  'packages/build/test/shipped-rules-on-demand.test.ts',
   'packages/build/test/signatures-workflow-step.test.ts',
   'packages/build/test/spawn-capability-guard-hook.test.ts',
   'packages/build/test/spawn-guards.test.ts',
