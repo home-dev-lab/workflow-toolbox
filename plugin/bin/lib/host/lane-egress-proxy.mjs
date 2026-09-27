@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { lookup } from 'node:dns'
-import { closeSync, constants, fstatSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, openSync, writeSync } from 'node:fs'
 import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
+import { parseHelperArguments, runLaneHelper } from './lane-helper-process.mjs'
 
 // Host-side egress proxy for a sandboxed lane (lane-sandbox.mjs). The lane runs in its own network
 // namespace with nothing but loopback; this proxy, reached over a unix socket bridged into that
@@ -283,63 +284,16 @@ export function egressLogWriter(file, { limit = EGRESS_LOG_LIMIT_BYTES, now = ()
   }
 }
 
-// /proc/<pid>/stat field 22: a pid whose start time changed is a DIFFERENT process (pid reuse).
-export function processStartTicks(pid, readFile = (file) => readFileSync(file, 'utf8')) {
-  try {
-    const stat = readFile(`/proc/${pid}/stat`)
-    const start = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19])
-    return Number.isFinite(start) ? start : null
-  } catch { return null }
-}
-
-export function parentAlive(pid, startTicks, { kill = process.kill, readStart = processStartTicks } = {}) {
-  try { kill(pid, 0) } catch { return false }
-  return startTicks === null || readStart(pid) === startTicks
-}
-
-function parseArguments(argv) {
-  const options = { allow: new Set(), socket: null, log: null, parent: null, parentStart: null }
-  for (let index = 0; index < argv.length; index += 2) {
-    const value = argv[index + 1]
-    if (argv[index] === '--socket') options.socket = value
-    else if (argv[index] === '--allow') for (const host of String(value ?? '').split(',')) { if (host.trim()) options.allow.add(normalizeEgressHost(host)) }
-    else if (argv[index] === '--log') options.log = value
-    else if (argv[index] === '--parent') options.parent = Number(value)
-    else if (argv[index] === '--parent-start') options.parentStart = Number.isFinite(Number(value)) ? Number(value) : null
-  }
-  return options
-}
+export { parentAlive, processStartTicks } from './lane-helper-process.mjs'
 
 function main() {
-  const options = parseArguments(process.argv.slice(2))
-  const fatal = (message) => {
-    process.stderr.write(`workflow-toolbox: lane egress proxy stopped: ${message}; the sandboxed lane has no egress\n`)
-    try { rmSync(options.socket, { force: true }) } catch { /* nothing to remove */ }
-    process.exit(3)
-  }
-  if (!options.socket) fatal('--socket is required')
-  process.on('uncaughtException', (error) => fatal(error?.message ?? String(error)))
-  const server = createEgressProxy({ allow: options.allow, log: egressLogWriter(options.log) })
-  // A listen failure is fatal (the launch then refuses: its socket never appears). An accept error
-  // (EMFILE) is transient: the proxy keeps serving and says so once.
-  let listening = false
-  let acceptErrorReported = false
-  server.on('error', (error) => {
-    if (!listening) fatal(`cannot listen on its socket (${error.code ?? error.message})`)
-    if (!acceptErrorReported) process.stderr.write(`workflow-toolbox: lane egress proxy accept error (${error.code ?? error.message}); still serving\n`)
-    acceptErrorReported = true
+  const options = { allow: new Set(), socket: null, log: null, parent: null, parentStart: null }
+  parseHelperArguments(process.argv.slice(2), options, {
+    '--allow': (value) => { for (const host of String(value ?? '').split(',')) { if (host.trim()) options.allow.add(normalizeEgressHost(host)) } },
+    '--log': (value) => { options.log = value },
   })
-  server.listen(options.socket, () => { listening = true })
-  // The proxy exits within one poll (2 s) of its parent's death, SIGKILL included: the parent pid
-  // AND its start time are checked, so a reused pid does not keep it alive.
-  if (Number.isSafeInteger(options.parent) && options.parent > 1) {
-    setInterval(() => {
-      if (parentAlive(options.parent, options.parentStart)) return
-      server.close()
-      try { rmSync(options.socket, { force: true }) } catch { /* already gone */ }
-      process.exit(0)
-    }, 2_000)
-  }
+  const server = createEgressProxy({ allow: options.allow, log: egressLogWriter(options.log) })
+  runLaneHelper({ server, options, name: 'egress proxy', stoppedSuffix: '; the sandboxed lane has no egress' })
 }
 
 if (isInvokedDirectly(import.meta.url)) main()

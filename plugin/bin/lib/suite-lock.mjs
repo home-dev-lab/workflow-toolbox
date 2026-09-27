@@ -40,7 +40,7 @@ function positiveSeconds(value, name) {
   return number
 }
 
-export function suiteLockDir(env = process.env, home = homedir(), platform = process.platform) {
+function suiteLockDir(env = process.env, home = homedir(), platform = process.platform) {
   if (typeof env.WT_SUITE_LOCK_DIR === 'string' && env.WT_SUITE_LOCK_DIR.length > 0) {
     return path.resolve(env.WT_SUITE_LOCK_DIR)
   }
@@ -309,8 +309,13 @@ function acquireBrokerSuiteLock(socketPath, options) {
     let resolveLost
     const lost = new Promise((done) => { resolveLost = done })
     const fail = (error) => {
-      if (settled) { if (!released) resolveLost(); return }
-      settled = true; clearTimeout(timer); reject(error)
+      if (settled) {
+        if (!released) resolveLost()
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      reject(error)
     }
     const timer = setTimeout(() => {
       const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}`)

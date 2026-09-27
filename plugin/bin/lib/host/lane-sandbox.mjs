@@ -543,6 +543,11 @@ function networkBridges({ network, socketDir, socat, execPath, egressLog }) {
 // Starts every host bridge and waits for its socket. A bridge whose socket never appears REFUSES
 // the launch (the lane would otherwise start with a launch line claiming a route that does not
 // exist); a bridge that dies later says so on the lane's diagnostics stream (its run log).
+function bridgeName(bridge) {
+  if (bridge.hostOnly) return 'suite-lock broker'
+  return bridge.proxy ? 'egress proxy' : `relay to ${bridge.host}:${bridge.port}`
+}
+
 function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
   const relays = []
   try {
@@ -564,7 +569,7 @@ function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
     }
     const missing = bridges.filter(({ sock }) => !fs.exists(sock))
     if (missing.length) {
-      const names = missing.map((bridge) => (bridge.hostOnly ? 'suite-lock broker' : bridge.proxy ? 'egress proxy' : 'relay to ' + bridge.host + ':' + bridge.port)).join(', ')
+      const names = missing.map(bridgeName).join(', ')
       throw new LaneSandboxRefusal(`lane ${names} did not start within 3 s; refusing to launch a lane whose route does not exist`)
     }
     return { relays, insideCommands }

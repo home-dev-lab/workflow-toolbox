@@ -26,10 +26,10 @@ async function waitFor(predicate: () => boolean, timeoutMs = 7000) {
   }
 }
 
-async function startBroker() {
+async function startBroker(parent = process.pid) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lock-broker-')); roots.push(root)
   const socket = join(root, 'broker.sock')
-  const child = spawn(process.execPath, [BROKER, '--socket', socket, '--parent', String(process.pid), '--label', 'test-lane'], { env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks') }), stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [BROKER, '--socket', socket, '--parent', String(parent), '--label', 'test-lane'], { env: sealedPluginCliEnv(root, { WT_SUITE_LOCK_DIR: join(root, 'locks') }), stdio: ['ignore', 'pipe', 'pipe'] })
   children.push(child)
   await waitFor(() => existsSync(socket))
   return { root, socket, child, lock: join(root, 'locks', 'lock.d', 'holder.json') }
@@ -70,6 +70,17 @@ describe('lane suite-lock broker', () => {
     const result = spawnSync(process.execPath, [CLI, 'run', '--', process.execPath, '-e', 'process.stdout.write("sync")'], { encoding: 'utf8', env: sealedPluginCliEnv(broker.root, { WT_SUITE_LOCK_BROKER: broker.socket }) })
     expect(result.status, result.stderr).toBe(0)
     expect(result.stdout).toBe('sync')
+  })
+
+  it('releases the lock it holds when its parent dies, and the granted client sees the lease lost', async () => {
+    const parent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']); children.push(parent)
+    const broker = await startBroker(parent.pid)
+    const client = connect(broker.socket, { argv: ['pnpm', 'test'], waitS: 2 })
+    await waitFor(() => client.text().includes('granted '))
+    let closed = false
+    client.socket.on('close', () => { closed = true })
+    parent.kill('SIGKILL')
+    await waitFor(() => !existsSync(broker.lock) && closed, 6000)
   })
 
   it('isolates malformed, oversized, timed-out, and excess clients', async () => {

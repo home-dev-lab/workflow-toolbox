@@ -1,25 +1,12 @@
 #!/usr/bin/env node
-import { rmSync } from 'node:fs'
 import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
-import { parentAlive } from './lane-egress-proxy.mjs'
+import { parseHelperArguments, runLaneHelper } from './lane-helper-process.mjs'
 import { acquireSuiteLock, releaseSuiteLock } from '../suite-lock.mjs'
 
 const REQUEST_LIMIT = 4096
 const REQUEST_TIMEOUT_MS = 5000
 const MAX_CONNECTIONS = 16
-
-function parseArguments(argv) {
-  const options = { socket: null, parent: null, parentStart: null, label: '' }
-  for (let index = 0; index < argv.length; index += 2) {
-    const value = argv[index + 1]
-    if (argv[index] === '--socket') options.socket = value
-    else if (argv[index] === '--parent') options.parent = Number(value)
-    else if (argv[index] === '--parent-start') options.parentStart = Number.isFinite(Number(value)) ? Number(value) : null
-    else if (argv[index] === '--label') options.label = String(value ?? '')
-  }
-  return options
-}
 
 function requestFrom(line) {
   let request
@@ -32,7 +19,8 @@ function requestFrom(line) {
 
 export function createSuiteLockBroker({ label = '' } = {}) {
   let active = 0
-  return net.createServer((socket) => {
+  const releases = new Set()
+  const server = net.createServer((socket) => {
     if (active >= MAX_CONNECTIONS) { socket.end('error busy\n'); return }
     active += 1
     let buffer = Buffer.alloc(0)
@@ -45,8 +33,10 @@ export function createSuiteLockBroker({ label = '' } = {}) {
       if (released) return
       released = true
       controller.abort()
+      releases.delete(release)
       if (lease) releaseSuiteLock(lease)
     }
+    releases.add(release)
     const finish = () => {
       if (closed) return
       closed = true; active -= 1; clearTimeout(timer); release()
@@ -79,29 +69,20 @@ export function createSuiteLockBroker({ label = '' } = {}) {
       }
     })
   })
+  // Releases every lock this broker holds (its lease on exit must not wait for its pid to read dead).
+  server.releaseAll = () => { for (const release of [...releases]) release() }
+  return server
 }
 
 function main() {
-  const options = parseArguments(process.argv.slice(2))
-  const fatal = (message) => {
-    process.stderr.write(`workflow-toolbox: lane suite-lock broker stopped: ${message}\n`)
-    try { rmSync(options.socket, { force: true }) } catch { /* nothing to remove */ }
-    process.exit(3)
-  }
-  if (!options.socket) fatal('--socket is required')
-  process.on('uncaughtException', (error) => fatal(error?.message ?? String(error)))
+  const options = { socket: null, parent: null, parentStart: null, label: '' }
+  parseHelperArguments(process.argv.slice(2), options, {
+    '--label': (value) => { options.label = String(value ?? '') },
+  })
   const server = createSuiteLockBroker({ label: options.label })
-  let listening = false
-  server.on('error', (error) => { if (!listening) fatal(`cannot listen on its socket (${error.code ?? error.message})`) })
-  server.listen(options.socket, () => { listening = true })
-  if (Number.isSafeInteger(options.parent) && options.parent > 1) {
-    setInterval(() => {
-      if (parentAlive(options.parent, options.parentStart)) return
-      server.close()
-      try { rmSync(options.socket, { force: true }) } catch { /* already gone */ }
-      process.exit(0)
-    }, 2000)
-  }
+  // A broker that is going away releases every lock it holds first, so the next waiter is not left
+  // to wait for its pid to read dead; each lane client then sees its lease lost and stops its suite.
+  runLaneHelper({ server, options, name: 'suite-lock broker', beforeExit: () => server.releaseAll() })
 }
 
 if (isInvokedDirectly(import.meta.url)) main()
