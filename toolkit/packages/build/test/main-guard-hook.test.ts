@@ -585,7 +585,7 @@ describe('wt-main-guard-hook — escape hatch', () => {
     const command = 'git push origin --delete card/é-x 2>&1 | grep -v \'a\\b\' # "q" ✓\necho done'
     const refused = run(command, { toolUseId: 'tool-1' })
     expect(refused.denied).toBe(true)
-    const printed = JSON.parse(refusalOf(refused).match(/write (\{.*\}) to /)![1])
+    const printed = JSON.parse(refusalOf(refused).match(/write (\{.*\}) to /)?.[1] ?? 'null')
     expect(printed.command).toBe(command)
     printed.reason = 'owner approved this exact deletion'
     const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
