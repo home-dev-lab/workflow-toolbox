@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { acquireSuiteLock, readSuiteLock, releaseSuiteLock, spawnNeedsShell, windowsShimArgumentRefusal } from '../../../../plugin/bin/lib/suite-lock.mjs'
+import { acquireSuiteLock, formatSuiteLockHolder, readSuiteLock, releaseSuiteLock, spawnNeedsShell, windowsShimArgumentRefusal } from '../../../../plugin/bin/lib/suite-lock.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const CLI = join(ROOT, 'plugin/bin/wt-suite-lock.mjs')
@@ -91,6 +91,211 @@ describe('suite lock library', () => {
   })
 })
 
+// A waiter process driven through the library, so each one can be given its own poll interval: the
+// starvation needs a slow poller (asleep between polls when the lock is released) and fast arrivals.
+const LIB_URL = new URL('../../../../plugin/bin/lib/suite-lock.mjs', import.meta.url).href
+const WAITER_SCRIPT = `
+import { appendFileSync } from 'node:fs'
+import { acquireSuiteLock, releaseSuiteLock } from ${JSON.stringify(LIB_URL)}
+const cfg = JSON.parse(process.argv[1])
+let lease
+try {
+  lease = await acquireSuiteLock({ root: cfg.root, pollMs: cfg.pollMs, noticeMs: 60000, waitS: cfg.waitS, argv: [cfg.name], onWait: (line) => process.stdout.write(line + '\\n') })
+} catch (error) {
+  // An error that is not a timeout names its code, so a failure on another OS says what it met.
+  appendFileSync(cfg.order, (error?.code === 'WT_SUITE_LOCK_TIMEOUT' ? 'TIMEOUT-' : 'ERROR-' + (error?.code ?? error?.message) + '-') + cfg.name + '\\n')
+  process.exit(75)
+}
+appendFileSync(cfg.order, cfg.name + '\\n')
+await new Promise((resolve) => setTimeout(resolve, cfg.holdMs))
+releaseSuiteLock(lease)
+`
+
+interface Waiter { child: ReturnType<typeof spawn>, stdout: () => string, done: Promise<number | null> }
+
+function startWaiter(root: string, order: string, name: string, pollMs: number, holdMs: number, waitS = 30): Waiter {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', WAITER_SCRIPT, JSON.stringify({ root, order, name, pollMs, holdMs, waitS })], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stdout = ''
+  child.stdout!.on('data', (chunk) => { stdout += String(chunk) })
+  return { child, stdout: () => stdout, done: new Promise((resolve) => child.once('exit', resolve)) }
+}
+
+const readOrder = (order: string) => (existsSync(order) ? readFileSync(order, 'utf8').split('\n').filter(Boolean) : [])
+const queueRecords = (root: string) => (existsSync(join(root, 'queue.d')) ? readdirSync(join(root, 'queue.d')).filter((name) => name.endsWith('.json')) : [])
+
+describe('suite lock FIFO queue (card 1873075570439357968)', () => {
+  // Red on the "first poller wins" lock: the oldest waiter polls every second, the arrivals every
+  // 10 ms, so each release went to an arrival and the oldest waiter ran last.
+  it('gives the lock to the OLDEST waiter while new arrivals keep coming, and prints each position', async () => {
+    const root = tempRoot('fifo')
+    const order = join(root, 'order.log')
+    const holder = startWaiter(root, order, 'H', 10, 2500)
+    await waitFor(() => readOrder(order).includes('H'), 5000)
+    const oldest = startWaiter(root, order, 'W1', 1000, 200)
+    await waitFor(() => oldest.stdout().includes('waiting for suite lock'), 5000)
+    const second = startWaiter(root, order, 'A2', 10, 400)
+    await waitFor(() => second.stdout().includes('waiting for suite lock'), 5000)
+    const third = startWaiter(root, order, 'A3', 10, 400)
+    await waitFor(() => third.stdout().includes('waiting for suite lock'), 5000)
+    expect(readOrder(order), 'the holder must still hold when the last arrival queues').toEqual(['H'])
+    const exits = await Promise.all([holder, oldest, second, third].map((waiter) => waiter.done))
+    expect(readOrder(order)).toEqual(['H', 'W1', 'A2', 'A3'])
+    expect(exits).toEqual([0, 0, 0, 0])
+    expect(oldest.stdout()).toMatch(/waiting for suite lock: position 1 of 1, holder pid \d+ \(H\) since \d\d:\d\d/)
+    expect(third.stdout()).toMatch(/waiting for suite lock: position 3 of 3, holder pid \d+ \(H\) since \d\d:\d\d/)
+    expect(queueRecords(root)).toEqual([])
+  }, 20_000)
+
+  it('does not let a waiter killed mid-queue block the waiters behind it', async () => {
+    const root = tempRoot('fifo-crash')
+    const order = join(root, 'order.log')
+    const holder = startWaiter(root, order, 'H', 10, 1500)
+    await waitFor(() => readOrder(order).includes('H'), 5000)
+    const killed = startWaiter(root, order, 'K', 50, 100)
+    await waitFor(() => killed.stdout().includes('waiting for suite lock'), 5000)
+    const behind = startWaiter(root, order, 'W', 50, 100, 6)
+    await waitFor(() => behind.stdout().includes('position 2 of 2'), 5000)
+    killed.child.kill('SIGKILL')
+    await killed.done
+    expect(await holder.done).toBe(0)
+    expect(await behind.done).toBe(0)
+    expect(readOrder(order)).toEqual(['H', 'W'])
+    expect(queueRecords(root)).toEqual([])
+  }, 20_000)
+})
+
+describe('suite lock queue tickets', () => {
+  function seedTicket(root: string, number: number, record: unknown, ageMs = 0) {
+    const queue = join(root, 'queue.d')
+    mkdirSync(queue, { recursive: true })
+    const base = join(queue, String(number).padStart(16, '0'))
+    writeFileSync(`${base}.ticket`, '')
+    writeFileSync(`${base}.json`, typeof record === 'string' ? record : JSON.stringify(record))
+    if (ageMs > 0) {
+      const then = new Date(Date.now() - ageMs)
+      utimesSync(`${base}.json`, then, then)
+    }
+    return `${base}.json`
+  }
+  const liveRecord = (extra: Record<string, unknown> = {}) => ({ pid: process.pid, argv: ['x'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: null, startTime: null, ...extra })
+  const timesOut = (options: Record<string, unknown>) => acquireSuiteLock({ waitS: 0.2, pollMs: 10, insideSandbox: false, ...options }).then(
+    (lease: { holder: unknown }) => { releaseSuiteLock(lease); return 'acquired' },
+    (error: { code?: string }) => error.code,
+  )
+
+  // A launcher from an older release takes no ticket; the head of the queue out-polls it by polling
+  // at 100 ms whatever its own interval, which also bounds the hand-over after a release.
+  it('polls fast at the head of the queue, so a release is picked up within a fraction of its poll interval', async () => {
+    const root = tempRoot('ticket-head')
+    const blocker = await acquireSuiteLock({ root })
+    let acquiredAt = 0
+    const waiting = acquireSuiteLock({ root, pollMs: 5000, waitS: 20 }).then((lease: unknown) => { acquiredAt = Date.now(); return lease })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const releasedAt = Date.now()
+    releaseSuiteLock(blocker)
+    releaseSuiteLock(await waiting)
+    expect(acquiredAt - releasedAt).toBeLessThan(1500)
+  }, 10_000)
+
+  it('waits behind a live ticket even while the lock itself is free', async () => {
+    const root = tempRoot('ticket-live')
+    seedTicket(root, 1, liveRecord())
+    expect(await timesOut({ root })).toBe('WT_SUITE_LOCK_TIMEOUT')
+  })
+
+  it('reclaims a ticket whose pid is dead or reused, with the holder rule', async () => {
+    const dead = tempRoot('ticket-dead')
+    const deadFile = seedTicket(dead, 1, liveRecord({ pid: 2_147_483_647 }))
+    expect(await timesOut({ root: dead })).toBe('acquired')
+    expect(existsSync(deadFile)).toBe(false)
+    const reused = tempRoot('ticket-reused')
+    seedTicket(reused, 1, liveRecord({ startTime: 111, pidNamespace: 'pid:[4026531836]' }))
+    const view = { root: reused, pidNamespace: 'pid:[4026531836]', insideSandbox: false, platform: 'linux' }
+    expect(await timesOut({ ...view, processStartTime: () => 111 })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    expect(await timesOut({ ...view, processStartTime: () => 222 })).toBe('acquired')
+  })
+
+  it('judges a ticket from another PID namespace like the holder: by its namespace from the host, by its heartbeat inside a sandbox', async () => {
+    const host = tempRoot('ticket-host')
+    seedTicket(host, 1, liveRecord({ pid: 7, pidNamespace: 'pid:[4026532999]' }))
+    const hostView = { root: host, pidNamespace: 'pid:[4026531836]', insideSandbox: false }
+    expect(await timesOut({ ...hostView, namespaceHasProcesses: () => true })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    expect(await timesOut({ ...hostView, namespaceHasProcesses: () => false })).toBe('acquired')
+    // Inside a sandbox the host waiter is invisible: its ticket lives while its heartbeat does, and is
+    // reclaimed after min(staleS, waitS) of silence, the holder's own bound.
+    const sandboxView = { pidNamespace: 'pid:[4026532999]', insideSandbox: true, namespaceHasProcesses: () => false, waitS: 1, staleS: 60 }
+    const fresh = tempRoot('ticket-sandbox-fresh')
+    const beating = seedTicket(fresh, 1, liveRecord({ pid: 7, pidNamespace: 'pid:[4026531836]' }))
+    const heartbeat = setInterval(() => { const now = new Date(); utimesSync(beating, now, now) }, 50)
+    try {
+      expect(await timesOut({ root: fresh, ...sandboxView })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    } finally { clearInterval(heartbeat) }
+    const silent = tempRoot('ticket-sandbox-silent')
+    seedTicket(silent, 1, liveRecord({ pid: 7, pidNamespace: 'pid:[4026531836]' }), 3_600_000)
+    expect(await timesOut({ root: silent, ...sandboxView })).toBe('acquired')
+  })
+
+  // A ticket heartbeats and the holder does not, so a ticket's age bound is its silence (at least two
+  // minutes), not the holder's 45-minute/3-hour bounds: a recycled Windows PID or an invisible host
+  // waiter cannot hold the queue for hours.
+  it('reclaims a ticket silent for minutes where its PID cannot prove it dead, and keeps a beating one', async () => {
+    const windows = { platform: 'win32', insideSandbox: false, pidNamespace: null }
+    const recycled = tempRoot('ticket-win-recycled')
+    seedTicket(recycled, 1, liveRecord({ platform: 'win32' }), 180_000)
+    expect(await timesOut({ root: recycled, ...windows, waitS: 5 })).toBe('acquired')
+    const beating = tempRoot('ticket-win-beating')
+    seedTicket(beating, 1, liveRecord({ platform: 'win32' }), 10_000)
+    expect(await timesOut({ root: beating, ...windows })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    const hostWaiter = tempRoot('ticket-sandbox-silent-minutes')
+    seedTicket(hostWaiter, 1, liveRecord({ pid: 7, pidNamespace: 'pid:[4026531836]' }), 180_000)
+    // waitS 600: the holder's own sandbox bound, min(staleS, waitS), would not reclaim it for ten minutes.
+    expect(await timesOut({ root: hostWaiter, pidNamespace: 'pid:[4026532999]', insideSandbox: true, waitS: 600 })).toBe('acquired')
+  }, 15_000)
+
+  it('keeps an unreadable ticket for a grace period, then reclaims it', async () => {
+    const young = tempRoot('ticket-unreadable-young')
+    seedTicket(young, 1, '')
+    expect(await timesOut({ root: young })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    const old = tempRoot('ticket-unreadable-old')
+    seedTicket(old, 1, '', 60_000)
+    expect(await timesOut({ root: old })).toBe('acquired')
+  })
+
+  it('numbers past every allocated marker, prunes old markers, and restores a live waiter\'s removed record under its number', async () => {
+    const root = tempRoot('ticket-numbering')
+    const queue = join(root, 'queue.d')
+    mkdirSync(queue, { recursive: true })
+    for (const number of [1, 300]) writeFileSync(join(queue, `${String(number).padStart(16, '0')}.ticket`), '')
+    const blocker = await acquireSuiteLock({ root })
+    let acquired = false
+    const waiting = acquireSuiteLock({ root, pollMs: 10, waitS: 5 }).then((lease: unknown) => { acquired = true; return lease })
+    // The blocker took 301 (past marker 300, never the freed 2), so this waiter holds 302.
+    const mine = join(queue, `${String(302).padStart(16, '0')}.json`)
+    await waitFor(() => existsSync(mine))
+    expect(existsSync(join(queue, `${String(1).padStart(16, '0')}.ticket`)), 'a marker 256 below the new ticket is pruned').toBe(false)
+    rmSync(mine)
+    await waitFor(() => existsSync(mine))
+    expect(acquired).toBe(false)
+    releaseSuiteLock(blocker)
+    releaseSuiteLock(await waiting)
+    expect(existsSync(mine)).toBe(false)
+  })
+})
+
+describe('holder display', () => {
+  it('replaces control characters, caps the command, and never prints a non-integer pid', () => {
+    const line = formatSuiteLockHolder({ pid: '1\nforged line', argv: ['pnpm\u001b[31m', `test\r\n${'x'.repeat(200)}`], startedAt: 'nope' })
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
+    expect(line).toContain('holder pid unknown (pnpm?[31m test??')
+    expect(line).toMatch(/\.\.\.\) since unknown time$/)
+    expect(line.length).toBeLessThan(140)
+    expect(formatSuiteLockHolder({ pid: 42, argv: ['a\u202eb'], startedAt: 'nope' })).toBe('holder pid 42 (a?b) since unknown time')
+    expect(formatSuiteLockHolder('string holder')).toBe('holder unknown')
+  })
+})
+
 describe('wt-suite-lock CLI', () => {
   it('times out with 75 and never runs the command', async () => {
     const root = tempRoot('timeout')
@@ -122,7 +327,7 @@ describe('wt-suite-lock CLI', () => {
     expect(await first.done).toBe(0)
     expect(await second.done).toBe(0)
     expect(Date.now() - started).toBeGreaterThanOrEqual(5900)
-    expect(second.stderr()).toMatch(/waiting for suite lock: holder pid \d+ \(.+\) since \d\d:\d\d/)
+    expect(second.stderr()).toMatch(/waiting for suite lock: position 1 of 1, holder pid \d+ \(.+\) since \d\d:\d\d/)
     expect(existsSync(join(root, 'lock.d'))).toBe(false)
   }, 10_000)
 
@@ -209,7 +414,7 @@ describe('wt-suite-lock-run runner', () => {
     const statusWhileHeld = cli(['status'], root)
     expect(statusWhileHeld.stdout).toContain('suite lock held')
     const second = runner([process.execPath, '-e', 'process.stdout.write("second ran")'], root)
-    expect(second.stderr).toContain('waiting for suite lock: holder pid')
+    expect(second.stderr).toMatch(/waiting for suite lock: position 1 of 1, holder pid \d+ /)
     expect(second.stdout).toBe('second ran')
     await new Promise((resolve) => child.once('exit', resolve))
   })
@@ -283,4 +488,264 @@ describe('spawn shell decision (Windows shims only)', () => {
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('quoted ok')
   })
+})
+
+interface QueueModule {
+  takeTicket: (queueDir: string, record: unknown, seams?: { list?: (queueDir: string) => { markers: number[], records: number[] } }) => number
+}
+const queueModule = (await import(new URL('../../../../plugin/bin/lib/host/suite-lock-queue.mjs', import.meta.url).href)) as QueueModule
+
+// Round 2 (review of the first FIFO commit): each case is red on that commit.
+describe('suite lock queue — round 2', () => {
+  const pad = (number: number) => String(number).padStart(16, '0')
+  function seed(root: string, number: number, record: unknown, ageMs = 0, marker = true) {
+    const queue = join(root, 'queue.d')
+    mkdirSync(queue, { recursive: true })
+    if (marker) writeFileSync(join(queue, `${pad(number)}.ticket`), '')
+    const file = join(queue, `${pad(number)}.json`)
+    writeFileSync(file, JSON.stringify(record))
+    if (ageMs > 0) { const then = new Date(Date.now() - ageMs); utimesSync(file, then, then) }
+    return file
+  }
+  const record = (extra: Record<string, unknown> = {}) => ({ pid: process.pid, argv: ['x'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: null, startTime: null, ...extra })
+  const attempt = (options: Record<string, unknown>) => acquireSuiteLock({ waitS: 0.2, pollMs: 10, insideSandbox: false, ...options }).then(
+    (lease: { holder: unknown }) => { releaseSuiteLock(lease); return 'acquired' },
+    (error: { code?: string }) => error.code,
+  )
+  const HOST = 'pid:[4026531836]'
+  const SANDBOX = 'pid:[4026532999]'
+
+  // F1: a populated namespace proves nothing about the ticket's owner; silence past the bound wins.
+  it('reclaims a silent foreign-namespace ticket from the host even while its namespace is populated', async () => {
+    const root = tempRoot('r2-f1')
+    seed(root, 1, record({ pid: 7, pidNamespace: SANDBOX }), 180_000)
+    expect(await attempt({ root, pidNamespace: HOST, namespaceHasProcesses: () => true })).toBe('acquired')
+  })
+
+  // F3: the caller's --wait-s / --stale-s never shorten another waiter's grace below the fixed floor.
+  it('keeps a recently beating ticket whatever the newcomer\'s wait or stale bound, in every view', async () => {
+    const sandboxView = tempRoot('r2-f3-sandbox')
+    seed(sandboxView, 1, record({ pid: 7, pidNamespace: HOST }), 500)
+    expect(await attempt({ root: sandboxView, pidNamespace: SANDBOX, insideSandbox: true, waitS: 0.2 })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    const windows = tempRoot('r2-f3-windows')
+    seed(windows, 1, record({ platform: 'win32' }), 10_000)
+    expect(await attempt({ root: windows, platform: 'win32', pidNamespace: null, staleS: 1 })).toBe('WT_SUITE_LOCK_TIMEOUT')
+  })
+
+  // F5: a lost race on <n>.json means the number is not mine.
+  it('never returns a number whose record another waiter already published', () => {
+    const root = tempRoot('r2-f5-owner')
+    const queue = join(root, 'queue.d')
+    const theirs = seed(root, 1, record({ argv: ['theirs'] }), 0, false)
+    let stale = true
+    const list = (dir: string) => {
+      if (stale) { stale = false; return { markers: [], records: [] } }
+      const names = readdirSync(dir)
+      const numbers = (suffix: string) => names.filter((name) => name.endsWith(suffix)).map((name) => Number(name.slice(0, 16)))
+      return { markers: numbers('.ticket'), records: numbers('.json') }
+    }
+    const mine = queueModule.takeTicket(queue, record({ argv: ['mine'] }), { list })
+    expect(mine).not.toBe(1)
+    expect(JSON.parse(readFileSync(theirs, 'utf8')).argv).toEqual(['theirs'])
+    expect(JSON.parse(readFileSync(join(queue, `${pad(mine)}.json`), 'utf8')).argv).toEqual(['mine'])
+  })
+
+  it('prunes allocation markers only below the lowest live ticket', () => {
+    const root = tempRoot('r2-f5-prune')
+    const queue = join(root, 'queue.d')
+    seed(root, 1, record())
+    writeFileSync(join(queue, `${pad(300)}.ticket`), '')
+    expect(queueModule.takeTicket(queue, record())).toBe(301)
+    expect(existsSync(join(queue, `${pad(1)}.ticket`)), 'marker of a live ticket survives').toBe(true)
+  })
+
+  // F8: an abandoned reclaim.d must neither spin the loop past its wait nor block reclaim forever.
+  it('times out on schedule behind an abandoned reclaim.d, and reclaims one older than its bound', async () => {
+    const seedStaleHolder = (root: string, reclaimAgeMs: number) => {
+      mkdirSync(join(root, 'lock.d'), { recursive: true })
+      writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ ...record({ pid: 2_147_483_647 }) }))
+      mkdirSync(join(root, 'reclaim.d'))
+      if (reclaimAgeMs > 0) { const then = new Date(Date.now() - reclaimAgeMs); utimesSync(join(root, 'reclaim.d'), then, then) }
+    }
+    const fresh = tempRoot('r2-f8-fresh')
+    seedStaleHolder(fresh, 0)
+    const started = Date.now()
+    expect(await attempt({ root: fresh })).toBe('WT_SUITE_LOCK_TIMEOUT')
+    expect(Date.now() - started).toBeLessThan(2000)
+    const abandoned = tempRoot('r2-f8-abandoned')
+    seedStaleHolder(abandoned, 120_000)
+    expect(await attempt({ root: abandoned })).toBe('acquired')
+  }, 10_000)
+})
+
+// Card 1873134162710365740: the lock must never reclaim a LIVE holder, whatever the waiter's own
+// --wait-s, and a reclaim must remove the lock instance it judged, not a newer one.
+describe('suite lock exclusion', () => {
+  const EXCL_SCRIPT = `
+import { appendFileSync } from 'node:fs'
+import { acquireSuiteLock, releaseSuiteLock } from ${JSON.stringify(LIB_URL)}
+const cfg = JSON.parse(process.argv[1])
+let lease
+try {
+  lease = await acquireSuiteLock({ root: cfg.root, pollMs: 50, waitS: cfg.waitS, argv: [cfg.name], ...cfg.view })
+} catch (error) {
+  appendFileSync(cfg.log, cfg.name + ' TIMEOUT ' + Date.now() + '\\n')
+  process.exit(75)
+}
+appendFileSync(cfg.log, cfg.name + ' START ' + Date.now() + '\\n')
+await new Promise((resolve) => setTimeout(resolve, cfg.holdMs))
+appendFileSync(cfg.log, cfg.name + ' END ' + Date.now() + '\\n')
+releaseSuiteLock(lease)
+`
+  function runExcl(cfg: Record<string, unknown>) {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', EXCL_SCRIPT, JSON.stringify(cfg)], { stdio: 'ignore' })
+    return new Promise<number | null>((resolve) => child.once('exit', resolve))
+  }
+  const events = (log: string) => (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => {
+    const [name = '', kind = '', at = '0'] = line.split(' ')
+    return { name, kind, at: Number(at) }
+  }) : [])
+  // Two runs overlap when one STARTs before the other ENDs.
+  function overlaps(log: string) {
+    const list = events(log)
+    const span = (name: string) => ({ start: list.find((e) => e.name === name && e.kind === 'START')?.at, end: list.find((e) => e.name === name && e.kind === 'END')?.at })
+    const names = [...new Set(list.filter((e) => e.kind === 'START').map((e) => e.name))]
+    for (const a of names) for (const b of names) {
+      if (a === b) continue
+      const x = span(a); const y = span(b)
+      if (x.start !== undefined && y.start !== undefined && x.start <= y.start && (x.end === undefined || y.start < x.end)) return `${b} started while ${a} ran`
+    }
+    return null
+  }
+
+  it('a sandboxed waiter with a short --wait-s never reclaims a live host holder (real processes)', async () => {
+    const root = tempRoot('excl-sandbox')
+    const log = join(root, 'events.log')
+    const holder = runExcl({ root, log, name: 'HOST', waitS: 10, holdMs: 3000, view: {} })
+    // HOST's own START event is written only after it has acquired the suite lock, so waiting for
+    // it (rather than a fixed pause) already proves the holder is live before SANDBOX ever attempts.
+    await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 12_000)
+    const sandboxed = runExcl({ root, log, name: 'SANDBOX', waitS: 1, holdMs: 100, view: { insideSandbox: true, pidNamespace: 'pid:[4026532999]' } })
+    expect(await sandboxed).toBe(75)
+    expect(await holder).toBe(0)
+    expect(overlaps(log)).toBeNull()
+  }, 20_000)
+
+  const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', 'true'], { stdio: 'ignore' }).status === 0
+  it.skipIf(!BWRAP_WORKS)('same through the CLI from a real bwrap PID namespace (skips: bwrap unavailable)', async () => {
+    const root = tempRoot('excl-bwrap')
+    const log = join(root, 'events.log')
+    const mark = (name: string, holdMs: number) => `const f=require('fs');f.appendFileSync(${JSON.stringify(log)},'${name} START '+Date.now()+'\\n');setTimeout(()=>f.appendFileSync(${JSON.stringify(log)},'${name} END '+Date.now()+'\\n'),${holdMs})`
+    const env = { ...process.env, WT_SUITE_LOCK_DIR: root }
+    const host = spawn(process.execPath, [CLI, 'run', '--', process.execPath, '-e', mark('HOST', 3000)], { env, stdio: 'ignore' })
+    const hostDone = new Promise((resolve) => host.once('exit', resolve))
+    // Same reasoning as the sibling non-bwrap test: HOST's own START event already proves the lock
+    // is held, so there is nothing left to pad with a fixed pause.
+    await waitFor(() => events(log).some((e) => e.name === 'HOST' && e.kind === 'START'), 12_000)
+    const boxed = spawnSync('bwrap', ['--unshare-pid', '--unshare-user', '--dev-bind', '/', '/', '--proc', '/proc', process.execPath, CLI, 'run', '--wait-s', '1', '--', process.execPath, '-e', mark('SANDBOX', 100)], { env, encoding: 'utf8' })
+    await hostDone
+    expect(boxed.status, boxed.stderr).toBe(75)
+    expect(overlaps(log)).toBeNull()
+  }, 20_000)
+
+  it('keeps a live holder whose PID cannot be judged until the documented hard bound, never the waiter\'s --wait-s', async () => {
+    const root = tempRoot('excl-bound')
+    await acquireSuiteLock({ root })
+    const hourAgo = new Date(Date.now() - 3_600_000)
+    utimesSync(join(root, 'lock.d'), hourAgo, hourAgo)
+    const sandboxView = { root, pidNamespace: 'pid:[4026532999]', insideSandbox: true, waitS: 0.2, pollMs: 10 }
+    await expect(acquireSuiteLock(sandboxView)).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    const windowsView = { root, platform: 'win32', insideSandbox: false, waitS: 0.2, pollMs: 10 }
+    await expect(acquireSuiteLock(windowsView)).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    // The hard bound is --stale-s (3 h by default), stated in known-issues.md.
+    const lease = await acquireSuiteLock({ ...sandboxView, staleS: 1800 })
+    releaseSuiteLock(lease)
+  })
+
+  it('reclaims a half-created lock.d (no valid holder.json) after its bound, and not before', async () => {
+    const young = tempRoot('excl-half-young')
+    mkdirSync(join(young, 'lock.d'))
+    await expect(acquireSuiteLock({ root: young, waitS: 0.2, pollMs: 10 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    const old = tempRoot('excl-half-old')
+    mkdirSync(join(old, 'lock.d'))
+    writeFileSync(join(old, 'lock.d', 'holder.json'), '{"truncat')
+    const twoMinutesAgo = new Date(Date.now() - 120_000)
+    utimesSync(join(old, 'lock.d'), twoMinutesAgo, twoMinutesAgo)
+    const lease = await acquireSuiteLock({ root: old, waitS: 2, pollMs: 10 })
+    expect(lease.holder.pid).toBe(process.pid)
+    releaseSuiteLock(lease)
+  })
+
+  it('only the head of the queue reclaims a dead holder', async () => {
+    const root = tempRoot('excl-head-only')
+    mkdirSync(join(root, 'lock.d'))
+    const dead = { pid: 2_147_483_647, argv: ['dead'], cwd: '/', startedAt: new Date().toISOString(), platform: process.platform, pidNamespace: null, startTime: null }
+    writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify(dead))
+    mkdirSync(join(root, 'queue.d'))
+    writeFileSync(join(root, 'queue.d', `${'1'.padStart(16, '0')}.ticket`), '')
+    writeFileSync(join(root, 'queue.d', `${'1'.padStart(16, '0')}.json`), JSON.stringify({ ...dead, pid: process.pid, argv: ['head'] }))
+    await expect(acquireSuiteLock({ root, waitS: 0.3, pollMs: 10, insideSandbox: false })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    expect(JSON.parse(readFileSync(join(root, 'lock.d', 'holder.json'), 'utf8')).argv).toEqual(['dead'])
+  })
+
+  // The judged instance is released and a NEW holder (here an older-release client, which takes no
+  // ticket) creates lock.d between the reclaimer's check and its removal: that holder must survive.
+  it('a reclaim that finds a newer lock instance puts it back instead of deleting it (real processes)', async () => {
+    const root = tempRoot('excl-instance')
+    const log = join(root, 'events.log')
+    mkdirSync(join(root, 'lock.d'))
+    writeFileSync(join(root, 'lock.d', 'holder.json'), JSON.stringify({ pid: 2_147_483_647, argv: ['dead'], cwd: '/', startedAt: new Date(0).toISOString(), platform: process.platform, pidNamespace: null, startTime: null }))
+    const legacy = `const f=require('fs'),p=require('path');const d=p.join(${JSON.stringify(root)},'lock.d');f.mkdirSync(d);f.writeFileSync(p.join(d,'holder.json'),JSON.stringify({pid:process.pid,argv:['legacy'],cwd:'/',startedAt:new Date().toISOString(),platform:process.platform,pidNamespace:null,startTime:null}));f.appendFileSync(${JSON.stringify(log)},'LEGACY START '+Date.now()+'\\n');setTimeout(()=>{f.appendFileSync(${JSON.stringify(log)},'LEGACY END '+Date.now()+'\\n');f.rmSync(d,{recursive:true})},1500)`
+    let legacyDone: Promise<unknown> = Promise.resolve()
+    const beforeReclaimRemoval = () => {
+      rmSync(join(root, 'lock.d'), { recursive: true })
+      const child = spawn(process.execPath, ['-e', legacy], { stdio: 'ignore' })
+      legacyDone = new Promise((resolve) => child.once('exit', resolve))
+      // Bounded busy-poll on the real event (the legacy holder.json reappearing) — the cap is a
+      // safety net for a stalled host, not itself the mechanism, so it sits above the census's
+      // short-deadline threshold.
+      const deadline = Date.now() + 12_000
+      while (!existsSync(join(root, 'lock.d', 'holder.json')) && Date.now() < deadline) spawnSync(process.execPath, ['-e', 'setTimeout(()=>{},20)'])
+    }
+    const lease = await acquireSuiteLock({ root, waitS: 15, pollMs: 20, insideSandbox: false, beforeReclaimRemoval })
+    appendFileSync(log, `RECLAIMER START ${Date.now()}\n`)
+    appendFileSync(log, `RECLAIMER END ${Date.now()}\n`)
+    releaseSuiteLock(lease)
+    await legacyDone
+    expect(events(log).map((e) => `${e.name} ${e.kind}`)).toEqual(['LEGACY START', 'LEGACY END', 'RECLAIMER START', 'RECLAIMER END'])
+  }, 20_000)
+})
+
+// Windows run 36299753097: a FIFO waiter died with exit 75 in 3 s, far inside its 30 s wait, while the
+// holder released and fast pollers raced it. Windows reports an entry another process is deleting as
+// EPERM/EACCES/EBUSY; the lock's hot path treated any such code as fatal. The class reproduced on Linux
+// with a permission error that clears (EACCES), and one that does not.
+const CAN_REVOKE_WRITE = process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0
+describe('suite lock transient filesystem errors', () => {
+  it.skipIf(!CAN_REVOKE_WRITE)('retries an EACCES that clears instead of failing the wait (skips: Windows or root)', async () => {
+    const root = tempRoot('transient-clears')
+    mkdirSync(join(root, 'queue.d'))
+    chmodSync(join(root, 'queue.d'), 0o500)
+    // acquireSuiteLock's first ticket attempt runs synchronously (through retryTransient's initial
+    // try) before its first internal await, so restoring permissions on the very next line — no
+    // timer needed — deterministically lands after that first EACCES and before the retry's own
+    // sleep elapses, proving the retry-then-recover path without racing on a fixed duration.
+    const acquiring = acquireSuiteLock({ root, waitS: 10, pollMs: 20 })
+    chmodSync(join(root, 'queue.d'), 0o700)
+    const lease = await acquiring
+    expect(lease.holder.pid).toBe(process.pid)
+    releaseSuiteLock(lease)
+  }, 10_000)
+
+  it.skipIf(!CAN_REVOKE_WRITE)('still throws a permission error that persists, within a bounded window (skips: Windows or root)', async () => {
+    const root = tempRoot('transient-persists')
+    mkdirSync(join(root, 'queue.d'))
+    chmodSync(join(root, 'queue.d'), 0o500)
+    const started = Date.now()
+    try {
+      await expect(acquireSuiteLock({ root, waitS: 60, pollMs: 20 })).rejects.toMatchObject({ code: 'EACCES' })
+      expect(Date.now() - started).toBeGreaterThanOrEqual(4500)
+      expect(Date.now() - started).toBeLessThan(15_000)
+    } finally { chmodSync(join(root, 'queue.d'), 0o700) }
+  }, 20_000)
 })

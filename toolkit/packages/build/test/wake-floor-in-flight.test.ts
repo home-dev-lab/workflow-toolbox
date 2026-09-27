@@ -8,13 +8,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { classifyLane } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { sessionBackgroundTaskInFlight, sessionLaneInFlight } from '../../../../plugin/bin/lib/wake-floor-in-flight.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 type RecordValue = Record<string, unknown>
 
 const projectDir = path.resolve('/project')
 const worktree = path.join(projectDir, 'lane\nwith-newline')
 const runId = '123-456'
-const supervisionDir = path.join(worktree, '.lane', 'supervision')
+const supervisionDir = path.join(laneHostDir(worktree), 'supervision')
 const recordPath = path.join(supervisionDir, `${runId}.json`)
 const realProcessRoots: string[] = []
 const realProcessChildren: ChildProcess[] = []
@@ -74,7 +76,7 @@ function fixture(options: {
       if (options.umbrella instanceof Error) throw options.umbrella
       return options.umbrella ?? []
     }
-    if (dirPath === path.join(projectDir, '.lane', 'supervision')) {
+    if (dirPath === path.join(laneHostDir(projectDir), 'supervision')) {
       const error = Object.assign(new Error('missing'), { code: 'ENOENT' })
       throw error
     }
@@ -118,7 +120,7 @@ function fixture(options: {
 
 describe('sessionLaneInFlight', () => {
   it('finds an owned lane in a slot-scoped supervision directory', () => {
-    const slotDir = path.join(projectDir, '.lane', 'supervision-critic-Z')
+    const slotDir = path.join(laneHostDir(projectDir), 'supervision-critic-Z')
     const slotRecord = path.join(slotDir, `${runId}.json`)
     const missing = () => { throw Object.assign(new Error('missing'), { code: 'ENOENT' }) }
     const result = sessionLaneInFlight({
@@ -127,7 +129,7 @@ describe('sessionLaneInFlight', () => {
       spawnSyncImpl: () => ({ status: 0, stdout: `worktree ${projectDir}\0HEAD abc\0\0`, stderr: '' }),
       readdirImpl: ((dirPath: string) => {
         if (dirPath === path.join(projectDir, '.claude', 'worktrees')) return []
-        if (dirPath === path.join(projectDir, '.lane')) return [dirent('supervision-critic-Z')]
+        if (dirPath === laneHostDir(projectDir)) return [dirent('supervision-critic-Z')]
         if (dirPath === slotDir) return [dirent(`${runId}.json`, false)]
         return missing()
       }) as unknown as typeof import('node:fs').readdirSync,

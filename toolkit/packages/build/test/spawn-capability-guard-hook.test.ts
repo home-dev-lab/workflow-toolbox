@@ -37,7 +37,7 @@ function projectWithAgent(name: string, frontmatter: string): string {
   roots.push(root)
   const dir = join(root, '.claude', 'agents')
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, `${name}.md`), `---\nname: ${name}\n${frontmatter}\n---\n\nbody\n`)
+  writeFileSync(join(dir, `${name}.md`), `---\nname: ${name}\ndescription: test agent\n${frontmatter}\n---\n\nbody\n`)
   return root
 }
 

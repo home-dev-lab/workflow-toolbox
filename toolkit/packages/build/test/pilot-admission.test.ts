@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error Runtime .mjs helper under plugin/bin/lib/.
 const admissionModule = await import('../../../../plugin/bin/lib/pilot-admission.mjs').catch(() => null)
 
@@ -61,14 +63,14 @@ describe('SDK pilot admission queue', () => {
         root: join(root, 'queue'), worktree, card: '1867509524609369334', maxActive: 3,
         measureLoad: () => ({ available: true, load: 1, cores: 8, source: 'fixture' }),
       })
-      const statusFile = join(worktree, '.lane', 'admission.json')
+      const statusFile = lease.record.statusFile
       expect(JSON.parse(readFileSync(statusFile, 'utf8'))).toMatchObject({ state: 'active', position: 1, cardId: '1867509524609369334' })
       expect(existsSync(lease.record.file)).toBe(true)
 
       await admissionModule!.pilotAdmission.finishPilotAdmission(lease)
       expect(existsSync(lease.record.file)).toBe(false)
       expect(JSON.parse(readFileSync(statusFile, 'utf8'))).toMatchObject({ state: 'finished', position: null })
-    } finally { rmSync(root, { recursive: true, force: true }) }
+    } finally { rmSync(laneHostDir(worktree), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) }
   })
 
   it('logs an unavailable load probe once while polling more than once', async () => {

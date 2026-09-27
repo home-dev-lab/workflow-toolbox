@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { treeSignature } from './gate-evidence.mjs'
 import { costReportSection } from './run-cost-core.mjs'
+import { readWorktreeRegular } from './host/lane-host-dir.mjs'
 
 const WORKTREE_RETENTION_FILE = path.join('.lane', 'worktree-retention.json')
 const COST_BLOCK = /<!-- run-cost -->[\s\S]*?<!-- \/run-cost -->/g
@@ -47,7 +48,8 @@ function readBackDeclaredArtefacts({ root, report, startedAt, sha256 }) {
     }
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`declared artefact is not a regular file: ${declaration}`)
     if (stat.mtimeMs < startedAtMs) throw new Error(`declared artefact predates this run: ${declaration}`)
-    const bytes = fs.readFileSync(requested)
+    const bytes = readWorktreeRegular(requested, null, canonicalRoot)
+    if (bytes === null) throw new Error(`declared artefact is not a protected regular file: ${declaration}`)
     return {
       path: declaration,
       size: bytes.length,
@@ -242,6 +244,21 @@ export function assertArchiveOutsideWorktree({ root, archiveRoot, target = path.
   return resolved
 }
 
+function copyProtectedLaneTree(source, destination, root) {
+  fs.mkdirSync(destination, { recursive: true })
+  for (const entry of fs.readdirSync(source)) {
+    const from = path.join(source, entry)
+    const to = path.join(destination, entry)
+    const info = fs.lstatSync(from)
+    if (info.isDirectory()) copyProtectedLaneTree(from, to, root)
+    else {
+      const bytes = readWorktreeRegular(from, null, root)
+      if (bytes === null) throw new Error(`archive source is not a protected regular file: ${from}`)
+      fs.writeFileSync(to, bytes, { flag: 'wx' })
+    }
+  }
+}
+
 export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, head, phases, evidence, partial, deferred, implementation, delivery = { mode: 'commit', artifacts: [] }, routedCards = [], assertDirectories, copy, git, sha256, writeRegularFile }) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const target = assertArchiveOutsideWorktree({ root, archiveRoot, target: path.join(archiveRoot ?? '', '.claude', 'reports', `${cardId}-${stamp}`) })
@@ -252,7 +269,8 @@ export function archiveLifecycle({ root, archiveRoot, laneDir, cardId, route, he
   try {
     assertDirectories()
     const statusBefore = git('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' })
-    copy(laneDir, temporary, { recursive: true, dereference: false })
+    if (copy === fs.cpSync) copyProtectedLaneTree(laneDir, temporary, root)
+    else copy(laneDir, temporary, { recursive: true, dereference: false })
     assertArchiveCostReport(temporary, target)
     writeRegularFile(path.join(temporary, 'manifest.json'), manifestContent)
     writeRegularFile(path.join(temporary, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`)

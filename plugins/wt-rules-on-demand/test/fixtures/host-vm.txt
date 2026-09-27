@@ -1,0 +1,36 @@
+import { SourceTextModule, createContext } from 'node:vm';
+import { readFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+
+const context = createContext({ Date, Map, Set, Number, Object, String, Promise, RegExp, JSON, TextEncoder, console });
+const cache = new Map();
+async function moduleFor(url) {
+  if (cache.has(url.href)) return cache.get(url.href);
+  const module = new SourceTextModule(await readFile(url, 'utf8'), { context, identifier: url.href });
+  cache.set(url.href, module);
+  await module.link((specifier, referencing) => moduleFor(new URL(specifier, referencing.identifier)));
+  return module;
+}
+const module = await moduleFor(new URL('../../hooks/hooks.js', import.meta.url));
+await module.evaluate();
+const handlers = new Map();
+module.namespace.register((name, handler) => handlers.set(name, handler), { enabled: true });
+const rule = `---\non-demand:\n  triggers:\n    - kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n      before-first-act: 'true'\n    - kind: 'prompt'\n      regex: 'hello'\n  compliance:\n    kind: 'none'\n    reason: 'test'\n---\nRead this rule.\n`;
+const files = new Map([['./.claude/rules-on-demand/example.md', rule], ['/mock-project/.claude/rules-on-demand/example.md', rule]]);
+const $ = {
+  fs: { list: async (dir) => [...files.keys()].filter((path) => path.startsWith(`${dir}/`)).map((path) => ({ kind: 'file', name: path.slice(dir.length + 1) })), read: async (path) => files.get(path),
+    stat: async (path) => ({ kind: 'file', size: rule.length, realPath: path }) },
+  env: { get: async (key) => ({ CLAUDE_CONFIG_DIR: '/mock-config' })[key] },
+  session: { messages: async () => [], id: async () => 'synthetic' },
+  ui: { log: async () => {} },
+  store: { get: async () => undefined, set: async () => {} },
+};
+for (const cwd of [undefined, '/mock-project']) {
+  module.namespace.resetForSelftest();
+  const event = cwd ? { cwd } : {};
+  await handlers.get('prompt.context')($, event, async () => ({}));
+  assert.match((await handlers.get('prompt.submit')($, { ...event, text: 'hello' }, async () => ({}))).context[0], /Read this rule/);
+  await handlers.get('prompt.context')($, event, async () => ({}));
+  assert.match((await handlers.get('tool.call')($, { ...event, tool: 'Agent' }, async () => ({}))).deny, /Read this rule/);
+}
+assert.equal(typeof context.process, 'undefined');

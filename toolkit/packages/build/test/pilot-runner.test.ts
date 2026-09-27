@@ -9,6 +9,8 @@ import { createSdkMcpServer, query as sdkQuery, tool } from '@anthropic-ai/claud
 import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { defaultArchiveRoot, lifecycleCanUseTool, loadProfileEnv, parsePilotRunnerArgs, runPilot as rawRunPilot } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -109,7 +111,7 @@ function deterministicAdmissionEnv(root: string, env: NodeJS.ProcessEnv): NodeJS
   ].join('\n'))
   return { ...env, XDG_STATE_HOME: join(root, 'state'), NODE_OPTIONS: `${env.NODE_OPTIONS ?? ''} --require=${preload}`.trim() }
 }
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'worktree')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) } })
 
 describe('SDK pilot runner', () => {
   it('records the launching session id and replaces an existing env log', () => {
@@ -119,14 +121,14 @@ describe('SDK pilot runner', () => {
       if (sessionId === undefined) delete env.CLAUDE_CODE_SESSION_ID
       else env.CLAUDE_CODE_SESSION_ID = sessionId
       spawnSync(process.execPath, [CLI, '--card', '1', '--dir', started.dir, '--card-file', started.cardFile, '--contract', join(started.root, 'missing-contract.md')], { env, encoding: 'utf8' })
-      expect(readFileSync(join(started.dir, '.lane', 'env.log'), 'utf8')).toBe(expected)
+      expect(readFileSync(join(laneHostDir(started.dir), 'env.log'), 'utf8')).toBe(expected)
     }
 
     const existing = fixture()
-    writeFileSync(join(existing.dir, '.lane', 'env.log'), 'CLAUDE_CODE_SESSION_ID=lane-session\n')
+    mkdirSync(laneHostDir(existing.dir), { recursive: true }); writeFileSync(join(laneHostDir(existing.dir), 'env.log'), 'CLAUDE_CODE_SESSION_ID=lane-session\n')
     const env = { ...process.env, CLAUDE_CODE_SESSION_ID: 'runner-session' }
     spawnSync(process.execPath, [CLI, '--card', '1', '--dir', existing.dir, '--card-file', existing.cardFile, '--contract', join(existing.root, 'missing-contract.md')], { env, encoding: 'utf8' })
-    expect(readFileSync(join(existing.dir, '.lane', 'env.log'), 'utf8')).toBe('CLAUDE_CODE_SESSION_ID=runner-session\n')
+    expect(readFileSync(join(laneHostDir(existing.dir), 'env.log'), 'utf8')).toBe('CLAUDE_CODE_SESSION_ID=runner-session\n')
   })
 
   it('has no up-front lane-consent refusal path', () => {

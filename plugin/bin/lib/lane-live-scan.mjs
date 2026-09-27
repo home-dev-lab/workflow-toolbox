@@ -1,7 +1,8 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import path, { basename, join } from 'node:path'
+import { classifyLane, readCurrentSupervisions } from './lane-supervisor-core.mjs'
 
 export const ACTIVITY_MAX_ENTRIES = 4000
 export const ACTIVITY_WINDOW_MIN = 12
@@ -65,26 +66,6 @@ export function reportableOpencodeArgv(argv, { tmpRoot = tmpdir(), realpath = re
 
   // Only an installed OpenCode `run` invocation is a lane candidate; temp-hosted executables are test fakes.
   return ![argv[0], argv[opencodeIndex]].some((arg) => pathShaped(arg) && insideTmp(arg))
-}
-
-function launcherOwnsLog(name) {
-  return name === 'run.log'
-    || name === 'sdk-pilot.log'
-    || name === 'runner-stdout.log'
-    || /-run\.log$/.test(name)
-    || /-run\..+\.log$/.test(name)
-}
-
-function readTail(file, size) {
-  const length = Math.min(size, LANE_LOG_TAIL_BYTES)
-  const buffer = Buffer.alloc(length)
-  const fd = openSync(file, 'r')
-  try {
-    const bytesRead = readSync(fd, buffer, 0, length, size - length)
-    return buffer.subarray(0, bytesRead).toString('utf8')
-  } finally {
-    closeSync(fd)
-  }
 }
 
 // This scan can only suppress the advisory: a recent write means work may be in flight, but an
@@ -165,22 +146,12 @@ export function registeredWorktreeActivity(worktreeScan, cutoff) {
 export function hasActiveLaneLog(worktreeScan, cutoff) {
   if (worktreeScan.status !== 'known') return false
   for (const worktree of worktreeScan.worktrees) {
-    let names
-    try {
-      names = readdirSync(join(worktree, '.lane')).filter(launcherOwnsLog)
-    } catch {
-      continue
-    }
-    for (const name of names) {
-      const log = join(worktree, '.lane', name)
+    for (const { record } of readCurrentSupervisions(worktree)) {
       try {
-        const info = statSync(log)
-        if (info.mtimeMs < cutoff) continue
-        const lines = readTail(log, info.size).trimEnd().split('\n')
-        const lastLine = lines.at(-1) || ''
-        if (!/^EXIT=\d+$/.test(lastLine)) return true
+        if (!record.log || statSync(record.log).mtimeMs < cutoff) continue
+        if (['running', 'decision-needed', 'launching'].includes(classifyLane(record).status)) return true
       } catch {
-        // An unreadable lane log is not evidence of liveness.
+        // An unreadable log or unverified record is not evidence of liveness.
       }
     }
   }

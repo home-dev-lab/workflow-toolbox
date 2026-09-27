@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error Function-hook modules ship as host-loaded JavaScript.
 import { COLLECTOR_TIMEOUT_MS, fileUrlPath, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
@@ -441,33 +443,39 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('ignores a 5000-file child coverage directory and keeps ordinary walk exhaustion row-local', async () => {
+  it('ignores a child coverage directory larger than the scan cap and keeps ordinary walk exhaustion row-local', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-child-coverage-'))
     try {
-      const paths = collector(root)
+      // The collector's per-directory scan cap (default 1000) is injected small through its existing
+      // `scanEntryCap` option, so the fixture crosses the cap with a few files instead of thousands:
+      // the test's cost no longer scales with the runner's disk speed (card 1872480817763059704).
+      const scanEntryCap = 5
+      const paths = collector(root, { scanEntryCap })
       const cardId = '1867480027738670232'
       const lane = join(paths.suiteRoot, 'worktrees', 'coverage-load', '.lane')
       const coverage = join(lane, 'child-coverage-fixture')
       mkdirSync(coverage, { recursive: true })
       writeFileSync(join(lane, 'brief.md'), `# Brief: card ${cardId}: Coverage load\n`)
       writeFileSync(join(lane, 'run.log'), 'working\n')
-      for (let index = 0; index < 5000; index += 1) writeFileSync(join(coverage, `${index}.json`), '{}')
+      for (let index = 0; index < scanEntryCap * 4; index += 1) writeFileSync(join(coverage, `${index}.json`), '{}')
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const exact = snapshot.rows.find((row: { cardId?: string }) => row.cardId === cardId)
       expect(snapshot.discovery).toBe('available')
       expect(snapshot.cappedScans).toEqual([])
-      expect(snapshot.rows.find((row: { cardId?: string }) => row.cardId === cardId)).toBeTruthy()
+      // Walking into the coverage directory would exhaust the cap and mark the row approximate.
+      expect(exact.activity).toMatch(/^last write \d+ min ago$/)
 
       const ordinary = join(paths.suiteRoot, 'worktrees', 'coverage-load', 'ordinary-volume')
       mkdirSync(ordinary)
-      for (let index = 0; index < 1001; index += 1) writeFileSync(join(ordinary, `${index}.txt`), 'evidence')
+      for (let index = 0; index < scanEntryCap + 1; index += 1) writeFileSync(join(ordinary, `${index}.txt`), 'evidence')
       const approximate = await readSnapshot({ process: processCapability() }, paths)
       const row = approximate.rows.find((item: { cardId?: string }) => item.cardId === cardId)
       expect(approximate.discovery).toBe('available')
       expect(approximate.cappedScans).toEqual([])
       expect(row.activity).toMatch(/^last write at least /)
     } finally { rmSync(root, { recursive: true, force: true }) }
-  }, process.platform === 'win32' ? 30_000 : 20_000) // Hosted Windows measured 22.628 s for 6,001 volume files.
+  })
 
   it('uses the card file title when the lane brief starts with the standard preamble', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-preamble-title-'))
@@ -510,7 +518,9 @@ describe('What is running collector seam', () => {
       const lane = join(paths.suiteRoot, 'worktrees', 'queued-pilot', '.lane')
       mkdirSync(lane, { recursive: true })
       writeFileSync(join(lane, `card-${cardId}.md`), '# Queued SDK pilot\n')
-      writeFileSync(join(lane, 'admission.json'), JSON.stringify({
+      const host = laneHostDir(join(paths.suiteRoot, 'worktrees', 'queued-pilot'))
+      mkdirSync(host, { recursive: true })
+      writeFileSync(join(host, 'admission.json'), JSON.stringify({
         state: 'queued', cardId, position: 2, waiting: { kind: 'load', load: 14.5, cores: 12 },
       }))
 

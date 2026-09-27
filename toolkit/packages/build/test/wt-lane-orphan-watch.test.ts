@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest'
 import { detectOrphanWatchers, terminateOrphanWatchers } from '../../../../plugin/bin/lib/lane-watcher-orphans.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { classifyIdleHelper, IDLE_HELPER_SAFE_TO_STOP_SECONDS } from '../../../../plugin/bin/lib/resolved-binary.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const WATCHER = resolve(__dirname, '../../../../plugin/bin/wt-lane-orphan-watch.mjs')
 const LIB = resolve(__dirname, '../../../../plugin/bin/lib')
@@ -19,12 +21,12 @@ const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bi
 
 function withTempDir(run: (root: string) => void) {
   const root = mkdtempSync(join(tmpdir(), 'wt-lane-orphan-watch-'))
-  try { return run(root) } finally { rmSync(root, { recursive: true, force: true }) }
+  try { return run(root) } finally { rmSync(laneHostDir(root), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) }
 }
 
 async function withTempDirAsync(run: (root: string) => Promise<void>) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lane-orphan-watch-')))
-  try { await run(root) } finally { rmSync(root, { recursive: true, force: true }) }
+  try { await run(root) } finally { rmSync(laneHostDir(root), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) }
 }
 
 // Host PIDs whose command line contains `needle` (read from /proc; Linux-only callers).
@@ -79,7 +81,7 @@ describe('lane orphan watcher self-detection', () => {
   it('attributes a slotted lane and emits its decision-needed event', () => withTempDir((root) => {
     const fixture = join(root, 'helpers.json')
     writeFileSync(fixture, '[]')
-    const supervision = join(root, '.lane', 'supervision-critic-Z')
+    const supervision = join(laneHostDir(root), 'supervision-critic-Z')
     mkdirSync(supervision, { recursive: true })
     writeFileSync(join(supervision, 'current.json'), JSON.stringify({ version: 1, runId: '10-20' }))
     writeFileSync(join(supervision, '10-20.json'), JSON.stringify({
@@ -178,7 +180,7 @@ describe('lane orphan watcher self-detection', () => {
       const nested = (await waitFor(() => pidsMatching('opencode run nested'), 10_000, 2)).filter((pid) => pid !== plain.pid)
       expect(nested.length).toBe(1)
       const child = inspectProcess(lane.pid); const worker = inspectProcess(process.pid); const plainChild = inspectProcess(plain.pid)
-      const supervision = join(wt, '.lane', 'supervision')
+      const supervision = join(laneHostDir(wt), 'supervision')
       mkdirSync(supervision, { recursive: true })
       writeFileSync(join(supervision, 'current.json'), JSON.stringify({ version: 1, runId: '11-22' }))
       writeFileSync(join(supervision, '11-22.json'), JSON.stringify({

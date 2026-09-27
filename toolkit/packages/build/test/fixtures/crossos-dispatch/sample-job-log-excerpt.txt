@@ -1,0 +1,31 @@
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.0774970Z  [32m✓[39m [30m[45m process-spawning [49m[39m scripts/test/child-process-coverage.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 90[2mms[22m[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.2365310Z  [32m✓[39m [30m[45m process-spawning [49m[39m packages/build/test/pilot-guard.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 398[2mms[22m[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.2468100Z      [33m[2m✓[22m[39m denies push, publish, merge, force, deletion, and recursive forced removal without retrying [33m 335[2mms[22m[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.3471820Z  [32m✓[39m [30m[45m process-spawning [49m[39m scripts/test/suite-under-load.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 56[2mms[22m[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6370350Z  [32m✓[39m [30m[45m process-spawning [49m[39m packages/build/test/no-committed-conflict-markers.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 231[2mms[22m[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6617700Z  [32m✓[39m [30m[45m process-spawning [49m[39m packages/build/test/lifecycle-phase-identity.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 109[2mms[22m[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6706590Z 
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6707650Z [31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 1 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6708040Z 
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6709700Z [41m[1m FAIL [22m[49m [30m[45m process-spawning [49m[39m packages/build/test/sdk-pilot-lifecycle-server.test.ts[2m > [22mrunner-hosted SDK pilot lifecycle[2m > [22mthe shipped launcher keeps ordinary descendants in the terminated lane group [requires POSIX process groups and modes]
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6727330Z [31m[1mAssertionError[22m: expected 'edge refused: review->next; missing l…' to be 'lane review EXIT=0' // Object.is equality[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6728660Z 
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6729350Z Expected: [32m"lane review EXIT=0"[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6731000Z Received: [31m"edge refused: review->next; missing launcher pid: /private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/wt-lifecycle-jP4m3p/.lane/review-run.34d6127e-b0bf-41bc-8d60-22fefb2cd543.log"[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6731950Z 
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6732720Z [36m [2m❯[22m packages/build/test/sdk-pilot-lifecycle-server.test.ts:[2m979:89[22m[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6748930Z     [90m977|[39m       expect(await text(lifecycle.transition({ phase: 'verify', outcom…
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6749780Z     [90m978|[39m       expect(await text(lifecycle.artifact({ kind: 'review-brief', con…
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6750600Z     [90m979|[39m       expect(await text(lifecycle.run({ kind: 'lane', phase: 'review',…
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6751310Z     [90m   |[39m                                                                                         [31m^[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6752000Z     [90m980|[39m       expect(readFileSync(join(lifecycle.root, '.lane', 'review-report…
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6752690Z     [90m981|[39m       expect(fs.existsSync(join(lifecycle.root, '.lane', 'survivor-sna…
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6753010Z 
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6753350Z [31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯[22m[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6753540Z 
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6755020Z 
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6773000Z [2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m192 passed[39m[22m[90m (193)[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6788600Z [2m      Tests [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m3621 passed[39m[22m[2m | [22m[33m32 skipped[39m[90m (3654)[39m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6789350Z [2m   Start at [22m 19:53:24
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6791500Z [2m   Duration [22m 183.09s[2m (transform 5.43s, setup 2.38s, import 12.05s, tests 325.22s, environment 15ms)[22m
+matrix (macos-latest)	Test (macOS shard 2/2)	2026-09-26T19:56:27.6792680Z 

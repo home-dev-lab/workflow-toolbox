@@ -2,9 +2,9 @@ import fs, { cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSy
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createServer, request as httpRequest } from 'node:http'
-import { syncBuiltinESMExports } from 'node:module'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join as pathJoin, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -27,6 +27,17 @@ import { withDisputedDodTermsSection } from '../../../../plugin/bin/lib/lifecycl
 import { cardDefinitionOfDone } from '../../../../plugin/bin/lib/card-definition-of-done.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { criticFindingAfterNoReblock } from '../../../../plugin/bin/lib/lifecycle-dod-dispute.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+
+function join(...parts: string[]): string {
+  const index = parts.indexOf('.lane')
+  const name = parts[index + 1] ?? ''
+  if (index >= 0 && (/^supervision(?:-|$)/.test(name) || /^(?:tdd|critic(?:-[A-Za-z]+)?|review|refutation|harden)-run(?:\..+)?\.log$/.test(name))) {
+    return pathJoin(laneHostDir(pathJoin(...parts.slice(0, index))), ...parts.slice(index + 1))
+  }
+  return pathJoin(...parts)
+}
 
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n'
 const FIXTURE_LANE_TIMEOUT_SECONDS = 10
@@ -478,7 +489,7 @@ printf 'report\n' > "$report"
 
   it('refuses verify when every gate mtime equals the lane receipt mtime', async () => {
     const lifecycle = await lifecycleAtVerify(equalMtimeLauncher())
-    const nonceLog = readdirSync(join(lifecycle.root, '.lane')).find((name) => /^tdd-run\..+\.log$/.test(name))!
+    const nonceLog = readdirSync(laneHostDir(lifecycle.root)).find((name) => /^tdd-run\..+\.log$/.test(name))!
     const laneMtime = fs.statSync(join(lifecycle.root, '.lane', nonceLog)).mtimeMs
     const append = fs.appendFileSync.bind(fs)
     const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
@@ -592,9 +603,10 @@ printf 'report\n' > "$report"
     const lifecycle = await lifecycleReadyForReport()
     const gateLogs = ['typecheck.log', 'lint.log', 'test.log']
     const laneDir = join(lifecycle.root, '.lane')
-    const laneLogs = fs.readdirSync(laneDir).filter((name) => name.endsWith('.log') && !gateLogs.includes(name))
+    const hostDir = laneHostDir(lifecycle.root)
+    const laneLogs = fs.readdirSync(hostDir).filter((name) => /-run\.log$/.test(name))
     expect(laneLogs.length).toBeGreaterThan(0)
-    const laneReceipt = Math.max(...laneLogs.map((name) => fs.statSync(join(laneDir, name)).mtimeMs))
+    const laneReceipt = Math.max(...laneLogs.map((name) => fs.statSync(join(hostDir, name)).mtimeMs))
     for (const name of gateLogs) expect(fs.statSync(join(laneDir, name)).mtimeMs - laneReceipt).toBeGreaterThanOrEqual(20)
   })
 
@@ -653,7 +665,7 @@ printf 'report\n' > "$report"
     expect(publish('absent')()).toHaveProperty('archive.path')
     expect(publish('cost-only')).toThrow(/missing Measured Run Cost block/)
     expect(publish('report-only')).toThrow(/cost\.json is missing/)
-    expect(publish('unreadable')).toThrow(/cost\.json: not a regular file/)
+    expect(publish('unreadable')).toThrow(/(?:cost\.json: not a regular file|archive source is not a protected regular file: .*cost\.json)/)
   })
 
   it('retries an archive failure without making a second commit', async () => {
@@ -1957,10 +1969,44 @@ printf 'report\n' > "$report"
 
     expect(() => createLifecycleServer({ worktree, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: '1', sessionTag: 'test', rules: [] })).not.toThrow()
   })
+
+  // Card 1873173639063406158: WT_AGENT_SDK_PATH, set for the runner only, reached the run's own
+  // `pnpm test` gate and turned two correct tests red. The real default gate path (no gateRunner) runs a
+  // fake `pnpm` that prints the environment it received into the gate log.
+  it.skipIf(process.platform === 'win32')('runs a lifecycle gate without the runner-only WT_* variables and keeps what a gate needs', async () => {
+    const bin = realpathSync(mkdtempSync(join(tmpdir(), 'wt-gate-env-bin-'))); roots.push(bin)
+    writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'for (const [k, v] of Object.entries(process.env)) console.log(k + "=" + v)'\n`)
+    fs.chmodSync(join(bin, 'pnpm'), 0o755)
+    const gatePath = `${bin}:${process.env.PATH}`
+    vi.stubEnv('PATH', gatePath)
+    vi.stubEnv('HOME', '/tmp/wt-gate-env-home')
+    // The runner sets it to a real SDK entry (the lifecycle itself resolves the SDK through it).
+    const runnerSdk = createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk')
+    vi.stubEnv('WT_AGENT_SDK_PATH', runnerSdk)
+    vi.stubEnv('WT_EXECUTOR_CODE_MODEL', 'runner-only-model')
+    vi.stubEnv('WT_RUN_PIECES_TESTED', '1')
+    vi.stubEnv('WT_PLANKA_MCP_URL', 'http://runner-only.invalid/mcp')
+    vi.stubEnv('WT_SUITE_LOCK_DIR', '/tmp/wt-gate-env-lock')
+    vi.stubEnv('WT_TEST_MODE', 'blocking')
+    try {
+      const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, { gateRunner: null })
+      mkdirSync(join(lifecycle.root, 'toolkit'))
+      expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))).toBe('accepted phase=tdd')
+      expect(await text(lifecycle.artifact({ kind: 'brief', content: 'brief\n' }))).toBe('wrote brief')
+      expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+      expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toBe('accepted phase=verify')
+      expect(await text(lifecycle.run({ kind: 'gate', name: 'test' }))).toBe('gate test EXIT=0')
+      const seen = readFileSync(join(lifecycle.root, '.lane', 'test.log'), 'utf8').split('\n')
+      expect(seen.filter((line) => /^WT_(AGENT_SDK_PATH|EXECUTOR_CODE_MODEL|RUN_PIECES_TESTED|PLANKA_MCP_URL)=/.test(line))).toEqual([])
+      expect(seen).toEqual(expect.arrayContaining([`PATH=${gatePath}`, 'HOME=/tmp/wt-gate-env-home', 'WT_SUITE_LOCK_DIR=/tmp/wt-gate-env-lock', 'WT_TEST_MODE=blocking']))
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
 })
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) })
+afterEach(() => { for (const root of roots.splice(0)) { rmSync(laneHostDir(root), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) } })
 // The win32 provider echoes the spawn-recorded argv (Get-Process has no command line); the POSIX providers
 // return the argv they OBSERVE (`/proc` on linux, `ps -o args` on darwin, where it is one string). Asserting the
 // recorded argv on every platform was red on the macOS shards from run 28 to run 34 while the job read green
@@ -2048,7 +2094,19 @@ function launcher(source: string) {
 }
 function rawLauncher(source: string) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-launcher-'))); roots.push(root)
-  const file = join(root, 'launcher.mjs'); writeFileSync(file, source)
+  if (source.includes('laneHostDir as wtFixtureHostDir')) {
+    const file = join(root, 'launcher.mjs'); writeFileSync(file, source)
+    return file
+  }
+  const adjusted = source
+    .replaceAll("path.join(root,'.lane','supervision',", "path.join(process.env.WT_LANE_SUPERVISION_DIR,")
+    .replaceAll("join(root,'.lane','supervision',", "join(process.env.WT_LANE_SUPERVISION_DIR,")
+    .replaceAll("path.join(root,'.lane','supervision')", 'process.env.WT_LANE_SUPERVISION_DIR')
+    .replaceAll("join(root,'.lane','supervision')", 'process.env.WT_LANE_SUPERVISION_DIR')
+    .replaceAll("root+'/.lane/supervision'", 'process.env.WT_LANE_SUPERVISION_DIR')
+  const helper = fileURLToPath(new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url))
+  const prefix = `import { laneHostDir as wtFixtureHostDir } from ${JSON.stringify(helper)}; import { join as wtFixtureJoin } from 'node:path'; process.env.WT_LANE_SUPERVISION_DIR = wtFixtureJoin(wtFixtureHostDir(process.argv[process.argv.indexOf('--dir') + 1]), 'supervision');\n`
+  const file = join(root, 'launcher.mjs'); writeFileSync(file, prefix + adjusted)
   return file
 }
 function delayedLauncher() {
@@ -2130,10 +2188,10 @@ async function writeGates(lifecycle: ReturnType<typeof testLifecycle>, overrides
 }
 
 async function writePassingGate({ log, root }: { log: string, root: string }) {
-  const laneDir = join(root, '.lane')
-  const laneMtime = Math.max(...readdirSync(laneDir)
+  const hostDir = laneHostDir(root)
+  const laneMtime = Math.max(...readdirSync(hostDir)
     .filter((name) => /-run(?:\..+)?\.log$/.test(name))
-    .map((name) => fs.statSync(join(laneDir, name)).mtimeMs))
+    .map((name) => fs.statSync(join(hostDir, name)).mtimeMs))
   for (let attempt = 0; attempt < 400; attempt += 1) {
     writeFileSync(log, 'gate\n')
     if (fs.statSync(log).mtimeMs - laneMtime >= 20) return 0

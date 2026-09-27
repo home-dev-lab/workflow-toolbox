@@ -51,6 +51,11 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-crossos-dispatch.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The internal merge/release operator runbook is maintained by the integrating session outside this worktree; CLI --help describes its interim invocation contract.',
+  },
+  {
     script: 'plugin/bin/wt-grounding-sources.mjs',
     status: 'mapped',
     reason: 'The deep-grounding source-registry reference documents list, init, layering, and missing dependency reporting.',
@@ -711,7 +716,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/wt-suite-lock-run.mjs', 'plugin/bin/lib/suite-lock.mjs'],
+    sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/wt-suite-lock-run.mjs', 'plugin/bin/lib/suite-lock.mjs', 'plugin/bin/lib/host/suite-lock-queue.mjs'],
     docs: ['docs/public/known-issues.md'],
   },
   {
