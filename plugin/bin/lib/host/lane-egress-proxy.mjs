@@ -284,16 +284,64 @@ export function egressLogWriter(file, { limit = EGRESS_LOG_LIMIT_BYTES, now = ()
   }
 }
 
+/**
+ * Relay mode: the host half of a sandboxed lane's bridge to ONE loopback model endpoint. Each
+ * connection accepted on the unix socket is piped to TCP `host:port`, half-close carried in both
+ * directions (a client that ends its write side right after the request still gets the answer), and
+ * both sides destroyed on any error. Every live socket is kept in `connections`, so the parent
+ * watchdog can destroy them all before exiting: nothing relayed outlives the lane's launcher, unlike
+ * a host `socat ... fork`, whose forked children survived it.
+ */
+export function createEndpointRelay({ host, port, connect = net.connect, connections = new Set() } = {}) {
+  return net.createServer({ allowHalfOpen: true }, (client) => {
+    const upstream = connect({ host, port, allowHalfOpen: true })
+    const destroyBoth = () => { client.destroy(); upstream.destroy() }
+    for (const socket of [client, upstream]) {
+      connections.add(socket)
+      socket.on('error', destroyBoth)
+      // A clean close means both FINs were exchanged on that side; the pipe has already ended the
+      // other side, which may still be flushing, so it is left to finish rather than destroyed.
+      socket.on('close', () => connections.delete(socket))
+    }
+    client.pipe(upstream)
+    upstream.pipe(client)
+  })
+}
+
+// `<host>:<port>`, the host possibly an IPv6 literal (bare or bracketed); null when malformed.
+function relayTarget(value) {
+  const text = String(value ?? '')
+  const colon = text.lastIndexOf(':')
+  const host = text.slice(0, colon).replace(/^\[(.*)\]$/, '$1')
+  const port = Number(text.slice(colon + 1))
+  return colon > 0 && host && Number.isInteger(port) && port > 0 && port < 65_536 ? { host, port } : null
+}
+
 export { parentAlive, processStartTicks } from './lane-helper-process.mjs'
 
+function refuseArguments(message) {
+  process.stderr.write(`workflow-toolbox: lane endpoint relay stopped: ${message}\n`)
+  process.exit(3)
+}
+
 function main() {
-  const options = { allow: new Set(), socket: null, log: null, parent: null, parentStart: null }
+  const options = { allow: new Set(), allowGiven: false, relay: null, socket: null, log: null, parent: null, parentStart: null }
   parseHelperArguments(process.argv.slice(2), options, {
-    '--allow': (value) => { for (const host of String(value ?? '').split(',')) { if (host.trim()) options.allow.add(normalizeEgressHost(host)) } },
+    '--allow': (value) => { options.allowGiven = true; for (const host of String(value ?? '').split(',')) { if (host.trim()) options.allow.add(normalizeEgressHost(host)) } },
     '--log': (value) => { options.log = value },
+    '--relay': (value) => { options.relay = value ?? '' },
   })
-  const server = createEgressProxy({ allow: options.allow, log: egressLogWriter(options.log) })
-  runLaneHelper({ server, options, name: 'egress proxy', stoppedSuffix: '; the sandboxed lane has no egress' })
+  if (options.relay === null) {
+    const server = createEgressProxy({ allow: options.allow, log: egressLogWriter(options.log) })
+    runLaneHelper({ server, options, name: 'egress proxy', stoppedSuffix: '; the sandboxed lane has no egress' })
+    return
+  }
+  if (options.allowGiven) refuseArguments('--relay and --allow are mutually exclusive')
+  const target = relayTarget(options.relay)
+  if (!target) refuseArguments('--relay needs <host>:<port>')
+  const connections = new Set()
+  const server = createEndpointRelay({ ...target, connections })
+  runLaneHelper({ server, options, name: 'endpoint relay', stoppedSuffix: `; the sandboxed lane has lost its route to ${target.host}:${target.port}`, beforeExit: () => { for (const socket of connections) socket.destroy() } })
 }
 
 if (isInvokedDirectly(import.meta.url)) main()

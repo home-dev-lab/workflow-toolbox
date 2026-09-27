@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -640,6 +640,23 @@ describe('lane sandbox plan — network endpoints (H4)', () => {
     expect(args[args.indexOf('--') + 1]).toBe('/bin/sh')
   })
 
+  // Card 1872293505129252765 (L2b): the HOST half of an endpoint bridge is the Node relay mode of the
+  // egress proxy, under the parent watchdog, never a host socat whose forked children outlive it.
+  it('starts the host half of an endpoint bridge as a Node relay tied to this process', () => {
+    const config = `${HOME}/.config/opencode`
+    const fs = fakeFs({ [`${config}/opencode.jsonc`]: '{ "provider": { "x": { "options": { "baseURL": "http://127.0.0.1:8317/v1" } } } }' }, [config, HOME, '/work/tree'])
+    const spawned: Array<{ command: string, args: string[] }> = []
+    plan({ fs, args: ['run', 'x', '--model', 'x/m'], spawnFn: listening(fs, spawned) })
+    const relay = spawned.find((s) => s.args.includes('--relay'))
+    expect(relay, JSON.stringify(spawned)).toBeDefined()
+    expect(relay!.command).toBe('/usr/bin/node')
+    expect(relay!.args[0]!.endsWith('lane-egress-proxy.mjs')).toBe(true)
+    expect(relay!.args[relay!.args.indexOf('--relay') + 1]).toBe('127.0.0.1:8317')
+    expect(relay!.args[relay!.args.indexOf('--parent') + 1]).toBe(String(process.pid))
+    expect(relay!.args).not.toContain('--allow')
+    expect(spawned.some((s) => s.command === '/usr/bin/socat')).toBe(false)
+  })
+
   it('states the isolation honestly when socat is absent (no bridge)', () => {
     const config = `${HOME}/.config/opencode`
     const fs = fakeFs({ [`${config}/opencode.jsonc`]: '{ "provider": { "x": { "options": { "baseURL": "http://127.0.0.1:8317/v1" } } } }' }, [config, HOME, '/work/tree'])
@@ -688,7 +705,9 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     const { p, spawned, args } = egressPlan('antigravity/some-model', {})
     expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8317 }])
     expect(p.egressHosts).toEqual([])
-    expect(spawned.some((s) => s.args.some((a) => a.endsWith('lane-egress-proxy.mjs')))).toBe(false)
+    // The endpoint is relayed by the same module in --relay mode; no PROXY (--allow) is started.
+    expect(spawned.some((s) => s.args.includes('--allow'))).toBe(false)
+    expect(spawned.some((s) => s.args.includes('--relay'))).toBe(true)
     expect(setenv(args, 'HTTPS_PROXY')).toEqual([])
   })
 
@@ -1183,4 +1202,62 @@ describe('host-side git hardening (H1)', () => {
     expect(gitCalls.length).toBeGreaterThan(0)
     for (const call of gitCalls) expect(call.slice(1, 5)).toEqual(['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null'])
   })
+})
+
+// Card 1872293505129252765 (L2b): a host socat relay ran `UNIX-LISTEN:...,fork`, and its forked
+// children outlived a SIGKILLed launcher (one orphan by 5 h 40 min). Invariant: once the launcher is
+// SIGKILLed, no host process tied to its runtime directory survives, and a connection the lane held
+// open through the relay is closed. Real processes, real unix sockets, a real TCP upstream; no bwrap
+// is needed because only the host half of the bridge is exercised (the probe is injected).
+describe('host relays die with their launcher (card 1872293505129252765)', () => {
+  const SOCAT = process.platform === 'linux' ? spawnSync('sh', ['-c', 'command -v socat'], { encoding: 'utf8' }).stdout.trim() : ''
+  const survivorsOf = (needle: string) => readdirSync('/proc').filter((pid) => /^\d+$/.test(pid)).flatMap((pid) => {
+    try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes(needle) ? [Number(pid)] : [] } catch { return [] }
+  })
+
+  it.runIf(process.platform === 'linux')('SIGKILL of the launcher closes a held relayed connection and leaves no relay process (Linux-only: reads /proc)', async () => {
+    const root = tempRoot('relay-death')
+    const home = join(root, 'home'); const work = join(root, 'w'); const runtime = join(root, 'rt')
+    mkdirSync(join(home, '.config/opencode'), { recursive: true }); mkdirSync(work); mkdirSync(runtime)
+    let upstreamConnected = false
+    const upstream = net.createServer((c) => { upstreamConnected = true; c.on('error', () => {}) }) // answers "slowly": never within the test
+    servers.push(upstream)
+    await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r))
+    const port = (upstream.address() as net.AddressInfo).port
+    writeFileSync(join(home, '.config/opencode/opencode.jsonc'), JSON.stringify({ provider: { x: { options: { baseURL: `http://127.0.0.1:${port}/v1` } } } }))
+    const modulePath = sandboxLib ? join(sandboxLib, 'host/lane-sandbox.mjs') : join(LIB, 'host/lane-sandbox.mjs')
+    // The host relay needs no socat after the fix; a placeholder stands in where socat is absent, only
+    // to keep the plan's "inside half exists" branch (it is never executed here).
+    const request = { profile: 'opencode', bin: process.execPath, args: ['run', '--model', 'x/m'], cwd: work, env: { HOME: home, PATH: process.env.PATH }, optionEnv: { PATH: process.env.PATH }, platform: 'linux', bwrap: process.execPath, socat: SOCAT || '/bin/sh', runtimeParent: runtime }
+    const launcherScript = `const { resolveLaneSandbox } = await import(process.env.WT_TEST_SANDBOX_URL)
+      const plan = resolveLaneSandbox({ ...JSON.parse(process.env.WT_TEST_REQUEST), probe: () => ({ ok: true }) })
+      console.log('ready ' + plan.endpoints.length)
+      setInterval(() => {}, 1000)`
+    const launcher = spawn(process.execPath, ['--input-type=module', '-e', launcherScript], { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, WT_TEST_SANDBOX_URL: pathToFileURL(modulePath).href, WT_TEST_REQUEST: JSON.stringify(request) } })
+    children.push(launcher)
+    const ready = await new Promise<string>((resolve) => launcher.stdout.once('data', (d) => resolve(String(d).trim())))
+    expect(ready).toBe('ready 1')
+    const [planDir] = readdirSync(runtime).filter((name) => name.startsWith('wt-lane-sandbox-'))
+    const sock = join(runtime, planDir!, 'net', 'ep-0.sock')
+    let clientClosed = false
+    const client = net.connect(sock, () => client.write('held request'))
+    client.on('error', () => {})
+    client.on('close', () => { clientClosed = true })
+    const connected = Date.now() + 5000
+    while (!upstreamConnected && Date.now() < connected) await new Promise((r) => setTimeout(r, 50))
+    expect(upstreamConnected).toBe(true)
+    expect(survivorsOf(runtime).length).toBeGreaterThan(0) // control: the relay IS running before the kill
+    launcher.kill('SIGKILL')
+    const deadline = Date.now() + 5000
+    let survivors = survivorsOf(runtime)
+    while ((survivors.length || !clientClosed) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100))
+      survivors = survivorsOf(runtime)
+    }
+    const closedInTime = clientClosed
+    for (const pid of survivors) { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } }
+    client.destroy()
+    expect(survivors).toEqual([])
+    expect(closedInTime).toBe(true)
+  }, 20_000)
 })

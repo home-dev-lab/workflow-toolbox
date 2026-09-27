@@ -13,8 +13,19 @@ export function processStartTicks(pid, readFile = (file) => readFileSync(file, '
   } catch { return null }
 }
 
-export function parentAlive(pid, startTicks, { kill = process.kill, readStart = processStartTicks } = {}) {
+// /proc/<pid>/stat field 3 (one letter), or null where it cannot be read (not Linux, pid gone).
+function processState(pid, readFile = (file) => readFileSync(file, 'utf8')) {
+  try {
+    const stat = readFile(`/proc/${pid}/stat`)
+    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0] || null
+  } catch { return null }
+}
+
+// A SIGKILLed parent its own parent has not reaped yet is a zombie: kill(pid, 0) still succeeds on
+// it, so state `Z` counts as dead. An unreadable state falls back to the pid and start-time checks.
+export function parentAlive(pid, startTicks, { kill = process.kill, readStart = processStartTicks, readState = processState } = {}) {
   try { kill(pid, 0) } catch { return false }
+  if (readState(pid) === 'Z') return false
   return startTicks === null || readStart(pid) === startTicks
 }
 

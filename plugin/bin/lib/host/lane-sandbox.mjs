@@ -16,7 +16,7 @@ import { sandboxExtraPaths } from './sandbox-extra-paths.mjs'
 // and NETWORK. It is built from an allow-list of binds on an empty root, never by masking secret
 // paths on top of the whole filesystem: a path nobody named is absent by construction. The lane
 // runs in its own network namespace (--unshare-net) with two routes out, both chosen by its MODEL: a
-// loopback provider endpoint through a socat relay over a unix socket, and a remote provider's own
+// loopback provider endpoint through a host Node relay over a unix socket, and a remote provider's own
 // hostnames through a host-side HTTPS CONNECT proxy (lane-egress-proxy.mjs) that checks the CONNECT
 // host against an exact allow-list and the TLS SNI against the CONNECT host. No other host loopback
 // service is reachable, and no other internet NAME can be tunnelled. Not covered, by design: HTTP
@@ -431,8 +431,9 @@ export function laneUnsandboxedAtStart(optionEnv = process.env, platform = proce
   return !realFs.exists(binary)
 }
 
-// Host-side bridges, each listening on a unix socket bound into the sandbox: a socat relay per
-// allowed loopback endpoint, and the egress proxy when the model has remote hosts. The sandbox has
+// Host-side bridges, each listening on a unix socket bound into the sandbox: a Node relay (the relay
+// mode of lane-egress-proxy.mjs) per allowed loopback endpoint, and the egress proxy when the model
+// has remote hosts. The sandbox has
 // its own empty loopback (--unshare-net), so nothing else on the host is reachable; the bootstrap
 // inside re-listens on each bridge's loopback address (H4).
 // The realpath of the deepest existing ancestor, with the rest appended: a path that does not exist
@@ -523,10 +524,15 @@ function reportBridgeExit(diagnostics, message) {
   } catch { /* nowhere left to say it */ }
 }
 
-function networkBridges({ network, socketDir, socat, execPath, egressLog }) {
+// Every host half is a Node helper under the parent watchdog (lane-helper-process.mjs): it exits,
+// destroying what it relays, within one poll of this process's death, SIGKILL included. A host
+// `socat ... fork` relay did not: its forked children outlived a SIGKILLed launcher.
+function networkBridges({ network, socketDir, execPath, egressLog }) {
+  const parentStart = processStartTime(process.pid)
+  const watchdog = ['--parent', String(process.pid), ...(parentStart === null ? [] : ['--parent-start', String(parentStart)])]
   const bridges = network.endpoints.map((endpoint, index) => {
     const sock = path.join(socketDir, `ep-${index}.sock`)
-    return { sock, host: endpoint.host, port: endpoint.port, command: socat, args: [`UNIX-LISTEN:${sock},fork,mode=600`, `TCP4:${endpoint.host}:${endpoint.port}`] }
+    return { sock, host: endpoint.host, port: endpoint.port, command: execPath, args: [EGRESS_PROXY, '--socket', sock, '--relay', `${endpoint.host}:${endpoint.port}`, ...watchdog] }
   })
   if (network.hosts.length) {
     const used = new Set(network.endpoints.map((endpoint) => endpoint.port))
@@ -534,8 +540,7 @@ function networkBridges({ network, socketDir, socat, execPath, egressLog }) {
     while (used.has(port)) port += 1
     const sock = path.join(socketDir, 'egress.sock')
     const log = path.isAbsolute(egressLog ?? '') ? ['--log', egressLog] : []
-    const parentStart = processStartTime(process.pid)
-    bridges.push({ sock, host: '127.0.0.1', port, proxy: true, command: execPath, args: [EGRESS_PROXY, '--socket', sock, '--allow', network.hosts.join(','), '--parent', String(process.pid), ...(parentStart === null ? [] : ['--parent-start', String(parentStart)]), ...log] })
+    bridges.push({ sock, host: '127.0.0.1', port, proxy: true, command: execPath, args: [EGRESS_PROXY, '--socket', sock, '--allow', network.hosts.join(','), ...watchdog, ...log] })
   }
   return bridges
 }
@@ -695,7 +700,7 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   }
   const executableOverlays = safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs)
   const readable = [...keptReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
-  const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
+  const bridges = socketDir ? networkBridges({ network, socketDir, execPath, egressLog }) : []
   const parentStart = processStartTime(process.pid)
   bridges.push({ sock: path.join(lockDir, 'broker.sock'), hostOnly: true, command: execPath, args: [SUITE_LOCK_BROKER, '--socket', path.join(lockDir, 'broker.sock'), '--parent', String(process.pid), ...(parentStart === null ? [] : ['--parent-start', String(parentStart)]), '--label', path.basename(base ?? profile)], env: { ...process.env, WT_SUITE_LOCK_DIR: lockRoot } })
   const prefix = sandboxArguments({
