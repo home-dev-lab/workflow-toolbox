@@ -19,7 +19,7 @@ const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
 const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
 
 // The effort a lane is launched at; the pilot runner records the same resolution in its run summary.
-export function launchVariant(phase, model, env) {
+function launchVariant(phase, model, env) {
   const role = phase === 'tdd' ? 'code' : phase
   return { role, ...resolveRoleVariant(role, model, { env }) }
 }
@@ -35,6 +35,7 @@ export function phaseLaunchPlan(phase, model, defaultExecutor, env = {}) {
   const variant = launchVariant(phase, model, env)
   return {
     executor,
+    variant,
     script: executor === 'claude-sdk' ? 'wt-claude-executor.mjs' : 'wt-lane.mjs',
     args: [...launchVariantArgs(executor, variant), ...(executor === 'claude-sdk' ? ['--role', phase] : [])],
   }

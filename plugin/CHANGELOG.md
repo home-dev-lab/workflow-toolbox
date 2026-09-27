@@ -14,6 +14,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Slimmed the always-loaded plugin rules by moving memory maintenance, delegation routing and addressing, board sweeps, distributed-twin checks, monitoring, Workflow fan-out, review/refutation, and gate-log guidance into pre-act companions. Split the oversized delegation and memory companions to fit the fallback delivery limit. The rules' operative-order inventory and static private-rule anchors remain checked; adoption registry now includes the new companions.
 
 ### Fixed
+- SDK runner: a Claude critic launched in the first, two-lane plan round is no longer refused for its report name (`critic-report.A.<nonce>.md` / `.B.`). Only critics accept a lane id, and the Claude executor takes the runner's report line rather than one quoted in the pilot's context. The run summary's `executor_variants` now names each role's executor family.
 - DoD dispute decisions are write-once and deadline-bound under a stale-reclaimable exclusive store lock. Timeout findings are mechanically downgraded, the pilot sees the lifecycle's bound reading before revising the plan, and request/status publication retries without half-committing. Raw fenced card criteria survive fallback; extra sandbox writable binds overlapping the store are refused, non-regular lane request files are replaced safely, and unsandboxed runs warn about their same-user authority limit.
 
 ## [0.188.2] - 2026-09-26
