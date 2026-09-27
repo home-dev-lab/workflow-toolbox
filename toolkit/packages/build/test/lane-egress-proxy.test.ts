@@ -277,7 +277,7 @@ describe('egress log hardening (round 4, MED 2)', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
   it.skipIf(!constants.O_NOFOLLOW)('keeps writing to its original inode after its parent is swapped', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-egress-parent-'))
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-egress-parent-'))) // canonical, as the launcher passes it
     try {
       const original = join(root, 'original'); const replacement = join(root, 'replacement')
       mkdirSync(original); mkdirSync(replacement)
@@ -310,7 +310,7 @@ describe('egress log hardening (round 4, MED 2)', () => {
   })
 
   it.skipIf(!constants.O_NOFOLLOW)('writes DNS names only and stops at its size cap (skipped where O_NOFOLLOW does not exist, e.g. Windows: the writer writes nothing there)', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-egress-log-'))
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-egress-log-'))) // canonical, as the launcher passes it
     try {
       const file = join(root, 'real.jsonl')
       const write = proxy.egressLogWriter(file, { limit: 400 })

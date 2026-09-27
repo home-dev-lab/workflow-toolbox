@@ -265,7 +265,8 @@ describe('What is running collector seam', () => {
   })
 
   it.skipIf(process.platform === 'win32')('reads bounded regular files on simulated Windows without following a redirected leaf', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-wir-win-read-'))
+    // realpath: a symlinked temp dir (macOS /var -> /private/var) must not read as outside the root.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-wir-win-read-')))
     const outsideRoot = mkdtempSync(join(tmpdir(), 'wt-wir-outside-'))
     try {
       const file = join(root, 'brief.md')

@@ -378,6 +378,9 @@ printf 'report\n' > "$report"
     const supervision = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', `${pointer.runId}.json`), 'utf8'))
     expect(result).toContain('TIMEOUT')
     try { process.kill(-supervision.workerPid, 'SIGTERM') } catch {}
+    // The signalled worker records its terminal state in its host directory on the way out; wait for
+    // it to exit so teardown removes that directory after the last write, not before it.
+    await waitForIdentityExit({ pid: supervision.workerPid, argv: supervision.workerArgv })
   }, 15_000)
 
   it.skipIf(realLaunchUnavailable)('does not terminate a live real worker while its timeout evidence scan is still completing [requires POSIX SIGSTOP/SIGCONT and host user namespace]', async () => {
@@ -392,6 +395,9 @@ printf 'report\n' > "$report"
     const supervision = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', `${pointer.runId}.json`), 'utf8'))
     expect(result).toContain('TIMEOUT')
     try { process.kill(-supervision.workerPid, 'SIGTERM') } catch {}
+    // The signalled worker records its terminal state in its host directory on the way out; wait for
+    // it to exit so teardown removes that directory after the last write, not before it.
+    await waitForIdentityExit({ pid: supervision.workerPid, argv: supervision.workerArgv })
   }, 15_000)
 
   it('does not accept a reused worker pid with different argv as live lane evidence', async () => {

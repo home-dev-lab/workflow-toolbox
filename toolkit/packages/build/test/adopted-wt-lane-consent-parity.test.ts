@@ -33,9 +33,26 @@ const CONSENT_MATRIX_TIMEOUT_MS = CHILD_TIMEOUT_MS * CONSENT_ACCOUNTS.length * C
 // left for that many sequential child processes on that host.
 const SUITE_LOCK_CHILD_TIMEOUT_MS = CHILD_TIMEOUT_MS * 3 + 15_000
 
-afterEach(() => {
+// A started launcher returns while its detached worker is still recording the run in the host
+// directory; teardown waits for every started worker to exit so it never removes that directory
+// under a live writer (ENOTEMPTY on macOS, run 36341392712).
+const workers: number[] = []
+const WORKER_EXIT_PATIENCE_MS = 30_000
+const workerAlive = (pid: number) => { try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' } }
+async function waitForWorkerExit(pid: number) {
+  const deadline = Date.now() + WORKER_EXIT_PATIENCE_MS
+  while (workerAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25))
+  if (workerAlive(pid)) throw new Error(`timed out waiting for adopted lane worker pid=${pid} to exit before teardown`)
+}
+
+afterEach(async () => {
+  for (const pid of workers.splice(0)) await waitForWorkerExit(pid)
   for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'project')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
-})
+}, WORKER_EXIT_PATIENCE_MS * 2)
+
+function laneLogTail(project: string, lines = 8) {
+  try { return readFileSync(join(laneHostDir(project), 'run.log'), 'utf8').trim().split(/\r?\n/).slice(-lines).join(' | ') || '<empty>' } catch { return '<unavailable>' }
+}
 
 function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = CHILD_TIMEOUT_MS) {
   const result = spawnSync(process.execPath, args, {
@@ -48,9 +65,7 @@ function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutM
   if (result.error) {
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim().split(/\r?\n/).at(-1) || '<no output>'
     const dirIndex = args.indexOf('--dir')
-    const log = dirIndex >= 0 ? join(laneHostDir(args[dirIndex + 1]!), 'run.log') : null
-    let laneTail = '<unavailable>'
-    try { laneTail = readFileSync(log!, 'utf8').trim().split(/\r?\n/).slice(-8).join(' | ') || '<empty>' } catch {}
+    const laneTail = dirIndex >= 0 ? laneLogTail(args[dirIndex + 1]!) : '<unavailable>'
     throw new Error(`${name} failed after ${timeoutMs}ms: ${result.error.message}; last output: ${output}; lane log tail: ${laneTail}`)
   }
   return result
@@ -122,7 +137,10 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
 function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna', extra: string[] = []) {
   const brief = join(f.project, 'brief.md')
   writeFileSync(brief, '# brief\n')
-  return runChild('adopted wt-lane launcher', [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git', ...extra], f.env)
+  const result = runChild('adopted wt-lane launcher', [f.installed, '--dir', f.project, '--model', model, '--brief', brief, '--allow-no-git', ...extra], f.env)
+  const worker = /^pid=(\d+)$/m.exec(result.stdout ?? '')?.[1]
+  if (result.status === 0 && worker) workers.push(Number(worker))
+  return result
 }
 
 describe('adopted wt-lane consent resolver', () => {
@@ -307,6 +325,7 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     expect(started.status, started.stderr).toBe(0)
     const until = Date.now() + (process.platform === 'win32' ? 10_000 : 3000)
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    expect(existsSync(seen), `the lane child never wrote ${seen}; lane log tail: ${laneLogTail(f.project, 20)}`).toBe(true)
     expect(readFileSync(seen, 'utf8')).toBe('true\n')
   })
 
@@ -331,6 +350,7 @@ printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
     // Node resolves a module URL through symlinks, so the launcher reports the REAL path (macOS tmpdir is
     // /var -> /private/var); the expectation compares against the same real path.
     const cli = realpathSync(join(f.pluginRoot, 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs'))
+    expect(existsSync(seen), `the lane child never wrote ${seen}; lane log tail: ${laneLogTail(f.project, 20)}`).toBe(true)
     expect(readFileSync(seen, 'utf8')).toBe(cli)
     expect(existsSync(cli)).toBe(true)
   }, SUITE_LOCK_CHILD_TIMEOUT_MS)
