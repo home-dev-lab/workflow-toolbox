@@ -63,7 +63,7 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { createGitInspectionIsolation } from './lib/host/git-inspection-isolation.mjs'
 import { stripHeredocs, stripQuotedSpans } from './lib/command-invocation.mjs'
-import { consumeMainGuardAllowOnce, mainGuardStateDir } from './lib/main-guard-allow-once.mjs'
+import { consumeMainGuardAllowOnce, describeMainGuardAllowOnceMiss, mainGuardStateDir } from './lib/main-guard-allow-once.mjs'
 
 const STATE_DIR = mainGuardStateDir()
 const JOURNAL_PATH = path.join(STATE_DIR, 'journal.jsonl')
@@ -445,6 +445,7 @@ function main() {
   }
 
   // result.kind === 'deny'
+  const allowanceMiss = describeMainGuardAllowOnceMiss(command, input.tool_use_id)
   const overrideReason = consumeMainGuardAllowOnce(command, input.tool_use_id)
   if (overrideReason) {
     journal({
@@ -475,9 +476,9 @@ function main() {
         permissionDecisionReason:
           `[workflow-toolbox main guard] Refused: ${result.reason}. This Bash-text action has ` +
           'no undo; API deletions and gh calls are outside this guard. If it is genuinely ' +
-          'intended, write {"command": "<exact ' +
-          `command>", "reason": "<why>"} to ${ALLOW_ONCE_PATH} and ` +
-          'retry (single use).',
+          `intended, write ${JSON.stringify({ command, reason: '<why>' })} to ${ALLOW_ONCE_PATH} and ` +
+          'retry this exact command (single use).' +
+          (allowanceMiss ? ` ${allowanceMiss}` : ''),
       },
     }),
   )
