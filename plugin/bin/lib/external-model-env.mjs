@@ -156,6 +156,11 @@ function credentialInValue(name, value) {
   return null
 }
 
+/** True when a variable NAME looks like a credential under the same pattern the external-model builder applies. */
+export function isCredentialName(name) {
+  return CREDENTIAL_NAME.test(name)
+}
+
 function configuredExtraRefusal(name) {
   if (!NAME.test(name)) return 'invalid-name'
   if (NEVER_PASS.has(name.toUpperCase())) return 'never-pass'

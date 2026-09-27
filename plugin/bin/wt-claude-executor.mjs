@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
+import { claudeExecutorEnv } from './lib/claude-executor-env.mjs'
 import { resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
@@ -55,7 +56,7 @@ async function worker(options) {
       sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true },
       settings: { permissions: { blockReadsOutsideWorkingDirectories: true, disableBypassPermissionsMode: 'disable' } },
       abortController,
-      env: { ...process.env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
+      env: claudeExecutorEnv(process.env),
     }, sdkRole)
     const stream = query({ prompt: withRepositoryGuide(options.dir, launch.prompt), options: queryOptions })
     for await (const message of stream) {
@@ -108,7 +109,7 @@ async function main() {
   if (isWorker) return worker(options)
   mkdirSync(path.join(options.dir, '.lane'), { recursive: true })
   const resolution = resolveAgentSdk({ projectDir: options.dir, writableRoots: [options.dir] })
-  const child = spawn(process.execPath, [process.argv[1], '--worker', '--sdk-path', resolution.entryPath, '--dir', options.dir, '--model', options.model, ...(options.variant ? ['--variant', options.variant] : []), ...(options.variantOrigin ? ['--variant-origin', options.variantOrigin] : []), '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role, ...(options.knowledgeBaseIndex ? ['--knowledge-base-index', options.knowledgeBaseIndex] : [])], { detached: true, stdio: 'ignore', env: process.env })
+  const child = spawn(process.execPath, [process.argv[1], '--worker', '--sdk-path', resolution.entryPath, '--dir', options.dir, '--model', options.model, ...(options.variant ? ['--variant', options.variant] : []), ...(options.variantOrigin ? ['--variant-origin', options.variantOrigin] : []), '--brief', options.brief, '--log', options.log, '--timeout', String(options.timeout), '--role', options.role, ...(options.knowledgeBaseIndex ? ['--knowledge-base-index', options.knowledgeBaseIndex] : [])], { detached: true, stdio: 'ignore', env: claudeExecutorEnv(process.env) })
   child.unref()
   process.stdout.write(`pid=${child.pid}\nlog=${options.log}\n`)
   return 0
