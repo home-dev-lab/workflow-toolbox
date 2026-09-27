@@ -65,6 +65,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     const refutation = calls.find((call) => call.phase === 'refutation')
     expect(refutation.argv).toContain('--variant'); expect(refutation.argv).toContain('--role'); expect(refutation.argv).toContain('--knowledge-base-index')
     expect(refutation.argv).not.toContain('--owner'); expect(refutation.briefText).toContain(`KNOWLEDGE_BASE_INDEX: ${index}`)
+    // The Claude refuter gets the plain index line; the GPT reviewer in the SAME run gets the OpenCode wording.
+    expect(refutation.briefText).not.toContain('outside the OpenCode working directory')
+    expect(calls.find((call) => call.phase === 'review').briefText).toContain('outside the OpenCode working directory')
     const tdd = calls.find((call) => call.phase === 'tdd')
     expect(tdd.argv).toContain('--owner'); expect(tdd.argv).toContain('pilot')
   })
