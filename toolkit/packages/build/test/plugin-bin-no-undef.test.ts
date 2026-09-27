@@ -31,7 +31,7 @@ const PLUGIN_BIN = join(REPO_ROOT, 'plugin/bin')
 // `lint` script — a `cd ..` in a package script is one more thing to get wrong on a
 // platform we do not develop on.
 const NODE_GLOBALS = [
-  '__dirname', '__filename', 'AbortController', 'AbortSignal', 'Buffer', 'clearImmediate',
+  '__dirname', '__filename', 'AbortController', 'AbortSignal', 'atob', 'btoa', 'Buffer', 'clearImmediate',
   'clearInterval', 'clearTimeout', 'console', 'fetch', 'globalThis', 'performance', 'process',
   'queueMicrotask', 'setImmediate', 'setInterval', 'setTimeout', 'structuredClone',
   'TextDecoder', 'TextEncoder', 'URL', 'URLSearchParams',
