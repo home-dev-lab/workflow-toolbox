@@ -120,8 +120,10 @@ function send(child: ChildProcessWithoutNullStreams, message: object): void {
 // the channel ignores, then rename it into place. A plain writeFileSync on the `.txt` name is open, then
 // write: when the host deschedules this process between the two, the watch event reaches the channel
 // with the file still empty, the channel consumes it as an empty wake, and the content lands in
-// `consumed/` with no notification ever emitted. That lost wake is what CI reported as "timed out
-// waiting for wake-channel output; child exit=running", on a host slow enough to open the window.
+// `consumed/` with no notification ever emitted. Forcing that interleave reproduces the CI message
+// "timed out waiting for wake-channel output; child exit=running" exactly; that text alone cannot rule
+// out a dropped watch event, which this deposit does not address. Only the `.txt` suffix makes the
+// channel read a file, so the staged name is never consumed.
 function deposit(spool: string, name: string, body: string): void {
   const staged = join(spool, `.${name}.staged`)
   writeFileSync(staged, body, 'utf8')

@@ -24,7 +24,8 @@ export function quarantineTestPattern(entries = quarantinedTests) {
 }
 
 export function blockingTestPattern(entries = quarantinedTests) {
-  return new RegExp(`^(?!.*(?:${namesAlternation(entries)})$).+$`)
+  // [\s\S], never `.`: Vitest matches the full task name, and a name may contain a newline.
+  return new RegExp(`^(?![\\s\\S]*(?:${namesAlternation(entries)})$)[\\s\\S]+$`)
 }
 
 export function validateQuarantinedTests(entries = quarantinedTests, root = ROOT) {

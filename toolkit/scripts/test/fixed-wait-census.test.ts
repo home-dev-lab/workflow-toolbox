@@ -44,10 +44,97 @@ await waitFor(() => ready(), 4000)
 spawnSync('node', ['x.mjs'], { encoding: 'utf8', timeout: 8000 })
 `)).toEqual([
       'short-deadline waitForFile(timeoutMs = 3000 ms)',
-      'short-deadline Date.now() + 5000 ms',
+      'short-deadline now() + 5000 ms',
       'short-deadline waitFor(…, 4000 ms)',
       'short-deadline spawnSync timeout: 8000 ms',
     ])
+  })
+
+  it('resolves the forms a new test plausibly writes: scoped constants, aliases, expressions, option objects', () => {
+    expect(signals(`
+import { setTimeout as snooze } from 'node:timers/promises'
+import { setTimeout as later } from 'node:timers'
+import { spawn as start } from 'node:child_process'
+it('ready', async () => {
+  const ms = 500
+  await sleep(ms)
+  await snooze(400, undefined, { signal })
+  later(resolve, 300)
+  await sleep(1000 / 2)
+  await delay(600 as number)
+  const end = (Date.now()) + 700
+  start('node', [], { timeout: 800 })
+  const opts = { timeout: 900 }
+  start('node', [], opts)
+  const timeout = 950
+  start('node', [], { timeout })
+  await waitFor(() => ready(), { timeout: 450 })
+})
+async function waitForFile(file: string, budget = 350) {}
+`)).toEqual([
+      'fixed-sleep sleep 500 ms',
+      'fixed-sleep setTimeout 400 ms',
+      'fixed-sleep setTimeout 300 ms',
+      'fixed-sleep sleep 500 ms',
+      'fixed-sleep delay 600 ms',
+      'short-deadline now() + 700 ms',
+      'short-deadline start timeout: 800 ms',
+      'short-deadline start timeout: 900 ms',
+      'short-deadline start timeout: 950 ms',
+      'short-deadline waitFor({ timeout: 450 ms })',
+      'short-deadline waitForFile(budget = 350 ms)',
+    ])
+  })
+
+  it('reports a pause whose loop only waits for the clock, or never reads it, and the bound of an elapsed-time check', () => {
+    expect(signals(`
+const deadline = Date.now() + 30_000
+while (Date.now() < deadline) {
+  await new Promise((r) => setTimeout(r, 500))
+}
+while (Date.now() < deadline) {
+  trigger()
+  await sleep(501)
+  expect(result()).toBe(true)
+  break
+}
+while (!ready()) {
+  if (mode === 'deadline') log(mode)
+  await sleep(502)
+}
+for (const item of items) {
+  while (!done(item) && Date.now() < deadline) {
+    for (const probe of probes) await sleep(503)
+  }
+}
+const started = Date.now()
+while (!ready()) {
+  if (Date.now() - started > 504) throw new Error('late')
+  await sleep(20)
+}
+`)).toEqual([
+      'fixed-sleep setTimeout 500 ms',
+      'fixed-sleep sleep 501 ms',
+      'fixed-sleep sleep 502 ms',
+      'fixed-sleep sleep 503 ms',
+      'short-deadline elapsed bound 504 ms',
+    ])
+  })
+
+  it('does not read a method named like a sleep, a non-child-process timeout, or a constant a parameter shadows', () => {
+    expect(signals(`
+const ms = 500
+player.pause(500)
+database.exec('query', { timeout: 500 })
+async function waitForThing(ms = 60_000) {
+  return waitFor(ready, ms)
+}
+`)).toEqual([])
+  })
+
+  it('changes the key when the number changes, even when the statement starts on an earlier line', () => {
+    const at = (value: number) => scanSource('packages/example/test/k.test.ts', `setTimeout(\n  resolve, ${value}\n)\n`).map((finding) => finding.key)
+    expect(at(500)).not.toEqual(at(9000))
   })
 
   it('stays silent on a generous event wait, the tick of a deadline-bounded poll, a unit input named timeout, and code inside a fixture string', () => {
@@ -80,7 +167,7 @@ while (!done()) {
     writeFileSync(file, `// one\n// two\n${body}`)
     expect(scanFixedWaits(root).map((finding) => finding.key)).toEqual(before)
     expect(new Set(before).size).toBe(2)
-    expect(before[0]).toBe('packages/example/test/moved.test.ts:fixed-sleep:await new Promise((r) => setTimeout(r, 50))')
+    expect(before[0]).toBe('packages/example/test/moved.test.ts:fixed-sleep:setTimeout 50 ms:await new Promise((r) => setTimeout(r, 50))')
   })
 
   it('refuses a new fixed wait until it is converted or named, and hands the entry to paste', () => {
@@ -89,8 +176,8 @@ while (!done()) {
     mkdirSync(join(root, 'scripts/test'), { recursive: true })
     writeFileSync(join(root, 'scripts/test/new.test.ts'), 'await new Promise((r) => setTimeout(r, 500))\n')
     const unnamed = checkFixedWaits(root, new Map())
-    expect(unnamed.unapproved.map((finding) => finding.key)).toEqual(['scripts/test/new.test.ts:fixed-sleep:await new Promise((r) => setTimeout(r, 500))'])
-    expect(approvalEntry(unnamed.unapproved[0]!)).toContain('"scripts/test/new.test.ts:fixed-sleep:await new Promise((r) => setTimeout(r, 500))"')
+    expect(unnamed.unapproved.map((finding) => finding.key)).toEqual(['scripts/test/new.test.ts:fixed-sleep:setTimeout 500 ms:await new Promise((r) => setTimeout(r, 500))'])
+    expect(approvalEntry(unnamed.unapproved[0]!)).toContain('"scripts/test/new.test.ts:fixed-sleep:setTimeout 500 ms:await new Promise((r) => setTimeout(r, 500))"')
     const named = checkFixedWaits(root, new Map([[unnamed.unapproved[0]!.key, { class: 'duration-bound', reason: 'proves nothing arrives within the window' }]]))
     expect(named.unapproved).toEqual([])
     expect(named.stale).toEqual([])

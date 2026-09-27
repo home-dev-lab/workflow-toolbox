@@ -43,6 +43,18 @@ describe('release-blocking test quarantine', () => {
     expect(quarantineNotice([])).toBe('QUARANTINE: 0 tests run separately and do not block release.')
   })
 
+  // Vitest matches the full task name, newlines included; `.` would stop at one and drop the test from
+  // BOTH selections.
+  it('keeps a test whose name spans lines in exactly one selection', () => {
+    const entry = { file: 'scripts/test/wt-wake-channel.test.ts', name: 'answers the MCP handshake', cardId: '1', waitingOn: 'x' }
+    for (const entries of [[], [entry]]) {
+      expect(blockingTestPattern(entries).test('suite handles\nmultiline input')).toBe(true)
+      expect(quarantineTestPattern(entries).test('suite handles\nmultiline input')).toBe(false)
+    }
+    expect(blockingTestPattern([entry]).test('suite\nanswers the MCP handshake')).toBe(false)
+    expect(quarantineTestPattern([entry]).test('suite\nanswers the MCP handshake')).toBe(true)
+  })
+
   it('skips the quarantine run when nothing is quarantined, and still returns the blocking status', () => {
     const modes: string[] = []
     const written: string[] = []

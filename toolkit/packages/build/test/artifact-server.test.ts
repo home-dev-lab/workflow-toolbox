@@ -116,9 +116,11 @@ function startupClaimPath(stateHome: string) {
 
 // The holder publishes its claim owner with atomicWriteJson: a `.<token>.json.tmp-…` staging file sits
 // in the claim directory until it is renamed to `<token>.json`. A wait satisfied by "one entry" can
-// wake inside that window and act on a claim with no owner yet: removing the staging file then leaves
-// the real owner behind (rmdir ENOTEMPTY on macOS CI), and a contender started then reads no valid
-// owner. The event every claim test means is the PUBLISHED owner, so that is the one waited on.
+// wake inside that window and act on a claim with no owner yet. If the rename lands after the test
+// listed the staging name and before its rmdir, the force-remove misses and rmdir meets the published
+// owner (the macOS CI ENOTEMPTY); if the test removes the staging file first, the owner is never
+// published. A contender started in the window reads no valid owner either. The event every claim test
+// means is the PUBLISHED owner, so that is the one waited on.
 const CLAIM_OWNER_FILE = /^[0-9a-f-]+\.json$/
 
 async function waitForPublishedClaimOwner(stateHome: string): Promise<string> {
