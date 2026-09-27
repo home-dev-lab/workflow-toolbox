@@ -7,6 +7,7 @@ import { treeSignature } from './gate-evidence.mjs'
 import { createSdkJudge } from './orchestrator-judge.mjs'
 import { createWaveServer } from './wave-lifecycle-server.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
+import { gateEnvironment } from './gate-environment.mjs'
 
 const DEFAULTS = { concurrency: 1, base: 'develop', pilotTimeout: 5400, maxCards: Infinity, maxMinutes: Infinity, missionLabels: [], hard: [] }
 const ELIGIBLE_LISTS = new Set(['Backlog', 'Next', 'In Progress'])
@@ -137,8 +138,8 @@ async function ineligibleReason(card, requiredLabels, board, known) {
   return null
 }
 
-function runLogged(program, args, cwd, log) {
-  const result = spawnSync(program, args, { cwd, encoding: 'utf8' })
+function runLogged(program, args, cwd, log, env = process.env) {
+  const result = spawnSync(program, args, { cwd, encoding: 'utf8', env })
   fs.writeFileSync(log, `${result.stdout ?? ''}${result.stderr ?? ''}${/\n$/.test(`${result.stdout ?? ''}${result.stderr ?? ''}`) ? '' : '\n'}EXIT=${result.status ?? 1}\n`)
   return result.status ?? 1
 }
@@ -152,9 +153,10 @@ function defaultInstall(worktree, cardDir) {
   return runLogged('pnpm', ['install', '--offline', '--frozen-lockfile', '--config.package-import-method=copy'], path.join(worktree, 'toolkit'), path.join(cardDir, 'install.log'))
 }
 
-async function defaultGates(worktree, cardDir) {
+// The delivery's gates run without the runner's own WT_* configuration (gate-environment.mjs).
+async function defaultGates(worktree, cardDir, env = process.env) {
   const result = {}
-  for (const name of ['typecheck', 'lint', 'test']) result[name] = runLogged('pnpm', [name], path.join(worktree, 'toolkit'), path.join(cardDir, `${name}.log`))
+  for (const name of ['typecheck', 'lint', 'test']) result[name] = runLogged('pnpm', [name], path.join(worktree, 'toolkit'), path.join(cardDir, `${name}.log`), gateEnvironment(env))
   return result
 }
 

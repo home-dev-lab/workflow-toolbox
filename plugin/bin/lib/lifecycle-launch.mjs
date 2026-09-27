@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
+import { gateEnvironment } from './gate-environment.mjs'
 import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './lifecycle-receipts.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { classifyLane, shellQuote, supervisionPaths } from './lane-supervisor-core.mjs'
@@ -581,7 +582,7 @@ export function createLifecycleLaunch({
           const out = fs.openSync(log, 'a')
           const err = fs.openSync(log, 'a')
           try {
-            code = await launchProcess('pnpm', [args.name], { cwd: path.join(root, 'toolkit'), stdio: ['ignore', out, err] })
+            code = await launchProcess('pnpm', [args.name], { cwd: path.join(root, 'toolkit'), env: gateEnvironment(process.env), stdio: ['ignore', out, err] })
           } finally {
             fs.closeSync(out)
             fs.closeSync(err)
