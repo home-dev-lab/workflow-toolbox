@@ -464,6 +464,17 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /, relative, ${HOME}`)
   })
 
+  it('never binds the host-owned lane state root, an ancestor of it, or anything beneath it', () => {
+    const stateRoot = '/state/wt-lane-host'
+    const env = { HOME, PATH: '/usr/bin', WT_LANE_HOST_STATE: stateRoot }
+    const extras = [`${stateRoot}/abc/supervision`, stateRoot, '/state', '/scratch']
+    const p = plan({ env, optionEnv: { WT_LANE_SANDBOX_READ: extras[0], WT_LANE_SANDBOX_WRITE: extras.slice(1).join(delimiter) }, fs: fakeFs({}, [HOME, '/work/tree', ...extras]) })
+    const [, args] = p.wrap('opencode', [])
+    for (const refused of extras.slice(0, 3)) { expect(everyBind(args)).not.toContain(refused) }
+    expect(flat(args, '--bind-try')).toContain('/scratch')
+    expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries ${extras.slice(0, 3).join(', ')}`)
+  })
+
   it('announces an unsandboxed lane once per reason, and a sandboxed one never', () => {
     const lines: string[] = []
     const none = plan({ platform: 'freebsd' })

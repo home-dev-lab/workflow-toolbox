@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { parseJsonc } from './jsonc.mjs'
 import { processStartTime } from './pid-namespace.mjs'
 import { sandboxExtraPaths } from './sandbox-extra-paths.mjs'
+import { laneHostStateRoot } from './lane-host-dir.mjs'
 
 // External lanes (opencode, codex) run as the owner with a shell. The environment allow-list keeps
 // secrets out of their ENVIRONMENT; this sandbox keeps them out of their FILESYSTEM, process table
@@ -157,7 +158,18 @@ function isForbiddenPath(candidate, env, fs) {
   const target = fs.realpath(candidate) ?? path.resolve(candidate)
   const homeDir = fs.realpath(home(env)) ?? path.resolve(home(env))
   if (target === path.parse(target).root) return true
-  return homeDir === target || homeDir.startsWith(`${target}${path.sep}`)
+  if (homeDir === target || homeDir.startsWith(`${target}${path.sep}`)) return true
+  // Host-owned lane state (records, decisions, logs) must never be visible to a lane: its root, an
+  // ancestor that would contain it, or anything beneath it.
+  const hostRoot = hostStateRootOf(env, fs)
+  return hostRoot !== null && (within(target, hostRoot) || within(hostRoot, target))
+}
+
+function hostStateRootOf(env, fs) {
+  try {
+    const root = laneHostStateRoot({ env })
+    return fs.realpath(root) ?? path.resolve(root)
+  } catch { return null }
 }
 
 // The global OpenCode config names the files it substitutes with {file:...} (API keys among them).
@@ -507,17 +519,19 @@ function canonicalPath(candidate, fs) {
 
 function registeredLaneRoots(optionEnv) {
   // The host-owned index is optional for older installations; without it the worktree-segment
-  // and current-launch checks still apply. Never read this index from inside a child namespace.
-  const base = optionEnv.WT_LANE_HOST_STATE || path.join(os.userInfo().homedir, '.local/state', 'wt-lane-host')
+  // and current-launch checks still apply. One unreadable entry skips only itself: stopping at the
+  // first failure would silently drop every later root and widen what is trusted.
+  const base = laneHostStateRoot({ env: optionEnv })
   const roots = []
   const present = existsSync(base)
-  try {
-    for (const entry of readdirSync(base)) {
-      const record = path.join(base, entry, 'worktree')
-      const fd = openSync(record, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
+  let entries = []
+  try { entries = readdirSync(base) } catch { /* no registry on pre-upgrade installations */ }
+  for (const entry of entries) {
+    try {
+      const fd = openSync(path.join(base, entry, 'worktree'), constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
       try { if (fstatSync(fd).isFile()) roots.push(readFileSync(fd, 'utf8').trim()) } finally { closeSync(fd) }
-    }
-  } catch { /* no registry on pre-upgrade installations */ }
+    } catch { /* this entry has no readable index file */ }
+  }
   return { roots: roots.filter((root) => path.isAbsolute(root)), present }
 }
 
