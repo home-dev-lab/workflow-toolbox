@@ -74,19 +74,53 @@ describe('pilot model configuration', () => {
     expect(resolveExecutorProfile({
       worktree: '/worktree', route, hard, env: {}, settingsEnv: {},
       resolveConsentImpl: () => ({ outcome: consent }),
-    })).toMatchObject({ executor, models })
+    })).toMatchObject({ executor, models, executors: { critic: executor, code: executor, review: executor, refutation: executor } })
   })
 
-  it('treats unresolved consent as Claude and validates family-specific role overrides', () => {
+  it('treats unresolved consent as Claude and resolves each override by its own model', () => {
     expect(resolveExecutorProfile({
       worktree: '/worktree', route: 'FULL', hard: false,
       env: { WT_EXECUTOR_CODE_MODEL: 'opus', WT_EXECUTOR_REFUTATION_MODEL: 'fable' },
       settingsEnv: { WT_EXECUTOR_CODE_MODEL: 'opus', WT_EXECUTOR_REVIEW_MODEL: 'sonnet' },
       resolveConsentImpl: () => ({ outcome: 'unknown' }),
     })).toMatchObject({ executor: 'claude-sdk', models: { critic: 'opus', code: 'opus', review: 'sonnet', refutation: 'fable' } })
-    expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'sonnet' }, resolveConsentImpl: () => ({ outcome: 'true' }) })).toThrow('provider model')
-    expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'openai/gpt-5.6-sol' }, resolveConsentImpl: () => ({ outcome: 'not_true' }) })).toThrow('harness model')
-    expect(() => resolveExecutorProfile({ worktree: '/w', route: 'FULL', hard: false, env: { WT_EXECUTOR_CODE_MODEL: 'claude-sonnet-5' }, resolveConsentImpl: () => ({ outcome: 'not_true' }) })).toThrow('harness model alias')
+    expect(resolveExecutorProfile({ worktree: '/w', route: 'FULL', env: { WT_EXECUTOR_CODE_MODEL: 'sonnet' }, resolveConsentImpl: () => ({ outcome: 'true' }) })).toMatchObject({ executor: 'gpt-lane', executors: { code: 'claude-sdk', review: 'gpt-lane' } })
+  })
+
+  it('routes GPT code with Claude refutation and preserves each family effort', () => {
+    expect(resolveExecutorProfile({ worktree: '/w', route: 'FULL', env: { WT_EXECUTOR_REFUTATION_MODEL: 'opus' }, resolveConsentImpl: () => ({ outcome: 'true' }) })).toMatchObject({
+      executor: 'gpt-lane', models: { code: 'openai/gpt-6-sol', refutation: 'opus' },
+      executors: { code: 'gpt-lane', refutation: 'claude-sdk' }, variants: { code: 'high', refutation: 'xhigh' },
+    })
+  })
+
+  it('routes Claude code with GPT review when consent is true', () => {
+    expect(resolveExecutorProfile({ worktree: '/w', route: 'FULL', env: { WT_EXECUTOR_CODE_MODEL: 'sonnet', WT_EXECUTOR_REVIEW_MODEL: 'openai/gpt-6-astra' }, resolveConsentImpl: () => ({ outcome: 'true' }) })).toMatchObject({
+      executors: { code: 'claude-sdk', review: 'gpt-lane' }, variants: { code: 'medium', review: 'medium' },
+    })
+  })
+
+  it.each(['not_true', 'unknown'] as const)('refuses GPT without %s consent from env, settings and plugin option', (outcome) => {
+    const value = 'openai/gpt-6-sol'
+    const sources = [
+      { env: { WT_EXECUTOR_REVIEW_MODEL: value }, source: 'env' },
+      { settingsEnv: { WT_EXECUTOR_REVIEW_MODEL: value }, source: 'settings' },
+      { readPluginOption: (key: string) => key === 'executor_review_model' ? { present: true, value } : { present: false }, source: 'plugin option' },
+    ]
+    for (const { source, ...options } of sources) {
+      expect(() => resolveExecutorProfileImpl({ worktree: '/w', route: 'FULL', resolveConsentImpl: () => ({ outcome }), readPluginOption: noPluginOption, ...options })).toThrow(new RegExp(`review.*${value}.*${source}.*${outcome}.*consent.*harness model alias`))
+    }
+  })
+
+  it.each(['true', 'not_true', 'unknown'] as const)('refuses selected invalid and explicit blank values for %s consent', (outcome) => {
+    for (const value of ['claude-sonnet-5', 'gpt-6-sol', '']) {
+      const selected = () => resolveExecutorProfile({ worktree: '/w', route: 'FULL', env: { WT_EXECUTOR_CODE_MODEL: value }, resolveConsentImpl: () => ({ outcome }) })
+      for (const fragment of ['code', 'provider model', 'harness model alias', `model ${value} from env`]) expect(selected).toThrow(fragment)
+    }
+  })
+
+  it('ignores a blank plugin model option and falls back to the selected env model', () => {
+    expect(resolveExecutorProfileImpl({ worktree: '/w', route: 'FULL', env: { WT_EXECUTOR_CODE_MODEL: 'opus' }, resolveConsentImpl: () => ({ outcome: 'true' }), readPluginOption: (key: string) => key === 'executor_code_model' ? { present: true, value: '' } : { present: false } })).toMatchObject({ models: { code: 'opus' }, executors: { code: 'claude-sdk' }, modelSources: { code: 'env' } })
   })
 
   it('selects the family through the real consent resolver with hermetic settings', () => {

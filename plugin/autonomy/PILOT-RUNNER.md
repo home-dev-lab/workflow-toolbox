@@ -171,6 +171,8 @@ hard critic, review and refutation use `openai/gpt-6-astra` (`max` / `medium` / 
 Astra reviews Sol's code so the same model never judges itself. Claude SDK executors
 use `opus` for critic, review and refutation at `xhigh`; standard code uses `sonnet`
 at `medium`, hard code `opus` at `medium`. Explicit effort overrides take precedence.
+Each executor role's selected model determines its launcher independently: a provider/model uses a GPT lane,
+while a harness alias uses the Claude SDK. GPT models require lane consent even when another role runs on Claude.
 Lane timeouts are capped at 5400 seconds. `run { kind: 'gate' }` runs the
 toolkit's `pnpm typecheck`, `pnpm lint`, or `pnpm test`.
 A lane must not rely on background processes surviving its receipt: the reported process group contains

@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { MAX_CRITIC_ROUNDS, MAX_REVIEW_ROUNDS } from '../../../../plugin/bin/lib/lifecycle-state-machine.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { phaseLaunchPlan } from '../../../../plugin/bin/lib/lifecycle-launch.mjs'
 
 const plan = readFileSync(new URL('./fixtures/mechanical-cycle-plan.md', import.meta.url), 'utf8')
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n\n## Acceptance\n- exercise the lifecycle fixture\n  Outcome: proven\n'
@@ -30,7 +32,7 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
   it('passes the knowledge-base index only to Claude SDK independent roles and names it in their briefs', async () => {
     const knowledgeBaseDir = mkdtempSync(join(tmpdir(), 'wt-lifecycle-kb-')); roots.push(knowledgeBaseDir)
     const index = join(knowledgeBaseDir, 'MEMORY.md'); writeFileSync(index, '- review claim\n')
-    const lifecycle = fullLifecycle({ executor: 'claude-sdk', knowledgeBase: { path: index, checkedPath: index } })
+    const lifecycle = fullLifecycle({ executor: 'claude-sdk', models: { critic: 'opus', code: 'sonnet', review: 'opus', refutation: 'opus' }, knowledgeBase: { path: index, checkedPath: index } })
     edgeConfig(lifecycle, { critic: { verdict: 'approved' } })
     await lifecycle.transition({ phase: 'discovery', tool_use_id: 'discovery' }); await lifecycle.artifact({ kind: 'plan', content: plan }); await lifecycle.transition({ phase: 'plan', tool_use_id: 'plan' }); await lifecycle.artifact({ kind: 'critic-brief', content: 'critic\n' }); await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })
     const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
@@ -38,6 +40,47 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
     expect(calls.every((call) => call.argv.includes('--knowledge-base-index') && call.argv.includes(index))).toBe(true)
     expect(calls.every((call) => call.briefText.includes(`KNOWLEDGE_BASE_INDEX: ${index}`))).toBe(true)
     expect(calls.every((call) => call.briefText.includes('fiches are claims to verify against the current code, never evidence by themselves'))).toBe(true)
+  })
+
+  it('selects both production launchers by phase model, including tdd as code', () => {
+    expect(phaseLaunchPlan('refutation', 'opus', 'gpt-lane')).toMatchObject({ executor: 'claude-sdk', script: 'wt-claude-executor.mjs', args: ['--variant', 'xhigh', '--variant-origin', 'role base', '--role', 'refutation'] })
+    expect(phaseLaunchPlan('tdd', 'openai/gpt-6-sol', 'claude-sdk')).toMatchObject({ executor: 'gpt-lane', script: 'wt-lane.mjs', args: ['--role', 'code'] })
+    expect(phaseLaunchPlan('tdd', 'sonnet', 'gpt-lane')).toMatchObject({ executor: 'claude-sdk', script: 'wt-claude-executor.mjs', args: ['--variant', 'medium', '--variant-origin', 'role base', '--role', 'tdd'] })
+    expect(phaseLaunchPlan('review', 'openai/gpt-6-astra', 'claude-sdk')).toMatchObject({ executor: 'gpt-lane', script: 'wt-lane.mjs', args: ['--role', 'review'] })
+    expect(phaseLaunchPlan('tdd', 'test-model', 'claude-sdk').executor).toBe('claude-sdk')
+  })
+
+  it('records the launched family per lane and route in a mixed FULL lifecycle', async () => {
+    const index = join(tmpdir(), 'mixed-memory', 'MEMORY.md')
+    const lifecycle = fullLifecycle({ models: { critic: 'openai/gpt-6-astra', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' }, knowledgeBase: { path: index, checkedPath: index } })
+    const route = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'route.json'), 'utf8'))
+    expect(route.executors).toEqual({ critic: 'gpt-lane', code: 'gpt-lane', review: 'gpt-lane', refutation: 'claude-sdk' })
+    await reachReview(lifecycle)
+    edgeConfig(lifecycle, { review: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' }); await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 }); await lifecycle.transition({ phase: 'review', outcome: 'clear', tool_use_id: 'mixed-review' })
+    await lifecycle.artifact({ kind: 'refutation-brief', content: 'refutation' }); expect(await lifecycle.run({ kind: 'lane', phase: 'refutation', timeout: 1 })).toBe('lane refutation EXIT=0')
+    const lanes = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).lanes
+    expect(lanes.filter((lane: { phase: string }) => ['tdd', 'review', 'refutation'].includes(lane.phase)).map((lane: { phase: string, executor: string }) => [lane.phase, lane.executor])).toEqual([['tdd', 'gpt-lane'], ['review', 'gpt-lane'], ['refutation', 'claude-sdk']])
+    const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const refutation = calls.find((call) => call.phase === 'refutation')
+    expect(refutation.argv).toContain('--variant'); expect(refutation.argv).toContain('--role'); expect(refutation.argv).toContain('--knowledge-base-index')
+    expect(refutation.argv).not.toContain('--owner'); expect(refutation.briefText).toContain(`KNOWLEDGE_BASE_INDEX: ${index}`)
+    const tdd = calls.find((call) => call.phase === 'tdd')
+    expect(tdd.argv).toContain('--owner'); expect(tdd.argv).toContain('pilot')
+  })
+
+  it('launches Claude tdd as code and GPT review in the reverse mixed FULL lifecycle', async () => {
+    const lifecycle = fullLifecycle({ executor: 'claude-sdk', models: { critic: 'opus', code: 'sonnet', review: 'openai/gpt-6-astra', refutation: 'opus' } })
+    expect(JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'route.json'), 'utf8')).executors).toEqual({ critic: 'claude-sdk', code: 'claude-sdk', review: 'gpt-lane', refutation: 'claude-sdk' })
+    await reachReview(lifecycle)
+    edgeConfig(lifecycle, { review: { verdict: 'clear' } })
+    await lifecycle.artifact({ kind: 'review-brief', content: 'review' })
+    expect(await lifecycle.run({ kind: 'lane', phase: 'review', timeout: 1 })).toBe('lane review EXIT=0')
+    const lanes = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8')).lanes
+    expect(lanes.filter((lane: { phase: string }) => ['tdd', 'review'].includes(lane.phase)).map((lane: { phase: string, executor: string }) => [lane.phase, lane.executor])).toEqual([['tdd', 'claude-sdk'], ['review', 'gpt-lane']])
+    const calls = readFileSync(lifecycle.calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    expect(calls.find((call) => call.phase === 'tdd').argv).not.toContain('--owner')
+    expect(calls.find((call) => call.phase === 'review').argv).toContain('--owner')
   })
 
   it('names the external knowledge-base index in GPT independent briefs with a refused-read instruction, without widening launcher arguments', async () => {

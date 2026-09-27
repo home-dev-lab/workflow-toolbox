@@ -90,7 +90,7 @@ export function executorBrief(options) {
   if (!match) throw new Error('brief does not name its report path')
   const report = path.resolve(match[1])
   const laneDir = path.join(fs.realpathSync(options.dir), '.lane')
-  if (path.dirname(report) !== laneDir || !new RegExp(`^${options.role}-report\\.[A-Za-z0-9-]+\\.md$`).test(path.basename(report))) {
+  if (path.dirname(report) !== laneDir || !new RegExp(`^${options.role}-report(?:\\.[A-Za-z0-9]+)?\\.[A-Za-z0-9-]+\\.md$`).test(path.basename(report))) {
     throw new Error(`brief report path is not a nonce lane report: ${report}`)
   }
   // Read-only is decided by the phase the lifecycle launched, never by text inside the brief.

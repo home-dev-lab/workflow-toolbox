@@ -104,6 +104,22 @@ describe('Claude SDK executor', () => {
     expect(() => executorBrief(parseExecutorArgs(['--dir', root, '--model', 'opus', '--brief', brief, '--role', 'critic']))).toThrow('nonce lane report')
   })
 
+  it('accepts both critic lane IDs and plain nonce reports, but rejects extra components and role escapes', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-executor-critic-report-'))); roots.push(root); mkdirSync(join(root, '.lane'))
+    const brief = join(root, 'b.md')
+    const options = parseExecutorArgs(['--dir', root, '--model', 'opus', '--brief', brief, '--role', 'critic'])
+    for (const name of ['critic-report.A.nonce-1.md', 'critic-report.B.nonce-1.md', 'critic-report.nonce-1.md']) {
+      writeFileSync(brief, `Write the report to \`${join(root, '.lane', name)}\`.\n`)
+      expect(executorBrief(options).report).toBe(join(root, '.lane', name))
+    }
+    for (const name of ['critic-report.A.B.nonce.md', 'review-report.A.nonce.md', 'critic-report...md']) {
+      writeFileSync(brief, `Write the report to \`${join(root, '.lane', name)}\`.\n`)
+      expect(() => executorBrief(options)).toThrow('nonce lane report')
+    }
+    writeFileSync(brief, `Write the report to \`${join(root, 'critic-report.A.nonce.md')}\`.\n`)
+    expect(() => executorBrief(options)).toThrow('nonce lane report')
+  })
+
 
   it('fences writable tools to the worktree and read-only writes to the nonce report', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-executor-fence-')); roots.push(root); mkdirSync(join(root, '.lane'))
