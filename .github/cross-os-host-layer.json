@@ -9,6 +9,7 @@
     { "glob": "plugin/skills/*/scripts/**", "why": "Skill host scripts" },
     { "glob": "plugin/skills/*/assets/**", "why": "Bundled skill assets are checked byte-for-byte and Windows line endings can differ" },
     { "glob": "plugin/workflows/**", "why": "Bundled workflow runtime" },
+    { "glob": "plugins/**", "why": "Secondary plugins: their hooks and scripts run on every OS, and the suite drives their own tests" },
     { "glob": "toolkit/packages/*/src/**", "why": "Package implementation" },
     { "glob": "toolkit/packages/*/*.config.*", "why": "Executable package build configuration including tsup" },
     { "glob": "toolkit/packages/*/tsconfig*.json", "why": "Package typecheck and build configuration" },
