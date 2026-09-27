@@ -22,7 +22,7 @@ describe('release-blocking test quarantine', () => {
       const mode = options.env?.WT_TEST_MODE as string
       modes.push(mode)
       return { status: mode === 'blocking' ? 1 : 0 } as ReturnType<typeof import('node:child_process').spawnSync>
-    }, () => true)
+    }, () => true, [{ file: 'scripts/test/wt-wake-channel.test.ts', name: 'answers the MCP handshake and requests while an empty spool emits no channel notification', cardId: '1863398344542389302', waitingOn: 'fixture entry for this lock' }])
 
     expect(exitCode).toBe(1)
     expect(modes).toEqual(['blocking', 'quarantine'])
@@ -30,8 +30,30 @@ describe('release-blocking test quarantine', () => {
 
   it('refuses a quarantine entry without a card id', () => {
     expect(() => validateQuarantinedTests([
-      { ...quarantinedTests[0], cardId: '' },
+      { file: 'scripts/test/wt-wake-channel.test.ts', name: 'answers the MCP handshake', cardId: '', waitingOn: 'x' },
     ])).toThrow('card id')
+  })
+
+  // An empty quarantine is the state the list exists to reach. An alternation of zero names is the
+  // empty pattern, which matches EVERY test name: the blocking run would then exclude the whole
+  // process-spawning project and still exit green.
+  it('keeps every test blocking and quarantines nothing when the list is empty', () => {
+    expect(blockingTestPattern([]).test('journals a stalled episode again after it clears and recurs for the same runId')).toBe(true)
+    expect(quarantineTestPattern([]).test('journals a stalled episode again after it clears and recurs for the same runId')).toBe(false)
+    expect(quarantineNotice([])).toBe('QUARANTINE: 0 tests run separately and do not block release.')
+  })
+
+  it('skips the quarantine run when nothing is quarantined, and still returns the blocking status', () => {
+    const modes: string[] = []
+    const written: string[] = []
+    const exitCode = runReleaseBlockingTests((_command, _args, options) => {
+      modes.push(options.env?.WT_TEST_MODE as string)
+      return { status: 0 } as ReturnType<typeof import('node:child_process').spawnSync>
+    }, (text) => { written.push(text); return true }, [])
+
+    expect(exitCode).toBe(0)
+    expect(modes).toEqual(['blocking'])
+    expect(written.join('')).toContain('QUARANTINE: 0 tests')
   })
 
   it('keeps every configured quarantine entry grounded in its source and visible in one notice', () => {
