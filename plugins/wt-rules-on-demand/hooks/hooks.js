@@ -1,6 +1,7 @@
 import { parseRuntimeRule } from './runtime-rule.js';
 import { maskReadOnlyMentions } from './bash-mention.js';
 import { bashCommandVerdict, isGovernedAct } from './act-checks.js';
+import { toolInputVerdict, correlateTurn } from './declarative-checks.js';
 import { ruleDirectories, configDirectory, agentLoop } from '../paths.js';
 import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
 import { triggerMatches } from './trigger-match.js';
@@ -26,7 +27,7 @@ const serial = (fn) => {
 };
 const key = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
 const context = (loop) => {
-  if (!contexts.has(loop)) contexts.set(loop, { rules: null, served: new Map(), pending: [], refusing: new Map() });
+  if (!contexts.has(loop)) contexts.set(loop, { rules: null, served: new Map(), pending: [], refusing: new Map(), correlation: [] });
   return contexts.get(loop);
 };
 async function notice($, message) {
@@ -158,7 +159,8 @@ async function evaluate($, ctx, e, loop) {
     const c = pending.rule.compliance;
     pending.remaining--;
      pending.calls.push(`${e.tool}: ${bounded(textOf(e) ?? '')}`);
-     if (c.kind === 'bash-command' && isGovernedAct(c, e)) await safeVerdict($, pending.rule, loop, bashCommandVerdict(c, e.command ?? ''), e.tool);
+      if (c.kind === 'bash-command' && isGovernedAct(c, e)) await safeVerdict($, pending.rule, loop, bashCommandVerdict(c, e.command ?? ''), e.tool);
+      else if (c.kind === 'tool-input' && toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }) !== null) await safeVerdict($, pending.rule, loop, toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }), e.tool);
      else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) { pending.testSeen = true; if (pending.remaining <= 0) await close($, pending, loop); else remaining.push(pending); }
      else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) await safeVerdict($, pending.rule, loop, pending.testSeen ? 'followed' : 'not followed', e.tool);
     else if (pending.remaining <= 0) await close($, pending, loop);
@@ -176,7 +178,13 @@ async function close($, pending, loop) {
    } else await safeVerdict($, pending.rule, loop, c.onClose, pending.calls.at(-1) ?? 'no governed act', 'window closed');
 }
 function inject(ctx, rules) {
-  for (const rule of rules) if (rule.compliance && rule.compliance.kind !== 'check') ctx.pending.push({ rule, remaining: rule.compliance.window, calls: [], testSeen: false });
+  for (const rule of rules) if (rule.compliance && !['check', 'unregistered', 'turn-correlation'].includes(rule.compliance.kind)) ctx.pending.push({ rule, remaining: rule.compliance.window, calls: [], testSeen: false });
+}
+async function closeCorrelation($, ctx, loop) {
+  const events = [...ctx.correlation, { kind: 'turn' }];
+  for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation')
+    for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, rule, loop, item.verdict, item.id, item.detail);
+  ctx.correlation = [];
 }
 const eligible = (ctx, rule) => {
   const state = ctx.served.get(rule.name);
@@ -210,7 +218,7 @@ export const register = (on, options) => {
   });
   on('session.compact', async ($, e, next) => {
     const result = await next(e);
-    if (!result || typeof result !== 'object' || !('skip' in result)) contexts.delete(agentLoop(e.agentId));
+    if (!result || typeof result !== 'object' || !('skip' in result)) { const loop = agentLoop(e.agentId); await closeCorrelation($, context(loop), loop); contexts.delete(loop); }
     return result;
   });
   on('prompt.submit', async ($, e, next) => {
@@ -225,7 +233,13 @@ export const register = (on, options) => {
   });
   on('turn.complete', async ($, e, next) => {
     const result = await next(e);
-    if (enabled) { const loop = agentLoop(e.agentId); const ctx = context(loop); const pending = ctx.pending.splice(0); for (const p of pending) await close($, p, loop); }
+    if (enabled) {
+      const loop = agentLoop(e.agentId);
+      const ctx = context(loop);
+      const pending = ctx.pending.splice(0);
+      for (const p of pending) await close($, p, loop);
+      await closeCorrelation($, ctx, loop);
+    }
     return result;
   });
   // One matcherless tool.call handler: the host permits only one per module.
@@ -247,6 +261,7 @@ export const register = (on, options) => {
       try {
         await $.ui.log(`wt-rules-on-demand: before-act refusal serving ${before.map((r) => r.name).join(', ')}`);
          await journal($, before, loop);
+         for (const rule of before) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, rule, loop, 'unregistered check', e.tool, rule.compliance.reason);
         inject(ctx, before);
         const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the call.', ...before.map(block)].join('\n\n') };
         claim(ctx, before);
@@ -255,6 +270,11 @@ export const register = (on, options) => {
     }
     const result = await next(e);
     if (result?.deny || result?.drop) return result;
+    if (ctx.rules.some((rule) => rule.compliance?.kind === 'turn-correlation')) {
+      const id = String(e.tool_use_id ?? `${ctx.correlation.length}`);
+      ctx.correlation.push({ kind: 'use', id, name: e.tool, input: e.input ?? e });
+      ctx.correlation.push({ kind: 'result', id, text: typeof result === 'string' ? result : JSON.stringify(result ?? ''), isError: result?.isError === true });
+    }
     const acts = ctx.rules.filter((rule) => rule.compliance && !['model', 'check'].includes(rule.compliance.kind) ? isGovernedAct(rule.compliance, e) : chosen.includes(rule));
      const ride = chosen.filter((rule) => !ctx.refusing.has(rule.name) && eligible(ctx, rule));
      if (ride.length) { claim(ctx, ride); inject(ctx, ride); }
@@ -263,6 +283,11 @@ export const register = (on, options) => {
       ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
        await safeVerdict($, rule, loop, bashCommandVerdict(rule.compliance, bounded(e.command)), e.tool);
     }
+    for (const rule of ride) if (rule.compliance?.kind === 'tool-input') {
+      const value = toolInputVerdict(rule.compliance, { tool: e.tool, input: e.input ?? e });
+      if (value) { ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule); await safeVerdict($, rule, loop, value, e.tool); }
+    }
+    for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, rule, loop, 'unregistered check', e.tool, rule.compliance.reason);
     return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
   });
 };

@@ -8,11 +8,11 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, resolve, basename, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
-import { maskReadOnlyMentions, executableSegments } from '../hooks/bash-mention.js';
-import { bashCommandVerdict, checkLines, isGovernedAct } from '../hooks/act-checks.js';
+import { checkLines } from '../hooks/act-checks.js';
 import { ruleDirectories, configDirectory } from '../paths.js';
 import { argumentEvidence, bounded } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
+import { toolInputVerdict, bashSegments, segmentVerdict, correlateTurn } from '../hooks/declarative-checks.js';
 
 const RULE_BLOCK = /<rule name="([^"]+\.md)"(\s+source="[^"]*")?>/g;
 const watched = /"(?:tool_use|hook_additional_context|compact_boundary|tool_result)"|"cwd"|"timestamp"/;
@@ -83,7 +83,7 @@ async function loadScopes(scopes, migrationDate, lastChange, stats) {
       const gitDate = await dated(migrationDate);
       const ledgerDate = gitDate ? null : (await Promise.all((scope.ledgerRoots ?? []).map((root) => firstMigration(root, name, scope.scope)))).filter(Boolean).sort()[0];
       const migrated = gitDate || ledgerDate || null;
-      if (['check', 'bash-command'].includes(rule.compliance?.kind)) {
+      if (['check', 'bash-command', 'tool-input', 'turn-correlation', 'unregistered'].includes(rule.compliance?.kind)) {
         stats.coverage.checkableRules++;
         if (!migrated) stats.coverage.unknownMigrationDates.push(`${scope.scope} ${name}`);
       } else stats.coverage.unmeasuredRules.push({ rule: `${scope.scope} ${name}`, reason: `scanner cannot measure ${rule.compliance?.kind ?? 'none'}` });
@@ -103,11 +103,15 @@ function blocks(text) {
   return [...String(text).matchAll(RULE_BLOCK)].map((match) => ({ name: match[1], fallback: !!match[2] }));
 }
 
-function toolVerdict(rule, use, checked) {
+function toolVerdict(rule, use, checked, correlated) {
   if (rule.compliance?.kind === 'bash-command') return use.name === 'Bash'
-    ? executableSegments(maskReadOnlyMentions(use.input?.command ?? '')).flatMap((part, segment) =>
-      isGovernedAct(rule.compliance, { tool: 'Bash', command: part.text })
-        ? [{ verdict: bashCommandVerdict(rule.compliance, part.text), detail: '', segment }] : []) : [];
+    ? bashSegments(rule.compliance, use.input?.command ?? '').map((part, segment) => ({ verdict: segmentVerdict(rule.compliance, part), detail: '', segment })) : [];
+  if (rule.compliance?.kind === 'tool-input') {
+    const verdict = toolInputVerdict(rule.compliance, { tool: use.name, input: use.input });
+    return verdict ? [{ verdict, detail: '' }] : [];
+  }
+  if (rule.compliance?.kind === 'turn-correlation') return (correlated.get(rule)?.get(use.id) ?? []).map((item) => ({ verdict: item.verdict, detail: item.detail }));
+  if (rule.compliance?.kind === 'unregistered') return [{ verdict: 'unregistered check', detail: rule.compliance.reason }];
   if (rule.compliance?.kind === 'check') {
     return (checked.get(use.id) ?? []).filter((act) => act.check === rule.compliance.check && ['FOLLOWED', 'VIOLATED', 'unresolved'].includes(act.verdict))
       .map((act) => {
@@ -141,7 +145,7 @@ export function normalize(record, line, cwd = '') {
     const content = record.message?.content;
     const results = Array.isArray(content) ? content.filter((part) => part?.type === 'tool_result') : [];
     const events = results.map((part) => ({ ...base, kind: 'result', id: part.tool_use_id, isError: part.is_error === true,
-       text: /^\s*(?:<tool_use_error>)?wt-rules-on-demand: read the rule below before this action/.test(textOf(part.content)) ? textOf(part.content) : '' }));
+       text: bounded(textOf(part.content)) }));
     for (const result of events) if (result.text) for (const block of blocks(result.text).filter((item) => !item.fallback))
       events.push({ ...base, kind: 'delivery', name: block.name, provenance: { kind: 'refusal', toolUseId: result.id, line, at } });
     if (!results.length && (typeof content === 'string' || Array.isArray(content) && content.some((part) => part?.type === 'text')) && !record.isMeta && !record.isCompactSummary)
@@ -170,6 +174,8 @@ export function resolveContext(context, scopes) {
 export function judge(context, resolved, path, stats, seen, now) {
   const rows = [];
   const checked = new Map();
+  const correlated = new Map(resolved.effective.filter(({ rule }) => rule.compliance?.kind === 'turn-correlation').map(({ rule }) =>
+    [rule, new Map(correlateTurn(rule.compliance, context.events).map((item) => [item.id, [item]]))]));
   for (const act of checkLines(context.events)) if (act.toolUseId) checked.set(act.toolUseId, [...checked.get(act.toolUseId) ?? [], act]);
   const refused = new Set(context.events.filter((event) => event.kind === 'result' && event.text).map((event) => event.id));
   for (const call of resolved.calls.values()) {
@@ -177,9 +183,9 @@ export function judge(context, resolved, path, stats, seen, now) {
     const time = Date.parse(call.at ?? '');
     if (!Number.isFinite(time)) { stats.coverage.missingTimestamps++; continue; }
     if (time < now - stats.days * 86400000 || time > now) { stats.skippedOutsideWindow++; continue; }
-    for (const { rule, scope } of resolved.effective) for (const [index, evaluated] of toolVerdict(rule, { name: call.name, id: call.id, input: call.input }, checked).entries()) {
+    for (const { rule, scope } of resolved.effective) for (const [index, evaluated] of toolVerdict(rule, { name: call.name, id: call.id, input: call.input }, checked, correlated).entries()) {
        // An act whose outcome the transcript cannot decide is counted, never a row.
-      if (evaluated.verdict === 'unresolved') { const key = `${scope.scope} ${rule.name}`; stats.coverage.unresolvedActs ??= {}; stats.coverage.unresolvedActs[key] = (stats.coverage.unresolvedActs[key] ?? 0) + 1; continue; }
+       if (evaluated.verdict === 'unresolved') { const key = `${scope.scope} ${rule.name}`; stats.coverage.unresolvedActs ??= {}; stats.coverage.unresolvedActs[key] = (stats.coverage.unresolvedActs[key] ?? 0) + 1; }
        const contextKey = /(?:^|[\\/])subagents(?:[\\/]|$)/.test(path) ? path : call.sessionId ?? '';
       const key = `${scope.scope}:${scope.rulesDir}:${rule.name}:${contextKey}:${call.id ?? path + ':' + call.line}:${index}`;
       if (seen.has(key)) continue;
@@ -191,7 +197,7 @@ export function judge(context, resolved, path, stats, seen, now) {
        let verdict = 'out of scope';
        if (rule.migrated && phase === 'before') verdict = 'static baseline';
        else if (rule.migrated && context.start >= rule.cutoff && active) {
-         if (served) verdict = evaluated.verdict;
+          if (served) verdict = evaluated.verdict;
          else verdict = time < rule.lastChange ? 'trigger miss (superseded)' : 'trigger miss';
        }
       rows.push({ rule: rule.name, scope: scope.scope, rulesDir: scope.rulesDir, migrated: rule.migrated, phase,
@@ -232,7 +238,7 @@ async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPref
        }
       if (!context.start && record.timestamp) context.start = Date.parse(record.timestamp) || 0;
       const events = normalize(record, lineNumber, cwd);
-      if (events[0]?.kind === 'compact') { await flush(); context = { start: Date.parse(record.timestamp) || 0, cwd, events: [], owners }; }
+       if (events[0]?.kind === 'compact') { context.events.push({ kind: 'turn' }); await flush(); context = { start: Date.parse(record.timestamp) || 0, cwd, events: [], owners }; }
       else context.events.push(...events);
     }
     // A subagent transcript ends when the subagent ends: its last turn is closed. A main-session file may still be live.

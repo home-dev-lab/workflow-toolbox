@@ -82,7 +82,7 @@ const declared = await declaredChecks();
 
 const report = {};
 const rowFor = (name) => {
-  report[name] ??= { served: 0, check: 'no check declared', injections: 0, followed: 0, 'not followed': 0, 'not applicable': 0, unknown: 0, followRate: null, reasons: {} };
+  report[name] ??= { served: 0, check: 'no check declared', injections: 0, followed: 0, 'not followed': 0, 'not applicable': 0, 'unregistered check': 0, unknown: 0, followRate: null, reasons: {} };
   return report[name];
 };
 const nameOfKey = new Map();
@@ -109,11 +109,11 @@ for (const [name, counts] of Object.entries(report)) {
 if (json) {
   console.log(JSON.stringify(report, null, 2));
 } else {
-  console.log('rule\tserved\tcheck\tverdicts\tfollowed\tnot followed\tnot applicable\tunknown\tfollow rate\tnote');
+  console.log('rule\tserved\tcheck\tverdicts\tfollowed\tnot followed\tnot applicable\tunregistered check\tunknown\tfollow rate\tnote');
   for (const [rule, counts] of Object.entries(report).sort(([a], [b]) => a.localeCompare(b))) {
     const rate = counts.followRate === null ? 'n/a' : `${(counts.followRate * 100).toFixed(1)}%`;
     const reasons = Object.entries(counts.reasons).map(([reason, count]) => `${count}× ${reason}`).join('; ');
     const note = [counts.note, reasons].filter(Boolean).join(' | ');
-    console.log(`${rule}\t${counts.served}\t${counts.check}\t${counts.injections}\t${counts.followed}\t${counts['not followed']}\t${counts['not applicable']}\t${counts.unknown}\t${rate}\t${note}`);
+    console.log(`${rule}\t${counts.served}\t${counts.check}\t${counts.injections}\t${counts.followed}\t${counts['not followed']}\t${counts['not applicable']}\t${counts['unregistered check']}\t${counts.unknown}\t${rate}\t${note}`);
   }
 }

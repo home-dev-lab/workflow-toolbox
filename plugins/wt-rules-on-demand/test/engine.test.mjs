@@ -83,9 +83,19 @@ test('nested user static rule blocks a project on-demand copy', async () => {
   assert.deepEqual(await f.call({}), {});
   assert.match(f.logs.join('\n'), /nested\/deep\/sample.md and .*rules-on-demand\/sample.md/);
 });
-test('frontmatter refuses unknown keys and private check names', () => {
+test('frontmatter refuses unknown keys and degrades unregistered check names', () => {
   assert.throws(() => parseRuntimeRule('sample.md', rule().replace('unconditional:', 'unrecognised:')), /unknown trigger key/);
-  assert.throws(() => parseRuntimeRule('sample.md', rule().replace("kind: 'none'\n    reason: 'no mechanical check'", "kind: 'check'\n    check: 'machine-only'")), /unknown compliance check/);
+  assert.equal(parseRuntimeRule('sample.md', rule().replace("kind: 'none'\n    reason: 'no mechanical check'", "kind: 'check'\n    check: 'machine-only'")).compliance.kind, 'unregistered');
+});
+test('unregistered check is served and records a named non-applicable verdict', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(true).replace("kind: 'none'\n    reason: 'no mechanical check'", "kind: 'check'\n    check: 'machine-only'"));
+  const result = await f.call({ tool: 'Agent' });
+  assert.match(result.deny, /Follow this rule/);
+  await f.call({ tool: 'Agent' });
+  const verdicts = String(f.stored.get('compliance-verdicts-jsonl')).trim().split('\n').map(JSON.parse);
+  assert.equal(verdicts[0].verdict, 'unregistered check');
+  assert.equal(verdicts[0].reason, 'unregistered check machine-only');
 });
 test('one directory contract and home fallback', () => {
   assert.deepEqual(ruleDirectories('/project/', '/config/'), { project: '/project/.claude/rules-on-demand', user: '/config/rules-on-demand', projectStatic: '/project/.claude/rules', userStatic: '/config/rules' });

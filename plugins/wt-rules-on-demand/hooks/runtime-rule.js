@@ -11,8 +11,8 @@ function scalar(value) {
 // Every key a rule may declare. A key outside these lists is REFUSED, never ignored: an
 // ignored predicate fails open — a `tool` trigger whose narrowing key the engine does not know fires on every call.
 // scripts/rule-lifecycle-lib.mjs validates a migration spec against the same lists.
-export const TRIGGER_KEYS = Object.freeze(['kind', 'regex', 'tool', 'flags', 'unconditional', 'before-first-act', 'mentions', 'input-regex']);
-export const COMPLIANCE_KEYS = Object.freeze(['kind', 'check', 'reason', 'window', 'on-close', 'flags', 'model', 'prompt', 'act-regex', 'require-regex', 'require-all', 'test-regex', 'path-regex',
+export const TRIGGER_KEYS = Object.freeze(['kind', 'regex', 'tool', 'flags', 'unconditional', 'before-first-act', 'mentions', 'input-regex', 'command-head']);
+export const COMPLIANCE_KEYS = Object.freeze(['kind', 'check', 'reason', 'window', 'on-close', 'flags', 'model', 'prompt', 'act-regex', 'require-regex', 'require-all', 'test-regex', 'path-regex', 'tool', 'require-input-regex', 'exempt-regex', 'id-regex', 'follow-up-tool', 'value-regex', 'min-distinct',
    // Not read by the engine: scripts/rollback-check.mjs reads them from the file (TRIGGERS.md, rollback).
   'rollback-threshold', 'rollback-min-samples']);
 
@@ -36,7 +36,8 @@ function parseCompliance(lines, complianceAt, name) {
     return null;
   }
   if (data.kind === 'check') {
-    if (!CHECKS.includes(data.check)) throw new Error(`unknown compliance check: ${data.check ?? '(missing)'} (known checks: ${CHECKS.join(', ')})`);
+    if (!data.check) throw new Error('compliance.check requires a name');
+    if (!CHECKS.includes(data.check)) return { kind: 'unregistered', check: data.check, reason: `unregistered check ${data.check}` };
     return { kind: 'check', check: data.check };
   }
   const window = Number(data.window);
@@ -51,11 +52,24 @@ function parseCompliance(lines, complianceAt, name) {
       kind: data.kind,
        act: safeRegex(name, data['act-regex'], flags),
        require: data['require-regex'] ? safeRegex(name, data['require-regex'], flags) : null,
+       exempt: data['exempt-regex'] ? safeRegex(name, data['exempt-regex'], flags) : null,
       requireAll: data['require-all'] ? data['require-all'].split('||').map((part) => part.trim()).filter(Boolean) : [],
       flags,
       window,
       onClose: data['on-close'],
     };
+  }
+  if (data.kind === 'tool-input') {
+    if (!data.tool || !data['require-input-regex']) throw new Error('tool-input requires tool and require-input-regex');
+    return { kind: data.kind, tool: safeRegex(name, data.tool, flags), required: data['require-input-regex'].split('||').map((part) => safeRegex(name, part.trim(), flags)), window, onClose: data['on-close'] };
+  }
+  if (data.kind === 'turn-correlation') {
+    if (!data.tool || !data['id-regex'] || !data['value-regex'] || (!data['follow-up-tool'] && !data['act-regex'])) throw new Error('turn-correlation requires tool, id-regex, value-regex and follow-up-tool or act-regex');
+    const minDistinct = Number(data['min-distinct']);
+    if (!Number.isInteger(minDistinct) || minDistinct < 1) throw new Error('min-distinct must be a positive integer');
+    return { kind: data.kind, tool: safeRegex(name, data.tool, flags), id: safeRegex(name, data['id-regex'], flags),
+      value: safeRegex(name, data['value-regex'], flags), followUpTool: data['follow-up-tool'] ? safeRegex(name, data['follow-up-tool'], flags) : null,
+      act: data['act-regex'] ? safeRegex(name, data['act-regex'], flags) : null, minDistinct, window, onClose: data['on-close'] };
   }
   if (data.kind === 'test-before-edit') {
     if (!data['test-regex'] || !data['path-regex']) throw new Error('test-before-edit compliance requires test-regex and path-regex');
@@ -111,13 +125,16 @@ export function parseRuntimeRule(name, text) {
     // its match; by default such a mention is blanked before the regex runs (hooks/bash-mention.js).
     if (entry.mentions && !['true', 'false'].includes(entry.mentions)) throw new Error('mentions must be true or false');
     if (entry.mentions && entry.kind !== 'bash') throw new Error('mentions applies to bash triggers only');
+    if (entry['command-head'] && !['true', 'false'].includes(entry['command-head'])) throw new Error('command-head must be true or false');
+    if (entry['command-head'] && entry.kind !== 'bash') throw new Error('command-head applies to bash triggers only');
     return {
       kind: entry.kind,
        regex: entry.regex ? safeRegex(name, entry.regex, flags) : null,
        tool: entry.tool ? safeRegex(name, entry.tool) : null,
        input: entry['input-regex'] ? safeRegex(name, entry['input-regex'], flags) : null,
       beforeFirstAct: entry['before-first-act'] === 'true',
-      onMention: entry.mentions === 'true',
+       onMention: entry.mentions === 'true',
+       commandHead: entry['command-head'] === 'true',
     };
   });
   return { name, content: text.slice(match[0].length), triggers, compliance: parseCompliance(lines, complianceAt, name) };
