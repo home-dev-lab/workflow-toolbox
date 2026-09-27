@@ -28,6 +28,25 @@ describe('lane supervisor safety core', () => {
     expect(classifyLane(record, { platform: 'linux', inspect: (pid: number) => pid === worker.pid ? { ...worker, startTime: 401 } : child })).toMatchObject({ status: 'worker-gone-child-alive' })
   })
 
+  it.each(['exited', 'abandoned'])('classifies a %s lane with a gone child as terminal despite an uncertain live worker', (state) => {
+    const record = { runId: '40-1', state, workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+    const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : null
+    expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => false })).toMatchObject({ status: 'terminal', reason: state, worker: 'unknown', child: 'gone' })
+    expect(classifyLane(record, { platform: 'darwin', inspect: () => null, processExists: () => false })).toMatchObject({ status: 'gone', reason: 'worker-and-child-gone' })
+  })
+
+  it('keeps an exited lane uncertain when its child identity is unknown', () => {
+    const record = { runId: '40-1', state: 'exited', workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+    const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : null
+    expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => null })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-ps', worker: 'unknown', child: 'unknown' })
+  })
+
+  it('keeps a running lane uncertain when its worker identity is unknown and its child is gone', () => {
+    const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+    const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : null
+    expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => false })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-ps', worker: 'unknown', child: 'gone' })
+  })
+
   it('classifies a gone worker that never spawned a child as gone', () => {
     const record = { runId: '40-1', state: 'launching', workerPid: 40, workerArgv: ['node'], workerStartTime: 400, childPid: null, childArgv: null, childStartTime: null, worktree: '/work' }
     expect(classifyLane(record, { platform: 'linux', inspect: () => null, processExists: () => false })).toMatchObject({ status: 'gone', reason: 'worker-gone-no-child' })
