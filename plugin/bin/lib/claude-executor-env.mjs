@@ -10,17 +10,22 @@ const SDK_NAMES = [
   'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL',
   'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_MAX_OUTPUT_TOKENS', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_PLUGIN_ROOT',
 ]
-const FORCED_SWITCHES = ['CLAUDE_CODE_SUBPROCESS_ENV_SCRUB', 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS']
-const NEVER_PASS = ['ANTHROPIC_CUSTOM_HEADERS', ...FORCED_SWITCHES]
+const FORCED_SWITCHES = ['CLAUDE_CODE_ENABLE_FUNCTION_HOOKS']
+// CLAUDE_CODE_SUBPROCESS_ENV_SCRUB never passes: measured 2026-09-27 on WSL2 (Claude Code SDK 0.3.280),
+// it makes every sandboxed Bash command fail at bwrap setup ("Can't mkdir /mnt/c/Program Files/ClaudeCode").
+// The SDK credentials are kept from sandboxed commands by executorSandboxCredentials() instead.
+const NEVER_PASS = ['ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB', ...FORCED_SWITCHES]
 const OPEN_PREFIXES = ['CLAUDE_CODE_', 'WT_']
 
 /**
  * Builds the complete environment for the Claude SDK executor worker and for the SDK query it runs.
  * Unknown parent variables are absent: the base is the external-model allow-list, plus the SDK's own
  * Anthropic credentials by exact name, plus value-checked SDK, plugin, CLAUDE_CODE_* and WT_* names
- * whose names do not look like credentials. ANTHROPIC_CUSTOM_HEADERS never passes. Every case
- * spelling of CLAUDE_CODE_SUBPROCESS_ENV_SCRUB and CLAUDE_CODE_ENABLE_FUNCTION_HOOKS is replaced by
- * the canonical name set to '1'. Refusals are reported by name and reason, never by value.
+ * whose names do not look like credentials. ANTHROPIC_CUSTOM_HEADERS and every case spelling of
+ * CLAUDE_CODE_SUBPROCESS_ENV_SCRUB never pass; every case spelling of CLAUDE_CODE_ENABLE_FUNCTION_HOOKS
+ * is replaced by the canonical name set to '1'. Refusals are reported by name and reason, never by value.
+ * The SDK credentials stay in this environment (the SDK authenticates with them); the executor keeps
+ * them from its sandboxed Bash commands with executorSandboxCredentials().
  *
  * Bedrock and Vertex executor authentication (AWS_*, GOOGLE_* cloud credentials) is not supported by
  * this builder: those credentials never reach the executor.
@@ -41,4 +46,13 @@ export function claudeExecutorEnv(env = process.env, platform = runtimePlatform,
   }
   for (const name of FORCED_SWITCHES) child[name] = '1'
   return child
+}
+
+/**
+ * The sandbox `credentials` block for the executor's SDK query: the SDK's own credentials are unset
+ * before every sandboxed Bash command runs (Claude Code sandbox.credentials.envVars, mode deny), so
+ * the model driving the executor, remapped or not, cannot read them from its shell.
+ */
+export function executorSandboxCredentials() {
+  return { envVars: SDK_CREDENTIAL_NAMES.map((name) => ({ name, mode: 'deny' })) }
 }

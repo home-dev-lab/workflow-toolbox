@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/claude-executor-core.mjs'
-import { claudeExecutorEnv } from './lib/claude-executor-env.mjs'
+import { claudeExecutorEnv, executorSandboxCredentials } from './lib/claude-executor-env.mjs'
 import { resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
 import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
@@ -53,7 +53,7 @@ async function worker(options) {
       settingSources: [],
       canUseTool: async (toolName, input) => executorCanUseTool(options.dir, launch.report, launch.readOnly, toolName, input, { knowledgeBaseIndex: options.knowledgeBaseIndex, profile: sdkRole.profile }),
       permissionMode: 'default',
-      sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true },
+      sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true, credentials: executorSandboxCredentials() },
       settings: { permissions: { blockReadsOutsideWorkingDirectories: true, disableBypassPermissionsMode: 'disable' } },
       abortController,
       env: claudeExecutorEnv(process.env),

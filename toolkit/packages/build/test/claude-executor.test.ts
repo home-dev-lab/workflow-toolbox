@@ -134,7 +134,7 @@ describe('Claude SDK executor', () => {
     })
   })
 
-  it('hands neither the worker nor the SDK an unrelated owner credential, and forces the subprocess scrub', () => {
+  it('hands neither the worker nor the SDK an unrelated owner credential, and denies the SDK credentials to sandboxed commands', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.env.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'env.log'); const receipt = join(f.root, 'receipt.json')
     writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, GITHUB_TOKEN: 'CANARY_GH', CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '0', WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside') } })
@@ -142,7 +142,8 @@ describe('Claude SDK executor', () => {
     const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
     expect(sdkReceipt.envKeys).not.toContain('GITHUB_TOKEN')
     expect(sdkReceipt.workerEnvKeys).not.toContain('GITHUB_TOKEN')
-    expect(sdkReceipt.scrub).toBe('1')
+    expect(sdkReceipt.scrub).toBeUndefined()
+    expect(sdkReceipt.sandbox.credentials).toEqual({ envVars: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'].map((name) => ({ name, mode: 'deny' })) })
     expect(readFileSync(log, 'utf8')).not.toContain('CANARY')
   })
 
@@ -154,7 +155,8 @@ describe('Claude SDK executor', () => {
     const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
     expect(sdkReceipt.workerEnvKeys).toContain('GITHUB_TOKEN')
     expect(sdkReceipt.envKeys).not.toContain('GITHUB_TOKEN')
-    expect(sdkReceipt.scrub).toBe('1')
+    expect(sdkReceipt.scrub).toBeUndefined()
+    expect(sdkReceipt.sandbox.credentials).toEqual({ envVars: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'].map((name) => ({ name, mode: 'deny' })) })
   })
 
   it.runIf(process.env.WT_CLAUDE_EXECUTOR_REAL_E2E === 'true')('keeps real SDK Bash writes inside the worktree', () => {

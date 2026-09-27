@@ -78,9 +78,9 @@ describe('claudeExecutorEnv', () => {
       CLAUDE_PLUGIN_ROOT: '/home/owner/.claude/plugins/cache/wt',
       CLAUDE_CODE_EFFORT_LEVEL: 'high',
       WT_EXECUTOR_CODE_VARIANT: 'high',
-      CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1',
       CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1',
     })
+    expect(Object.keys(child)).not.toContain('CLAUDE_CODE_SUBPROCESS_ENV_SCRUB')
   })
 
   it('keeps a proxy base URL that carries no credential', () => {
@@ -93,11 +93,11 @@ describe('claudeExecutorEnv', () => {
     expect(warnings.filter((warning) => warning.includes('CANARY'))).toEqual([])
   })
 
-  it('on win32 replaces every case spelling of the two forced switches with one canonical value', () => {
+  it('on win32 drops every spelling of the subprocess scrub and replaces every spelling of the hooks switch with one canonical value', () => {
     const { child } = build({ Path: 'C:\\Windows', claude_code_subprocess_env_scrub: '0', Claude_Code_Enable_Function_Hooks: '0', anthropic_custom_headers: 'x-api-key: CANARY' }, 'win32')
     const scrub = Object.entries(child).filter(([name]) => name.toUpperCase() === 'CLAUDE_CODE_SUBPROCESS_ENV_SCRUB')
     const hooks = Object.entries(child).filter(([name]) => name.toUpperCase() === 'CLAUDE_CODE_ENABLE_FUNCTION_HOOKS')
-    expect(scrub).toEqual([['CLAUDE_CODE_SUBPROCESS_ENV_SCRUB', '1']])
+    expect(scrub).toEqual([])
     expect(hooks).toEqual([['CLAUDE_CODE_ENABLE_FUNCTION_HOOKS', '1']])
     expect(Object.keys(child).map((name) => name.toUpperCase())).not.toContain('ANTHROPIC_CUSTOM_HEADERS')
   })
