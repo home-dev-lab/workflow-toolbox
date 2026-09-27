@@ -421,6 +421,31 @@ describe('cross-OS dispatch', () => {
     expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: output().print })).toBe(1)
   })
 
+  it('a complete matrix with one failed job is COMPLETE, not incomplete, in release-check and collect', async () => {
+    const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
+    writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'cross-os.yml', branch: `card/ci-${f.host.slice(0, 12)}`, url: 'https://github.com/owner/repo/actions/runs/23' }))
+    const jobs = [
+      { name: 'matrix (ubuntu-latest)', conclusion: 'success' },
+      { name: 'matrix (windows-latest)', conclusion: 'failure' },
+      { name: 'matrix (macos-latest)', conclusion: 'success' },
+    ]
+    const fake = fakeGh(f); const out = output()
+    const io = { ...fake.io, run(program: string, argv: string[], opts: { cwd: string }) {
+      if (program === 'gh' && argv[1] === 'view' && !argv.includes('--job')) return { status: 0, stdout: JSON.stringify({ event: 'workflow_dispatch', headBranch: `card/ci-${f.host.slice(0, 12)}`, headSha: f.host, status: 'completed', conclusion: 'failure', jobs }), stderr: '' }
+      return fake.io.run(program, argv, opts)
+    } }
+    expect(await dispatch(['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs], { io, print: out.print })).toBe(1)
+    expect(out.lines.join('\n')).toContain('MATRIX COMPLETE: 1 of 3 jobs failed (matrix (windows-latest))')
+    expect(out.lines.join('\n')).not.toContain('MATRIX INCOMPLETE')
+    const auth = authPathOf(f.dir)
+    writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth)
+    const out2 = output()
+    expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out2.print })).toBe(1)
+    expect(out2.lines.join('\n')).toContain('MATRIX COMPLETE: 1 of 3 jobs failed (matrix (windows-latest))')
+    expect(out2.lines.join('\n')).not.toContain('MATRIX INCOMPLETE')
+  })
+
   it('ignores a verdict recorded for another workflow', async () => {
     const f = publicFixture(); const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
     writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, workflow: 'other.yml' }))
@@ -513,6 +538,19 @@ describe('green only from positive evidence', () => {
       for (let k = 0; k < count; k += 1) { const field = fields[next() % fields.length] as string; const values = variants[field] as unknown[]; run[field] = values[next() % values.length] }
       expect(verdictFromEvidence(run, sha).verdict, JSON.stringify(run)).not.toBe('green')
     }
+  })
+  it('a complete matrix with a failed job is red but explicitly not incomplete', () => {
+    const run = positive(); run.jobs[1] = { ...run.jobs[1], conclusion: 'failure' } as never
+    const result = verdictFromEvidence({ ...run, conclusion: 'failure' }, sha)
+    expect(result.verdict).toBe('red')
+    expect(result.incomplete).toBe(false)
+    expect(result.reason).toBe('1 of 3 jobs failed (matrix (windows-latest))')
+  })
+  it('a genuinely missing job is still incomplete, never read as a job failure', () => {
+    const dropped = positive(); dropped.jobs.splice(1, 1)
+    const result = verdictFromEvidence(dropped, sha)
+    expect(result.verdict).toBe('red')
+    expect(result.incomplete).toBe(true)
   })
   it('a stored record claiming success is not evidence: release-check reads the platform', () => {
     // Stored evidence for another commit is foreign even when everything else is perfect.

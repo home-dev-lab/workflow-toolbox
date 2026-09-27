@@ -188,12 +188,12 @@ async function collect(ctx, record) {
   try {
     record.status = run.status; record.conclusion = run.conclusion
     save(ctx, record)
-    const { verdict, reason } = verdictFromEvidence(run, record.sha)
+    const { verdict, reason, incomplete: matrixIncomplete } = verdictFromEvidence(run, record.sha)
     if (verdict === 'unchecked') throw failure(`run ${record.runId} ${reason}`, 3)
     const incomplete = verdict === 'green' ? null : reason
     const failingJobs = (run.jobs ?? []).filter((job) => job.conclusion !== 'success')
     for (const job of run.jobs ?? []) ctx.print(`JOB ${job.name}: ${job.conclusion}`)
-    if (incomplete) ctx.print(`MATRIX INCOMPLETE: ${incomplete}`)
+    if (incomplete) ctx.print(`${matrixIncomplete ? 'MATRIX INCOMPLETE' : 'MATRIX COMPLETE'}: ${incomplete}`)
     if (incomplete) {
       const tests = []
       for (const job of failingJobs) {
@@ -284,7 +284,7 @@ function releaseCheck(ctx) {
   if (judged.verdict === 'green') { ctx.print(`RESULT: green run=${verdict.runId}`); return 0 }
   if (judged.verdict === 'pending') { ctx.print(`RESULT: pending run=${verdict.runId}`); return 5 }
   if (judged.verdict === 'unchecked') { ctx.print(`EVIDENCE MISMATCH: ${judged.reason}`); ctx.print(`RESULT: mismatch run=${verdict.runId}`); return 3 }
-  ctx.print(`MATRIX INCOMPLETE: ${judged.reason}`)
+  ctx.print(`${judged.incomplete ? 'MATRIX INCOMPLETE' : 'MATRIX COMPLETE'}: ${judged.reason}`)
   ctx.print(`BLOCKER: host-layer merge ${verdict.sha} cross-os run ${verdict.runId} conclusion=${state.conclusion}`)
   ctx.print(`RESULT: red run=${verdict.runId}`)
   return 1

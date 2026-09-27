@@ -6,15 +6,23 @@ export function matchesHostPath(file, glob) {
   return new RegExp(`^${escaped}$`).test(file)
 }
 
-function matrixFailure(run) {
-  if (run.conclusion !== 'success') return `conclusion ${run.conclusion}`
-  if (!run.jobs?.length) return 'no jobs'
-  const failed = run.jobs.find((job) => job.conclusion !== 'success')
-  if (failed) return `job ${failed.name}: ${failed.conclusion}`
+// A job that never actually ran to a real conclusion — the matrix itself is short a data point,
+// distinct from a job that ran and failed.
+const NOT_RUN = new Set(['skipped', null, undefined, ''])
+
+// Splits "the matrix is missing information" (a job absent, or present but not run) from
+// "the matrix is complete and at least one job failed" — the two are different facts and must
+// never share one reason string (a complete, failed matrix is not an incomplete one).
+function matrixState(run) {
+  if (!run.jobs?.length) return { incomplete: 'no jobs' }
   for (const os of ['ubuntu', 'windows', 'macos']) {
-    if (!run.jobs.some((job) => job.name.toLowerCase().includes(os))) return `missing ${os}`
+    if (!run.jobs.some((job) => job.name.toLowerCase().includes(os))) return { incomplete: `missing ${os}` }
   }
-  return null
+  const notRun = run.jobs.find((job) => NOT_RUN.has(job.conclusion))
+  if (notRun) return { incomplete: `job ${notRun.name}: ${notRun.conclusion ?? 'no conclusion'}` }
+  const failed = run.jobs.filter((job) => job.conclusion !== 'success')
+  if (!failed.length && run.conclusion !== 'success') return { incomplete: `conclusion ${run.conclusion}` }
+  return { failed }
 }
 
 export const ciBranchFor = (sha) => `card/ci-${sha.slice(0, 12)}`
@@ -30,6 +38,9 @@ export function verdictFromEvidence(run, sha) {
     return { verdict: 'unchecked', reason: `evidence is not about ${sha}: event=${run.event} headBranch=${run.headBranch} headSha=${run.headSha}` }
   }
   if (run.status !== 'completed' || !run.conclusion) return { verdict: 'pending', reason: `status ${run.status}` }
-  const incomplete = matrixFailure(run)
-  return incomplete ? { verdict: 'red', reason: incomplete } : { verdict: 'green', reason: 'ubuntu, windows and macos jobs succeeded' }
+  const state = matrixState(run)
+  if (state.incomplete) return { verdict: 'red', reason: state.incomplete, incomplete: true }
+  if (!state.failed.length) return { verdict: 'green', reason: 'ubuntu, windows and macos jobs succeeded', incomplete: false }
+  const names = state.failed.map((job) => job.name).join(', ')
+  return { verdict: 'red', reason: `${state.failed.length} of ${run.jobs.length} jobs failed (${names})`, incomplete: false }
 }
