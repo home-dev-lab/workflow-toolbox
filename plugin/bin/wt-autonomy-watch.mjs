@@ -496,7 +496,10 @@ try {
 if (!sessionId) process.exit(0)
 
 const projectStateRoot = path.join(configDir, 'projects', projectSlug(projectDir))
-const transcriptPath = path.join(projectStateRoot, `${sessionId}.jsonl`)
+// Resolved to an absolute path: it is recorded in the per-session records, and the shared sweep only
+// honours an absolute owner path — a relative CLAUDE_CONFIG_DIR would otherwise fall back to the
+// sweeper's own directory and a neighbour would delete this live session's records.
+const transcriptPath = path.resolve(projectStateRoot, `${sessionId}.jsonl`)
 const subagentsDir = path.join(projectStateRoot, sessionId, 'subagents')
 // ⚠ PER-PROJECT, matching the SHIPPED stop gate. An earlier draft read a single machine-global
 // `queue.json` — the shape a PRIVATE copy of that gate on this machine still uses. Reading the

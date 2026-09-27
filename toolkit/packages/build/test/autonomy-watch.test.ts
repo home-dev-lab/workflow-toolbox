@@ -120,11 +120,13 @@ function runWatch(
   projectDir: string,
   env: NodeJS.ProcessEnv,
   extraArgs: string[] = [],
+  cwd?: string,
 ): { status: number | null; stdout: string; stderr: string; armed: string } {
   const res = spawnSync(process.execPath, [WATCH, '--once', '--project', projectDir, ...extraArgs], {
     encoding: 'utf8',
     env,
     timeout: 10_000,
+    cwd,
   })
   // The watcher now writes ONE unconditional banner at arming, on the same stream as its wakes.
   // It is split out here rather than folded into `stdout` so that every silence assertion below
@@ -520,6 +522,50 @@ describe('wt-autonomy-watch', () => {
     expect(first.stdout).toContain('AUTONOMY WAKE:')
     expect(existsSync(a.markerPath)).toBe(true)
     expect(second.stdout).toBe('')
+  })
+
+  it('a record naming ANOTHER session\'s transcript is judged by the fallback rule, not kept alive by that file', () => {
+    const b = scaffold('foreign-sweeper')
+    const now = Date.now()
+    const foreign = transcriptPathFor(b.configDir, b.projectDir, 'neighbour-session')
+    touch(foreign, now - 20 * 60_000)
+    const statePath = join(b.stateDir, 'autonomy-watch-mandate-ghost-session.json')
+    const emissionPath = join(b.stateDir, 'autonomy-watch-ghost-session.json')
+    writeFileSync(statePath, `${JSON.stringify({ observedAt: new Date(now).toISOString(), lastMandateKind: 'live', lastMandateDeclaredAtMs: now, transcriptPath: foreign })}\n`)
+    writeFileSync(emissionPath, `${JSON.stringify({ emittedAt: new Date(now).toISOString(), transcriptMtimeMs: now, mandateDeclaredAtMs: now, transcriptPath: foreign })}\n`)
+
+    runWatch(b.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: b.configDir,
+      CLAUDE_CODE_SESSION_ID: 'neighbour-session',
+      XDG_STATE_HOME: b.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(existsSync(foreign)).toBe(true)
+    expect(existsSync(statePath)).toBe(false)
+    expect(existsSync(emissionPath)).toBe(false)
+  })
+
+  it('a relative CLAUDE_CONFIG_DIR still records an absolute owner path a neighbour honours', () => {
+    const a = scaffold('relative-owner')
+    const b = scaffold('relative-neighbour')
+    const now = Date.now()
+    touch(a.transcriptPath, now - 20 * 60_000)
+    writeMandate(a.mandatePath, a.sessionId, now - 5 * 60_000)
+    writeQueue(a.queuePath, { at: now, open: 4, next: 'CARD-11 relative config' })
+    const common = { ...process.env, XDG_STATE_HOME: a.stateHome, WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match' }
+    touch(transcriptPathFor(b.configDir, b.projectDir, 'neighbour-session'), now - 20 * 60_000)
+
+    const first = runWatch(a.projectDir, { ...common, CLAUDE_CONFIG_DIR: 'config', CLAUDE_CODE_SESSION_ID: a.sessionId }, [], a.root)
+    const mandateStatePath = join(a.stateDir, `autonomy-watch-mandate-${a.sessionId}.json`)
+    expect(first.stdout).toContain('AUTONOMY WAKE:')
+    runWatch(b.projectDir, { ...common, CLAUDE_CONFIG_DIR: b.configDir, CLAUDE_CODE_SESSION_ID: 'neighbour-session' })
+
+    expect(existsSync(a.markerPath)).toBe(true)
+    expect(existsSync(mandateStatePath)).toBe(true)
+    expect(JSON.parse(readFileSync(a.markerPath, 'utf8')).transcriptPath).toBe(a.transcriptPath)
+    expect(JSON.parse(readFileSync(mandateStatePath, 'utf8')).transcriptPath).toBe(a.transcriptPath)
   })
 
   it('a session record whose own transcript is gone is still expired, by any watcher', () => {
