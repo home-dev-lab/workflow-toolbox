@@ -6,6 +6,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { migrateRule, readSpec, revertRule, retireRule, triggersHash } from './rule-lifecycle-lib.mjs';
 import { configDirectory, ruleDirectories } from '../paths.js';
 import { createHash } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { argumentEvidence, bounded, safeRegex } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { discoverFiles } from './discover-files.mjs';
@@ -30,7 +31,7 @@ const lifecycleRoot = scope === 'user' ? configDir : project;
 const mirrorDirs = (options['mirror-dir'] ?? []).flatMap((value) => String(value).split(',')).filter(Boolean).map((path) => resolve(path));
 
 function usage() {
-  console.error('       rules.mjs check-rules --dir <rules-on-demand dir> [--dir <dir> ...] [--json]');
+  console.error('       rules.mjs check-rules --dir <rules-on-demand dir> [--dir <dir> ...] [--corpus <file> --time-bound-ms <n>] [--json]');
   console.error('usage: rules.mjs prove-triggers <rule.md> --transcripts <dir> --spec <file> [--project <dir> | --user [--config-dir <dir>]] [--output <file>]');
   console.error('       rules.mjs migrate <rule.md | wt/rule.md> (--project <dir> | --user [--config-dir <dir>] [--mirror-dir <dir>]) --spec <file> (--proof <file> | --no-proof <reason>)');
   console.error('       rules.mjs revert (<rule.md> | --all) (--project <dir> | --user [--config-dir <dir>] [--mirror-dir <dir>])');
@@ -38,8 +39,40 @@ function usage() {
   process.exit(2);
 }
 
+function timedPatterns(rule, corpus, boundMs) {
+  const patterns = [];
+  for (const [index, trigger] of rule.triggers.entries()) for (const [key, regex] of Object.entries({ regex: trigger.regex, tool: trigger.tool, input: trigger.input }))
+    if (regex && (trigger.kind === 'bash' || trigger.kind === 'tool')) patterns.push([`trigger-${index}-${key}`, regex]);
+  const compliance = rule.compliance;
+  if (compliance) for (const [key, regex] of Object.entries(compliance)) {
+    if (regex instanceof RegExp) patterns.push([`compliance-${key}`, regex]);
+    if (Array.isArray(regex)) for (const [index, part] of regex.entries()) if (part instanceof RegExp) patterns.push([`compliance-${key}-${index}`, part]);
+  }
+  const slow = [];
+  for (const [patternId, regex] of patterns) for (const command of corpus) {
+    regex.lastIndex = 0;
+    const start = performance.now();
+    regex.test(command);
+    const ms = performance.now() - start;
+    if (ms > boundMs) slow.push({ status: 'slow', patternId, ms });
+  }
+  return slow;
+}
+
 async function checkRules() {
   if (!options.dir?.length) usage();
+  const boundMs = options['time-bound-ms'] === undefined ? 50 : Number(options['time-bound-ms']);
+  if (!Number.isFinite(boundMs) || boundMs <= 0) throw new Error('time-bound-ms must be a positive finite number');
+  const parsedCorpus = options.corpus ? JSON.parse(await readFile(resolve(String(options.corpus)), 'utf8')) : [];
+  let rawCorpus = parsedCorpus;
+  if (!Array.isArray(rawCorpus)) {
+    rawCorpus = null;
+    if (parsedCorpus && Array.isArray(parsedCorpus.positives) && Array.isArray(parsedCorpus.negatives))
+      rawCorpus = [...parsedCorpus.positives, ...parsedCorpus.negatives];
+  }
+  if (!Array.isArray(rawCorpus) || rawCorpus.some((item) => typeof item !== 'string' && (typeof item !== 'object' || item === null || typeof item.command !== 'string')))
+    throw new Error('corpus must be an array of strings or objects with a command field');
+  const corpus = rawCorpus.map((item) => bounded(typeof item === 'string' ? item : item.command));
   const rows = [];
   for (const dir of options.dir) {
     for (const name of (await readdir(resolve(String(dir)))).filter((item) => item.endsWith('.md'))) {
@@ -47,15 +80,17 @@ async function checkRules() {
       try {
         const rule = parseRuntimeRule(name, await readFile(file, 'utf8'));
         rows.push({ file, status: rule.compliance?.kind === 'unregistered' ? 'degraded' : 'ok', ...(rule.compliance?.reason && rule.compliance.kind === 'unregistered' ? { reason: rule.compliance.reason } : {}) });
+        rows.push(...timedPatterns(rule, corpus, boundMs).map((slow) => ({ file, ...slow })));
       } catch (error) { rows.push({ file, status: 'skipped', reason: error.message }); }
     }
   }
   if (options.json) console.log(JSON.stringify(rows, null, 2));
   else for (const row of rows) {
     const reason = row.reason ? `\t${row.reason}` : '';
-    console.log(`${row.status}\t${row.file}${reason}`);
+    if (row.status === 'slow') console.log(`slow ${basename(row.file)} ${row.patternId} ${row.ms.toFixed(3)}`);
+    else console.log(`${row.status}\t${row.file}${reason}`);
   }
-  if (rows.some((row) => row.status === 'skipped')) process.exitCode = 1;
+  if (rows.some((row) => row.status === 'skipped' || row.status === 'slow')) process.exitCode = 1;
 }
 
 const textOfPrompt = (row) => {

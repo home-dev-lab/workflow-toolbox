@@ -66,13 +66,17 @@ test('nested unbounded regex is rejected naming rule and pattern', () => {
     assert.throws(() => parseRuntimeRule('sample.md', text().replace("tool: '^Agent$'", () => `tool: '${pattern}'`)), /sample\.md.*single unbounded element or overlapping alternation/);
   }
 });
-test('all shipped adjacent trigger specs parse', async () => {
+test('unsafe shipped adjacent trigger specs are refused, other specs parse', async () => {
   const dir = fileURLToPath(new URL('../../../plugin/rules/', import.meta.url));
   const names = (await readdir(dir)).filter((name) => name.endsWith('.spec.json'));
   assert.ok(names.length > 0);
+  let refused = 0, accepted = 0;
   for (const name of names) {
-    await assert.doesNotReject(readSpec(join(dir, name)), name);
+    try { await readSpec(join(dir, name)); accepted++; }
+    catch (error) { assert.match(error.message, /nested unbounded/, name); refused++; }
   }
+  assert.ok(refused >= 4);
+  assert.ok(accepted > 0);
 });
 test('foreign plugin data dir ignored, own plugin data dir honored', () => {
   assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/fixture/other-plugin' }), resolve('/fixture-config', 'plugins', 'data', 'wt-rules-on-demand', 'quality'));

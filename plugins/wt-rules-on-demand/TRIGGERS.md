@@ -5,7 +5,10 @@ Both directories are scanned at context creation. Project rules shadow user rule
 Unknown trigger and compliance keys cause the file to be skipped and a diagnostic logged.
 An unregistered `check` name does not prevent delivery: the rule is served and records
 `unregistered check` with the name as its reason. Audit all files with
-`node scripts/rules.mjs check-rules --dir <rules-on-demand directory> [--json]`.
+`node scripts/rules.mjs check-rules --dir <rules-on-demand directory> [--corpus <commands.json> --time-bound-ms 50] [--json]`.
+The corpus is an array of commands (strings or objects with a `command` field);
+each Bash/tool trigger and compliance regex is timed on every entry. Any test
+exceeding the per-test bound reports `slow` and exits nonzero.
 
 ```yaml
 ---
@@ -60,7 +63,8 @@ or `require-all: 'origin||main'`; `kind: test-before-edit` with
 `test-regex: 'npm test'` and `path-regex: '\.ts$'`.
 `bash-command` optionally accepts `exempt-regex: '^lane-run\b'` to mark
 matching executable segments `not applicable`; its requirements are checked
-per segment, not against the entire shell command.
+per segment, not against the entire shell command. `forbid-pipe: true` makes
+a segment piped to another command a violation.
 
 Declarative checks use the same window and close keys:
 
@@ -77,7 +81,15 @@ Declarative checks use the same window and close keys:
 must match bounded JSON argument evidence. `require-any-input-regex` matches
 at least one `||`-separated alternative. Optional `forbid-input-regex` disallows matching argument evidence,
 `absent-input-key` requires that input property be absent (even if false), and
-`path-regex` narrows the check to file-path arguments. For values that can occur in the
+`path-regex` narrows the check to file-path arguments.
+`input-field` selects a text argument (or `edit-text` for content/new_string/edits;
+`||` chooses the first present key). `mask-code: true` removes fenced/inline code
+and leading frontmatter. `when-input-regex` makes a nonmatch ungoverned;
+`each-line-regex` validates each selected line, while `match-block-regex`
+captures each block as group 1 and validates each independently. The optional
+`minimum-input-key` / `minimum-input-value` pair checks a numeric argument;
+`reject-bash-regex` marks matching executable Bash segments as violations.
+For values that can occur in the
 same turn as a subject creation, use `turn-correlation` with `tool` (subject
 name regex), `id-regex` (capture group 1 over result, then input fallback),
 `follow-up-tool` and/or Bash `act-regex`, `value-regex` (capture group 1), and
@@ -99,6 +111,9 @@ positive `min-distinct`. For example:
 Only successful result-bearing follow-ups count; shell `for` loops over
 values count their listed iterations when the loop's tool result succeeds.
 Open turns and missing subject results are recorded as `unresolved`.
+`subject-input-key`/`subject-input-regex` narrow which subjects are governed;
+`identity-pair: true` requires a later successful follow-up addressed to the
+captured subject identity, with that same identity captured from its message.
 For the windowed kinds, `window: 3` and `on-close: not applicable` are required;
 `flags: i` applies to compliance regular expressions. Rollback reads
 `rollback-threshold: 0.8` and `rollback-min-samples: 5`.

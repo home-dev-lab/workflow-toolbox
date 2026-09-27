@@ -10,14 +10,48 @@ const values = (regex, text) => {
   return found;
 };
 
+function withoutCode(text) {
+  let start = 0, cursor = 0, output = '';
+  while (cursor < text.length) {
+    const open = text.indexOf('`', cursor);
+    if (open < 0) break;
+    const fence = text.startsWith('```', open);
+    const close = text.indexOf(fence ? '```' : '`', open + (fence ? 3 : 1));
+    if (close < 0 || !fence && text.slice(open + 1, close).includes('\n')) { cursor = open + 1; continue; }
+    output += text.slice(start, open);
+    cursor = close + (fence ? 3 : 1);
+    start = cursor;
+  }
+  output += text.slice(start);
+  if (output.startsWith('---\n')) {
+    const end = output.indexOf('\n---', 4);
+    if (end >= 0 && (output[end + 4] === '\n' || end + 4 === output.length)) output = output.slice(end + 4).replace(/^\n/, '');
+  }
+  return output;
+}
+
 export function toolInputVerdict(compliance, event) {
+  if (event.tool === 'Bash' && compliance.rejectBash && executableSegments(maskReadOnlyMentions(bounded(event.input?.command)))
+    .some((part) => test(compliance.rejectBash, part.text))) return 'not followed';
   if (!test(compliance.tool, bounded(event.tool))) return null;
   if (compliance.path && !test(compliance.path, bounded(event.input?.file_path ?? event.input?.path ?? ''))) return null;
-  const evidence = argumentEvidence(event.input);
-  return evidence && compliance.required.every((regex) => test(regex, evidence))
-    && (!compliance.any?.length || compliance.any.some((regex) => test(regex, evidence)))
-    && (!compliance.forbidden || !test(compliance.forbidden, evidence))
-    && (!compliance.absentKey || !Object.hasOwn(event.input ?? {}, compliance.absentKey)) ? 'followed' : 'not followed';
+  let raw = event.input;
+  if (compliance.inputField === 'edit-text') raw = event.input?.content ?? event.input?.new_string ?? event.input?.edits;
+  else if (compliance.inputField) raw = compliance.inputField.split('||').map((key) => event.input?.[key]).find((value) => value !== undefined);
+  let evidence = argumentEvidence(raw);
+  if (compliance.inputField) evidence = bounded(Array.isArray(raw) ? raw.map((item) => item?.new_string ?? '').join('\n') : raw);
+  if (compliance.maskCode && typeof evidence === 'string') evidence = withoutCode(evidence);
+  if (compliance.when && !test(compliance.when, evidence ?? '')) return null;
+  let subjects = [evidence];
+  if (compliance.matchBlock) subjects = values(compliance.matchBlock, evidence ?? '');
+  else if (compliance.eachLine) subjects = (evidence ?? '').split('\n').filter((line) => test(compliance.eachLine, line));
+  if (!subjects.length) return null;
+  const meets = (value) => value !== null && compliance.required.every((regex) => test(regex, value))
+    && (!compliance.any?.length || compliance.any.some((regex) => test(regex, value)))
+    && (!compliance.forbidden || !test(compliance.forbidden, value));
+  return subjects.every(meets)
+    && (!compliance.absentKey || !Object.hasOwn(event.input ?? {}, compliance.absentKey))
+    && (!compliance.minimumKey || Number(event.input?.[compliance.minimumKey]) >= compliance.minimumValue) ? 'followed' : 'not followed';
 }
 
 export function bashSegments(compliance, command) {
@@ -28,7 +62,7 @@ export function segmentVerdict(compliance, segment) {
   if (compliance.exempt && test(compliance.exempt, `${segment.head} ${segment.args.join(' ')}`)) return 'not applicable';
   const text = bounded(segment.text);
   const satisfied = compliance.require ? test(compliance.require, text) : compliance.requireAll.every((part) => text.includes(part));
-  return satisfied ? 'followed' : 'not followed';
+  return satisfied && (!compliance.forbidPipe || segment.sep !== '|' && segment.sep !== '|&') ? 'followed' : 'not followed';
 }
 
 function bashValues(compliance, command, id) {
@@ -55,11 +89,30 @@ export function correlateTurn(compliance, events) {
   const output = [];
   let turn = [];
   const close = (closed) => {
-    for (const subject of turn.filter((event) => event.kind === 'use' && test(compliance.tool, bounded(event.name)))) {
-      const result = results.get(subject.id);
+    const usedPartners = new Set();
+    for (const subject of turn.filter((event) => event.kind === 'use' && test(compliance.tool, bounded(event.name))
+      && (!compliance.subjectInput || test(compliance.subjectInput, bounded(event.input?.[compliance.subjectInputKey]))))) {
+       const result = results.get(subject.id);
+       if (result?.text?.includes('wt-rules-on-demand: read the rule below before this action')) {
+         output.push({ id: subject.id, verdict: 'refused', detail: 'before-first-act refusal' });
+         continue;
+       }
       const input = argumentEvidence(subject.input) ?? '';
       const confirmed = result && !result.isError;
-      const id = confirmed ? capture(compliance.id, bounded(result.text)) ?? capture(compliance.id, input) : null;
+       const id = confirmed ? capture(compliance.id, bounded(result.text)) ?? capture(compliance.id, input) : null;
+       if (compliance.identityPair) {
+         const index = turn.indexOf(subject);
+         const partner = id && turn.slice(index + 1).find((event) => event.kind === 'use' && !usedPartners.has(event.id) && compliance.followUpTool
+           && test(compliance.followUpTool, bounded(event.name)) && (event.input?.to === id || event.input?.to === subject.input?.name)
+           && values(compliance.value, bounded(event.input?.message)).includes(id)
+           && results.has(event.id) && !results.get(event.id).isError
+           && !results.get(event.id).text?.includes('wt-rules-on-demand: read the rule below before this action'));
+          if (partner) { usedPartners.add(partner.id); }
+          let verdict = 'unresolved';
+          if (id && closed) verdict = partner ? 'followed' : 'not followed';
+          output.push({ id: subject.id, verdict });
+         continue;
+       }
       const collected = new Set(confirmed ? values(compliance.value, input) : []);
       if (id) for (const event of turn) {
         if (event.kind !== 'use' || event === subject) continue;

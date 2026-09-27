@@ -12,7 +12,7 @@ function scalar(value) {
 // ignored predicate fails open — a `tool` trigger whose narrowing key the engine does not know fires on every call.
 // scripts/rule-lifecycle-lib.mjs validates a migration spec against the same lists.
 export const TRIGGER_KEYS = Object.freeze(['kind', 'regex', 'tool', 'flags', 'unconditional', 'before-first-act', 'mentions', 'input-regex', 'command-head']);
-export const COMPLIANCE_KEYS = Object.freeze(['kind', 'check', 'reason', 'window', 'on-close', 'flags', 'model', 'prompt', 'act-regex', 'require-regex', 'require-all', 'test-regex', 'path-regex', 'tool', 'require-input-regex', 'require-any-input-regex', 'forbid-input-regex', 'absent-input-key', 'exempt-regex', 'id-regex', 'follow-up-tool', 'value-regex', 'min-distinct',
+export const COMPLIANCE_KEYS = Object.freeze(['kind', 'check', 'reason', 'window', 'on-close', 'flags', 'model', 'prompt', 'act-regex', 'require-regex', 'require-all', 'test-regex', 'path-regex', 'tool', 'require-input-regex', 'require-any-input-regex', 'forbid-input-regex', 'absent-input-key', 'exempt-regex', 'id-regex', 'follow-up-tool', 'value-regex', 'min-distinct', 'input-field', 'mask-code', 'when-input-regex', 'each-line-regex', 'match-block-regex', 'minimum-input-key', 'minimum-input-value', 'forbid-pipe', 'subject-input-key', 'subject-input-regex', 'identity-pair', 'reject-bash-regex',
    // Not read by the engine: scripts/rollback-check.mjs reads them from the file (TRIGGERS.md, rollback).
   'rollback-threshold', 'rollback-min-samples']);
 
@@ -48,11 +48,13 @@ function parseCompliance(lines, complianceAt, name) {
   if (data.model) return { kind: 'model', model: data.model, prompt: data.prompt ?? '', window, onClose: data['on-close'] };
   if (data.kind === 'bash-command') {
     if (!data['act-regex'] || (!data['require-regex'] && !data['require-all'])) throw new Error('bash-command compliance requires act-regex and require-regex or require-all');
+    if (data['forbid-pipe'] && !['true', 'false'].includes(data['forbid-pipe'])) throw new Error('forbid-pipe must be true or false');
     return {
       kind: data.kind,
        act: safeRegex(name, data['act-regex'], flags),
        require: data['require-regex'] ? safeRegex(name, data['require-regex'], flags) : null,
        exempt: data['exempt-regex'] ? safeRegex(name, data['exempt-regex'], flags) : null,
+       forbidPipe: data['forbid-pipe'] === 'true',
       requireAll: data['require-all'] ? data['require-all'].split('||').map((part) => part.trim()).filter(Boolean) : [],
       flags,
       window,
@@ -61,11 +63,21 @@ function parseCompliance(lines, complianceAt, name) {
   }
   if (data.kind === 'tool-input') {
     if (!data.tool || !data['require-input-regex'] && !data['require-any-input-regex']) throw new Error('tool-input requires tool and require-input-regex or require-any-input-regex');
+    if (data['mask-code'] && !['true', 'false'].includes(data['mask-code'])) throw new Error('mask-code must be true or false');
+    if (data['minimum-input-key'] && (!Number.isFinite(Number(data['minimum-input-value'])) || !data['minimum-input-value'])) throw new Error('minimum-input-key requires a finite minimum-input-value');
     return { kind: data.kind, tool: safeRegex(name, data.tool, flags), required: data['require-input-regex'] ? data['require-input-regex'].split('||').map((part) => safeRegex(name, part.trim(), flags)) : [],
       any: data['require-any-input-regex'] ? data['require-any-input-regex'].split('||').map((part) => safeRegex(name, part.trim(), flags)) : [],
       forbidden: data['forbid-input-regex'] ? safeRegex(name, data['forbid-input-regex'], flags) : null,
       path: data['path-regex'] ? safeRegex(name, data['path-regex'], flags) : null,
-      absentKey: data['absent-input-key'] ?? null, window, onClose: data['on-close'] };
+       absentKey: data['absent-input-key'] ?? null,
+       rejectBash: data['reject-bash-regex'] ? safeRegex(name, data['reject-bash-regex'], flags) : null,
+       inputField: data['input-field'] ?? null, maskCode: data['mask-code'] === 'true',
+       when: data['when-input-regex'] ? safeRegex(name, data['when-input-regex'], flags) : null,
+       eachLine: data['each-line-regex'] ? safeRegex(name, data['each-line-regex'], flags) : null,
+       matchBlock: data['match-block-regex'] ? safeRegex(name, data['match-block-regex'], flags) : null,
+       minimumKey: data['minimum-input-key'] ?? null,
+       minimumValue: data['minimum-input-value'] === undefined ? null : Number(data['minimum-input-value']),
+       window, onClose: data['on-close'] };
   }
   if (data.kind === 'turn-correlation') {
     if (!data.tool || !data['id-regex'] || !data['value-regex'] || (!data['follow-up-tool'] && !data['act-regex'])) throw new Error('turn-correlation requires tool, id-regex, value-regex and follow-up-tool or act-regex');
@@ -73,7 +85,10 @@ function parseCompliance(lines, complianceAt, name) {
     if (!Number.isInteger(minDistinct) || minDistinct < 1) throw new Error('min-distinct must be a positive integer');
     return { kind: data.kind, tool: safeRegex(name, data.tool, flags), id: safeRegex(name, data['id-regex'], flags),
       value: safeRegex(name, data['value-regex'], flags), followUpTool: data['follow-up-tool'] ? safeRegex(name, data['follow-up-tool'], flags) : null,
-      act: data['act-regex'] ? safeRegex(name, data['act-regex'], flags) : null, minDistinct, window, onClose: data['on-close'] };
+      act: data['act-regex'] ? safeRegex(name, data['act-regex'], flags) : null,
+      subjectInputKey: data['subject-input-key'] ?? null,
+      subjectInput: data['subject-input-regex'] ? safeRegex(name, data['subject-input-regex'], flags) : null,
+      identityPair: data['identity-pair'] === 'true', minDistinct, window, onClose: data['on-close'] };
   }
   if (data.kind === 'test-before-edit') {
     if (!data['test-regex'] || !data['path-regex']) throw new Error('test-before-edit compliance requires test-regex and path-regex');

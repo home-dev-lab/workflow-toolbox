@@ -56,7 +56,7 @@ const cli = fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url));
 const quality = fileURLToPath(new URL('../scripts/quality-check.mjs', import.meta.url));
 const rollback = fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url));
 const realRule = fileURLToPath(new URL('../../../plugin/rules/wt-delegation-ladder-at-act.md', import.meta.url));
-const realSpec = fileURLToPath(new URL('../../../plugin/rules/wt-delegation-ladder-at-act.spec.json', import.meta.url));
+const realSpec = fileURLToPath(new URL('./fixtures/lifecycle.spec.json', import.meta.url));
 const name = 'wt-delegation-ladder-at-act.md';
 async function sandbox(t) {
   const root = await mkdtemp(join(tmpdir(), 'rod-test-'));
@@ -80,7 +80,7 @@ async function tree(root) {
   return entries.sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-test('real adjacent trigger spec migrates unchanged real rule body, reverts and retires into archive', async (t) => {
+test('safe trigger spec migrates unchanged real rule body, reverts and retires into archive', async (t) => {
   const root = await sandbox(t);
   const spec = await readSpec(realSpec);
   const source = join(root, '.claude/rules/wt', name);

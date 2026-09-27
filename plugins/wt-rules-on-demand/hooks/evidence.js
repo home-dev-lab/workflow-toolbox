@@ -79,10 +79,15 @@ export function safeRegex(rule, source, flags = '') {
     if (pattern[i] === '[') { inClass = true; continue; }
     if (pattern[i] === ']' && inClass) { inClass = false; continue; }
     if (inClass) continue;
-    if (pattern[i] === '(') groups.push(i);
+    if (pattern[i] === '(') groups.push({ start: i, repeatedChild: false });
     if (pattern[i] !== ')' || !groups.length) continue;
-    const start = groups.pop();
+    const { start, repeatedChild } = groups.pop();
     if (!unbounded(pattern, i + 1)) continue;
+    // Two independently repeatable nesting levels can partition the same input
+    // in exponentially many ways, even when the inner alternatives begin with
+    // distinct characters. Refuse the shape without evaluating a sample input.
+    if (repeatedChild) throw new Error(`${rule}: regex has nested unbounded groups in ${pattern}`);
+    for (const parent of groups) parent.repeatedChild = true;
     const body = pattern.slice(start + (pattern.startsWith('(?:', start) ? 3 : 1), i);
     const alternatives = branches(body);
     const singleRepeated = alternatives.length === 1 && alternatives[0].length === 1 && alternatives[0][0].repeated;
