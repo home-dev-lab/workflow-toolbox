@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "entries": [
+    { "glob": ".gitattributes", "why": "Cross-platform line endings" },
+    { "glob": ".github/cross-os-host-layer.json", "why": "The decision policy itself" },
+    { "glob": ".github/workflows/cross-os.yml", "why": "Matrix definition" },
+    { "glob": "plugin/bin/**", "why": "Plugin host commands" },
+    { "glob": "plugin/hooks/**", "why": "Plugin runtime hooks" },
+    { "glob": "plugin/skills/*/scripts/**", "why": "Skill host scripts" },
+    { "glob": "plugin/workflows/**", "why": "Bundled workflow runtime" },
+    { "glob": "toolkit/packages/*/src/**", "why": "Package implementation" },
+    { "glob": "toolkit/packages/*/test/**", "why": "Package regressions" },
+    { "glob": "toolkit/packages/*/package.json", "why": "Package dependencies" },
+    { "glob": "toolkit/bin/**", "why": "Toolkit commands" },
+    { "glob": "toolkit/examples/**", "why": "Example runtime and process tests" },
+    { "glob": "toolkit/scripts/**", "why": "Build and host scripts" },
+    { "glob": "toolkit/test-support/**", "why": "Shared test harness" },
+    { "glob": "toolkit/vitest.config.mts", "why": "Test configuration" },
+    { "glob": "toolkit/tsconfig*.json", "why": "Typecheck configuration" },
+    { "glob": "toolkit/eslint.config.mjs", "why": "Lint configuration" },
+    { "glob": "toolkit/package.json", "why": "Suite scripts and dependencies" },
+    { "glob": "toolkit/pnpm-lock.yaml", "why": "Pinned dependencies" },
+    { "glob": "toolkit/pnpm-workspace.yaml", "why": "Workspace topology" },
+    { "glob": "package.json", "why": "Root toolchain version" }
+  ]
+}
