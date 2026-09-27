@@ -129,7 +129,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
     const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, (root) => {
       const agents = join(root, 'claude-config', 'agents')
       mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\nmodel: "sonnet"\n---\nRead.\n')
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: "sonnet"\n---\nRead.\n')
     })
     expectSilentModelPin(result)
   })
@@ -147,7 +147,7 @@ describe('wt-right-sized-spawn-guard-hook', () => {
     const result = runToolInput({ subagent_type: 'custom-worker', prompt: 'Read' }, (root) => {
       const agents = join(root, '.claude', 'agents')
       mkdirSync(agents, { recursive: true })
-      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\nmodel: inherit\n---\nRead.\n')
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: inherit\n---\nRead.\n')
     })
     expectModelWarning(result)
   })
@@ -160,6 +160,8 @@ describe('wt-right-sized-spawn-guard-hook', () => {
       mkdirSync(config, { recursive: true })
       writeFileSync(join(plugin, 'agents', 'worker.md'), '---\nname: worker\nmodel: opus\n---\nRead.\n')
       writeFileSync(join(config, 'installed_plugins.json'), JSON.stringify({ plugins: { 'example-plugin@market': [{ installPath: plugin }] } }))
+      mkdirSync(join(config, 'marketplaces', 'market', '.claude-plugin'), { recursive: true })
+      writeFileSync(join(config, 'marketplaces', 'market', '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'example-plugin' }] }))
     })
     expectSilentModelPin(result)
   })
@@ -172,6 +174,8 @@ describe('wt-right-sized-spawn-guard-hook', () => {
       mkdirSync(config, { recursive: true })
       writeFileSync(join(plugin, 'agents', 'worker.md'), '---\nname: worker\n---\nRead.\n')
       writeFileSync(join(config, 'installed_plugins.json'), JSON.stringify({ plugins: { 'example-plugin@market': [{ installPath: plugin }] } }))
+      mkdirSync(join(config, 'marketplaces', 'market', '.claude-plugin'), { recursive: true })
+      writeFileSync(join(config, 'marketplaces', 'market', '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'example-plugin' }] }))
     })
     expectModelWarning(result)
   })
@@ -188,6 +192,69 @@ describe('wt-right-sized-spawn-guard-hook', () => {
     const result = run('general-purpose', 'Implement this.')
     expect(result.stdout).not.toContain('model pin')
     expect(result.journal).not.toContain('model-unpinned')
+    expectModelWarning(run('workflow-toolbox:leaf-readonly'))
+  })
+
+  it('honors a project Explore definition before the built-in, including an unpinned control', () => {
+    const projectAgent = (model: string) => (root: string) => {
+      const agents = join(root, '.claude', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'Explore.md'), `---\nname: Explore\ndescription: Search the project.\n${model}---\nRead.\n`)
+    }
+    expectSilentModelPin(runToolInput({ subagent_type: 'Explore' }, projectAgent('model: sonnet\n')))
+    expectModelWarning(runToolInput({ subagent_type: 'Explore' }, projectAgent('')))
+  })
+
+  it.each([['empty', ''], ['absent', undefined]])('warns for %s implicit general-purpose with a reason', (_label, type) => {
+    const prompt = 'general-purpose because: no specialist fits'
+    const result = run(type, prompt)
+    expectModelWarning(result)
+    expect(result.stdout).toContain('no subagent_type')
+    expectSilentModelPin(run(type, prompt, 'sonnet'))
+  })
+
+  it('parses an inline YAML comment on inherit instead of treating it as a pin', () => {
+    const result = runToolInput({ subagent_type: 'custom-worker' }, (root) => {
+      const agents = join(root, '.claude', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: inherit # comment\n---\nRead.\n')
+    })
+    expectModelWarning(result)
+  })
+
+  it('resolves a nested file by frontmatter identity, pinned and unpinned', () => {
+    const nestedAgent = (model: string) => (root: string) => {
+      const agents = join(root, '.claude', 'agents', 'sub', 'dir')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'file-name.md'), `---\nname: nested-worker\ndescription: Read nested files.\n${model}---\nRead.\n`)
+    }
+    expectSilentModelPin(runToolInput({ subagent_type: 'nested-worker' }, nestedAgent('model: opus\n')))
+    expectModelWarning(runToolInput({ subagent_type: 'nested-worker' }, nestedAgent('')))
+  })
+
+  it('stays silent when the matching definition has malformed frontmatter', () => {
+    const result = runToolInput({ subagent_type: 'custom-worker' }, (root) => {
+      const agents = join(root, '.claude', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: [broken\n---\nRead.\n')
+    })
+    expectSilentModelPin(result)
+  })
+
+  it('lets spawn-level inherit override a pinned definition', () => {
+    const projectAgent = (root: string) => {
+      const agents = join(root, '.claude', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: sonnet\n---\nRead.\n')
+    }
+    expectModelWarning(runToolInput({ subagent_type: 'custom-worker', model: 'inherit' }, projectAgent))
+    expectSilentModelPin(runToolInput({ subagent_type: 'custom-worker' }, projectAgent))
+  })
+
+  it('fails open for thrown and explicitly unresolved definitions', async () => {
+    const { resolveAgentModelPin } = await import('../../../../plugin/bin/lib/agent-model-pin.mjs')
+    expect(resolveAgentModelPin('custom-worker', { resolve: () => { throw Error('read failed') } })).toEqual({ status: 'unknown', type: 'custom-worker' })
+    expect(resolveAgentModelPin('custom-worker', { resolve: () => ({ unresolved: 'x' }) })).toEqual({ status: 'unknown', type: 'custom-worker' })
     expectModelWarning(run('workflow-toolbox:leaf-readonly'))
   })
 

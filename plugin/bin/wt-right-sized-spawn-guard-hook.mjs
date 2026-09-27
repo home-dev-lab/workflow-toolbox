@@ -2,7 +2,7 @@
 // Refuse the expensive ambient general-purpose agent unless justified; warn on unpinned models.
 // Hook errors must never prevent a legitimate spawn.
 
-import { resolveAgentModelPin } from './lib/host/agent-model-definitions.mjs'
+import { resolveAgentModelPin } from './lib/agent-model-pin.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { recordGuardEvent } from './lib/guard-journal.mjs'
 import { readStdinJson } from './lib/host/read-stdin-json.mjs'
@@ -59,23 +59,30 @@ function promptText(prompt) {
     .join('\n')
 }
 
-function warnIfUnpinned(input, toolInput, type) {
-  const model = typeof toolInput.model === 'string' ? toolInput.model : undefined
-  if (resolveAgentModelPin(type, typeof input.cwd === 'string' ? input.cwd : '', model) !== 'unpinned') return
-  recordGuardEvent({
-    guard: GUARD,
-    decision: 'warned',
-    session: input.session_id,
-    agent: input.agent_id,
-    class: 'model-unpinned',
-    reason: `${type} has no model pin`,
-  })
-  process.stdout.write(JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      additionalContext: `[workflow-toolbox model pin] Agent type "${type}" has no pinned model and will inherit the session model. Set an explicit model on the spawn or in the agent frontmatter; model: inherit is not a pin.`,
-    },
-  }))
+function warnIfUnpinned(input, toolInput) {
+  try {
+    const pin = resolveAgentModelPin(toolInput.subagent_type, {
+      cwd: typeof input.cwd === 'string' ? input.cwd : undefined,
+      requestedModel: toolInput.model,
+    })
+    if (pin.status !== 'unpinned') return
+    const implicit = typeof toolInput.subagent_type !== 'string' || !toolInput.subagent_type.trim()
+    const display = String(pin.type).slice(0, 120)
+    recordGuardEvent({
+      guard: GUARD,
+      decision: 'warned',
+      session: input.session_id,
+      agent: input.agent_id,
+      class: 'model-unpinned',
+      reason: `${display} has no model pin`,
+    })
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        additionalContext: `[workflow-toolbox model pin] Agent type "${display}"${implicit ? ' (no subagent_type given)' : ''} has no pinned model and will inherit the session model. Set an explicit model on the spawn or in the agent frontmatter; model: inherit is not a pin.`,
+      },
+    }))
+  } catch { /* Model-pin inspection is advisory; a failure must never block the spawn. */ }
 }
 
 function main() {
@@ -87,7 +94,7 @@ function main() {
   const type = typeof toolInput.subagent_type === 'string' ? toolInput.subagent_type.trim() : ''
   const isDefault = !type || type === 'general-purpose'
   if (!isDefault) {
-    warnIfUnpinned(input, toolInput, type)
+    warnIfUnpinned(input, toolInput)
     return
   }
 
@@ -102,7 +109,7 @@ function main() {
       class: 'general-purpose-override',
       reason,
     })
-    warnIfUnpinned(input, toolInput, type)
+    warnIfUnpinned(input, toolInput)
     return
   }
 
