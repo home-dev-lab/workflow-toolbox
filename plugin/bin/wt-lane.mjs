@@ -382,7 +382,7 @@ function currentLaneLaunchRefusal(opts, modules, paths, current, inspect) {
     : verdict.status === 'unknown'
       ? `retry after the recorded hard bound${hardBound === null ? ' can be established from a readable record' : ` at ${new Date(hardBound).toISOString()}`}`
       : `wait until the lane reaches decision-needed, then abandon with ${control}`
-  process.stderr.write(`wt-lane: Refused: current lane ${current.runId} is ${verdict.status}; ${remedy}\n`)
+  process.stderr.write(`wt-lane: Refused: current lane ${current.runId} is ${verdict.status} (${verdict.reason}); ${remedy}\n`)
   return true
 }
 

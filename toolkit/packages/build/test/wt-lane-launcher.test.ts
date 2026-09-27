@@ -46,7 +46,7 @@ const RECURRENT_TEST_MARGIN_MS = 60_000
 const RECURRENT_TEST_TIMEOUT_MS = RECURRENT_EVENT_COUNT * RECURRENT_EVENT_WAIT_MS + RECURRENT_TEST_MARGIN_MS
 const RECURRENT_WORKER_SECONDS = Math.ceil((RECURRENT_TEST_TIMEOUT_MS + 60_000) / 1000)
 const RECURRENT_LAUNCH_TIMEOUT_SECONDS = RECURRENT_WORKER_SECONDS + 60
-const BWRAP_WORKS = process.platform === 'linux' && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
+const BWRAP_WORKS = process.platform === 'linux' && (() => { try { return statSync(realpathSync('/usr/bin/bwrap')).uid === 0 && statSync('/').uid === 0 } catch { return false } })() && spawnSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', '--proc', '/proc', '--', 'true'], { stdio: 'ignore' }).status === 0
 const ZSH_WORKS = process.platform !== 'win32' && spawnSync('zsh', ['--version'], { stdio: 'ignore' }).status === 0
 afterEach(async () => {
   const children = [...spawnedWatchers.splice(0), ...spawnedChildren.splice(0)]
@@ -698,6 +698,18 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
     expect(result.status, result.stderr).toBe(0)
     const journal = join(f.root, 'state', 'workflow-toolbox', 'lane-supervisor', 'lane-supervisor.jsonl')
     expect(readFileSync(journal, 'utf8')).toContain('"event":"superseded"')
+  })
+  it('names the classification reason while preserving the hard-bound remedy on a current-lane refusal', () => {
+    const f = fixture('printf spawned > "$PWD/spawned"')
+    const dir = join(f.dir, '.lane', 'supervision'); mkdirSync(dir, { recursive: true })
+    const unknown = { runId: '2-1', state: 'running', workerPid: 2, workerArgv: null, workerStartTime: null, workerIdentity: 'unavailable (ps)', childPid: null, childArgv: null, worktree: f.dir }
+    writeFileSync(join(dir, '2-1.json'), JSON.stringify(unknown)); writeFileSync(join(dir, 'current.json'), JSON.stringify({ runId: unknown.runId }))
+
+    const result = run(f)
+
+    expect(result.status).toBe(1)
+    expect(result.stderr).toContain('current lane 2-1 is unknown (worker identity unavailable (ps)); retry after the recorded hard bound can be established from a readable record')
+    expect(existsSync(join(f.dir, 'spawned'))).toBe(false)
   })
   it('refuses an unreadable current pointer as unknown', () => {
     const f = fixture('printf spawned > "$PWD/spawned"')
@@ -1480,7 +1492,7 @@ describe.skipIf(process.platform === 'win32')('wt-lane detached launcher (requir
   }, 60_000)
   // The real sandbox binds only named paths: the CLI (and the plugin files it reads at import) must be
   // visible inside it, and the lock directory writable. The lock root is the fixture's own state dir.
-  it.skipIf(!BWRAP_WORKS || !ZSH_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips without working bwrap or zsh)', () => {
+  it.skipIf(!BWRAP_WORKS || !ZSH_WORKS)('runs a lane gate through WT_SUITE_LOCK_CMD inside the real bwrap sandbox (skips: bwrap unavailable or not root-owned, or zsh unavailable)', () => {
     const f = fixture('suite-lock-run-zsh')
     delete f.env.WT_LANE_SANDBOX
     f.env.WT_LANE_SANDBOX_READ = join(ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures')

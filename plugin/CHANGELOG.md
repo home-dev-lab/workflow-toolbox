@@ -19,6 +19,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Slimmed the always-loaded plugin rules by moving memory maintenance, delegation routing and addressing, board sweeps, distributed-twin checks, monitoring, Workflow fan-out, review/refutation, and gate-log guidance into pre-act companions. Split the oversized delegation and memory companions to fit the fallback delivery limit. The rules' operative-order inventory and static private-rule anchors remain checked; adoption registry now includes the new companions.
 
 ### Fixed
+- Lanes: an exited or abandoned lane whose child is gone no longer blocks the next launch while its worker identity is uncertain; refusals for lanes that may still be live now include the classification reason.
 - SDK pilot lifecycle: when a lane launch prints no worker pid, the refusal now carries the launcher's exit code and its stderr (collapsed, capped at 500 characters) instead of only `missing launcher pid`, so a refused or crashed launch says why.
 - Agent-definition lookup now scans bounded project, user and registered plugin trees, honors marketplace agent paths, and reports uncertain or conflicting definitions to spawn guards instead of treating them as missing. Shared frontmatter reading uses a bundled YAML parser for nested values, quotes, comments, BOM and multiline content in skills and memory notes.
 - Lanes: a detached lane worker that refuses or crashes before its first stage now leaves its error in the lane log instead of vanishing after the launcher reported success.
