@@ -3,11 +3,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { treeSignature } from './gate-evidence.mjs'
+import { gateEnvironment, treeSignature } from './gate-evidence.mjs'
 import { createSdkJudge } from './orchestrator-judge.mjs'
 import { createWaveServer } from './wave-lifecycle-server.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
-import { gateEnvironment } from './gate-environment.mjs'
 
 const DEFAULTS = { concurrency: 1, base: 'develop', pilotTimeout: 5400, maxCards: Infinity, maxMinutes: Infinity, missionLabels: [], hard: [] }
 const ELIGIBLE_LISTS = new Set(['Backlog', 'Next', 'In Progress'])
@@ -153,7 +152,7 @@ function defaultInstall(worktree, cardDir) {
   return runLogged('pnpm', ['install', '--offline', '--frozen-lockfile', '--config.package-import-method=copy'], path.join(worktree, 'toolkit'), path.join(cardDir, 'install.log'))
 }
 
-// The delivery's gates run without the runner's own WT_* configuration (gate-environment.mjs).
+// The delivery's gates run without the runner's own WT_* configuration (gateEnvironment in gate-evidence.mjs).
 async function defaultGates(worktree, cardDir, env = process.env) {
   const result = {}
   for (const name of ['typecheck', 'lint', 'test']) result[name] = runLogged('pnpm', [name], path.join(worktree, 'toolkit'), path.join(cardDir, `${name}.log`), gateEnvironment(env))

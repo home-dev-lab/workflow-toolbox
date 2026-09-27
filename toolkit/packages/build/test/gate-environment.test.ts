@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { gateEnvironment } from '../../../../plugin/bin/lib/gate-environment.mjs'
+import { gateEnvironment } from '../../../../plugin/bin/lib/gate-evidence.mjs'
 
 // Card 1873173639063406158: a variable the operator sets for the RUNNER must not reach the delivery's gates.
 const RUNNER_ONLY = {

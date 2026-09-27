@@ -283,7 +283,7 @@ describe('orchestrator driver', () => {
     try {
       const runPilot: typeof f.runPilot = async (options, dependencies) => { mkdirSync(join(options.dir, 'toolkit'), { recursive: true }); return f.runPilot(options, dependencies) }
       const result = await runOrchestrator(f.options, { ...f, runPilot, gates: undefined })
-      expect(result.rows[0]).toMatchObject({ gates: '0/0/0' })
+      expect(result.rows[0], `stopReason=${result.stopReason}`).toMatchObject({ gates: '0/0/0' })
       const logs = gateLogs(f.worktreesDir)
       expect(logs.map((file) => file.split('/').pop()).sort()).toEqual(['lint.log', 'test.log', 'typecheck.log'])
       for (const file of logs) {
