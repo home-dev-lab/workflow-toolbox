@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -24,8 +24,22 @@ function git(cwd: string, ...args: string[]) {
   if (result.status !== 0) throw new Error(result.stderr)
   return result.stdout.trim()
 }
+// The fixture repository is reached through a NON-canonical path, the way macOS (/var -> /private/var) and Windows
+// runners (8.3 short names in TEMP) present it: git reports the canonical path, the test holds the other spelling.
+// On POSIX a symlink reproduces that on every runner; Windows runners already present a short-name TEMP.
+function scratchDir() {
+  const real = mkdtempSync(join(tmpdir(), 'crossos-')); temporary.push(real)
+  if (process.platform === 'win32') return real
+  const link = `${real}-link`; symlinkSync(real, link); temporary.unshift(link)
+  return link
+}
+// The authorization path exactly as the dispatcher and the hook resolve it (git --absolute-git-dir), never a spelling
+// built from the fixture directory.
+function authPathOf(dir: string) {
+  return join(git(dir, 'rev-parse', '--absolute-git-dir'), 'wt-push-authorized.json')
+}
 function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'crossos-')); temporary.push(dir)
+  const dir = scratchDir()
   git(dir, 'init', '-q', '-b', 'main')
   git(dir, 'config', 'user.name', 'Fixture')
   git(dir, 'config', 'user.email', 'fixture@example.test')
@@ -159,7 +173,7 @@ describe('cross-OS dispatch', () => {
   })
 
   it('permits replaying an already-public commit with empty authorized commits', async () => {
-    const f = publicFixture(); const auth = join(f.dir, '.git/wt-push-authorized.json')
+    const f = publicFixture(); const auth = authPathOf(f.dir)
     writeFileSync(auth, JSON.stringify({ commits: [f.host] }))
     git(f.dir, 'push', 'public', `${f.host}:refs/heads/main`)
     rmSync(auth)
@@ -188,7 +202,7 @@ describe('cross-OS dispatch', () => {
 
   it('retains a timed-out branch for collect, then deletes it with deletion-only authorization', async () => {
     const f = publicFixture(); const fake = fakeGh(f); const out = output(); let pending = true
-    const auth = join(f.dir, '.git/wt-push-authorized.json')
+    const auth = authPathOf(f.dir)
     const authAtDelete: unknown[] = []
     let clock = 100000
     const io = { ...fake.io, now: () => clock += 1000, push(args: string[], cwd: string) {
@@ -210,7 +224,7 @@ describe('cross-OS dispatch', () => {
   })
 
   it('deletes a successful run with maxCount zero and removes its authorization', async () => {
-    const f = publicFixture(); const auth = join(f.dir, '.git/wt-push-authorized.json')
+    const f = publicFixture(); const auth = authPathOf(f.dir)
     const deletionScopes: unknown[] = []
     const io = { ...fakeGh(f).io, push(args: string[], cwd: string) {
       if (args.includes('--delete')) deletionScopes.push(JSON.parse(readFileSync(auth, 'utf8')))
@@ -232,7 +246,7 @@ describe('cross-OS dispatch', () => {
     expect(out.lines.join('\n')).toContain('guard did not run')
     expect(out.lines.at(-1)).toBe('RESULT: error')
     expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
-    expect(existsSync(join(f.dir, '.git/wt-push-authorized.json'))).toBe(false)
+    expect(existsSync(authPathOf(f.dir))).toBe(false)
   })
 
   it('refuses to delete a branch outside the generated CI namespace', async () => {
@@ -252,7 +266,7 @@ describe('cross-OS dispatch', () => {
     } }
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(2)
     expect(out.lines.join('\n')).toContain('git push public')
-    expect(existsSync(join(f.dir, '.git/wt-push-authorized.json'))).toBe(false)
+    expect(existsSync(authPathOf(f.dir))).toBe(false)
   })
 
   it('checks the checkout real hook when installed', async (context) => {
@@ -264,7 +278,7 @@ describe('cross-OS dispatch', () => {
     }
     const f = publicFixture(); const target = join(f.dir, '.git/hooks/pre-push')
     copyFileSync(path, target); chmodSync(target, 0o755)
-    const auth = join(f.dir, '.git/wt-push-authorized.json')
+    const auth = authPathOf(f.dir)
     writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
     const push = spawnSync('git', ['push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`], { cwd: f.dir, env, encoding: 'utf8' })
     expect(push.status, push.stderr).toBe(0)
@@ -276,7 +290,7 @@ describe('cross-OS dispatch', () => {
 
   it('runs the real public pre-push hook with exclusive authorization, then rejects a missing authorization', () => {
     const f = publicFixture()
-    const auth = join(f.dir, '.git/wt-push-authorized.json')
+    const auth = authPathOf(f.dir)
     writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
     const push = spawnSync('git', ['push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`], { cwd: f.dir, env, encoding: 'utf8' })
     expect(push.status, push.stderr).toBe(0)
@@ -297,12 +311,12 @@ describe('cross-OS dispatch', () => {
     expect(calls.some((args) => args.includes('--job') && args.includes('--log'))).toBe(true)
     expect(git(f.dir, 'ls-remote', '--heads', 'public', `refs/heads/card/ci-${f.host.slice(0, 12)}`)).toBe('')
     expect(readFileSync(join(f.dir, '.git/wt-crossos', `${f.host}.card.md`), 'utf8')).toContain('matrix (macos-latest)')
-    expect(() => readFileSync(join(f.dir, '.git/wt-push-authorized.json'))).toThrow()
+    expect(() => readFileSync(authPathOf(f.dir))).toThrow()
   })
 
   it('refuses an existing authorization with its metadata and does not remove it', async () => {
     const f = publicFixture(); const { io } = fakeGh(f); const out = output()
-    const path = join(f.dir, '.git/wt-push-authorized.json')
+    const path = authPathOf(f.dir)
     writeFileSync(path, JSON.stringify({ commits: [f.base, f.host] }))
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(2)
     expect(out.lines.join('\n')).toContain('already-on-public/main=1')
@@ -401,7 +415,7 @@ describe('cross-OS dispatch', () => {
     } }
     expect(await dispatch(['release-check', '--repo', f.dir, '--repo-slug', 'owner/repo', '--base', f.base, '--ref', f.docs], { io, print: out.print })).toBe(1)
     expect(out.lines.join('\n')).toContain('MATRIX INCOMPLETE:')
-    const auth = join(f.dir, '.git/wt-push-authorized.json')
+    const auth = authPathOf(f.dir)
     writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
     git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth)
     expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: output().print })).toBe(1)
@@ -431,7 +445,7 @@ describe('cross-OS dispatch', () => {
       return commandIO.writeText(path, text, exclusive)
     } }
     // Start from a recorded run and a remotely existing branch.
-    const auth = join(f.dir, '.git/wt-push-authorized.json'); writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
+    const auth = authPathOf(f.dir); writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
     git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth)
     const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
     writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, branch: `card/ci-${f.host.slice(0, 12)}`, url: 'https://github.com/owner/repo/actions/runs/23' }))
@@ -441,7 +455,7 @@ describe('cross-OS dispatch', () => {
   })
 
   it('cleans up an authorization created by a failed exclusive write', async () => {
-    const f = publicFixture(); const auth = join(f.dir, '.git/wt-push-authorized.json')
+    const f = publicFixture(); const auth = authPathOf(f.dir)
     const fake = fakeGh(f)
     const io = { ...fake.io, writeText(path: string, text: string, exclusive?: boolean) {
       commandIO.writeText(path, text, exclusive)
