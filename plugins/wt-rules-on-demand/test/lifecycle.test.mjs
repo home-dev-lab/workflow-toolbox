@@ -379,3 +379,17 @@ test('automatic quality pipeline reports would-revert but leaves entire rule tre
   assert.deepEqual(await readFile(ledgerFile), ledgerBefore);
   assert.deepEqual(await tree(join(project, '.claude')), treeBefore);
 });
+
+test('readSpec refuses every spec migrate would refuse: prove and apply share the full runtime parser', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rod-readspec-parity-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const spec = { 'on-demand': { triggers: [{ kind: 'prompt', regex: 'deploy' }] }, compliance: { kind: 'model', model: 'fixture', prompt: 'p', 'on-close': 'not applicable' } };
+  const path = join(root, 'spec.json');
+  await writeFile(path, JSON.stringify(spec));
+  await mkdir(join(root, '.claude', 'rules'), { recursive: true });
+  await writeFile(join(root, '.claude', 'rules', 'sample.md'), 'Body.\n');
+  // apply refuses this spec through parseRuntimeRule ...
+  await assert.rejects(() => migrateRule(root, 'sample.md', { triggers: spec['on-demand'].triggers, compliance: spec.compliance }, { unproven: true }), /window must be a positive integer/);
+  // ... so the reader prove uses must refuse it too, before any proof is spent on it.
+  await assert.rejects(readSpec(path), /window must be a positive integer/);
+});

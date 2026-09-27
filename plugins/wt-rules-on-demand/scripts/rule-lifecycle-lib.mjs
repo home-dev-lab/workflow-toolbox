@@ -117,6 +117,9 @@ export async function readSpec(path) {
   // Same key lists as the runtime parser: a spec key the engine would not know is refused
   // here, before migrate writes it into a frontmatter the engine would then skip.
   assertKnownKeys(Object.keys(compliance), COMPLIANCE_KEYS, 'compliance');
+  // Run the full runtime parser on exactly the frontmatter migrate would write, so a spec
+  // prove accepts can never be refused later by apply.
+  parseRuntimeRule('migration spec', frontmatter({ triggers, compliance }));
   return { triggers, compliance };
 }
 
