@@ -14,11 +14,13 @@ const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 // lane brief and lifecycle reads moved into the host lane directory helper; the launcher
 // also moved its host file-descriptor operations behind that helper.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1909
+export const HOST_PRIMITIVE_CEILING = 1903
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
-  const generated = new Set([join(root, 'bin', 'wt-observe.mjs')])
+  // Generated third-party YAML grammar literals are not host access (same exemption
+  // as the generated observatory launcher); their source is byte-identity checked.
+  const generated = new Set([join(root, 'bin', 'wt-observe.mjs'), join(root, 'bin', 'lib', 'vendor', 'yaml.mjs')])
   function walk(directory) {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
       const path = join(directory, entry.name)

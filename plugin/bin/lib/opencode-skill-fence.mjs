@@ -7,6 +7,7 @@ import { externalModelEnv, providerCredentialNames } from './external-model-env.
 import { resolvedBinary } from './resolved-binary.mjs'
 import { normalizeOpencodeSkillName, REFUSED_LANE_SKILLS } from './lane-skill-allowlist.mjs'
 import { resolvePluginDataDir } from './plugin-data-dir.mjs'
+import { readFrontmatterFile } from './frontmatter.mjs'
 import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 
 // The launcher reaches the suite-lock CLI through this module, so an adopted launcher (which
@@ -112,13 +113,9 @@ function skillFailure(name, reason, detail) {
 }
 
 function frontmatterName(file) {
-  const content = readFileSync(file, 'utf8')
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1]
-  if (frontmatter === undefined) return null
-  const value = /^name\s*:\s*(.*?)\s*$/m.exec(frontmatter)?.[1]
-  if (!value) return null
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) return value.slice(1, -1)
-  return value
+  const parsed = readFrontmatterFile(file)
+  if (parsed.reason === 'io-error') throw new Error(parsed.detail)
+  return parsed.ok && typeof parsed.data.name === 'string' ? parsed.data.name : null
 }
 
 function validateSkillTree(name, source, current = source) {
