@@ -4,7 +4,7 @@
 
 import { resolveAgentModelPin } from './lib/agent-model-pin.mjs'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
-import { recordGuardEvent } from './lib/guard-journal.mjs'
+import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
 import { readStdinJson } from './lib/host/read-stdin-json.mjs'
 
 const GUARD = 'wt-right-sized-spawn-guard-hook.mjs'
@@ -76,12 +76,12 @@ function warnIfUnpinned(input, toolInput) {
       class: 'model-unpinned',
       reason: `${display} has no model pin`,
     })
-    process.stdout.write(JSON.stringify({
+    emitGuardNotice({ payload: input, stdoutJson: {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: `[workflow-toolbox model pin] Agent type "${display}"${implicit ? ' (no subagent_type given)' : ''} has no pinned model and will inherit the session model. Set an explicit model on the spawn or in the agent frontmatter; model: inherit is not a pin.`,
       },
-    }))
+    } })
   } catch { /* Model-pin inspection is advisory; a failure must never block the spawn. */ }
 }
 

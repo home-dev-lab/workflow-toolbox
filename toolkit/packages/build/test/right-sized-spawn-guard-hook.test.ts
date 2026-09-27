@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+// @ts-expect-error plugin runtime modules are untyped JavaScript.
+import { resolveAgentModelPin } from '../../../../plugin/bin/lib/agent-model-pin.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const HOOK = join(REPO_ROOT, 'plugin/bin/wt-right-sized-spawn-guard-hook.mjs')
@@ -15,7 +17,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-function runToolInput(tool_input: unknown, setup?: (root: string) => void) {
+function runToolInput(tool_input: unknown, setup?: (root: string) => void, env: NodeJS.ProcessEnv = {}) {
   const root = mkdtempSync(join(tmpdir(), 'wt-right-sized-spawn-'))
   roots.push(root)
   setup?.(root)
@@ -23,7 +25,13 @@ function runToolInput(tool_input: unknown, setup?: (root: string) => void) {
   const result = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: 'Agent', session_id: 's-1', cwd: root, tool_input }),
     encoding: 'utf8',
-    env: sealedPluginCliEnv(root, { WT_GUARD_JOURNAL_DIR: journal, WT_GUARD_JOURNAL_NOW: '2026-09-25T12:00:00Z' }),
+    env: sealedPluginCliEnv(root, {
+      CLAUDE_CODE_SUBAGENT_MODEL: undefined,
+      CLAUDE_CODE_SUBAGENT_MODEL_FORCE: undefined,
+      WT_GUARD_JOURNAL_DIR: journal,
+      WT_GUARD_JOURNAL_NOW: '2026-09-25T12:00:00Z',
+      ...env,
+    }),
   })
   const journalPath = join(journal, '2026-W39.ndjson')
   return { status: result.status, stdout: result.stdout, journal: existsSync(journalPath) ? readFileSync(journalPath, 'utf8') : '' }
@@ -35,16 +43,23 @@ function run(subagent_type: unknown, prompt: unknown = '', model?: string) {
 
 function expectModelWarning(result: ReturnType<typeof runToolInput>) {
   expect(result.status).toBe(0)
-  expect(result.stdout).toContain('model pin')
-  expect(result.stdout).not.toContain('"permissionDecision":"deny"')
-  expect(result.journal).toContain('"class":"model-unpinned"')
-  expect(result.journal).toContain('"decision":"warned"')
+  const output = JSON.parse(result.stdout) as Record<string, unknown>
+  const hook = output.hookSpecificOutput as Record<string, unknown>
+  expect(hook.hookEventName).toBe('PreToolUse')
+  expect(hook.additionalContext).toEqual(expect.stringContaining('model pin'))
+  expect(JSON.stringify(output)).not.toContain('permissionDecision')
+  expect(output).not.toHaveProperty('continue')
+  const records = result.journal.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+  const warnings = records.filter((record) => record.class === 'model-unpinned')
+  expect(warnings).toHaveLength(1)
+  expect(warnings[0]).toMatchObject({ class: 'model-unpinned', decision: 'warned' })
 }
 
 function expectSilentModelPin(result: ReturnType<typeof runToolInput>) {
   expect(result.status).toBe(0)
   expect(result.stdout).toBe('')
-  expect(result.journal).not.toContain('model-unpinned')
+  const records = result.journal.trim() ? result.journal.trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>) : []
+  expect(records.filter((record) => record.class === 'model-unpinned')).toEqual([])
   // A positive control keeps this case red until the warning actually exists.
   expectModelWarning(run('workflow-toolbox:leaf-readonly'))
 }
@@ -132,6 +147,33 @@ describe('wt-right-sized-spawn-guard-hook', () => {
       writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: "sonnet"\n---\nRead.\n')
     })
     expectSilentModelPin(result)
+  })
+
+  it('warns for an unpinned custom agent in the active config directory', () => {
+    const result = runToolInput({ subagent_type: 'custom-worker' }, (root) => {
+      const agents = join(root, 'claude-config', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\n---\nRead.\n')
+    })
+    expectModelWarning(result)
+  })
+
+  it('mutes a model-pin warning in observe mode and journals the silent detection', () => {
+    const result = runToolInput({ subagent_type: 'workflow-toolbox:leaf-readonly' }, undefined, { WT_GUARD_MODE: 'observe' })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toBe('')
+    expect(result.journal.trim().split('\n').map((line) => JSON.parse(line))).toMatchObject([
+      { class: 'model-unpinned', decision: 'silent', mode: 'observe' },
+    ])
+  })
+
+  it('treats YAML tilde as a missing model pin', () => {
+    const result = runToolInput({ subagent_type: 'custom-worker' }, (root) => {
+      const agents = join(root, '.claude', 'agents')
+      mkdirSync(agents, { recursive: true })
+      writeFileSync(join(agents, 'custom-worker.md'), '---\nname: custom-worker\ndescription: Read.\nmodel: ~\n---\nRead.\n')
+    })
+    expectModelWarning(result)
   })
 
   it('warns for a custom agent with no frontmatter model pin', () => {
@@ -251,11 +293,70 @@ describe('wt-right-sized-spawn-guard-hook', () => {
     expectSilentModelPin(runToolInput({ subagent_type: 'custom-worker' }, projectAgent))
   })
 
-  it('fails open for thrown and explicitly unresolved definitions', async () => {
-    const { resolveAgentModelPin } = await import('../../../../plugin/bin/lib/agent-model-pin.mjs')
+  it('fails open for thrown and explicitly unresolved definitions', () => {
     expect(resolveAgentModelPin('custom-worker', { resolve: () => { throw Error('read failed') } })).toEqual({ status: 'unknown', type: 'custom-worker' })
     expect(resolveAgentModelPin('custom-worker', { resolve: () => ({ unresolved: 'x' }) })).toEqual({ status: 'unknown', type: 'custom-worker' })
     expectModelWarning(run('workflow-toolbox:leaf-readonly'))
+  })
+
+  describe('model precedence and built-in defaults', () => {
+    const missing = () => null
+    const noModel = () => ({ data: {} })
+    const model = (value: unknown) => () => ({ data: { model: value } })
+    const pin = (type: string, resolve: () => unknown, env: NodeJS.ProcessEnv = {}, requestedModel?: string) =>
+      resolveAgentModelPin(type, { resolve, env, requestedModel })
+
+    it.each(['statusline-setup', 'claude-code-guide'])('uses the own default of %s', (type) => {
+      expect(pin(type, missing)).toEqual({ status: 'pinned', type })
+    })
+
+    it.each(['Explore', 'Plan'])('does not let the environment default override built-in %s', (type) => {
+      expect(pin(type, missing, { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })).toEqual({ status: 'unpinned', type })
+    })
+
+    it.each(['general-purpose', 'claude'])('uses the environment default for built-in %s', (type) => {
+      expect(pin(type, missing, { CLAUDE_CODE_SUBAGENT_MODEL: 'sonnet' })).toEqual({ status: 'pinned', type })
+      expect(pin(type, missing)).toEqual({ status: 'unpinned', type })
+    })
+
+    it('lets a user definition shadow a built-in default', () => {
+      expect(pin('statusline-setup', noModel)).toEqual({ status: 'unpinned', type: 'statusline-setup' })
+    })
+
+    it.each([noModel, model(''), model('null'), model('~')])('uses the environment default when a definition has no model pin', (resolve) => {
+      expect(pin('worker', resolve, { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' })).toEqual({ status: 'pinned', type: 'worker' })
+    })
+
+    it.each(['inherit', ''])('treats environment default %s as unset', (defaultModel) => {
+      expect(pin('worker', noModel, { CLAUDE_CODE_SUBAGENT_MODEL: defaultModel })).toEqual({ status: 'unpinned', type: 'worker' })
+    })
+
+    it('does not let the environment default override explicit inherit at spawn or definition', () => {
+      const env = { CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' }
+      expect(pin('worker', model('sonnet'), env, 'inherit')).toEqual({ status: 'unpinned', type: 'worker' })
+      expect(pin('worker', model('inherit'), env)).toEqual({ status: 'unpinned', type: 'worker' })
+    })
+
+    it('forces the environment model over explicit pins and built-in defaults', () => {
+      const env = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' }
+      expect(pin('worker', model('inherit'), env, 'sonnet')).toEqual({ status: 'pinned', type: 'worker' })
+      expect(pin('Explore', missing, env)).toEqual({ status: 'pinned', type: 'Explore' })
+    })
+
+    it('forces the main model when the environment model is unset or inherit', () => {
+      for (const defaultModel of [undefined, 'inherit']) {
+        const env = { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1', CLAUDE_CODE_SUBAGENT_MODEL: defaultModel }
+        expect(pin('worker', model('sonnet'), env, 'opus')).toEqual({ status: 'unpinned', type: 'worker' })
+      }
+    })
+
+    it('exempts fork even when its definition has no model and force is enabled', () => {
+      expect(pin('fork', noModel, { CLAUDE_CODE_SUBAGENT_MODEL_FORCE: '1' })).toEqual({ status: 'exempt', type: 'fork' })
+    })
+
+    it('treats tilde as YAML null without an environment default', () => {
+      expect(pin('worker', model('~'))).toEqual({ status: 'unpinned', type: 'worker' })
+    })
   })
 
   it('is registered as a PreToolUse Agent hook', () => {
