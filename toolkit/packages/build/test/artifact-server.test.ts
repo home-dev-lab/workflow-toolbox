@@ -114,6 +114,24 @@ function startupClaimPath(stateHome: string) {
   return join(stateHome, 'wt-artifact-server', 'startup.claim')
 }
 
+// The holder publishes its claim owner with atomicWriteJson: a `.<token>.json.tmp-…` staging file sits
+// in the claim directory until it is renamed to `<token>.json`. A wait satisfied by "one entry" can
+// wake inside that window and act on a claim with no owner yet. If the rename lands after the test
+// listed the staging name and before its rmdir, the force-remove misses and rmdir meets the published
+// owner (the macOS CI ENOTEMPTY); if the test removes the staging file first, the owner is never
+// published. A contender started in the window reads no valid owner either. The event every claim test
+// means is the PUBLISHED owner, so that is the one waited on.
+const CLAIM_OWNER_FILE = /^[0-9a-f-]+\.json$/
+
+async function waitForPublishedClaimOwner(stateHome: string): Promise<string> {
+  return waitFor(() => {
+    try {
+      const files = readdirSync(startupClaimPath(stateHome))
+      return files.length === 1 && CLAIM_OWNER_FILE.test(files[0]!) ? files[0]! : null
+    } catch { return null }
+  })
+}
+
 function spawnReceipts(file: string) {
   try { return readFileSync(file, 'utf8').trim().split('\n').filter(Boolean) } catch { return [] }
 }
@@ -820,12 +838,7 @@ describe('owner decision 2: discovery and one instance', () => {
     }))
     if (!holder.pid) throw new Error('startup claim holder has no pid')
     const claimPath = startupClaimPath(stateHome)
-    const ownerFile = await waitFor(() => {
-      try {
-        const files = readdirSync(claimPath)
-        return files.length === 1 && /^[0-9a-f-]+\.json$/.test(files[0]!) ? files[0]! : null
-      } catch { return null }
-    })
+    const ownerFile = await waitForPublishedClaimOwner(stateHome)
     rmSync(join(claimPath, ownerFile), { force: true })
     rmdirSync(claimPath)
     mkdirSync(claimPath, { mode: 0o700 })
@@ -844,9 +857,7 @@ describe('owner decision 2: discovery and one instance', () => {
     const holder = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '5000',
     }))
-    await waitFor(() => {
-      try { return readdirSync(startupClaimPath(stateHome)).length === 1 ? true : null } catch { return null }
-    })
+    await waitForPublishedClaimOwner(stateHome)
     const contender = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '400',
     }))
@@ -1008,9 +1019,7 @@ describe('owner decision 2: discovery and one instance', () => {
     const holder = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_CLAIM_HOLD_MS: '30000',
     }))
-    await waitFor(() => {
-      try { return readdirSync(startupClaimPath(stateHome)).length === 1 ? true : null } catch { return null }
-    })
+    await waitForPublishedClaimOwner(stateHome)
     const contender = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_TEST_HOLDER_BOUND_MS: '300',
       WT_ARTIFACT_SERVER_TEST_RETRY_WINDOW_MS: '1000', WT_ARTIFACT_SERVER_TEST_RETRY_OVERALL_CAP_MS: '3000',
@@ -1117,9 +1126,7 @@ describe('owner decision 2: discovery and one instance', () => {
     }))
     const output = childOutput(holder)
     const claimPath = startupClaimPath(stateHome)
-    const ownerFile = await waitFor(() => {
-      try { return readdirSync(claimPath)[0] ?? null } catch { return null }
-    })
+    const ownerFile = await waitForPublishedClaimOwner(stateHome)
     rmSync(join(claimPath, ownerFile), { force: true })
     rmdirSync(claimPath)
     mkdirSync(claimPath, { mode: 0o700 })
@@ -1143,9 +1150,7 @@ describe('owner decision 2: discovery and one instance', () => {
       ...(process.platform === 'win32' ? { WT_ARTIFACT_SERVER_TEST_SHUTDOWN_FILE: shutdownFile } : {}),
     }))
     const output = childOutput(holder)
-    await waitFor(() => {
-      try { return readdirSync(startupClaimPath(stateHome)).length === 1 ? true : null } catch { return null }
-    })
+    await waitForPublishedClaimOwner(stateHome)
     if (process.platform === 'win32') writeFileSync(shutdownFile, 'shutdown\n')
     else holder.kill('SIGTERM')
     await waitFor(() => /startup stopped during shutdown/i.test(output.stdout()) ? true : null)
