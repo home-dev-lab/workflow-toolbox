@@ -21,6 +21,7 @@ interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
+  laneWritableForLaunch: (request: Record<string, unknown>) => (file: string) => boolean
   announceUnsandboxedLane: (plan: SandboxPlan, write: (text: string) => void) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
@@ -87,6 +88,36 @@ function fakeFs(files: Record<string, string> = {}, dirs: string[] = [], realpat
 
 const HOME = '/home/lane-owner'
 const okProbe = () => ({ ok: true })
+
+describe('lane host output preflight — Windows paths', () => {
+  const home = 'C:\\Users\\RUNNER~1'
+  const worktree = 'C:\\Projects\\Lane\\tree'
+  const hostState = `${home}\\AppData\\Local\\Temp\\wt-lane-host-suite-x\\abc`
+  const env = { HOME: home, USERPROFILE: home, LOCALAPPDATA: `${home}\\AppData\\Local`, TEMP: `${home}\\AppData\\Local\\Temp` }
+  const fs = fakeFs({}, [home, worktree, hostState])
+
+  it('accepts an external host log and refuses worktree and extra writable paths case-insensitively', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, args: ['--dir', worktree], env, optionEnv: {}, platform: 'win32', paths: { writable: ['D:\\Shared\\lane-output'] }, fs })
+    expect(() => writable(`${hostState}\\run.log`)).not.toThrow()
+    expect(writable(`${hostState}\\run.log`)).toBe(false)
+    expect(writable(`${worktree}\\run.log`)).toBe(true)
+    expect(writable('c:\\PROJECTS\\lane\\TREE\\brief-cleanup')).toBe(true)
+    expect(writable('d:\\SHARED\\lane-output\\run.log')).toBe(true)
+  })
+
+  it('refuses relative paths and parent traversal even if the final location is outside a writable root', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env, optionEnv: {}, platform: 'win32', fs })
+    expect(() => writable('run.log')).toThrow(/non-absolute path or parent traversal/)
+    expect(() => writable(`${worktree}\\..\\run.log`)).toThrow(/non-absolute path or parent traversal/)
+  })
+
+  it('detects an aliased writable root before an as-yet-uncreated log file', () => {
+    const alias = 'D:\\Links\\lane-tree'
+    const linked = fakeFs({}, [home, worktree, alias], { [alias]: worktree })
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env, optionEnv: {}, platform: 'win32', fs: linked })
+    expect(writable(`${alias}\\run.log`)).toBe(true)
+  })
+})
 // The POSIX-planner cases build the Linux plan against the REAL filesystem (symlinks, realpaths) on
 // every POSIX host. The plan is constructed, never executed, so they pin the planner's platform to
 // linux and hand it a fixture bwrap answered by okProbe: a host without bubblewrap (CI ubuntu, macOS)
