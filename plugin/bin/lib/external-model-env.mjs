@@ -17,7 +17,8 @@ const EXACT_NAMES = new Set([
 const PREFIXES = ['OPENCODE_', 'CODEX_', 'OPENAI_', 'AZURE_OPENAI_']
 const NEVER_PASS = new Set(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'])
 const NAME = /^[A-Za-z_]\w*$/
-const CREDENTIAL_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|CONFIG_FILE)/i
+// PASS counts only as a whole underscore segment, so BYPASS and COMPASS stay ordinary names.
+const CREDENTIAL_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|CONFIG_FILE)|(?:^|_)PASS(?:_|$)/i
 const EXECUTION_HOOK_NAME = /^(?:NODE_OPTIONS|BUN_OPTIONS|BASH_ENV|ENV|ZDOTDIR|PYTHONPATH|PYTHONSTARTUP|RUBYOPT|RUBYLIB|PERL5OPT|PERL5LIB|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)$/i
 const CONFIGURATION_CARRIER = /^(?:OPENCODE_CONFIG(?:_|$)|CODEX_HOME$)/i
 const PROVIDER_CREDENTIALS = Object.freeze({
@@ -36,23 +37,171 @@ function configuredExtraNames(env) {
   return String(env.WT_EXTERNAL_MODEL_ENV_ALLOW ?? '').split(',').map((name) => name.trim()).filter(Boolean)
 }
 
+const URL_TOKEN_NAME = /(token|secret|passw|pwd|signature|credential|apikey)/i
+const URL_KEY_SEGMENT = /(^|[-_.])key($|[-_.])/i
+const URL_TOKEN_EXACT_NAME = new Set(['key', 'sig', 'auth', 'authorization', 'code', 'code_verifier', 'pass', 'pw'])
+// camelCase key names (accessKey, subscriptionKey); case-sensitive so monkey and keyboard stay harmless.
+const URL_CAMEL_KEY_NAME = /[a-z]Key$/
+const HEADER_CREDENTIAL_NAME = /(auth|api-key|api_key|apikey|token|secret|password|cookie|session|signature|credential)/i
+const HEADER_KEY_SEGMENT = /(^|[-_])key($|[-_])/i
+const HEADER_NAME = /^[A-Za-z0-9_-]+$/
+const HEADER_CARRIER_NAME = /HEADERS?$/i
+const NON_SECRET_HEADERS = new Set([
+  'content-type', 'accept', 'accept-encoding', 'accept-language', 'user-agent',
+  'traceparent', 'tracestate', 'x-request-id', 'x-correlation-id',
+])
+const ADDRESS_NAME = /(?:PROXY|_URL|_URI|_ENDPOINT|_HOST)$/i
+// Userinfo may hold spaces or tabs: URL parsers keep the space (percent-encoded) and drop the tab,
+// so both still carry a credential. A newline ends it, so separate lines are never joined.
+const URL_USERINFO = /\b[a-z][a-z0-9+.-]*:\/\/[^/?#@\n]*@/i
+const SCHEME_RELATIVE_USERINFO = /(?:^|[,\s])\/\/[^/?#@\n]*@/
+// A quoted JSON key anywhere in the value, at any nesting depth.
+const QUOTED_KEY = /"([^"\\\n]*)"\s*:/g
+const BEARER_OR_BASIC = /(?:^|[=:])\s*(?:bearer|basic)\s+\S/i
+const HOST_PORT_VALUE = /^\d+(?:\/\S*)?$/
+// Names that carry filesystem paths by construction: a false positive there would remove the binary
+// search path or the home directory, so their values are never inspected.
+const PATH_NAMES = new Set([
+  'PATH', 'Path', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'SHELL', 'TMPDIR', 'TMP', 'TEMP',
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'XDG_RUNTIME_DIR',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  'SystemRoot', 'SYSTEMROOT', 'ComSpec', 'COMSPEC', 'WINDIR', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
+])
+const DEFAULT_WARNED = new Set()
+
+function warnOncePerProcess(message) {
+  if (DEFAULT_WARNED.has(message)) return
+  DEFAULT_WARNED.add(message)
+  console.error(message)
+}
+
+function valueItems(text) {
+  return text.split(/[,;\n]/)
+}
+
+// A header carrier separates entries with commas or newlines only; a semicolon belongs to a header
+// value (`content-type=application/json;charset=utf-8`).
+function headerCarrierItems(text) {
+  return text.split(/[,\n]/)
+}
+
+function isCredentialHeaderName(name) {
+  return HEADER_CREDENTIAL_NAME.test(name) || HEADER_KEY_SEGMENT.test(name)
+}
+
+function stripEdges(text, leading, trailing) {
+  let start = 0
+  let end = text.length
+  while (start < end && leading.includes(text[start])) start += 1
+  while (end > start && trailing.includes(text[end - 1])) end -= 1
+  return text.slice(start, end)
+}
+
+// Header-shaped item: optional leading quotes/braces, a name without dots, then `=` or `:`, then a
+// non-empty value. Parsed by hand so an adversarial value cannot trigger regex backtracking.
+function headerItem(item) {
+  const separator = item.search(/[=:]/)
+  if (separator < 0) return null
+  const name = stripEdges(item.slice(0, separator), ' \t\r"\'{', ' \t\r"\'')
+  const value = item.slice(separator + 1).trim()
+  // host:port shape (`auth-proxy:8080/`): a colon directly followed by a port, no whitespace.
+  const hostPort = item[separator] === ':' && HOST_PORT_VALUE.test(item.slice(separator + 1))
+  return HEADER_NAME.test(name) && value ? { name, value, hostPort } : null
+}
+
+function isUrlCredentialParameter(rawName) {
+  let name = rawName
+  try { name = decodeURIComponent(rawName) } catch { /* keep the raw spelling when it is not valid percent-encoding */ }
+  return URL_KEY_SEGMENT.test(name) || URL_TOKEN_NAME.test(name) || URL_TOKEN_EXACT_NAME.has(name.toLowerCase()) || URL_CAMEL_KEY_NAME.test(name)
+}
+
+// Fail-closed allowlist: an item passes only when it names a known non-secret header, so a harmless
+// custom header (`x-tenant=public`) is refused too; nothing tells it apart from a custom auth header.
+function headerCarrierRefusal(text) {
+  for (const item of headerCarrierItems(text)) {
+    if (!item.trim()) continue
+    const separator = item.search(/[=:]/)
+    if (separator < 0) return 'header-carrier'
+    const name = item.slice(0, separator).replaceAll(/["'{}\s]/g, '').toLowerCase()
+    if (!NON_SECRET_HEADERS.has(name)) return 'header-carrier'
+  }
+  return null
+}
+
+function credentialInValue(name, value) {
+  const text = String(value)
+  if (HEADER_CARRIER_NAME.test(name)) {
+    const refusal = headerCarrierRefusal(text)
+    if (refusal) return refusal
+  }
+  if (URL_USERINFO.test(text) || SCHEME_RELATIVE_USERINFO.test(text)) return 'url-userinfo'
+  if (ADDRESS_NAME.test(name)) {
+    for (const item of [text, ...text.split(',')]) {
+      const address = item.trim()
+      if (address && !address.includes('://') && URL_USERINFO.test(`http://${address}`)) return 'url-userinfo'
+    }
+  }
+  for (const match of text.matchAll(/[?&;#]([^=?&;#\s]+)=/g)) {
+    if (isUrlCredentialParameter(match[1])) return 'url-token-parameter'
+  }
+  for (const item of valueItems(text)) {
+    const header = headerItem(item)
+    if (!header || header.hostPort) continue
+    if (isCredentialHeaderName(header.name)) return 'header-credential'
+  }
+  for (const match of text.matchAll(QUOTED_KEY)) {
+    if (isCredentialHeaderName(match[1])) return 'header-credential'
+  }
+  if (BEARER_OR_BASIC.test(text)) return 'bearer-token'
+  return null
+}
+
+function configuredExtraRefusal(name) {
+  if (!NAME.test(name)) return 'invalid-name'
+  if (NEVER_PASS.has(name.toUpperCase())) return 'never-pass'
+  if (CREDENTIAL_NAME.test(name)) return 'credential-name'
+  if (EXECUTION_HOOK_NAME.test(name)) return 'execution-hook'
+  if (CONFIGURATION_CARRIER.test(name)) return 'configuration-carrier'
+  return null
+}
+
 /**
  * Builds the complete environment for an external model CLI. Unknown parent variables are absent.
- * WT_EXTERNAL_MODEL_ENV_ALLOW can add harmless non-credential, non-execution names.
- * Callers can pass credential names explicitly in code; the three session Anthropic credentials
- * are never eligible.
+ * WT_EXTERNAL_MODEL_ENV_ALLOW can add harmless non-credential, non-execution names. Admitted values
+ * that resemble embedded credentials are refused with a name-and-reason-only warning. Callers can
+ * pass provider credential names explicitly in code without value inspection; explicit non-credential
+ * names are inspected. Path-like names are never value-inspected. A variable whose name ends in
+ * HEADER(S) passes only when every item names a non-secret header. The three session Anthropic
+ * credentials are never eligible. Without a caller-supplied warn, each distinct refusal is printed
+ * once per process.
  */
-export function externalModelEnv(env = process.env, extraNames = [], platform = runtimePlatform) {
+export function externalModelEnv(env = process.env, extraNames = [], platform = runtimePlatform, { warn = warnOncePerProcess } = {}) {
   const normalize = platform === 'win32' ? (name) => name.toUpperCase() : (name) => name
   const exactNames = new Set([...EXACT_NAMES].map(normalize))
-  const configuredNames = new Set(configuredExtraNames(env).filter((name) => NAME.test(name) && !CREDENTIAL_NAME.test(name) && !EXECUTION_HOOK_NAME.test(name) && !CONFIGURATION_CARRIER.test(name)).map(normalize))
+  const pathNames = new Set([...PATH_NAMES].map(normalize))
+  const configured = configuredExtraNames(env)
+  const configuredNames = new Set(configured.filter((name) => configuredExtraRefusal(name) === null).map(normalize))
   const explicitNames = new Set(extraNames.filter((name) => NAME.test(name)).map(normalize))
+  const explicitCredentialNames = new Set(extraNames.filter((name) => NAME.test(name) && CREDENTIAL_NAME.test(name)).map(normalize))
+  const environmentNames = new Set(Object.keys(env).map(normalize))
+  for (const name of configured) {
+    const reason = configuredExtraRefusal(name)
+    if (reason && environmentNames.has(normalize(name))) {
+      warn(`workflow-toolbox: external-model child environment refused configured extra ${name} (${reason})`)
+    }
+  }
   const child = {}
   for (const [name, value] of Object.entries(env)) {
     const matchedName = normalize(name)
     if (value === undefined || NEVER_PASS.has(name.toUpperCase())) continue
     const allowedByConfig = !CONFIGURATION_CARRIER.test(name) && !CREDENTIAL_NAME.test(name) && (exactNames.has(matchedName) || PREFIXES.some((prefix) => matchedName.startsWith(prefix)) || /^LC_[A-Z]+$/.test(matchedName) || configuredNames.has(matchedName))
-    if (explicitNames.has(matchedName) || allowedByConfig) child[name] = value
+    if (!explicitNames.has(matchedName) && !allowedByConfig) continue
+    const reason = explicitCredentialNames.has(matchedName) || pathNames.has(matchedName) ? null : credentialInValue(name, value)
+    if (reason) {
+      warn(`workflow-toolbox: external-model child environment refused ${name} (${reason}); its value is not passed`)
+      continue
+    }
+    child[name] = value
   }
   return child
 }
@@ -72,6 +221,7 @@ export function providerCredentialNames(model, { definitions = installedOpenCode
   const reference = String(model)
   if (!reference.includes(PROVIDER_MODEL_SEPARATOR)) return []
   const provider = reference.split(PROVIDER_MODEL_SEPARATOR, 1)[0].toLowerCase()
+  if (!provider) return []
   if (Object.hasOwn(PROVIDER_CREDENTIALS, provider)) return [...PROVIDER_CREDENTIALS[provider]]
   const installed = definitions?.[provider]?.env
   if (Array.isArray(installed)) {
@@ -81,6 +231,8 @@ export function providerCredentialNames(model, { definitions = installedOpenCode
   }
   const prefix = provider.toUpperCase().replaceAll(/[^A-Z0-9]+/g, '_')
   const names = [`${prefix}_API_KEY`, ...(PROVIDER_EXTRAS[provider] ?? [])]
+    .filter((name) => !NEVER_PASS.has(name.toUpperCase()))
+    .filter((name) => { const owner = knownCredentialOwner(name); return owner === null || owner === provider })
   if (!FALLBACK_WARNED.has(provider)) {
     FALLBACK_WARNED.add(provider)
     warn(`workflow-toolbox: OpenCode provider definitions unavailable for ${provider}; using fallback environment names ${names.join(', ')}`)
