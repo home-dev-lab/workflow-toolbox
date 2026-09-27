@@ -75,7 +75,12 @@ function main() {
   if (!type || !prompt) return
 
   const resolved = resolveAgentTypeTools(type, typeof input.cwd === 'string' ? input.cwd : '')
-  if (!resolved.resolved) return // unknown type: cannot judge, so say nothing
+  if (resolved.unresolved) {
+    recordGuardEvent({ guard: 'wt-spawn-capability-guard-hook.mjs', decision: 'warned', class: 'unresolved', reason: resolved.unresolved, session: input.session_id, agent: input.agent_id })
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `[workflow-toolbox spawn-capability] Definition unresolved for ${type}: ${resolved.unresolved}` } }))
+    return
+  }
+  if (!resolved.resolved) return
   const { tools } = resolved
   if (!tools) return // inherits everything
 

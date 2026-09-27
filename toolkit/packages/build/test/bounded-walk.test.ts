@@ -1,0 +1,63 @@
+import { describe, expect, it } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+// @ts-expect-error plugin runtime modules are untyped JavaScript.
+import { createBudget, walkFiles } from '../../../../plugin/bin/lib/bounded-walk.mjs'
+
+describe('bounded walk', () => {
+  it('enumerates seeded generated trees despite broken siblings and cycles', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-generated-walk-'))
+    let state = 0x714d2
+    const random = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0)
+    const expected: string[] = []
+    try {
+      for (let i = 0; i < 60; i++) {
+        const folder = path.join(root, `dir-${String(i).padStart(3, '0')}`)
+        fs.mkdirSync(folder)
+        for (let j = 0; j < 1 + random() % 4; j++) {
+          const file = path.join(folder, `agent-${j}.md`)
+          fs.writeFileSync(file, `---\nname: agent-${i}-${j}\n---\n`)
+          expected.push(file)
+        }
+        fs.writeFileSync(path.join(folder, 'ignore.txt'), 'ignored')
+        fs.symlinkSync(path.join(folder, 'gone'), path.join(folder, 'broken.md'))
+        fs.symlinkSync(root, path.join(folder, 'loop'))
+        if (i === 0) {
+          fs.symlinkSync(path.join(folder, 'agent-0.md'), path.join(folder, 'linked.md'))
+          if (process.platform !== 'win32') execFileSync('mkfifo', [path.join(folder, 'pipe.md')])
+        }
+      }
+      const result = walkFiles([root], { accept: (_rel: string, name: string) => name.endsWith('.md') })
+      expect(result.exhausted).toBeNull()
+      expect(result.files.map((f: { file: string }) => f.file).sort()).toEqual([...expected, path.join(root, 'dir-000', 'linked.md')].sort())
+      expect(result.errors.length).toBeGreaterThanOrEqual(60)
+      expect(walkFiles([root], { budget: createBudget({ maxDirs: 4 }) }).exhausted).toBe('dirs')
+      expect(walkFiles([root], { budget: createBudget({ maxEntries: 12 }) }).exhausted).toBe('entries')
+      const deep = path.join(root, 'deep')
+      fs.mkdirSync(deep)
+      let cursor = deep
+      for (let i = 0; i < 16; i++) { cursor = path.join(cursor, 'x'); fs.mkdirSync(cursor) }
+      expect(walkFiles([deep], { budget: createBudget({ maxDepth: 3 }) }).exhausted).toBe('depth')
+      const injected = { ...fs, opendirSync: (dir: string) => {
+        if (dir.endsWith('dir-000')) { const error = Object.assign(new Error('denied'), { code: 'EACCES' }); throw error }
+        return fs.opendirSync(dir)
+      } }
+      const isolated = walkFiles([root], { fs: injected, budget: createBudget({ maxDepth: 20 }), accept: (_rel: string, name: string) => name.endsWith('.md') })
+      expect(isolated.files.map((f: { file: string }) => f.file).sort()).toEqual(expected.filter((f) => !f.includes('dir-000')).sort())
+      expect(isolated.errors.some((e: { code: string }) => e.code === 'EACCES')).toBe(true)
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+  it('preserves a valid sibling of a dangling symlink and bounds entries', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wt-walk-'))
+    try {
+      fs.writeFileSync(path.join(root, 'pilot.md'), 'ok')
+      fs.symlinkSync(path.join(root, 'missing'), path.join(root, 'z-broken'))
+      const result = walkFiles([root], { accept: (_rel: string, name: string) => name.endsWith('.md') })
+      expect(result.files.map((f: { file: string }) => path.basename(f.file))).toEqual(['pilot.md'])
+      expect(result.errors.length).toBeGreaterThan(0)
+      expect(walkFiles([root], { budget: createBudget({ maxEntries: 1 }) }).exhausted).toBe('entries')
+    } finally { fs.rmSync(root, { recursive: true, force: true }) }
+  })
+})
