@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { absentPluginPaths } from './plugin-receipt.mjs'
 import { hostAdapter } from './host/adapter.mjs'
+import { parseFrontmatter } from './frontmatter.mjs'
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_PLUGIN_ROOT = path.resolve(MODULE_DIR, '../..')
@@ -235,8 +236,11 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
 // `user-invocable: false` loads through the plugin manifest all the same, but the receipt cannot prove it, so
 // requiring it there refused every pilot run at initialization. Such a skill is recorded and logged instead.
 export function skillIsUnlistedByInit(skillMarkdown) {
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMarkdown)?.[1] ?? ''
-  return /^user-invocable:\s*false\s*$/m.test(frontmatter)
+  const parsed = parseFrontmatter(skillMarkdown)
+  // Init receipts omit unlisted skills; a failed parse cannot establish that it is listed.
+  if (!parsed.ok) return parsed.reason !== 'absent'
+  if (parsed.data['user-invocable'] !== undefined && typeof parsed.data['user-invocable'] !== 'string') throw new Error('skill user-invocable frontmatter unresolved')
+  return parsed.ok && parsed.data['user-invocable'] === 'false'
 }
 
 export function composeSdkRoleQueryOptions(base, prepared) {
@@ -299,6 +303,16 @@ const LIFECYCLE_TOOLS = Object.freeze({
   judge: Object.freeze(['wave_state', 'read_card', 'read_card_report', 'read_diff', 'decide', 'write_judgment'].map((name) => `mcp__sdk-wave-lifecycle__${name}`)),
 })
 
+// An attached HTTP MCP server's init receipt lists its WHOLE tool surface, and the SDK offers no allow-list
+// narrower than the server (a deny glob would also remove the admitted calls). For these servers the call-time
+// fence (`lifecycleCanUseTool`) is the authority: a tool listed but refused at call time is not a breach.
+// Keyed by role so the allowance never widens a role that does not attach the server.
+const LISTED_CALL_FENCED_SERVERS = Object.freeze({ pilot: Object.freeze(['planka']) })
+
+function listedUnderCallFence(role, tool) {
+  return (LISTED_CALL_FENCED_SERVERS[role] ?? []).some((server) => tool.startsWith(`mcp__${server}__`))
+}
+
 export function assertSdkRoleReceipt(role, message, prepared) {
   const tools = Array.isArray(message.tools) ? message.tools : []
   const plugins = Array.isArray(message.plugins) ? message.plugins : []
@@ -309,7 +323,7 @@ export function assertSdkRoleReceipt(role, message, prepared) {
   const requiredTools = prepared.profile.tools
   const missingTools = requiredTools.filter((tool) => !tools.includes(tool))
   const allowedTools = new Set([...prepared.profile.tools, ...(LIFECYCLE_TOOLS[role] ?? [])])
-  const unexpectedTools = tools.filter((tool) => !allowedTools.has(tool))
+  const unexpectedTools = tools.filter((tool) => !allowedTools.has(tool) && !listedUnderCallFence(role, tool))
   const unlistedSkills = Array.isArray(prepared.unlistedSkills) ? prepared.unlistedSkills : []
   const missingSkills = prepared.profile.skills.filter((skill) => !unlistedSkills.includes(skill) && !skills.some((loaded) => loaded === skill || loaded.endsWith(`:${skill}`)))
   if (absentPlugins.length || missingTools.length || unexpectedTools.length || missingSkills.length) {

@@ -2,7 +2,7 @@
 // Push-scope answers WHICH commits go out; this guard independently answers whether the release commit was gated.
 import fs from 'node:fs'
 import path from 'node:path'
-import { consumeMainGuardAllowOnce, mainGuardStateDir } from './lib/main-guard-allow-once.mjs'
+import { consumeMainGuardAllowOnce, describeMainGuardAllowOnceMiss, mainGuardStateDir } from './lib/main-guard-allow-once.mjs'
 import { derivePushTargets, gitString } from './lib/git-push.mjs'
 import { readGateDeclaration, repoRoot, requiredGateProblems } from './lib/gate-evidence.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
@@ -111,6 +111,7 @@ function main() {
       continue
     }
 
+    const allowanceMiss = describeMainGuardAllowOnceMiss(command, input.tool_use_id)
     const overrideReason = consumeMainGuardAllowOnce(command, input.tool_use_id)
     if (overrideReason) {
       const message = `[workflow-toolbox release gate] Allowed ${target.remote}/${target.destination} by consuming one-time override: ${overrideReason}. ${resolution}`
@@ -126,7 +127,8 @@ function main() {
       : ''
     const overrideFile = path.join(mainGuardStateDir(), 'allow-once.json')
     const overrideExample = JSON.stringify({ command, reason: '<why>' })
-    const reason = `Gate evidence is required before pushing ${target.remote}/${target.destination} at ${pushedCommit}. ${resolution}\n${problemLines}${legacyRefresh}\nRun:\n${refresh}\nThe release path does not accept a gates: skipped trailer. If a gate cannot run, write ${overrideExample} to ${overrideFile} and retry; the exact-command override requires a non-empty reason and is consumed once.`
+    const allowanceMissSuffix = allowanceMiss ? ' ' + allowanceMiss : ''
+    const reason = `Gate evidence is required before pushing ${target.remote}/${target.destination} at ${pushedCommit}. ${resolution}\n${problemLines}${legacyRefresh}\nRun:\n${refresh}\nThe release path does not accept a gates: skipped trailer. If a gate cannot run, write ${overrideExample} to ${overrideFile} and retry; the exact-command override requires a non-empty reason and is consumed once.${allowanceMissSuffix}`
     recordGuardEvent({ guard: GUARD, decision: 'blocked', class: 'release-gate-evidence-stale', reason: problems.map(({ gate, status }) => `${gate.name}:${status}`).join(', '), cwd: root, session: input.session_id, agent: input.agent_id })
     emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: reason } } })
     return

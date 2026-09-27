@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as hooksModule from '../../../../../../plugin/hooks/hooks.js';
 import * as artifactHelpers from '../../../../../../plugin/hooks/snapshot-program.js';
+import { laneHostDir } from '../../../../../../plugin/bin/lib/host/lane-host-dir.mjs';
 import { PHASES } from '../../../../../../plugin/bin/lib/lifecycle-state-machine.mjs';
 import { captureHasPane } from './host-capture-match.mjs';
 import { HOST_USER_CONFIG_TYPES } from './host-user-config-types.mjs';
@@ -118,7 +119,7 @@ writeFileSync(join(waveWorktree, '.lane', 'runner-stdout.log'), [
   'lifecycle: lane critic EXIT=2',
   'lifecycle: accepted phase=critic',
 ].join('\n') + '\n');
-writeFileSync(join(waveWorktree, '.lane', 'pid'), String(process.pid));
+mkdirSync(laneHostDir(waveWorktree), { recursive: true }); writeFileSync(join(laneHostDir(waveWorktree), 'pid'), String(process.pid));
 writeFileSync(join(waveWorktree, '.lane', 'plan.md'), [
   '# Plan', '## ADR', '### Decision', 'Use a bounded tree.', 'Keep refresh state.',
   '## Tasks', '1. **Build hierarchy.** Nest every actor.', '2. Test inspector',
@@ -534,7 +535,7 @@ await test('[DoD 1] each current activity signal admits a row and each stale cou
     for (const [file, value] of [['brief.md', `# Brief: ${name} card ${id}\n`], ['run.log', 'working\n']]) {
       const target = join(lane, file); writeFileSync(target, value); utimesSync(target, mtime, mtime);
     }
-    if (pid !== null) { const target = join(lane, 'pid'); writeFileSync(target, pid); utimesSync(target, mtime, mtime); }
+    if (pid !== null) { const host = laneHostDir(join(lane, '..')); mkdirSync(host, { recursive: true }); const target = join(host, 'pid'); writeFileSync(target, pid); utimesSync(target, mtime, mtime); }
   };
   makeExternal('fresh-file', '1862698281071544110', fresh);
   makeExternal('stale-file', '1862698281071544111', stale);
@@ -646,7 +647,7 @@ await test('[A-3] SDK pilots nest a lane only with independently live process ev
     mkdirSync(lane, { recursive: true });
     writeFileSync(join(lane, 'route.json'), JSON.stringify({ cardId: id, route: 'FULL' }));
     writeFileSync(join(lane, 'runner-stdout.log'), 'lifecycle: accepted phase=tdd\n');
-    if (pid) writeFileSync(join(lane, 'pid'), pid);
+    if (pid) { const host = laneHostDir(join(lane, '..')); mkdirSync(host, { recursive: true }); writeFileSync(join(host, 'pid'), pid); }
   }
   mkdirSync(join(isolatedPaths.procRoot, String(process.pid)), { recursive: true });
   const liveWorktree = join(isolatedPaths.suiteRoot, 'worktrees', 'live');
@@ -677,9 +678,9 @@ await test('[A-4] duplicate card receipts attach only by the running worktree wa
   assert.equal(row.waveId, 'running');
   assert.equal(row.title, 'running title');
 });
-await test('[A-5] linkBase uses a suite-relative URL and outside liveness content is refused', async () => {
+await test('[A-5] host-owned HTML falls back to a local file URL and outside liveness content is refused', async () => {
   const linked = await readSnapshot({ process: processCapability }, { ...paths, linkBase: 'http://localhost:9000/files' });
-  assert.equal(linked.rows.find((row) => row.id === waveCardId).inspectors.plan.href, `http://localhost:9000/files/worktrees/card-${waveCardId}-wave-${waveId}/.lane/plan.md.html`);
+  assert.equal(linked.rows.find((row) => row.id === waveCardId).inspectors.plan.href, artifactHelpers.detectArtifactUrl(join(laneHostDir(waveWorktree), 'plan.md.html'), process.platform, process.env));
   const outside = join(root, 'outside-artifact');
   mkdirSync(join(outside, '.lane'), { recursive: true });
   writeFileSync(join(outside, '.lane', 'brief.md'), '# Brief: card 1862698281071544144: Outside canary\n');
@@ -903,7 +904,7 @@ await test('[E-1] a symlinked worktree ancestor escaping suiteRoot cannot receiv
   assert.equal(statSync(join(escaped, '.lane', 'plan.md')).isFile(), true);
   assert.throws(() => statSync(join(escaped, '.lane', 'plan.md.html')));
 });
-await test('[write failure] an unwritable lane degrades its artifact to Text without poisoning the snapshot', async () => {
+await test('[host HTML] an unwritable lane does not block host-owned rendering', async () => {
   const isolated = join(root, 'write-failure');
   const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now, linkBase: 'http://localhost:9000/files' };
   mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true });
@@ -918,7 +919,7 @@ await test('[write failure] an unwritable lane degrades its artifact to Text wit
   try {
     const snapshot = await readSnapshot({ process: processCapability }, isolatedPaths);
     assert.equal(snapshot.discovery, 'available');
-    assert.equal(snapshot.rows.find((row) => row.id === '1862698281071544146').inspectors.plan.href, null);
+    assert.equal(snapshot.rows.find((row) => row.id === '1862698281071544146').inspectors.plan.href, artifactHelpers.detectArtifactUrl(join(laneHostDir(join(lane, '..')), 'plan.md.html'), process.platform, process.env));
   } finally { chmodSync(lane, 0o700); }
 });
 await test('[stale HTML] changed source metadata regenerates even when the replacement mtime is older', async () => {
@@ -937,7 +938,7 @@ await test('[stale HTML] changed source metadata regenerates even when the repla
   writeFileSync(source, '# Older value\n');
   utimesSync(source, new Date('2000-01-01T00:00:00Z'), new Date('2000-01-01T00:00:00Z'));
   await readSnapshot({ process: processCapability }, isolatedPaths);
-  assert.match(readFileSync(source + '.html', 'utf8'), /Older value/);
+  assert.match(readFileSync(join(laneHostDir(join(lane, '..')), 'plan.md.html'), 'utf8'), /Older value/);
 });
 await test('[E-2] directory scans stop at the configured cap and record the capped path', async () => {
   const isolated = join(root, 'scan-cap');
@@ -1783,10 +1784,11 @@ await test('[DoD 4] markdown rendering is safe and URL detection covers four pla
   const snapshot = await readSnapshot({ process: processCapability }, paths);
   const artifact = snapshot.rows.find((row) => row.id === waveCardId).inspectors.plan;
   assert.match(artifact.href, /plan\.md\.html$/);
-  assert.match(readFileSync(join(waveWorktree, '.lane', 'plan.md.html'), 'utf8'), /<h2>ADR<\/h2>/);
-  const before = statSync(join(waveWorktree, '.lane', 'plan.md.html')).mtimeMs;
+  const rendered = join(laneHostDir(waveWorktree), 'plan.md.html');
+  assert.match(readFileSync(rendered, 'utf8'), /<h2>ADR<\/h2>/);
+  const before = statSync(rendered).mtimeMs;
   await readSnapshot({ process: processCapability }, paths);
-  assert.equal(statSync(join(waveWorktree, '.lane', 'plan.md.html')).mtimeMs, before);
+  assert.equal(statSync(rendered).mtimeMs, before);
 });
 await test('[Arbiter 1.1] Link href validator mirrors the declared host rule', async () => {
   assert.equal(typeof hooksModule.isValidLinkHref, 'function');
@@ -1850,7 +1852,7 @@ await test('[changed: card and artifact links] every rendered Link href is valid
   assert(!defaultLinks.some((link) => linkText(link).startsWith('Open ')));
   for (const link of defaultLinks) assert.equal(hooksModule.isValidLinkHref(link.props.href), true, link.props.href);
   const links = descendants(linkedTree, (item) => item.name === 'Link');
-  assert(links.length > defaultLinks.length);
+  assert.equal(links.length, defaultLinks.length);
   for (const link of links) assert.equal(hooksModule.isValidLinkHref(link.props.href), true, link.props.href);
 });
 await test('[changed Step 8 artifact action][A-5] an artifact outside suiteRoot renders no action-looking text', async () => {
@@ -1862,7 +1864,7 @@ await test('[changed Step 8 artifact action][A-5] an artifact outside suiteRoot 
   assert(!hasDescendant(tree, (item) => item.name === 'Text' && item.props.children.includes('/outside/.lane/plan.md')));
   assert.equal(descendants(tree, (item) => item.name === 'Link').length, 0);
 });
-await test('[changed Step 8 action label][E-3] a truncated HTML artifact uses the same real report Link', async () => {
+await test('[changed Step 8 action label][E-3] an unserved host HTML artifact does not promise a report Link', async () => {
   const isolated = join(root, 'truncated-artifact');
   const isolatedPaths = { configDir: join(isolated, 'config'), livenessDir: join(isolated, 'liveness'), suiteRoot: join(isolated, 'suite'), now: paths.now, linkBase: 'http://localhost:9000/files' };
   mkdirSync(join(isolatedPaths.configDir, 'plugins', 'store'), { recursive: true });
@@ -1876,13 +1878,13 @@ await test('[changed Step 8 action label][E-3] a truncated HTML artifact uses th
   const snapshot = await readSnapshot({ process: processCapability }, isolatedPaths);
   const artifact = snapshot.rows.find((row) => row.id === '1862698281071544149').inspectors.plan;
   assert.equal(artifact.truncated, true);
-  assert.equal(hooksModule.isValidLinkHref(artifact.href), true);
+  assert.equal(hooksModule.isValidLinkHref(artifact.href), false);
   const rendered = await renderSnapshot({ discovery: 'available', rows: [snapshot.rows.find((row) => row.id === '1862698281071544149')], collectedAt: paths.now });
   const plan = descendants(rendered.tree, (item) => item.name === 'Button' && String(item.props.key).endsWith(':plan'))[0];
   assert(plan, 'evidenced Plan stage button');
   plan.props.onPress();
   const tree = await rendered.pane.hook(rendered.local$, { component: 'Pane', requestId: 'wt-what-is-running', surface: 'terminal' }, async () => ({}));
-  assert(hasDescendant(tree, (item) => item.name === 'Link' && linkText(item) === '[Open report]'));
+  assert(!hasDescendant(tree, (item) => item.name === 'Link' && linkText(item) === '[Open report]'));
   assert(!hasDescendant(tree, (item) => item.name === 'Link' && /Open (?:first|full)/.test(linkText(item))));
 });
 await test('[Arbiter 1.4] a wave with only finished pilot worktrees is omitted', async () => {

@@ -505,6 +505,105 @@ describe('wt-main-guard-hook — escape hatch', () => {
     expect(existsSync(join(stateDir, 'allow-once.json'))).toBe(true) // untouched
   })
 
+  function refusalOf(result: { stdout: string }): string {
+    return JSON.parse(result.stdout).hookSpecificOutput.permissionDecisionReason as string
+  }
+
+  it('hands the exact allow-once JSON for THIS command, so the instruction is satisfiable by copying it', () => {
+    const command = 'cd /work/repo && git push public --delete card/x 2>&1 | tail -4'
+    const refused = run(command)
+    const example = JSON.stringify({ command, reason: '<why>' })
+    expect(refused.denied).toBe(true)
+    expect(refusalOf(refused)).toContain(example)
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    writeFileSync(join(stateDir, 'allow-once.json'), example.replace('<why>', 'owner approved this deletion'))
+    expect(run(command, { toolUseId: 'tool-retry' })).toMatchObject({ denied: false, stdout: '', status: 0 })
+  })
+
+  it('names an allowance written for a DIFFERENT command (the retry dropped its cd prefix)', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const written = 'cd /work/repo && git push public --delete card/x 2>&1 | tail -4'
+    const retried = 'git push public --delete card/x 2>&1 | tail -4'
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify({ command: written, reason: 'owner approved' }))
+    const refused = run(retried)
+    expect(refused.denied).toBe(true)
+    expect(refusalOf(refused)).toContain('names a different command')
+    expect(refusalOf(refused)).toContain('carries an extra prefix')
+    expect(existsSync(join(stateDir, 'allow-once.json'))).toBe(true)
+  })
+
+  it('never prints ANOTHER allowance\'s command into a refusal (it may carry a credential)', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const secretBearing = 'git push https://user:ghp_s3cr3tT0kenValue@github.com/o/r --delete other'
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify({ command: secretBearing, reason: 'owner approved' }))
+    const refusal = refusalOf(run('git push origin --delete mine'))
+    expect(refusal).toContain('names a different command')
+    expect(refusal).not.toContain('ghp_s3cr3tT0kenValue')
+    expect(refusal).not.toContain('github.com/o/r')
+  })
+
+  it('names an allowance already spent by another tool call without asserting its removal', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const command = 'git push origin --delete stale-branch'
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify({ command, reason: 'ok', consumedBy: 'tool-old', consumedAt: '2026-09-27T03:00:00.000Z' }))
+    const refusal = refusalOf(run(command, { toolUseId: 'tool-new' }))
+    expect(refusal).toContain('already spent by tool call "tool-old"')
+    expect(refusal).not.toContain('now removed')
+  })
+
+  it('an allowance with a non-string consumedBy still refuses (the explainer can never fail the guard open)', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const file = join(stateDir, 'allow-once.json')
+    const command = 'git push origin --delete x'
+    writeFileSync(file, JSON.stringify({ command, reason: 'x', consumedBy: { toString: 0 }, consumedAt: { toString: 0 } }))
+    const first = run(command, { toolUseId: 'tool-a' })
+    expect(first.denied, first.stdout + first.stderr).toBe(true)
+    expect(existsSync(file)).toBe(false)
+    expect(run(command, { toolUseId: 'tool-b' }).denied).toBe(true)
+    expect(journalLines().map((line) => line.decision)).toEqual(['denied', 'denied'])
+  })
+
+  it('refuses the printed placeholder reason copied verbatim, and names it', () => {
+    const command = 'git push origin --delete stale-branch'
+    const refused = run(command)
+    const printed = refusalOf(refused).match(/write (\{.*\}) to /)?.[1]
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    writeFileSync(join(stateDir, 'allow-once.json'), printed!)
+    const retried = run(command, { toolUseId: 'tool-copy' })
+    expect(retried.denied).toBe(true)
+    expect(refusalOf(retried)).toContain('placeholder')
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify({ command, reason: '  <why>  ' }))
+    expect(run(command, { toolUseId: 'tool-copy-2' }).denied).toBe(true)
+    expect(journalLines().some((line) => line.decision === 'override-allow')).toBe(false)
+  })
+
+  it('the printed JSON round-trips a command with quotes, a backslash, a newline and non-ASCII, honoured once', () => {
+    const command = 'git push origin --delete card/é-x 2>&1 | grep -v \'a\\b\' # "q" ✓\necho done'
+    const refused = run(command, { toolUseId: 'tool-1' })
+    expect(refused.denied).toBe(true)
+    const printed = JSON.parse(refusalOf(refused).match(/write (\{.*\}) to /)?.[1] ?? 'null')
+    expect(printed.command).toBe(command)
+    printed.reason = 'owner approved this exact deletion'
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify(printed))
+    expect(run(command, { toolUseId: 'tool-2' })).toMatchObject({ denied: false, stdout: '', status: 0 })
+    expect(run(command, { toolUseId: 'tool-3' }).denied).toBe(true)
+  })
+
+  it('names an empty reason and an unparseable allowance file', () => {
+    const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
+    mkdirSync(stateDir, { recursive: true })
+    const command = 'git push origin --delete stale-branch'
+    writeFileSync(join(stateDir, 'allow-once.json'), JSON.stringify({ command, reason: ' ' }))
+    expect(refusalOf(run(command))).toContain('its "reason" is empty')
+    writeFileSync(join(stateDir, 'allow-once.json'), '{"command": "git push origin --delete stale-branch",')
+    expect(refusalOf(run(command))).toContain('is not valid JSON')
+  })
+
   it('does not consume or authorize an exact-command override without a non-empty reason', () => {
     const stateDir = join(sandboxHome, '.local', 'state', 'wt-main-guard')
     mkdirSync(stateDir, { recursive: true })

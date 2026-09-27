@@ -30,6 +30,9 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const roles = ['pilot', 'judge', 'tdd', 'critic', 'review', 'refutation'] as const
+it('treats opaque skill visibility as unresolved instead of listed', () => {
+  expect(() => skillIsUnlistedByInit('---\nuser-invocable: {unknown: value}\n---\n')).toThrow(/unresolved/)
+})
 const processStartingContextTools = [CONTEXT_MODE_TOOLS.batchExecute, CONTEXT_MODE_TOOLS.execute, CONTEXT_MODE_TOOLS.executeFile]
 const roleContextTools = [CONTEXT_MODE_TOOLS.fetchAndIndex, CONTEXT_MODE_TOOLS.index, CONTEXT_MODE_TOOLS.search]
 const preparedRole = (role: string) => {
@@ -138,6 +141,38 @@ describe('SDK role profiles', () => {
       skills: [...prepared.profile.skills],
     }
     expect(() => assertSdkRoleReceipt('pilot', receipt, prepared)).toThrow(new RegExp(`unexpectedTools.*${unexpected}`))
+  })
+
+  // Card 1873103822893614627: the attached board server's init receipt lists its WHOLE tool surface (40+ names,
+  // measured on this machine's Planka MCP), while the pilot's call-time fence admits six. Listed is not callable.
+  it('accepts the board server\'s full listed surface on a pilot receipt while the call-time fence still denies all but six', async () => {
+    const { root, prepared } = preparedRole('pilot')
+    const fullPlankaSurface = ['add_card_member', 'add_comment', 'add_label_to_card', 'create_board', 'create_card', 'delete_card', 'delete_project', 'find_cards', 'get_board', 'get_card', 'get_comments', 'move_card', 'search_cards_semantic', 'update_card', 'upload_attachment'].map((name) => `mcp__planka__${name}`)
+    const receipt = {
+      tools: [...prepared.profile.tools.filter((tool: string) => tool !== 'LSP'), 'mcp__sdk-pilot-lifecycle__run', ...fullPlankaSurface],
+      plugins: prepared.pluginPaths.map((pluginPath: string) => ({ path: pluginPath })),
+      skills: [...prepared.profile.skills],
+    }
+    expect(() => assertSdkRoleReceipt('pilot', receipt, prepared)).not.toThrow()
+    expect(() => assertSdkRoleReceipt('pilot', { ...receipt, tools: [...receipt.tools, 'mcp__planka_evil__delete_card'] }, prepared)).toThrow(/unexpectedTools.*mcp__planka_evil__delete_card/)
+    expect(() => assertSdkRoleReceipt('pilot', { ...receipt, tools: [...receipt.tools, 'mcp__other__delete_card'] }, prepared)).toThrow(/unexpectedTools.*mcp__other__delete_card/)
+    const options = composeSdkRoleQueryOptions({ model: 'opus', effort: 'medium', canUseTool: async (toolName: string, input: unknown) => lifecycleCanUseTool(root, toolName, input, { profile: prepared.profile }) }, prepared)
+    for (const outside of ['mcp__planka__delete_card', 'mcp__planka__create_board', 'mcp__planka__delete_project', 'mcp__planka__upload_attachment']) {
+      await expect(options.canUseTool(outside, {})).resolves.toMatchObject({ behavior: 'deny' })
+    }
+    for (const admitted of ['mcp__planka__get_card', 'mcp__planka__add_comment']) {
+      await expect(options.canUseTool(admitted, {})).resolves.toEqual({ behavior: 'allow' })
+    }
+  })
+
+  it('keeps the listed board surface a pilot allowance: a judge receipt listing a board tool is refused', () => {
+    const { prepared } = preparedRole('judge')
+    const receipt = {
+      tools: [...prepared.profile.tools.filter((tool: string) => tool !== 'LSP'), 'mcp__planka__get_card'],
+      plugins: prepared.pluginPaths.map((pluginPath: string) => ({ path: pluginPath })),
+      skills: [...prepared.profile.skills],
+    }
+    expect(() => assertSdkRoleReceipt('judge', receipt, prepared)).toThrow(/unexpectedTools.*mcp__planka__get_card/)
   })
 
   it('denies Bash requests that ask to disable the sandbox before the caller callback', async () => {

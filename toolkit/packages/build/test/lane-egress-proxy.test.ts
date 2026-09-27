@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { constants, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { constants, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -25,6 +25,16 @@ interface ProxyModule {
   createEndpointRelay: (options: { host: string, port: number, connections?: Set<net.Socket> }) => net.Server
 }
 const proxy = (await import(pathToFileURL(join(LIB, 'lane-egress-proxy.mjs')).href)) as ProxyModule
+it.skipIf(process.platform !== 'linux')('does not block opening an existing FIFO egress log', () => {
+  const root = mkdtempSync(join(tmpdir(), 'egress-fifo-'))
+  try {
+    const fifo = join(root, 'log')
+    expect(spawnSync('mkfifo', [fifo]).status).toBe(0)
+    const result = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(pathToFileURL(join(LIB, 'lane-egress-proxy.mjs')).href)}).then(m => { m.egressLogWriter(${JSON.stringify(fifo)})({ host: 'example.com' }) })`], { timeout: 2000, encoding: 'utf8' })
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
 const servers: net.Server[] = []
 afterEach(() => { for (const s of servers.splice(0)) s.close() })
 
@@ -241,6 +251,21 @@ describe('SNI must equal the CONNECT host (real TLS client, round 4 HIGH 1)', ()
 })
 
 describe('egress log hardening (round 4, MED 2)', () => {
+  it.skipIf(!constants.O_NOFOLLOW)('keeps writing to its original inode after its parent is swapped', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-egress-parent-'))
+    try {
+      const original = join(root, 'original'); const replacement = join(root, 'replacement')
+      mkdirSync(original); mkdirSync(replacement)
+      const file = join(original, 'egress.jsonl')
+      const write = proxy.egressLogWriter(file)
+      write({ host: 'one.example', decision: 'denied' })
+      renameSync(original, join(root, 'moved'))
+      symlinkSync(replacement, original)
+      write({ host: 'two.example', decision: 'denied' })
+      expect(readFileSync(join(root, 'moved', 'egress.jsonl'), 'utf8')).toContain('two.example')
+      expect(existsSync(join(replacement, 'egress.jsonl'))).toBe(false)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
   // Runs on every host: the no-follow guarantee holds everywhere (Windows has no O_NOFOLLOW, so the
   // writer writes nothing there rather than following the link).
   it('never follows a symlink planted at the log path', () => {

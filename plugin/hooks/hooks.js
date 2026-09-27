@@ -124,7 +124,7 @@ export async function readSnapshot($, paths, layout = WORKFLOW_TOOLBOX_LAYOUT, t
     let snapshotFile;
     try { snapshotFile = await $.env?.get?.('WT_WHAT_IS_RUNNING_SNAPSHOT_FILE'); } catch {}
     const collectorBootstrap = SNAPSHOT_PROGRAM.length > 0
-      ? "import(process.argv[1]).then(({ SNAPSHOT_PROGRAM }) => Function('require', SNAPSHOT_PROGRAM)(require))"
+      ? "Promise.all([import(process.argv[1]), import(new URL('../bin/lib/host/lane-host-dir.mjs', process.argv[1]))]).then(([{ SNAPSHOT_PROGRAM }, { laneHostDir, ensureLaneHostDir }]) => Function('require', 'laneHostDir', 'ensureLaneHostDir', SNAPSHOT_PROGRAM)(require, laneHostDir, ensureLaneHostDir))"
       : '';
     const result = await $.process.run(
       snapshotFile

@@ -1,75 +1,25 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
-
-function definitionDirs(cwd) {
-  const dirs = []
-  if (cwd) {
-    let current = path.resolve(cwd)
-    for (;;) {
-      dirs.push(path.join(current, '.claude', 'agents'))
-      const parent = path.dirname(current)
-      if (parent === current) break
-      current = parent
-    }
-  }
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  dirs.push(path.join(configDir, 'agents'))
-  dirs.push(path.join(import.meta.dirname, '..', '..', 'agents'))
-  dirs.push(path.join(import.meta.dirname, '..', '..', 'agent-templates'))
-  return dirs
-}
-
-function findDefinition(type, cwd) {
-  const bare = String(type || '').split(':').pop()
-  if (!bare) return null
-  for (const dir of definitionDirs(cwd)) {
-    const file = path.join(dir, `${bare}.md`)
-    try {
-      if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8')
-    } catch {
-      /* unreadable dir or file */
-    }
-  }
-  return null
-}
-
-function frontmatter(source) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(source)
-  return match ? match[1] : null
-}
-
-function parseToolList(value) {
-  if (!value) return null
-  const trimmed = value.trim()
-  if (!trimmed || trimmed === '*') return null
-  return trimmed
-    .replace(/^\[|\]$/g, '')
-    .split(',')
-    .map((t) => t.trim().replace(/^['"]|['"]$/g, ''))
-    .filter(Boolean)
-}
-
-function declaredTools(source) {
-  const fm = frontmatter(source)
-  if (!fm) return null
-  const line = /^tools:\s*(.+)$/m.exec(fm)
-  return line ? parseToolList(line[1]) : null
-}
-
-function disallowedTools(source) {
-  const fm = frontmatter(source)
-  if (!fm) return []
-  const line = /^disallowedTools:\s*(.+)$/m.exec(fm)
-  return line ? (parseToolList(line[1]) ?? []) : []
-}
+import { resolveAgentDefinition } from './agent-definitions.mjs'
+import { readFrontmatterFile } from './frontmatter.mjs'
+import { toolList } from './agent-type-tools.mjs'
 
 export function agentHasNoMessagingTool(agentType, cwd = '') {
-  const source = findDefinition(agentType, cwd)
-  if (source !== null) {
-    const tools = declaredTools(source)
+  const leaf = String(agentType).split(':').pop()
+  if (!leaf || leaf === '..' || leaf === '.' || leaf.includes('\0') || /[/\\]/.test(leaf)) return false
+  const definition = resolveAgentDefinition(agentType, { cwd })
+  // The outbound guard stops agents without a messaging channel. Uncertainty must
+  // take that same conservative branch so a missing definition cannot bypass delivery.
+  if (definition?.unresolved) return true
+  // Templates are a consumer-specific legacy extra root, after Claude's agent scopes.
+  const template = !definition && readFrontmatterFile(path.join(import.meta.dirname, '..', '..', 'agent-templates', `${leaf}.md`))
+  const data = definition?.data ?? (template?.ok ? template.data : null)
+  if (data) {
+    const tools = toolList(data.tools)
+    const denied = toolList(data.disallowedTools)
+    if (tools === undefined || denied === undefined || data.tools && typeof data.tools === 'object' && !Array.isArray(data.tools) || data.disallowedTools && typeof data.disallowedTools === 'object' && !Array.isArray(data.disallowedTools)) return true
     if (Array.isArray(tools) && !tools.includes('SendMessage')) return true
-    if (disallowedTools(source).includes('SendMessage')) return true
+    if (denied?.includes('SendMessage')) return true
   }
   return String(agentType || '').split(':').pop() === 'opencode-envelope'
 }
