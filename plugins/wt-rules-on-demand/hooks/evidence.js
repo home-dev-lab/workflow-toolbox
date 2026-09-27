@@ -33,11 +33,13 @@ function branches(body) {
   const result = [[]];
   for (let i = 0; i < body.length;) {
     if (body[i] === '|') { result.push([]); i++; continue; }
+    const start = i;
     let first = null;
     const group = body[i] === '(';
     if (body[i] === '\\') {
-      if (!/[dDsSwWbBpPkK]/.test(body[i + 1] ?? '')) first = body[i + 1] ?? null;
-      i += 2;
+      const escape = /^(?:\\u\{[\da-f]+\}|\\u[\da-f]{4}|\\x[\da-f]{2}|\\k<[^>]+>|\\c.|\\.)/i.exec(body.slice(i));
+      if (escape && /^\\[^dDsSwWbBpPkK1-9uxc]/.test(escape[0])) first = escape[0][1];
+      i += escape?.[0].length ?? 2;
     } else if (body[i] === '[') {
       i++;
       if (body[i] === '^') i++;
@@ -62,6 +64,7 @@ function branches(body) {
       if (!'.^$*+?{}'.includes(body[i])) first = body[i];
       i++;
     }
+    const source = body.slice(start, i);
     const repeated = unbounded(body, i);
     const count = /^\{\d+(?:,\d*)?\}/.exec(body.slice(i));
     const quantified = Boolean(count || '*+?'.includes(body[i] ?? ''));
@@ -69,9 +72,68 @@ function branches(body) {
     if (count) i += count[0].length;
     else if (quantified) i++;
     if (quantified && body[i] === '?') i++; // lazy quantifier
-    result[result.length - 1].push({ first, repeated, anchor: !repeated && !optional && (first !== null || group) });
+    result[result.length - 1].push({ first, source, repeated: repeated || multiplies(body, start + source.length), optional, anchor: !repeated && !optional && (first !== null || group) });
   }
   return result;
+}
+
+// An iteration boundary is fixed if an atom's next possible character cannot be
+// consumed by that atom. Unknown atoms intentionally fail this proof.
+function deterministic(body, flags) {
+  const alternatives = branches(body);
+  const samples = new Set([...Array(256).keys(), 0xa0, 0x1680, 0x2000, 0x2028, 0x2029, 0x3000, 0xfeff, 0xe9, 0x391, 0x410, 0x4e2d]);
+  for (const atom of alternatives.flat()) {
+    for (const char of atom.source) {
+      const point = char.codePointAt(0);
+      for (const near of [point - 1, point, point + 1]) if (near >= 0 && near <= 0x10ffff) samples.add(near);
+    }
+    for (const match of atom.source.matchAll(/\\u\{([\da-f]+)\}|\\u([\da-f]{4})|\\x([\da-f]{2})/gi)) {
+      const point = parseInt(match[1] ?? match[2] ?? match[3], 16);
+      for (const near of [point - 1, point, point + 1]) if (near >= 0 && near <= 0x10ffff) samples.add(near);
+    }
+  }
+  const chars = new Set([...samples].map((point) => String.fromCodePoint(point)));
+  if (flags.includes('i')) for (const char of [...chars]) { chars.add(char.toLowerCase()); chars.add(char.toUpperCase()); }
+  const cache = new Map();
+  const matcher = (atom) => {
+    if (cache.has(atom.source)) return cache.get(atom.source);
+    // Preserve a deterministic prefix for a grouped list of literal options
+    // (e.g. -C|--dir); every alternative must start with the same literal.
+    let source = atom.source;
+    if (source.startsWith('(')) {
+      const options = /^\(\?:([^()]+)\)$/.exec(source)?.[1].split('|');
+      const initial = options?.[0]?.[0];
+      if (!initial || '\\.^$[*+?{'.includes(initial) || !options.every((option) => option[0] === initial)) return null;
+      source = initial.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+    }
+    if (/^\\(?:[pPkKbB1-9])/.test(source) || !source || '^$'.includes(source)) return null;
+    try {
+      const regex = new RegExp(`^(?:${source})$`, flags.replace(/[gy]/g, ''));
+      cache.set(atom.source, regex);
+      return regex;
+    } catch { return null; }
+  };
+  const disjoint = (left, right) => {
+    const a = matcher(left), b = matcher(right);
+    return a && b && [...chars].every((char) => !a.test(char) || !b.test(char));
+  };
+  const first = alternatives.flatMap((branch) => {
+    const atoms = [];
+    for (const atom of branch) { atoms.push(atom); if (!atom.optional) break; }
+    return atoms;
+  });
+  return alternatives.every((branch) => branch.every((atom, index) => {
+    if (atom.source.startsWith('(') && /[+*]|\{\d+,\}/.test(atom.source)) return false;
+    if (!atom.repeated) return true;
+    const next = [];
+    let anchored = false;
+    for (const following of branch.slice(index + 1)) {
+      next.push(following);
+      if (!following.optional) { anchored = true; break; }
+    }
+    if (!anchored) next.push(...first);
+    return next.every((following) => disjoint(atom, following));
+  }));
 }
 
 // Parse-time heuristic: direct repetition of one unbounded atom, or repeated
@@ -94,12 +156,12 @@ export function safeRegex(rule, source, flags = '') {
     // A bounded count above one still multiplies the ways an unbounded body can split the input.
     // Each bounded iteration must consume a fixed anchor (a literal or a group, neither repeated nor optional);
     // a branch made only of unbounded or optional atoms lets the iterations split one run of input many ways.
-    if (containsUnbounded && multiplies(pattern, i + 1) && branches(body).some((branch) => !branch.some((atom) => atom.anchor))) throw new Error(`${rule}: regex has nested unbounded groups (bounded repeat of an unbounded body) in ${pattern}`);
+    if (containsUnbounded && multiplies(pattern, i + 1) && !deterministic(body, flags)) throw new Error(`${rule}: regex has nested unbounded groups (bounded repeat of an unbounded body) in ${pattern}`);
     if (!unbounded(pattern, i + 1)) continue;
     // Two independently repeatable nesting levels can partition the same input
     // in exponentially many ways, even when the inner alternatives begin with
     // distinct characters. Refuse the shape without evaluating a sample input.
-    if (repeatedChild || containsUnbounded) throw new Error(`${rule}: regex has nested unbounded groups (single unbounded element or overlapping alternation) in ${pattern}`);
+    if (repeatedChild || containsUnbounded && !deterministic(body, flags)) throw new Error(`${rule}: regex has nested unbounded groups (single unbounded element or overlapping alternation) in ${pattern}`);
     for (const parent of groups) parent.repeatedChild = true;
     const alternatives = branches(body);
     const singleRepeated = alternatives.length === 1 && alternatives[0].length === 1 && alternatives[0][0].repeated;

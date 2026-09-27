@@ -274,7 +274,7 @@ export const register = (on, options) => {
           ctx.rules = null;
           ctx.loading = null;
           ctx.served.clear();
-           ctx.prompting = new Map();
+            ctx.prompting = new Map(ctx.prompting);
        }
      }
     return result;
@@ -283,29 +283,30 @@ export const register = (on, options) => {
     if (!enabled) return next(e);
     const ctx = await context($, MAIN);
      await rulesFor($, ctx, e.cwd ?? '.');
-    const prompting = ctx.prompting;
-     const candidates = selected(ctx.rules, e, true);
-     while (true) {
-       const conflicts = candidates.filter((rule) => eligible(ctx, rule)).map((rule) => prompting.get(rule.name)).filter(Boolean);
-       if (!conflicts.length) break;
-       await Promise.all(conflicts);
-     }
+      const candidates = selected(ctx.rules, e, true);
+      while (true) {
+        const conflicts = candidates.filter((rule) => eligible(ctx, rule)).map((rule) => ctx.prompting.get(rule.name)).filter(Boolean);
+        if (!conflicts.length) break;
+        await Promise.all(conflicts);
+      }
+      const prompting = ctx.prompting;
      const chosen = candidates.filter((rule) => eligible(ctx, rule));
      let release;
      const reservation = new Promise((resolve) => { release = resolve; });
-     for (const rule of chosen) prompting.set(rule.name, reservation);
-     let result;
-     try {
-       result = await next(chosen.length ? { ...e, context: [...(e.context ?? []), ...chosen.map(block)] } : e);
-       if (result && ('deny' in result || 'drop' in result) || !chosen.length || ctx.prompting !== prompting) return result;
-       const ride = chosen.filter((rule) => eligible(ctx, rule));
+      for (const rule of chosen) { prompting.set(rule.name, reservation); }
+      let result;
+      try {
+        result = await next(chosen.length ? { ...e, context: [...(e.context ?? []), ...chosen.map(block)] } : e);
+        const currentPrompting = ctx.prompting;
+        if (result && ('deny' in result || 'drop' in result) || !chosen.length) return result;
+       const ride = chosen.filter((rule) => currentPrompting.get(rule.name) === reservation && eligible(ctx, rule));
        if (!ride.length) return result;
        claim(ctx, ride); const injected = inject(ctx, ride, 'prompt.submit'); await journal($, ride, MAIN, [], ride, injected, 'prompt.submit');
        for (const rule of ride) await $.ui.log(`wt-rules-on-demand: serving ${rule.name}`).catch(() => {});
        return result;
-     } finally {
-       for (const rule of chosen) if (prompting.get(rule.name) === reservation) prompting.delete(rule.name);
-       release();
+      } finally {
+        for (const rule of chosen) for (const state of new Set([prompting, ctx.prompting])) if (state.get(rule.name) === reservation) state.delete(rule.name);
+        release();
      }
   });
   on('turn.complete', async ($, e, next) => {

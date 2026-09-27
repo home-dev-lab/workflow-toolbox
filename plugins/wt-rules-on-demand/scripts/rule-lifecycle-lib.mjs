@@ -56,21 +56,22 @@ export function rollbackDecision({ triggerMiss = false, triggerMissUnmatched = 0
   // Owner decision: the only revert criterion is comparative. A migrated rule goes back to static only when it is
   // followed LESS on demand than it was static, each measured on at least `minimum` samples. Without a static
   // baseline it is flagged for attention and never reverted. `threshold` is kept for callers and reports only.
-  const measured = !hasMiss && applicable >= minimum;
+  const measured = applicable >= minimum;
   const noBaseline = measured && beforeApplicable < minimum;
   const worse = measured && !noBaseline && rate < beforeRate;
   const pct = (value) => `${(value * 100).toFixed(1)}%`;
+  const comparison = `on-demand follow rate ${pct(rate)} below static ${pct(beforeRate)} (${applicable} on-demand, ${beforeApplicable} static samples)`;
   let reason = '';
-  if (hasMiss) reason = 'trigger miss (governed acts, never served)';
+  if (hasMiss) { reason = 'trigger miss (governed acts, never served)'; if (worse) reason += `; ${comparison}`; }
   else if (noBaseline) reason = `no static baseline (${beforeApplicable} static samples, minimum ${minimum}); on demand ${pct(rate)} over ${applicable} samples`;
-  else if (worse) reason = `on-demand follow rate ${pct(rate)} below static ${pct(beforeRate)} (${applicable} on-demand, ${beforeApplicable} static samples)`;
+  else if (worse) reason = comparison;
   let recommendation = '';
   if (triggerMissUnmatched) recommendation = `fix the trigger: it does not select ${triggerMissUnmatched} governed act(s), e.g. ${triggerMissEvidence[0] ?? 'unknown act'}`;
   else if (triggerMissMatched) recommendation = 'the trigger matched but nothing was served: engine defect (serve-once / refusal channel), investigate before any revert';
   else if (triggerMiss) recommendation = 'Fix the trigger or reinstate as static after reviewing the acts';
   else if (noBaseline) recommendation = 'measure the static regime first; never reverted without a baseline';
   else if (worse) recommendation = 'Review the rule and reinstate as static or correct the check';
-  return { reason, recommendation, followed, applicable, rate, beforeRate, attention: noBaseline, threshold };
+  return { reason, recommendation, followed, applicable, rate, beforeRate, attention: noBaseline || hasMiss && !worse, revert: worse, threshold };
 }
 
 const scalar = (value) => {
@@ -162,6 +163,7 @@ export function frontmatter(spec) {
 }
 
 export async function migrationPreflight(root, rule, spec, scope = 'project') {
+  if (rule.includes('\\')) throw new Error(`rule path contains a literal backslash and cannot be ledgered portably: ${rule}`);
   const paths = rulePaths(root, rule, scope);
   const body = await readFile(paths.source, 'utf8');
   if (body.startsWith('---\n') || body.startsWith('---\r\n')) throw new Error('source rule already has frontmatter; refusing to alter its body');

@@ -102,6 +102,46 @@ test('competing prompt reselects after first host callback throws', async () => 
   assert.equal(f.stored.get('served')['sample.md'].count, 1);
 });
 
+test('compaction during a prompt wait claims exactly the context delivered', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n      before-first-act: 'false'", "kind: 'prompt'\n      regex: 'ready'"));
+  const handler = f.handlers.get('prompt.submit');
+  let release, entered;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { entered = resolve; });
+  const deliveries = [];
+  const submit = (next) => handler(f.$, { text: 'ready', cwd: '/sample-project' }, next);
+  const a = submit(async (event) => { deliveries.push(event.context?.length ?? 0); entered(); await waiting; return {}; });
+  await started;
+  const b = submit(async (event) => { deliveries.push(event.context?.length ?? 0); return {}; });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await f.handlers.get('session.compact')(f.$, {}, async () => ({}));
+  release(); await a; await b;
+  await submit(async (event) => { deliveries.push(event.context?.length ?? 0); return {}; });
+  assert.deepEqual(deliveries, [1, 0, 0]);
+  assert.equal(f.stored.get('served')['sample.md'].count, deliveries.filter(Boolean).length);
+});
+
+test('compaction preserves an in-flight prompt reservation for a new waiter', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', rule(false).replace("kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n      before-first-act: 'false'", "kind: 'prompt'\n      regex: 'ready'"));
+  const handler = f.handlers.get('prompt.submit');
+  let release, entered;
+  const waiting = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { entered = resolve; });
+  const delivered = [];
+  const submit = (next) => handler(f.$, { text: 'ready', cwd: '/sample-project' }, next);
+  const a = submit(async (event) => { delivered.push(event.context?.length ?? 0); entered(); await waiting; return {}; });
+  await started;
+  await f.handlers.get('session.compact')(f.$, {}, async () => ({}));
+  const b = submit(async (event) => { delivered.push(event.context?.length ?? 0); return {}; });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(delivered, [1]);
+  release(); await Promise.all([a, b]);
+  assert.deepEqual(delivered, [1, 0]);
+  assert.equal(f.stored.get('served')['sample.md'].count, 1);
+});
+
 test('failed skip diagnostic cannot prevent a valid neighbor rule loading', async () => {
   const f = fixture({ userNames: ['broken.md', 'sample.md'] });
   f.files.set('/sample-config/rules-on-demand/broken.md', 'not frontmatter');

@@ -228,7 +228,7 @@ export function judge(context, resolved, path, stats, seen, now) {
   return rows;
 }
 
-async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPrefixes, owners, migrationDate, lastChange, now, nonProofNames }) {
+async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPrefixes, explicitRoots, owners, migrationDate, lastChange, now, nonProofNames }) {
   let context = { start: 0, cwd: '', events: [], owners }, cwd = '', valid = 0, lineNumber = 0;
   const badBefore = stats.badLines;
   const flush = async () => {
@@ -251,7 +251,8 @@ async function scanFile(path, scopes, rows, stats, seen, { discover, skipCwdPref
          cwd = record.cwd; context.cwd = cwd;
          const withinTemp = relative(tmpdir(), cwd);
           const parentPrefix = process.platform === 'win32' ? '..\\' : '../';
-          const collection = withinTemp && withinTemp !== '..' && !withinTemp.startsWith(parentPrefix) && !isAbsolute(withinTemp) ? stats.tmpProjects : stats.projects;
+           const explicit = explicitRoots.has(cwd);
+           const collection = !explicit && withinTemp && withinTemp !== '..' && !withinTemp.startsWith(parentPrefix) && !isAbsolute(withinTemp) ? stats.tmpProjects : stats.projects;
           collection.add(cwd);
        }
       if (!context.start && record.timestamp) context.start = Date.parse(record.timestamp) || 0;
@@ -288,6 +289,7 @@ export async function scanTranscripts({ projectsDirs, scopes, days = 7, since, n
   const stats = { filesRead: 0, filesFailed: 0, linesRead: 0, skipped: [], skippedOutsideWindow: 0, errors: [], badLines: 0, days, projects: new Set(), tmpProjects: new Set(), scopeErrors: [],
     coverage: { rulesParsed: 0, checkableRules: 0, unmeasuredRules: [], filesRead: 0, filesFailed: 0, badLines: 0, missingTimestamps: 0, unknownMigrationDates: [], unresolvedActs: {}, gitErrors: [], missingProjectsDirs: [], unownedProjectsDirs: [] } };
   const loaded = await loadScopes(scopes, migrationDate, lastChange, stats);
+  const explicitRoots = new Set(scopes.filter((scope) => scope.scope === 'project').map((scope) => scope.projectRoot));
   const rows = [];
   const seen = new Set();
   for (const dir of projectsDirs) {
@@ -298,7 +300,7 @@ export async function scanTranscripts({ projectsDirs, scopes, days = 7, since, n
     for (const path of await filesIn(dir, stats)) {
     try {
        if ((await stat(path)).mtimeMs < now - days * 86400000) { stats.skippedOutsideWindow++; continue; }
-         await scanFile(path, loaded, rows, stats, seen, { discover: discoverProjects, skipCwdPrefixes, owners: owners ?? [], migrationDate, lastChange, now, nonProofNames });
+          await scanFile(path, loaded, rows, stats, seen, { discover: discoverProjects, skipCwdPrefixes, explicitRoots, owners: owners ?? [], migrationDate, lastChange, now, nonProofNames });
     } catch (error) { stats.filesFailed++; if (stats.errors.length < 50) stats.errors.push(`${path}: ${error.code ?? error.message}`); }
     }
   }

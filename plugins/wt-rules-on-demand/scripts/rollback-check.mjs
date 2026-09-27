@@ -149,7 +149,7 @@ for (const name of names) {
   const { threshold, minimum } = policy(await readFile(join(rulesDir, name), 'utf8'));
    const evidence = afterRows.filter((row) => row.verdict === 'trigger miss').map((row) => `${row.file}:${row.line}`);
   const before = rows.filter((row) => row.phase === 'before' && ['followed', 'not followed'].includes(row.checkVerdict));
-  const { reason, recommendation, rate, attention } = rollbackDecision({ triggerMiss: false,
+   const { reason, recommendation, rate, attention, revert } = rollbackDecision({ triggerMiss: false,
      triggerMissUnmatched: options.verdictFiles.length ? afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).length : 0,
      triggerMissMatched: options.verdictFiles.length ? afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched !== false).length : 0,
      triggerMissEvidence: afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).map((row) => `${row.file}:${row.line}`),
@@ -175,12 +175,12 @@ for (const name of names) {
       log(`${name}: attention: ${result.reason}`);
       continue;
    }
-   if (!reason) {
+   if (!reason && !revert) {
     log(`${name}: no rollback (${applicable.length} applicable verdicts; minimum ${minimum})`);
     results.push(result);
     continue;
   }
-   if (attention) { result.action = 'attention'; results.push(result); log(`${name}: attention: ${reason}`); continue; }
+    if (attention || !revert) { result.action = 'attention'; results.push(result); log(`${name}: attention: ${reason}`); continue; }
   // A file that physically lives in another profile's directory (a symlinked on-demand directory or file) is not this
   // profile's to revert: the revert would delete the file the other profile serves (HIGH 1).
   const realFile = await realOr(join(rulesDir, name));
@@ -194,7 +194,7 @@ for (const name of names) {
   result.action = options.dryRun ? 'would revert' : 'reverted';
   results.push(result);
   log(`${options.dryRun ? 'would revert' : 'reverted'} ${name}: ${reason}`);
-   if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
+    rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
    if (!options.dryRun) {
       const notification = { ...result, at: new Date().toISOString(), ...(scope === 'project' ? { root: project } : {}) };
       if (options.journal) await appendFile(options.journal, JSON.stringify({ ...notification, state: 'pending' }) + '\n');

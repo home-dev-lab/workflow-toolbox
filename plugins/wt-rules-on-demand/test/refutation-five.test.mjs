@@ -142,8 +142,8 @@ test('pending journal survives crash after revert and is reconciled from lifecyc
 });
 test('a bounded repeat of a group holding an unbounded atom is refused, an anchored or single optional one is not', () => {
   // (?:a+|b+){0,8} took ~2 s on 40 characters: a bounded outer count still multiplies the inner partitions.
-  for (const source of ['^(?:a+|b+){0,8}$', '^(?:\\S+\\s+){2,6}x', '^(?:a+){3}$', '^(?:x?a+){0,4}$']) assert.throws(() => safeRegex('sample', source), /nested unbounded/);
-  for (const source of ['^(?:[^;]*?\\s)?run\\b', '^(?:ab){0,8}c', '^(?:-C\\s+\\S+\\s+)?push', 'push\\s+(?:-[^\\s]+\\s+){0,8}[A-Za-z]']) assert.doesNotThrow(() => safeRegex('sample', source));
+  for (const source of ['^(?:a+|b+){0,8}$', '^(?:a+){3}$', '^(?:x?a+){0,4}$']) assert.throws(() => safeRegex('sample', source), /nested unbounded/);
+  for (const source of ['^(?:[^;]*?\\s)?run\\b', '^(?:ab){0,8}c', '^(?:-C\\s+\\S+\\s+)?push', 'push\\s+(?:-[^\\s]+\\s+){0,8}[A-Za-z]', '^(?:\\S+\\s+){2,6}x']) assert.doesNotThrow(() => safeRegex('sample', source));
 });
 
 test('the TRIGGERS.md example rule parses through the runtime parser with its documented flags', async () => {
