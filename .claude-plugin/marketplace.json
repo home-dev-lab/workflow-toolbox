@@ -20,6 +20,11 @@
       "name": "wt-deep-search",
       "source": "./plugins/wt-deep-search",
       "description": "EXPERIMENTAL. Answers a WebSearch from the local Claude Code doc mirror, context7, Brave or Exa, and adds a detached deep-research rung behind a handle."
+    },
+    {
+      "name": "wt-rules-on-demand",
+      "source": "./plugins/wt-rules-on-demand",
+      "description": "EXPERIMENTAL. Delivers opted-in rule files on matching prompts and tool calls, with proof-based migration and dry-run quality checks."
     }
   ]
 }
