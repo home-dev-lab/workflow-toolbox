@@ -87,7 +87,7 @@ test('safe regex refuses nested unbounded command-head scanning before execution
 test('check-rules measures every trigger and compliance regex against a supplied corpus', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'rod-census-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  await writeFile(join(dir, 'sample.md'), `---\non-demand:\n  triggers:\n    - kind: bash\n      regex: '^(a|aa){20}$'\n  compliance:\n    kind: bash-command\n    act-regex: '^(a|aa){20}$'\n    require-regex: '^a'\n    window: 1\n    on-close: not applicable\n---\nbody`);
+  await writeFile(join(dir, 'sample.md'), `---\non-demand:\n  triggers:\n    - kind: bash\n      regex: '^a*a*a*a*c$'\n  compliance:\n    kind: bash-command\n    act-regex: '^a*a*a*a*c$'\n    require-regex: '^a'\n    window: 1\n    on-close: not applicable\n---\nbody`);
   const corpus = join(dir, 'corpus.json');
   await writeFile(corpus, JSON.stringify([{ command: 'a'.repeat(35) + 'b' }, 'a'.repeat(35) + 'b']));
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url)), 'check-rules', '--dir', dir, '--corpus', corpus, '--time-bound-ms', '0.000001'], { encoding: 'utf8' });

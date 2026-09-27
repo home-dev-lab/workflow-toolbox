@@ -66,7 +66,7 @@ test('prove respects command-head and shares migration rendered-size preflight',
 });
 test('check-rules audits prompt triggers and interrupts pathological matches', async (t) => {
   const root = await sandbox(t), corpus = join(root, 'corpus.json');
-  await writeFile(join(root, 'slow.md'), `---\non-demand:\n  triggers:\n    - kind: prompt\n      regex: '^(a|aa){30}$'\n  compliance:\n    kind: none\n    reason: fixture\n---\nbody`);
+  await writeFile(join(root, 'slow.md'), `---\non-demand:\n  triggers:\n    - kind: prompt\n      regex: '^a*a*a*a*a*a*a*a*c$'\n  compliance:\n    kind: none\n    reason: fixture\n---\nbody`);
   await writeFile(join(root, 'fast.md'), ruleText);
   await writeFile(corpus, JSON.stringify(['a'.repeat(60) + '!']));
   const result = spawnSync(process.execPath, [scripts('rules'), 'check-rules', '--dir', root, '--corpus', corpus, '--time-bound-ms', '20'], { encoding: 'utf8', timeout: 8000 });

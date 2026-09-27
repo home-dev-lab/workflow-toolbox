@@ -22,160 +22,246 @@ export function argumentEvidence(input) {
   return bounded(JSON.stringify(trim(input, low)));
 }
 
-const unbounded = (text, at) => text[at] === '*' || text[at] === '+' || /^\{\d+,\}/.test(text.slice(at));
-const multiplies = (text, at) => {
-  const count = /^\{(\d+)(?:,(\d+))?\}/.exec(text.slice(at));
-  return Boolean(count) && Number(count[2] ?? count[1]) > 1;
+
+// Regex guard: a DETERMINISTIC-ITERATION checker. A quantifier that can take more than one iteration over a group is
+// accepted only when every iteration of that group can match a given input position in AT MOST ONE way. Then the
+// only choice the engine can backtrack over is the iteration count, as for a single repeated character, and the
+// cost stays polynomial instead of exponential. The rule is conservative by construction: every shape it cannot
+// prove deterministic is refused, including shapes that happen to be safe.
+//
+// Inside a repeated group, every item of every alternative must be one of:
+//   - a zero-width assertion (^ $ \b \B);
+//   - a FIXED item: a character atom or a group whose body is fixed-width and deterministic, repeated an exact number
+//     of times ({k});
+//   - a RUN: one character atom under a variable quantifier (?, *, +, {m,n}), followed by a non-optional item whose
+//     first character the run cannot consume. For the last item of an alternative, that follower is the first item of
+//     every alternative (the next iteration).
+// Alternatives must be told apart by a fixed-width prefix: at some position their character sets are disjoint.
+// Character-set disjointness is decided by sampling every code point 0-255, the code points each atom names (and
+// their neighbours, so range endpoints are covered) and a fixed set of non-ASCII representatives; an atom whose set
+// cannot be sampled (a property escape, a backreference) is treated as overlapping everything.
+
+const quantifierAt = (text, at) => {
+  const brace = /^\{(\d+)(?:(,)(\d*))?\}/.exec(text.slice(at));
+  let min, max, length;
+  if (text[at] === '*') [min, max, length] = [0, Infinity, 1];
+  else if (text[at] === '+') [min, max, length] = [1, Infinity, 1];
+  else if (text[at] === '?') [min, max, length] = [0, 1, 1];
+  else if (brace) {
+    let upper = Number(brace[1]);
+    if (brace[2]) upper = brace[3] === '' ? Infinity : Number(brace[3]);
+    [min, max, length] = [Number(brace[1]), upper, brace[0].length];
+  }
+  else return { min: 1, max: 1, length: 0 };
+  if (text[at + length] === '?') length++;
+  return { min, max, length };
 };
 
-// Tokenize only top-level atoms. Unknown first sets are deliberately left undecided.
-function branches(body) {
-  const result = [[]];
-  for (let i = 0; i < body.length;) {
-    if (body[i] === '|') { result.push([]); i++; continue; }
+// Escape shapes, longest first; an escape matching none of them (a backslash before a line break) fails the parse.
+const ESCAPES = [/^\\u\{[\da-f]+\}/i, /^\\u[\da-f]{4}/i, /^\\x[\da-f]{2}/i, /^\\c[a-z]/i, /^\\k<[^>]+>/, /^\\[pP]\{[^}]+\}/,
+  /^\\[1-9]\d*/, /^\\./];
+
+function parseRegex(pattern) {
+  let i = 0;
+  const atom = () => {
     const start = i;
-    let first = null;
-    const group = body[i] === '(';
-    if (body[i] === '\\') {
-      const escape = /^(?:\\u\{[\da-f]+\}|\\u[\da-f]{4}|\\x[\da-f]{2}|\\k<[^>]+>|\\c.|\\.)/i.exec(body.slice(i));
-      if (escape && /^\\[^dDsSwWbBpPkK1-9uxc]/.test(escape[0])) first = escape[0][1];
-      i += escape?.[0].length ?? 2;
-    } else if (body[i] === '[') {
+    const c = pattern[i];
+    if (c === '(') {
+      let kind = 'group';
+      if (pattern.startsWith('(?:', i)) i += 3;
+      else if (/^\(\?<?[=!]/.test(pattern.slice(i))) { kind = 'look'; i += pattern[i + 2] === '<' ? 4 : 3; }
+      else if (pattern.startsWith('(?<', i)) i = pattern.indexOf('>', i) + 1;
+      else i++;
+      const alt = alternation();
+      if (pattern[i] !== ')') throw new Error('unbalanced group');
       i++;
-      if (body[i] === '^') i++;
-      while (i < body.length && body[i] !== ']') i += body[i] === '\\' ? 2 : 1;
-      i++;
-    } else if (body[i] === '(') {
-      let depth = 1;
-      i++;
-      while (i < body.length && depth) {
-        if (body[i] === '\\') i += 2;
-        else if (body[i] === '[') {
-          i++;
-          while (i < body.length && body[i] !== ']') i += body[i] === '\\' ? 2 : 1;
-          i++;
-        } else {
-          if (body[i] === '(') depth++;
-          if (body[i] === ')') depth--;
-          i++;
-        }
-      }
-    } else {
-      if (!'.^$*+?{}'.includes(body[i])) first = body[i];
-      i++;
+      return { type: kind, alt, source: pattern.slice(start, i) };
     }
-    const source = body.slice(start, i);
-    const repeated = unbounded(body, i);
-    const count = /^\{\d+(?:,\d*)?\}/.exec(body.slice(i));
-    const quantified = Boolean(count || '*+?'.includes(body[i] ?? ''));
-    const optional = body[i] === '*' || body[i] === '?' || /^\{0[,}]/.test(body.slice(i));
-    if (count) i += count[0].length;
-    else if (quantified) i++;
-    if (quantified && body[i] === '?') i++; // lazy quantifier
-    result[result.length - 1].push({ first, source, repeated: repeated || multiplies(body, start + source.length), optional, anchor: !repeated && !optional && (first !== null || group) });
-  }
-  return result;
+    if (c === '[') {
+      i++;
+      if (pattern[i] === '^') i++;
+      if (pattern[i] === ']') i++;
+      while (i < pattern.length && pattern[i] !== ']') i += pattern[i] === '\\' ? 2 : 1;
+      i++;
+      return { type: 'char', source: pattern.slice(start, i) };
+    }
+    if (c === '\\') {
+      const escape = ESCAPES.map((shape) => shape.exec(pattern.slice(i))).find(Boolean)[0];
+      i += escape.length;
+      if (/^\\[bB]$/.test(escape)) return { type: 'assert', source: escape };
+      if (/^\\(?:k<|[1-9])/.test(escape)) return { type: 'unknown', source: escape };
+      if (/^\\[pP]/.test(escape)) return { type: 'char', source: escape, opaque: true };
+      return { type: 'char', source: escape };
+    }
+    i++;
+    if (c === '^' || c === '$') return { type: 'assert', source: c };
+    return { type: 'char', source: c };
+  };
+  const sequence = () => {
+    const items = [];
+    while (i < pattern.length && pattern[i] !== '|' && pattern[i] !== ')') {
+      const node = atom();
+      const quantifier = quantifierAt(pattern, i);
+      i += quantifier.length;
+      items.push({ node, min: quantifier.min, max: quantifier.max });
+    }
+    return items;
+  };
+  const alternation = () => {
+    const branches = [sequence()];
+    while (pattern[i] === '|') { i++; branches.push(sequence()); }
+    return branches;
+  };
+  const tree = alternation();
+  if (i !== pattern.length) throw new Error('unbalanced group');
+  return tree;
 }
 
-// An iteration boundary is fixed if an atom's next possible character cannot be
-// consumed by that atom. Unknown atoms intentionally fail this proof.
-function deterministic(body, flags) {
-  const alternatives = branches(body);
-  const samples = new Set([...Array(256).keys(), 0xa0, 0x1680, 0x2000, 0x2028, 0x2029, 0x3000, 0xfeff, 0xe9, 0x391, 0x410, 0x4e2d]);
-  for (const atom of alternatives.flat()) {
-    for (const char of atom.source) {
-      const point = char.codePointAt(0);
-      for (const near of [point - 1, point, point + 1]) if (near >= 0 && near <= 0x10ffff) samples.add(near);
+function characterSets(tree, flags) {
+  const cleanFlags = flags.replace(/[gy]/g, '');
+  const points = new Set([...Array(256).keys(), 0xa0, 0x1680, 0x2000, 0x2028, 0x2029, 0x3000, 0xfeff, 0xe9, 0x391, 0x3b1, 0x410, 0x430, 0x4e2d, 0x1f600]);
+  const visit = (branches) => {
+    for (const branch of branches) for (const { node } of branch) {
+      if (node.alt) visit(node.alt);
+      if (node.type !== 'char') continue;
+      for (const char of node.source) for (const near of [-1, 0, 1]) points.add(Math.max(0, char.codePointAt(0) + near));
+      for (const match of node.source.matchAll(/\\u\{([\da-f]+)\}|\\u([\da-f]{4})|\\x([\da-f]{2})/gi)) {
+        for (const near of [-1, 0, 1]) points.add(Math.max(0, parseInt(match[1] ?? match[2] ?? match[3], 16) + near));
+      }
     }
-    for (const match of atom.source.matchAll(/\\u\{([\da-f]+)\}|\\u([\da-f]{4})|\\x([\da-f]{2})/gi)) {
-      const point = parseInt(match[1] ?? match[2] ?? match[3], 16);
-      for (const near of [point - 1, point, point + 1]) if (near >= 0 && near <= 0x10ffff) samples.add(near);
-    }
-  }
-  const chars = new Set([...samples].map((point) => String.fromCodePoint(point)));
-  if (flags.includes('i')) for (const char of [...chars]) { chars.add(char.toLowerCase()); chars.add(char.toUpperCase()); }
+  };
+  visit(tree);
+  const samples = new Set([...points].filter((point) => point <= 0x10ffff).map((point) => String.fromCodePoint(point)));
+  if (flags.includes('i')) for (const char of [...samples]) { samples.add(char.toLowerCase()); samples.add(char.toUpperCase()); }
   const cache = new Map();
-  const matcher = (atom) => {
-    if (cache.has(atom.source)) return cache.get(atom.source);
-    // Preserve a deterministic prefix for a grouped list of literal options
-    // (e.g. -C|--dir); every alternative must start with the same literal.
-    let source = atom.source;
-    if (source.startsWith('(')) {
-      const options = /^\(\?:([^()]+)\)$/.exec(source)?.[1].split('|');
-      const initial = options?.[0]?.[0];
-      if (!initial || '\\.^$[*+?{'.includes(initial) || !options.every((option) => option[0] === initial)) return null;
-      source = initial.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+  const matcher = (node) => {
+    if (node.opaque) return null;
+    if (!cache.has(node.source)) {
+      let regex;
+      try { regex = new RegExp(`^(?:${node.source})$`, cleanFlags); } catch { regex = null; }
+      cache.set(node.source, regex);
     }
-    if (/^\\(?:[pPkKbB1-9])/.test(source) || !source || '^$'.includes(source)) return null;
-    try {
-      const regex = new RegExp(`^(?:${source})$`, flags.replace(/[gy]/g, ''));
-      cache.set(atom.source, regex);
-      return regex;
-    } catch { return null; }
+    return cache.get(node.source);
   };
-  const disjoint = (left, right) => {
+  return (left, right) => {
     const a = matcher(left), b = matcher(right);
-    return a && b && [...chars].every((char) => !a.test(char) || !b.test(char));
+    return Boolean(a && b) && [...samples].every((char) => !a.test(char) || !b.test(char));
   };
-  const first = alternatives.flatMap((branch) => {
-    const atoms = [];
-    for (const atom of branch) { atoms.push(atom); if (!atom.optional) break; }
-    return atoms;
-  });
-  return alternatives.every((branch) => branch.every((atom, index) => {
-    if (atom.source.startsWith('(') && /[+*]|\{\d+,\}/.test(atom.source)) return false;
-    if (!atom.repeated) return true;
-    const next = [];
-    let anchored = false;
-    for (const following of branch.slice(index + 1)) {
-      next.push(following);
-      if (!following.optional) { anchored = true; break; }
+}
+
+// Fixed width of an item that matches in exactly one way, or null.
+function fixedWidth(item, disjoint) {
+  if (item.node.type === 'assert') return item.min === item.max ? 0 : null;
+  if (item.min !== item.max) return null;
+  if (item.node.type === 'char') return item.min;
+  if (item.node.type !== 'group') return null;
+  const width = alternativesWidth(item.node.alt, disjoint);
+  return width === null ? null : width * item.min;
+}
+
+// Character-set positions an item contributes to a fixed prefix (stops at anything not a plain fixed item).
+function prefixPositions(items) {
+  const positions = [];
+  for (const item of items) {
+    if (item.node.type === 'assert' && item.min === item.max) continue;
+    if (item.node.type !== 'char') break;
+    if (item.min !== item.max) {
+      // A run that must take at least one character still fixes the character set of its first position.
+      if (item.min >= 1) positions.push(item.node);
+      break;
     }
-    if (!anchored) next.push(...first);
-    return next.every((following) => disjoint(atom, following));
+    for (let k = 0; k < item.min; k++) positions.push(item.node);
+  }
+  return positions;
+}
+
+function distinguishable(branches, disjoint) {
+  const prefixes = branches.map(prefixPositions);
+  return prefixes.every((left, index) => prefixes.slice(index + 1).every((right) => {
+    for (let at = 0; at < Math.min(left.length, right.length); at++) if (disjoint(left[at], right[at])) return true;
+    return false;
   }));
 }
 
-// Parse-time heuristic: direct repetition of one unbounded atom, or repeated
-// alternatives whose first literal characters are provably the same.
+function alternativesWidth(branches, disjoint) {
+  const widths = branches.map((branch) => branch.reduce((sum, item) => {
+    const width = fixedWidth(item, disjoint);
+    return sum === null || width === null ? null : sum + width;
+  }, 0));
+  if (widths.some((width) => width === null) || new Set(widths).size !== 1) return null;
+  if (branches.length > 1 && !distinguishable(branches, disjoint)) return null;
+  return widths[0];
+}
+
+// The first character atom an item must consume, or null when it cannot be named.
+function firstAtom(item) {
+  if (item.node.type === 'char') return item.node;
+  if (item.node.type === 'group' && item.node.alt.length === 1) {
+    const first = item.node.alt[0].find((inner) => inner.node.type !== 'assert');
+    return first && first.min >= 1 ? firstAtom(first) : null;
+  }
+  return null;
+}
+
+// A group taken exactly once distributes over its alternatives: x(?:a|b)y and xay|xby match the same inputs in the same
+// number of ways. Expanding such groups lets the rules below see every concrete sequence an iteration can take.
+const EXPANSION_CAP = 256;
+function expandOnceGroups(branches) {
+  let current = branches;
+  for (;;) {
+    let changed = false;
+    const next = [];
+    for (const branch of current) {
+      const at = branch.findIndex((item) => item.node.type === 'group' && item.min === 1 && item.max === 1);
+      if (at < 0) { next.push(branch); continue; }
+      changed = true;
+      for (const inner of branch[at].node.alt) next.push([...branch.slice(0, at), ...inner, ...branch.slice(at + 1)]);
+      if (next.length > EXPANSION_CAP) return null;
+    }
+    if (!changed) return current;
+    current = next;
+  }
+}
+
+function iterationDeterministic(original, disjoint) {
+  const branches = expandOnceGroups(original);
+  if (!branches) return false;
+  if (branches.length > 1 && !distinguishable(branches, disjoint)) return false;
+  const heads = branches.map((branch) => branch.find((item) => item.node.type !== 'assert'));
+  if (heads.some((head) => !head || head.min < 1)) return false;
+  return branches.every((branch) => branch.every((item, index) => {
+    if (item.node.type === 'assert') return item.min === item.max;
+    if (fixedWidth(item, disjoint) !== null) return true;
+    if (item.node.type !== 'char') return false;
+    const next = branch.slice(index + 1).find((following) => following.node.type !== 'assert');
+    const followers = next ? [next] : heads;
+    return followers.every((follower) => {
+      const atom = follower.min >= 1 ? firstAtom(follower) : null;
+      return atom !== null && disjoint(item.node, atom);
+    });
+  }));
+}
+
 export function safeRegex(rule, source, flags = '') {
   const pattern = String(source);
-  const groups = [];
-  let inClass = false;
-  for (let i = 0; i < pattern.length; i++) {
-    if (pattern[i] === '\\') { i++; continue; }
-    if (pattern[i] === '[') { inClass = true; continue; }
-    if (pattern[i] === ']' && inClass) { inClass = false; continue; }
-    if (inClass) continue;
-    if (pattern[i] === '(') groups.push({ start: i, repeatedChild: false, unboundedChild: false });
-    if (pattern[i] !== ')' || !groups.length) continue;
-    const { start, repeatedChild, unboundedChild } = groups.pop();
-    const body = pattern.slice(start + (pattern.startsWith('(?:', start) ? 3 : 1), i);
-    const containsUnbounded = unboundedChild || branches(body).some((branch) => branch.some((atom) => atom.repeated));
-    if (containsUnbounded) for (const parent of groups) parent.unboundedChild = true;
-    // A bounded count above one still multiplies the ways an unbounded body can split the input.
-    // Each bounded iteration must consume a fixed anchor (a literal or a group, neither repeated nor optional);
-    // a branch made only of unbounded or optional atoms lets the iterations split one run of input many ways.
-    if (containsUnbounded && multiplies(pattern, i + 1) && !deterministic(body, flags)) throw new Error(`${rule}: regex has nested unbounded groups (bounded repeat of an unbounded body) in ${pattern}`);
-    if (!unbounded(pattern, i + 1)) continue;
-    // Two independently repeatable nesting levels can partition the same input
-    // in exponentially many ways, even when the inner alternatives begin with
-    // distinct characters. Refuse the shape without evaluating a sample input.
-    if (repeatedChild || containsUnbounded && !deterministic(body, flags)) throw new Error(`${rule}: regex has nested unbounded groups (single unbounded element or overlapping alternation) in ${pattern}`);
-    for (const parent of groups) parent.repeatedChild = true;
-    const alternatives = branches(body);
-    const singleRepeated = alternatives.length === 1 && alternatives[0].length === 1 && alternatives[0][0].repeated;
-    // A shared first character is safe when the alternatives diverge at a
-    // subsequent literal before either can finish (e.g. -C versus --dir).
-    const overlapping = alternatives.some((branch, index) => alternatives.slice(index + 1).some((other) => {
-      if (branch[0]?.first !== other[0]?.first || branch[0]?.first == null) return false;
-      for (let at = 1; at < Math.min(branch.length, other.length); at++) {
-        if (branch[at].first !== other[at].first && branch[at].first != null && other[at].first != null) return false;
-        if (branch[at].first == null || other[at].first == null) break;
+  let tree;
+  try { tree = parseRegex(pattern); } catch { tree = null; }
+  if (!tree) {
+    const regex = new RegExp(pattern, flags); // an invalid pattern keeps its own syntax error
+    if (regex) throw new Error(`${rule}: regex could not be analysed for nested repetition in ${pattern}`);
+  }
+  {
+    const disjoint = characterSets(tree, flags);
+    const check = (branches) => {
+      for (const branch of branches) for (const item of branch) {
+        if (!item.node.alt) continue;
+        if (item.max > 1 && !iterationDeterministic(item.node.alt, disjoint)) {
+          throw new Error(`${rule}: regex has nested unbounded groups (an iteration can match the same input more than one way) in ${pattern}`);
+        }
+        check(item.node.alt);
       }
-      return true;
-    }));
-    if (singleRepeated || overlapping) throw new Error(`${rule}: regex has a repeated single unbounded element or overlapping alternation (same literal first character) in ${pattern}`);
+    };
+    check(tree);
   }
   return new RegExp(pattern, flags);
 }

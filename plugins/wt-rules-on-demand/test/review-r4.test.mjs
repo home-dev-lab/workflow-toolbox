@@ -63,7 +63,7 @@ for (const before of [false, true]) test(`verdict store failure cannot lose ${be
 
 test('nested unbounded regex is rejected naming rule and pattern', () => {
   for (const pattern of ['^(a+)+$', '(?:\\d*)*', '(a|a)*', '(a|ab)*', '(\\w+){2,}']) {
-    assert.throws(() => parseRuntimeRule('sample.md', text().replace("tool: '^Agent$'", () => `tool: '${pattern}'`)), /sample\.md.*single unbounded element or overlapping alternation/);
+    assert.throws(() => parseRuntimeRule('sample.md', text().replace("tool: '^Agent$'", () => `tool: '${pattern}'`)), /sample\.md.*nested unbounded groups/);
   }
 });
 test('unsafe shipped adjacent trigger specs are refused, other specs parse', async () => {
