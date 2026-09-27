@@ -7,7 +7,6 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ### Added
 - SDK runner: a Definition-of-done criterion that the critic blocks on in two consecutive plan rounds is escalated to the run's parent, never to a person. The parent answers only through `wt-pilot-runner.mjs decide --run <id> --dod <n> --reading <text>`, which writes atomically to the runner's per-run host state outside every lane-writable sandbox bind; the lifecycle supplies its bound reading to the pilot, and `DECISION` prose in mailboxes or lane files has no special meaning. Without an answer within 15 minutes, the card criterion's literal words bind verbatim and the critic may not block again on that criterion for the rest of the run; the next critic brief, pilot report, and run summary quote both. Card-term lookup accepts shorter labels and normalizes curly quotes, transition state remains unchanged if decision-request publication fails, dispute identity is consistently the DoD number, and the mandatory `## Card terms: reading chosen` plan section is now enforced.
-- `wt-rules-on-demand` (EXPERIMENTAL) marketplace plugin: opt-in Function Hooks delivery of rule files at matching acts, evidence-bound migration and daily dry-run quality reports.
 
 ### Changed
 - Restored unconditional anomaly, fan-out, distributed-twin, escalation, reporting, board-sweep, memory-integrity and cross-platform shipping duties to always-loaded rules; fan-out now loads its companion before Agent as well as Workflow calls.
