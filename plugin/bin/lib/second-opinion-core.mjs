@@ -53,20 +53,38 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   if (signal?.aborted) return Promise.resolve({ status: 1, stdout: '', stderr: 'Codex companion launch aborted before spawn.\n', cleanup: [], interrupted: signal.reason })
   const ownership = adapter.createCodexBrokerOwnership(env)
   const companionArgs = [companion, 'task', '--fresh', '--model', 'gpt-6-astra', '--effort', effort, request]
-  // second-opinion only reads the repository: it is bound read-only (H5).
-  const sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true })
-  announceUnsandboxedLane(sandbox)
-  // Inside the sandbox's PID namespace the broker records a namespace pid; ownership must find it as
-  // a host descendant of the sandbox instead of trusting that number.
-  if (sandbox.kind === 'bwrap') ownership.brokerInChildPidNamespace?.()
-  const [command, commandArgs] = sandbox.wrap(process.execPath, companionArgs)
-  const child = spawn(command, commandArgs, {
-    cwd,
-    env: ownership.env,
-    detached: adapter.platform !== 'win32',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  })
+  let stopEverything = (reason = null) => {
+    if (reason) { return ownership.stop() }
+    return []
+  }
+  const onAbort = () => stopEverything(signal?.reason)
+  const onExit = () => { stopEverything() }
+  process.once('exit', onExit)
+  signal?.addEventListener('abort', onAbort, { once: true })
+  let sandbox
+  let child
+  try {
+    // second-opinion only reads the repository: it is bound read-only (H5).
+    sandbox = resolveSandbox({ profile: 'codex', bin: process.execPath, args: companionArgs, cwd, env: ownership.env, paths: { readable: [companionRoot(companion)] }, platform: adapter.platform, readonlyCwd: true })
+    announceUnsandboxedLane(sandbox)
+    // Inside the sandbox's PID namespace the broker records a namespace pid; ownership must find it as
+    // a host descendant of the sandbox instead of trusting that number.
+    if (sandbox.kind === 'bwrap') ownership.brokerInChildPidNamespace?.()
+    const [command, commandArgs] = sandbox.wrap(process.execPath, companionArgs)
+    child = spawn(command, commandArgs, {
+      cwd,
+      env: ownership.env,
+      detached: adapter.platform !== 'win32',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    })
+  } catch (error) {
+    process.removeListener('exit', onExit)
+    signal?.removeEventListener('abort', onAbort)
+    sandbox?.dispose?.()
+    ownership.stop()
+    throw error
+  }
   const chunks = { stdout: [], stderr: [] }
   let outputBytes = 0
   let overflow = false
@@ -83,7 +101,7 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
     companionAlive = false
     clearInterval(captureTimer)
   })
-  const stopEverything = (reason = null) => {
+  stopEverything = (reason = null) => {
     if (cleanup) return cleanup
     if (reason) interrupted ??= reason
     clearInterval(captureTimer)
@@ -110,10 +128,6 @@ function runCodex({ companion, cwd, effort, request, env, signal, adapter, maxOu
   }
   child.stdout.on('data', (chunk) => collect('stdout', chunk))
   child.stderr.on('data', (chunk) => collect('stderr', chunk))
-  const onAbort = () => stopEverything(signal?.reason)
-  const onExit = () => { stopEverything() }
-  process.once('exit', onExit)
-  signal?.addEventListener('abort', onAbort, { once: true })
   if (signal?.aborted) onAbort()
   return new Promise((resolve) => {
     let settled = false

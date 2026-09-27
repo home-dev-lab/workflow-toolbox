@@ -54,17 +54,18 @@ const ETC_LINK_TARGETS = ['/etc/resolv.conf', '/etc/hosts', '/etc/ssl/certs/ca-c
 const OPENCODE_GLOBAL_CONFIGS = ['config.json', 'opencode.json', 'opencode.jsonc']
 const FILE_REFERENCE = /\{file:([^}]+)\}/g
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost'])
+const CODEX_PATH_DIR = '/run/wt-lane/bin'
 const probeCache = new Map()
 
 export class LaneSandboxRefusal extends Error {}
 
 const realFs = {
   exists: (file) => existsSync(file),
-  realpath: (file) => { try { return realpathSync(file) } catch { return null } },
+  realpath: (file) => { try { return realpathSync.native(file) } catch { return null } },
   isFile: (file) => { try { return statSync(file).isFile() } catch { return false } },
   // Windows has no execute bit to check (a .cmd is invoked by name resolution, never by mode); the
   // check is POSIX-only, and always true on win32.
-  isExecutable: (file) => { if (process.platform === 'win32') return true; try { accessSync(file, constants.X_OK); return true } catch { return false } },
+  isExecutable: (file) => { if (process.platform === 'win32') { return true } try { accessSync(file, constants.X_OK); return true } catch { return false } },
   isDir: (file) => { try { return statSync(file).isDirectory() } catch { return false } },
   readText: (file) => { try { return readFileSync(file, 'utf8') } catch { return null } },
   ensureDir: (directory) => { try { mkdirSync(directory, { recursive: true, mode: 0o700 }) } catch { /* bind-try then leaves it private */ } },
@@ -90,7 +91,7 @@ function findOnPath(name, searchPath, fs) {
   for (const directory of String(searchPath ?? '').split(path.delimiter)) {
     if (!path.isAbsolute(directory)) continue
     const candidate = path.join(directory, name)
-    if (fs.isFile(candidate)) return candidate
+    if (fs.isFile(candidate) && (fs.isExecutable?.(candidate) ?? true)) return candidate
   }
   return null
 }
@@ -226,8 +227,6 @@ function opencodePrivateHome({ env, fs, runtimeDir, model }) {
   const privShare = path.join(runtimeDir, 'oc-share')
   const privCache = path.join(runtimeDir, 'oc-cache')
   const privState = path.join(runtimeDir, 'oc-state')
-  for (const dir of [privShare, privCache, privState]) fs.ensureDir(dir)
-  fs.copy(path.join(shareDir, 'auth.json'), path.join(privShare, 'auth.json'))
   const readOnlyOverlays = []
   const writable = [{ inside: shareDir, outside: privShare }, { inside: cacheDir, outside: privCache }, { inside: stateDir, outside: privState }]
   // The shared provider packages and models cache are needed to run but must not be writable.
@@ -235,10 +234,14 @@ function opencodePrivateHome({ env, fs, runtimeDir, model }) {
     const src = path.join(cacheDir, sub)
     if (fs.isDir(src)) readOnlyOverlays.push(path.join(privCache, sub) === src ? src : { inside: path.join(cacheDir, sub), outside: src })
   }
-  fs.copy(path.join(cacheDir, 'models.json'), path.join(privCache, 'models.json'))
+  const prepare = () => {
+    for (const dir of [privShare, privCache, privState]) fs.ensureDir(dir)
+    fs.copy(path.join(shareDir, 'auth.json'), path.join(privShare, 'auth.json'))
+    fs.copy(path.join(cacheDir, 'models.json'), path.join(privCache, 'models.json'))
+  }
   const configDir = path.join(xdg(env, 'XDG_CONFIG_HOME', '.config'), 'opencode')
   const network = (laneWritable) => opencodeModelNetwork({ configDir, model, authFile: path.join(shareDir, 'auth.json'), configFile: absolute(env.OPENCODE_CONFIG).find((file) => !laneWritable(file)), fs })
-  return { writable, readOnlyOverlays, network }
+  return { writable, readOnlyOverlays, network, prepare }
 }
 
 const PROFILES = {
@@ -250,6 +253,7 @@ const PROFILES = {
     const opencodeHome = OPENCODE_HOME_READ_ONLY.map((name) => path.join(home(env), '.opencode', name))
     return {
       readable: [configDir, ...opencodeConfigReferences(configDir, env, fs), ...configFile, ...opencodeHome, ...argumentValues(args, ['-f', '--file'], base), ...(readonlyCwd ? dirArgs : [])],
+      prepare: priv.prepare,
       writableRemap: priv.writable,
       writable: [...(readonlyCwd ? [] : dirArgs)],
       readOnlyOverlaysRemap: priv.readOnlyOverlays.filter((entry) => typeof entry === 'object'),
@@ -265,12 +269,12 @@ const PROFILES = {
     // A per-run CODEX_HOME: ~/.codex stays READ-ONLY (it holds hooks.json the unsandboxed codex runs,
     // H3), auth.json is copied into the private home and written back only if the token refreshed.
     const privHome = path.join(runtimeDir, 'codex-home')
-    fs.ensureDir(privHome)
-    fs.copy(path.join(codexHome, 'auth.json'), path.join(privHome, 'auth.json'))
-    fs.copy(path.join(codexHome, 'config.toml'), path.join(privHome, 'config.toml'))
     return {
-      executableMounts: executableMount(findOnPath('codex', env.PATH, fs), fs),
-      executableSymlinks: executableSymlinks(findOnPath('codex', env.PATH, fs), fs),
+      prepare: () => {
+        fs.ensureDir(privHome)
+        fs.copy(path.join(codexHome, 'auth.json'), path.join(privHome, 'auth.json'))
+        fs.copy(path.join(codexHome, 'config.toml'), path.join(privHome, 'config.toml'))
+      },
       writableRemap: [{ inside: codexHome, outside: privHome }],
       writable: [...absolute(env.CLAUDE_PLUGIN_DATA)],
       readOnlyOverlaysRemap: [],
@@ -357,15 +361,22 @@ function operatorExtras(optionEnv, env, fs) {
   return { readable: accepted(LANE_SANDBOX_READ_ENV), writable: accepted(LANE_SANDBOX_WRITE_ENV), refused }
 }
 
+function bindPath(item) {
+  if (typeof item !== 'string' || !path.isAbsolute(item) || item.split('/').includes('..')) {
+    throw new LaneSandboxRefusal(`refusing path ${String(item)}: non-absolute path or parent traversal in a bind cannot be checked safely`)
+  }
+  return item
+}
+
 function bindArgs(flag, paths) {
-  return [...new Set(paths)].flatMap((item) => [flag, item, item])
+  return [...new Set(paths)].flatMap((item) => [flag, bindPath(item), bindPath(item)])
 }
 
 function remapArgs(flag, remaps) {
-  return remaps.flatMap(({ inside, outside }) => [flag, outside, inside])
+  return remaps.flatMap(({ inside, outside }) => [flag, bindPath(outside), bindPath(inside)])
 }
 
-function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, executableSymlinks, env, chdir, fs, socketDir }) {
+function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays, readOnlyOverlaysRemap, executableSymlinks, codexReal, codexPath, env, chdir, fs, socketDir }) {
   const etcTargets = ETC_LINK_TARGETS.map((file) => fs.realpath(file)).filter((file) => file && !file.startsWith('/etc/') && !file.startsWith('/usr/'))
   const mounted = [...SYSTEM_READ_ONLY, ...readable, ...writable, ...writableRemap.map(({ inside }) => inside)]
   const uniqueSymlinks = [...new Map(executableSymlinks.map((entry) => [entry.link, entry])).values()]
@@ -384,10 +395,12 @@ function sandboxArguments({ readable, writable, writableRemap, readOnlyOverlays,
     // Read-only overlays land AFTER the writable binds they sit inside, so they win.
     ...bindArgs('--ro-bind-try', readOnlyOverlays),
     ...remapArgs('--ro-bind-try', readOnlyOverlaysRemap),
+    ...(codexReal ? ['--dir', CODEX_PATH_DIR, '--symlink', codexReal, `${CODEX_PATH_DIR}/codex`] : []),
     '--chdir', chdir,
     '--unsetenv', 'XDG_RUNTIME_DIR', '--unsetenv', 'DBUS_SESSION_BUS_ADDRESS', '--unsetenv', 'SSH_AUTH_SOCK',
     '--setenv', 'TMPDIR', '/tmp', '--setenv', 'TMP', '/tmp', '--setenv', 'TEMP', '/tmp',
     '--setenv', LANE_SANDBOX_SWITCH_ENV, 'bwrap',
+    ...(codexReal ? ['--setenv', 'PATH', codexPath] : []),
   ]
 }
 
@@ -419,8 +432,9 @@ export function laneUnsandboxedAtStart(optionEnv = process.env, platform = proce
 // The realpath of the deepest existing ancestor, with the rest appended: a path that does not exist
 // yet (a log file) is still compared by where it would really land.
 function canonicalPath(candidate, fs) {
+  bindPath(candidate)
   const suffix = []
-  let probe = path.resolve(candidate)
+  let probe = candidate
   while (true) {
     const real = fs.realpath(probe)
     if (real) return path.join(real, ...suffix)
@@ -432,10 +446,11 @@ function canonicalPath(candidate, fs) {
 }
 
 const within = (child, parent) => child === parent || child.startsWith(`${parent}${path.sep}`)
+const withinOnDisk = (child, parent) => within(child.toLowerCase(), parent.toLowerCase())
 
 function laneWritablePredicate(roots, fs) {
   const canonicalRoots = roots.map((root) => canonicalPath(root, fs))
-  return (candidate) => canonicalRoots.some((root) => within(canonicalPath(candidate, fs), root))
+  return (candidate) => canonicalRoots.some((root) => withinOnDisk(canonicalPath(candidate, fs), root))
 }
 
 // A writable bind that contains (or sits inside) a CLI's config/auth location would override its
@@ -446,7 +461,7 @@ function refuseProtectedOverlap(writable, protectedPaths, fs) {
     const root = canonicalPath(bind, fs)
     for (const guarded of protectedPaths) {
       const target = canonicalPath(guarded, fs)
-      if (within(target, root) || within(root, target)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
+      if (withinOnDisk(target, root) || withinOnDisk(root, target)) throw new LaneSandboxRefusal(`refusing writable bind ${bind}: it overlaps ${guarded}, which a lane must not be able to change`)
     }
   }
 }
@@ -455,7 +470,7 @@ function refuseProtectedOverlap(writable, protectedPaths, fs) {
 // private remap target, or protected location. Narrow only executable mounts; other late overlays
 // (git pointer files and private cache packages) must already satisfy the same invariant.
 function safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs) {
-  const collision = (overlay) => guarded.find((target) => within(canonicalPath(target, fs), canonicalPath(overlay, fs)))
+  const collision = (overlay) => guarded.find((target) => withinOnDisk(canonicalPath(target, fs), canonicalPath(overlay, fs)))
   for (const overlay of otherOverlays) {
     const target = collision(overlay)
     if (target) throw new LaneSandboxRefusal(`refusing late read-only overlay ${overlay}: it covers ${target}`)
@@ -470,6 +485,23 @@ function safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs) {
     }
     return fallback
   })
+}
+
+// A bind at the real target does not recreate an invocation beneath a private remap (nor
+// beneath an aliased HOME). Mount the selected entry point at its PATH spelling last.
+// Only the real target matters: the plan creates its own first PATH entry. Confirm the last
+// covering bind still exposes the real file at its original spelling, then create the link AFTER
+// all binds. Unlike a simulation of shell lookup, this has no symlink-chain or PATH fallback case.
+function refuseCoveredCodex(prefix, real, fs) {
+  let source = null
+  for (let i = 0; i < prefix.length; i += 1) {
+    if (!['--bind', '--bind-try', '--ro-bind', '--ro-bind-try'].includes(prefix[i])) continue
+    const from = prefix[i + 1]; const to = prefix[i + 2]
+    if (withinOnDisk(real, to) && (fs.isFile(from) || fs.isDir(from) || SYSTEM_READ_ONLY.includes(from))) {
+      source = path.join(from, path.relative(to, real))
+    }
+  }
+  if (source !== real) throw new LaneSandboxRefusal(`refusing executable ${real}: its realpath is covered by a later bind or is not mounted`)
 }
 
 // The egress log is written by the host-side proxy; a path the lane can write (or plant a symlink
@@ -506,30 +538,35 @@ function networkBridges({ network, socketDir, socat, execPath, egressLog }) {
 // the launch (the lane would otherwise start with a launch line claiming a route that does not
 // exist); a bridge that dies later says so on the lane's diagnostics stream (its run log).
 function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
-  const relays = bridges.map((bridge) => {
-    const relay = spawnFn(bridge.command, bridge.args, { stdio: ['ignore', 'ignore', typeof diagnostics === 'number' ? diagnostics : 'inherit'], detached: false })
-    if (typeof relay?.once === 'function') {
-      relay.once('exit', (code, signal) => {
-        if (!state.disposed) reportBridgeExit(diagnostics, `workflow-toolbox: lane ${bridge.proxy ? 'egress proxy' : 'endpoint relay'} exited (code ${code ?? 'none'}, signal ${signal ?? 'none'}); the sandboxed lane has lost that route\n`)
-      })
+  const relays = []
+  try {
+    for (const bridge of bridges) {
+      const relay = spawnFn(bridge.command, bridge.args, { stdio: ['ignore', 'ignore', typeof diagnostics === 'number' ? diagnostics : 'inherit'], detached: false })
+      relays.push(relay)
+      if (typeof relay?.once === 'function') {
+        relay.once('exit', (code, signal) => {
+          if (!state.disposed) reportBridgeExit(diagnostics, `workflow-toolbox: lane ${bridge.proxy ? 'egress proxy' : 'endpoint relay'} exited (code ${code ?? 'none'}, signal ${signal ?? 'none'}); the sandboxed lane has lost that route\n`)
+        })
+      }
     }
-    return relay
-  })
-  const insideCommands = bridges.map((bridge) => `${shPosix(socat)} TCP4-LISTEN:${bridge.port},bind=${bridge.host},fork,reuseaddr UNIX-CONNECT:${shPosix(bridge.sock)} >/dev/null 2>&1 &`)
+    const insideCommands = bridges.map((bridge) => `${shPosix(socat)} TCP4-LISTEN:${bridge.port},bind=${bridge.host},fork,reuseaddr UNIX-CONNECT:${shPosix(bridge.sock)} >/dev/null 2>&1 &`)
   // A host bridge's unix socket appears asynchronously. Wait for it BEFORE the sandbox starts, or
   // the lane's first connection races the socket into existence and is refused (measured).
-  const deadline = Date.now() + 3_000
-  for (const { sock } of bridges) {
-    while (!fs.exists(sock) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
-  }
-  const missing = bridges.filter(({ sock }) => !fs.exists(sock))
-  if (missing.length) {
+    const deadline = Date.now() + 3_000
+    for (const { sock } of bridges) {
+      while (!fs.exists(sock) && Date.now() < deadline) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    }
+    const missing = bridges.filter(({ sock }) => !fs.exists(sock))
+    if (missing.length) {
+      const names = missing.map((bridge) => (bridge.proxy ? 'egress proxy' : 'relay to ' + bridge.host + ':' + bridge.port)).join(', ')
+      throw new LaneSandboxRefusal(`lane ${names} did not start within 3 s; refusing to launch a lane whose route does not exist`)
+    }
+    return { relays, insideCommands }
+  } catch (error) {
     state.disposed = true
     for (const relay of relays) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }
-    const names = missing.map((bridge) => (bridge.proxy ? 'egress proxy' : 'relay to ' + bridge.host + ':' + bridge.port)).join(', ')
-    throw new LaneSandboxRefusal(`lane ${names} did not start within 3 s; refusing to launch a lane whose route does not exist`)
+    throw error
   }
-  return { relays, insideCommands }
 }
 
 // Inside the namespace, HTTP(S)_PROXY name the bridged proxy; loopback stays direct so a relayed
@@ -580,12 +617,20 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   for (const dir of argumentValues(args, ['--dir'], base)) {
     if (isForbiddenPath(dir, env, fs)) throw new LaneSandboxRefusal(`refusing a lane --dir of ${dir} (/, $HOME or an ancestor)`)
   }
+  const selectedCommand = profile === 'codex' ? findOnPath('codex', env.PATH, fs) : null
+  if (profile === 'codex' && !selectedCommand) throw new LaneSandboxRefusal('refusing executable codex: no executable selected on an absolute PATH entry')
+  const codexReal = selectedCommand ? fs.realpath(selectedCommand) : null
+  if (selectedCommand && (!codexReal || !fs.isFile(codexReal) || (fs.isExecutable && !fs.isExecutable(codexReal)))) {
+    throw new LaneSandboxRefusal(`refusing executable ${selectedCommand}: its realpath is missing or not executable`)
+  }
 
   const parent = runtimeParent ?? (path.isAbsolute(optionEnv.XDG_RUNTIME_DIR ?? '') ? optionEnv.XDG_RUNTIME_DIR : os.tmpdir())
   fs.ensureDir(parent)
   const runtimeDir = path.join(parent, `wt-lane-sandbox-${process.pid}-${randomUUID().slice(0, 8)}`)
+  const bridgeState = { disposed: false }
+  let bridge
+  try {
   fs.ensureDir(runtimeDir)
-
   const selected = PROFILES[profile]({ env, args, fs, runtimeDir, readonlyCwd, base })
   const extras = operatorExtras(optionEnv, env, fs)
   const git = workdir.length ? gitPaths(workdir[0], env, fs) : { readable: [], writable: [], overlaysRo: [] }
@@ -594,12 +639,18 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   fs.ensureDir(suiteLockDir(env))
   // A read-only role (observer, second-opinion) gets its working directory bound read-only (H5).
   const toolchain = toolchainPaths({ env, execPath, fs })
-  const executableMounts = [...toolchain.executableMounts, ...executableMount(bin, fs), ...(selected.executableMounts ?? [])]
+  const executableMounts = [...toolchain.executableMounts, ...executableMount(bin, fs), ...(codexReal ? [executableMount(codexReal, fs)[0]] : [])]
   const rawReadable = [...toolchain.readable, ...(selected.readable ?? []), ...git.readable, ...(readonlyCwd ? workdir : []), ...(paths.readable ?? []), ...extras.readable]
   const rawWritable = [...(readonlyCwd ? [] : workdir), ...selected.writable, ...git.writable, suiteLockDir(env), ...(paths.writable ?? []), ...extras.writable]
-  // The root/$HOME/ancestor refusal covers EVERY computed bind, not only the operator extras (H2).
+  // Validate only paths that survive the same forbidden-path filtering as the bwrap argv.
+  // Discarded paths (including a spelling that resolves to HOME) are not binds.
+  const keptReadable = rawReadable.filter((item) => item && !isForbiddenPath(item, env, fs))
   const writable = rawWritable.filter((item) => item && !isForbiddenPath(item, env, fs))
-  const executableLinks = [...toolchain.executableSymlinks, ...executableSymlinks(bin, fs), ...(selected.executableSymlinks ?? [])]
+  for (const item of [...keptReadable, ...writable, ...(selected.writableRemap ?? []).flatMap(({ inside, outside }) => [inside, outside]), ...(selected.readOnlyOverlaysRemap ?? []).flatMap(({ inside, outside }) => [inside, outside]), ...(selected.readOnlyOverlays ?? []), ...git.overlaysRo]) {
+    if (item) bindPath(item)
+  }
+  // The root/$HOME/ancestor refusal covers EVERY computed bind, not only the operator extras (H2).
+  const executableLinks = [...toolchain.executableSymlinks, ...executableSymlinks(bin, fs)]
     .filter(({ target, link }) => {
       if (isForbiddenPath(link, env, fs)) return false
       if (isForbiddenPath(target, env, fs)) throw new LaneSandboxRefusal(`refusing executable ${link}: link target ${target} cannot be mounted`)
@@ -619,26 +670,31 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   if (socketDir) fs.ensureDir(socketDir)
   const otherOverlays = [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...(selected.readOnlyOverlaysRemap ?? []).map(({ inside }) => inside)]
   const guarded = [...writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), ...(selected.protectedPaths ?? []), ...(socketDir ? [socketDir] : [])]
-  const executableOverlays = safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs)
-  const readable = [...rawReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
-  const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
-  const bridgeState = { disposed: false }
-  let bridge
-  try { bridge = startBridges({ bridges, fs, spawnFn, socat: socatPath, diagnostics, state: bridgeState }) } catch (error) {
-    try { rmSync(runtimeDir, { recursive: true, force: true }) } catch { /* best effort */ }
-    throw error
+  if (codexReal) {
+    const collision = [...guarded, ...keptReadable, ...otherOverlays].find((item) => {
+      const a = canonicalPath(item, fs); const b = canonicalPath(CODEX_PATH_DIR, fs)
+      return withinOnDisk(a, b) || withinOnDisk(b, a)
+    })
+    if (collision) throw new LaneSandboxRefusal(`refusing executable ${codexReal}: dedicated PATH directory ${CODEX_PATH_DIR} overlaps ${collision}`)
   }
-
+  const executableOverlays = safeLateOverlays(executableMounts, otherOverlays, guarded, env, fs)
+  const readable = [...keptReadable, ...executableOverlays].filter((item) => item && !isForbiddenPath(item, env, fs))
+  const bridges = socketDir ? networkBridges({ network, socketDir, socat: socatPath, execPath, egressLog }) : []
   const prefix = sandboxArguments({
     readable, writable, writableRemap: selected.writableRemap ?? [],
     executableSymlinks: executableLinks,
     // Executable directories land late only if they cannot cover a writable/private/protected path.
     readOnlyOverlays: [...(selected.readOnlyOverlays ?? []), ...git.overlaysRo, ...executableOverlays],
     readOnlyOverlaysRemap: selected.readOnlyOverlaysRemap ?? [],
+    codexReal, codexPath: codexReal ? [CODEX_PATH_DIR, ...String(env.PATH ?? '').split(path.delimiter).filter((entry) => path.isAbsolute(entry))].join(path.delimiter) : null,
     env, chdir: workdir[0] ?? home(env), fs, socketDir,
   })
+  if (codexReal) refuseCoveredCodex(prefix, codexReal, fs)
   if (selected.codexHome) prefix.push('--setenv', 'CODEX_HOME', selected.codexHome)
   prefix.push(...proxyEnvironment(bridges.find((item) => item.proxy)))
+  bridge = startBridges({ bridges, fs, spawnFn, socat: socatPath, diagnostics, state: bridgeState })
+  // Bridge readiness needs only the network plan and socket directory, never a copied profile file.
+  selected.prepare()
 
   const refusedNote = extras.refused.length ? `; refused ${LANE_SANDBOX_READ_ENV}/${LANE_SANDBOX_WRITE_ENV} entries ${extras.refused.join(', ')}` : ''
   const netNote = networkNote({ network, bridges, socat: socatPath })
@@ -675,6 +731,12 @@ export function resolveLaneSandbox({ profile, bin, args = [], cwd, env = {}, opt
   }
 
   return { kind: 'bwrap', line, readable, writable, endpoints, egressHosts: bridges.some((item) => item.proxy) ? network.hosts : [], anchor: git.anchor ?? null, authWriteback: selected.authWriteback ?? null, writeBackAuth, wrap, dispose }
+  } catch (error) {
+    bridgeState.disposed = true
+    for (const relay of bridge?.relays ?? []) { try { relay.kill('SIGKILL') } catch { /* already gone */ } }
+    try { rmSync(runtimeDir, { recursive: true, force: true }) } catch { /* best effort */ }
+    throw error
+  }
 }
 
 const announced = new Set()

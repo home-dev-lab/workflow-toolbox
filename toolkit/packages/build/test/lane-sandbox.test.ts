@@ -18,7 +18,7 @@ const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const LIB = join(ROOT, 'plugin/bin/lib')
 
 interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[], writable?: string[], endpoints?: Array<{ host: string, port: number }>, anchor?: unknown, wrap: (bin: string, args: string[]) => [string, string[]], dispose: () => void }
-interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
+interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
   announceUnsandboxedLane: (plan: SandboxPlan, write: (text: string) => void) => void
@@ -74,6 +74,7 @@ function fakeFs(files: Record<string, string> = {}, dirs: string[] = [], realpat
     exists: (f) => f in files || dirSet.has(f) || f === '/usr/bin/bwrap' || f === '/usr/bin/socat',
     realpath: (f) => realpaths[f] ?? (f in files || dirSet.has(f) ? f : null),
     isFile: (f) => f in files,
+    isExecutable: (f) => f in files,
     isDir: (f) => dirSet.has(f),
     readText: (f) => files[f] ?? null,
     ensureDir: (d) => { dirSet.add(d); ensured.push(d) },
@@ -159,7 +160,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     const cases = [
       { profile: 'codex', env: { HOME, PATH: codexHome }, fs: fakeFs({ [bin]: 'bin' }, [HOME, '/work/tree', codexHome]), execPath: '/usr/bin/node' },
       { profile: 'codex', env: { HOME, PATH: `${HOME}/.local/bin` }, fs: fakeFs({ [bin]: 'bin', [link]: 'link' }, [HOME, '/work/tree', codexHome, `${HOME}/.local/bin`], { [link]: bin }), execPath: '/usr/bin/node' },
-      ...(['codex', 'opencode'] as const).map((profile) => ({ profile, env: { HOME, PATH: '/usr/bin' }, fs: fakeFs({ [`${HOME}/.local/bin/node`]: 'node' }, [HOME, '/work/tree', `${HOME}/.local/bin`]), execPath: `${HOME}/.local/bin/node` })),
+      ...(['codex', 'opencode'] as const).map((profile) => ({ profile, env: { HOME, PATH: '/usr/bin' }, fs: fakeFs({ [`${HOME}/.local/bin/node`]: 'node', '/usr/bin/codex': 'codex' }, [HOME, '/work/tree', `${HOME}/.local/bin`]), execPath: `${HOME}/.local/bin/node` })),
     ]
     for (const { profile, env, fs, execPath } of cases) {
       const p = plan({ profile, env, fs, execPath })
@@ -203,6 +204,93 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     const late = flat(args, '--ro-bind-try')
     expect(late).toContain(binary)
     expect(late).not.toContain(`${HOME}/.config`)
+  })
+
+  it('always folds both sides of an overlap, including case-only differences on a case-sensitive filesystem', () => {
+    const bin = '/srv/Tools/cli'
+    const fs = fakeFs({ [bin]: 'cli' }, [HOME, '/work/tree', '/srv', '/srv/Tools', '/srv/tools/state'])
+    const [, args] = plan({ bin, fs, paths: { readable: ['/srv'] }, optionEnv: { WT_LANE_SANDBOX_WRITE: '/srv/tools/state' } }).wrap(bin, [])
+    const ro = flat(args, '--ro-bind-try')
+    expect(ro).toContain(bin)
+    expect(ro).not.toContain('/srv/Tools')
+  })
+
+  it('accepts an ordinary non-overlapping bind after unconditional case folding', () => {
+    const bin = '/srv/Tools/cli'
+    const [, args] = plan({ bin, fs: fakeFs({ [bin]: 'cli' }, [HOME, '/work/tree', '/srv/Tools', '/data/other']), paths: { writable: ['/data/other'] } }).wrap(bin, [])
+    expect(flat(args, '--ro-bind-try')).toContain('/srv/Tools')
+  })
+
+  it('refuses a bind spelling with symlink/.. before lexical normalization can conceal its target', () => {
+    const fs = fakeFs({ '/opt/tools/cli': 'cli' }, [HOME, '/work/tree', '/mnt/links', '/opt/tools', '/opt/tools/deep', '/opt/tools/state'], { '/mnt/links/jump': '/opt/tools/deep' })
+    expect(() => plan({ bin: '/opt/tools/cli', fs, paths: { readable: ['/mnt/links'] }, optionEnv: { WT_LANE_SANDBOX_WRITE: '/mnt/links/jump/../state' } })).toThrow(/refusing path .*parent traversal/)
+  })
+
+  it('refuses traversal in paths.readable at the bind entry point', () => {
+    expect(() => plan({ paths: { readable: ['/data/x/../x'] } })).toThrow(/refusing path \/data\/x\/\.\.\/x: .*parent traversal/)
+  })
+
+  it('drops a readable spelling resolving to HOME without refusing the OpenCode launch', () => {
+    const discarded = `${HOME}/a/..`
+    const p = plan({ paths: { readable: [discarded] }, fs: fakeFs({}, [HOME, '/work/tree']) })
+    expect(p.kind).toBe('bwrap')
+    expect(p.readable).not.toContain(discarded)
+    expect(everyBind(p.wrap('opencode', [])[1])).not.toContain(discarded)
+    p.dispose()
+  })
+
+  it('constructs codex PATH with a late symlink to the selected realpath, discarding relative and empty entries', () => {
+    const real = '/opt/good/bin/codex'
+    const first = '/usr/local/bin/codex'
+    const fs = fakeFs({ [first]: 'link', [real]: 'selected', '/usr/bin/codex': 'other' }, [HOME, '/work/tree', '/usr/local/bin', '/usr/bin', '/opt/good/bin'], { [first]: real })
+    for (const original of [`.${delimiter}/usr/local/bin${delimiter}/usr/bin`, `tools${delimiter}/usr/local/bin`, `${delimiter}/usr/local/bin${delimiter}${delimiter}/usr/bin`]) {
+      const [, args] = plan({ profile: 'codex', env: { HOME, PATH: original }, fs }).wrap('/bin/sh', ['-c', 'codex'])
+      const link = args.lastIndexOf('--symlink')
+      expect(args.slice(link + 1, link + 3)).toEqual([real, '/run/wt-lane/bin/codex'])
+      expect(link).toBeGreaterThan(args.lastIndexOf('--ro-bind-try'))
+      expect(args.slice(args.indexOf('PATH') - 1, args.indexOf('PATH') + 2)).toEqual(['--setenv', 'PATH', ['/run/wt-lane/bin', '/usr/local/bin', '/usr/bin'].filter((entry) => original.includes(entry) || entry === '/run/wt-lane/bin').join(':')])
+      expect(flat(args, '--ro-bind-try')).toContain('/opt/good/bin')
+    }
+  })
+
+  it('refuses an empty PATH with no selected codex, rather than falling through to the worktree', () => {
+    const fs = fakeFs({ '/work/tree/codex': 'other' }, [HOME, '/work/tree'])
+    expect(() => plan({ profile: 'codex', env: { HOME, PATH: '' }, fs })).toThrow(/no executable selected/)
+  })
+
+  it('never follows a preserved host symlink chain through a private remap to a different codex', () => {
+    const first = '/usr/local/bin/codex'; const hop = `${HOME}/.codex/hop`; const real = '/opt/good/bin/codex'
+    const fs = fakeFs({ [first]: 'link', [hop]: 'link', [real]: 'selected', '/usr/bin/codex': 'other' }, [HOME, '/work/tree', `${HOME}/.codex`, '/usr/local/bin', '/usr/bin', '/opt/good/bin'], { [first]: real, [hop]: real })
+    const [, args] = plan({ profile: 'codex', env: { HOME, PATH: '/usr/local/bin:/usr/bin' }, fs }).wrap('/bin/sh', ['-c', 'codex'])
+    expect(args.slice(args.lastIndexOf('--symlink') + 1, args.lastIndexOf('--symlink') + 3)).toEqual([real, '/run/wt-lane/bin/codex'])
+    expect(args[args.indexOf('PATH') + 1]).toBe('/run/wt-lane/bin:/usr/local/bin:/usr/bin')
+  })
+
+  it('skips a nonexecutable first hit and selects only an executable realpath', () => {
+    const first = '/opt/first/codex'; const second = '/opt/second/codex'
+    const fs = fakeFs({ [first]: 'no exec', [second]: 'selected' }, [HOME, '/work/tree', '/opt/first', '/opt/second'])
+    fs.isExecutable = (file) => file !== first && fs.isFile(file)
+    const [, args] = plan({ profile: 'codex', env: { HOME, PATH: '/opt/first:/opt/second' }, fs }).wrap('/bin/sh', [])
+    expect(args.slice(args.lastIndexOf('--symlink') + 1, args.lastIndexOf('--symlink') + 3)).toEqual([second, '/run/wt-lane/bin/codex'])
+    fs.isExecutable = () => false
+    expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/first:/opt/second' }, fs })).toThrow(/no executable selected/)
+    const link = '/opt/first/codex'
+    const linked = fakeFs({ [link]: 'link', [second]: 'not executable' }, [HOME, '/work/tree', '/opt/first', '/opt/second'], { [link]: second })
+    linked.isExecutable = (file) => file === link
+    expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/first:/opt/second' }, fs: linked })).toThrow(/realpath is missing or not executable/)
+  })
+
+  it('refuses a dedicated PATH dir covered by a writable or protected bind', () => {
+    const fs = fakeFs({ '/opt/good/bin/codex': 'selected' }, [HOME, '/work/tree', '/opt/good/bin', '/run/wt-lane'])
+    expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/good/bin' }, paths: { writable: ['/run/wt-lane'] }, fs })).toThrow(/dedicated PATH directory .* overlaps/)
+    expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/good/bin', CODEX_HOME: '/run/wt-lane/bin' }, fs })).toThrow(/dedicated PATH directory .* overlaps/)
+  })
+
+  it('refuses when the real target directory is unavailable for its ordered read-only mount', () => {
+    // A bind-try to a disappeared directory is skipped by bwrap; the dedicated link must not
+    // silently fall through to the next PATH entry. This specifically exercises the final check.
+    const fs = fakeFs({ '/opt/good/bin/codex': 'selected', '/usr/bin/codex': 'other' }, [HOME, '/work/tree'])
+    expect(() => plan({ profile: 'codex', env: { HOME, PATH: '/opt/good/bin:/usr/bin' }, fs })).toThrow(/realpath is covered by a later bind or is not mounted/)
   })
 
   it('recreates a symlinked executable inside the sandbox so its real directory and sibling helper are visible', () => {
@@ -391,6 +479,72 @@ describe('lane sandbox plan — codex home (H3)', () => {
   })
 })
 
+// The fake plan deliberately forces the Linux bwrap path; its real temporary root must use POSIX
+// paths. Windows verifies the normal unsandboxed branch in the availability suite above.
+describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans leave no acquired resources', () => {
+  function fixture(socketReady = true) {
+    const root = tempRoot('refusal')
+    const runtimeParent = join(root, 'run')
+    mkdirSync(runtimeParent)
+    const home = join(root, 'home')
+    const env = { HOME: home, XDG_STATE_HOME: join(root, 'state'), PATH: '/opt/good/bin' }
+    const credential = `${home}/.codex/auth.json`
+    const fake = fakeFs({ '/opt/good/bin/codex': 'binary', [credential]: '{"tokens":{}}' }, [home, '/work/tree', '/opt/good/bin', `${home}/.codex`])
+    const fs = {
+      ...fake,
+      ensureDir: (dir: string) => { mkdirSync(dir, { recursive: true }); fake.ensureDir(dir) },
+      copy: (from: string, to: string) => {
+        fake.copy(from, to)
+        if (from === credential) { mkdirSync(dirname(to), { recursive: true }); writeFileSync(to, fake.readText(from)!, { mode: 0o600 }) }
+      },
+    }
+    const relays: Array<{ alive: boolean, kill: () => void }> = []
+    const spawnFn = (_command: string, args: string[]) => {
+      const sock = socketOf(args)
+      if (sock && socketReady) fs.ensureFile(sock)
+      const relay = { alive: true, kill() { this.alive = false } }
+      relays.push(relay)
+      return relay
+    }
+    const refuse = (overrides: Record<string, unknown>, error: string | RegExp | (new (message: string) => Error) = sandbox.LaneSandboxRefusal) => {
+      expect(() => plan({ profile: 'codex', env, fs, runtimeParent, spawnFn, ...overrides })).toThrow(error)
+      expect(readdirSync(runtimeParent)).toEqual([])
+      expect(relays.every((relay) => !relay.alive)).toBe(true)
+    }
+    return { fs, relays, refuse, env }
+  }
+
+  it('selects codex before copying auth when no executable is on PATH', () => {
+    const { fs, relays, refuse, env } = fixture()
+    refuse({ env: { ...env, PATH: '' } })
+    expect(fs.copied).toEqual([])
+    expect(relays).toEqual([])
+  })
+
+  it('refuses a readable parent traversal without leaving the credential copy or a bridge', () => {
+    const { fs, relays, refuse } = fixture()
+    refuse({ paths: { readable: ['/data/a/../b'] } })
+    expect(fs.copied).toEqual([])
+    expect(relays).toEqual([])
+  })
+
+  it('refuses a covered codex realpath before starting the egress bridge', () => {
+    const { fs, relays, refuse } = fixture()
+    fs.isDir = (file: string) => file !== '/opt/good/bin' && file !== '/opt/good' && file !== '/opt' && file !== '/usr' && file !== '/usr/bin' && file !== '/usr/local/bin'
+    refuse({})
+    expect(fs.copied).toEqual([])
+    expect(relays).toEqual([])
+  })
+
+  it('kills a bridge that fails to open its socket without copying the credential', () => {
+    const { fs, relays, refuse } = fixture(false)
+    refuse({}, /did not start within 3 s/)
+    expect(relays).toHaveLength(1)
+    expect(relays[0]!.alive).toBe(false)
+    expect(fs.copied).toEqual([])
+  })
+})
+
 // Every path the plan hands the child through --setenv must EXIST inside the sandbox: the inside
 // path of a bind or a remap, a tmpfs, or a created --dir. A host path the sandbox never binds (the
 // per-run runtime dir under /run/user/<uid>, hidden by design) is absent in there, and the CLI fails
@@ -417,6 +571,10 @@ describe('lane sandbox plan — every --setenv path exists inside the sandbox', 
     const pairs = setenvPaths(prefix)
     expect(pairs.length).toBeGreaterThan(0)
     for (const [name, value] of pairs) {
+      if (name === 'PATH') {
+        expect(dirs).toContain(value.split(':')[0])
+        continue
+      }
       const inside = dirs.includes(value) || mounts.some((root) => value === root || value.startsWith(`${root}/`))
       expect(inside, `--setenv ${name} ${value} is not under any inside path (${[...mounts, ...dirs].join(', ')})`).toBe(true)
     }
@@ -749,6 +907,51 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     } finally { p.dispose() }
   })
 
+  it('runs the selected codex through relative/empty PATH components and a private-remapped symlink hop', () => {
+    const root = tempRoot('path-priority')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree')
+    const good = join(root, 'good'); const second = join(root, 'second'); const first = join(root, 'first')
+    const privateHome = join(home, '.codex')
+    for (const dir of [privateHome, worktree, good, second, first]) mkdirSync(dir, { recursive: true })
+    const chosen = join(good, 'codex')
+    writeFileSync(chosen, '#!/bin/sh\nprintf "SELECTED\\n"\n'); chmodSync(chosen, 0o755)
+    for (const bad of [join(worktree, 'codex'), join(second, 'codex')]) {
+      writeFileSync(bad, '#!/bin/sh\nprintf "WRONG\\n"\n'); chmodSync(bad, 0o755)
+    }
+    const hop = join(privateHome, 'hop')
+    symlinkSync(chosen, hop); symlinkSync(hop, join(first, 'codex'))
+    for (const pathValue of [`.${delimiter}${good}${delimiter}${second}`, `${delimiter}${good}${delimiter}${second}`, `${first}${delimiter}${second}`]) {
+      const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue }, paths: { readable: [second] } })
+      const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
+      const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
+      try {
+        expect(result.status, String(result.stderr)).toBe(0)
+        expect(result.stdout).toBe('SELECTED\n')
+      } finally { p.dispose() }
+    }
+    expect(() => sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: '' } })).toThrow(/no executable selected/)
+  })
+
+  it('keeps node module resolution anchored at the real script path through the dedicated symlink', () => {
+    const root = tempRoot('script-shim')
+    const home = join(root, 'home'); const worktree = join(root, 'worktree')
+    const binDir = join(root, 'package/bin'); const first = join(root, 'first')
+    for (const dir of [home, worktree, binDir, first]) mkdirSync(dir, { recursive: true })
+    const script = join(binDir, 'codex.js')
+    writeFileSync(script, '#!/usr/bin/env node\nconsole.log(require("./sibling.cjs"))\n')
+    writeFileSync(join(binDir, 'sibling.cjs'), 'module.exports = "SELECTED"\n')
+    chmodSync(script, 0o755)
+    symlinkSync(script, join(first, 'codex'))
+    const pathValue = `${first}:${process.env.PATH}`
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue } })
+    const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
+    const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
+    try {
+      expect(result.status, String(result.stderr)).toBe(0)
+      expect(result.stdout).toBe('SELECTED\n')
+    } finally { p.dispose() }
+  })
+
   it('keeps a binary inside a private Codex home runnable while hiding the host marker and allowing CODEX_HOME writes', () => {
     const root = tempRoot('private-binary')
     const home = join(root, 'home'); const worktree = join(root, 'worktree')
@@ -767,6 +970,30 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
       expect(result.stdout).toBe('BINARY_OK\n')
     } finally { p.dispose() }
   })
+
+  for (const aliasHome of [false, true]) {
+    it(`PATH reaches the selected codex directly inside the private home (${aliasHome ? 'symlinked HOME' : 'symlinked executable'})`, () => {
+      const root = tempRoot('private-path')
+      const actualHome = join(root, 'home'); const home = aliasHome ? join(root, 'alias') : actualHome
+      const worktree = join(root, 'worktree'); const second = join(root, 'second')
+      const codexHome = join(actualHome, '.codex')
+      for (const dir of [codexHome, worktree, second]) mkdirSync(dir, { recursive: true })
+      if (aliasHome) symlinkSync(actualHome, home)
+      const actual = join(codexHome, aliasHome ? 'codex' : 'actual')
+      writeFileSync(actual, '#!/bin/sh\nprintf "NEW\\n"\n'); chmodSync(actual, 0o755)
+      if (!aliasHome) symlinkSync('actual', join(codexHome, 'codex'))
+      const fallback = join(second, 'codex')
+      writeFileSync(fallback, '#!/bin/sh\nprintf "OLD\\n"\n'); chmodSync(fallback, 0o755)
+      const pathValue = `${join(home, '.codex')}:${second}:${process.env.PATH}`
+      const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: process.execPath, cwd: worktree, env: { HOME: home, PATH: pathValue }, paths: { readable: [second] } })
+      const [command, args] = p.wrap('/bin/sh', ['-c', 'codex'])
+      const result = spawnSync(command, args, { cwd: worktree, env: { HOME: home, PATH: pathValue }, encoding: 'utf8', timeout: 30_000 })
+      try {
+        expect(result.status, String(result.stderr)).toBe(0)
+        expect(String(result.stdout)).toBe('NEW\n')
+      } finally { p.dispose() }
+    })
+  }
 
   it('exposes NOTHING under $HOME beyond the named allow-list (invariant canary)', () => {
     const f = homeFixture()

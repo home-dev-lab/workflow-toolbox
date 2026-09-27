@@ -577,4 +577,92 @@ describe('second-opinion advisor', () => {
     expect(process.listenerCount('exit')).toBe(baselineExitListeners)
     expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
   })
+
+  it('removes abort and exit listeners when spawn reports an error after sandbox planning', async () => {
+    const f = fixture(true)
+    const baselineExitListeners = process.listenerCount('exit')
+    const signal = { aborted: false, reason: undefined, addEventListener: vi.fn(), removeEventListener: vi.fn() }
+    const adapter = {
+      platform: process.platform,
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
+    }
+    const deps = createSecondOpinionDependencies(adapter, {
+      resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', wrap: () => [join(f.repo, 'missing-executable'), []] }),
+    })
+    deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra', signal }, deps, f.env)).toBe(1)
+    expect(signal.addEventListener).toHaveBeenCalledWith('abort', expect.any(Function), { once: true })
+    expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(process.listenerCount('exit')).toBe(baselineExitListeners)
+  })
+
+  // The real bwrap planner takes POSIX paths; a Windows os.tmpdir() fixture cannot exercise
+  // its refusal reasons. The win32 pass-through and ownership cleanup are checked below.
+  it.skipIf(process.platform === 'win32')('stops broker ownership and removes its temp root when sandbox planning refuses (Linux planner paths)', async () => {
+    const core = process.env.WT_LANE_SECOND_OPINION_TEST_LIB
+      ? await import(pathToFileURL(join(process.env.WT_LANE_SECOND_OPINION_TEST_LIB, 'second-opinion-core.mjs')).href)
+      : { createSecondOpinionDependencies, runSecondOpinion }
+    const sandbox = await import(pathToFileURL(join(process.env.WT_LANE_SANDBOX_TEST_LIB ?? resolve(__dirname, '../../../../plugin/bin/lib'), 'host/lane-sandbox.mjs')).href)
+    for (const reason of ['no executable selected', 'parent traversal in a readable bind', 'codex realpath is covered'] as const) {
+      const f = fixture(true)
+      const ownershipRoot = mkdtempSync(join(f.repo, 'broker-ownership-'))
+      const stop = vi.fn(() => { rmSync(ownershipRoot, { recursive: true, force: true }); return [] })
+      const baseline = process.listenerCount('exit')
+      const codex = '/opt/good/bin/codex'
+      const env = { ...f.env, HOME: f.home, XDG_STATE_HOME: join(f.home, 'state'), PATH: reason === 'no executable selected' ? '' : '/opt/good/bin' }
+      const adapter = {
+        platform: 'linux',
+        createCodexBrokerOwnership: () => ({ env, capture: vi.fn(), stop }),
+      }
+      const fs = {
+        exists: () => true,
+        realpath: (file: string) => file,
+        isFile: (file: string) => file === codex,
+        isExecutable: (file: string) => file === codex,
+        isDir: (file: string) => reason !== 'codex realpath is covered' || !['/opt/good/bin', '/opt/good', '/opt', '/usr', '/usr/bin', '/usr/local/bin'].includes(file),
+        readText: (file: string) => file === join(f.home, '.codex', 'auth.json') ? '{"tokens":{}}' : null,
+        ensureDir: () => {}, ensureFile: () => {}, copy: () => {},
+      }
+      const resolveSandbox = vi.fn((request: Record<string, unknown>) => sandbox.resolveLaneSandbox({
+        ...request,
+        paths: { readable: [...(request.paths as { readable: string[] }).readable, ...(reason === 'parent traversal in a readable bind' ? ['/data/a/../b'] : [])] },
+        fs, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: () => ({ ok: true }),
+        runtimeParent: f.home, spawnFn: () => { throw new Error('bridge started before refusal') },
+      }))
+      const deps = core.createSecondOpinionDependencies(adapter, { resolveSandbox })
+      deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+      expect(await core.runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+      expect(resolveSandbox).toHaveBeenCalledOnce()
+      expect(lines(f.out).join('\n')).toMatch(reason === 'no executable selected' ? /no executable selected/ : reason === 'parent traversal in a readable bind' ? /parent traversal in a bind/ : /realpath is covered/)
+      expect(stop).toHaveBeenCalledOnce()
+      expect(existsSync(ownershipRoot)).toBe(false)
+      expect(process.listenerCount('exit')).toBe(baseline)
+    }
+  })
+
+  it('stops broker ownership and removes its temp root after a win32 pass-through plan', async () => {
+    const f = fixture(true)
+    const ownershipRoot = mkdtempSync(join(f.repo, 'broker-ownership-'))
+    const stop = vi.fn(() => { rmSync(ownershipRoot, { recursive: true, force: true }); return [] })
+    const baseline = process.listenerCount('exit')
+    // Exercise the Windows spelling even when this test runs on a POSIX CI worker.
+    const windowsHome = process.platform === 'win32' ? f.home : 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\home'
+    const adapter = {
+      platform: 'win32',
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env: { ...env, HOME: windowsHome }, capture: vi.fn(), stop }),
+    }
+    const sandbox = await import(pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/lane-sandbox.mjs')).href)
+    const resolveSandbox = vi.fn((request: Record<string, unknown>) => sandbox.resolveLaneSandbox(request))
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
+    deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+    expect(resolveSandbox).toHaveBeenCalledOnce()
+    expect((resolveSandbox.mock.calls[0]![0].env as Record<string, string>).HOME).toBe(windowsHome)
+    expect(lines(f.out)).toContain('lane sandbox: none (bubblewrap sandbox is Linux-only; this host is win32); running with the environment allow-list only')
+    expect(stop).toHaveBeenCalledOnce()
+    expect(existsSync(ownershipRoot)).toBe(false)
+    expect(process.listenerCount('exit')).toBe(baseline)
+  })
 })
