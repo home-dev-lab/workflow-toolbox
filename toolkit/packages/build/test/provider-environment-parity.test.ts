@@ -64,6 +64,25 @@ describe('external model provider environment parity', () => {
     expect(bothSides('azure/x', { XDG_CACHE_HOME: xdg, HOME: home }).deepSearch).not.toContain('AZURE_SECONDARY_KEY')
   })
 
+  // Review round 2: an empty provider and a registry listing a name twice resolved differently.
+  it('resolves an empty provider to nothing in both resolvers, with or without a registry', () => {
+    const cache = path.join(tempRoot(), 'cache')
+    writeRegistry(cache, { '': { env: ['EMPTY_PROVIDER_KEY'] }, azure: { env: ['AZURE_API_KEY'] } })
+    for (const env of [{ XDG_CACHE_HOME: cache }, { XDG_CACHE_HOME: path.join(tempRoot(), 'none') }]) {
+      const { deepSearch, shared } = bothSides('/x', env)
+      expect(shared).toEqual([])
+      expect(deepSearch).toEqual([])
+    }
+  })
+
+  it('deduplicates registry names identically, keeping first-occurrence order', () => {
+    const cache = path.join(tempRoot(), 'cache')
+    writeRegistry(cache, { azure: { env: ['AZURE_API_KEY', 'AZURE_RESOURCE_NAME', 'AZURE_API_KEY', 'AZURE_RESOURCE_NAME'] } })
+    const { deepSearch, shared } = bothSides('azure/x', { XDG_CACHE_HOME: cache })
+    expect(shared).toEqual(['AZURE_API_KEY', 'AZURE_RESOURCE_NAME'])
+    expect(deepSearch).toEqual(shared)
+  })
+
   it('never resolves a fallback name the known map assigns to a different provider', () => {
     const { deepSearch, shared } = bothSides('google-generative-ai/x', { XDG_CACHE_HOME: path.join(tempRoot(), 'none') })
     expect(deepSearch).not.toContain('GOOGLE_GENERATIVE_AI_API_KEY')

@@ -53,7 +53,8 @@ export function providerEnvironmentNames(model, source, warn) {
   // decides; a registry without this provider falls through to the fallback, never to a later root.
   const installed = installedDefinitions(source)?.[provider]?.env;
   if (Array.isArray(installed)) {
-    return withoutCredentials(installed.filter((name) => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))
+    // Deduplicated in first-occurrence order, like the plugin's providerCredentialNames.
+    return withoutCredentials([...new Set(installed.filter((name) => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))])
       .filter(ownedByProvider);
   }
   const names = withoutCredentials([`${provider.toUpperCase().replaceAll(/[^A-Z0-9]+/g, '_')}_API_KEY`, ...(PROVIDER_EXTRAS[provider] ?? [])])

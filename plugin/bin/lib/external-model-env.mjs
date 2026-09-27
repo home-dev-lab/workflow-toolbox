@@ -17,7 +17,8 @@ const EXACT_NAMES = new Set([
 const PREFIXES = ['OPENCODE_', 'CODEX_', 'OPENAI_', 'AZURE_OPENAI_']
 const NEVER_PASS = new Set(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'])
 const NAME = /^[A-Za-z_]\w*$/
-const CREDENTIAL_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|CONFIG_FILE)/i
+// PASS counts only as a whole underscore segment, so BYPASS and COMPASS stay ordinary names.
+const CREDENTIAL_NAME = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|PWD|CREDENTIAL|AUTH|COOKIE|SESSION|CONFIG_FILE)|(?:^|_)PASS(?:_|$)/i
 const EXECUTION_HOOK_NAME = /^(?:NODE_OPTIONS|BUN_OPTIONS|BASH_ENV|ENV|ZDOTDIR|PYTHONPATH|PYTHONSTARTUP|RUBYOPT|RUBYLIB|PERL5OPT|PERL5LIB|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)$/i
 const CONFIGURATION_CARRIER = /^(?:OPENCODE_CONFIG(?:_|$)|CODEX_HOME$)/i
 const PROVIDER_CREDENTIALS = Object.freeze({
@@ -39,6 +40,8 @@ function configuredExtraNames(env) {
 const URL_TOKEN_NAME = /(token|secret|passw|pwd|signature|credential|apikey)/i
 const URL_KEY_SEGMENT = /(^|[-_.])key($|[-_.])/i
 const URL_TOKEN_EXACT_NAME = new Set(['key', 'sig', 'auth', 'authorization', 'code', 'code_verifier', 'pass', 'pw'])
+// camelCase key names (accessKey, subscriptionKey); case-sensitive so monkey and keyboard stay harmless.
+const URL_CAMEL_KEY_NAME = /[a-z]Key$/
 const HEADER_CREDENTIAL_NAME = /(auth|api-key|api_key|apikey|token|secret|password|cookie|session|signature|credential)/i
 const HEADER_KEY_SEGMENT = /(^|[-_])key($|[-_])/i
 const HEADER_NAME = /^[A-Za-z0-9_-]+$/
@@ -48,7 +51,14 @@ const NON_SECRET_HEADERS = new Set([
   'traceparent', 'tracestate', 'x-request-id', 'x-correlation-id',
 ])
 const ADDRESS_NAME = /(?:PROXY|_URL|_URI|_ENDPOINT|_HOST)$/i
-const URL_USERINFO = /\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*@/i
+// Userinfo may hold spaces or tabs: URL parsers keep the space (percent-encoded) and drop the tab,
+// so both still carry a credential. A newline ends it, so separate lines are never joined.
+const URL_USERINFO = /\b[a-z][a-z0-9+.-]*:\/\/[^/?#@\n]*@/i
+const SCHEME_RELATIVE_USERINFO = /(?:^|[,\s])\/\/[^/?#@\n]*@/
+// A quoted JSON key anywhere in the value, at any nesting depth.
+const QUOTED_KEY = /"([^"\\\n]*)"\s*:/g
+const BEARER_OR_BASIC = /(?:^|[=:])\s*(?:bearer|basic)\s+\S/i
+const HOST_PORT_VALUE = /^\d+(?:\/\S*)?$/
 // Names that carry filesystem paths by construction: a false positive there would remove the binary
 // search path or the home directory, so their values are never inspected.
 const PATH_NAMES = new Set([
@@ -69,6 +79,16 @@ function valueItems(text) {
   return text.split(/[,;\n]/)
 }
 
+// A header carrier separates entries with commas or newlines only; a semicolon belongs to a header
+// value (`content-type=application/json;charset=utf-8`).
+function headerCarrierItems(text) {
+  return text.split(/[,\n]/)
+}
+
+function isCredentialHeaderName(name) {
+  return HEADER_CREDENTIAL_NAME.test(name) || HEADER_KEY_SEGMENT.test(name)
+}
+
 function stripEdges(text, leading, trailing) {
   let start = 0
   let end = text.length
@@ -84,17 +104,21 @@ function headerItem(item) {
   if (separator < 0) return null
   const name = stripEdges(item.slice(0, separator), ' \t\r"\'{', ' \t\r"\'')
   const value = item.slice(separator + 1).trim()
-  return HEADER_NAME.test(name) && value ? { name, value } : null
+  // host:port shape (`auth-proxy:8080/`): a colon directly followed by a port, no whitespace.
+  const hostPort = item[separator] === ':' && HOST_PORT_VALUE.test(item.slice(separator + 1))
+  return HEADER_NAME.test(name) && value ? { name, value, hostPort } : null
 }
 
 function isUrlCredentialParameter(rawName) {
   let name = rawName
   try { name = decodeURIComponent(rawName) } catch { /* keep the raw spelling when it is not valid percent-encoding */ }
-  return URL_KEY_SEGMENT.test(name) || URL_TOKEN_NAME.test(name) || URL_TOKEN_EXACT_NAME.has(name.toLowerCase())
+  return URL_KEY_SEGMENT.test(name) || URL_TOKEN_NAME.test(name) || URL_TOKEN_EXACT_NAME.has(name.toLowerCase()) || URL_CAMEL_KEY_NAME.test(name)
 }
 
+// Fail-closed allowlist: an item passes only when it names a known non-secret header, so a harmless
+// custom header (`x-tenant=public`) is refused too; nothing tells it apart from a custom auth header.
 function headerCarrierRefusal(text) {
-  for (const item of valueItems(text)) {
+  for (const item of headerCarrierItems(text)) {
     if (!item.trim()) continue
     const separator = item.search(/[=:]/)
     if (separator < 0) return 'header-carrier'
@@ -110,7 +134,7 @@ function credentialInValue(name, value) {
     const refusal = headerCarrierRefusal(text)
     if (refusal) return refusal
   }
-  if (URL_USERINFO.test(text)) return 'url-userinfo'
+  if (URL_USERINFO.test(text) || SCHEME_RELATIVE_USERINFO.test(text)) return 'url-userinfo'
   if (ADDRESS_NAME.test(name)) {
     for (const item of [text, ...text.split(',')]) {
       const address = item.trim()
@@ -122,10 +146,13 @@ function credentialInValue(name, value) {
   }
   for (const item of valueItems(text)) {
     const header = headerItem(item)
-    if (!header || /^\d+$/.test(header.value)) continue
-    if (HEADER_CREDENTIAL_NAME.test(header.name) || HEADER_KEY_SEGMENT.test(header.name)) return 'header-credential'
+    if (!header || header.hostPort) continue
+    if (isCredentialHeaderName(header.name)) return 'header-credential'
   }
-  if (/\b(?:bearer|basic)\s+[a-z0-9._~+/=-]{8,}/i.test(text)) return 'bearer-token'
+  for (const match of text.matchAll(QUOTED_KEY)) {
+    if (isCredentialHeaderName(match[1])) return 'header-credential'
+  }
+  if (BEARER_OR_BASIC.test(text)) return 'bearer-token'
   return null
 }
 
@@ -194,6 +221,7 @@ export function providerCredentialNames(model, { definitions = installedOpenCode
   const reference = String(model)
   if (!reference.includes(PROVIDER_MODEL_SEPARATOR)) return []
   const provider = reference.split(PROVIDER_MODEL_SEPARATOR, 1)[0].toLowerCase()
+  if (!provider) return []
   if (Object.hasOwn(PROVIDER_CREDENTIALS, provider)) return [...PROVIDER_CREDENTIALS[provider]]
   const installed = definitions?.[provider]?.env
   if (Array.isArray(installed)) {

@@ -190,6 +190,64 @@ describe('external model environment value filtering', () => {
     expect(warnings.join('\n')).not.toContain(secret)
   })
 
+  // Review round 2: harmless shapes the round-1 rules refused, and neighbours the new rules must not catch.
+  it.each([
+    ['OTEL_EXPORTER_OTLP_HEADERS', 'content-type=application/json;charset=utf-8', 'OTEL_EXPORTER_OTLP_HEADERS'],
+    ['EDITOR', 'C:\\Tools\\Basic PowerPacks\\editor.exe', 'EDITOR'],
+    ['HTTPS_PROXY', 'auth-proxy:8080/', undefined],
+    ['OPENAI_BASE_URL', 'https://gw.example/v1?monkey=1', undefined],
+    ['OPENAI_BASE_URL', 'https://gw.example/v1?keyboard=1', undefined],
+    ['CODEX_EXTRA', '{"theme":"dark"}', undefined],
+    ['CODEX_BYPASS_CACHE', '1', undefined],
+    ['COMPASS_DIR', '/opt/compass', 'COMPASS_DIR'],
+  ])('passes the round-2 harmless shape %s=%s', (name, value, configuredName) => {
+    const warnings: string[] = []
+    const env = { [name]: value, ...(configuredName ? { WT_EXTERNAL_MODEL_ENV_ALLOW: configuredName } : {}) }
+    const child = externalModelEnv(env, [], 'linux', { warn: (message: string) => warnings.push(message) })
+
+    expect(child[name]).toBe(value)
+    expect(warnings).toEqual([])
+  })
+
+  it.each([
+    ['OTEL_EXPORTER_OTLP_HEADERS', 'x-tenant=public', 'OTEL_EXPORTER_OTLP_HEADERS', 'public', 'header-carrier'],
+    ['CODEX_EXTRA', 'Bearer abc', undefined, 'abc', 'bearer-token'],
+    ['CODEX_EXTRA', 'Basic dTpw', undefined, 'dTpw', 'bearer-token'],
+    ['CODEX_EXTRA', 'Authorization: Basic dTpw', undefined, 'dTpw', 'header-credential'],
+    ['CODEX_EXTRA', 'Authorization: 123456', undefined, '123456', 'header-credential'],
+    ['CODEX_EXTRA', 'authorization=123456', undefined, '123456', 'header-credential'],
+    ['OPENAI_BASE_URL', 'https://u:pa ss@example.test/v1', undefined, 'pa ss', 'url-userinfo'],
+    ['OPENAI_BASE_URL', 'https://u:pa\tss@example.test/v1', undefined, 'pa\tss', 'url-userinfo'],
+    ['OPENAI_BASE_URL', '//u:synthetic-rel@example.test/v1', undefined, 'synthetic-rel', 'url-userinfo'],
+    ['NO_PROXY', 'localhost,//u:synthetic-rel@example.test', undefined, 'synthetic-rel', 'url-userinfo'],
+    ['CODEX_EXTRA', 'mirror //u:synthetic-rel@example.test', undefined, 'synthetic-rel', 'url-userinfo'],
+    ['OPENAI_BASE_URL', 'https://gw.example/?accessKey=synthetic-q', undefined, 'synthetic-q', 'url-token-parameter'],
+    ['OPENAI_BASE_URL', 'https://gw.example/?subscriptionKey=synthetic-q', undefined, 'synthetic-q', 'url-token-parameter'],
+    ['OPENAI_BASE_URL', 'https://gw.example/?access_token=synthetic-q', undefined, 'synthetic-q', 'url-token-parameter'],
+    ['OPENAI_BASE_URL', 'https://gw.example/?secret=synthetic-q', undefined, 'synthetic-q', 'url-token-parameter'],
+    ['CODEX_EXTRA', '{"headers":{"x-api-key":"synthetic-json"}}', undefined, 'synthetic-json', 'header-credential'],
+  ])('refuses the round-2 credential shape %s=%s', (name, value, configuredName, secret, reason) => {
+    const warnings: string[] = []
+    const env = { [name]: value, ...(configuredName ? { WT_EXTERNAL_MODEL_ENV_ALLOW: configuredName } : {}) }
+    const child = externalModelEnv(env, [], 'linux', { warn: (message: string) => warnings.push(message) })
+
+    expect(child).not.toHaveProperty(name)
+    expect(warnings).toEqual([`workflow-toolbox: external-model child environment refused ${name} (${reason}); its value is not passed`])
+    expect(warnings.join('\n')).not.toContain(secret)
+  })
+
+  it('treats PASS as a credential name segment, not by prefix and not as a configured extra', () => {
+    const warnings: string[] = []
+    const child = externalModelEnv({
+      CODEX_PASS: 'synthetic-pass',
+      WT_EXTERNAL_MODEL_ENV_ALLOW: 'SERVICE_PASS',
+      SERVICE_PASS: 'synthetic-pass',
+    }, [], 'linux', { warn: (message: string) => warnings.push(message) })
+
+    expect(child).toEqual({ WT_EXTERNAL_MODEL_ENV_ALLOW: 'SERVICE_PASS' })
+    expect(warnings).toEqual(['workflow-toolbox: external-model child environment refused configured extra SERVICE_PASS (credential-name)'])
+  })
+
   it('checks values on win32 with the same rules', () => {
     const warnings: string[] = []
     const child = externalModelEnv({ Https_Proxy: 'alice:S3cret@proxy.corp:3128', Path: 'C:\\bin' }, [], 'win32', { warn: (message: string) => warnings.push(message) })

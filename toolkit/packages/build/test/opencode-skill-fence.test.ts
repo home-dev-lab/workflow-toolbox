@@ -204,6 +204,15 @@ describe('OpenCode Claude-skill fence', () => {
         },
         expected: { OPENAI_API_KEY: 'selected', WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS' },
       },
+      // Review round 2: a numeric Authorization value and a userinfo holding a space reached the child.
+      {
+        env: { OPENAI_API_KEY: 'selected', CODEX_EXTRA: 'Authorization: 123456' },
+        expected: { OPENAI_API_KEY: 'selected' },
+      },
+      {
+        env: { OPENAI_API_KEY: 'selected', OPENAI_BASE_URL: 'https://u:other spaced@example.test/v1' },
+        expected: { OPENAI_API_KEY: 'selected' },
+      },
     ]
 
     for (const { env, expected } of cases) {
@@ -215,6 +224,8 @@ describe('OpenCode Claude-skill fence', () => {
     const printed = error.mock.calls.map((call) => String(call[0])).join('\n')
     expect(printed).not.toContain('other-service-secret')
     expect(printed).not.toContain('other:secret')
+    expect(printed).not.toContain('123456')
+    expect(printed).not.toContain('other spaced')
   })
 
   it('admits a configured harmless variable without admitting credentials or execution hooks', () => {
