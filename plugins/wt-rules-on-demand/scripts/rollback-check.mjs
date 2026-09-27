@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { readFile, readdir, mkdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { readFile, readdir, mkdir, realpath, stat, writeFile, appendFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDataDir, splitRuleIdentity } from './rule-lifecycle-lib.mjs';
+import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDataDir, assertSafeDataDir, splitRuleIdentity } from './rule-lifecycle-lib.mjs';
 import { configDirectory, ruleDirectories } from '../paths.js';
 import { createHash } from 'node:crypto';
 
@@ -13,12 +13,15 @@ for (let index = 0; index < args.length; index += 1) {
   else if (args[index] === '--verdicts') options.verdictFiles.push(args[++index] ?? '');
   else if (args[index] === '--json') options.json = true;
   else if (args[index] === '--dry-run') options.dryRun = true;
+  else if (args[index] === '--mechanical-only') options.mechanicalOnly = true;
+  else if (args[index] === '--journal') options.journal = args[++index] ?? '';
   else if (args[index] === '--user') options.user = true;
   else if (args[index] === '--config-dir') options.configDir = args[++index] ?? '';
   else if (args[index] === '--mirror-dir') options.mirrorDirs = String(args[++index] ?? '').split(',').filter(Boolean).map((path) => resolve(path));
   else { console.error(`unknown option: ${args[index]}`); process.exit(2); }
 }
 if (!options.user && (options.configDir || options.mirrorDirs.length)) { console.error('--config-dir and --mirror-dir require --user'); process.exit(2); }
+if (options.mechanicalOnly && !options.verdictFiles.length) { console.error('--mechanical-only requires --verdicts'); process.exit(2); }
 const project = resolve(options.project);
 const scope = options.user ? 'user' : 'project';
 const configDir = resolve(options.configDir || configDirectory(process.env) || (() => { throw new Error('HOME or USERPROFILE required'); })());
@@ -67,6 +70,9 @@ const stores = await Promise.all((await storePaths()).map(async (path) => JSON.p
 const store = { sessions: Object.assign({}, ...stores.map((item) => item.sessions ?? {})) };
 const verdictLines = stores.map((item) => String(item['compliance-verdicts-jsonl'] ?? ''));
 for (const item of stores) for (const [name, text] of Object.entries(item)) if (name.startsWith('compliance-verdicts-archive-')) verdictLines.push(String(text));
+const archiveDir = await assertSafeDataDir(qualityDataDir(configDir, {}));
+for (const name of (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
+  .filter((item) => /^compliance-verdicts-archive-\d+-\d+\.jsonl$/.test(item)).sort()) verdictLines.push(await readFile(join(archiveDir, name), 'utf8'));
 const verdicts = verdictLines.join('\n').split('\n').filter(Boolean).map((line) => JSON.parse(line));
 let legacyRowsSkipped = verdicts.filter((row) => !row.ruleIdentity).length;
 const transcriptRows = (await Promise.all(options.verdictFiles.map(async (path) => (await readFile(path, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line))))).flat();
@@ -122,7 +128,7 @@ for (const name of names) {
   const rows = transcriptRows.filter((row) => row.rule === name && row.scope === scope && row.rulesDir && physicalOf.get(row.rulesDir) === realRulesDir);
   // A scan that contains no rows for a rule is still the authoritative window when --verdicts is supplied.
   const kind = /^\s{4}kind:\s*['"]?([^'"\s]+)/m.exec(await readFile(join(rulesDir, name), 'utf8'))?.[1];
-  const measured = options.verdictFiles.length && ['check', 'bash-command'].includes(kind);
+   const measured = options.verdictFiles.length && ['check', 'bash-command', 'tool-input', 'turn-correlation'].includes(kind);
   // Only transcripts can establish non-delivery. In store-only mode, a governed act without
   // a delivery record for this identity in its context is unknown, regardless of other fields.
   // When transcript verdicts are supplied, the scan window decides independently of old sessions.
@@ -136,20 +142,28 @@ for (const name of names) {
       if (governed && !delivered) unprovenMiss = true;
     }
   }
-  const scanRows = measured ? rows : verdicts.filter((row) => row.ruleIdentity === identity);
+   const afterRows = rows.filter((row) => current(row.at));
+   const scanRows = measured ? afterRows : verdicts.filter((row) => row.ruleIdentity === identity);
   const applicable = scanRows.filter((row) => row.rule === name && ['followed', 'not followed'].includes(row.verdict) && (measured || current(row.decidedAt)));
   const followed = applicable.filter((row) => row.verdict === 'followed').length;
   const { threshold, minimum } = policy(await readFile(join(rulesDir, name), 'utf8'));
-  const evidence = rows.filter((row) => row.verdict === 'trigger miss').map((row) => `${row.file}:${row.line}`);
+   const evidence = afterRows.filter((row) => row.verdict === 'trigger miss').map((row) => `${row.file}:${row.line}`);
   const before = rows.filter((row) => row.phase === 'before' && ['followed', 'not followed'].includes(row.checkVerdict));
   const { reason, recommendation, rate, attention } = rollbackDecision({ triggerMiss: false,
-    triggerMissUnmatched: options.verdictFiles.length ? rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).length : 0,
-    triggerMissMatched: options.verdictFiles.length ? rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched !== false).length : 0,
-    triggerMissEvidence: rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).map((row) => `${row.file}:${row.line}`),
+     triggerMissUnmatched: options.verdictFiles.length ? afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).length : 0,
+     triggerMissMatched: options.verdictFiles.length ? afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched !== false).length : 0,
+     triggerMissEvidence: afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).map((row) => `${row.file}:${row.line}`),
     followed, applicable: applicable.length, beforeFollowed: before.filter((row) => row.checkVerdict === 'followed').length,
     beforeApplicable: before.length, threshold, minimum });
-  const result = { rule: name, scope, action: 'none', reason, recommendation, followed, applicable: applicable.length, triggerMissEvidence: evidence,
-    ...(rows.length && rows[0].window ? { window: rows[0].window } : {}) };
+   const result = { rule: name, scope, action: 'none', reason, recommendation, followed, applicable: applicable.length, triggerMissEvidence: evidence,
+     ...(rows.length && rows[0].window ? { window: rows[0].window } : {}) };
+   if (options.mechanicalOnly && !measured) {
+     result.action = 'attention';
+     result.reason = 'transcript check unavailable; store-only evidence cannot authorize automatic rollback';
+     results.push(result);
+     log(`${name}: attention: ${result.reason}`);
+     continue;
+   }
     if (unprovenMiss) {
       result.reason = 'trigger miss unproven: store cannot show non-delivery';
       result.action = 'attention';
@@ -177,7 +191,10 @@ for (const name of names) {
   results.push(result);
   log(`${options.dryRun ? 'would revert' : 'reverted'} ${name}: ${reason}`);
    if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
-  if (!options.dryRun) await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
+   if (!options.dryRun) {
+     const moved = await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
+     if (moved.changed && options.journal) await appendFile(options.journal, JSON.stringify({ ...result, at: new Date().toISOString(), ...(scope === 'project' ? { root: project } : {}) }) + '\n');
+   }
 }
 
 if (rateSummary.length && !options.dryRun) {

@@ -8,11 +8,13 @@ CLI checks were **run on Linux only**. Line numbers refer to the shipped files.
 | --- | --- | --- |
 | `paths.js:3-21` | `/`-joined rule directories and `HOME`, then `USERPROFILE` fallback | Missing both homes returns null; callers report **unknown**. Windows Node accepts `/` as a separator; drive roots are retained. |
 | `hooks/hooks.js:29-66` | Host `$.fs.list/read` instead of Node filesystem; directory entries and names | Missing directory is empty; malformed files log **unknown/skipped**, never served. Static duplicates are blocked, including `wt/`. |
-| `hooks/hooks.js:106-115` | Host store get/set, text encoder, archive keys | Verdict-store errors are logged as **unknown**; delivery still returns. Journal write failures are also logged. No project file write. |
+| `hooks/hooks.js` | Host store get/set, text encoder, bounded quality-directory archive files | Archive write/retention errors log **unknown**; delivery still returns. No project file write. Windows paths use `/` accepted by the host filesystem. |
 | `hooks/hooks.json:1-17` | Host plugin loader expands `CLAUDE_PLUGIN_ROOT`; command hook runs `node` on PATH | Missing Node or unexpanded plugin root **throws** at host launch; no rule is served by that command. |
 | `hooks/bash-mention.js:1` | Shell-token parsing, no child process | Conservative masking of read-only mentions; unsupported syntax may **silently** miss a trigger. |
 | `hooks/runtime-rule.js:72` | Regular-expression parser, no host OS API | Invalid keys and expressions **throw** and skip rule with log. |
 | `hooks/act-checks.js:19-23` | Fixed shell-command vocabulary, no shell execution | Unknown build tools **silently** return no applicable act. |
+| `hooks/declarative-checks.js`, `hooks/bash-mention.js` | Bounded argument JSON and shell-token segments, including wrapper and `sh -c` command heads | Unrecognized shell syntax can miss a segment; pending turn correlation records **unresolved** at close. No OS-specific shell is executed. |
+| `scripts/rules.mjs check-rules` | Node directory read and file read (follows symlinks) | Invalid files are named **skipped** with exit 1; unregistered checks are named **degraded**. |
 | `hooks/session-start.mjs:1-8,17-32` | Node `fs`, `path`, URL, config-home fallback | Missing scope reads empty; absent home gives named **unknown**. Runtime enabled option in command hook is supplied via `CLAUDE_PLUGIN_OPTION_ENABLED=true`. |
 | `hooks/session-start.mjs:33-68` | Atomic report rename, `wx` stamp; detached `spawn`, process `unref`, watchdog | Spawn failures publish named **failed** report; watchdog kills after 300 seconds (the private real-data run read 512 transcripts in 18.8 seconds); platform-specific detached-process behavior is untested outside Linux. |
 | `scripts/quality-watchdog.mjs`, `scripts/kill-worker.mjs` | PID probe, process-group kill signal, polling, atomic report | Timeout or leader exit kills the detached worker's entire process group using negative PID on POSIX; on Windows (or where groups are unavailable) falls back to the worker PID. Failed or timed-out child records **failed**. A recycled PID may delay status until timeout. |
@@ -25,6 +27,7 @@ CLI checks were **run on Linux only**. Line numbers refer to the shipped files.
 | `scripts/rollback-check.mjs:1-44` | Native path resolution, store file discovery | Missing rules directory or store **throws**; missing store with supplied transcript verdicts reports **unknown** on stderr. |
 | `scripts/compliance-report.mjs:1-32` | Node filesystem, config home | Missing store **throws**; no project writes. |
 | `scripts/quality-check.mjs:1-58` | `spawnSync` of Node rollback CLI, `realpath`, atomic rename, data directory | Child nonzero or zero transcripts writes **failed**, not clean. Daily path always includes `--dry-run`. |
+| `scripts/daily-rollback.mjs` | Native `node:path` for followed project roots, `spawnSync` with a JSON argv array and JSON stdin (no shell) for optional notification | Invalid followed list or incomplete transcript evidence fails before reverts; notification child failures are named in the daily report. No shell quoting differences on Windows/macOS. |
 
 Node CLIs use native `node:path` for disk paths. The Function Hooks module and
 every transitive import avoid Node builtins, using host capabilities instead.

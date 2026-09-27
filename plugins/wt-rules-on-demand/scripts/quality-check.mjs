@@ -8,7 +8,7 @@ import { assertSafeDataDir, qualityDataDir } from './rule-lifecycle-lib.mjs';
 import { readFile } from 'node:fs/promises';
 import { scanTranscripts, summarise } from './transcript-verdicts.mjs';
 
-export async function qualityCheck({ configDirs, projectsDirs, project, dataDir, days = 7 }) {
+export async function qualityCheck({ configDirs, projectsDirs, project, dataDir, days = 7, since, verdictPath: privateVerdictPath }) {
   const target = await assertSafeDataDir(dataDir ?? qualityDataDir(configDirs[0]));
   await mkdir(target, { recursive: true });
   const latest = join(target, 'latest.json');
@@ -35,11 +35,12 @@ export async function qualityCheck({ configDirs, projectsDirs, project, dataDir,
      if ((await readdir(candidate).catch(() => [])).some((name) => name.endsWith('.md')) && !physical.has(await realpath(candidate))) {
        scopes.push({ scope: 'project', projectRoot: project, rulesDir: candidate, ledgerRoots: [project] });
      }
-     const initial = await scanTranscripts({ projectsDirs, scopes, days, discoverProjects: true, nonProofNames: process.env.WT_ROD_NON_PROOF_NAMES?.split(',').filter(Boolean) ?? [] });
+      const initial = await scanTranscripts({ projectsDirs, scopes, days, since, discoverProjects: true, nonProofNames: process.env.WT_ROD_NON_PROOF_NAMES?.split(',').filter(Boolean) ?? [] });
     if (!initial.stats.filesRead) throw new Error(`0 transcript files read; skipped ${initial.stats.skipped.length}: ${initial.stats.skipped.join('; ')}`);
     const rows = initial.rows;
     const date = new Date().toISOString().slice(0, 10);
-    const verdictPath = join(target, `verdicts-${date}.jsonl`);
+     const verdictPath = privateVerdictPath ?? join(target, `verdicts-${date}.jsonl`);
+     if (privateVerdictPath && (resolve(privateVerdictPath) !== resolve(target, 'daily', privateVerdictPath.split(/[\\/]/).at(-1)))) throw new Error('private verdict path must be inside the daily quality directory');
     await writeFile(verdictPath, rows.map((row) => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''));
     const rollback = [], rollbackNotes = [];
     for (const scope of initial.scopes) {
@@ -66,7 +67,7 @@ export async function qualityCheck({ configDirs, projectsDirs, project, dataDir,
      }
      const unproven = [...latestMigration.entries()].filter(([, row]) => row.unproven).map(([key, row]) => ({ scope: key.split(':')[0], rule: row.rule, reason: row.noProofReason }));
      const applicableSamples = rows.filter((row) => ['followed', 'not followed'].includes(row.verdict)).length;
-      const report = { ok: true, complete: initial.complete && applicableSamples > 0 && !malformedLedgerLines, coverage: { ...initial.coverage, applicableSamples, malformedLedgerLines }, finishedAt: new Date().toISOString(), window: `${days}d`, unproven,
+       const report = { ok: true, complete: initial.complete && applicableSamples > 0 && !malformedLedgerLines, coverage: { ...initial.coverage, applicableSamples, malformedLedgerLines }, finishedAt: new Date().toISOString(), window: since ? `since ${since}` : `${days}d`, verdictPath, unproven,
        scopes: initial.scopes, table: summarise(rows), rollback, rollbackNotes, scan: initial.stats };
     await writeFile(join(target, `quality-${date}.json`), JSON.stringify(report, null, 2) + '\n');
      await atomicLatest(latest, report);
@@ -94,7 +95,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       else if (arg === '--projects-dir') options.projectsDirs.push(resolve(process.argv[++i]));
       else if (arg === '--project') options.project = resolve(process.argv[++i]);
       else if (arg === '--data-dir') options.dataDir = resolve(process.argv[++i]);
-      else if (arg === '--days') options.days = Number(process.argv[++i]);
+       else if (arg === '--days') options.days = Number(process.argv[++i]);
+       else if (arg === '--since') options.since = process.argv[++i];
       else throw new Error(`unknown option: ${arg}`);
     }
      if (!options.configDirs.length) options.configDirs = (process.env.WT_ROD_CONFIG_DIRS?.split(delimiter).filter(Boolean) ?? [configDirectory(process.env)]).map((dir) => {

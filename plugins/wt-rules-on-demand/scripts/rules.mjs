@@ -9,16 +9,18 @@ import { createHash } from 'node:crypto';
 import { argumentEvidence, bounded, safeRegex } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { discoverFiles } from './discover-files.mjs';
+import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 
-const [command, subject, ...rawOptions] = process.argv.slice(2);
+const [command, subject, ...remaining] = process.argv.slice(2);
+const rawOptions = command === 'check-rules' ? [subject, ...remaining].filter((item) => item !== undefined) : remaining;
 const options = {};
-const booleanOptions = new Set(['all', 'user']);
+const booleanOptions = new Set(['all', 'user', 'json']);
 for (let index = 0; index < rawOptions.length; index += 1) {
   const key = rawOptions[index];
   if (!key.startsWith('--')) throw new Error(`unexpected argument: ${key}`);
   const name = key.slice(2);
   const value = booleanOptions.has(name) ? true : rawOptions[++index] ?? true;
-  if (name === 'assume-loaded' || name === 'mirror-dir') options[name] = [...(options[name] ?? []), value];
+  if (['assume-loaded', 'mirror-dir', 'dir'].includes(name)) options[name] = [...(options[name] ?? []), value];
   else options[name] = value;
 }
 const project = resolve(String(options.project || process.cwd()));
@@ -28,11 +30,32 @@ const lifecycleRoot = scope === 'user' ? configDir : project;
 const mirrorDirs = (options['mirror-dir'] ?? []).flatMap((value) => String(value).split(',')).filter(Boolean).map((path) => resolve(path));
 
 function usage() {
+  console.error('       rules.mjs check-rules --dir <rules-on-demand dir> [--dir <dir> ...] [--json]');
   console.error('usage: rules.mjs prove-triggers <rule.md> --transcripts <dir> --spec <file> [--project <dir> | --user [--config-dir <dir>]] [--output <file>]');
   console.error('       rules.mjs migrate <rule.md | wt/rule.md> (--project <dir> | --user [--config-dir <dir>] [--mirror-dir <dir>]) --spec <file> (--proof <file> | --no-proof <reason>)');
   console.error('       rules.mjs revert (<rule.md> | --all) (--project <dir> | --user [--config-dir <dir>] [--mirror-dir <dir>])');
   console.error('       rules.mjs retire <rule.md | wt/rule.md> --reason "<text>" (--project <dir> | --user [--config-dir <dir>])');
   process.exit(2);
+}
+
+async function checkRules() {
+  if (!options.dir?.length) usage();
+  const rows = [];
+  for (const dir of options.dir) {
+    for (const name of (await readdir(resolve(String(dir)))).filter((item) => item.endsWith('.md'))) {
+      const file = join(resolve(String(dir)), name);
+      try {
+        const rule = parseRuntimeRule(name, await readFile(file, 'utf8'));
+        rows.push({ file, status: rule.compliance?.kind === 'unregistered' ? 'degraded' : 'ok', ...(rule.compliance?.reason && rule.compliance.kind === 'unregistered' ? { reason: rule.compliance.reason } : {}) });
+      } catch (error) { rows.push({ file, status: 'skipped', reason: error.message }); }
+    }
+  }
+  if (options.json) console.log(JSON.stringify(rows, null, 2));
+  else for (const row of rows) {
+    const reason = row.reason ? `\t${row.reason}` : '';
+    console.log(`${row.status}\t${row.file}${reason}`);
+  }
+  if (rows.some((row) => row.status === 'skipped')) process.exitCode = 1;
 }
 
 const textOfPrompt = (row) => {
@@ -155,7 +178,8 @@ async function retire() {
 }
 
 try {
-  if (command === 'prove-triggers') await prove();
+  if (command === 'check-rules') await checkRules();
+  else if (command === 'prove-triggers') await prove();
   else if (command === 'migrate') await migrate();
   else if (command === 'revert') await revert();
   else if (command === 'retire') await retire();

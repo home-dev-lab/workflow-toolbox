@@ -34,6 +34,11 @@ test('compliance aggregation counts served separately from verdicts and flags mi
   assert.match(rows['silent.md'].note, /no verdict recorded/);
   assert.equal(rows['b.md'].reasons['classifier unavailable'], 1);
   assert.equal(rows['a.md'].reasons['no governed act'], 1);
+  const archive = join(config, 'plugins', 'data', 'wt-rules-on-demand', 'quality');
+  await mkdir(archive, { recursive: true });
+  await writeFile(join(archive, 'compliance-verdicts-archive-1000-1.jsonl'), JSON.stringify({ rule: 'a.md', verdict: 'followed' }) + '\n');
+  const withArchive = JSON.parse(run('--json').stdout);
+  assert.equal(withArchive['a.md'].injections, 4);
   assert.match(run().stdout, /^none\.md\t2\tno check declared\t/m);
   const extra = join(root, 'extra');
   await mkdir(extra);

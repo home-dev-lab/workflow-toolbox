@@ -7,6 +7,49 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readSpec, migrateRule, revertRule, retireRule, triggersHash } from '../scripts/rule-lifecycle-lib.mjs';
+
+test('JSON migration specs accept boolean and string unconditional values', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rod-unconditional-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, 'spec.json');
+  for (const value of [true, 'true', 'false']) {
+    await writeFile(path, JSON.stringify({ 'on-demand': { triggers: [{ kind: 'tool', tool: '^Edit$', unconditional: value }] }, compliance: { kind: 'none', reason: 'fixture' } }));
+    if (value === 'false') await assert.rejects(readSpec(path), /tool trigger requires/);
+    else assert.equal((await readSpec(path)).triggers[0].unconditional, value);
+  }
+});
+test('transcript evidence before last migration cannot trigger mechanical rollback', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rod-cutoff-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'rules-on-demand');
+  await mkdir(directory);
+  await writeFile(join(directory, 'sample.md'), "---\non-demand:\n  triggers:\n    - kind: tool\n      tool: ^Agent$\n      unconditional: true\n  compliance:\n    kind: check\n    check: agent-model\n---\nReview.\n");
+  const cutoff = new Date(Date.now() - 86400000).toISOString();
+  await writeFile(join(root, 'rules-on-demand-ledger.jsonl'), JSON.stringify({ action: 'migrate', rule: 'sample.md', time: cutoff }) + '\n');
+  const verdicts = join(root, 'verdicts.jsonl');
+  const rows = (at) => Array.from({ length: 5 }, (_, index) => JSON.stringify({ rule: 'sample.md', scope: 'user', rulesDir: directory, verdict: 'not followed', at, line: index + 1 })).join('\n') + '\n';
+  const run = () => spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url)), '--user', '--config-dir', root, '--verdicts', verdicts, '--mechanical-only', '--dry-run', '--json'], { encoding: 'utf8' });
+  await writeFile(verdicts, rows(new Date(Date.now() - 172800000).toISOString()));
+  assert.equal(JSON.parse(run().stdout)[0].action, 'none');
+  await writeFile(verdicts, rows(new Date().toISOString()));
+  assert.equal(JSON.parse(run().stdout)[0].action, 'would revert');
+});
+test('rollback reads bounded external verdict archives by rule identity', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'rod-archive-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const directory = join(root, 'rules-on-demand');
+  await mkdir(directory);
+  await writeFile(join(directory, 'sample.md'), "---\non-demand:\n  triggers:\n    - kind: tool\n      tool: ^Agent$\n      unconditional: true\n  compliance:\n    kind: model\n    model: haiku\n    window: 1\n    on-close: not applicable\n---\nReview.\n");
+  const archive = join(root, 'plugins', 'data', 'wt-rules-on-demand', 'quality');
+  await mkdir(archive, { recursive: true });
+  const id = `user:${directory}:sample.md`;
+  await writeFile(join(archive, 'compliance-verdicts-archive-1000-1.jsonl'), Array.from({ length: 5 }, () => JSON.stringify({ rule: 'sample.md', ruleIdentity: id, verdict: 'not followed', decidedAt: new Date().toISOString() })).join('\n') + '\n');
+  const store = join(root, 'store.json');
+  await writeFile(store, JSON.stringify({ 'compliance-verdicts-jsonl': '' }));
+  const run = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url)), '--user', '--config-dir', root, '--store', store, '--dry-run', '--json'], { encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(JSON.parse(run.stdout)[0].action, 'would revert');
+});
 import { cleanEnv } from './clean-env.mjs';
 
 const cli = fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url));

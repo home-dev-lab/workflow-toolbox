@@ -56,7 +56,7 @@ test('transcript verdicts remain authoritative over old unproven store acts', as
   } } } } }));
   const verdictFile = join(f.root, 'verdicts.jsonl');
   await writeFile(verdictFile, Array.from({ length: 5 }, () => JSON.stringify({ rule: 'sample.md', scope: 'project', rulesDir: f.rulesDir,
-    verdict: 'not followed', window: '7d', decidedAt: '2026-09-26T00:00:00.000Z' })).join('\n') + '\n');
+     verdict: 'not followed', window: '7d', at: '2026-09-26T00:00:00.000Z' })).join('\n') + '\n');
   const result = f.run('--verdicts', verdictFile, '--json');
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout)[0].action, 'would revert');

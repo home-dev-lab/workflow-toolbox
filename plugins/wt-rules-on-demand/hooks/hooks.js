@@ -1,6 +1,7 @@
 import { parseRuntimeRule } from './runtime-rule.js';
 import { maskReadOnlyMentions } from './bash-mention.js';
-import { bashCommandVerdict, isGovernedAct } from './act-checks.js';
+import { bashCommandVerdict, isGovernedAct, classify } from './act-checks.js';
+import { toolInputVerdict, correlateTurn } from './declarative-checks.js';
 import { ruleDirectories, configDirectory, agentLoop } from '../paths.js';
 import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
 import { triggerMatches } from './trigger-match.js';
@@ -26,13 +27,18 @@ const serial = (fn) => {
   return run;
 };
 const key = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
-const context = (loop) => {
+const context = async ($, loop) => {
   if (!contexts.has(loop)) {
     if (contexts.size >= MAX_CONTEXTS) {
-      const oldest = [...contexts.keys()].find((name) => name !== MAIN && !contexts.get(name).pending.length);
-      if (oldest) contexts.delete(oldest);
+      const oldest = [...contexts.keys()].find((name) => name !== MAIN);
+      if (oldest) {
+        const evicted = contexts.get(oldest);
+        for (const pending of evicted.pending.splice(0)) await close($, pending, oldest, 'context evicted');
+        await closeCorrelation($, evicted, oldest);
+        contexts.delete(oldest);
+      }
     }
-    contexts.set(loop, { rules: null, served: new Map(), pending: [], refusing: new Map() });
+    contexts.set(loop, { rules: null, served: new Map(), pending: [], refusing: new Map(), prompting: new Set(), correlation: [] });
   }
   return contexts.get(loop);
 };
@@ -169,8 +175,20 @@ async function verdict($, pending, loop, value, evidence, reason) {
     const old = String(await $.store.get('compliance-verdicts-jsonl') ?? '');
     const line = `${JSON.stringify(record)}\n`;
     if (new TextEncoder().encode(old + line).length > MAX_BYTES && old) {
-      await $.store.set(`compliance-verdicts-archive-${Date.now()}-${counter++}`, old);
+      const config = configDirectory({ CLAUDE_CONFIG_DIR: await $.env.get('CLAUDE_CONFIG_DIR'), HOME: await $.env.get('HOME'), USERPROFILE: await $.env.get('USERPROFILE') });
+      if (!config) throw new Error('cannot locate quality data for verdict rotation');
+      const directory = `${config}/plugins/data/wt-rules-on-demand/quality`;
+      const physical = await $.fs.stat(directory, { resolve: true }).then((info) => info.realPath ?? directory).catch(() => directory);
+      if (/(^|[\\/])(?:rules|rules-on-demand|\.git)(?:[\\/]|$)/.test(physical)) throw new Error('unsafe quality data directory');
+      const path = `${directory}/compliance-verdicts-archive-${Date.now()}-${counter++}.jsonl`;
+      await $.fs.write(path, old);
       await $.store.set('compliance-verdicts-jsonl', line);
+      const numbers = (name) => name.slice('compliance-verdicts-archive-'.length, -'.jsonl'.length).split('-').map(Number);
+      const files = (await list($, directory)).map((item) => item.name)
+        .filter((name) => name.startsWith('compliance-verdicts-archive-') && name.endsWith('.jsonl')
+          && numbers(name).length === 2 && numbers(name).every((n) => Number.isSafeInteger(n) && n >= 0))
+        .sort((a, b) => numbers(a)[0] - numbers(b)[0] || numbers(a)[1] - numbers(b)[1]);
+      for (const name of files.slice(0, -14)) await $.fs.remove(`${directory}/${name}`);
     } else await $.store.set('compliance-verdicts-jsonl', old + line);
   });
 }
@@ -185,6 +203,7 @@ async function evaluate($, ctx, e, loop) {
     pending.remaining--;
       pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
       if (c.kind === 'bash-command' && isGovernedAct(c, e)) await safeVerdict($, pending, loop, bashCommandVerdict(c, e.command ?? ''), summary(e));
+      else if (c.kind === 'tool-input' && toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }) !== null) await safeVerdict($, pending, loop, toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }), summary(e));
      else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) { pending.testSeen = true; if (pending.remaining <= 0) await close($, pending, loop); else remaining.push(pending); }
       else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) await safeVerdict($, pending, loop, pending.testSeen ? 'followed' : 'not followed', summary(e));
     else if (pending.remaining <= 0) await close($, pending, loop);
@@ -203,9 +222,15 @@ async function close($, pending, loop, reason = 'window closed') {
 }
 function inject(ctx, rules, trigger) {
    const injectedAt = new Date().toISOString();
-   const injected = rules.filter((rule) => rule.compliance && rule.compliance.kind !== 'check');
+   const injected = rules.filter((rule) => rule.compliance && !['check', 'unregistered', 'turn-correlation'].includes(rule.compliance.kind));
    for (const rule of injected) ctx.pending.push({ rule, trigger, injectedAt, remaining: rule.compliance.window, calls: [], testSeen: false });
    return injected;
+}
+async function closeCorrelation($, ctx, loop) {
+  const events = [...ctx.correlation, { kind: 'turn' }];
+  for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation')
+    for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail);
+  ctx.correlation = [];
 }
 const eligible = (ctx, rule) => {
   const state = ctx.served.get(rule.name);
@@ -233,7 +258,7 @@ export const register = (on, options) => {
   on('prompt.context', async ($, e, next) => {
     if (enabled) {
       try { if (!(await $.session.messages()).some((message) => message?.role === 'assistant')) { contexts.delete(MAIN); currentMain++; } } catch { /* Message history may be unavailable at startup. */ }
-       await rulesFor($, context(MAIN), e.cwd ?? '.');
+       await rulesFor($, await context($, MAIN), e.cwd ?? '.');
     }
     return next(e);
   });
@@ -243,36 +268,48 @@ export const register = (on, options) => {
        const loop = agentLoop(e.agentId), ctx = contexts.get(loop);
        if (ctx) {
          for (const pending of ctx.pending.splice(0)) await close($, pending, loop, 'compaction');
-         ctx.rules = null;
-         ctx.loading = null;
-         ctx.served.clear();
+         await closeCorrelation($, ctx, loop);
+          ctx.rules = null;
+          ctx.loading = null;
+          ctx.served.clear();
+          ctx.prompting = new Set();
        }
      }
     return result;
   });
   on('prompt.submit', async ($, e, next) => {
     if (!enabled) return next(e);
-    const ctx = context(MAIN);
+    const ctx = await context($, MAIN);
      await rulesFor($, ctx, e.cwd ?? '.');
-    const chosen = selected(ctx.rules, e, true).filter((rule) => eligible(ctx, rule));
-    const result = await next(e);
+    const prompting = ctx.prompting;
+    const chosen = selected(ctx.rules, e, true).filter((rule) => eligible(ctx, rule) && !prompting.has(rule.name));
+    for (const rule of chosen) prompting.add(rule.name);
+    let result;
+    try { result = await next(chosen.length ? { ...e, context: [...(e.context ?? []), ...chosen.map(block)] } : e); }
+    finally { for (const rule of chosen) prompting.delete(rule.name); }
      if (result && ('deny' in result || 'drop' in result) || !chosen.length) return result;
+     if (ctx.prompting !== prompting) return result;
      const ride = chosen.filter((rule) => eligible(ctx, rule));
      if (!ride.length) return result;
      claim(ctx, ride); const injected = inject(ctx, ride, 'prompt.submit'); await journal($, ride, MAIN, [], ride, injected, 'prompt.submit');
      for (const rule of ride) await $.ui.log(`wt-rules-on-demand: serving ${rule.name}`).catch(() => {});
-     return { ...result, context: [...(result.context ?? []), ...ride.map(block)] };
+     return result;
   });
   on('turn.complete', async ($, e, next) => {
     const result = await next(e);
-     if (enabled) { const loop = agentLoop(e.agentId); const ctx = context(loop); const pending = ctx.pending.splice(0); for (const p of pending) await close($, p, loop, 'turn ended'); }
+     if (enabled) {
+       const loop = agentLoop(e.agentId);
+       const ctx = await context($, loop);
+       for (const pending of ctx.pending.splice(0)) await close($, pending, loop, 'turn ended');
+       await closeCorrelation($, ctx, loop);
+     }
     return result;
   });
   // One matcherless tool.call handler: the host permits only one per module.
   on('tool.call', async ($, e, next) => {
     if (!enabled) return next(e);
     const loop = agentLoop(e.agentId);
-    const ctx = context(loop);
+    const ctx = await context($, loop);
      await rulesFor($, ctx, e.cwd ?? '.');
     await evaluate($, ctx, e, loop);
     if (textOf(e) === null) for (const rule of ctx.rules) {
@@ -288,6 +325,7 @@ export const register = (on, options) => {
         await $.ui.log(`wt-rules-on-demand: before-act refusal serving ${before.map((r) => r.name).join(', ')}`);
          const injected = inject(ctx, before, `tool.call:${e.tool}`);
          await journal($, before, loop, [], [], injected);
+         for (const rule of before) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason);
          const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context.', ...before.map(block)].join('\n\n') };
         claim(ctx, before);
         return result;
@@ -295,16 +333,32 @@ export const register = (on, options) => {
     }
     const result = await next(e);
      if (result && ('deny' in result || 'drop' in result)) return result;
+    if (ctx.rules.some((rule) => rule.compliance?.kind === 'turn-correlation')) {
+      const id = String(e.tool_use_id ?? `${ctx.correlation.length}`);
+      ctx.correlation.push({ kind: 'use', id, name: e.tool, input: e.input ?? e });
+      ctx.correlation.push({ kind: 'result', id, text: typeof result === 'string' ? result : JSON.stringify(result ?? ''), isError: result?.isError === true });
+    }
     const acts = ctx.rules.filter((rule) => rule.compliance && !['model', 'check'].includes(rule.compliance.kind) ? isGovernedAct(rule.compliance, e) : chosen.includes(rule));
      const ride = chosen.filter((rule) => !ctx.refusing.has(rule.name) && eligible(ctx, rule));
       if (ride.length) claim(ctx, ride);
       const injected = inject(ctx, ride, `tool.call:${e.tool}`);
-      await journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
+       await journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
+       const classified = classify(e.tool, e.input ?? e);
+       for (const rule of ctx.rules) if (rule.compliance?.kind === 'check' && ctx.served.has(rule.name)) {
+         for (const item of Array.isArray(classified) ? classified : [classified]) if (item?.check === rule.compliance.check)
+           await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
+             item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e));
+       }
       for (const rule of ride) await $.ui.log(`wt-rules-on-demand: serving ${rule.name}`).catch(() => {});
     for (const rule of ride) if (rule.compliance?.kind === 'bash-command' && isGovernedAct(rule.compliance, e)) {
       ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
         await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, bashCommandVerdict(rule.compliance, bounded(e.command)), summary(e));
     }
+    for (const rule of ride) if (rule.compliance?.kind === 'tool-input') {
+      const value = toolInputVerdict(rule.compliance, { tool: e.tool, input: e.input ?? e });
+      if (value) { ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule); await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e)); }
+    }
+    for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason);
     return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
   });
 };

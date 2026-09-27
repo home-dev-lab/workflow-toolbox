@@ -161,6 +161,11 @@ export function executableSegments(command) {
     ...headOf(segment.words), start: segment.start })).filter((segment) => segment.head);
 }
 
+export function executableHeads(command) {
+  return executableSegments(command).flatMap((part) => /^(?:sh|bash)$/.test(part.head) && part.args[0] === '-c'
+    ? executableSegments(part.args[1] ?? '') : [part]);
+}
+
 const WRITE_REDIRECT =/^(?:\d*|&)>>?(.*)$/;
 function writesAFile(words) {
   for (let k = 0; k < words.length; k += 1) {
@@ -216,8 +221,8 @@ export function maskReadOnlyMentions(command) {
       // A commit message is data, even though `git commit` itself is a write.
       if (head === 'git' && headOf(segment.words).args[0] === 'commit' && !segment.subst) {
         const source = text.slice(segment.start, segment.end);
-        for (const match of source.matchAll(/(?:^|\s)-m\s+(?:"[^"]*"|'[^']*')/g)) {
-          const start = segment.start + match.index + match[0].indexOf('-m');
+         for (const match of source.matchAll(/(?:^|\s)(?:-[a-zA-Z]*m\s*|--message(?:=|\s+))(?:"[^"]*"|'[^']*')/g)) {
+           const start = segment.start + match.index + match[0].search(/--message|-[a-zA-Z]*m/);
           spans.push({ start, end: segment.start + match.index + match[0].length });
         }
       }

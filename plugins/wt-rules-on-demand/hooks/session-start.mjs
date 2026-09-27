@@ -45,6 +45,15 @@ try { await assertSafeDataDir(dataDir); } catch (error) {
   process.exit(0);
 }
 const latestPath = join(dataDir, 'latest.json');
+const notifications = await readFile(join(dataDir, 'revert-notifications.jsonl'), 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error));
+if (notifications.trim()) {
+  const entries = notifications.trim().split('\n');
+  const recent = entries.at(-1);
+  try {
+    const item = JSON.parse(recent);
+    process.stdout.write(`rules-on-demand: ${entries.length} recorded revert notification(s); latest ${item.scope} ${item.rule}; ${join(dataDir, 'revert-notifications.jsonl')}\n`);
+  } catch { process.stdout.write(`rules-on-demand: revert notifications available at ${join(dataDir, 'revert-notifications.jsonl')}\n`); }
+}
 let latest;
 try { latest = JSON.parse(await readFile(latestPath, 'utf8')); } catch { /* No previous report yet. */ }
 const stamp = join(dataDir, `run-started-${new Date(now).toISOString().slice(0, 10)}`);
@@ -55,7 +64,7 @@ if ((!lastReport || now - lastReport >= 24 * 3600000) && !lastStarted) {
   for (const name of await readdir(dataDir)) if (/^run-started-\d{4}-\d\d-\d\d$/.test(name) && now - Date.parse(name.slice(12)) > 7 * 86400000) await rm(join(dataDir, name), { force: true });
   try {
     await writeFile(stamp, new Date(now).toISOString(), { flag: 'wx' });
-    const script = process.env.WT_ROD_QUALITY_SCRIPT || fileURLToPath(new URL('../scripts/quality-check.mjs', import.meta.url));
+    const script = process.env.WT_ROD_QUALITY_SCRIPT || fileURLToPath(new URL(process.env.WT_ROD_REAL_REVERT === '1' ? '../scripts/daily-rollback.mjs' : '../scripts/quality-check.mjs', import.meta.url));
     const profiles = process.env.WT_ROD_CONFIG_DIRS?.split(delimiter).filter(Boolean) ?? [config];
     const args = [script, '--project', cwd, ...profiles.flatMap((dir) => ['--config-dir', dir]), '--data-dir', dataDir];
     if (process.env.WT_ROD_QUALITY_SPAWN === '0') await writeFile(join(dataDir, 'spawn-record.json'), JSON.stringify({ script, args }));

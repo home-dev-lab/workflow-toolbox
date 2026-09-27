@@ -14,6 +14,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { configDirectory, ruleDirectories } from '../paths.js';
+import { assertSafeDataDir, qualityDataDir } from './rule-lifecycle-lib.mjs';
 
 const args = process.argv.slice(2);
 let storePath = '';
@@ -36,6 +37,10 @@ const configDir = configOverride || configDirectory(process.env);
 if (!configDir) throw new Error('HOME or USERPROFILE required to locate config directory');
 const locations = ruleDirectories(project, configDir);
 const rulesDirs = overrides.length ? overrides : [locations.project, locations.user];
+const archiveDir = await assertSafeDataDir(qualityDataDir(configDir, {}));
+const archiveFiles = (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
+  .filter((name) => /^compliance-verdicts-archive-\d+-\d+\.jsonl$/.test(name)).sort();
+const archiveLines = await Promise.all(archiveFiles.map((name) => readFile(join(archiveDir, name), 'utf8')));
 
 // Same key the hook uses for its served counters (hooks.js keyOf).
 const keyOf = (name) => name.replace(/[^a-z0-9._-]/gi, '_').toLowerCase();
@@ -60,7 +65,7 @@ async function declaredChecks() {
     for (const name of names) {
       try {
         const rule = parseRuntimeRule(name, await readFile(join(directory, name), 'utf8'));
-        if (!declared.has(keyOf(name))) declared.set(keyOf(name), { name, checkable: Boolean(rule.compliance) });
+        if (!declared.has(keyOf(name))) declared.set(keyOf(name), { name, checkable: Boolean(rule.compliance), invalid: rule.compliance?.kind === 'unregistered' ? `unknown compliance check ${rule.compliance.check}` : null });
        } catch (error) {
          if (!declared.has(keyOf(name))) declared.set(keyOf(name), { name, invalid: error.message });
       }
@@ -75,16 +80,16 @@ let lines;
 let servedCounters = {};
 try {
   const store = JSON.parse(source);
-  lines = [String(store['compliance-verdicts-jsonl'] ?? ''), ...Object.entries(store).filter(([name]) => name.startsWith('compliance-verdicts-archive-')).map(([, text]) => String(text))].join('\n');
+  lines = [String(store['compliance-verdicts-jsonl'] ?? ''), ...archiveLines, ...Object.entries(store).filter(([name]) => name.startsWith('compliance-verdicts-archive-')).map(([, text]) => String(text))].join('\n');
   servedCounters = store.served && typeof store.served === 'object' ? store.served : {};
 } catch {
-  lines = source;
+  lines = [source, ...archiveLines].join('\n');
 }
 const declared = await declaredChecks();
 
 const report = {};
 const rowFor = (name) => {
-  report[name] ??= { served: 0, check: 'no check declared', injections: 0, followed: 0, 'not followed': 0, 'not applicable': 0, unknown: 0, followRate: null, reasons: {} };
+  report[name] ??= { served: 0, check: 'no check declared', injections: 0, followed: 0, 'not followed': 0, 'not applicable': 0, 'unregistered check': 0, unknown: 0, followRate: null, reasons: {} };
   return report[name];
 };
 const nameOfKey = new Map();
@@ -112,11 +117,11 @@ for (const [name, counts] of Object.entries(report)) {
 if (json) {
   console.log(JSON.stringify(report, null, 2));
 } else {
-  console.log('rule\tserved\tcheck\tverdicts\tfollowed\tnot followed\tnot applicable\tunknown\tfollow rate\tnote');
+  console.log('rule\tserved\tcheck\tverdicts\tfollowed\tnot followed\tnot applicable\tunregistered check\tunknown\tfollow rate\tnote');
   for (const [rule, counts] of Object.entries(report).sort(([a], [b]) => a.localeCompare(b))) {
     const rate = counts.followRate === null ? 'n/a' : `${(counts.followRate * 100).toFixed(1)}%`;
     const reasons = Object.entries(counts.reasons).map(([reason, count]) => `${count}× ${reason}`).join('; ');
     const note = [counts.note, reasons].filter(Boolean).join(' | ');
-    console.log(`${rule}\t${counts.served}\t${counts.check}\t${counts.injections}\t${counts.followed}\t${counts['not followed']}\t${counts['not applicable']}\t${counts.unknown}\t${rate}\t${note}`);
+    console.log(`${rule}\t${counts.served}\t${counts.check}\t${counts.injections}\t${counts.followed}\t${counts['not followed']}\t${counts['not applicable']}\t${counts['unregistered check']}\t${counts.unknown}\t${rate}\t${note}`);
   }
 }

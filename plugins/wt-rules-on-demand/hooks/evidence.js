@@ -86,8 +86,16 @@ export function safeRegex(rule, source, flags = '') {
     const body = pattern.slice(start + (pattern.startsWith('(?:', start) ? 3 : 1), i);
     const alternatives = branches(body);
     const singleRepeated = alternatives.length === 1 && alternatives[0].length === 1 && alternatives[0][0].repeated;
-    const heads = alternatives.map((branch) => branch[0]?.first).filter((head) => head !== null && head !== undefined);
-    const overlapping = heads.length !== new Set(heads).size;
+    // A shared first character is safe when the alternatives diverge at a
+    // subsequent literal before either can finish (e.g. -C versus --dir).
+    const overlapping = alternatives.some((branch, index) => alternatives.slice(index + 1).some((other) => {
+      if (branch[0]?.first !== other[0]?.first || branch[0]?.first == null) return false;
+      for (let at = 1; at < Math.min(branch.length, other.length); at++) {
+        if (branch[at].first !== other[at].first && branch[at].first != null && other[at].first != null) return false;
+        if (branch[at].first == null || other[at].first == null) break;
+      }
+      return true;
+    }));
     if (singleRepeated || overlapping) throw new Error(`${rule}: regex has a repeated single unbounded element or overlapping alternation (same literal first character) in ${pattern}`);
   }
   return new RegExp(pattern, flags);
