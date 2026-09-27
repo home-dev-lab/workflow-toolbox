@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { classifyLane } from './lane-supervisor-core.mjs'
+import { laneHostDir } from './host/lane-host-dir.mjs'
 
 const RECORD_NAME = /^\d+-\d+\.json$/
 const LIVE_STATUSES = new Set(['running', 'decision-needed', 'launching'])
@@ -256,12 +257,13 @@ function currentRecord(dir, entries, readFileImpl) {
 }
 
 function supervisionDirs(worktree, readdirImpl) {
-  const defaultDir = path.join(worktree, '.lane', 'supervision')
+  const hostDir = laneHostDir(worktree)
+  const defaultDir = path.join(hostDir, 'supervision')
   let entries
-  try { entries = readdirImpl(path.join(worktree, '.lane'), { withFileTypes: true }) } catch { entries = [] }
+  try { entries = readdirImpl(hostDir, { withFileTypes: true }) } catch { entries = [] }
   const slots = entries
     .filter((entry) => (entry.isDirectory() || entry.isSymbolicLink()) && /^supervision-[A-Za-z0-9._-]+$/.test(entry.name))
-    .map((entry) => path.join(worktree, '.lane', entry.name))
+    .map((entry) => path.join(hostDir, entry.name))
     .sort()
   return [defaultDir, ...slots]
 }

@@ -8,12 +8,14 @@ import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from '../../../../plugin/bin/lib/claude-executor-core.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 prepareContextModeFixture()
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'worktree')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) } })
 
 function waitFor(file: string, timeoutMs = 3000) {
   const until = Date.now() + timeoutMs
@@ -124,7 +126,7 @@ describe('Claude SDK executor', () => {
   })
 
   it('launches the writer with mandatory sandboxing and denies per-command escape', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.sandbox.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'sandbox.log'); const receipt = join(f.root, 'receipt.json')
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.sandbox.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'sandbox.log'); const receipt = join(f.root, 'receipt.json')
     writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside') } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0')
@@ -139,7 +141,7 @@ describe('Claude SDK executor', () => {
     const worktree = join(root, 'worktree'); mkdirSync(join(worktree, '.lane'), { recursive: true }); spawnSync('git', ['init', '-q'], { cwd: worktree })
     const marker = `cd-escape-${process.pid}`; const computedMarker = `computed-escape-${process.pid}`; const nodeSandboxMarker = `node-sandbox-escape-${process.pid}`; const sandboxMarker = `sandbox-escape-${process.pid}`
     const encodedSandboxPath = Buffer.from(`../${nodeSandboxMarker}`).toString('hex')
-    const report = join(worktree, '.lane', 'tdd-report.confinement.md'); const brief = join(worktree, '.lane', 'brief.md'); const log = join(worktree, '.lane', 'real-sdk.log')
+    const report = join(worktree, '.lane', 'tdd-report.confinement.md'); const brief = join(worktree, '.lane', 'brief.md'); const log = join(laneHostDir(worktree), 'real-sdk.log')
     writeFileSync(brief, `This is a confinement regression fixture. Use Bash to run each command exactly once and record each tool result verbatim in the report. Do not try alternative commands.\n\n1. \`cd .. && touch ${marker}\`\n2. \`node -e "require('fs').writeFileSync(require('path').resolve('..','${computedMarker}'),'x')"\`\n3. \`node -e "require('fs').writeFileSync(Buffer.from('${encodedSandboxPath}','hex').toString(),'x')"\`\n4. \`p=$(printf '\\056\\056\\057${sandboxMarker}'); : > "$p"\`\n\nWrite the report to \`${report}\`.\n`)
     const home = join(root, 'home'); const config = join(root, 'config'); const state = join(root, 'state'); mkdirSync(home); mkdirSync(config); mkdirSync(state)
     const result = spawnSync(process.execPath, [join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), '--dir', worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '120', '--role', 'tdd'], { encoding: 'utf8', env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: state } })
@@ -169,7 +171,7 @@ describe('Claude SDK executor', () => {
   })
 
   it('prints a detached pid, loads the guard, writes only the named report, and ends its log with EXIT=0', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.nonce.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'run.log'); const receipt = join(f.root, 'receipt.json'); const outside = join(f.root, 'outside.txt')
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.nonce.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'run.log'); const receipt = join(f.root, 'receipt.json'); const outside = join(f.root, 'outside.txt')
     writeFileSync(brief, `Implement the task.\n\nWrite the report to \`${report}\`.\n`)
     writeFileSync(join(f.worktree, 'AGENTS.md'), '# Guide\n')
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: outside } })
@@ -189,7 +191,7 @@ describe('Claude SDK executor', () => {
   })
 
   it('ends a timed-out detached worker log with EXIT=124', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.timeout.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'timeout.log'); const receipt = join(f.root, 'receipt.json')
+    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.timeout.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'timeout.log'); const receipt = join(f.root, 'receipt.json')
     writeFileSync(brief, `You are the independent reviewer.\nWrite the report to \`${report}\` with exactly one verdict block.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '0.05', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_HANG: 'true' } })
     expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+/)
@@ -200,8 +202,8 @@ describe('Claude SDK executor', () => {
   })
 
   it('item 7: the log always ENDS with an exit marker, even when an earlier marker is followed by later lines', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.idempotent.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'idempotent.log'); const receipt = join(f.root, 'receipt.json')
-    writeFileSync(brief, `Write the report to \`${report}\`.\n`); writeFileSync(log, 'EXIT=0\n')
+    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.idempotent.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'idempotent.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`); mkdirSync(laneHostDir(f.worktree), { recursive: true }); writeFileSync(log, 'EXIT=0\n')
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '0.05', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_HANG: 'true' } })
     expect(result.status).toBe(0); waitFor(receipt); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
     // A waiter reads the LAST line. Diagnostics written after a pre-seeded marker must not leave the log without a final one.
@@ -211,7 +213,7 @@ describe('Claude SDK executor', () => {
   // wt-claude-executor states that Windows forced termination has no POSIX 143/130 marker contract.
   it.skipIf(process.platform === 'win32')('item 8: SIGTERM and SIGINT sent to the pid the launcher prints write exit markers 143 and 130', () => {
     for (const [signal, exit] of [['SIGTERM', 143], ['SIGINT', 130]] as const) {
-      const f = fixture(); const report = join(f.worktree, '.lane', `review-report.${signal.toLowerCase()}.md`); const brief = join(f.root, `${signal}.md`); const log = join(f.worktree, '.lane', `${signal}.log`); const receipt = join(f.root, `${signal}.json`)
+      const f = fixture(); const report = join(f.worktree, '.lane', `review-report.${signal.toLowerCase()}.md`); const brief = join(f.root, `${signal}.md`); const log = join(laneHostDir(f.worktree), `${signal}.log`); const receipt = join(f.root, `${signal}.json`)
       writeFileSync(brief, `Write the report to \`${report}\`.\n`)
       const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '5', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_HANG: 'true' } })
       expect(result.status).toBe(0); waitFor(receipt); const workerPid = Number(/^pid=(\d+)$/m.exec(result.stdout)?.[1]); expect(workerPid).toBeGreaterThan(0)
@@ -222,31 +224,31 @@ describe('Claude SDK executor', () => {
   })
 
   it('item 9: rejects a stream whose first message is not an initialization receipt', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.first.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'first.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.first.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'first.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'first-result' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(log, 'utf8')).toContain('SDK executor initialization receipt never arrived: the first message was result/success')
   })
 
   it('item 10: rejects a stream that ends without an initialization receipt', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.empty.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'empty.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.empty.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'empty.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'empty' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(log, 'utf8')).toContain('SDK executor run ended without an initialization receipt')
   })
 
   it('item 11: writes a read-only report from terminal result text when absent', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.generated.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'generated.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.generated.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'generated.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'no-write' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); expect(readFileSync(report, 'utf8')).toBe('generated review\n\nvariant=xhigh origin=role base forced=false\n')
   })
 
   it('item 12: exits 1 when the terminal result is_error despite a written report', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.error.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'error.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.error.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'error.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'error' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=medium origin=role base forced=false\n')
   })
 
   it('item 13: accumulates usage across multiple result messages', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.multiple.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'multiple.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.multiple.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'multiple.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'multiple' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); waitFor(`${log}.usage.json`)
     expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8')).totals).toEqual({ input: 13, cache_creation: 16, cache_read: 22, output: 26 })

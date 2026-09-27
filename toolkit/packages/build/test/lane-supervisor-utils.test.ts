@@ -4,12 +4,14 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { argvSummary, laneHardBoundAt, readCurrentSupervision, readCurrentSupervisions, readLogTail, shellQuote, supervisionPaths, supervisionSlots, terminalExit, writeJsonAtomic } from '../../../../plugin/bin/lib/lane-supervisor-core.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const roots: string[] = []
 const tempRoot = () => { const root = mkdtempSync(join(tmpdir(), 'wt-supervisor-utils-')); roots.push(root); return root }
 
 afterEach(() => {
-  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) { rmSync(laneHostDir(root), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) }
 })
 
 describe('lane supervisor utilities', () => {
@@ -52,18 +54,19 @@ describe('lane supervisor utilities', () => {
   })
 
   it('builds supervision paths with and without a run id', () => {
-    const root = join(tmpdir(), 'lane root')
+    const root = tempRoot()
+    const dir = join(laneHostDir(root), 'supervision')
     const withoutRun = supervisionPaths(root)
     expect(withoutRun).toEqual({
-      dir: join(root, '.lane', 'supervision'),
-      pointer: join(root, '.lane', 'supervision', 'current.json'),
+      dir,
+      pointer: join(dir, 'current.json'),
       record: null,
       decision: null,
     })
     expect(supervisionPaths(root, '10-20')).toEqual({
       ...withoutRun,
-      record: join(root, '.lane', 'supervision', '10-20.json'),
-      decision: join(root, '.lane', 'supervision', '10-20.decision.json'),
+      record: join(dir, '10-20.json'),
+      decision: join(dir, '10-20.decision.json'),
     })
   })
 

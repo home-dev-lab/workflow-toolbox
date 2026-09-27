@@ -9,9 +9,9 @@ const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 
-// Lowered to 1920 after moving lane publication I/O and sandbox availability checks into host adapters.
+// Lowered to 1915 after moving lane brief and lifecycle reads into the host directory helper.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1920
+export const HOST_PRIMITIVE_CEILING = 1915
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
