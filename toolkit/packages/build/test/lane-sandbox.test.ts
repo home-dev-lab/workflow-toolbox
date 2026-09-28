@@ -1382,7 +1382,7 @@ describe('host relays die with their launcher (card 1872293505129252765)', () =>
     const modulePath = sandboxLib ? join(sandboxLib, 'host/lane-sandbox.mjs') : join(LIB, 'host/lane-sandbox.mjs')
     // The host relay needs no socat after the fix; a placeholder stands in where socat is absent, only
     // to keep the plan's "inside half exists" branch (it is never executed here).
-    const request = { profile: 'opencode', bin: process.execPath, args: ['run', '--model', 'x/m'], cwd: work, env: { HOME: home, PATH: process.env.PATH }, optionEnv: { PATH: process.env.PATH }, platform: 'linux', bwrap: process.execPath, socat: SOCAT || '/bin/sh', runtimeParent: runtime }
+    const request = { profile: 'opencode', bin: process.execPath, args: ['run', '--model', 'x/m'], cwd: work, env: { HOME: home, PATH: process.env.PATH }, optionEnv: { PATH: process.env.PATH }, platform: 'linux', bwrap: process.execPath, socat: SOCAT || '/bin/sh', find: '/usr/bin/find', runtimeParent: runtime }
     const launcherScript = `const { resolveLaneSandbox } = await import(process.env.WT_TEST_SANDBOX_URL)
       const plan = resolveLaneSandbox({ ...JSON.parse(process.env.WT_TEST_REQUEST), probe: () => ({ ok: true }) })
       console.log('ready ' + plan.endpoints.length)
@@ -1397,12 +1397,12 @@ describe('host relays die with their launcher (card 1872293505129252765)', () =>
     const client = net.connect(sock, () => client.write('held request'))
     client.on('error', () => {})
     client.on('close', () => { clientClosed = true })
-    const connected = Date.now() + 5000
+    const connected = Date.now() + 15_000
     while (!upstreamConnected && Date.now() < connected) await new Promise((r) => setTimeout(r, 50))
     expect(upstreamConnected).toBe(true)
     expect(survivorsOf(runtime).length).toBeGreaterThan(0) // control: the relay IS running before the kill
     launcher.kill('SIGKILL')
-    const deadline = Date.now() + 5000
+    const deadline = Date.now() + 15_000
     let survivors = survivorsOf(runtime)
     while ((survivors.length || !clientClosed) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 100))

@@ -369,6 +369,7 @@ function acquireBrokerSuiteLock(socketPath, options) {
     let resolveLost
     const lost = new Promise((done) => { resolveLost = done })
     const fail = (error) => {
+      socket.destroy()
       if (settled) {
         if (!released) resolveLost()
         return
@@ -376,7 +377,6 @@ function acquireBrokerSuiteLock(socketPath, options) {
       settled = true
       clearTimeout(timer)
       options.signal?.removeEventListener?.('abort', abort)
-      socket.destroy()
       reject(error)
     }
     const timer = setTimeout(() => {

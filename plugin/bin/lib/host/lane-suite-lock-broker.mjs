@@ -50,7 +50,7 @@ export function createSuiteLockBroker({ label = '' } = {}) {
       if (closed) return
       closed = true; active -= 1; clearTimeout(timer); release()
     }
-    const error = (message) => { clearTimeout(timer); rejectConnection(socket, message) }
+    const error = (message) => { requested = true; clearTimeout(timer); rejectConnection(socket, message) }
     const timer = setTimeout(() => error('request timed out'), REQUEST_TIMEOUT_MS)
     socket.on('error', finish)
     socket.on('close', finish)

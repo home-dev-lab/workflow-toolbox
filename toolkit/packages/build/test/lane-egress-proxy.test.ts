@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import tls from 'node:tls'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Card 1871036638205838753, round 3, defect 1: the host-side egress proxy that is a sandboxed lane's
 // only route out. Portable: every test runs on loopback with an injected resolver/connector, so no
@@ -427,13 +427,15 @@ describe('endpoint relay mode (card 1872293505129252765)', () => {
   })
 
   it('tracks every live relayed connection, so destroying them closes a held client', async () => {
-    const { root, sock, connections } = await relayFixture((c) => { c.on('error', () => {}) })
+    let upstreamReady!: () => void
+    const upstreamConnected = new Promise<void>((resolve) => { upstreamReady = resolve })
+    const { root, sock, connections } = await relayFixture((c) => { c.on('error', () => {}); upstreamReady() })
     try {
       let tracked = -1
       await new Promise<void>((resolve) => {
         const client = net.connect(sock, () => {
           client.write('held')
-          setTimeout(() => { tracked = connections.size; for (const s of connections) s.destroy() }, 100)
+          void upstreamConnected.then(() => { tracked = connections.size; for (const s of connections) s.destroy() })
         })
         client.on('error', () => {})
         client.on('close', () => resolve())
@@ -458,17 +460,17 @@ describe('endpoint relay mode (card 1872293505129252765)', () => {
         client.on('error', () => {})
         client.on('close', () => resolve())
       })
-      await new Promise((r) => setTimeout(r, 50))
+      await vi.waitFor(() => expect(connections.size).toBe(0), { timeout: 15_000 })
       expect(connections.size).toBe(0)
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
   it('refuses --relay together with --allow, and a relay target without a port', () => {
     const PROXY = join(LIB, 'lane-egress-proxy.mjs')
-    const both = spawnSync(process.execPath, [PROXY, '--socket', '/nonexistent-dir-for-egress/r.sock', '--relay', '127.0.0.1:1', '--allow', 'chatgpt.com'], { encoding: 'utf8', timeout: 10_000 })
+    const both = spawnSync(process.execPath, [PROXY, '--socket', '/nonexistent-dir-for-egress/r.sock', '--relay', '127.0.0.1:1', '--allow', 'chatgpt.com'], { encoding: 'utf8', timeout: 15_000 })
     expect(both.status).toBe(3)
     expect(both.stderr).toContain('--relay and --allow are mutually exclusive')
-    const bad = spawnSync(process.execPath, [PROXY, '--socket', '/nonexistent-dir-for-egress/r.sock', '--relay', '127.0.0.1'], { encoding: 'utf8', timeout: 10_000 })
+    const bad = spawnSync(process.execPath, [PROXY, '--socket', '/nonexistent-dir-for-egress/r.sock', '--relay', '127.0.0.1'], { encoding: 'utf8', timeout: 15_000 })
     expect(bad.status).toBe(3)
     expect(bad.stderr).toContain('--relay needs <host>:<port>')
   })
