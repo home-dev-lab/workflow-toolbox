@@ -15,9 +15,9 @@
 // reaches these repositories, and HOME / state / config dirs sealed under a throwaway root.
 
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { delimiter, join } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
@@ -252,13 +252,16 @@ describe('wt-push-scope-check: fails closed when it cannot measure', () => {
 
   it('when git cat-file fails', () => {
     const f = fixture()
-    const bin = join(f.root, 'bin')
-    mkdirSync(bin)
-    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8', env: SEALED }).stdout.trim()
-    const shim = join(bin, 'git')
-    writeFileSync(shim, `#!/bin/sh\nfor a in "$@"; do [ "$a" = cat-file ] && { echo "shim: cat-file refused" >&2; exit 128; }; done\nexec "${realGit}" "$@"\n`)
-    chmodSync(shim, 0o755)
-    const env = { ...SEALED, PATH: `${bin}${delimiter}${SEALED.PATH ?? ''}` }
+    // A PATH shell shim is not selected by Node's Windows executable resolution (git.exe wins).
+    // Preload before the guard imports child_process so the failure is injected on every OS.
+    const shim = join(f.root, 'refuse-cat-file.cjs')
+    writeFileSync(shim, `const child = require('node:child_process');
+      const original = child.execFileSync;
+      child.execFileSync = function (command, args, options) {
+        if (command === 'git' && args.includes('cat-file')) throw Error('shim: cat-file refused');
+        return original.call(this, command, args, options);
+      };\n`)
+    const env = { ...SEALED, NODE_OPTIONS: `${SEALED.NODE_OPTIONS ?? ''} --require="${shim.replaceAll('\\', '/')}"` }
     const r = run(f, { commits: [f.C] }, 'card', { remoteSha: ZERO, env })
     expect(r.status, r.out).toBe(2)
     expect(r.out).toContain('could not check which advertised objects')
