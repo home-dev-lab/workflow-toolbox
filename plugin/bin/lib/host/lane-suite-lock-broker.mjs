@@ -7,6 +7,9 @@ import { acquireSuiteLock, releaseSuiteLock } from '../suite-lock.mjs'
 const REQUEST_LIMIT = 4096
 const REQUEST_TIMEOUT_MS = 5000
 const MAX_CONNECTIONS = 16
+// A rejected socket no longer holds a served slot but can linger up to REJECTION_CLOSE_MS, so open
+// sockets get their own bound: past it, the server drops a new connection without accepting it.
+const MAX_OPEN_SOCKETS = 2 * MAX_CONNECTIONS
 const REJECTION_CLOSE_MS = 1000
 
 function rejectConnection(socket, message) {
@@ -50,7 +53,8 @@ export function createSuiteLockBroker({ label = '' } = {}) {
       if (closed) return
       closed = true; active -= 1; clearTimeout(timer); release()
     }
-    const error = (message) => { requested = true; clearTimeout(timer); rejectConnection(socket, message) }
+    // The answer is final, so the served slot is freed now, not when the rejected client goes away.
+    const error = (message) => { requested = true; finish(); rejectConnection(socket, message) }
     const timer = setTimeout(() => error('request timed out'), REQUEST_TIMEOUT_MS)
     socket.on('error', finish)
     socket.on('close', finish)
@@ -78,6 +82,7 @@ export function createSuiteLockBroker({ label = '' } = {}) {
       }
     })
   })
+  server.maxConnections = MAX_OPEN_SOCKETS
   // Releases every lock this broker holds (its lease on exit must not wait for its pid to read dead).
   server.releaseAll = () => { for (const release of [...releases]) release() }
   return server
