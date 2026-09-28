@@ -5,6 +5,14 @@ file/area/shape repeatedly = signal of shared architectural root. Stop, question
 Trigger on: 2+ rounds same area; adding second patch to just-patched thing; fix that spawns next
 finding. Right moment = FIRST sign, not five commits later.
 
+Same trigger when the nominal cases already work and the next round only chases rare ones —
+persistence past diminishing returns is the signal, not the effort spent so far.
+Step back ≠ stop, ≠ ask. Re-examine the ROUTE itself before any further round: run two or three
+independent analyses from different lenses (competing hypotheses, a structural or architectural
+root cause, a simpler reformulated problem, cost of the remaining cases against their frequency);
+write down the routes considered and the one kept, and why. Continuing is legitimate when the
+analysis confirms the route. Escalate only when no route is found.
+
 For ANYTHING distributed — rule, script, hook, helper or other file — check for a shipped twin and
 carry a needed fix there in the SAME pass, reading that twin for improvements to carry back.
 "Does the distributed set already carry this?" is answered against the SOURCE at a named revision,
