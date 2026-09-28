@@ -27,8 +27,9 @@ describe('pid to parent-pid host perimeter', () => {
     // and the cross-OS CLI, dispatcher and verdict module add three, and the shared frontmatter/definition helpers add three more;
     // the pure model-pin module adds one more, and the pure Claude-executor environment builder
     // (claude-executor-env.mjs) one more; the transcript checker, shared tracker and warning hook add three
-    // process-table-free modules (their filesystem access is contained in bin/lib/host); none of them adds a process-table primitive.
+    // process-table-free modules (their filesystem access is contained in bin/lib/host); the push-guard
+    // installer adds one process-table-free CLI. None adds a process-table primitive.
     // The TypeScript pack's protocol-only wt-tsls.mjs adds one perimeter entry; resolution and spawn stay in host/ts-language-server.mjs.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 236, violations: [] })
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 237, violations: [] })
   })
 })
