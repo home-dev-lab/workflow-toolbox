@@ -31,10 +31,12 @@ only `-at-act` halves belong here. A duplicate static/on-demand basename is
 reported as loaded twice and the on-demand copy is not served only when their normalised bodies match. Different bodies with the same basename are reported and served.
 
 `before-first-act: true` refuses the first matching call with the rule text;
-retrying passes. Ride-along rules accompany the result and cannot govern their
-triggering call. A model compliance classifier is measurement-only and often
-answers “not applicable”. The `agent-model` check counts a spawn without a
-`model` argument as not followed even when an agent definition pins it.
+retrying passes. Ride-along rules accompany the result; declarative Bash-command
+and tool-input checks measure that call, and model classification includes it.
+The rule cannot guide that call's already-completed action. A model compliance
+classifier is measurement-only and often answers “not applicable”. The
+`agent-model` check counts a spawn without a `model` argument as not followed
+even when an agent definition pins it.
 `gate-background` recognises a fixed build-command vocabulary. A refusal on an
 Agent spawn inside a subagent was missed in one real session (under investigation).
 Store writes serialize within one process; concurrent sessions sharing a store
@@ -57,8 +59,11 @@ inspect rules before deployment with `rules.mjs check-rules --dir <rules-dir>
 --corpus <commands.json> --time-bound-ms 50`; each slow regex test is reported
 and causes a nonzero exit.
 
-Rule files are limited to 256 KiB and regex subjects to their first 16 KiB,
-identically in the hook and transcript/proof matching. Patterns with a repeated
+Rule files are limited to 256 KiB (bytes) and regex subjects to their first
+16 Ki characters, identically in the hook and transcript/proof matching. Refusal
+deliveries, and the refusal itself, are detected across the first 256 Ki
+characters of the result while stored result evidence remains limited to
+16 Ki characters. Patterns with a repeated
 group whose sole element is unbounded-quantified (such as `^(a+)+$`
 or `(?:\d*)*`), or a repeated alternation with branches starting with the same
 decidable literal character (such as `(a|ab)*`), are rejected at parse time.

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { checkLines } from '../hooks/act-checks.js';
 import { ruleDirectories, configDirectory } from '../paths.js';
-import { argumentEvidence, bounded } from '../hooks/evidence.js';
+import { argumentEvidence, bounded, RULE_CAP } from '../hooks/evidence.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { toolInputVerdict, bashSegments, segmentVerdict, correlateTurn } from '../hooks/declarative-checks.js';
 
@@ -152,10 +152,17 @@ export function normalize(record, line, cwd = '') {
   if (record.type === 'user') {
     const content = record.message?.content;
     const results = Array.isArray(content) ? content.filter((part) => part?.type === 'tool_result') : [];
-    const events = results.map((part) => ({ ...base, kind: 'result', id: part.tool_use_id, isError: part.is_error === true,
-       text: bounded(textOf(part.content)) }));
-    for (const result of events.filter((event) => event.kind === 'result')) if (result.text.includes(REFUSAL)) for (const block of blocks(result.text).filter((item) => !item.fallback))
-      events.push({ ...base, kind: 'delivery', name: block.name, provenance: { kind: 'refusal', toolUseId: result.id, line, at } });
+    const events = [];
+    const deliveries = [];
+    for (const part of results) {
+      const raw = textOf(part.content);
+      const refusal = raw.slice(0, RULE_CAP);
+      const refused = refusal.includes(REFUSAL);
+      events.push({ ...base, kind: 'result', id: part.tool_use_id, isError: part.is_error === true, text: bounded(raw), ...(refused ? { refused } : {}) });
+      if (refused) for (const block of blocks(refusal).filter((item) => !item.fallback))
+        deliveries.push({ ...base, kind: 'delivery', name: block.name, provenance: { kind: 'refusal', toolUseId: part.tool_use_id, line, at } });
+    }
+    events.push(...deliveries);
     if (!results.length && (typeof content === 'string' || Array.isArray(content) && content.some((part) => part?.type === 'text')) && !record.isMeta && !record.isCompactSummary)
       events.push({ ...base, kind: 'turn' });
     return events;
@@ -190,7 +197,7 @@ export function judge(context, resolved, path, stats, seen, now) {
    for (const act of checkLines(context.events)) {
      if (act.toolUseId) checked.set(act.toolUseId, [...checked.get(act.toolUseId) ?? [], act]);
    }
-   const refused = new Set(context.events.filter((event) => event.kind === 'result' && event.text.includes(REFUSAL)).map((event) => event.id));
+   const refused = new Set(context.events.filter((event) => event.kind === 'result' && (event.refused || event.text.includes(REFUSAL))).map((event) => event.id));
   for (const call of resolved.calls.values()) {
     if (refused.has(call.id)) continue;
     const time = Date.parse(call.at ?? '');
