@@ -13,6 +13,19 @@ root cause, a simpler reformulated problem, cost of the remaining cases against 
 write down the routes considered and the one kept, and why. Continuing is legitimate when the
 analysis confirms the route. Escalate only when no route is found.
 
+Recognise the drift by its names:
+- escalation of commitment / sunk cost — continuing because of what is already spent;
+- degenerating programme (Lakatos) — each round patches a rarer anomaly, nothing new is gained;
+- Einstellung effect — the familiar method hides a simpler one in plain sight;
+- diminishing returns (Pareto) — the last rare cases cost most of the effort;
+- satisficing (Simon) — acceptance criterion met: stop optimising;
+- kill criteria / stop-loss — the point of re-evaluation is set BEFORE starting, not felt during.
+Lenses to step back with:
+- multiple working hypotheses (Chamberlin; Platt's strong inference) — rival explanations, never one;
+- Pólya — reformulate, solve a simpler neighbouring problem, work backwards;
+- root cause (5 whys) — the structural cause, not the next symptom;
+- explore vs exploit — when a route's yield drops, explore another.
+
 For ANYTHING distributed — rule, script, hook, helper or other file — check for a shipped twin and
 carry a needed fix there in the SAME pass, reading that twin for improvements to carry back.
 "Does the distributed set already carry this?" is answered against the SOURCE at a named revision,
