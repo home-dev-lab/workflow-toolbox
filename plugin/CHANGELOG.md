@@ -32,6 +32,7 @@ Patch release: measured on the release tree against the 0.189.0 baseline (`node 
 - Executor roles now choose their launcher from each phase's model, so a consented GPT implementation can use a Claude refuter (and Claude code can use GPT review); GPT models still require lane consent.
 
 ### Fixed
+- After a clock change, the commit guard no longer accepts staged content the gate never saw or refuses an untouched file, and lifecycle reports no longer refuse a delivered file written during the run.
 - SDK pilot lifecycle: a lane receipt and the gates that follow it are no longer refused when the system clock steps backwards. The receipt's freshness now rests on its launch nonce alone, and gates are ordered after the lane by a server-side receipt count instead of file modification times (card 1873939897).
 - `wt-rules-on-demand` transcript scan: a rule delivered past the first 16 KiB of a refusal that serves several rules at once is now counted as delivered, and the refused call is no longer judged as an executed act. Before, every act that rule governed read as a trigger miss, the evidence the daily rollback acts on.
 - `wt-rules-on-demand` serving: a rule triggered by a tool call, or by a prompt, no longer aborts the hook after it is claimed. The host's `ui.log` returns nothing, so the progress line threw and the host skipped the hook: a tool-triggered rule was marked served but its text never reached the model.
