@@ -57,8 +57,11 @@ inspect rules before deployment with `rules.mjs check-rules --dir <rules-dir>
 --corpus <commands.json> --time-bound-ms 50`; each slow regex test is reported
 and causes a nonzero exit.
 
-Rule files are limited to 256 KiB and regex subjects to their first 16 KiB,
-identically in the hook and transcript/proof matching. Patterns with a repeated
+Rule files are limited to 256 KiB (bytes) and regex subjects to their first
+16 Ki characters, identically in the hook and transcript/proof matching. Refusal
+deliveries, and the refusal itself, are detected across the first 256 Ki
+characters of the result while stored result evidence remains limited to
+16 Ki characters. Patterns with a repeated
 group whose sole element is unbounded-quantified (such as `^(a+)+$`
 or `(?:\d*)*`), or a repeated alternation with branches starting with the same
 decidable literal character (such as `(a|ab)*`), are rejected at parse time.
