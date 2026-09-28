@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { planTsLaunch, inspectInitialize, runTsLaunch } from '../../../../plugin/bin/lib/host/ts-language-server.mjs'
 
@@ -235,7 +236,7 @@ describe('initialize framing', () => {
   })
   it('returns a protocol refusal when neither backend is reachable', () => {
     const launcher = new URL('../../../../plugin/bin/wt-tsls.mjs', import.meta.url)
-    const result = spawnSync(process.execPath, [launcher.pathname], { input: frame({ id: 0, method: 'initialize', params: {} }), env: { PATH: '' }, timeout: 30_000 })
+    const result = spawnSync(process.execPath, [fileURLToPath(launcher)], { input: frame({ id: 0, method: 'initialize', params: {} }), env: { PATH: '' }, timeout: 30_000 })
     expect(result.stdout.toString()).toContain('"retry":false')
     expect(result.stderr.toString()).toContain('wt-tsls:')
   })
@@ -247,10 +248,11 @@ describe('initialize framing', () => {
       mkdirSync(join(bin, 'node_modules', 'typescript-language-server', 'lib'), { recursive: true })
       const reply = frame({ id: 0, result: { capabilities: {} } })
       writeFileSync(cli, `let bytes = Buffer.alloc(0); process.stdin.on('data', chunk => { bytes = Buffer.concat([bytes, chunk]) }); process.stdin.on('end', () => { process.stderr.write('received:' + bytes.toString('hex') + '\\n'); process.stdout.write(Buffer.from('${reply.toString('hex')}', 'hex'), () => process.exit(7)) })`)
-      symlinkSync(cli, join(bin, 'typescript-language-server'))
+      if (process.platform === 'win32') writeFileSync(join(bin, 'typescript-language-server.cmd'), '@rem npm shim fixture\r\n')
+      else symlinkSync(cli, join(bin, 'typescript-language-server'))
       const input = Buffer.concat([frame({ id: 0, method: 'initialize', params: {} }), frame({ method: 'initialized' })])
       const launcher = new URL('../../../../plugin/bin/wt-tsls.mjs', import.meta.url)
-      const result = spawnSync(process.execPath, [launcher.pathname], { input, env: { PATH: bin }, timeout: 30_000 })
+      const result = spawnSync(process.execPath, [fileURLToPath(launcher)], { input, env: { PATH: bin, SystemRoot: process.env.SystemRoot }, timeout: 30_000 })
       expect(result.stdout).toEqual(reply)
       expect(result.stderr.toString()).toContain(`received:${input.toString('hex')}`)
       expect(result.status).toBe(7)
