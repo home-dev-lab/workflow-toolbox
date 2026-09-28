@@ -5,6 +5,25 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.189.1] - 2026-09-28
+
+### Quality
+
+Patch release: measured on the release tree against the 0.189.0 baseline (`node scripts/quality.mjs delta`, coverage from the release tree's own test run). Cyclomatic and cognitive complexity each rose by 1 and the longest function shrank by 1 line; duplication fell slightly; ESLint warnings, Knip issues and dependency cycles are unchanged. Coverage moved by less than 0.05 points on every measure.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 126 -> 127 | +1 |
+| Cognitive complexity | 268 -> 269 | +1 |
+| Longest function (lines) | 700 -> 699 | -1 |
+| ESLint warnings | 684 -> 684 | 0 |
+| Duplication % | 2.4324 -> 2.4256 | -0.01 |
+| Knip issues | 196 -> 196 | 0 |
+| Coverage lines % | 78.61 -> 78.65 | +0.04 |
+| Coverage branches % | 69.76 -> 69.78 | +0.02 |
+| Coverage functions % | 80.86 -> 80.83 | -0.03 |
+| Coverage statements % | 76.50 -> 76.49 | -0.01 |
+
 ### Added
 - The shipped TypeScript language server now selects a workspace TypeScript server or a host TypeScript 7 native server and provides navigation and diagnostics for `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` files.
 
