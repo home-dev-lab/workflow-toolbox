@@ -26,6 +26,14 @@ const CANDIDATE_PROBE_MS = 750
 const FALLBACK_CANDIDATES = 2
 const FALLBACK_READINESS_MS = 5_000
 const FALLBACK_DISCOVERY_MARGIN_MS = 2_000
+// Test startup cap chosen equal to RETRY_WINDOW_MS in plugin/bin/wt-artifact-server-ensure.mjs;
+// deferrals and the overall retry cap can keep the real monitor working beyond this test budget.
+const MONITORED_SERVER_STARTUP_CAP_MS = 60_000
+const STOP_CHILD_WAIT_MS = 10_000
+const STOP_DETACHED_WAIT_MS = 10_000
+// One monitor and up to four spawned servers (initial attempt plus three retries) stop sequentially.
+const MONITORED_SERVER_TEARDOWN_BOUND_MS = STOP_CHILD_WAIT_MS + 4 * STOP_DETACHED_WAIT_MS + FALLBACK_DISCOVERY_MARGIN_MS
+const MONITORED_SERVER_TEST_BOUND_MS = MONITORED_SERVER_STARTUP_CAP_MS + MONITORED_SERVER_TEARDOWN_BOUND_MS
 const FALLBACK_DISCOVERY_BOUND_MS = CANDIDATE_PROBE_MS * FALLBACK_CANDIDATES + FALLBACK_READINESS_MS + FALLBACK_DISCOVERY_MARGIN_MS
 const PAUSED_CLAIM_HOLD_MS = 7_000
 const OLD_CLAIM_STALE_BOUND_MS = 3_000
@@ -178,6 +186,13 @@ function lastOutputLine(value: string) {
   return value.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? '<none>'
 }
 
+function monitorStateFailure(stateHome: string, monitor: ChildProcess, reason: string) {
+  const output = childOutput(monitor)
+  const processes = spawnReceipts(join(stateHome, 'server-processes.log'))
+    .map((pid) => `${pid}: ${pidAlive(Number(pid)) ? 'alive' : 'dead'}`)
+  return new Error(`${reason}; last stdout=${JSON.stringify(lastOutputLine(output.stdout()))}; last stderr=${JSON.stringify(lastOutputLine(output.stderr()))}; server-processes=${JSON.stringify(processes)}; last state=${JSON.stringify(readState(stateHome))}`)
+}
+
 type RootRecord = { name: string, path: string }
 type Discovery = {
   version: string
@@ -288,7 +303,7 @@ async function stopChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'
     : new Promise<void>((resolve) => child.once('close', () => resolve()))
   if (process.platform === 'win32') killWindowsTree(pid, spawnSync, includeWindowsTree)
   else child.kill(signal)
-  await waitFor(() => pidAlive(pid) ? null : true, 10_000).catch(() => {
+  await waitFor(() => pidAlive(pid) ? null : true, STOP_CHILD_WAIT_MS).catch(() => {
     throw new Error(`timed out waiting for test child pid=${pid} to exit before teardown`)
   })
   await closed
@@ -328,7 +343,7 @@ async function stopDetached(pid: number, record: DetachedProcess) {
     detachedProcesses.delete(pid)
     return
   }
-  await waitFor(() => pidAlive(pid) ? null : true, 10_000).catch(() => {
+  await waitFor(() => pidAlive(pid) ? null : true, STOP_DETACHED_WAIT_MS).catch(() => {
     throw new Error(`timed out waiting for detached artifact server pid=${pid} to exit before teardown`)
   })
   detachedProcesses.delete(pid)
@@ -393,18 +408,27 @@ function runCli(args: string[], env: NodeJS.ProcessEnv) {
   })
 }
 
-async function waitForState(stateHome: string, predicate: (state: Discovery) => boolean = () => true, timeoutMs = 15_000) {
+async function waitForState(stateHome: string, predicate: (state: Discovery) => boolean = () => true, timeoutMs = 15_000,
+  options: { monitor?: ChildProcess, track?: boolean } = {}) {
   const deadline = Date.now() + timeoutMs
   const state = await new Promise<Discovery>((resolve, reject) => {
     let watcher: ReturnType<typeof watch> | null = null
     let poller: ReturnType<typeof setInterval> | null = null
+    const monitor = options.monitor
+    const output = monitor ? childOutput(monitor) : null
     const stopWaiting = () => {
       clearTimeout(timer)
       if (poller) clearInterval(poller)
       watcher?.close()
+      monitor?.stdout?.removeListener('data', onOutput)
+      monitor?.removeListener('exit', onExit)
     }
     const timer = setTimeout(() => {
       stopWaiting()
+      if (monitor) {
+        reject(monitorStateFailure(stateHome, monitor, `timed out waiting for monitor state after ${timeoutMs} ms`))
+        return
+      }
       const outputs = ensureOutputs.get(stateHome) ?? []
       const stdout = outputs.map((output) => lastOutputLine(output.stdout())).at(-1) ?? '<none>'
       const stderr = outputs.map((output) => lastOutputLine(output.stderr())).at(-1) ?? '<none>'
@@ -416,6 +440,26 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
       stopWaiting()
       resolve(value)
       return true
+    }
+    const fail = (reason: string) => {
+      if (inspect()) return
+      // A monitor can give up while an already-spawned server is still starting.
+      // Only reject once every recorded server has also lost its chance to publish.
+      if (spawnReceipts(join(stateHome, 'server-processes.log')).some((pid) => pidAlive(Number(pid)))) return
+      stopWaiting()
+      reject(monitorStateFailure(stateHome, monitor!, reason))
+    }
+    let terminalReason: string | null = null
+    const onOutput = () => {
+      const terminal = output?.stdout().match(/^ARTIFACT SERVER (?:NOT STARTED|RETRY STOPPED):[^\r\n]*\r?\n/m)?.[0]
+      if (terminal) {
+        terminalReason = `monitor reported ${terminal.trimEnd()}`
+        fail(terminalReason)
+      }
+    }
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+      terminalReason ??= `monitor exited code=${code} signal=${signal}`
+      fail(terminalReason)
     }
     const arm = () => {
       if (inspect()) return
@@ -434,10 +478,16 @@ async function waitForState(stateHome: string, predicate: (state: Discovery) => 
     }
     // fs.watch is the fast path, not the correctness boundary: events may be coalesced or
     // dropped on every supported platform. Poll the state predicate as a bounded backstop.
-    poller = setInterval(inspect, 50)
+    poller = setInterval(() => {
+      if (!inspect() && terminalReason) fail(terminalReason)
+    }, 50)
+    monitor?.stdout?.on('data', onOutput)
+    monitor?.on('exit', onExit)
     arm()
+    if (monitor && (monitor.exitCode !== null || monitor.signalCode !== null)) onExit(monitor.exitCode, monitor.signalCode)
+    else onOutput()
   })
-  trackDetached(state.pid, state)
+  if (options.track !== false) trackDetached(state.pid, state)
   return state
 }
 
@@ -481,16 +531,133 @@ describe('review test infrastructure', () => {
     await closeServer(reservation.server)
     // A slow registration poll keeps the server alive long after its monitor exits, so only teardown
     // itself can have stopped it by the time the directories are removed.
-    spawnEnsure(project, baseEnv(stateHome, {
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '60000',
     }))
-    const state = await waitFor(() => readState(stateHome))
+    const state = await waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false })
     expect(pidAlive(state.pid)).toBe(true)
 
     await stopTestProcesses()
 
     expect(pidAlive(state.pid)).toBe(false)
-  })
+  }, MONITORED_SERVER_TEST_BOUND_MS)
+
+  it('rejects an undiscovered server wait when a live monitor reports NOT STARTED', async () => {
+    const stateHome = temporaryDir('monitor-not-started')
+    const monitor = spawn(process.execPath, ['-e', 'process.stdout.write("ARTIFACT SERVER NOT STARTED: no available port\\n"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(monitor)
+    await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
+      .rejects.toThrow(/monitor reported ARTIFACT SERVER NOT STARTED: no available port.*last stdout=.*ARTIFACT SERVER NOT STARTED: no available port.*server-processes=\[\].*last state=null/)
+    expect(monitor.exitCode).toBeNull()
+  }, MONITORED_SERVER_TEST_BOUND_MS)
+
+  it('rejects an undiscovered server wait when a silent monitor exits', async () => {
+    const stateHome = temporaryDir('monitor-silent-exit')
+    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(monitor)
+    await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
+      .rejects.toThrow(/monitor exited code=0 signal=null; last stdout="<none>"; last stderr="<none>"; server-processes=\[\]; last state=null/)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
+
+  function latePublishedState(stateHome: string): Discovery {
+    const server = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(server)
+    if (!server.pid) throw new Error('stand-in server has no pid')
+    writeFileSync(join(stateHome, 'server-processes.log'), `${server.pid}\n`)
+    return {
+      version: 'test', pid: server.pid, port: 48765, baseUrl: 'http://127.0.0.1:48765',
+      remoteUrl: null, roots: [], startedAt: new Date().toISOString(),
+    }
+  }
+
+  function publishState(stateHome: string, state: Discovery) {
+    mkdirSync(serverStateDir(stateHome), { recursive: true })
+    writeFileSync(statePath(stateHome), JSON.stringify(state))
+  }
+
+  function waitForMonitorLine(monitor: ChildProcess, line: string): Promise<void> {
+    const output = childOutput(monitor)
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        monitor.stdout?.removeListener('data', onData)
+        monitor.removeListener('exit', onExit)
+        monitor.removeListener('error', onError)
+      }
+      const onData = () => {
+        if (!output.stdout().includes(line)) return
+        cleanup()
+        resolve()
+      }
+      const onExit = () => {
+        cleanup()
+        reject(new Error(`monitor exited before writing ${JSON.stringify(line)}`))
+      }
+      const onError = (error: Error) => {
+        cleanup()
+        reject(error)
+      }
+      monitor.stdout?.on('data', onData)
+      monitor.once('exit', onExit)
+      monitor.once('error', onError)
+      onData()
+      if (monitor.exitCode !== null || monitor.signalCode !== null) onExit()
+    })
+  }
+
+  function waitForMonitorExit(monitor: ChildProcess): Promise<void> {
+    if (monitor.exitCode !== null || monitor.signalCode !== null) return Promise.resolve()
+    return new Promise((resolve, reject) => {
+      monitor.once('exit', () => {
+        monitor.removeListener('error', reject)
+        resolve()
+      })
+      monitor.once('error', reject)
+    })
+  }
+
+  it('accepts publication by a recorded live server after RETRY STOPPED', async () => {
+    const stateHome = temporaryDir('retry-stopped-live-server')
+    const state = latePublishedState(stateHome)
+    const monitor = spawn(process.execPath, ['-e', 'process.stdout.write("ARTIFACT SERVER RETRY STOPPED: attempts exhausted\\n"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(monitor)
+    const waiting = expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false })).resolves.toEqual(state)
+    await waitForMonitorLine(monitor, 'ARTIFACT SERVER RETRY STOPPED: attempts exhausted\n')
+    publishState(stateHome, state)
+    await waiting
+  }, MONITORED_SERVER_TEST_BOUND_MS)
+
+  it('rejects on the poll tick when the last recorded server dies after RETRY STOPPED', async () => {
+    const stateHome = temporaryDir('retry-stopped-dead-server')
+    const state = latePublishedState(stateHome)
+    const monitor = spawn(process.execPath, ['-e', 'process.stdout.write("ARTIFACT SERVER RETRY STOPPED: attempts exhausted\\n"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(monitor)
+    const waiting = expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
+      .rejects.toThrow(/monitor reported ARTIFACT SERVER RETRY STOPPED: attempts exhausted;.*server-processes=.*dead/)
+    await waitForMonitorLine(monitor, 'ARTIFACT SERVER RETRY STOPPED: attempts exhausted\n')
+    const server = [...children].find((child) => child.pid === state.pid)
+    if (!server) throw new Error('stand-in server was not tracked')
+    await stopChild(server)
+    await waiting
+  }, MONITORED_SERVER_TEST_BOUND_MS)
+
+  it('accepts publication by a recorded live server after silent monitor exit', async () => {
+    const stateHome = temporaryDir('exited-monitor-live-server')
+    const state = latePublishedState(stateHome)
+    const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(monitor)
+    const waiting = expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false })).resolves.toEqual(state)
+    await waitForMonitorExit(monitor)
+    publishState(stateHome, state)
+    await waiting
+  }, MONITORED_SERVER_TEST_BOUND_MS)
+
+  it('reports the complete reason from a split terminal line', async () => {
+    const stateHome = temporaryDir('split-terminal-line')
+    const monitor = spawn(process.execPath, ['-e', 'process.stdout.write("ARTIFACT SERVER NOT STARTED:"); setTimeout(() => process.stdout.write(" no available port\\n"), 150); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    children.add(monitor)
+    await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
+      .rejects.toThrow(/monitor reported ARTIFACT SERVER NOT STARTED: no available port;/)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('uses taskkill to stop the verified Windows process tree', () => {
     const calls: unknown[][] = []
@@ -1882,17 +2049,20 @@ describe('owner decision 5: Tailscale access', () => {
     await closeServer(reservation.server)
     mkdirSync(serverStateDir(stateHome), { recursive: true, mode: 0o700 })
     writeFileSync(join(serverStateDir(stateHome), 'ip'), 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000)\n')
-    spawnEnsure(project, baseEnv(stateHome, {
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
       WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
 
-    const state = await waitForState(stateHome, () => true, 12_000)
+    // The server runs the 5 s Tailscale command timeout before it listens, and the monitor's readiness
+    // window is also 5 s, so the monitor can declare this server not-ready and retry while it is still
+    // detecting. Wait on the monitor's own outcome, never a fixed deadline under that race.
+    const state = await waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor })
     expect(state.tailnetDetection).toEqual({
       status: 'unavailable',
       reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGTERM, code=ETIMEDOUT, timeout=5000ms/),
     })
-  }, 15_000)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('distinguishes a successful no-tailnet result from a failed lookup', async () => {
     const { project } = projectWithRoots('no-tailnet-result')
