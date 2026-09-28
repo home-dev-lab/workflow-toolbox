@@ -20,6 +20,12 @@ function signalExitCode(reason) {
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
+// Every refusal has the same shape: the whole output is the REFUSED line, then its EXIT marker.
+function refuse(out, message, code) {
+  writeFileSync(out, `REFUSED: ${message}\n`)
+  appendLine(out, `EXIT=${code}`)
+  return code
+}
 
 function appendOutput(out, text) {
   if (!text) return
@@ -198,25 +204,31 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
 
   // The CLI validates the value; a direct caller gets the same refusal rather than a silent Opus run.
   if (!['auto', 'astra', 'opus'].includes(route)) {
-    writeFileSync(options.out, `REFUSED: unknown route ${JSON.stringify(route)}; use auto, astra, or opus.\n`)
-    appendLine(options.out, 'EXIT=2')
-    return 2
+    return refuse(options.out, `unknown route ${JSON.stringify(route)}; use auto, astra, or opus.`, 2)
   }
 
   if (route === 'astra' && consent.outcome !== 'true') {
-    writeFileSync(options.out, consent.outcome === 'unknown'
-      ? 'REFUSED: Astra requires active GPT lane consent, and the consent setting could not be read; check executor_lane_consent in the plugin settings of this profile and project.\n'
-      : 'REFUSED: Astra requires active GPT lane consent.\n')
-    appendLine(options.out, 'EXIT=1')
-    return 1
+    return refuse(options.out, consent.outcome === 'unknown'
+      ? 'Astra requires active GPT lane consent, and the consent setting could not be read; check executor_lane_consent in the plugin settings of this profile and project.'
+      : 'Astra requires active GPT lane consent.', 1)
   }
 
-  if (route === 'astra' || (route === 'auto' && consent.outcome === 'true')) {
+  // A second opinion exists to escape the session's own model-family biases, so `auto` never
+  // picks a Claude model: without a consented external lane, the second opinion is the user.
+  // Only an explicit `--route opus` runs the Claude consult.
+  if (route === 'auto' && consent.outcome !== 'true') {
+    const reason = consent.outcome === 'unknown'
+      ? 'the consent setting could not be read (check executor_lane_consent in the plugin settings of this profile and project)'
+      : 'GPT lane consent is not active'
+    return refuse(options.out, `no consented external lane is available for an independent second opinion; ${reason}. `
+      + 'A same-family consult cannot counter this session\'s own biases, so ask the user for the second opinion instead. '
+      + 'To route it to GPT-6 Astra, run: wt-lane-consent --on', 1)
+  }
+
+  if (route === 'astra' || route === 'auto') {
     const companion = dependencies.resolveCodexCompanion(env)
     if (!companion) {
-      writeFileSync(options.out, 'REFUSED: GPT lane consent is active, but the Codex companion runtime is not installed; install the openai-codex plugin.\n')
-      appendLine(options.out, 'EXIT=1')
-      return 1
+      return refuse(options.out, 'GPT lane consent is active, but the Codex companion runtime is not installed; install the openai-codex plugin.', 1)
     }
 
     writeFileSync(options.out, 'ROUTE=gpt-astra\n')
