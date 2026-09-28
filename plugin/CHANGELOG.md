@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- The shipped TypeScript language server now selects a workspace TypeScript server or a host TypeScript 7 native server and provides navigation and diagnostics for `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` files.
+
 ### Changed
 - `wt-rules-on-demand` verdicts: a served `bash-command` or `tool-input` rule now records a verdict on every act it governs until compaction, as a named check does, instead of only on the call it rode or within its window; a `model` rule's classifier now sees the tool call that served it; turn-correlation verdicts are recorded only for rules served in that context.
 - Executor roles now choose their launcher from each phase's model, so a consented GPT implementation can use a Claude refuter (and Claude code can use GPT review); GPT models still require lane consent.
@@ -40,7 +43,6 @@ Minor release: measured on the release tree against the 0.188.2 baseline (`node 
 | Coverage statements % | 78.74 -> 76.50 | -2.24 |
 
 ### Added
-- The shipped TypeScript language server now selects a workspace TypeScript server or a host TypeScript 7 native server and provides navigation and diagnostics for `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` files.
 - The Agent spawn guard now warns when a spawn would inherit the session model without a model pin; built-in agents' own defaults and the environment's subagent default model count as pins. It never refuses a spawn for this reason. Forks are exempt, and agent definitions that cannot be resolved produce no warning.
 - Model-fallback observability: `wt-model-fallback-check.mjs` inspects Claude session and agent transcripts for served-model changes, classifier notices, refusals and fallback targets; PostToolUse and SubagentStop hooks warn the parent and user without blocking. SDK callers log the same warnings, and second-opinion outputs label classifier outcomes.
 - SDK runner: a Definition-of-done criterion that the critic blocks on in two consecutive plan rounds is escalated to the run's parent, never to a person. The parent answers only through `wt-pilot-runner.mjs decide --run <id> --dod <n> --reading <text>`, which writes atomically to the runner's per-run host state outside every lane-writable sandbox bind; the lifecycle supplies its bound reading to the pilot, and `DECISION` prose in mailboxes or lane files has no special meaning. Without an answer within 15 minutes, the card criterion's literal words bind verbatim and the critic may not block again on that criterion for the rest of the run; the next critic brief, pilot report, and run summary quote both. Card-term lookup accepts shorter labels and normalizes curly quotes, transition state remains unchanged if decision-request publication fails, dispute identity is consistently the DoD number, and the mandatory `## Card terms: reading chosen` plan section is now enforced.
