@@ -633,6 +633,34 @@ printf 'report\n' > "$report"
       .toContain('declared artefact predates this run: tracked.txt')
   })
 
+  it.skipIf(process.platform === 'win32')('refuses an old file declared via a directory alias', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport('alias')
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/alias/pre-existing.txt\`\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'aliased-artefact' })))
+      .toContain('declared artefact predates this run: .lane/alias/pre-existing.txt')
+  })
+
+  it('refuses an old file in an opaque ignored embedded repository', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport('embedded')
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`ign/vendor/old.txt\`\n` })
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'embedded-artefact' })))
+      .toContain('declared artefact predates this run: ign/vendor/old.txt')
+  })
+
+  it('does not write route or card receipts when the identity snapshot fails', () => {
+    const lifecycle = () => testLifecycle('LITE', [], null, null, {
+      cardText: 'DoD: snapshot before receipts',
+      git: (_binary: string, args: string[]) => {
+        if (args.includes('ls-files')) throw new Error('snapshot unavailable')
+        throw new Error('unexpected git call')
+      },
+    })
+    expect(lifecycle).toThrow('snapshot unavailable')
+    const root = roots.at(-2)!
+    expect(existsSync(join(root, '.lane', 'route.json'))).toBe(false)
+    expect(existsSync(join(root, '.lane', 'card.md'))).toBe(false)
+  })
+
   it('accepts a pre-existing declared artefact rewritten during the run despite its old mtime', async () => {
     const lifecycle = await realGitLifecycleReadyForReport(true)
     const artefact = join(lifecycle.root, '.lane', 'pre-existing.txt')
@@ -2153,10 +2181,10 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
 }
-function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked' = false) {
+function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-'))); roots.push(root)
   const archiveRoot = archiveProject()
-  mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n'); writeFileSync(join(root, 'tracked.txt'), 'tracked\n')
+  mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\nign/\n'); writeFileSync(join(root, 'tracked.txt'), 'tracked\n')
   const git = (...args: string[]) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
   expect(git('init', '-q').status).toBe(0)
   expect(git('config', 'user.email', 'test@example.invalid').status).toBe(0)
@@ -2170,6 +2198,15 @@ function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked'
     writeFileSync(artefact, 'pre-existing\n')
     utimesSync(artefact, new Date(1), new Date(1))
   }
+  if (preExistingArtefact === 'alias') {
+    writeFileSync(join(root, '.lane', 'pre-existing.txt'), 'pre-existing\n')
+    symlinkSync(join(root, '.lane'), join(root, '.lane', 'alias'), 'dir')
+  }
+  if (preExistingArtefact === 'embedded') {
+    mkdirSync(join(root, 'ign', 'vendor'), { recursive: true })
+    writeFileSync(join(root, 'ign', 'vendor', 'old.txt'), 'pre-existing\n')
+    expect(spawnSync('git', ['init', '-q'], { cwd: join(root, 'ign', 'vendor') }).status).toBe(0)
+  }
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
   const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, gateRunner: async (args: { name: string, log: string, root: string }) => { await writePassingGate(args); return Number(gateResults[args.name]?.exit ?? '0') }, rules: [] })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
@@ -2177,7 +2214,7 @@ function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked'
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
 }
-async function realGitLifecycleReadyForReport(preExistingArtefact: boolean | 'untracked' | 'tracked' = false) {
+async function realGitLifecycleReadyForReport(preExistingArtefact: boolean | 'untracked' | 'tracked' | 'alias' | 'embedded' = false) {
   const lifecycle = realGitLifecycle(preExistingArtefact)
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
   await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })

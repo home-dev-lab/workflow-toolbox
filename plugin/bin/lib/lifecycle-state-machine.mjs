@@ -682,6 +682,8 @@ export function createLifecycleStateMachine({
     throw new Error('lifecycle cardId must match [A-Za-z0-9._-]+')
   }
   const root = fs.realpathSync(worktree)
+  // Capture pre-existing files before creating even the first lifecycle receipt or directory.
+  const artefactsAtStart = artefactIdentitiesAtStart(root, git)
   const dodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText) : undefined
   const rawDodBullets = typeof cardText === 'string' ? cardDefinitionOfDone(cardText, { raw: true }) : undefined
   const activeRules = rules ?? loadRules({ projectRoot: root })
@@ -734,7 +736,6 @@ export function createLifecycleStateMachine({
   )
   const state = initialLifecycleState()
   const timelinePath = path.join(laneDir, 'lifecycle.json')
-  const artefactsAtStart = artefactIdentitiesAtStart(root, git)
   const lifecycleStartedAt = now()
   const timeline = { version: 2, started_at: lifecycleStartedAt, ended_at: null, lsp, phases: [{ phase: 'discovery', round: null, entered_at: lifecycleStartedAt, exited_at: null, transition_id: null }], lanes: [], routed_cards: [] }
   const atomicTimelineWriter = timelineWriter ?? defaultTimelineWriter

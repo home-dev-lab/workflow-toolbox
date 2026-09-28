@@ -1,7 +1,7 @@
 // Hermetic real-git selftests: the guard's evidence is the index and tree, not a mocked diff.
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -65,11 +65,11 @@ function env(root: string) {
   }
 }
 
-function run(root: string, command = 'git commit -m x') {
+function run(root: string, command = 'git commit -m x', extraEnv: NodeJS.ProcessEnv = {}) {
   const result = spawnSync(process.execPath, [HOOK], {
     cwd: root,
     encoding: 'utf8',
-    env: env(root),
+    env: { ...env(root), ...extraEnv },
     input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `release-push-${++toolUseSequence}`, cwd: root, tool_input: { command } }),
   })
   return { stdout: result.stdout, status: result.status }
@@ -140,6 +140,42 @@ describe('wt-gate-evidence-guard-hook', () => {
     expect(run(root).stdout).toContain('test: STALE (signature differs or staged file changed after gate)')
   })
 
+  it.each(['--skip-worktree', '--assume-unchanged'])('refuses an incomparable staged path marked %s', (flag) => {
+    const root = repo()
+    write(root, 'plugin/thing.mjs', '// gated\n')
+    git(root, 'add', 'plugin/thing.mjs')
+    record(root)
+    write(root, 'plugin/thing.mjs', '// ungated index\n')
+    git(root, 'add', 'plugin/thing.mjs')
+    write(root, 'plugin/thing.mjs', '// gated\n')
+    git(root, 'update-index', flag, '--', 'plugin/thing.mjs')
+    expect(run(root).stdout).toContain('test: STALE (signature differs or staged file changed after gate)')
+  })
+
+  it.each(['GIT_LITERAL_PATHSPECS', 'GIT_ICASE_PATHSPECS'])('compares staged bytes under inherited %s=1', (variable) => {
+    const root = repo()
+    write(root, 'plugin/thing.mjs', '// gated\n')
+    git(root, 'add', 'plugin/thing.mjs')
+    record(root)
+    write(root, 'plugin/thing.mjs', '// ungated index\n')
+    git(root, 'add', 'plugin/thing.mjs')
+    write(root, 'plugin/thing.mjs', '// gated\n')
+    expect(run(root, 'git commit -m x', { [variable]: '1' }).stdout)
+      .toContain('test: STALE (signature differs or staged file changed after gate)')
+  })
+
+  it.skipIf(process.platform === 'win32')('limits comparison to the exact staged spelling under inherited GIT_ICASE_PATHSPECS=1', () => {
+    const root = repo()
+    write(root, 'plugin/THING.mjs', '// indexed upper\n')
+    git(root, 'add', 'plugin/THING.mjs')
+    git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'upper')
+    write(root, 'plugin/THING.mjs', '// unstaged upper\n')
+    write(root, 'plugin/thing.mjs', '// gated lower\n')
+    git(root, 'add', 'plugin/thing.mjs')
+    record(root)
+    expect(run(root, 'git commit -m x', { GIT_ICASE_PATHSPECS: '1' }).stdout).toBe('')
+  })
+
   it('accepts unchanged staged bytes after a forward-dated touch', () => {
     const root = repo()
     write(root, 'plugin/thing.mjs', '// gated\n')
@@ -194,15 +230,24 @@ describe('wt-gate-evidence-guard-hook', () => {
     })
     expect(problems).toEqual([])
     expect(calls.length).toBeGreaterThan(1)
-    expect(calls.every((args) => args.filter((arg) => arg.startsWith(':(literal)')).length <= 100)).toBe(true)
+    expect(calls.every((args) => args.slice(args.indexOf('--') + 1).length <= 100)).toBe(true)
   })
 
   it.skipIf(process.platform === 'win32')('refuses an index-only mode change after the gate', () => {
     const root = repo()
-    git(root, 'config', 'core.filemode', 'false')
+    git(root, 'config', 'core.filemode', 'true')
     record(root)
     git(root, 'update-index', '--chmod=+x', '--', 'plugin/thing.mjs')
     expect(run(root).stdout).toContain('test: STALE')
+  })
+
+  it.skipIf(process.platform === 'win32')('honors core.filemode=false for an executable worktree file', () => {
+    const root = repo()
+    git(root, 'update-index', '--chmod=+x', '--', 'plugin/thing.mjs')
+    git(root, 'config', 'core.filemode', 'false')
+    chmodSync(join(root, 'plugin/thing.mjs'), 0o644)
+    record(root)
+    expect(run(root).stdout).toBe('')
   })
 
   it('warns with the exact remedy for missing, red, and stale evidence', () => {

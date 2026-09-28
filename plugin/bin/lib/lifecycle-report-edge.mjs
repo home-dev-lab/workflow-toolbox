@@ -34,19 +34,31 @@ function fileStat(file) {
 export function artefactIdentitiesAtStart(root, git = execFileSync) {
   let names
   try {
-    names = git('git', ['ls-files', '--cached', '--others', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024 })
+    names = git('git', ['ls-files', '--cached', '--others', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 })
   } catch (error) {
     // The injected-git lifecycle fixtures have no repository. Real repositories must still
     // fail closed on any other snapshot error rather than silently accepting old files.
-    if (/not a git repository/.test(String(error?.stderr))) return new Map()
+    if (/not a git repository/.test(String(error?.stderr))) return new Set()
     throw error
   }
-  const identities = new Map()
-  for (const name of names.split('\0').filter(Boolean)) {
-    try { identities.set(name, fileIdentity(fileStat(path.join(root, name)))) } catch (error) {
-      if (error?.code !== 'ENOENT') throw error
+  const identities = new Set()
+  const visit = (name) => {
+    const file = path.join(root, name)
+    let stat
+    try { stat = fileStat(file) } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'EACCES') return
+      throw error
     }
+    if (stat.isDirectory()) {
+      let children
+      try { children = fs.readdirSync(file) } catch (error) {
+        if (error?.code === 'EACCES' || error?.code === 'ENOENT') return
+        throw error
+      }
+      for (const child of children) visit(path.join(name, child))
+    } else if (stat.isFile() && !stat.isSymbolicLink()) identities.add(fileIdentity(stat))
   }
+  for (const name of names.split('\0').filter(Boolean)) visit(name)
   return identities
 }
 
@@ -75,7 +87,7 @@ function readBackDeclaredArtefacts({ root, report, artefactsAtStart, sha256 }) {
       throw new Error(`declared artefact path escapes the worktree: ${declaration}`)
     }
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`declared artefact is not a regular file: ${declaration}`)
-    if (artefactsAtStart.get(relative.split(path.sep).join('/')) === fileIdentity(stat)) {
+    if (artefactsAtStart.has(fileIdentity(stat))) {
       throw new Error(`declared artefact predates this run: ${declaration}`)
     }
     const bytes = readWorktreeRegular(requested, null, canonicalRoot)
