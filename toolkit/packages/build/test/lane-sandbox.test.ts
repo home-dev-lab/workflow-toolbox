@@ -1387,7 +1387,7 @@ describe('host relays die with their launcher (card 1872293505129252765)', () =>
       const plan = resolveLaneSandbox({ ...JSON.parse(process.env.WT_TEST_REQUEST), probe: () => ({ ok: true }) })
       console.log('ready ' + plan.endpoints.length)
       setInterval(() => {}, 1000)`
-    const launcher = spawn(process.execPath, ['--input-type=module', '-e', launcherScript], { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, WT_TEST_SANDBOX_URL: pathToFileURL(modulePath).href, WT_TEST_REQUEST: JSON.stringify(request) } })
+    const launcher = spawn(process.execPath, ['--input-type=module', '-e', launcherScript], { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, HOME: home, XDG_STATE_HOME: join(home, '.local/state'), CLAUDE_CONFIG_DIR: join(home, '.claude'), WT_TEST_SANDBOX_URL: pathToFileURL(modulePath).href, WT_TEST_REQUEST: JSON.stringify(request) } })
     children.push(launcher)
     const ready = await new Promise<string>((resolve) => launcher.stdout.once('data', (d) => resolve(String(d).trim())))
     expect(ready).toBe('ready 1')
