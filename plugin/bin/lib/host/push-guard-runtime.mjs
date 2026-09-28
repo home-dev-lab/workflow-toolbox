@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, renameSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { matchesGuardPath, normalizePushPath } from './push-guard-identity.mjs';
+import { matchesGuardPath, normalizePushPath, recognizedPushShape } from './push-guard-identity.mjs';
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const ZERO = /^0+$/;
@@ -33,16 +33,25 @@ function verifyInstall(dir) {
   catch { stop(2, 'config.json malformed; run wt-push-guard-install.mjs --check / --install'); }
 }
 
-function identity(config, remote, url) {
+function identity(config, remote, url, authorized) {
   const baseDir = process.cwd();
-  const normalized = normalizePushPath(url, baseDir);
   const names = config.guardRemotes;
   const paths = config.guardPaths;
   if (!Array.isArray(names) || !Array.isArray(paths) || (!names.length && !paths.length)) stop(2, 'guard config has no identities');
-  let guarded = names.includes(remote) || matchesGuardPath(url, paths, baseDir);
+  let normalized;
+  try { if (recognizedPushShape(url)) normalized = normalizePushPath(url, baseDir); }
+  catch (err) {
+    // A missing local destination and remote-helper syntax remain unmeasurable.
+    if (/relative local path not found/.test(err.message)) throw err;
+  }
+  if (normalized === undefined && /^[^/]+::/.test(url)) throw Error(`unmeasurable push URL: ${url}`);
+  if (normalized === undefined && !readScope(authorized)) {
+    stop(2, `wt-push-scope-check: unmeasurable push URL: ${url}; the guard could not recognise its form. Push through the named remote (git push <remote> …), or use a standard URL / absolute path; to publish to the guarded repository, write the single-use authorization at ${authorized}`);
+  }
+  let guarded = normalized === undefined || names.includes(remote) || matchesGuardPath(url, paths, baseDir);
   for (const name of names) {
     for (const args of [['remote', 'get-url', '--all', name], ['remote', 'get-url', '--push', '--all', name]]) {
-      try { if (git(args).split('\n').some((item) => normalizePushPath(item, baseDir) === normalized)) guarded = true; }
+      try { if (normalized !== undefined && git(args).split('\n').some((item) => normalizePushPath(item, baseDir) === normalized)) guarded = true; }
       catch { /* A configured remote may not exist in this checkout. */ }
     }
   }
@@ -148,7 +157,7 @@ function signatures(lines, dir) {
 export function runPrePush({ installDir, remote, url, authorized, afterConsume = () => {} }) {
   try {
     const config = verifyInstall(installDir);
-    if (!identity(config, remote, url)) { readFileSync(0); return; }
+    if (!identity(config, remote, url, authorized)) { readFileSync(0); return; }
     const lines = linesFromStdin();
     ancestryCheck();
     const auth = readScope(authorized);

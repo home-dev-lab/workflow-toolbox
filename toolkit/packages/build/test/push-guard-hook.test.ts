@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/host/ has no declaration
-import { matchesGuardPath, normalizePushPath } from '../../../../plugin/bin/lib/host/push-guard-identity.mjs'
+import { matchesGuardPath, normalizePushPath, recognizedPushShape } from '../../../../plugin/bin/lib/host/push-guard-identity.mjs'
 
 const root = fileURLToPath(new URL('../../../..', import.meta.url))
 const installer = join(root, 'plugin/bin/wt-push-guard-install.mjs')
@@ -118,6 +118,63 @@ describe('installed pinned pre-push guard (local bare remotes only)', () => {
     expect(unrelated.status, unrelated.out).toBe(0)
   })
 
+  it('refuses an invented URL scheme through the installed shim with a remedy', () => {
+    const f = fixture()
+    const B = f.commit('B')
+    const url = 'nebula://nowhere.invalid/other.git'
+    const input = `refs/heads/main ${B} refs/heads/main ${f.A}\n`
+    const refused = f.hook('other', url, input)
+    expect(refused.status, refused.out).toBe(2)
+    expect(refused.out).toContain(url)
+    expect(refused.out).toContain('could not recognise its form')
+    expect(refused.out).toContain('git push <remote>')
+    expect(f.git(f.bare, 'rev-parse', 'main')).toBe(f.A)
+  })
+
+  it('judges an unrecognised host with authorization instead of treating it as unrelated', () => {
+    const f = fixture()
+    const B = f.commit('B')
+    const url = 'https://bad_host.invalid/other.git'
+    const input = `refs/heads/main ${B} refs/heads/main ${f.A}\n`
+    const missing = f.hook('other', url, input)
+    expect(missing.status, missing.out).toBe(2)
+    expect(missing.out).toContain('could not recognise its form')
+    f.authorize({ commits: [] })
+    const judged = f.hook('other', url, input)
+    expect(judged.status, judged.out).toBe(1)
+    expect(judged.out).toContain(`UNAUTHORIZED COMMIT: ${B.slice(0, 12)}`)
+    expect(existsSync(f.auth)).toBe(true)
+    expect(f.git(f.bare, 'rev-parse', 'main')).toBe(f.A)
+  })
+
+  it('uses raw guarded tokens when a recognised URL path is mis-parsed', () => {
+    const url = 'https://example.invalid/home-dev-lab/workflow-toolbox.git/another'
+    expect(matchesGuardPath(url, ['home-dev-lab/workflow-toolbox'], undefined, () => 'other/repo')).toBe(true)
+    expect(matchesGuardPath('https://example.invalid/home-dev-lab/workflow-toolbox-private.git', ['home-dev-lab/workflow-toolbox'], undefined, () => 'other/repo')).toBe(false)
+    expect(matchesGuardPath('https://example.invalid/home-dev-lab%20workflow-toolbox.git', ['home-dev-lab/workflow-toolbox'], undefined, () => 'other/repo')).toBe(false)
+  })
+
+  it('recognises the documented transports and validates the entire authority', () => {
+    for (const scheme of ['ssh', 'git', 'http', 'https', 'ftp', 'ftps']) {
+      expect(normalizePushPath(`${scheme}://user@host.example:443/other/repo.git`)).toBe('other/repo')
+    }
+    expect(normalizePushPath('file:///tmp/other/repo.git')).toBe('tmp/other/repo')
+    expect(normalizePushPath('file://localhost/tmp/other/repo.git')).toBe('tmp/other/repo')
+    for (const url of ['nebula://host.example/other/repo.git', 'https://bad_host.example/other/repo.git', 'https://256.256.256.256/other/repo.git', 'ssh://[not-ipv6]/other/repo.git', 'https://host.example:99999/other/repo.git']) {
+      expect(recognizedPushShape(url), url).toBe(false)
+    }
+  })
+
+  it('allows an unrelated scheme URL through the installed shim without authorization', () => {
+    const f = fixture()
+    const B = f.commit('B')
+    const url = 'https://elsewhere.invalid/another/repository.git'
+    const result = f.hook('other', url, `refs/heads/main ${B} refs/heads/main ${f.A}\n`)
+    expect(result.status, result.out).toBe(0)
+    expect(existsSync(f.auth)).toBe(false)
+    expect(f.git(f.bare, 'rev-parse', 'main')).toBe(f.A)
+  })
+
   it('allows an existing sibling bare repository through a relative push URL and named remote', () => {
     const f = fixture()
     const B = f.commit('B')
@@ -182,6 +239,7 @@ describe('installed pinned pre-push guard (local bare remotes only)', () => {
     ['git@[0:0:0:0:0:ffff:140.82.112.3]:home-dev-lab/workflow-toolbox.git', 'home-dev-lab/workflow-toolbox'],
     ['git@[2001:db8::1]:x/y.git', 'x/y'],
     ['git@[2001:db8::1:22]:x/y.git', 'x/y'],
+    ['git@[host.example]:x/y.git', 'x/y'],
     ['[example.com:2222]:x/y.git', 'x/y'],
     ['ssh://git@[::1]:22/x/y.git', 'x/y'],
   ])('normalizes the repository path after a bracketed host in %s', (url, path) => {
