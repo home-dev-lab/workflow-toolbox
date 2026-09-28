@@ -28,12 +28,12 @@ const FALLBACK_READINESS_MS = 5_000
 const FALLBACK_DISCOVERY_MARGIN_MS = 2_000
 // Test startup cap chosen equal to RETRY_WINDOW_MS in plugin/bin/wt-artifact-server-ensure.mjs;
 // deferrals and the overall retry cap can keep the real monitor working beyond this test budget.
-const UNDISCOVERED_SERVER_STARTUP_CAP_MS = 60_000
+const MONITORED_SERVER_STARTUP_CAP_MS = 60_000
 const STOP_CHILD_WAIT_MS = 10_000
 const STOP_DETACHED_WAIT_MS = 10_000
 // One monitor and up to four spawned servers (initial attempt plus three retries) stop sequentially.
-const UNDISCOVERED_SERVER_TEARDOWN_BOUND_MS = STOP_CHILD_WAIT_MS + 4 * STOP_DETACHED_WAIT_MS + FALLBACK_DISCOVERY_MARGIN_MS
-const UNDISCOVERED_SERVER_TEST_BOUND_MS = UNDISCOVERED_SERVER_STARTUP_CAP_MS + UNDISCOVERED_SERVER_TEARDOWN_BOUND_MS
+const MONITORED_SERVER_TEARDOWN_BOUND_MS = STOP_CHILD_WAIT_MS + 4 * STOP_DETACHED_WAIT_MS + FALLBACK_DISCOVERY_MARGIN_MS
+const MONITORED_SERVER_TEST_BOUND_MS = MONITORED_SERVER_STARTUP_CAP_MS + MONITORED_SERVER_TEARDOWN_BOUND_MS
 const FALLBACK_DISCOVERY_BOUND_MS = CANDIDATE_PROBE_MS * FALLBACK_CANDIDATES + FALLBACK_READINESS_MS + FALLBACK_DISCOVERY_MARGIN_MS
 const PAUSED_CLAIM_HOLD_MS = 7_000
 const OLD_CLAIM_STALE_BOUND_MS = 3_000
@@ -534,30 +534,30 @@ describe('review test infrastructure', () => {
     const monitor = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_PORT: String(port), WT_ARTIFACT_SERVER_REGISTRATION_POLL_MS: '60000',
     }))
-    const state = await waitForState(stateHome, () => true, UNDISCOVERED_SERVER_STARTUP_CAP_MS, { monitor, track: false })
+    const state = await waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false })
     expect(pidAlive(state.pid)).toBe(true)
 
     await stopTestProcesses()
 
     expect(pidAlive(state.pid)).toBe(false)
-  }, UNDISCOVERED_SERVER_TEST_BOUND_MS)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('rejects an undiscovered server wait when a live monitor reports NOT STARTED', async () => {
     const stateHome = temporaryDir('monitor-not-started')
     const monitor = spawn(process.execPath, ['-e', 'process.stdout.write("ARTIFACT SERVER NOT STARTED: no available port\\n"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
     children.add(monitor)
-    await expect(waitForState(stateHome, () => true, UNDISCOVERED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
+    await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
       .rejects.toThrow(/monitor reported ARTIFACT SERVER NOT STARTED: no available port.*last stdout=.*ARTIFACT SERVER NOT STARTED: no available port.*server-processes=\[\].*last state=null/)
     expect(monitor.exitCode).toBeNull()
-  }, UNDISCOVERED_SERVER_TEST_BOUND_MS)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('rejects an undiscovered server wait when a silent monitor exits', async () => {
     const stateHome = temporaryDir('monitor-silent-exit')
     const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'] })
     children.add(monitor)
-    await expect(waitForState(stateHome, () => true, UNDISCOVERED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
+    await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
       .rejects.toThrow(/monitor exited code=0 signal=null; last stdout="<none>"; last stderr="<none>"; server-processes=\[\]; last state=null/)
-  }, UNDISCOVERED_SERVER_TEST_BOUND_MS)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   function latePublishedState(stateHome: string): Discovery {
     const server = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -620,44 +620,44 @@ describe('review test infrastructure', () => {
     const state = latePublishedState(stateHome)
     const monitor = spawn(process.execPath, ['-e', 'process.stdout.write("ARTIFACT SERVER RETRY STOPPED: attempts exhausted\\n"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
     children.add(monitor)
-    const waiting = expect(waitForState(stateHome, () => true, UNDISCOVERED_SERVER_STARTUP_CAP_MS, { monitor, track: false })).resolves.toEqual(state)
+    const waiting = expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false })).resolves.toEqual(state)
     await waitForMonitorLine(monitor, 'ARTIFACT SERVER RETRY STOPPED: attempts exhausted\n')
     publishState(stateHome, state)
     await waiting
-  }, UNDISCOVERED_SERVER_TEST_BOUND_MS)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('rejects on the poll tick when the last recorded server dies after RETRY STOPPED', async () => {
     const stateHome = temporaryDir('retry-stopped-dead-server')
     const state = latePublishedState(stateHome)
     const monitor = spawn(process.execPath, ['-e', 'process.stdout.write("ARTIFACT SERVER RETRY STOPPED: attempts exhausted\\n"); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
     children.add(monitor)
-    const waiting = expect(waitForState(stateHome, () => true, UNDISCOVERED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
+    const waiting = expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
       .rejects.toThrow(/monitor reported ARTIFACT SERVER RETRY STOPPED: attempts exhausted;.*server-processes=.*dead/)
     await waitForMonitorLine(monitor, 'ARTIFACT SERVER RETRY STOPPED: attempts exhausted\n')
     const server = [...children].find((child) => child.pid === state.pid)
     if (!server) throw new Error('stand-in server was not tracked')
     await stopChild(server)
     await waiting
-  }, UNDISCOVERED_SERVER_TEST_BOUND_MS)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('accepts publication by a recorded live server after silent monitor exit', async () => {
     const stateHome = temporaryDir('exited-monitor-live-server')
     const state = latePublishedState(stateHome)
     const monitor = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: ['ignore', 'pipe', 'pipe'] })
     children.add(monitor)
-    const waiting = expect(waitForState(stateHome, () => true, UNDISCOVERED_SERVER_STARTUP_CAP_MS, { monitor, track: false })).resolves.toEqual(state)
+    const waiting = expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false })).resolves.toEqual(state)
     await waitForMonitorExit(monitor)
     publishState(stateHome, state)
     await waiting
-  }, UNDISCOVERED_SERVER_TEST_BOUND_MS)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('reports the complete reason from a split terminal line', async () => {
     const stateHome = temporaryDir('split-terminal-line')
     const monitor = spawn(process.execPath, ['-e', 'process.stdout.write("ARTIFACT SERVER NOT STARTED:"); setTimeout(() => process.stdout.write(" no available port\\n"), 150); setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'pipe'] })
     children.add(monitor)
-    await expect(waitForState(stateHome, () => true, UNDISCOVERED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
+    await expect(waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor, track: false }))
       .rejects.toThrow(/monitor reported ARTIFACT SERVER NOT STARTED: no available port;/)
-  }, UNDISCOVERED_SERVER_TEST_BOUND_MS)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('uses taskkill to stop the verified Windows process tree', () => {
     const calls: unknown[][] = []
@@ -2049,17 +2049,20 @@ describe('owner decision 5: Tailscale access', () => {
     await closeServer(reservation.server)
     mkdirSync(serverStateDir(stateHome), { recursive: true, mode: 0o700 })
     writeFileSync(join(serverStateDir(stateHome), 'ip'), 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30000)\n')
-    spawnEnsure(project, baseEnv(stateHome, {
+    const monitor = spawnEnsure(project, baseEnv(stateHome, {
       WT_ARTIFACT_SERVER_TAILSCALE_BINARY: process.execPath,
       WT_ARTIFACT_SERVER_PORT: String(reservation.port),
     }))
 
-    const state = await waitForState(stateHome, () => true, 12_000)
+    // The server runs the 5 s Tailscale command timeout before it listens, and the monitor's readiness
+    // window is also 5 s, so the monitor can declare this server not-ready and retry while it is still
+    // detecting. Wait on the monitor's own outcome, never a fixed deadline under that race.
+    const state = await waitForState(stateHome, () => true, MONITORED_SERVER_STARTUP_CAP_MS, { monitor })
     expect(state.tailnetDetection).toEqual({
       status: 'unavailable',
       reason: expect.stringMatching(/configured tailscale binary failed after \d+ ms: exit=none, signal=SIGTERM, code=ETIMEDOUT, timeout=5000ms/),
     })
-  }, 15_000)
+  }, MONITORED_SERVER_TEST_BOUND_MS)
 
   it('distinguishes a successful no-tailnet result from a failed lookup', async () => {
     const { project } = projectWithRoots('no-tailnet-result')
