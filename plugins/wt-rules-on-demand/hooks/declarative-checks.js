@@ -5,8 +5,7 @@ const test = (regex, text) => { regex.lastIndex = 0; return regex.test(bounded(t
 const capture = (regex, text) => { regex.lastIndex = 0; return regex.exec(bounded(text))?.[1] ?? null; };
 const values = (regex, text) => {
   const found = [];
-  const matcher = new RegExp(regex.source, regex.flags.includes('g') ? regex.flags : `${regex.flags}g`);
-  for (const match of bounded(text).matchAll(matcher)) if (match[1]) found.push(match[1]);
+  for (const match of regex.matchAll(bounded(text))) if (match[1]) found.push(match[1]);
   return found;
 };
 
@@ -31,6 +30,13 @@ function withoutCode(text) {
 }
 
 export function toolInputVerdict(compliance, event) {
+  try { return { verdict: judgeToolInput(compliance, event), matchError: null }; }
+  catch (error) {
+    return { verdict: 'unknown', matchError: String(error?.message ?? error) };
+  }
+}
+
+function judgeToolInput(compliance, event) {
   if (event.tool === 'Bash' && compliance.rejectBash && executableSegments(maskReadOnlyMentions(bounded(event.input?.command)))
     .some((part) => test(compliance.rejectBash, part.text))) return 'not followed';
   if (!test(compliance.tool, bounded(event.tool))) return null;
@@ -69,7 +75,7 @@ function bashValues(compliance, command, id) {
   command = bounded(command);
   const output = [];
   for (const segment of executableSegments(maskReadOnlyMentions(bounded(command)))) {
-     if (!compliance.act || !test(compliance.act, segment.text) || !segment.text.includes(id)) continue;
+    if (!compliance.act || !test(compliance.act, segment.text) || !segment.text.includes(id)) continue;
     output.push(...values(compliance.value, segment.text));
   }
   // Shell loops expose one tool call but several invocations; the result confirms the whole loop succeeded.
@@ -77,7 +83,7 @@ function bashValues(compliance, command, id) {
   const rest = loop ? command.slice(loop.index + loop[0].length) : '';
   const separator = rest.indexOf(';');
   const body = separator < 0 ? '' : rest.slice(separator + 1).split(/\bdone\b/, 1)[0];
-   if (compliance.act && loop && separator >= 0 && /\bdo\b/.test(body) && test(compliance.act, body) && body.includes(id) && new RegExp(String.raw`\$\{?${loop[1]}\b`).test(body))
+  if (compliance.act && loop && separator >= 0 && /\bdo\b/.test(body) && test(compliance.act, body) && body.includes(id) && new RegExp(String.raw`\$\{?${loop[1]}\b`).test(body))
     output.push(...rest.slice(0, separator).trim().split(/\s+/));
   return output;
 }
@@ -85,6 +91,13 @@ function bashValues(compliance, command, id) {
 // Events are one context's uses, results and turn boundaries. One result per subject;
 // unresolved is explicit whenever the turn is still open or an id could not be proven.
 export function correlateTurn(compliance, events) {
+  try { return judgeTurn(compliance, events); }
+  catch (error) {
+    return events.filter((event) => event.kind === 'use').map((event) => ({ id: event.id, verdict: 'unresolved', detail: String(error?.message ?? error) }));
+  }
+}
+
+function judgeTurn(compliance, events) {
   const results = new Map(events.filter((event) => event.kind === 'result').map((event) => [event.id, event]));
   const output = [];
   let turn = [];
@@ -92,27 +105,27 @@ export function correlateTurn(compliance, events) {
     const usedPartners = new Set();
     for (const subject of turn.filter((event) => event.kind === 'use' && test(compliance.tool, bounded(event.name))
       && (!compliance.subjectInput || test(compliance.subjectInput, bounded(event.input?.[compliance.subjectInputKey]))))) {
-       const result = results.get(subject.id);
-       if (result?.text?.includes('wt-rules-on-demand: read the rule below before this action')) {
-         output.push({ id: subject.id, verdict: 'refused', detail: 'before-first-act refusal' });
-         continue;
-       }
+      const result = results.get(subject.id);
+      if (result?.text?.includes('wt-rules-on-demand: read the rule below before this action')) {
+        output.push({ id: subject.id, verdict: 'refused', detail: 'before-first-act refusal' });
+        continue;
+      }
       const input = argumentEvidence(subject.input) ?? '';
       const confirmed = result && !result.isError;
-       const id = confirmed ? capture(compliance.id, bounded(result.text)) ?? capture(compliance.id, input) : null;
-       if (compliance.identityPair) {
-         const index = turn.indexOf(subject);
-         const partner = id && turn.slice(index + 1).find((event) => event.kind === 'use' && !usedPartners.has(event.id) && compliance.followUpTool
+      const id = confirmed ? capture(compliance.id, bounded(result.text)) ?? capture(compliance.id, input) : null;
+      if (compliance.identityPair) {
+        const index = turn.indexOf(subject);
+        const partner = id && turn.slice(index + 1).find((event) => event.kind === 'use' && !usedPartners.has(event.id) && compliance.followUpTool
            && test(compliance.followUpTool, bounded(event.name)) && (event.input?.to === id || event.input?.to === subject.input?.name)
            && values(compliance.value, bounded(event.input?.message)).includes(id)
            && results.has(event.id) && !results.get(event.id).isError
            && !results.get(event.id).text?.includes('wt-rules-on-demand: read the rule below before this action'));
-          if (partner) { usedPartners.add(partner.id); }
-          let verdict = 'unresolved';
-          if (id && closed) verdict = partner ? 'followed' : 'not followed';
-          output.push({ id: subject.id, verdict });
-         continue;
-       }
+        if (partner) { usedPartners.add(partner.id); }
+        let verdict = 'unresolved';
+        if (id && closed) verdict = partner ? 'followed' : 'not followed';
+        output.push({ id: subject.id, verdict });
+        continue;
+      }
       const collected = new Set(confirmed ? values(compliance.value, input) : []);
       if (id) for (const event of turn) {
         if (event.kind !== 'use' || event === subject) continue;

@@ -4,7 +4,8 @@ import { bashCommandVerdict, isGovernedAct, classify } from './act-checks.js';
 import { toolInputVerdict, correlateTurn } from './declarative-checks.js';
 import { ruleDirectories, configDirectory, agentLoop } from '../paths.js';
 import { bounded, argumentEvidence, RULE_CAP } from './evidence.js';
-import { triggerMatches } from './trigger-match.js';
+import { triggerMatches, testTriggerRegex, unevaluatedTrigger } from './trigger-match.js';
+import { regexCallBudget } from './linear-regex.js';
 import { sameRule } from '../duplicate-rule.js';
 
 export { parseRuntimeRule, maskReadOnlyMentions };
@@ -114,16 +115,42 @@ const textOf = (event) => {
   return Object.keys(args).length ? argumentEvidence(args) : null;
 };
 const pathOf = (e) => e.path ?? e.file_path ?? e.input?.path ?? e.input?.file_path ?? '';
-const matches = (trigger, e, prompt) => triggerMatches(trigger, prompt
-  ? { channel: 'prompt', text: e.text } : { channel: 'tool', tool: e.tool, command: e.command, path: pathOf(e), input: textOf(e) });
-const selected = (rules, e, prompt) => rules.filter((rule) => rule.triggers.some((trigger) => matches(trigger, e, prompt)));
+const triggerItem = (e, prompt) => prompt
+  ? { channel: 'prompt', text: e.text } : { channel: 'tool', tool: e.tool, command: e.command, path: pathOf(e), input: textOf(e) };
+const selected = (rules, e, prompt, errors, budget, beforeMatched) => rules.filter((rule) => {
+  let matched = false;
+  const item = triggerItem(e, prompt);
+  for (const trigger of rule.triggers) {
+    if (budget.exhausted) {
+      errors.push({ rule: rule.name, ...unevaluatedTrigger(trigger, item) });
+      budget.unresolved.add(rule.name);
+      matched = true;
+      if (rule.triggers.some((entry) => entry.beforeFirstAct)) beforeMatched?.add(rule.name);
+      break;
+    }
+    if (triggerMatches(trigger, item, (error) => errors.push({ rule: rule.name, ...error }), budget)) {
+      matched = true;
+      if (trigger.beforeFirstAct) beforeMatched?.add(rule.name);
+      if (!beforeMatched && !budget.exhausted) break;
+    }
+    if (budget.exhausted) {
+      budget.unresolved.add(rule.name);
+      matched = true;
+      if (rule.triggers.some((entry) => entry.beforeFirstAct)) beforeMatched?.add(rule.name);
+      break;
+    }
+  }
+  return matched;
+});
+const exhaustionNotice = (budget) => `wt-rules-on-demand: shared regex budget exhausted: ${budget.unresolved.size} rules served unevaluated`;
 const block = (rule) => `<rule name="${rule.name}">\n${rule.content}\n</rule>`;
 const sessionId = async ($) => { try { return await $.session.id(); } catch { return null; } };
 const summary = (e) => e.tool === 'Bash' ? `Bash: ${bounded(e.command ?? '').trim().split(/\s+/).slice(0, 2).join(' ')}`
   : `${e.tool}: ${String(pathOf(e)).split(/[\\/]/).at(-1) || 'call'}`;
 
-async function journal($, names, loop, suppressed = [], acts = [], injected = [], channel = 'tool.call') {
-  if (!names.length && !suppressed.length && !acts.length && !injected.length) return;
+async function journal($, names, loop, suppressed = [], acts = [], injected = [], options = {}) {
+  const { channel = 'tool.call', triggerErrors = [] } = options;
+  if (!names.length && !suppressed.length && !acts.length && !injected.length && !triggerErrors.length) return;
   await serial(async () => {
     try {
       const now = new Date().toISOString();
@@ -158,6 +185,13 @@ async function journal($, names, loop, suppressed = [], acts = [], injected = []
          else ctx.governedActs.push({ rule: rule.name, ruleIdentity: rule.identity, at: now, last: now, count: 1 });
        }
        for (const rule of injected) ctx.complianceInjected.push({ rule: rule.name, ruleIdentity: rule.identity, at: now });
+       if (triggerErrors.length) {
+         ctx.triggerErrors ??= [];
+         ctx.triggerErrors.push(...triggerErrors.map((error) => ({ ...error, at: now, channel })));
+          // Retain every error from this call, even when a mass serve exceeds
+          // the usual 100-row history cap; older rows yield first.
+          ctx.triggerErrors = ctx.triggerErrors.slice(-Math.max(100, triggerErrors.length));
+       }
       session.contexts[ck] = ctx;
       sessions[id] = session;
        const ordered = Object.entries(sessions).sort((a, b) => b[1].last.localeCompare(a[1].last));
@@ -206,8 +240,14 @@ async function evaluate($, ctx, e, loop, measured) {
         if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, bashCommandVerdict(c, e.command ?? ''), summary(e));
         measured.add(pending.rule.name);
       }
-      else if (c.kind === 'tool-input' && toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }) !== null) {
-        if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }), summary(e));
+      else if (c.kind === 'tool-input') {
+        const { verdict: value, matchError } = toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
+        if (value === null) {
+          if (pending.remaining <= 0) await close($, pending, loop);
+          else remaining.push(pending);
+          continue;
+        }
+        if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, value, summary(e), matchError);
         measured.add(pending.rule.name);
       }
      else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) { pending.testSeen = true; if (pending.remaining <= 0) await close($, pending, loop); else remaining.push(pending); }
@@ -228,9 +268,9 @@ async function close($, pending, loop, reason = 'window closed') {
 }
 // A served declarative rule judges every act it governs, like a named check does while served.
 function servedVerdict(c, e) {
-  if (c?.kind === 'bash-command') return isGovernedAct(c, e) ? bashCommandVerdict(c, bounded(e.command ?? '')) : null;
+  if (c?.kind === 'bash-command') return { verdict: isGovernedAct(c, e) ? bashCommandVerdict(c, bounded(e.command ?? '')) : null, matchError: null };
   if (c?.kind === 'tool-input') return toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
-  return null;
+  return { verdict: null, matchError: null };
 }
 function inject(ctx, rules, trigger, event = null) {
    const injectedAt = new Date().toISOString();
@@ -261,7 +301,7 @@ function claim(ctx, rules) {
 }
 
 /** @type {import('claude-code').Register} */
-export const register = (on, options) => {
+export const register = (on, options, clock = Date.now) => {
   enabled = options?.enabled === true;
   reserve = options?.time_reserve === true || options?.time_reserve === '1' || (typeof process !== 'undefined' && process.env?.WT_ROD_TIME_RESERVE === '1');
   // Host userConfig defaults arrive as explicit options: max_per_context only applies with time_reserve.
@@ -300,7 +340,11 @@ export const register = (on, options) => {
     if (!enabled) return next(e);
     const ctx = await context($, MAIN);
      await rulesFor($, ctx, e.cwd ?? '.');
-      const candidates = selected(ctx.rules, e, true);
+       const triggerErrors = [];
+        const budget = regexCallBudget(clock);
+        const candidates = selected(ctx.rules, e, true, triggerErrors, budget);
+        await journal($, [], MAIN, [], [], [], { channel: 'prompt.submit', triggerErrors });
+        if (budget.exhausted) await progress($, exhaustionNotice(budget));
       while (true) {
         const conflicts = candidates.filter((rule) => eligible(ctx, rule)).map((rule) => ctx.prompting.get(rule.name)).filter(Boolean);
         if (!conflicts.length) break;
@@ -317,8 +361,10 @@ export const register = (on, options) => {
         const currentPrompting = ctx.prompting;
         if (result && ('deny' in result || 'drop' in result) || !chosen.length) return result;
        const ride = chosen.filter((rule) => currentPrompting.get(rule.name) === reservation && eligible(ctx, rule));
-       if (!ride.length) return result;
-       claim(ctx, ride); const injected = inject(ctx, ride, 'prompt.submit'); await journal($, ride, MAIN, [], ride, injected, 'prompt.submit');
+        if (!ride.length) { return result; }
+        claim(ctx, ride);
+        const injected = inject(ctx, ride, 'prompt.submit');
+        await journal($, ride, MAIN, [], ride, injected, { channel: 'prompt.submit' });
        for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
        return result;
       } finally {
@@ -344,12 +390,20 @@ export const register = (on, options) => {
      await rulesFor($, ctx, e.cwd ?? '.');
      const measured = new Set();
      await evaluate($, ctx, e, loop, measured);
-    if (textOf(e) === null) for (const rule of ctx.rules) {
-       if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.tool.test(bounded(e.tool)) && trigger.input))
-        await notice($, `${rule.name}: input-regex trigger not fired, the ${e.tool} call carried no input`);
-    }
-    const chosen = selected(ctx.rules, e, false);
-     const before = chosen.filter((rule) => rule.triggers.some((trigger) => trigger.beforeFirstAct && matches(trigger, e, false)) && ((ctx.refusing.get(rule.name) ?? 0) > 0 || !ctx.served.has(rule.name)));
+      const triggerErrors = [];
+      const budget = regexCallBudget(clock);
+      if (textOf(e) === null) for (const rule of ctx.rules) {
+        if (budget.exhausted) break;
+        let failed = false;
+        if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.input && testTriggerRegex(trigger, trigger.tool, e.tool, (error) => {
+          failed = true; triggerErrors.push({ rule: rule.name, ...error });
+        }, budget)) && !failed) await notice($, `${rule.name}: input-regex trigger not fired, the ${e.tool} call carried no input`);
+      }
+      const beforeMatched = new Set();
+      const chosen = selected(ctx.rules, e, false, triggerErrors, budget, beforeMatched);
+      const before = chosen.filter((rule) => beforeMatched.has(rule.name) && ((ctx.refusing.get(rule.name) ?? 0) > 0 || !ctx.served.has(rule.name)));
+      await journal($, [], loop, [], [], [], { triggerErrors: [...new Map(triggerErrors.map((error) => [JSON.stringify(error), error])).values()] });
+      if (budget.exhausted) await progress($, exhaustionNotice(budget));
     if (before.length) {
       // Keep pending refusals in flight until the result is returned; do not claim on failed logging/store.
        for (const rule of before) ctx.refusing.set(rule.name, (ctx.refusing.get(rule.name) ?? 0) + 1);
@@ -385,10 +439,10 @@ export const register = (on, options) => {
       for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
      // This call is the act a served declarative rule judges: drop any window left for it, even one re-served just now.
      for (const rule of ctx.rules) if (ctx.served.has(rule.name)) {
-       const value = servedVerdict(rule.compliance, e);
+       const { verdict: value, matchError } = servedVerdict(rule.compliance, e);
        if (value === null) continue;
        ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
-       if (!measured.has(rule.name)) await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e));
+       if (!measured.has(rule.name)) await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e), matchError);
      }
     for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason);
     return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;

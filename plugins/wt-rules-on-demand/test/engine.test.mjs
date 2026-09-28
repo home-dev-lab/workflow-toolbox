@@ -4,10 +4,10 @@ import { register, resetForSelftest, parseRuntimeRule } from '../hooks/hooks.js'
 import { ruleDirectories, configDirectory } from '../paths.js';
 
 const rule = (before = false) => `---\non-demand:\n  triggers:\n    - kind: 'tool'\n      tool: '^Agent$'\n      unconditional: 'true'\n      before-first-act: '${before}'\n  compliance:\n    kind: 'none'\n    reason: 'no mechanical check'\n---\nFollow this rule.\n`;
-function fixture({ options = { enabled: true }, staticNames = [], userNames = ['sample.md'], projectNames = [] } = {}) {
+function fixture({ options = { enabled: true }, staticNames = [], userNames = ['sample.md'], projectNames = [], clock } = {}) {
   resetForSelftest();
   const handlers = new Map();
-  register((event, handler) => handlers.set(event, handler), options);
+  register((event, handler) => handlers.set(event, handler), options, clock);
   const paths = ruleDirectories('/sample-project', '/sample-config');
   const files = new Map([
     ...userNames.map((name) => [`${paths.user}/${name}`, rule(true)]),
@@ -378,4 +378,112 @@ test('journal retries a size failure with fewer older sessions', async () => {
   };
   await f.call({});
   assert.ok(f.stored.get('sessions')['sample-session']);
+});
+
+const overBudget = '(?:[a]{1024}){4}b';
+const longMiss = 'a'.repeat(16000);
+const triggerRule = (lines, before = false) => `---\non-demand:\n  triggers:\n${lines}\n      before-first-act: '${before}'\n  compliance:\n    kind: 'none'\n    reason: 'fixture'\n---\nBudget rule body.\n`;
+const errorsFor = (f) => f.stored.get('sessions')?.['sample-session']?.contexts?.['0']?.triggerErrors ?? [];
+
+test('over-budget Bash trigger serves a refusal and records rule, source and command length', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', triggerRule(`    - kind: 'bash'\n      regex: '${overBudget}'`, true));
+  const result = await f.call({ tool: 'Bash', command: longMiss });
+  assert.match(result.deny, /Budget rule body/);
+  assert.ok(errorsFor(f).some((row) => row.rule === 'sample.md' && row.pattern === overBudget && row.length === 16000));
+});
+
+test('over-budget prompt trigger injects the rule and journals its subject length', async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', triggerRule(`    - kind: 'prompt'\n      regex: '${overBudget}'`));
+  let delivered;
+  await f.handlers.get('prompt.submit')(f.$, { text: longMiss, cwd: '/sample-project' }, async (event) => {
+    delivered = event.context; return {};
+  });
+  assert.match(delivered[0], /Budget rule body/);
+  assert.ok(errorsFor(f).some((row) => row.rule === 'sample.md' && row.pattern === overBudget && row.length === 16000));
+});
+
+for (const [name, lines, event, pattern, length] of [
+  ['command-head', `    - kind: 'bash'\n      command-head: 'true'\n      regex: '${overBudget}'`, { tool: 'Bash', command: longMiss }, overBudget, 16001],
+  ['tool selector and no-input notice', `    - kind: 'tool'\n      tool: '${overBudget}'\n      input-regex: 'missing'`, { tool: longMiss }, overBudget, 16000],
+  ['tool input', `    - kind: 'tool'\n      tool: '^Agent$'\n      input-regex: '${overBudget}'`, { tool: 'Agent', input: { content: longMiss } }, overBudget, 16014],
+  ['path', `    - kind: 'path'\n      tool: '^Write$'\n      regex: '${overBudget}'`, { tool: 'Write', path: longMiss }, overBudget, 16000],
+  ['path tool selector', `    - kind: 'path'\n      tool: '${overBudget}'\n      regex: 'never'`, { tool: longMiss, path: 'unmatched' }, overBudget, 16000],
+]) test(`over-budget ${name} trigger serves and journals the failure`, async () => {
+  const f = fixture();
+  f.files.set('/sample-config/rules-on-demand/sample.md', triggerRule(lines));
+  const result = await f.call(event);
+  assert.match(result.context?.[0], /Budget rule body/);
+  assert.ok(errorsFor(f).some((row) => row.rule === 'sample.md' && row.pattern === pattern && row.length === length), JSON.stringify(errorsFor(f)));
+  if (name === 'tool selector and no-input notice') assert.doesNotMatch(f.logs.join('\n'), /input-regex trigger not fired/);
+});
+
+const budgetNotice = /shared regex budget exhausted: (\d+) rules served unevaluated/gi;
+function crowdedFixture() {
+  let time = 0;
+  const names = Array.from({ length: 12 }, (_, index) => `budget-${index}.md`);
+  const f = fixture({ userNames: names, clock: () => (time += 250) });
+  for (const name of names) f.files.set(`/sample-config/rules-on-demand/${name}`, triggerRule(`    - kind: 'bash'\n      regex: '${overBudget}'`, true));
+  return { f, names, elapsed: () => time };
+}
+
+test('one hook call exhausts a shared clock budget and serves and journals all unevaluated rules', async (t) => {
+  const { f, names, elapsed } = crowdedFixture();
+  const result = await f.call({ tool: 'Bash', command: longMiss });
+  t.diagnostic(JSON.stringify({ case: 'shared-exhaustion', clockMs: elapsed(), records: errorsFor(f).length }));
+  assert.ok(elapsed() <= 2500, `shared clock consumed ${elapsed()} ms`);
+  for (const name of names) {
+    assert.match(result.deny, new RegExp(name));
+    assert.ok(errorsFor(f).some((row) => row.rule === name && row.pattern === overBudget && row.length === 16000 && /shared.*budget/i.test(row.error)), `${name} lacks shared-budget journal`);
+  }
+  assert.deepEqual(f.logs.flatMap((line) => [...line.matchAll(budgetNotice)].map((match) => Number(match[1]))), [names.length]);
+});
+
+test('crowded real-clock call has one shared step ceiling and publishes raw timing', async (t) => {
+  const names = Array.from({ length: 12 }, (_, index) => `real-${index}.md`);
+  const f = fixture({ userNames: names });
+  for (const name of names) f.files.set(`/sample-config/rules-on-demand/${name}`, triggerRule(`    - kind: 'bash'\n      regex: '${overBudget}'`, true));
+  const started = performance.now(), cpuStarted = process.cpuUsage();
+  await f.call({ tool: 'Bash', command: longMiss });
+  const cpu = process.cpuUsage(cpuStarted);
+  const count = new Set(errorsFor(f).filter((row) => /shared.*budget/i.test(row.error)).map((row) => row.rule)).size;
+  t.diagnostic(JSON.stringify({ case: 'real-clock-shared-exhaustion', ms: performance.now() - started,
+    cpuMs: (cpu.user + cpu.system) / 1000, servedUnevaluated: count, journalRows: errorsFor(f).length }));
+  assert.ok(count > 0, 'shared limit must exhaust before all patterns reach their private limit');
+  assert.deepEqual(f.logs.flatMap((line) => [...line.matchAll(budgetNotice)].map((match) => Number(match[1]))), [count]);
+});
+
+test('prompt hook also shares its clock budget and reports the unevaluated count once', async () => {
+  let time = 0;
+  const names = Array.from({ length: 10 }, (_, index) => `prompt-${index}.md`);
+  const f = fixture({ userNames: names, clock: () => (time += 250) });
+  for (const name of names) f.files.set(`/sample-config/rules-on-demand/${name}`, triggerRule(`    - kind: 'prompt'\n      regex: '${overBudget}'`));
+  let delivered;
+  await f.handlers.get('prompt.submit')(f.$, { text: longMiss, cwd: '/sample-project' }, async (event) => { delivered = event.context; return {}; });
+  assert.equal(delivered.length, names.length);
+  assert.deepEqual(f.logs.flatMap((line) => [...line.matchAll(budgetNotice)].map((match) => Number(match[1]))), [names.length]);
+  assert.equal(new Set(errorsFor(f).filter((row) => /shared.*budget/i.test(row.error)).map((row) => row.rule)).size, names.length);
+});
+
+test('one mass serve retains every current-call journal record even above the history cap', async () => {
+  let time = 0;
+  const names = Array.from({ length: 110 }, (_, index) => `many-${index}.md`);
+  const f = fixture({ userNames: names, clock: () => (time += 250) });
+  for (const name of names) f.files.set(`/sample-config/rules-on-demand/${name}`, triggerRule(`    - kind: 'prompt'\n      regex: '${overBudget}'`));
+  await f.handlers.get('prompt.submit')(f.$, { text: longMiss, cwd: '/sample-project' }, async () => ({}));
+  assert.equal(new Set(errorsFor(f).map((row) => row.rule)).size, names.length, 'one mass serve must journal every rule');
+  assert.deepEqual(f.logs.flatMap((line) => [...line.matchAll(budgetNotice)].map((match) => Number(match[1]))), [names.length]);
+});
+
+test('a long literal-headed alternation matches normally without an exhaustion notice', async () => {
+  const f = fixture();
+  const heads = Array.from({ length: 30 }, (_, i) => `\\bcommand${String(i).padStart(2, '0')}\\s+--option\\b[^\\n]*--since`);
+  const pattern = `(?:\\bgit\\s+log\\b[^\\n]*--since|PIPESTATUS|\\bgrep\\s+-[a-zA-Z]*c\\b|${heads.join('|')})`;
+  f.files.set('/sample-config/rules-on-demand/sample.md', triggerRule(`    - kind: 'bash'\n      regex: '${pattern}'`));
+  const result = await f.call({ tool: 'Bash', command: 'A=1 x; '.repeat(2341).slice(0, 16384) });
+  assert.equal(result.deny, undefined);
+  assert.equal(result.context, undefined);
+  assert.doesNotMatch(f.logs.join('\n'), budgetNotice);
+  assert.deepEqual(errorsFor(f), []);
 });

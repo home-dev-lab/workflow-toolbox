@@ -108,8 +108,8 @@ function toolVerdict(rule, use, checked, correlated) {
   if (rule.compliance?.kind === 'bash-command') return use.name === 'Bash'
     ? bashSegments(rule.compliance, use.input?.command ?? '').map((part, segment) => ({ verdict: segmentVerdict(rule.compliance, part), detail: '', segment })) : [];
   if (rule.compliance?.kind === 'tool-input') {
-    const verdict = toolInputVerdict(rule.compliance, { tool: use.name, input: use.input });
-    return verdict ? [{ verdict, detail: '' }] : [];
+    const { verdict, matchError } = toolInputVerdict(rule.compliance, { tool: use.name, input: use.input });
+    return verdict ? [{ verdict, detail: matchError ?? '' }] : [];
   }
   if (rule.compliance?.kind === 'turn-correlation') return (correlated.get(rule)?.get(use.id) ?? []).map((item) => ({ verdict: item.verdict, detail: item.detail }));
   if (rule.compliance?.kind === 'unregistered') return [{ verdict: 'unregistered check', detail: rule.compliance.reason }];

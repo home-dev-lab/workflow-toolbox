@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { parseRuntimeRule } from '../hooks/runtime-rule.js';
 import { triggerMatches } from '../hooks/trigger-match.js';
 import { bashCommandVerdict, isGovernedAct } from '../hooks/act-checks.js';
-import { correlateTurn, toolInputVerdict, bashSegments, segmentVerdict } from '../hooks/declarative-checks.js';
+import { correlateTurn, toolInputVerdict as toolInputOutcome, bashSegments, segmentVerdict } from '../hooks/declarative-checks.js';
+
+const toolInputVerdict = (...args) => toolInputOutcome(...args).verdict;
 
 const rule = (compliance, trigger = '    - kind: bash\n      regex: run') => parseRuntimeRule('example.md', `---\non-demand:\n  triggers:\n${trigger}\n  compliance:\n${compliance}\n---\nbody`);
 
@@ -73,15 +75,20 @@ test('command-head finds wrapped launches but excludes quoted mentions and commi
     assert.equal(triggerMatches(trigger, { channel: 'tool', tool: 'Bash', command }), false, command);
 });
 
-test('safe regex accepts disambiguated option alternatives and rejects ambiguous repetitions', () => {
+test('safe regex accepts disambiguated and ambiguous option alternatives', () => {
   assert.doesNotThrow(() => rule('    kind: none\n    reason: no check', '    - kind: bash\n      regex: "\\\\b(?:pnpm|npm|yarn)\\\\s+(?:(?:-C|--dir|--filter|-F|--prefix|-w|--workspace)\\\\s+\\\\S+\\\\s+|-r\\\\s+|--recursive\\\\s+){0,8}(?:run\\\\s+)?(?:test|typecheck|lint|build|e2e|check)\\\\b"'));
-  for (const source of ['(a+)+', '(?:\\d*)*', '(a|ab)*']) assert.throws(() => rule('    kind: none\n    reason: no check', `    - kind: bash\n      regex: '${source}'`), /regex has/);
+  for (const source of ['(a+)+', '(?:\\d*)*', '(a|ab)*']) {
+    const regex = rule('    kind: none\n    reason: no check', `    - kind: bash\n      regex: '${source}'`).triggers[0].regex;
+    for (const subject of ['', 'a', 'ab', 'aab!']) assert.equal(regex.test(subject), new RegExp(source).test(subject));
+  }
 });
 
-test('safe regex refuses nested unbounded command-head scanning before execution', () => {
+test('safe regex accepts nested command-head scanning with native answers', () => {
   const source = String.raw`^(?:(?:(?:[^'";&|()\n]|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')*(?:;|&&|\|\|)\s*)|(?:timeout\s+\S+))*runner\b`;
-  assert.throws(() => rule('    kind: none\n    reason: no check', `    - kind: bash\n      regex: '${source.replaceAll("'", "''")}'`), /regex has.*nested unbounded/);
-  assert.throws(() => rule('    kind: none\n    reason: no check', '    - kind: bash\n      regex: "(?:(?:[ab])* ;)*x"'), /nested unbounded/);
+  const first = rule('    kind: none\n    reason: no check', `    - kind: bash\n      regex: '${source.replaceAll("'", "''")}'`).triggers[0].regex;
+  const second = rule('    kind: none\n    reason: no check', '    - kind: bash\n      regex: "(?:(?:[ab])* ;)*x"').triggers[0].regex;
+  for (const subject of ['runner', 'timeout 2 runner', 'a ; x', 'zzz']) for (const [linear, pattern] of [[first, source], [second, '(?:(?:[ab])* ;)*x']])
+    assert.equal(linear.test(subject), new RegExp(pattern).test(subject));
 });
 
 test('check-rules measures every trigger and compliance regex against a supplied corpus', async (t) => {
@@ -94,6 +101,19 @@ test('check-rules measures every trigger and compliance regex against a supplied
   assert.equal(result.status, 1);
   assert.match(result.stdout, /slow\s+sample\.md\s+trigger-0-regex\s+[\d.]+/);
   assert.match(result.stdout, /slow\s+sample\.md\s+compliance-act\s+[\d.]+/);
+  assert.equal(result.stdout.split('\n').filter((line) => line.startsWith('slow sample.md ')).length, 3, 'one trigger and two compliance patterns are timed');
+});
+
+test('check-rules times capture fields with their actual iterator and reports budget errors', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'rod-capture-timing-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, 'sample.md'), `---\non-demand:\n  triggers:\n    - kind: bash\n      regex: ^Write$\n  compliance:\n    kind: tool-input\n    tool: ^Write$\n    input-field: content\n    match-block-regex: '(?:[a]{1024}){4}(b)'\n    require-input-regex: b\n    window: 1\n    on-close: not applicable\n---\nbody`);
+  const corpus = join(dir, 'corpus.json');
+  await writeFile(corpus, JSON.stringify(['a'.repeat(16384)]));
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('../scripts/rules.mjs', import.meta.url)), 'check-rules', '--dir', dir, '--corpus', corpus, '--time-bound-ms', '500', '--json'], { encoding: 'utf8', timeout: 8000 });
+  assert.equal(result.status, 1, result.stderr);
+  const rows = JSON.parse(result.stdout);
+  assert.match(rows.find((row) => row.patternId === 'compliance-matchBlock')?.reason, /regex iteration work budget exceeded; verdict unresolved/);
 });
 
 test('text-field checks mask quoted code and validate each selected line independently', () => {

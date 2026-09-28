@@ -42,23 +42,27 @@ function usage() {
 async function timedPatterns(rule, corpus, boundMs) {
   const patterns = [];
   for (const [index, trigger] of rule.triggers.entries()) for (const [key, regex] of Object.entries(trigger))
-    if (regex instanceof RegExp) patterns.push([`trigger-${index}-${key}`, regex]);
+    if (regex && typeof regex.test === 'function' && typeof regex.source === 'string') patterns.push([`trigger-${index}-${key}`, regex]);
   const compliance = rule.compliance;
   if (compliance) for (const [key, regex] of Object.entries(compliance)) {
-    if (regex instanceof RegExp) patterns.push([`compliance-${key}`, regex]);
-    if (Array.isArray(regex)) for (const [index, part] of regex.entries()) if (part instanceof RegExp) patterns.push([`compliance-${key}-${index}`, part]);
+    if (regex && typeof regex.test === 'function' && typeof regex.source === 'string') patterns.push([`compliance-${key}`, regex]);
+    if (Array.isArray(regex)) for (const [index, part] of regex.entries()) if (part && typeof part.test === 'function' && typeof part.source === 'string') patterns.push([`compliance-${key}-${index}`, part]);
   }
   const slow = [];
   for (const [patternId, regex] of patterns) {
     if (!corpus.length) break;
-    const ms = await new Promise((done) => {
-      const worker = new Worker(new URL('./regex-timing-worker.mjs', import.meta.url), { workerData: { source: regex.source, flags: regex.flags, corpus, boundMs } });
-      const timer = setTimeout(() => { void worker.terminate(); done(boundMs); }, Math.max(500, boundMs * 5, corpus.length / 10));
+    let operation = 'test';
+    if (patternId === 'compliance-id') operation = 'exec';
+    else if (patternId === 'compliance-value' || patternId === 'compliance-matchBlock') operation = 'matchAll';
+    const result = await new Promise((done) => {
+      const worker = new Worker(new URL('./regex-timing-worker.mjs', import.meta.url), { workerData: { source: regex.source, flags: regex.flags, corpus, boundMs, operation } });
+      const timer = setTimeout(() => { void worker.terminate(); done({ error: 'timing worker deadline exceeded' }); }, Math.max(500, boundMs * 5, corpus.length / 10));
       worker.once('message', (value) => { clearTimeout(timer); done(value); });
-      worker.once('error', () => { clearTimeout(timer); void worker.terminate(); done(boundMs); });
-      worker.once('exit', (code) => { if (code !== 0) { clearTimeout(timer); done(boundMs); } });
+      worker.once('error', (error) => { clearTimeout(timer); void worker.terminate(); done({ error: error.message }); });
+      worker.once('exit', (code) => { if (code !== 0) { clearTimeout(timer); done({ error: `timing worker exited ${code}` }); } });
     });
-    if (ms !== null && ms >= boundMs) slow.push({ status: 'slow', patternId, ms });
+    if (result.error) slow.push({ status: 'error', patternId, reason: result.error });
+    else if (result.ms !== null && result.ms >= boundMs) slow.push({ status: 'slow', patternId, ms: result.ms });
   }
   return slow;
 }
@@ -94,7 +98,7 @@ async function checkRules() {
     if (row.status === 'slow') console.log(`slow ${basename(row.file)} ${row.patternId} ${row.ms.toFixed(3)}`);
     else console.log(`${row.status}\t${row.file}${reason}`);
   }
-  if (rows.some((row) => row.status === 'skipped' || row.status === 'slow')) process.exitCode = 1;
+   if (rows.some((row) => ['skipped', 'slow', 'error'].includes(row.status))) process.exitCode = 1;
 }
 
 const textOfPrompt = (row) => {
