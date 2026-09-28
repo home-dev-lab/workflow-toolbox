@@ -1,7 +1,7 @@
 import { resolveConsent } from './lane-consent-check-core.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { hasModelPluginValue, readWorkflowToolboxPluginOption } from './plugin-options.mjs'
-import { EXECUTOR_DEFAULTS } from './executor-defaults.mjs'
+import { EXECUTOR_DEFAULTS, executorFamilyForModel } from './executor-defaults.mjs'
 
 // Owner decision 2026-09-22: every harness and SDK pilot/orchestrator cell runs on Opus. The 0.3.280
 // SDK floor makes the alias resolve to Opus 5.5, so hard cards no longer need a separate Fable route.
@@ -91,27 +91,29 @@ const EXECUTOR_KEYS = {
   review: ['executor_review_model', 'WT_EXECUTOR_REVIEW_MODEL'],
   refutation: ['executor_refutation_model', 'WT_EXECUTOR_REFUTATION_MODEL'],
 }
-function assertProviderModel(value) {
-  if (typeof value !== 'string' || !/^[^/\s]+\/[^/\s]+$/.test(value)) {
-    throw new Error(`executor GPT override must be a provider model (provider/model); refused model value: ${String(value)}`)
+function resolveExecutorModel(role, selected, consent) {
+  const family = executorFamilyForModel(selected.value)
+  if (!family) throw new Error(`executor ${role} model ${String(selected.value)} from ${selected.source}: expected a provider model (provider/model) or harness model alias (${ALIASES.join(', ')})`)
+  if (family === 'gpt-lane' && consent !== 'true') {
+    throw new Error(`executor ${role} model ${selected.value} from ${selected.source}: consent outcome ${consent}; grant lane consent or use a harness model alias`)
   }
-  return value
+  return family
 }
 
 export function resolveExecutorProfile({ worktree, route, hard = false, env = {}, settingsEnv = {}, resolveConsentImpl = resolveConsent, readPluginOption = readWorkflowToolboxPluginOption }) {
   if (!['LITE', 'FULL'].includes(route)) throw new Error(`unknown executor route: ${String(route)}`)
-  const executor = resolveConsentImpl(worktree, env).outcome === 'true' ? 'gpt-lane' : 'claude-sdk'
+  const consent = resolveConsentImpl(worktree, env).outcome
+  const executor = consent === 'true' ? 'gpt-lane' : 'claude-sdk'
   const defaults = EXECUTOR_DEFAULTS[executor][hard ? 'hard' : 'standard']
   const resolved = Object.fromEntries(Object.entries(EXECUTOR_KEYS).map(([role, [option, key]]) => {
     const plugin = readPluginOption(option, { env })
     const selected = resolveModelInput(plugin, key, env, settingsEnv, defaults[role])
-    const value = executor === 'gpt-lane'
-      ? assertProviderModel(selected.value)
-      : assertHarnessAlias(selected.value)
-    return [role, { value, source: selected.source, variant: resolveRoleVariant(role, value, { env, settingsEnv, readPluginOption }) }]
+    const family = resolveExecutorModel(role, selected, consent)
+    return [role, { value: selected.value, source: selected.source, family, variant: resolveRoleVariant(role, selected.value, { env, settingsEnv, readPluginOption }) }]
   }))
   return {
     executor,
+    executors: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.family])),
     models: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.value])),
     modelSources: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.source])),
     variants: Object.fromEntries(Object.entries(resolved).map(([role, model]) => [role, model.variant.value])),

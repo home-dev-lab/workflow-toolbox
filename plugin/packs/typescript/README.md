@@ -13,7 +13,7 @@ TypeScript pack.
 
 ## Limits
 
-- The pack covers TypeScript and TSX only; it supplies no rules or workflow for other languages.
+- The pack's rules and workflows cover TypeScript and TSX only; its language server also serves JavaScript.
 - SDK-only status is a convention plus the absence of these definitions from `plugin/agents/` and
   `plugin/agent-templates/`; the pack does not enforce SDK invocation at runtime.
 - Pack selection attaches context notes and topic rules. It does not execute TDD, gates, or a
@@ -27,14 +27,26 @@ rules, two skills, and two SDK-only agents.
 
 ## Language server
 
-The pack carries `.lsp.json` for `typescript-language-server`; when the Workflow Toolbox plugin is
-loaded and the binary is on `PATH`, TypeScript diagnostics are delivered after edits as
+The pack carries one `.lsp.json` declaration for `wt-tsls.mjs`; when the Workflow Toolbox plugin is
+loaded and a backend is available, TypeScript and JavaScript diagnostics are delivered after edits as
 `<new-diagnostics>` blocks. Claude Code loads LSP declarations from a plugin root, not a pack
 directory, so `plugin/.lsp.json` deliberately mirrors this pack declaration as the loader bridge.
 This makes diagnostics available to sessions that load this plugin; it does not make LSP
 configuration conditional on pack selection.
 
-The language server is not vendored. Install it separately with:
+The declaration maps `.ts`, `.mts`, `.cts`, `.tsx`, `.js`, `.mjs`, `.cjs` and `.jsx` (with React
+language IDs for TSX/JSX). The launcher reads `initialize` to select a backend in this order:
+an explicitly configured `tsserver.path` or a valid workspace `tsserver.js` uses
+`typescript-language-server`; otherwise a host TypeScript 7+ native executable serves the session;
+otherwise `typescript-language-server` uses its own fallback TypeScript installation. If neither
+is installed, initialize receives an error explaining what to install. Workspace discovery mirrors
+the server's `rootUri`/`rootPath` search and stops at the first TypeScript lib folder, even if unusable.
+The host native executable is resolved from the `tsc` package on PATH, including its matching
+platform package. Resolution reads version metadata without running binaries; the launcher never
+executes a workspace-local `tsc`. The workspace `tsserver.js` selected by
+`typescript-language-server` may execute workspace code, as it already did before this change.
+
+The language servers are not vendored. Install a backend separately with:
 
 ```sh
 npm i -g typescript-language-server typescript
@@ -73,9 +85,7 @@ TypeScript installation") — the global install line above is not enough for a 
 on a LATER tool result, so a session that edits and stops never receives it — the probe waits and
 reads again after the edit. With both fixed, the planted TS2554 error was delivered.
 
-`.tsx` files are not mapped yet: `extensionToLanguage` covers `.ts` only, the shape measured on 2026-09-08,
-although `pack.json` triggers on `.tsx` too. Mapping `typescriptreact` needs its own probe before it is
-added.
+The 2026-09-12 measurements below predate the launcher and its expanded extension mapping.
 
 ## Probe
 
@@ -97,10 +107,11 @@ Missing arm — PASS (same date; `command -v` → not found on the shim PATH, `n
 
 ## Cross-platform verdict
 
-The command must resolve on the Claude Code process PATH; measured on Linux (this machine,
-2026-09-12, typescript-language-server 6.0.0 — the archived two-arm probe above); macOS and Windows unmeasured until
-their probe artifacts exist. This retains the prior requirement that the global npm bin directory
-be on PATH and that command discovery is otherwise platform-specific.
+The Node interpreter must resolve on Claude Code's PATH. The backend must be discoverable on that
+PATH: Linux was measured with the native TypeScript 7 executable and typescript-language-server
+6.0.0. The Windows npm `.cmd` shim layout is supported without running a shell; unrecognized
+wrappers are refused. macOS uses POSIX paths like Linux; macOS and Windows remain unmeasured on
+real hosts.
 
 ## Optional assets
 

@@ -540,6 +540,7 @@ describe('orchestrator driver', () => {
     // without an empty npm prefix and without CLAUDE_PLUGIN_DATA this case reads the machine, not the subject.
     const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') }
     delete env.CLAUDE_PLUGIN_DATA
+    delete env.WT_AGENT_SDK_PATH
     const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env })
     expect(result.status).toBe(1)
     expect(result.stderr).toContain('@anthropic-ai/claude-agent-sdk is not installed')
@@ -550,6 +551,7 @@ describe('orchestrator driver', () => {
     const configDir = mkdtempSync(join(tmpdir(), 'wt-orch-config-')); roots.push(configDir); writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
     const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CONFIG_DIR: configDir, NODE_PATH: '', NPM_CONFIG_PREFIX: join(f.root, 'empty-global') }
     delete env.CLAUDE_PLUGIN_DATA
+    delete env.WT_AGENT_SDK_PATH
     const result = spawnSync(process.execPath, [join(installed, 'bin/wt-run-orchestrator.mjs'), '--cards', '1', '--base', 'main', '--worktrees-dir', f.worktreesDir, '--report', f.report], { cwd: f.root, encoding: 'utf8', env: { ...env, NODE_NO_WARNINGS: '1' } })
     expect(result.status).toBe(1)
     expect(result.stderr.trim().split(/\r?\n/)).toEqual(["wt-run-orchestrator: @anthropic-ai/claude-agent-sdk is not installed; require >=0.3.280; run: npm install -g '@anthropic-ai/claude-agent-sdk@>=0.3.280'"])

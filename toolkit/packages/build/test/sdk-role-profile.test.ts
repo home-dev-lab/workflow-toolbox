@@ -103,6 +103,15 @@ describe('SDK role profiles', () => {
     })
   })
 
+  it('turns the account claude.ai connectors off for every SDK role, keeping the caller env', () => {
+    const prepared = { profile: roleProfile('pilot'), plugins: [], hooks: {} }
+    const supplied = composeSdkRoleQueryOptions({ model: 'opus', effort: 'medium', env: { KEEP: '1', ENABLE_CLAUDEAI_MCP_SERVERS: 'true' } }, prepared)
+    expect(supplied.env).toEqual({ KEEP: '1', ENABLE_CLAUDEAI_MCP_SERVERS: 'false' })
+    const inherited = composeSdkRoleQueryOptions({ model: 'opus', effort: 'medium' }, prepared)
+    expect(inherited.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBe('false')
+    expect(inherited.env?.PATH).toBe(process.env.PATH)
+  })
+
   it.each(roles)('refuses to launch the %s SDK role without a declared effort', (role) => {
     expect(() => composeSdkRoleQueryOptions({ model: 'opus' }, { profile: roleProfile(role), plugins: [], hooks: {} }))
       .toThrow('SDK role launch requires explicit effort')

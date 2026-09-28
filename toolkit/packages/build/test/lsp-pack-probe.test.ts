@@ -12,6 +12,7 @@ import {
   probePack,
   resolveCommand,
   serverBinary,
+  serverBinaries,
 } from '../../../scripts/lsp-pack-probe.mjs'
 
 const temporaryDirectories: string[] = []
@@ -69,7 +70,18 @@ describe('LSP pack probe pure contracts', () => {
   it('probes the server a plugin launcher starts, not the node interpreter that runs the launcher', () => {
     expect(serverBinary('java', { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/wt-jdtls.mjs'] })).toBe('jdtls')
     expect(serverBinary('groovy', { command: 'groovy-language-server', args: [] })).toBe('groovy-language-server')
+    expect(serverBinaries('typescript', { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/wt-tsls.mjs'] })).toEqual(['typescript-language-server', 'tsc'])
     expect(() => serverBinary('svelte', { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/bin/other.mjs'] })).toThrow('svelte: no server binary is known for launcher')
+  })
+
+  it('hides both TypeScript backends in the missing arm and records the selected available backend', () => {
+    const first = temporary('wt-lsp-both-')
+    const shim = temporary('wt-lsp-shim-')
+    for (const name of ['node', 'claude', 'typescript-language-server', 'tsc']) executable(first, name)
+    buildShimDirectory(first, ['typescript-language-server', 'tsc'], shim)
+    expect(resolveCommand('typescript-language-server', shim)).toBeUndefined()
+    expect(resolveCommand('tsc', shim)).toBeUndefined()
+    expect(resolveCommand('node', shim)).toBeDefined()
   })
 
   it('builds one PATH shim that preserves executables while excluding only the declared command', () => {

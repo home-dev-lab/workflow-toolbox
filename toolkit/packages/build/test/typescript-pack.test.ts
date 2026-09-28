@@ -23,9 +23,9 @@ describePackContract({
   extensions: ['.ts', '.tsx'],
   consumerRules: ['lint-typecheck-build.md', 'tdd-vitest.md'],
   declaration: {
-    command: 'typescript-language-server',
-    args: ['--stdio'],
-    extensionToLanguage: { '.ts': 'typescript' },
+    command: 'node',
+    args: ['${CLAUDE_PLUGIN_ROOT}/bin/wt-tsls.mjs'],
+    extensionToLanguage: { '.ts': 'typescript', '.tsx': 'typescriptreact', '.mts': 'typescript', '.cts': 'typescript', '.js': 'javascript', '.jsx': 'javascriptreact', '.mjs': 'javascript', '.cjs': 'javascript' },
     diagnostics: true,
     startupTimeout: 10000,
   },

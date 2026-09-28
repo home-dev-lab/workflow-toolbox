@@ -96,7 +96,8 @@ describe('raw host primitive quality ratchet', () => {
     // helpers and the pure model-pin module add perimeter files too. The pure Claude-executor environment builder
     // (claude-executor-env.mjs) adds one; it performs no host operation.
     // The model-fallback CLI, tracker and hook add three files but no raw host primitives.
-    expect(result.perimeterFiles).toBe(246)
+    // The TypeScript pack adds a protocol-only entry; its host reads and spawn remain under bin/lib/host.
+    expect(result.perimeterFiles).toBe(247)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

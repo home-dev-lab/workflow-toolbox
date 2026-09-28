@@ -5,6 +5,20 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- The shipped TypeScript language server now selects a workspace TypeScript server or a host TypeScript 7 native server and provides navigation and diagnostics for `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` files.
+
+### Changed
+- `wt-rules-on-demand` verdicts: a served `bash-command` or `tool-input` rule now records a verdict on every act it governs until compaction, as a named check does, instead of only on the call it rode or within its window; a `model` rule's classifier now sees the tool call that served it; turn-correlation verdicts are recorded only for rules served in that context.
+- Executor roles now choose their launcher from each phase's model, so a consented GPT implementation can use a Claude refuter (and Claude code can use GPT review); GPT models still require lane consent.
+
+### Fixed
+- SDK pilot lifecycle: a lane receipt and the gates that follow it are no longer refused when the system clock steps backwards. The receipt's freshness now rests on its launch nonce alone, and gates are ordered after the lane by a server-side receipt count instead of file modification times (card 1873939897).
+- `wt-rules-on-demand` transcript scan: a rule delivered past the first 16 KiB of a refusal that serves several rules at once is now counted as delivered, and the refused call is no longer judged as an executed act. Before, every act that rule governed read as a trigger miss, the evidence the daily rollback acts on.
+- `wt-rules-on-demand` serving: a rule triggered by a tool call, or by a prompt, no longer aborts the hook after it is claimed. The host's `ui.log` returns nothing, so the progress line threw and the host skipped the hook: a tool-triggered rule was marked served but its text never reached the model.
+- SDK runner, Claude executor and orchestrator judge: an account with a claude.ai connector (for example Claude Docs) no longer kills every SDK role at its initialization receipt. Connectors load by default for claude.ai-authenticated users and fall outside every role's tool surface; each role's query now runs with `ENABLE_CLAUDEAI_MCP_SERVERS=false`. Plugin-provided MCP servers are unaffected.
+- SDK runner: a Claude critic launched in the first, two-lane plan round is no longer refused for its report name (`critic-report.A.<nonce>.md` / `.B.`). Only critics accept a lane id, and the Claude executor takes the runner's report line rather than one quoted in the pilot's context. The run summary's `executor_variants` now names each role's executor family.
+
 ## [0.189.0] - 2026-09-28
 
 ### Release notes
