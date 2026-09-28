@@ -93,8 +93,8 @@ describe('raw host primitive quality ratchet', () => {
     // The pure executor defaults shared by routing and options, the suite-lock runner, the pure DoD
     // dispute module, and the cross-OS CLI, dispatcher and verdict module add perimeter modules; their host operations
     // stay behind bin/lib/host, so the primitive ceiling does not increase. The three shared frontmatter/definition
-    // helpers add perimeter files too.
-    expect(result.perimeterFiles).toBe(241)
+    // helpers and the pure model-pin module add perimeter files too.
+    expect(result.perimeterFiles).toBe(242)
     expect(result.findings).toHaveLength(HOST_PRIMITIVE_CEILING)
   })
 

@@ -123,6 +123,11 @@ describe('cross-OS dispatch', () => {
     for (const file of spawningTestFiles) {
       expect(globs.some((glob: string) => matchesHostPath(`toolkit/${file}`, glob)), file).toBe(true)
     }
+    // Shipped secondary plugins run their hooks and scripts on every OS; a change to any of their files must
+    // trigger the matrix, whose suite drives their own tests (shipped-rules-on-demand.test.ts).
+    for (const file of tracked.filter((path) => path.startsWith('plugins/'))) {
+      expect(globs.some((glob: string) => matchesHostPath(file, glob)), file).toBe(true)
+    }
   })
 
   it('decides host and docs commits from the list in each commit', async () => {
