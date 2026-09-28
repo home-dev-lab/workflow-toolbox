@@ -1,18 +1,18 @@
 import { maskReadOnlyMentions, executableSegments } from './bash-mention.js';
 import { bounded } from './evidence.js';
+import { bashSegments, segmentVerdict } from './declarative-checks.js';
 
 // Keep this dependency tree free of node: imports: the Function Hooks host rejects them.
 export const CHECKS = Object.freeze(['agent-model', 'gate-background']);
 
 export function bashCommandVerdict(compliance, command) {
-  const followed = compliance.require
-    ? compliance.require.test(bounded(command))
-    : compliance.requireAll.every((part) => bounded(command).includes(part));
-  return followed ? 'followed' : 'not followed';
+  const segments = bashSegments(compliance, command);
+  if (segments.some((part) => segmentVerdict(compliance, part) === 'not followed')) return 'not followed';
+  return segments.some((part) => segmentVerdict(compliance, part) === 'followed') ? 'followed' : 'not applicable';
 }
 
 export function isGovernedAct(compliance, event) {
-  if (compliance.kind === 'bash-command') return event.tool === 'Bash' && compliance.act.test(maskReadOnlyMentions(bounded(event.command)));
+  if (compliance.kind === 'bash-command') return event.tool === 'Bash' && bashSegments(compliance, event.command).length > 0;
   return compliance.kind === 'test-before-edit' && /^(?:Edit|Write)$/.test(event.tool)
     && compliance.path.test(bounded(event.path ?? event.file_path ?? event.input?.path ?? event.input?.file_path));
 }
@@ -39,7 +39,7 @@ export function classify(name, input = {}) {
   }
   if (name === 'Bash' && typeof input.command === 'string') {
     const acts = [];
-    const segments = executableSegments(maskReadOnlyMentions(input.command));
+    const segments = executableSegments(maskReadOnlyMentions(bounded(input.command)));
     for (const [segment, item] of segments.entries()) {
     const cmd = item.text;
     const invocation = `${item.head} ${item.args.join(' ')}`;

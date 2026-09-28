@@ -38,15 +38,33 @@ answers “not applicable”. The `agent-model` check counts a spawn without a
 `gate-background` recognises a fixed build-command vocabulary. A refusal on an
 Agent spawn inside a subagent was missed in one real session (under investigation).
 Store writes serialize within one process; concurrent sessions sharing a store
-may lose a measurement.
+ may lose a measurement.
+
+The first quality run reports "never" until a check finishes. Later startup
+messages name incomplete coverage, unchecked scopes and dry-run rollback reasons.
+The scanner can exclude historical delivery block names from runtime proof using
+`WT_ROD_NON_PROOF_NAMES` (comma-separated); its CLI also accepts repeatable
+`--non-proof-name`. This list is empty by default. Transcript-derived verdicts
+drive the daily rollback decision, which stays dry-run. Legacy store rows without
+a rule identity are counted and skipped by rollback. The report CLI accepts
+repeatable `--rules-dir` to inspect an alternate rule tree.
+
+Run `node /path/to/wt-rules-on-demand/scripts/daily-rollback.mjs` once a day
+from a host timer or cron job; the plugin ships no scheduler. This entry point
+checks the user rules and configured followed projects, and defaults to dry-run.
+To permit evidence-gated reversions, pass `--apply` explicitly. A host can
+inspect rules before deployment with `rules.mjs check-rules --dir <rules-dir>
+--corpus <commands.json> --time-bound-ms 50`; each slow regex test is reported
+and causes a nonzero exit.
 
 Rule files are limited to 256 KiB and regex subjects to their first 16 KiB,
 identically in the hook and transcript/proof matching. Patterns with a repeated
 group whose sole element is unbounded-quantified (such as `^(a+)+$`
 or `(?:\d*)*`), or a repeated alternation with branches starting with the same
 decidable literal character (such as `(a|ab)*`), are rejected at parse time.
-The check covers exactly those two shapes; other nested repetition, ambiguous
-character classes, and repeated adjacent atoms are not checked. This is a
+Nested unbounded groups are also rejected, including repeated command-head
+scanners with repeatable quoted/unquoted alternatives. Other ambiguous
+character classes and repeated adjacent atoms are not checked. This is a
 heuristic, **not** a proof of regex safety; other catastrophic patterns remain
 possible. Further hardening is tracked separately. Run lifecycle commands
 (`migrate`, `revert`, `retire`) single-writer per scope: do not run them concurrently

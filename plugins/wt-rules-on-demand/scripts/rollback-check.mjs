@@ -1,8 +1,10 @@
 #!/usr/bin/env node
-import { readFile, readdir, mkdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { readFile, readdir, mkdir, realpath, stat, writeFile, appendFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDataDir, splitRuleIdentity } from './rule-lifecycle-lib.mjs';
+import { DEMAND_DIR, lastLifecycleTime, revertRule, rollbackDecision, qualityDataDir, assertSafeDataDir, splitRuleIdentity } from './rule-lifecycle-lib.mjs';
 import { configDirectory, ruleDirectories } from '../paths.js';
+import { createHash } from 'node:crypto';
+import { verdictPath, readVerdicts, pendingRules, recordRollback } from './verdict-record.mjs';
 
 const args = process.argv.slice(2);
 const options = { project: process.cwd(), stores: [], verdictFiles: [], dryRun: false, json: false, user: false, configDir: '', mirrorDirs: [] };
@@ -12,12 +14,15 @@ for (let index = 0; index < args.length; index += 1) {
   else if (args[index] === '--verdicts') options.verdictFiles.push(args[++index] ?? '');
   else if (args[index] === '--json') options.json = true;
   else if (args[index] === '--dry-run') options.dryRun = true;
+  else if (args[index] === '--mechanical-only') options.mechanicalOnly = true;
+  else if (args[index] === '--journal') options.journal = args[++index] ?? '';
   else if (args[index] === '--user') options.user = true;
   else if (args[index] === '--config-dir') options.configDir = args[++index] ?? '';
   else if (args[index] === '--mirror-dir') options.mirrorDirs = String(args[++index] ?? '').split(',').filter(Boolean).map((path) => resolve(path));
   else { console.error(`unknown option: ${args[index]}`); process.exit(2); }
 }
 if (!options.user && (options.configDir || options.mirrorDirs.length)) { console.error('--config-dir and --mirror-dir require --user'); process.exit(2); }
+if (options.mechanicalOnly && !options.verdictFiles.length) { console.error('--mechanical-only requires --verdicts'); process.exit(2); }
 const project = resolve(options.project);
 const scope = options.user ? 'user' : 'project';
 const configDir = resolve(options.configDir || configDirectory(process.env) || (() => { throw new Error('HOME or USERPROFILE required'); })());
@@ -25,6 +30,8 @@ const configDir = resolve(options.configDir || configDirectory(process.env) || (
 // In-hook verdict archives are store keys; quality scan verdicts live under qualityDataDir(configDir).
 const lifecycleRoot = scope === 'user' ? configDir : project;
 const rulesDir = scope === 'user' ? ruleDirectories(project, configDir).user : ruleDirectories(project, configDir).project;
+const hasRecord = scope === 'project' && await readFile(verdictPath(project)).then(() => true, (error) => { if (error.code === 'ENOENT') { return false; } throw error; });
+if (hasRecord) await readVerdicts(project);
 
 // Never report "nothing to roll back" over a directory that was never there: that exit 0 checked nothing.
 let names;
@@ -66,7 +73,11 @@ const stores = await Promise.all((await storePaths()).map(async (path) => JSON.p
 const store = { sessions: Object.assign({}, ...stores.map((item) => item.sessions ?? {})) };
 const verdictLines = stores.map((item) => String(item['compliance-verdicts-jsonl'] ?? ''));
 for (const item of stores) for (const [name, text] of Object.entries(item)) if (name.startsWith('compliance-verdicts-archive-')) verdictLines.push(String(text));
+const archiveDir = await assertSafeDataDir(qualityDataDir(configDir, {}));
+for (const name of (await readdir(archiveDir).catch((error) => error.code === 'ENOENT' ? [] : Promise.reject(error)))
+  .filter((item) => /^compliance-verdicts-archive-\d+-\d+\.jsonl$/.test(item)).sort()) verdictLines.push(await readFile(join(archiveDir, name), 'utf8'));
 const verdicts = verdictLines.join('\n').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+let legacyRowsSkipped = verdicts.filter((row) => !row.ruleIdentity).length;
 const transcriptRows = (await Promise.all(options.verdictFiles.map(async (path) => (await readFile(path, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line))))).flat();
 const rateSummary = [];
 const realOr = (path) => realpath(path).catch((error) => (error.code === 'ENOENT' || error.code === 'ENOTDIR' ? resolve(path) : Promise.reject(error)));
@@ -83,6 +94,7 @@ async function canonicalIdentity(identity) {
 for (const row of verdicts) if (row.ruleIdentity) row.ruleIdentity = await canonicalIdentity(row.ruleIdentity);
 for (const session of Object.values(store.sessions ?? {})) {
   for (const context of Object.values(session.contexts ?? {})) {
+    legacyRowsSkipped += [...(context.governedActs ?? []), ...(context.complianceInjected ?? [])].filter((item) => !item?.ruleIdentity).length;
     for (const item of [...(context.governedActs ?? []), ...(context.complianceInjected ?? [])]) {
       if (item?.ruleIdentity) item.ruleIdentity = await canonicalIdentity(item.ruleIdentity);
     }
@@ -97,6 +109,7 @@ for (const session of Object.values(store.sessions ?? {})) {
     }
   }
 }
+if (legacyRowsSkipped) console.error(`rollback-check: legacy rows skipped: ${legacyRowsSkipped}`);
 // Where this profile's on-demand files must physically live for a revert to be this profile's to make.
 const ownDemandDir = join(await realOr(lifecycleRoot), scope === 'user' ? 'rules-on-demand' : DEMAND_DIR);
 const realRulesDir = await realOr(rulesDir);
@@ -112,13 +125,13 @@ for (const name of names) {
   // files physically live in (a profile whose on-demand directory is a symlink ledgers nothing of its own). Sessions
   // and acts older than it ran under the rule's previous state and are ignored (HIGH 1).
   const ledgerRoots = [...new Set([lifecycleRoot, scope === 'user' ? dirname(realRulesDir) : lifecycleRoot])];
-  const cutoff = (await Promise.all(ledgerRoots.map((root) => lastLifecycleTime(root, name, scope)))).filter(Boolean).sort().at(-1) ?? '';
-  const current = (time) => !cutoff || (typeof time === 'string' && time >= cutoff);
+   const cutoff = (await Promise.all(ledgerRoots.map((root) => lastLifecycleTime(root, name, scope)))).filter(Boolean).sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? '';
+   const current = (time) => !!cutoff && Number.isFinite(Date.parse(time)) && Date.parse(time) > Date.parse(cutoff);
   const identity = `${scope}:${realRulesDir}:${name}`;
   const rows = transcriptRows.filter((row) => row.rule === name && row.scope === scope && row.rulesDir && physicalOf.get(row.rulesDir) === realRulesDir);
   // A scan that contains no rows for a rule is still the authoritative window when --verdicts is supplied.
   const kind = /^\s{4}kind:\s*['"]?([^'"\s]+)/m.exec(await readFile(join(rulesDir, name), 'utf8'))?.[1];
-  const measured = options.verdictFiles.length && ['check', 'bash-command'].includes(kind);
+   const measured = options.verdictFiles.length && ['check', 'bash-command', 'tool-input', 'turn-correlation'].includes(kind);
   // Only transcripts can establish non-delivery. In store-only mode, a governed act without
   // a delivery record for this identity in its context is unknown, regardless of other fields.
   // When transcript verdicts are supplied, the scan window decides independently of old sessions.
@@ -132,20 +145,32 @@ for (const name of names) {
       if (governed && !delivered) unprovenMiss = true;
     }
   }
-  const scanRows = measured ? rows : verdicts.filter((row) => row.ruleIdentity === identity);
+   const afterRows = rows.filter((row) => current(row.at));
+   const scanRows = measured ? afterRows : verdicts.filter((row) => row.ruleIdentity === identity);
   const applicable = scanRows.filter((row) => row.rule === name && ['followed', 'not followed'].includes(row.verdict) && (measured || current(row.decidedAt)));
   const followed = applicable.filter((row) => row.verdict === 'followed').length;
   const { threshold, minimum } = policy(await readFile(join(rulesDir, name), 'utf8'));
-  const evidence = rows.filter((row) => row.verdict === 'trigger miss').map((row) => `${row.file}:${row.line}`);
+   const evidence = afterRows.filter((row) => row.verdict === 'trigger miss').map((row) => `${row.file}:${row.line}`);
   const before = rows.filter((row) => row.phase === 'before' && ['followed', 'not followed'].includes(row.checkVerdict));
-  const { reason, recommendation, rate, attention } = rollbackDecision({ triggerMiss: false,
-    triggerMissUnmatched: options.verdictFiles.length ? rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).length : 0,
-    triggerMissMatched: options.verdictFiles.length ? rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched !== false).length : 0,
-    triggerMissEvidence: rows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).map((row) => `${row.file}:${row.line}`),
+   const { reason, recommendation, rate, attention, revert } = rollbackDecision({ triggerMiss: false,
+     triggerMissUnmatched: options.verdictFiles.length ? afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).length : 0,
+     triggerMissMatched: options.verdictFiles.length ? afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched !== false).length : 0,
+     triggerMissEvidence: afterRows.filter((row) => row.verdict === 'trigger miss' && row.triggerMatched === false).map((row) => `${row.file}:${row.line}`),
     followed, applicable: applicable.length, beforeFollowed: before.filter((row) => row.checkVerdict === 'followed').length,
     beforeApplicable: before.length, threshold, minimum });
-  const result = { rule: name, scope, action: 'none', reason, recommendation, followed, applicable: applicable.length, triggerMissEvidence: evidence,
-    ...(rows.length && rows[0].window ? { window: rows[0].window } : {}) };
+    const result = { rule: name, scope, action: 'none', reason, recommendation, followed, applicable: applicable.length, triggerMissEvidence: evidence,
+      ...(rows.length && rows[0].window ? { window: rows[0].window } : {}) };
+    if (!cutoff) {
+      result.action = 'attention'; result.reason = 'migration instant unknown; automatic rollback unavailable';
+      results.push(result); log(`${name}: attention: ${result.reason}`); continue;
+    }
+   if (options.mechanicalOnly && !measured) {
+     result.action = 'attention';
+     result.reason = 'transcript check unavailable; store-only evidence cannot authorize automatic rollback';
+     results.push(result);
+     log(`${name}: attention: ${result.reason}`);
+     continue;
+   }
     if (unprovenMiss) {
       result.reason = 'trigger miss unproven: store cannot show non-delivery';
       result.action = 'attention';
@@ -153,12 +178,12 @@ for (const name of names) {
       log(`${name}: attention: ${result.reason}`);
       continue;
    }
-   if (!reason) {
+   if (!reason && !revert) {
     log(`${name}: no rollback (${applicable.length} applicable verdicts; minimum ${minimum})`);
     results.push(result);
     continue;
   }
-   if (attention) { result.action = 'attention'; results.push(result); log(`${name}: attention: ${reason}`); continue; }
+    if (attention || !revert) { result.action = 'attention'; results.push(result); log(`${name}: attention: ${reason}`); continue; }
   // A file that physically lives in another profile's directory (a symlinked on-demand directory or file) is not this
   // profile's to revert: the revert would delete the file the other profile serves (HIGH 1).
   const realFile = await realOr(join(rulesDir, name));
@@ -172,18 +197,30 @@ for (const name of names) {
   result.action = options.dryRun ? 'would revert' : 'reverted';
   results.push(result);
   log(`${options.dryRun ? 'would revert' : 'reverted'} ${name}: ${reason}`);
-   if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
-  if (!options.dryRun) await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
+  if (!(options.verdictFiles.length && evidence.length)) rateSummary.push({ rule: name, reason, followed, applicable: applicable.length, followRate: rate, threshold, minimum });
+  if (!options.dryRun) {
+    const notification = { ...result, at: new Date().toISOString(), ...(scope === 'project' ? { root: project } : {}) };
+    if (options.journal) await appendFile(options.journal, JSON.stringify({ ...notification, state: 'pending' }) + '\n');
+    const moved = await revertRule(lifecycleRoot, name, reason, { scope, mirrorDirs: options.mirrorDirs });
+    if (moved.changed && options.journal) await appendFile(options.journal, JSON.stringify({ ...notification, state: 'reverted' }) + '\n');
+    if (hasRecord && moved.changed) await recordRollback(project, moved.source, { reason, rate, followed, applicable: applicable.length });
+  }
 }
 
 if (rateSummary.length && !options.dryRun) {
   const report = { generatedAt: new Date().toISOString(), dryRun: options.dryRun, defaults: { threshold: 0.8, minimumSamples: 5 }, reverted: rateSummary };
-   const path = join(qualityDataDir(configDir), 'rollback-latest.json');
+    const suffix = scope === 'user' ? 'user' : `project-${createHash('sha256').update(await realOr(project)).digest('hex').slice(0, 12)}`;
+    const path = join(qualityDataDir(configDir), `rollback-${suffix}-latest.json`);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify(report, null, 2)}\n`);
   log(`summary ${path}`);
 }
 
+const pending = hasRecord ? await pendingRules(project) : [];
+for (const row of pending) {
+  const priorState = row.priorState ? `changed since ${row.priorState}` : 'new';
+  console.error(`rollback-check: pending ${row.rule}: ${priorState}`);
+}
 if (options.json) console.log(JSON.stringify(results));
 
 // A refused revert is not a clean run: the rollback it would have made did not happen.
