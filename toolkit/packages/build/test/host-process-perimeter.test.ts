@@ -25,7 +25,8 @@ describe('pid to parent-pid host perimeter', () => {
     // (its JVM discovery and spawn live in host/jdtls-java.mjs).
     // Shared executor defaults and the suite-lock runner add two modules, the pure DoD dispute module adds one,
     // and the cross-OS CLI, dispatcher and verdict module add three, and the shared frontmatter/definition helpers add three more;
-    // the pure model-pin module adds one more; none of them adds a process-table primitive.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 231, violations: [] })
+    // the pure model-pin module adds one more, and the pure Claude-executor environment builder
+    // (claude-executor-env.mjs) one more; none of them adds a process-table primitive.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 232, violations: [] })
   })
 })
