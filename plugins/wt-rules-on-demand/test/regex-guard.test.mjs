@@ -112,10 +112,13 @@ const { parentPort, workerData } = require('node:worker_threads');
     const regex = safeRegex('generated', source);
     for (const unit of workerData.units) for (const length of [32, 256, 2048, 4096]) {
       const input = unit.repeat(Math.ceil((length - 1) / unit.length)).slice(0, length - 1) + '!';
-      const start = performance.now();
-      regex.test(input);
-      const elapsed = performance.now() - start;
-      if (elapsed > 500) slow.push(source + ' on ' + JSON.stringify(unit) + 'x' + length + ': ' + elapsed.toFixed(0) + ' ms');
+      try {
+        regex.test(input);
+        if (regex.steps > 64 * input.length * source.length)
+          slow.push(source + ' on ' + JSON.stringify(unit) + 'x' + length + ': ' + regex.steps + ' steps exceed linear bound');
+      } catch (error) {
+        slow.push(source + ' on ' + JSON.stringify(unit) + 'x' + length + ': ' + error.message + ' at ' + regex.steps + ' steps');
+      }
     }
   }
   parentPort.postMessage({ slow });

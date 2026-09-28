@@ -147,7 +147,7 @@ test('tool-input iteration error belongs to its verdict, not the shared compiled
 });
 
 // The worker owns compilation AND execution; broken engines cannot stall the test runner.
-function run(source, flags, subject, deadline = 10000) {
+function run(source, flags, subject, deadline = 30000) {
   return new Promise((resolve) => {
     const worker = new Worker(`
       const { parentPort, workerData } = require('node:worker_threads');
@@ -177,7 +177,8 @@ for (const [name, source, flags, unit, positive] of cases) test(`${name}: accept
     assert.equal(result.native, false, `${name}: safeRegex must not return native RegExp`);
     assert.equal(result.matched, false, `${name}: negative subject`);
     assert.ok(result.steps <= 64 * length * source.length, `${name}: ${result.steps} steps exceeds linear budget at ${length}`);
-    if (length === 16384) assert.ok(result.cpuMs < 1000, `${name}: ${result.cpuMs} CPU ms exceeds 1000 ms`);
+    // Backstop: ~5x the worst CI figure, 3,225 CPU ms on windows-latest (cross-OS run 36454983764, 2026-09-28).
+    if (length === 16384) assert.ok(result.cpuMs < 16000, `${name}: ${result.cpuMs} CPU ms exceeds backstop`);
     const yes = await run(source, flags, unit === 'a' ? 'a'.repeat(length) : unit.repeat(Math.floor((length - positive.length) / unit.length)) + positive);
     assert.equal(yes.error, undefined, `${name}: positive: ${yes.error}`);
     assert.equal(yes.matched, true, `${name}: positive subject`);
@@ -229,7 +230,7 @@ test('iteration work exhaustion becomes an explicit unknown verdict, never a par
         parentPort.postMessage(toolInputVerdict(c, {tool: 'Write', input: {content: 'a'.repeat(16384)}}));
       })().catch(error => parentPort.postMessage({error: error.message}));
     `, { eval: true, workerData: { evidence: new URL('../hooks/evidence.js', import.meta.url).href, checks: new URL('../hooks/declarative-checks.js', import.meta.url).href } });
-    const timer = setTimeout(() => { void worker.terminate(); resolve({ error: 'worker deadline exceeded' }); }, 10000);
+    const timer = setTimeout(() => { void worker.terminate(); resolve({ error: 'worker deadline exceeded' }); }, 30000);
     worker.once('message', (value) => { clearTimeout(timer); void worker.terminate(); resolve(value); });
     worker.once('error', (error) => { clearTimeout(timer); resolve({ error: error.message }); });
   });
@@ -250,7 +251,7 @@ test('whole iteration over 16,384 simple matches completes without rescanning th
         const cpuStart = process.cpuUsage();
         for (const match of regex.matchAll('a'.repeat(16384))) { if (match[1] !== 'a') throw new Error('wrong group'); count++; }
         const cpu = process.cpuUsage(cpuStart);
-        parentPort.postMessage({count, ms: performance.now() - start, cpuMs: (cpu.user + cpu.system) / 1000});
+        parentPort.postMessage({count, steps: regex.steps, ms: performance.now() - start, cpuMs: (cpu.user + cpu.system) / 1000});
       })().catch(error => parentPort.postMessage({error: error.message}));
     `, { eval: true, workerData: { module: new URL('../hooks/evidence.js', import.meta.url).href } });
     const timer = setTimeout(() => { void worker.terminate(); resolve({ error: 'worker deadline exceeded' }); }, 10000);
@@ -259,7 +260,8 @@ test('whole iteration over 16,384 simple matches completes without rescanning th
   });
   assert.equal(outcome.error, undefined, outcome.error);
   assert.equal(outcome.count, 16384);
-  assert.ok(outcome.cpuMs < 1000, `${outcome.cpuMs} CPU ms`);
+  assert.ok(outcome.steps > 0 && outcome.steps <= 64 * 16384 * '(a)'.length, `${outcome.steps} iteration steps exceed linear bound`);
+  assert.ok(outcome.cpuMs < 16000, `${outcome.cpuMs} CPU ms exceeds backstop`);
 });
 
 test('global/sticky lastIndex and empty match advancement agree with native', () => {

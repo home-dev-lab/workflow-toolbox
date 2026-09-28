@@ -10,7 +10,6 @@ import { cleanEnv } from './clean-env.mjs';
 import { scanTranscripts } from '../scripts/transcript-verdicts.mjs';
 import { dailyRollback } from '../scripts/daily-rollback.mjs';
 import { safeRegex } from '../hooks/evidence.js';
-import { performance } from 'node:perf_hooks';
 
 const rollback = fileURLToPath(new URL('../scripts/rollback-check.mjs', import.meta.url));
 const spec = { triggers: [{ kind: 'tool', tool: '^Agent$', unconditional: true }], compliance: { kind: 'tool-input', tool: '^Agent$', 'require-input-regex': 'yes', window: 1, 'on-close': 'not applicable' } };
@@ -98,15 +97,18 @@ test('regex boundary disjointness and formerly ambiguous repetitions match nativ
   ];
   for (const [index, source] of accepted.entries()) {
     const regex = safeRegex('sample', source);
-    // Measure matcher CPU rather than wall-clock time spent preempted by other
-    // test files; keep the 50 ms ceiling on the median of three matches.
+    // Steps are the primary linearity check; CPU only catches pathological host stalls.
+    // Worst CI median: 63 CPU ms for ^(?:ab+)+$ on windows-latest (cross-OS run 36454983764, 2026-09-28);
+    // 320 ms is ~5x that figure, only a backstop under loaded CI.
     const timings = Array.from({ length: 3 }, () => {
       const start = process.cpuUsage();
       regex.test(adversarial[index]);
+      assert.ok(regex.steps <= 64 * adversarial[index].length * source.length,
+        `${source}: ${regex.steps} steps exceed linear bound`);
       const usage = process.cpuUsage(start);
       return (usage.user + usage.system) / 1000;
     }).sort((a, b) => a - b);
-    assert.ok(timings[1] < 50, `slow: ${source} (median ${timings[1].toFixed(3)} ms)`);
+    assert.ok(timings[1] < 320, `slow: ${source} (median ${timings[1].toFixed(3)} CPU ms)`);
   }
   for (const [source, flags] of ['^(?:a+|b+){0,8}$', '^(?:a+){3}$', '^(?:x?a+){0,4}$', '^(?:aa+)+$', '^(\\w+\\s?)*$', '(a+)+', '^((a+))+$', '^(?:\\u0061+)+$', '^(?:\\p{L}+)+$', '^(?:\\p{L}+a)+$'].map((source) => [source, source.includes('\\p') ? 'u' : ''])) {
     const linear = safeRegex('sample', source, flags), native = new RegExp(source, flags);
@@ -121,10 +123,10 @@ test('nested optional option list and flat form both match native', () => {
   const nestedSource = '^(?:-{1,2}\\S+\\s+(?:\\S+\\s+)?){0,8}end$';
   for (const subject of ['-b br --lock v end', '-x end', 'end', 'x']) assert.equal(safeRegex('sample', nestedSource).test(subject), new RegExp(nestedSource).test(subject));
   const regex = safeRegex('sample', '^(?:-\\S+\\s+|[^-\\s]\\S*\\s+){0,8}end$');
-  const start = performance.now();
   assert.equal(regex.test('-x '.repeat(8) + 'x'.repeat(16384)), false);
+  assert.ok(regex.steps <= 64 * (16384 + 24) * regex.source.length, `${regex.steps} negative steps`);
   assert.equal(regex.test('-b br --lock v end'), true);
-  assert.ok(performance.now() - start < 50);
+  assert.ok(regex.steps <= 64 * '-b br --lock v end'.length * regex.source.length, `${regex.steps} positive steps`);
 });
 
 test('migration refuses literal backslash path segments before moving or ledgering', async (t) => {
