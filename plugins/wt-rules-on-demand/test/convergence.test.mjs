@@ -87,7 +87,7 @@ test('explicit temporary project counts as covered and daily rollback proceeds',
   assert.equal(daily.code, 0, daily.result.error);
 });
 
-test('regex boundary disjointness accepts deterministic repetitions and refuses ambiguous ones', () => {
+test('regex boundary disjointness and formerly ambiguous repetitions match native', () => {
   const accepted = ['^(?:[^/]+/)+file$', '^(?:ab+)+$', 'push\\s+(?:-[^\\s]+\\s+){0,8}[A-Za-z]',
     '^(?:ab){0,8}c', '^(?:-C\\s+\\S+\\s+)?push', '^(?:[^;]*?\\s)?run\\b', '^(?:\\S+\\s+){2,6}x'];
   const adversarial = [
@@ -98,21 +98,28 @@ test('regex boundary disjointness accepts deterministic repetitions and refuses 
   ];
   for (const [index, source] of accepted.entries()) {
     const regex = safeRegex('sample', source);
-    const start = performance.now();
-    regex.test(adversarial[index]);
-    assert.ok(performance.now() - start < 50, `slow: ${source}`);
+    // Measure matcher CPU rather than wall-clock time spent preempted by other
+    // test files; keep the 50 ms ceiling on the median of three matches.
+    const timings = Array.from({ length: 3 }, () => {
+      const start = process.cpuUsage();
+      regex.test(adversarial[index]);
+      const usage = process.cpuUsage(start);
+      return (usage.user + usage.system) / 1000;
+    }).sort((a, b) => a - b);
+    assert.ok(timings[1] < 50, `slow: ${source} (median ${timings[1].toFixed(3)} ms)`);
   }
-  for (const source of ['^(?:a+|b+){0,8}$', '^(?:a+){3}$', '^(?:x?a+){0,4}$', '^(?:aa+)+$', '^(\\w+\\s?)*$', '(a+)+', '^((a+))+$', '^(?:\\u0061+)+$'])
-    assert.throws(() => safeRegex('sample', source), /nested unbounded|repeated single unbounded/);
-  assert.throws(() => safeRegex('sample', '^(?:\\p{L}+)+$', 'u'), /nested unbounded/);
-  assert.throws(() => safeRegex('sample', '^(?:\\p{L}+a)+$', 'u'), /nested unbounded/);
+  for (const [source, flags] of ['^(?:a+|b+){0,8}$', '^(?:a+){3}$', '^(?:x?a+){0,4}$', '^(?:aa+)+$', '^(\\w+\\s?)*$', '(a+)+', '^((a+))+$', '^(?:\\u0061+)+$', '^(?:\\p{L}+)+$', '^(?:\\p{L}+a)+$'].map((source) => [source, source.includes('\\p') ? 'u' : ''])) {
+    const linear = safeRegex('sample', source, flags), native = new RegExp(source, flags);
+    for (const subject of ['', 'a', 'ab', 'aab', 'baba', 'abc!']) assert.equal(linear.test(subject), native.test(subject), `${source}: ${subject}`);
+  }
 });
 
-test('an option list is accepted only in its deterministic flat form, never as a nested optional group', () => {
+test('nested optional option list and flat form both match native', () => {
   // A bounded list whose iteration nests an optional unbounded group lets the group and the next iteration split one run
   // of input two ways per iteration; the engine refuses it without special cases. The flat form (an option or a value
   // per iteration) has a determined boundary and matches the same real commands.
-  assert.throws(() => safeRegex('sample', '^(?:-{1,2}\\S+\\s+(?:\\S+\\s+)?){0,8}end$'), /nested unbounded/);
+  const nestedSource = '^(?:-{1,2}\\S+\\s+(?:\\S+\\s+)?){0,8}end$';
+  for (const subject of ['-b br --lock v end', '-x end', 'end', 'x']) assert.equal(safeRegex('sample', nestedSource).test(subject), new RegExp(nestedSource).test(subject));
   const regex = safeRegex('sample', '^(?:-\\S+\\s+|[^-\\s]\\S*\\s+){0,8}end$');
   const start = performance.now();
   assert.equal(regex.test('-x '.repeat(8) + 'x'.repeat(16384)), false);

@@ -74,7 +74,7 @@ function parseCompliance(lines, complianceAt, name) {
        inputField: data['input-field'] ?? null, maskCode: data['mask-code'] === 'true',
        when: data['when-input-regex'] ? safeRegex(name, data['when-input-regex'], flags) : null,
        eachLine: data['each-line-regex'] ? safeRegex(name, data['each-line-regex'], flags) : null,
-       matchBlock: data['match-block-regex'] ? safeRegex(name, data['match-block-regex'], flags) : null,
+       matchBlock: data['match-block-regex'] ? safeRegex(name, data['match-block-regex'], flags, { capture: true }) : null,
        minimumKey: data['minimum-input-key'] ?? null,
        minimumValue: data['minimum-input-value'] === undefined ? null : Number(data['minimum-input-value']),
        window, onClose: data['on-close'] };
@@ -83,8 +83,8 @@ function parseCompliance(lines, complianceAt, name) {
     if (!data.tool || !data['id-regex'] || !data['value-regex'] || (!data['follow-up-tool'] && !data['act-regex'])) throw new Error('turn-correlation requires tool, id-regex, value-regex and follow-up-tool or act-regex');
     const minDistinct = Number(data['min-distinct']);
     if (!Number.isInteger(minDistinct) || minDistinct < 1) throw new Error('min-distinct must be a positive integer');
-    return { kind: data.kind, tool: safeRegex(name, data.tool, flags), id: safeRegex(name, data['id-regex'], flags),
-      value: safeRegex(name, data['value-regex'], flags), followUpTool: data['follow-up-tool'] ? safeRegex(name, data['follow-up-tool'], flags) : null,
+    return { kind: data.kind, tool: safeRegex(name, data.tool, flags), id: safeRegex(name, data['id-regex'], flags, { capture: true }),
+      value: safeRegex(name, data['value-regex'], flags, { capture: true }), followUpTool: data['follow-up-tool'] ? safeRegex(name, data['follow-up-tool'], flags) : null,
       act: data['act-regex'] ? safeRegex(name, data['act-regex'], flags) : null,
       subjectInputKey: data['subject-input-key'] ?? null,
       subjectInput: data['subject-input-regex'] ? safeRegex(name, data['subject-input-regex'], flags) : null,

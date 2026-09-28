@@ -61,22 +61,18 @@ for (const before of [false, true]) test(`verdict store failure cannot lose ${be
   assert.match(before ? result.deny : result.context?.join(''), /Follow this rule/);
 });
 
-test('nested unbounded regex is rejected naming rule and pattern', () => {
+test('nested unbounded regex compiles in real runtime rules', () => {
   for (const pattern of ['^(a+)+$', '(?:\\d*)*', '(a|a)*', '(a|ab)*', '(\\w+){2,}']) {
-    assert.throws(() => parseRuntimeRule('sample.md', text().replace("tool: '^Agent$'", () => `tool: '${pattern}'`)), /sample\.md.*nested unbounded groups/);
+    const regex = parseRuntimeRule('sample.md', text().replace("tool: '^Agent$'", () => `tool: '${pattern}'`)).triggers[0].tool;
+    for (const subject of ['', 'a', 'aa', 'a!']) assert.equal(regex.test(subject), new RegExp(pattern).test(subject));
   }
 });
-test('unsafe shipped adjacent trigger specs are refused, other specs parse', async () => {
+test('all shipped adjacent trigger specs compile', async () => {
   const dir = fileURLToPath(new URL('../../../plugin/rules/', import.meta.url));
   const names = (await readdir(dir)).filter((name) => name.endsWith('.spec.json'));
   assert.ok(names.length > 0);
-  let refused = 0, accepted = 0;
-  for (const name of names) {
-    try { await readSpec(join(dir, name)); accepted++; }
-    catch (error) { assert.match(error.message, /nested unbounded/, name); refused++; }
-  }
-  assert.ok(refused >= 4);
-  assert.ok(accepted > 0);
+  assert.equal(names.length, 12);
+  for (const name of names) assert.ok(await readSpec(join(dir, name)), name);
 });
 test('foreign plugin data dir ignored, own plugin data dir honored', () => {
   assert.equal(qualityDataDir('/fixture-config', { CLAUDE_PLUGIN_DATA: '/fixture/other-plugin' }), resolve('/fixture-config', 'plugins', 'data', 'wt-rules-on-demand', 'quality'));
