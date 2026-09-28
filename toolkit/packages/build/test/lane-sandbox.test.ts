@@ -1,10 +1,11 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
@@ -791,6 +792,21 @@ describe('lane sandbox plan — network endpoints (H4)', () => {
     expect(relay!.args[relay!.args.indexOf('--parent') + 1]).toBe(String(process.pid))
     expect(relay!.args).not.toContain('--allow')
     expect(spawned.some((s) => s.command === '/usr/bin/socat')).toBe(false)
+  })
+
+  it('names the suite-lock broker when its host bridge exits', () => {
+    const fs = fakeFs()
+    const broker = new EventEmitter() as EventEmitter & { kill: () => void }
+    broker.kill = () => {}
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const p = plan({ fs, spawnFn: (_command: string, args: string[]) => {
+      fs.ensureFile(socketOf(args)!)
+      return broker
+    } })
+    try {
+      broker.emit('exit', 7, null)
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('lane suite-lock broker exited (code 7, signal none)'))
+    } finally { p.dispose(); stderr.mockRestore() }
   })
 
   it('states the isolation honestly when socat is absent (no bridge)', () => {

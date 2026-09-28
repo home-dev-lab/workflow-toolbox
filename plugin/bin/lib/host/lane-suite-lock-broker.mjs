@@ -7,6 +7,15 @@ import { acquireSuiteLock, releaseSuiteLock } from '../suite-lock.mjs'
 const REQUEST_LIMIT = 4096
 const REQUEST_TIMEOUT_MS = 5000
 const MAX_CONNECTIONS = 16
+const REJECTION_CLOSE_MS = 1000
+
+function rejectConnection(socket, message) {
+  if (socket.destroyed) return
+  socket.end(`error ${String(message).replace(/[\r\n]/g, ' ')}\n`)
+  const timer = setTimeout(() => socket.destroy(), REJECTION_CLOSE_MS)
+  timer.unref?.()
+  socket.once('close', () => clearTimeout(timer))
+}
 
 function requestFrom(line) {
   let request
@@ -21,7 +30,7 @@ export function createSuiteLockBroker({ label = '' } = {}) {
   let active = 0
   const releases = new Set()
   const server = net.createServer((socket) => {
-    if (active >= MAX_CONNECTIONS) { socket.end('error busy\n'); return }
+    if (active >= MAX_CONNECTIONS) { socket.on('error', () => {}); rejectConnection(socket, 'busy'); return }
     active += 1
     let buffer = Buffer.alloc(0)
     let lease = null
@@ -41,8 +50,8 @@ export function createSuiteLockBroker({ label = '' } = {}) {
       if (closed) return
       closed = true; active -= 1; clearTimeout(timer); release()
     }
-    const error = (message) => { if (!socket.destroyed) socket.end(`error ${String(message).replace(/[\r\n]/g, ' ')}\n`) }
-    const timer = setTimeout(() => { error('request timed out'); socket.destroy() }, REQUEST_TIMEOUT_MS)
+    const error = (message) => { clearTimeout(timer); rejectConnection(socket, message) }
+    const timer = setTimeout(() => error('request timed out'), REQUEST_TIMEOUT_MS)
     socket.on('error', finish)
     socket.on('close', finish)
     socket.on('end', finish)

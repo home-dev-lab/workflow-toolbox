@@ -186,7 +186,7 @@ function queuePlace(queueDir, mine, options) {
   return { ahead, total: Math.max(total, ahead + 1) }
 }
 
-function tryTakeLock(lockDir, holder) {
+function tryTakeLock(lockDir, holder, beforePublish) {
   try {
     mkdirSync(lockDir)
   } catch (error) {
@@ -194,11 +194,12 @@ function tryTakeLock(lockDir, holder) {
     throw error
   }
   try {
+    beforePublish?.()
     writeFileSync(path.join(lockDir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
   } catch (error) {
     // Reclaimed as half-created while this acquirer was suspended: the lock is no longer mine, and the
     // lock.d now there may be someone else's.
-    if (error?.code === 'ENOENT') return false
+    if (error?.code === 'ENOENT' || error?.code === 'EEXIST') return false
     rmSync(lockDir, { recursive: true, force: true })
     throw error
   }
@@ -295,7 +296,7 @@ function pollQueue(state, options) {
   const place = queuePlace(queueDir, ticket, options)
   if (place.ahead === 0) {
     const holder = { ...record, leaseId: createSuiteLockLeaseId(), startedAt: options.startedAt ?? new Date().toISOString() }
-    if (tryTakeLock(lockDir, holder)) {
+    if (tryTakeLock(lockDir, holder, options.beforePublish)) {
       const lease = { root, lockDir, holder }
       // An abort that lands during the publish never leaves a lock behind.
       if (options.signal?.aborted) { releaseSuiteLock(lease); throw abortError() }
@@ -358,10 +359,12 @@ export async function acquireSuiteLock(options = {}) {
 
 function acquireBrokerSuiteLock(socketPath, options) {
   const waitS = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s')
+  throwIfAborted(options.signal)
   return new Promise((resolve, reject) => {
     const socket = connectSuiteLockBroker(socketPath)
     let buffer = ''
     let settled = false
+    let granted = false
     let released = false
     let resolveLost
     const lost = new Promise((done) => { resolveLost = done })
@@ -372,31 +375,34 @@ function acquireBrokerSuiteLock(socketPath, options) {
       }
       settled = true
       clearTimeout(timer)
+      options.signal?.removeEventListener?.('abort', abort)
+      socket.destroy()
       reject(error)
     }
     const timer = setTimeout(() => {
       const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}`)
       timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
-      socket.destroy(); fail(timeout)
+      fail(timeout)
     }, waitS * 1000)
-    const abort = () => { socket.destroy(); fail(abortError()) }
+    const abort = () => fail(abortError())
     options.signal?.addEventListener?.('abort', abort, { once: true })
-    socket.once('connect', () => socket.write(`${JSON.stringify({ argv: options.argv ?? process.argv, waitS })}\n`))
+    socket.once('connect', () => { if (!settled) socket.write(`${JSON.stringify({ argv: options.argv ?? process.argv, waitS })}\n`) })
     socket.on('data', (chunk) => {
       buffer += String(chunk)
       while (buffer.includes('\n')) {
         const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
+        if (settled && !granted) { socket.destroy(); return }
         if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
-        else if (line.startsWith('error ')) { socket.destroy(); fail(new Error(`suite lock broker ${socketPath}: ${line.slice(6)}`)) }
+        else if (line.startsWith('error ')) fail(new Error(`suite lock broker ${socketPath}: ${line.slice(6)}`))
         else if (line.startsWith('granted ') && !settled) {
-          settled = true; clearTimeout(timer); options.signal?.removeEventListener?.('abort', abort)
+          settled = true; granted = true; clearTimeout(timer); options.signal?.removeEventListener?.('abort', abort)
           resolve({ broker: socketPath, socket, holder: { leaseId: line.slice(8) }, lost, markReleased: () => { released = true } })
         }
       }
     })
     socket.once('error', (error) => fail(new Error(`suite lock broker ${socketPath}: ${error.message}`)))
     socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else if (!released) resolveLost() })
-    throwIfAborted(options.signal)
+    if (options.signal?.aborted) fail(abortError())
   })
 }
 

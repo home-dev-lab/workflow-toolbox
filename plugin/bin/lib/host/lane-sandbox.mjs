@@ -750,7 +750,7 @@ function startBridges({ bridges, fs, spawnFn, socat, diagnostics, state }) {
       relays.push(relay)
       if (typeof relay?.once === 'function') {
         relay.once('exit', (code, signal) => {
-          if (!state.disposed) reportBridgeExit(diagnostics, `workflow-toolbox: lane ${bridge.proxy ? 'egress proxy' : 'endpoint relay'} exited (code ${code ?? 'none'}, signal ${signal ?? 'none'}); the sandboxed lane has lost that route\n`)
+          if (!state.disposed) reportBridgeExit(diagnostics, `workflow-toolbox: lane ${bridgeName(bridge)} exited (code ${code ?? 'none'}, signal ${signal ?? 'none'}); the sandboxed lane has lost that route\n`)
         })
       }
     }

@@ -108,6 +108,22 @@ describe('suite lock library', () => {
     expect(existsSync(join(root, 'lock.d'))).toBe(true)
   })
 
+  it('does not delete a replacement holder that wins the publication race', async () => {
+    const root = tempRoot('publish-replaced')
+    const lockDir = join(root, 'lock.d')
+    const replacement = { pid: process.pid, argv: ['replacement'], startedAt: new Date().toISOString() }
+    let replaced = false
+    await expect(acquireSuiteLock({ root, waitS: 0.2, pollMs: 10, beforePublish: () => {
+      if (replaced) return
+      replaced = true
+      rmSync(lockDir, { recursive: true })
+      mkdirSync(lockDir)
+      writeFileSync(join(lockDir, 'holder.json'), JSON.stringify(replacement))
+    } })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    expect(replaced).toBe(true)
+    expect(JSON.parse(readFileSync(join(lockDir, 'holder.json'), 'utf8'))).toEqual(replacement)
+  })
+
   it('aborts before and immediately after publishing without leaving a lock', async () => {
     for (const afterPublish of [false, true]) {
       const root = tempRoot(`abort-${afterPublish}`)

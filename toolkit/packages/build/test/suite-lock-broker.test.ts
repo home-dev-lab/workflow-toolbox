@@ -4,8 +4,12 @@ import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { acquireSuiteLock } from '../../../../plugin/bin/lib/suite-lock.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { createSuiteLockBroker } from '../../../../plugin/bin/lib/host/lane-suite-lock-broker.mjs'
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const BROKER = join(ROOT, 'plugin/bin/lib/host/lane-suite-lock-broker.mjs')
@@ -35,15 +39,115 @@ async function startBroker(parent = process.pid) {
   return { root, socket, child, lock: join(root, 'locks', 'lock.d', 'holder.json') }
 }
 
-function connect(socketPath: string, request?: unknown) {
-  const socket = net.connect(socketPath)
+function connect(socketPath: string, request?: unknown, allowHalfOpen = false) {
+  const socket = net.connect({ path: socketPath, allowHalfOpen })
   let text = ''
   socket.on('data', (chunk) => { text += String(chunk) })
   if (request !== undefined) socket.write(`${typeof request === 'string' ? request : JSON.stringify(request)}\n`)
   return { socket, text: () => text }
 }
 
+async function localBroker() {
+  const root = mkdtempSync(join(tmpdir(), 'wt-lock-local-broker-')); roots.push(root)
+  const address = join(root, 'broker.sock')
+  const previous = process.env.WT_SUITE_LOCK_DIR
+  process.env.WT_SUITE_LOCK_DIR = join(root, 'locks')
+  const server = createSuiteLockBroker() as net.Server
+  await new Promise<void>((resolve) => server.listen(address, resolve))
+  return { address, server, restore: () => { if (previous === undefined) delete process.env.WT_SUITE_LOCK_DIR; else process.env.WT_SUITE_LOCK_DIR = previous } }
+}
+
+async function connectionCount(server: net.Server): Promise<number> {
+  return new Promise((resolve, reject) => server.getConnections((error, count) => error ? reject(error) : resolve(count)))
+}
+
+async function waitForConnections(server: net.Server, count: number) {
+  const deadline = Date.now() + 3500
+  while (await connectionCount(server) !== count) {
+    if (Date.now() >= deadline) throw new Error(`expected ${count} broker connections; still ${await connectionCount(server)}`)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
 describe('lane suite-lock broker', () => {
+  it('does not open a broker connection for an already-aborted acquisition', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-preabort-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    let connections = 0
+    const server = net.createServer((socket) => { connections += 1; socket.destroy() })
+    const connectSpy = vi.spyOn(net, 'connect')
+    try {
+      await new Promise<void>((resolve) => server.listen(address, resolve))
+      const controller = new AbortController(); controller.abort()
+      await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, signal: controller.signal })).rejects.toMatchObject({ code: 'ABORT_ERR' })
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(connectSpy).not.toHaveBeenCalledWith(address)
+      expect(connections).toBe(0)
+    } finally { connectSpy.mockRestore(); server.close() }
+  })
+
+  it('closes a rejected broker acquisition even if a grant follows an abort in the same packet', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-late-grant-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    let peer: net.Socket | undefined
+    const server = net.createServer((socket) => {
+      peer = socket
+      socket.once('data', () => socket.write('wait queued\ngranted late-lease\n'))
+    })
+    const controller = new AbortController()
+    try {
+      await new Promise<void>((resolve) => server.listen(address, resolve))
+      await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, signal: controller.signal, onWait: () => controller.abort(), waitS: 2 })).rejects.toMatchObject({ code: 'ABORT_ERR' })
+      await waitFor(() => peer?.destroyed === true)
+      expect(peer?.destroyed).toBe(true)
+    } finally { peer?.destroy(); server.close() }
+  })
+
+  it('closes a rejected broker acquisition after an error line', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-lock-error-line-')); roots.push(root)
+    const address = join(root, 'broker.sock')
+    let peer: net.Socket | undefined
+    const server = net.createServer((socket) => {
+      peer = socket
+      socket.once('data', () => socket.write('error refused\n'))
+    })
+    try {
+      await new Promise<void>((resolve) => server.listen(address, resolve))
+      await expect(acquireSuiteLock({ env: { WT_SUITE_LOCK_BROKER: address }, waitS: 2 })).rejects.toThrow('refused')
+      await waitFor(() => peer?.destroyed === true)
+      expect(peer?.destroyed).toBe(true)
+    } finally { peer?.destroy(); server.close() }
+  })
+
+  it('closes half-open invalid requests and recovers admission slots', async () => {
+    const { address, server, restore } = await localBroker()
+    const rejected = Array.from({ length: 16 }, () => connect(address, '{bad', true))
+    try {
+      await waitFor(() => rejected.every((client) => client.text().startsWith('error ')))
+      await waitForConnections(server, 0)
+      expect(await connectionCount(server)).toBe(0)
+      const next = connect(address, { argv: ['next'], waitS: 1 })
+      await waitFor(() => next.text().includes('granted '))
+      next.socket.end()
+    } finally { for (const client of rejected) client.socket.destroy(); server.close(); restore() }
+  }, 10_000)
+
+  it('closes half-open busy requests within a bound', async () => {
+    const { address, server, restore } = await localBroker()
+    const held = Array.from({ length: 16 }, () => connect(address))
+    await waitForConnections(server, 16)
+    const rejected = connect(address, undefined, true)
+    try {
+      await waitFor(() => rejected.text().startsWith('error busy'))
+      await waitForConnections(server, 16)
+      expect(await connectionCount(server)).toBe(16)
+      for (const client of held) client.socket.destroy()
+      await waitForConnections(server, 0)
+      const next = connect(address, { argv: ['next'], waitS: 1 })
+      await waitFor(() => next.text().includes('granted '))
+      next.socket.end()
+    } finally { rejected.socket.destroy(); for (const client of held) client.socket.destroy(); server.close(); restore() }
+  }, 10_000)
   it('holds as the broker, serialises clients, and releases on client end', async () => {
     const broker = await startBroker()
     const first = connect(broker.socket, { argv: ['pnpm', 'test'], waitS: 2 })
