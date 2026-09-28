@@ -31,16 +31,8 @@ function fileStat(file) {
 
 // Snapshot all Git-listed files at construction, before the run can create its delivery. Compare identity,
 // never the ordering of two wall-clock readings (which can step in either direction).
+// Any other git failure throws before the lifecycle writes anything (fail closed, retryable).
 export function artefactIdentitiesAtStart(root, git = execFileSync) {
-  let names
-  try {
-    names = git('git', ['ls-files', '--cached', '--others', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 })
-  } catch (error) {
-    // The injected-git lifecycle fixtures have no repository. Real repositories must still
-    // fail closed on any other snapshot error rather than silently accepting old files.
-    if (/not a git repository/.test(String(error?.stderr))) return new Set()
-    throw error
-  }
   const identities = new Set()
   const visit = (name) => {
     const file = path.join(root, name)
@@ -57,6 +49,16 @@ export function artefactIdentitiesAtStart(root, git = execFileSync) {
       }
       for (const child of children) visit(path.join(name, child))
     } else if (stat.isFile() && !stat.isSymbolicLink()) identities.add(fileIdentity(stat))
+  }
+  let names
+  try {
+    names = git('git', ['ls-files', '--cached', '--others', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 256 * 1024 * 1024 })
+  } catch (error) {
+    if (!/not a git repository/.test(String(error?.stderr))) throw error
+    // Without a repository there is no listing to trust: baseline the whole tree instead, so
+    // an old file is still refused rather than accepted by an empty baseline.
+    visit('')
+    return identities
   }
   for (const name of names.split('\0').filter(Boolean)) visit(name)
   return identities

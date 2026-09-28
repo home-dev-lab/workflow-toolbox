@@ -12,7 +12,7 @@ import { deriveRoute } from '../../../../plugin/bin/lib/route-from-card.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { createLifecycleServer } from '../../../../plugin/bin/lib/sdk-pilot-lifecycle-server.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { archiveLifecycle, removeLifecycleWorktree, writeWorktreeRetentionMarker } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
+import { archiveLifecycle, artefactIdentitiesAtStart, removeLifecycleWorktree, writeWorktreeRetentionMarker } from '../../../../plugin/bin/lib/lifecycle-report-edge.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { costReportSection } from '../../../../plugin/bin/lib/run-cost-core.mjs'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
@@ -645,6 +645,16 @@ printf 'report\n' > "$report"
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`ign/vendor/old.txt\`\n` })
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'embedded-artefact' })))
       .toContain('declared artefact predates this run: ign/vendor/old.txt')
+  })
+
+  it('baselines every file of a worktree git does not recognise as a repository', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-norepo-'))); roots.push(root)
+    mkdirSync(join(root, 'nested'))
+    writeFileSync(join(root, 'nested', 'old.txt'), 'present before the run\n')
+    const notARepository = () => { throw Object.assign(new Error('git failed'), { stderr: 'fatal: not a git repository (or any of the parent directories): .git' }) }
+    const identities = artefactIdentitiesAtStart(root, notARepository)
+    const stat = fs.lstatSync(join(root, 'nested', 'old.txt'), { bigint: true })
+    expect(identities.has([stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':'))).toBe(true)
   })
 
   it('does not write route or card receipts when the identity snapshot fails', () => {
