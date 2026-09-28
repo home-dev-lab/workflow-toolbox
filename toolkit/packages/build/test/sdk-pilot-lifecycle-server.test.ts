@@ -597,15 +597,52 @@ printf 'report\n' > "$report"
       .toContain('missing declared artefact .lane/missing.txt')
   })
 
-  it('refuses a declared artefact whose mtime predates the lifecycle', async () => {
+  it('accepts a new declared artefact backdated before the lifecycle start', async () => {
     const lifecycle = await realGitLifecycleReadyForReport()
-    const artefact = join(lifecycle.root, '.lane', 'pre-existing.txt')
-    writeFileSync(artefact, 'pre-existing\n')
+    const artefact = join(lifecycle.root, '.lane', 'backdated.txt')
+    writeFileSync(artefact, 'written this run\n')
     utimesSync(artefact, new Date(1), new Date(1))
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/backdated.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'backdated-artefact' }))).toBe('accepted phase=awaiting_fidelity')
+    const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
+    expect(summary.delivery.artifacts[0]).toMatchObject({ path: '.lane/backdated.txt', modified_after_started: true })
+  })
+
+  it('refuses an untouched declared artefact present before the lifecycle', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport(true)
     await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/pre-existing.txt\`\n` })
 
     expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'pre-existing-artefact' })))
       .toContain('declared artefact predates this run: .lane/pre-existing.txt')
+  })
+
+  it('refuses an untouched untracked non-ignored declared artefact present before the lifecycle', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport('untracked')
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`untracked-delivery.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'pre-existing-untracked' })))
+      .toContain('declared artefact predates this run: untracked-delivery.txt')
+  })
+
+  it('refuses an untouched tracked declared artefact present before the lifecycle', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport('tracked')
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`tracked.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'pre-existing-tracked' })))
+      .toContain('declared artefact predates this run: tracked.txt')
+  })
+
+  it('accepts a pre-existing declared artefact rewritten during the run despite its old mtime', async () => {
+    const lifecycle = await realGitLifecycleReadyForReport(true)
+    const artefact = join(lifecycle.root, '.lane', 'pre-existing.txt')
+    writeFileSync(artefact, 'rewritten this run\n')
+    utimesSync(artefact, new Date(1), new Date(1))
+    await lifecycle.artifact({ kind: 'pilot-report', content: `${liteReport}\n## Implemented\n- Delivered artefact: \`.lane/pre-existing.txt\`\n` })
+
+    expect(await text(lifecycle.transition({ phase: 'report', tool_use_id: 'rewritten-artefact' }))).toBe('accepted phase=awaiting_fidelity')
+    const summary = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'summary.json'), 'utf8'))
+    expect(summary.delivery.artifacts[0]).toMatchObject({ path: '.lane/pre-existing.txt', modified_after_started: true })
   })
 
   it('still refuses a real-git delivery that changes nothing and declares no artefact', async () => {
@@ -2116,7 +2153,7 @@ function testLifecycle(route: 'LITE' | 'FULL', reasons: string[] = [], launcher:
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
 }
-function realGitLifecycle() {
+function realGitLifecycle(preExistingArtefact: boolean | 'untracked' | 'tracked' = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-lifecycle-real-git-'))); roots.push(root)
   const archiveRoot = archiveProject()
   mkdirSync(join(root, '.lane')); writeFileSync(join(root, '.gitignore'), '.lane/\n.claude/reports/\n'); writeFileSync(join(root, 'tracked.txt'), 'tracked\n')
@@ -2127,6 +2164,12 @@ function realGitLifecycle() {
   expect(git('config', 'commit.gpgSign', 'false').status).toBe(0)
   expect(git('add', '-A').status).toBe(0)
   expect(git('commit', '-qm', 'base').status).toBe(0)
+  if (preExistingArtefact === 'untracked') writeFileSync(join(root, 'untracked-delivery.txt'), 'pre-existing\n')
+  if (preExistingArtefact === true) {
+    const artefact = join(root, '.lane', 'pre-existing.txt')
+    writeFileSync(artefact, 'pre-existing\n')
+    utimesSync(artefact, new Date(1), new Date(1))
+  }
   const gateResults: Record<string, { exit?: string, mtime?: number }> = {}
   const server = createLifecycleServer({ worktree: root, archiveRoot, route: 'LITE', reasons: [], models: { lane: 'test', review: 'test' }, cardId: 'real-git', sessionTag: 'test', laneLauncher: successLauncher(), laneWaitMs: FIXTURE_LANE_TIMEOUT_SECONDS * 1_000, gateRunner: async (args: { name: string, log: string, root: string }) => { await writePassingGate(args); return Number(gateResults[args.name]?.exit ?? '0') }, rules: [] })
   const tools = server.instance._registeredTools as Record<string, { handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ text: string }> }> }>
@@ -2134,8 +2177,8 @@ function realGitLifecycle() {
   const transition = (args: Record<string, unknown>) => rawTransition(args.phase === 'discovery' && !args.record ? { ...args, record: DISCOVERY_RECORD } : args)
   return { root, archiveRoot, gateResults, transition, rawTransition, artifact: tools.write_artifact!.handler, routeFinding: tools.route_finding!.handler, run: tools.run!.handler, state: server.state, dodDisputes: (server as unknown as { dodDisputes: () => Array<Record<string, unknown>> }).dodDisputes, awaitDodDecisions: (server as unknown as { awaitDodDecisions: () => Promise<void> }).awaitDodDecisions, requestStop: (server as unknown as { requestStop: (reason: string) => boolean }).requestStop }
 }
-async function realGitLifecycleReadyForReport() {
-  const lifecycle = realGitLifecycle()
+async function realGitLifecycleReadyForReport(preExistingArtefact: boolean | 'untracked' | 'tracked' = false) {
+  const lifecycle = realGitLifecycle(preExistingArtefact)
   await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
   await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
   await lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS })

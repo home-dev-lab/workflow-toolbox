@@ -117,20 +117,27 @@ export function touchesDeclaredPath(paths, declaredPaths) {
   return paths.some((file) => declaredPaths.some((prefix) => file.startsWith(prefix)))
 }
 
-function recordIsFresh(root, record, signature, paths) {
+function recordIsFresh(root, record, signature, paths, gitRunner = git) {
   if (!record || record.version !== 2 || record.exit !== 0 || record.tree !== signature) return false
-  const finishedAt = Date.parse(record.finishedAt)
-  if (!Number.isFinite(finishedAt)) return false
-  return paths.every((file) => {
-    try {
-      return fs.statSync(path.join(root, file)).mtimeMs <= finishedAt
-    } catch {
-      return false
+  if (paths.length === 0) return true
+  try {
+    // diff-files compares index bytes, type and executable bit with the worktree, including
+    // unstaged deletions. A file removed from both index and disk before the gate, then
+    // restored on disk afterward, changes the signature because HEAD names remain in its walk.
+    // --quiet short-circuits on a stat-only change (including a future-dated touch);
+    // the patch form actually compares the bytes and modes before deciding. Bound argv size.
+    for (let offset = 0; offset < paths.length; offset += 100) {
+      const literals = paths.slice(offset, offset + 100).map((file) => `:(literal)${file}`)
+      if (gitRunner(root, ['-c', 'core.filemode=true', 'diff', '--no-ext-diff', '--no-textconv', '--binary', '--', ...literals]) !== '') return false
     }
-  })
+    return true
+  } catch {
+    // An unreadable index or worktree is never fresh.
+    return false
+  }
 }
 
-export function requiredGateProblems(root, declaration, { signature, paths = [], pushedCommit = null } = {}) {
+export function requiredGateProblems(root, declaration, { signature, paths = [], pushedCommit = null, gitRunner = git } = {}) {
   return declaration.gates.flatMap((gate) => {
     const record = readGateRecord(root, gate.name)
     if (!record) return [{ gate, status: 'MISSING' }]
@@ -141,7 +148,7 @@ export function requiredGateProblems(root, declaration, { signature, paths = [],
         ? []
         : [{ gate, status: 'STALE (recorded tree does not match pushed commit)' }]
     }
-    return recordIsFresh(root, record, signature, paths)
+    return recordIsFresh(root, record, signature, paths, gitRunner)
       ? []
       : [{ gate, status: 'STALE (signature differs or staged file changed after gate)' }]
   })

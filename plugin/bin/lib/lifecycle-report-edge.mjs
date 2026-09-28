@@ -21,11 +21,39 @@ function declaredArtefactPaths(report) {
     .filter(Boolean)
 }
 
-function readBackDeclaredArtefacts({ root, report, startedAt, sha256 }) {
+function fileIdentity(stat) {
+  return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':')
+}
+
+function fileStat(file) {
+  return fs.lstatSync(file, { bigint: true })
+}
+
+// Snapshot all Git-listed files at construction, before the run can create its delivery. Compare identity,
+// never the ordering of two wall-clock readings (which can step in either direction).
+export function artefactIdentitiesAtStart(root, git = execFileSync) {
+  let names
+  try {
+    names = git('git', ['ls-files', '--cached', '--others', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 32 * 1024 * 1024 })
+  } catch (error) {
+    // The injected-git lifecycle fixtures have no repository. Real repositories must still
+    // fail closed on any other snapshot error rather than silently accepting old files.
+    if (/not a git repository/.test(String(error?.stderr))) return new Map()
+    throw error
+  }
+  const identities = new Map()
+  for (const name of names.split('\0').filter(Boolean)) {
+    try { identities.set(name, fileIdentity(fileStat(path.join(root, name)))) } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+  }
+  return identities
+}
+
+function readBackDeclaredArtefacts({ root, report, artefactsAtStart, sha256 }) {
   const declarations = declaredArtefactPaths(report)
   if (new Set(declarations).size !== declarations.length) throw new Error('duplicate delivered artefact declaration')
   const canonicalRoot = fs.realpathSync(root)
-  const startedAtMs = typeof startedAt === 'number' ? startedAt : Date.parse(startedAt)
   return declarations.map((declaration) => {
     if (path.isAbsolute(declaration)) throw new Error(`declared artefact path must be relative: ${declaration}`)
     const requested = path.resolve(canonicalRoot, declaration)
@@ -36,7 +64,7 @@ function readBackDeclaredArtefacts({ root, report, startedAt, sha256 }) {
     let stat
     let canonical
     try {
-      stat = fs.lstatSync(requested)
+      stat = fileStat(requested)
       canonical = fs.realpathSync(requested)
     } catch (error) {
       if (error?.code === 'ENOENT') throw new Error(`missing declared artefact ${declaration}`)
@@ -47,7 +75,9 @@ function readBackDeclaredArtefacts({ root, report, startedAt, sha256 }) {
       throw new Error(`declared artefact path escapes the worktree: ${declaration}`)
     }
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error(`declared artefact is not a regular file: ${declaration}`)
-    if (stat.mtimeMs < startedAtMs) throw new Error(`declared artefact predates this run: ${declaration}`)
+    if (artefactsAtStart.get(relative.split(path.sep).join('/')) === fileIdentity(stat)) {
+      throw new Error(`declared artefact predates this run: ${declaration}`)
+    }
     const bytes = readWorktreeRegular(requested, null, canonicalRoot)
     if (bytes === null) throw new Error(`declared artefact is not a protected regular file: ${declaration}`)
     return {
@@ -62,7 +92,7 @@ function readBackDeclaredArtefacts({ root, report, startedAt, sha256 }) {
 
 function archiveFile(file) {
   let stat
-  try { stat = fs.lstatSync(file) } catch (error) {
+  try { stat = fileStat(file) } catch (error) {
     if (error?.code === 'ENOENT') return null
     throw new Error(`cannot read archive receipt ${file}: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
@@ -249,7 +279,7 @@ function copyProtectedLaneTree(source, destination, root) {
   for (const entry of fs.readdirSync(source)) {
     const from = path.join(source, entry)
     const to = path.join(destination, entry)
-    const info = fs.lstatSync(from)
+    const info = fileStat(from)
     if (info.isDirectory()) copyProtectedLaneTree(from, to, root)
     else {
       const bytes = readWorktreeRegular(from, null, root)
@@ -293,7 +323,7 @@ export function completeLifecycleReport({
   laneDir,
   cardId,
   sessionTag,
-  startedAt,
+  artefactsAtStart,
   route,
   state,
   evidencePath,
@@ -331,7 +361,7 @@ export function completeLifecycleReport({
     }
     if (state.report.stage === 'idle') {
       const report = readRegularFile(path.join(laneDir, 'pilot-report.md'))
-      const artifacts = readBackDeclaredArtefacts({ root, report, startedAt, sha256 })
+      const artifacts = readBackDeclaredArtefacts({ root, report, artefactsAtStart, sha256 })
       const base = git('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
       state.report.base = base
       git('git', ['add', '-A'], { cwd: root })
