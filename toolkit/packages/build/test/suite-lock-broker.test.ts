@@ -228,6 +228,41 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     }
   }, 20_000)
 
+  it('frees the admission slot when it answers a rejection, while the rejected client is still open', async () => {
+    // Rejection linger timers are frozen, so the broker keeps all 16 rejected sockets open; only the
+    // accounting done at rejection time can let the next client in.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { address, server, restore } = await localBroker()
+    const rejected = Array.from({ length: 16 }, () => connect(address, '{bad', true))
+    let next: ReturnType<typeof connect> | undefined
+    try {
+      await Promise.all(rejected.map((client) => client.waitForReply(errorReply)))
+      next = connect(address, { argv: ['next'], waitS: 1 })
+      const reply = await next.waitForReply((text) => granted(text) || errorReply(text))
+      expect(await connectionCount(server)).toBe(17)
+      expect(reply).toMatch(/^granted /)
+    } finally { vi.useRealTimers(); next?.socket.destroy(); for (const client of rejected) client.socket.destroy(); server.close(); restore() }
+  }, 20_000)
+
+  it('bounds open sockets, rejected ones included, by dropping connections past the bound', async () => {
+    // Rejection linger timers are frozen, so every rejected half-open socket stays open for the whole test.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { address, server, restore } = await localBroker()
+    let dropped = 0
+    server.on('drop', () => { dropped += 1 })
+    const clients = Array.from({ length: 40 }, () => connect(address, '{bad', true))
+    for (const client of clients) client.socket.on('error', () => {})
+    const settled = () => clients.every((client) => client.socket.destroyed || client.socket.readableEnded)
+    try {
+      const deadline = Date.now() + 15_000
+      while (!settled() && Date.now() < deadline) await new Promise((resolve) => setImmediate(resolve))
+      expect(settled(), JSON.stringify(clients.map((client) => client.text()))).toBe(true)
+      expect(await connectionCount(server)).toBe(32)
+      expect(dropped).toBe(8)
+      expect(clients.filter((client) => errorReply(client.text()))).toHaveLength(32)
+    } finally { vi.useRealTimers(); for (const client of clients) client.socket.destroy(); server.close(); restore() }
+  }, 20_000)
+
   it('closes half-open busy requests within a bound', async () => {
     const { address, server, restore } = await localBroker()
     const held = Array.from({ length: 16 }, () => connect(address))
@@ -331,8 +366,17 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     const extra = connect(broker.socket)
     await extra.waitForReply((text) => /^error busy\n/.test(text))
     for (const client of held) client.socket.destroy()
-    const next = connect(broker.socket, { argv: ['next'], waitS: 1 })
-    await next.waitForReply(granted)
+    // Destroying the local endpoints does not tell us when the broker has seen them go, so capacity is
+    // asserted to come back: a busy answer is retried until the deadline, any other answer ends the wait.
+    const deadline = Date.now() + 15_000
+    let next = connect(broker.socket, { argv: ['next'], waitS: 1 })
+    let reply = await next.waitForReply((text) => granted(text) || errorReply(text))
+    while (/^error busy\n/.test(reply) && Date.now() < deadline) {
+      await waitFor(() => next.socket.destroyed)
+      next = connect(broker.socket, { argv: ['next'], waitS: 1 })
+      reply = await next.waitForReply((text) => granted(text) || errorReply(text))
+    }
+    expect(reply).toMatch(/^granted /)
     next.socket.end()
   }, 20_000)
 
