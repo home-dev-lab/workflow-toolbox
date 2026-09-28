@@ -13,6 +13,14 @@ import { ensureLaneHostDir, readLifecycleRegular } from './host/lane-host-dir.mj
 import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
 import { writeLaneRegularFile } from './host/lifecycle-file-write.mjs'
 
+// A launcher that prints no pid refused or crashed; its exit code and stderr are the only record of why.
+const LAUNCHER_STDERR_LIMIT = 500
+function launcherFailureDetail(launch) {
+  const stderr = String(launch?.stderr ?? '').replace(/\s+/g, ' ').trim()
+  const shown = stderr.length > LAUNCHER_STDERR_LIMIT ? `${stderr.slice(0, LAUNCHER_STDERR_LIMIT)}…` : stderr
+  return ` (launcher exit ${launch?.code ?? 'unknown'}${shown ? `: ${shown}` : ', no stderr'})`
+}
+
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
 const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
@@ -439,7 +447,7 @@ export function createLifecycleLaunch({
           return refusal(`${state.phase}->next`, `lane spawn (${error instanceof Error ? error.message : String(error)})`, log)
         }
         const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
-        if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return refusal(`${state.phase}->next`, 'launcher pid', log)
+        if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return `${refusal(`${state.phase}->next`, 'launcher pid', log)}${launcherFailureDetail(launch)}`
         let logEntry = await waitForLaneReceipt({
           log,
           nonce,

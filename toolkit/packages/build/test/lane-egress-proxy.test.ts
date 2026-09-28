@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { constants, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { constants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -251,8 +251,34 @@ describe('SNI must equal the CONNECT host (real TLS client, round 4 HIGH 1)', ()
 })
 
 describe('egress log hardening (round 4, MED 2)', () => {
+  it.skipIf(!constants.O_NOFOLLOW)('accepts a canonical parent reached through a directory alias without following a linked log leaf', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-egress-alias-'))
+    try {
+      const actual = join(root, 'actual'); mkdirSync(actual)
+      const alias = join(root, 'alias'); symlinkSync(actual, alias, 'dir')
+      // The launcher passes the canonical path established during validation, even when the
+      // operator supplied an alias such as macOS /var -> /private/var.
+      const file = join(realpathSync.native(alias), 'egress.jsonl')
+      proxy.egressLogWriter(file)({ host: 'alias.example', decision: 'denied' })
+      expect(readFileSync(join(actual, 'egress.jsonl'), 'utf8')).toContain('alias.example')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+  it.skipIf(!constants.O_NOFOLLOW)('refuses to append when a validated log parent is replaced before open', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-egress-before-open-'))
+    try {
+      const parent = join(root, 'validated'); const redirect = join(root, 'redirect')
+      mkdirSync(parent); mkdirSync(redirect)
+      const file = join(realpathSync.native(parent), 'egress.jsonl') // launch validation
+      renameSync(parent, join(root, 'moved'))
+      symlinkSync(redirect, parent, 'dir')
+      const target = join(redirect, 'egress.jsonl')
+      writeFileSync(target, 'fixture untouched\n') // only a disposable fixture can be reached
+      proxy.egressLogWriter(file)({ host: 'blocked.example', decision: 'denied' })
+      expect(readFileSync(target, 'utf8')).toBe('fixture untouched\n')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
   it.skipIf(!constants.O_NOFOLLOW)('keeps writing to its original inode after its parent is swapped', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-egress-parent-'))
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-egress-parent-'))) // canonical, as the launcher passes it
     try {
       const original = join(root, 'original'); const replacement = join(root, 'replacement')
       mkdirSync(original); mkdirSync(replacement)
@@ -285,7 +311,7 @@ describe('egress log hardening (round 4, MED 2)', () => {
   })
 
   it.skipIf(!constants.O_NOFOLLOW)('writes DNS names only and stops at its size cap (skipped where O_NOFOLLOW does not exist, e.g. Windows: the writer writes nothing there)', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-egress-log-'))
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-egress-log-'))) // canonical, as the launcher passes it
     try {
       const file = join(root, 'real.jsonl')
       const write = proxy.egressLogWriter(file, { limit: 400 })

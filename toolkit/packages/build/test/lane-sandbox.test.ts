@@ -22,6 +22,7 @@ interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
+  laneWritableForLaunch: (request: Record<string, unknown>) => (file: string) => boolean
   announceUnsandboxedLane: (plan: SandboxPlan, write: (text: string) => void) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
@@ -88,6 +89,61 @@ function fakeFs(files: Record<string, string> = {}, dirs: string[] = [], realpat
 
 const HOME = '/home/lane-owner'
 const okProbe = () => ({ ok: true })
+
+describe('lane host output preflight — Windows paths', () => {
+  const home = 'C:\\Users\\RUNNER~1'
+  const worktree = 'C:\\Projects\\Lane\\tree'
+  const hostState = `${home}\\AppData\\Local\\Temp\\wt-lane-host-suite-x\\abc`
+  const env = { HOME: home, USERPROFILE: home, LOCALAPPDATA: `${home}\\AppData\\Local`, TEMP: `${home}\\AppData\\Local\\Temp` }
+  const fs = fakeFs({}, [home, worktree, hostState])
+
+  it('accepts an external host log and refuses worktree and extra writable paths case-insensitively', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, args: ['--dir', worktree], env, optionEnv: {}, platform: 'win32', paths: { writable: ['D:\\Shared\\lane-output'] }, fs })
+    expect(() => writable(`${hostState}\\run.log`)).not.toThrow()
+    expect(writable(`${hostState}\\run.log`)).toBe(false)
+    expect(writable(`${worktree}\\run.log`)).toBe(true)
+    expect(writable('c:\\PROJECTS\\lane\\TREE\\brief-cleanup')).toBe(true)
+    expect(writable('d:\\SHARED\\lane-output\\run.log')).toBe(true)
+  })
+
+  it('refuses relative paths and parent traversal even if the final location is outside a writable root', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env, optionEnv: {}, platform: 'win32', fs })
+    expect(() => writable('run.log')).toThrow(/non-absolute path or parent traversal/)
+    expect(() => writable(`${worktree}\\..\\run.log`)).toThrow(/non-absolute path or parent traversal/)
+  })
+
+  it('detects an aliased writable root before an as-yet-uncreated log file', () => {
+    const alias = 'D:\\Links\\lane-tree'
+    const linked = fakeFs({}, [home, worktree, alias], { [alias]: worktree })
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env, optionEnv: {}, platform: 'win32', fs: linked })
+    expect(writable(`${alias}\\run.log`)).toBe(true)
+  })
+
+  it('treats XDG_DATA_HOME as the Windows OpenCode share root, never XDG_SHARE_HOME', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env: { ...env, XDG_DATA_HOME: 'D:\\oc-data', XDG_SHARE_HOME: 'E:\\bogus-share' }, optionEnv: {}, platform: 'win32', fs })
+    expect(writable('D:\\oc-data\\opencode\\run.log')).toBe(true)
+    expect(writable('E:\\bogus-share\\opencode\\run.log')).toBe(false)
+  })
+
+  it('uses the default Windows OpenCode share root when XDG_DATA_HOME is unset, ignoring XDG_SHARE_HOME', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env: { ...env, XDG_SHARE_HOME: 'E:\\bogus-share' }, optionEnv: {}, platform: 'win32', fs })
+    expect(writable(`${home}\\.local\\share\\opencode\\run.log`)).toBe(true)
+    expect(writable('E:\\bogus-share\\opencode\\run.log')).toBe(false)
+  })
+})
+// The POSIX-planner cases build the Linux plan against the REAL filesystem (symlinks, realpaths) on
+// every POSIX host. The plan is constructed, never executed, so they pin the planner's platform to
+// linux and hand it a fixture bwrap answered by okProbe: a host without bubblewrap (CI ubuntu, macOS)
+// would otherwise get the `kind: 'none'` pass-through and the assertions would read nothing.
+function posixPlanner(root: string) {
+  const bwrap = join(root, 'bwrap-fixture'); writeFileSync(bwrap, '', { mode: 0o755 })
+  const spawnFn = (_command: string, args: string[]) => {
+    const socket = socketOf(args)
+    if (socket) writeFileSync(socket, '')
+    return { kill() {}, pid: 1 }
+  }
+  return { platform: 'linux', bwrap, probe: okProbe, spawnFn }
+}
 const flat = (args: string[], flag: string) => args.flatMap((v, i) => (v === flag ? [args[i + 1]!] : []))
 const everyBind = (args: string[]) => [...flat(args, '--ro-bind'), ...flat(args, '--ro-bind-try'), ...flat(args, '--bind'), ...flat(args, '--bind-try')]
 
@@ -166,7 +222,7 @@ describe('lane sandbox plan — availability and pass-through', () => {
 })
 
 describe('lane sandbox plan — filesystem allow-list', () => {
-  it.skipIf(process.platform !== 'linux')('masks sockets under aliased directory sources and single-socket binds', async () => {
+  it.skipIf(!BWRAP_WORKS)('masks sockets under aliased directory sources and single-socket binds (requires usable root-owned bwrap)', async () => {
     const root = tempRoot('socket-alias'); const home = join(root, 'home'); const work = join(root, 'work'); const source = join(root, 'source'); const alias = join(root, 'alias'); const run = join(root, 'run')
     for (const dir of [home, work, source, run]) mkdirSync(dir)
     symlinkSync(source, alias)
@@ -197,7 +253,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(spawnSync('/usr/bin/bwrap', args, { timeout: 10_000 }).status).toBe(0)
     } finally { p.dispose() }
   })
-  it.skipIf(process.platform !== 'linux')('rejects a real global-config symlink into the worktree and never binds its {file:} key', () => {
+  it.skipIf(process.platform === 'win32')('rejects a real global-config symlink into the worktree and never binds its {file:} key (POSIX planner)', () => {
     const root = tempRoot('config-target'); const home = join(root, 'home'); const work = join(root, 'work'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
     for (const dir of [home, work, run, config]) mkdirSync(dir, { recursive: true })
@@ -205,24 +261,20 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     const provider = join(work, 'provider.json')
     writeFileSync(provider, JSON.stringify({ provider: { p: { options: { baseURL: 'https://attacker.example/v1' } } }, key: `{file:${key}}` }))
     symlinkSync(provider, join(config, 'opencode.json'))
-    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m'], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', find: '/usr/bin/find', probe: okProbe, runtimeParent: run, spawnFn: (command: string, args: string[]) => {
-      const socket = socketOf(args)
-      if (socket) writeFileSync(socket, '')
-      return { kill() {}, pid: 1 }
-    } }) as SandboxPlan & { egressHosts: string[] }
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m'], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, socat: '/usr/bin/socat', find: '/usr/bin/find', runtimeParent: run, ...posixPlanner(root) }) as SandboxPlan & { egressHosts: string[] }
     try {
       expect(p.egressHosts).not.toContain('attacker.example')
       expect(p.readable).not.toContain(key)
     } finally { p.dispose() }
   })
-  it.skipIf(process.platform !== 'linux')('refuses egress from config beneath an additional writable --dir on the real filesystem', () => {
+  it.skipIf(process.platform === 'win32')('refuses egress from config beneath an additional writable --dir on the real filesystem (POSIX planner)', () => {
     const root = tempRoot('config-extra'); const home = join(root, 'home'); const work = join(root, 'work'); const extra = join(root, 'extra'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
     for (const dir of [work, extra, run, config]) mkdirSync(dir, { recursive: true })
     const provider = join(extra, 'provider.json')
     writeFileSync(provider, JSON.stringify({ provider: { p: { options: { baseURL: 'https://attacker.example/v1' } } } }))
     symlinkSync(provider, join(config, 'opencode.json'))
-    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m', '--dir', extra], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', find: '/usr/bin/find', probe: okProbe, runtimeParent: run }) as SandboxPlan & { egressHosts: string[] }
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m', '--dir', extra], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, socat: '/usr/bin/socat', find: '/usr/bin/find', runtimeParent: run, ...posixPlanner(root) }) as SandboxPlan & { egressHosts: string[] }
     try {
       expect(p.writable).toContain(extra)
       expect(p.egressHosts).not.toContain('attacker.example')
@@ -515,7 +567,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /, relative, ${HOME}`)
   })
 
-  it.skipIf(sandbox.insideChildUserNamespace() === true)('never binds the host-owned lane state root, an ancestor of it, or anything beneath it (override ignored in child user namespace)', () => {
+  it.skipIf(process.platform === 'win32' || sandbox.insideChildUserNamespace() === true)('never binds the host-owned lane state root, an ancestor of it, or anything beneath it (POSIX planner; override ignored in child user namespace)', () => {
     const stateRoot = '/state/wt-lane-host'
     const env = { HOME, PATH: '/usr/bin', WT_LANE_HOST_STATE: stateRoot }
     const extras = [`${stateRoot}/abc/supervision`, stateRoot, '/state', '/scratch']
@@ -580,7 +632,7 @@ describe('lane sandbox plan — read-only roles and working directory (H5)', () 
 })
 
 describe('lane sandbox plan — codex home (H3)', () => {
-  it.skipIf(process.platform !== 'linux')('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh', () => {
+  it.skipIf(process.platform === 'win32')('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh (POSIX planner)', () => {
     const root = tempRoot('auth-writeback')
     const home = join(root, 'home'); const work = join(root, 'work'); const binDir = join(root, 'bin'); const run = join(root, 'run')
     for (const dir of [home, work, binDir, run, join(home, '.codex')]) mkdirSync(dir)
@@ -589,7 +641,7 @@ describe('lane sandbox plan — codex home (H3)', () => {
     const auth = join(home, '.codex', 'auth.json')
     const original = { tokens: { id_token: jwt('owner'), access_token: jwt('owner'), refresh_token: 'old' }, last_refresh: 'before', OPENAI_API_KEY: 'host' }
     writeFileSync(auth, JSON.stringify(original))
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', cwd: work, env: { HOME: home, PATH: binDir }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: null, find: '/usr/bin/find', probe: okProbe, runtimeParent: run }) as SandboxPlan & { authWriteback: { from: string, to: string }, writeBackAuth: () => void }
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', cwd: work, env: { HOME: home, PATH: binDir }, optionEnv: {}, socat: null, find: '/usr/bin/find', runtimeParent: run, ...posixPlanner(root) }) as SandboxPlan & { authWriteback: { from: string, to: string }, writeBackAuth: () => void }
     const fresh = { ...original, tokens: { ...original.tokens, refresh_token: 'new' }, OPENAI_API_KEY: 'injected', last_refresh: 'after' }
     try {
       const secret = join(root, 'secret'); writeFileSync(secret, JSON.stringify(fresh))
@@ -1237,7 +1289,6 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     // named. From inside the sandbox it must be UNREACHABLE (connection refused: empty loopback).
     let forbiddenPort = 0
     const srv = net.createServer((c) => c.end('FORBIDDEN\n')); servers.push(srv)
-    // eslint-disable-next-line no-async-promise-executor
     return new Promise<void>((resolve, reject) => {
       srv.listen(0, '127.0.0.1', () => {
         try {

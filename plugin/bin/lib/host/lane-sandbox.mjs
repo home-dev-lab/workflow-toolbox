@@ -5,7 +5,7 @@ import os from 'node:os'
 // POSIX paths, not the host's native ones: every path here names a location inside a Linux bwrap
 // sandbox or on the Linux host that builds it. The plan is never built elsewhere (see
 // sandboxAvailability), and on a Windows host `node:path` would rewrite `/home/x` into `\\home\\x`.
-import { posix as path } from 'node:path'
+import { posix as path, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseJsonc } from './jsonc.mjs'
 import { processStartTime } from './pid-namespace.mjs'
@@ -518,16 +518,19 @@ function hostSandboxExecutables(platform, optionEnv, bwrap, socat) {
 // inside re-listens on each bridge's loopback address (H4).
 // The realpath of the deepest existing ancestor, with the rest appended: a path that does not exist
 // yet (a log file) is still compared by where it would really land.
-function canonicalPath(candidate, fs) {
-  bindPath(candidate)
+function canonicalPath(candidate, fs, hostPath = path) {
+  if (hostPath === path) bindPath(candidate)
+  else if (typeof candidate !== 'string' || !hostPath.isAbsolute(candidate) || candidate.split(/[\\/]/).includes('..')) {
+    throw new LaneSandboxRefusal(`refusing path ${String(candidate)}: non-absolute path or parent traversal in a bind cannot be checked safely`)
+  }
   const suffix = []
   let probe = candidate
   while (true) {
     const real = fs.realpath(probe)
-    if (real) return path.join(real, ...suffix)
-    const parent = path.dirname(probe)
-    if (parent === probe) return path.resolve(candidate)
-    suffix.unshift(path.basename(probe))
+    if (real) return hostPath.join(real, ...suffix)
+    const parent = hostPath.dirname(probe)
+    if (parent === probe) return hostPath.resolve(candidate)
+    suffix.unshift(hostPath.basename(probe))
     probe = parent
   }
 }
@@ -564,19 +567,57 @@ function checkedConfigRead(file, fs, writable, registered, rejected) {
 }
 
 const within = (child, parent) => child === parent || child.startsWith(`${parent}${path.sep}`)
-const withinOnDisk = (child, parent) => within(child.toLowerCase(), parent.toLowerCase())
+const withinOnDisk = (child, parent, separator = path.sep) => child.toLowerCase() === parent.toLowerCase() || child.toLowerCase().startsWith(`${parent.toLowerCase()}${separator}`)
 
-function laneWritablePredicate(roots, fs) {
-  const canonicalRoots = roots.map((root) => canonicalPath(root, fs))
-  return (candidate) => canonicalRoots.some((root, index) => withinOnDisk(canonicalPath(candidate, fs), root) || withinOnDisk(path.resolve(candidate), path.resolve(roots[index])))
+function laneWritablePredicate(roots, fs, hostPath = path) {
+  const canonicalRoots = roots.map((root) => canonicalPath(root, fs, hostPath))
+  return (candidate) => {
+    const canonical = canonicalPath(candidate, fs, hostPath)
+    return canonicalRoots.some((root, index) => withinOnDisk(canonical, root, hostPath.sep) || withinOnDisk(hostPath.resolve(candidate), hostPath.resolve(roots[index]), hostPath.sep))
+  }
 }
 
-function effectiveWritableRoots({ workdir, selected, git, env, paths, extras, runtimeDir, readonlyCwd }) {
-  return [...(readonlyCwd ? [] : workdir), ...(selected.writable ?? []), ...git.writable, ...(paths.writable ?? []), ...extras.writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), runtimeDir]
+// The host suite lock root is never a lane-writable root on Linux: a sandboxed lane takes the lock through the
+// host broker. Only the Windows preflight (no sandbox) names it, as a location an unsandboxed lane can write.
+function effectiveWritableRoots({ workdir, selected, git, env, paths, extras, runtimeDir, readonlyCwd, suiteLock = null }) {
+  return [...(readonlyCwd ? [] : workdir), ...(selected.writable ?? []), ...git.writable, ...(suiteLock ? [suiteLock] : []), ...(paths.writable ?? []), ...extras.writable, ...(selected.writableRemap ?? []).map(({ inside }) => inside), runtimeDir]
+}
+
+// The Linux planner deliberately uses POSIX paths. On Windows no bwrap plan is built, but the
+// launcher's host-output preflight still needs the corresponding native writable locations.
+function windowsWritableRoots({ cwd, args, profile, env, optionEnv, paths, readonlyCwd, fs }) {
+  const homeDir = env.USERPROFILE || env.HOME || os.homedir()
+  const base = win32.resolve(cwd)
+  const xdgDir = (name, fallback) => win32.isAbsolute(env[name] ?? '') ? env[name] : win32.join(homeDir, fallback)
+  const state = win32.isAbsolute(env.XDG_STATE_HOME ?? '') ? env.XDG_STATE_HOME : env.LOCALAPPDATA || win32.join(homeDir, 'AppData', 'Local')
+  const hostState = win32.isAbsolute(env.WT_LANE_HOST_STATE ?? '') ? env.WT_LANE_HOST_STATE : win32.join(env.LOCALAPPDATA || win32.join(homeDir, 'AppData', 'Local'), 'wt-lane-host')
+  const forbidden = (item) => {
+    const target = canonicalPath(item, fs, win32)
+    const homeReal = canonicalPath(homeDir, fs, win32)
+    const hostReal = canonicalPath(hostState, fs, win32)
+    return target === win32.parse(target).root || withinOnDisk(homeReal, target, win32.sep) || withinOnDisk(target, hostReal, win32.sep) || withinOnDisk(hostReal, target, win32.sep)
+  }
+  const dirArgs = args.flatMap((value, index) => args[index - 1] === '--dir' ? [win32.resolve(base, value)] : [])
+  const codexHome = win32.join(homeDir, '.codex')
+  const opencodeXdgHomes = {
+    share: { name: 'XDG_DATA_HOME', fallback: '.local/share' },
+    cache: { name: 'XDG_CACHE_HOME', fallback: '.cache' },
+    state: { name: 'XDG_STATE_HOME', fallback: '.local/state' },
+  }
+  const selected = profile === 'codex'
+    ? { writable: [env.CLAUDE_PLUGIN_DATA].filter((item) => win32.isAbsolute(item ?? '')), writableRemap: [{ inside: codexHome }] }
+    : { writable: readonlyCwd ? [] : dirArgs, writableRemap: Object.values(opencodeXdgHomes).map(({ name, fallback }) => ({ inside: win32.join(xdgDir(name, fallback), 'opencode') })) }
+  const dotGit = fs.readText(win32.join(base, '.git'))?.split('\n').find((line) => line.startsWith('gitdir:'))
+  const git = { writable: dotGit ? [win32.resolve(base, dotGit.slice('gitdir:'.length).trim())] : [] }
+  const extras = { writable: String(optionEnv[LANE_SANDBOX_WRITE_ENV] ?? '').split(win32.delimiter).filter(Boolean).map((item) => item.startsWith('~/') ? win32.join(homeDir, item.slice(2)) : item).filter((item) => win32.isAbsolute(item)) }
+  const runtimeDir = win32.isAbsolute(os.tmpdir()) ? win32.join(os.tmpdir(), 'wt-lane-sandbox-preflight') : null
+  const roots = effectiveWritableRoots({ workdir: [base], selected, git, env, paths, extras, runtimeDir, readonlyCwd, suiteLock: win32.join(state, 'wt-suite-lock') })
+  return roots.filter((item) => item && win32.isAbsolute(item) && !forbidden(item))
 }
 
 // Preflight for host output paths, using exactly the same root collector as the final sandbox plan.
-export function laneWritableForLaunch({ cwd, args = [], profile = 'opencode', env = process.env, optionEnv = process.env, paths = {}, readonlyCwd = false, fs = realFs } = {}) {
+export function laneWritableForLaunch({ cwd, args = [], profile = 'opencode', env = process.env, optionEnv = process.env, paths = {}, readonlyCwd = false, fs = realFs, platform = process.platform } = {}) {
+  if (platform === 'win32') return laneWritablePredicate(windowsWritableRoots({ cwd, args, profile, env, optionEnv, paths, readonlyCwd, fs }), fs, win32)
   const base = path.resolve(cwd)
   const runtimeDir = path.join(os.tmpdir(), 'wt-lane-sandbox-preflight')
   const selected = PROFILES[profile]({ env, args, fs, runtimeDir, readonlyCwd, base, trustedRead: () => null })

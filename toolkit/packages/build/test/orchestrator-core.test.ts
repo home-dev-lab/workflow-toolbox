@@ -69,6 +69,8 @@ function receipts(cardDir: string, overrides: Record<string, number> = {}) {
 function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship\n' }]) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-orchestrator-'))); roots.push(root)
   spawnSync('git', ['init', '-q', '-b', 'develop'], { cwd: root }); spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root }); spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root })
+  // The fixture must never reach this machine's commit signing (an agent-backed signer fails under load).
+  spawnSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: root }); spawnSync('git', ['config', 'tag.gpgsign', 'false'], { cwd: root })
   writeFileSync(join(root, '.gitignore'), '.waves/\n.lane/\n'); writeFileSync(join(root, 'base.txt'), 'base\n'); spawnSync('git', ['add', '.'], { cwd: root }); spawnSync('git', ['commit', '-qm', 'base'], { cwd: root })
   const worktreesDir = join(root, '.waves'); const report = join(worktreesDir, 'report.md'); const moves: string[] = []; const comments: string[] = []; const gitCalls: string[][] = []; const launches: Array<{ card: string, hard?: boolean }> = []
   const byId = new Map(cards.map((card) => [String(card.id), card]))

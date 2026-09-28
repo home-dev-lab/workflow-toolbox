@@ -271,6 +271,9 @@ export function egressLogWriter(file, { limit = EGRESS_LOG_LIMIT_BYTES, now = ()
   if (file && constants.O_NOFOLLOW) {
     try {
       fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW, 0o600)
+      // The launcher hands us the canonical path established at validation, including when the
+      // operator used an OS alias (/var -> /private/var on macOS). Refuse a parent redirected
+      // between validation and open; O_NOFOLLOW only protects the leaf.
       if (realpathSync.native(file) !== file) throw new Error('log path is not canonical')
       const opened = fstatSync(fd); const named = statSync(file)
       if (!opened.isFile() || opened.dev !== named.dev || opened.ino !== named.ino) throw new Error('log inode changed')

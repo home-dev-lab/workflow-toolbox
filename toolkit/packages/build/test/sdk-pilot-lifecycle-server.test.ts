@@ -29,6 +29,8 @@ import { cardDefinitionOfDone } from '../../../../plugin/bin/lib/card-definition
 import { criticFindingAfterNoReblock } from '../../../../plugin/bin/lib/lifecycle-dod-dispute.mjs'
 // @ts-expect-error ESM runtime module
 import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
+// @ts-expect-error ESM runtime module
+import { insideChildUserNamespace } from '../../../../plugin/bin/lib/host/lane-sandbox.mjs'
 
 function join(...parts: string[]): string {
   const index = parts.indexOf('.lane')
@@ -57,6 +59,9 @@ const inBwrapPidNamespace = process.platform === 'linux' && (() => {
 const descendantSkipReason = inBwrapPidNamespace
   ? 'descendant PIDs are namespace-local inside a bwrap PID namespace'
   : 'requires POSIX process groups and modes'
+// A child user namespace deliberately ignores WT_LANE_HOST_STATE, including the
+// fixture override. Real-launch fixtures cannot share their private host root there.
+const realLaunchUnavailable = process.platform === 'win32' || insideChildUserNamespace() === true
 
 function nativeProcessExists(pid: number, inspect: (pid: number) => unknown, signal = process.kill) {
   if (inspect(pid) !== null) return true
@@ -322,7 +327,7 @@ describe.sequential('runner-hosted SDK pilot lifecycle', () => {
     killIdentity({ pid: record.workerPid, argv: record.workerArgv }, 'SIGKILL')
   })
 
-  it.skipIf(process.platform === 'win32')('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane [POSIX shell fixture]', async () => {
+  it.skipIf(realLaunchUnavailable)('abandons a real timed-out pilot lane through lifecycle control and reruns with a fresh owner-bound lane [requires POSIX and host user namespace]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = `#!/bin/sh
 if [ "$1" = "--version" ]; then printf 'fixture-1\n'; exit 0; fi
@@ -363,7 +368,7 @@ printf 'report\n' > "$report"
     expect(readFileSync(join(lifecycle.root, '.lane', 'pilot-restart-count'), 'utf8')).toBe('2')
   }, 60_000)
 
-  it.skipIf(process.platform === 'win32')('derives the lifecycle wait from a real worker timeout recorded after delayed preflight [POSIX shell fixture]', async () => {
+  it.skipIf(realLaunchUnavailable)('derives the lifecycle wait from a real worker timeout recorded after delayed preflight [requires POSIX and host user namespace]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const wrapper = rawLauncher(`import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'; import { spawnSync } from 'node:child_process'; import { delimiter, join } from 'node:path'; const root=process.argv[process.argv.indexOf('--dir')+1]; const bin=join(root,'.lane','fake-bin'); const config=join(root,'.lane','fake-config'); mkdirSync(bin,{recursive:true}); mkdirSync(config,{recursive:true}); writeFileSync(join(config,'settings.json'),JSON.stringify({env:{WT_EXECUTOR_LANE_CONSENT:'true'}})); const fake=join(bin,'opencode'); writeFileSync(fake,\`#!/bin/sh\nif [ "$1" = "--version" ]; then printf 'fixture-1\\n'; exit 0; fi\nif [ "$1" = "--pure" ]; then sleep 0.7; printf '[{"name":"workflow-toolbox-allowed-sentinel"}]\\n'; exit 0; fi\nif [ "$1" = "debug" ]; then sleep 0.7; printf '[]\\n'; exit 0; fi\nsleep 30\n\`); chmodSync(fake,0o755); const result=spawnSync(process.execPath,[${JSON.stringify(realLauncher)},...process.argv.slice(2),'--allow-no-git'],{encoding:'utf8',env:{...process.env,PATH:bin+delimiter+process.env.PATH,CLAUDE_CONFIG_DIR:config,XDG_STATE_HOME:join(root,'.lane','state'),WT_LANE_MODELS:'test',WT_LANE_SANDBOX:'off'}}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status ?? 1`)
     const lifecycle = testLifecycle('LITE', [], wrapper, 30, { executor: 'gpt-lane' })
@@ -373,9 +378,12 @@ printf 'report\n' > "$report"
     const supervision = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', `${pointer.runId}.json`), 'utf8'))
     expect(result).toContain('TIMEOUT')
     try { process.kill(-supervision.workerPid, 'SIGTERM') } catch {}
+    // The signalled worker records its terminal state in its host directory on the way out; wait for
+    // it to exit so teardown removes that directory after the last write, not before it.
+    await waitForIdentityExit({ pid: supervision.workerPid, argv: supervision.workerArgv })
   }, 15_000)
 
-  it.skipIf(process.platform === 'win32')('does not terminate a live real worker while its timeout evidence scan is still completing [requires POSIX SIGSTOP/SIGCONT]', async () => {
+  it.skipIf(realLaunchUnavailable)('does not terminate a live real worker while its timeout evidence scan is still completing [requires POSIX SIGSTOP/SIGCONT and host user namespace]', async () => {
     const realLauncher = fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url))
     const fakeSource = '#!/bin/sh\nif [ "$1" = "--version" ]; then printf \'fixture-1\\n\'; exit 0; fi\nif [ "$1" = "--pure" ]; then printf \'[{"name":"workflow-toolbox-allowed-sentinel"}]\\n\'; exit 0; fi\nif [ "$1" = "debug" ]; then printf \'[]\\n\'; exit 0; fi\nsleep 30\n'
     const helperSource = "const fs=require('fs');const path=require('path');const root=process.argv[1],pid=Number(process.argv[2]);const pointer=path.join(root,'.lane','supervision','current.json');const poll=setInterval(()=>{try{const run=JSON.parse(fs.readFileSync(pointer)).runId;const record=path.join(root,'.lane','supervision',run+'.json');const state=JSON.parse(fs.readFileSync(record));if(state.state==='running'&&Date.parse(state.timeoutAt)){clearInterval(poll);setTimeout(()=>{process.kill(pid,'SIGSTOP');setTimeout(()=>{try{process.kill(pid,'SIGCONT')}catch{}},1500)},Math.max(0,Date.parse(state.timeoutAt)-Date.now()-25))}}catch{}},10)"
@@ -387,6 +395,9 @@ printf 'report\n' > "$report"
     const supervision = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'supervision', `${pointer.runId}.json`), 'utf8'))
     expect(result).toContain('TIMEOUT')
     try { process.kill(-supervision.workerPid, 'SIGTERM') } catch {}
+    // The signalled worker records its terminal state in its host directory on the way out; wait for
+    // it to exit so teardown removes that directory after the last write, not before it.
+    await waitForIdentityExit({ pid: supervision.workerPid, argv: supervision.workerArgv })
   }, 15_000)
 
   it('does not accept a reused worker pid with different argv as live lane evidence', async () => {
@@ -941,6 +952,17 @@ printf 'report\n' > "$report"
     killIdentity(inspectProcess(pid), 'SIGKILL')
     const evidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
     expect(evidence.entries[join(lifecycle.root, '.lane', 'tdd-run.log')].group).toBe('worker-owned')
+  })
+
+  it('names the launcher exit code and its stderr when a lane launch prints no pid', async () => {
+    const launcher = rawLauncher("process.stderr.write('wt-lane: Refused: another lane launch owns the current supervision pointer\\n'); process.exitCode = 1")
+    const lifecycle = testLifecycle('LITE', [], launcher, FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
+    await lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' })
+    await lifecycle.artifact({ kind: 'brief', content: 'brief\n' })
+    const refused = await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))
+    expect(refused).toMatch(/^edge refused: tdd->next; missing launcher pid: /)
+    expect(refused).toContain('launcher exit 1')
+    expect(refused).toContain('wt-lane: Refused: another lane launch owns the current supervision pointer')
   })
 
   it.skipIf(process.platform === 'win32' || inBwrapPidNamespace)(`the shipped launcher keeps ordinary descendants in the terminated lane group [${descendantSkipReason}]`, async () => {
@@ -1960,6 +1982,7 @@ printf 'report\n' > "$report"
     roots.push(linked)
     symlinkSync(physical, linked, 'dir')
     const worktree = mkdtempSync(join(linked, 'worktree-'))
+    roots.push(worktree)
     const archiveRoot = mkdtempSync(join(linked, 'archive-'))
     mkdirSync(join(worktree, '.lane'))
     writeFileSync(join(worktree, '.gitignore'), '.lane/\n')
@@ -2006,7 +2029,20 @@ printf 'report\n' > "$report"
 })
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) { rmSync(laneHostDir(root), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) } })
+afterEach(() => {
+  const created = roots.splice(0)
+  const hostDirs = created.map((root) => laneHostDir(root))
+  // Detached fixtures can still finish writes as their workers exit. Retry the per-worktree
+  // removal rather than deleting the shared state root or swallowing ENOTEMPTY.
+  for (const dir of hostDirs) rmSync(dir, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 })
+  for (const root of created) rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  for (const dir of hostDirs) expect(existsSync(dir), `test left host state at ${dir}`).toBe(false)
+})
+it('uses a file URL for the host-dir module in spawned lifecycle fixture launchers', () => {
+  const source = readFileSync(rawLauncher('process.stdout.write("ready\\n")'), 'utf8')
+  const helper = new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url).href
+  expect(source).toContain(`from ${JSON.stringify(helper)}`)
+})
 // The win32 provider echoes the spawn-recorded argv (Get-Process has no command line); the POSIX providers
 // return the argv they OBSERVE (`/proc` on linux, `ps -o args` on darwin, where it is one string). Asserting the
 // recorded argv on every platform was red on the macOS shards from run 28 to run 34 while the job read green
@@ -2104,8 +2140,7 @@ function rawLauncher(source: string) {
     .replaceAll("path.join(root,'.lane','supervision')", 'process.env.WT_LANE_SUPERVISION_DIR')
     .replaceAll("join(root,'.lane','supervision')", 'process.env.WT_LANE_SUPERVISION_DIR')
     .replaceAll("root+'/.lane/supervision'", 'process.env.WT_LANE_SUPERVISION_DIR')
-  const helper = fileURLToPath(new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url))
-  const prefix = `import { laneHostDir as wtFixtureHostDir } from ${JSON.stringify(helper)}; import { join as wtFixtureJoin } from 'node:path'; process.env.WT_LANE_SUPERVISION_DIR = wtFixtureJoin(wtFixtureHostDir(process.argv[process.argv.indexOf('--dir') + 1]), 'supervision');\n`
+  const prefix = `import { laneHostDir as wtFixtureHostDir } from ${JSON.stringify(new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url).href)}; import { join as wtFixtureJoin } from 'node:path'; process.env.WT_LANE_SUPERVISION_DIR = wtFixtureJoin(wtFixtureHostDir(process.argv[process.argv.indexOf('--dir') + 1]), 'supervision');\n`
   const file = join(root, 'launcher.mjs'); writeFileSync(file, prefix + adjusted)
   return file
 }

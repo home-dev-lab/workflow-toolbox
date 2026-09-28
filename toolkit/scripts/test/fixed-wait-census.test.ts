@@ -50,6 +50,16 @@ spawnSync('node', ['x.mjs'], { encoding: 'utf8', timeout: 8000 })
     ])
   })
 
+  it('reads a platform-dependent bound by its shortest branch, so a conditional cannot hide a fixed wait', () => {
+    expect(signals(`
+const until = Date.now() + (process.platform === 'win32' ? 10_000 : 3000)
+const SLOW = process.platform === 'win32'
+await waitFor(() => ready(), SLOW ? 60_000 : 45_000)
+`)).toEqual([
+      'short-deadline now() + 3000 ms',
+    ])
+  })
+
   it('resolves the forms a new test plausibly writes: scoped constants, aliases, expressions, option objects', () => {
     expect(signals(`
 import { setTimeout as snooze } from 'node:timers/promises'

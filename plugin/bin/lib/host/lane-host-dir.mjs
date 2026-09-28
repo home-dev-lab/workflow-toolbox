@@ -34,10 +34,20 @@ export function laneHostStateRoot({ base, env = process.env, platform = process.
 
 export function laneHostDir(worktree, options = {}) {
   const platform = options.platform ?? process.platform
-  let canonical
-  try { canonical = (options.realpath ?? realpathSync.native)(worktree) } catch {
-    // Read-only observers may be asked about worktrees removed between discovery and inspection.
-    canonical = path.resolve(worktree)
+  const realpath = options.realpath ?? realpathSync.native
+  let ancestor = path.resolve(worktree)
+  const remainder = []
+  let canonical = ancestor
+  while (true) {
+    try { canonical = path.resolve(realpath(ancestor), ...remainder); break } catch {
+      // A removed worktree retains the identity of its nearest existing, canonical ancestor.
+      // Lexically resolving the whole path here splits /var from /private/var (or a Windows
+      // short-name parent from its long spelling) after removal.
+      const parent = path.dirname(ancestor)
+      if (parent === ancestor) break
+      remainder.unshift(path.basename(ancestor))
+      ancestor = parent
+    }
   }
   const key = ['win32', 'darwin'].includes(platform) ? canonical.toLowerCase() : canonical
   return path.join(laneHostStateRoot(options), createHash('sha256').update(key).digest('hex').slice(0, 32))
@@ -92,12 +102,11 @@ export function laneWritablePath(worktree, candidate) {
 }
 
 // Anchor the walk at a trusted realpath and refuse *every* redirected component, not just the leaf.
-// Unsandboxed lanes already have the owner's access; only there may unsupported platforms use a plain read.
-export function readWorktreeRegular(file, encoding = 'utf8', root = null, { unsandboxed = false } = {}) {
-  if (process.platform === 'win32' || !constants.O_NOFOLLOW || !constants.O_NONBLOCK) {
-    if (!unsandboxed) return null
-    try { return readFileSync(file, encoding === null ? undefined : encoding) } catch { return null }
-  }
+// Without O_NOFOLLOW, keep the containment and component checks; only the open-time race
+// protection is unavailable for unsandboxed lanes.
+export function readWorktreeRegular(file, encoding = 'utf8', root = null, { unsandboxed = process.platform !== 'linux' || process.env.WT_LANE_SANDBOX === 'off' } = {}) {
+  const protectedOpen = process.platform !== 'win32' && !!constants.O_NOFOLLOW && !!constants.O_NONBLOCK
+  if (!protectedOpen && !unsandboxed) return null
   let fd
   try {
     const laneMarker = `${path.sep}.lane${path.sep}`
@@ -116,6 +125,7 @@ export function readWorktreeRegular(file, encoding = 'utf8', root = null, { unsa
     }
     const leaf = lstatSync(protectedFile)
     if (!leaf.isFile() || leaf.isSymbolicLink()) return null
+    if (!protectedOpen) return readFileSync(protectedFile, encoding === null ? undefined : encoding)
     fd = openSync(protectedFile, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW)
     const opened = fstatSync(fd)
     if (!opened.isFile() || opened.dev !== leaf.dev || opened.ino !== leaf.ino) return null
@@ -135,6 +145,13 @@ export function makeReadableLaneBrief(snapshot, worktree, { temporaryParent = os
     rmSync(directory, { recursive: true, force: true })
     throw error
   }
+}
+
+// Starts a detached process whose stderr appends to the host-owned lane log, so a process that
+// fails before writing its own stages still leaves its error where the operator reads the lane.
+export function spawnWithLaneLogStderr(log, start) {
+  const fd = openSync(log, 'a', 0o600)
+  try { return start(['ignore', 'ignore', fd]) } finally { closeSync(fd) }
 }
 
 export function removeReadableLaneBrief(directory) {

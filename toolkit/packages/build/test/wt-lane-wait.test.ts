@@ -151,16 +151,30 @@ describe('wt-lane-wait', () => {
     const record = join(f.host, 'supervision', readFileSync(join(f.host, 'supervision', 'current.json'), 'utf8').match(/"runId":"([^"]+)"/)![1] + '.json')
     const state = JSON.parse(readFileSync(record, 'utf8'))
     writeFileSync(record, JSON.stringify({ ...state, state: 'exited', exit: 137 }))
-    const result = run(f.root, '--timeout', '0.12')
+    // Seconds, not milliseconds: a loaded CI runner can take longer than a sub-second bound to start
+    // the fixture worker. A waiter that needs a log marker still fails here, at this timeout.
+    const result = run(f.root, '--timeout', '5')
     expect(result.status).toBe(137)
     expect(result.stdout.trim()).toMatch(/^LANE DONE exit=137/)
   })
 
   it('accepts a terminal host record even without a log marker after worker exit', () => {
     const f = fixture(`const fs = require('node:fs'); setTimeout(() => { ${terminalUpdate} }, 40)`)
-    const result = run(f.root, '--timeout', '0.12')
+    const result = run(f.root, '--timeout', '5')
     expect(result.status).toBe(137)
     expect(result.stdout.trim()).toMatch(/^LANE DONE exit=137/)
+  })
+
+  it.skipIf(process.platform === 'win32')('uses a terminal host record when the worktree has been removed', () => {
+    const f = fixture('setTimeout(() => {}, 30_000)')
+    const pointer = JSON.parse(readFileSync(join(f.host, 'supervision', 'current.json'), 'utf8'))
+    const record = join(f.host, 'supervision', `${pointer.runId}.json`)
+    const state = JSON.parse(readFileSync(record, 'utf8'))
+    writeFileSync(record, JSON.stringify({ ...state, state: 'exited', exit: 7 }))
+    rmSync(f.root, { recursive: true, force: true })
+    const result = run(f.root)
+    expect(result.status, result.stderr + result.stdout).toBe(7)
+    expect(result.stdout).toMatch(/^LANE DONE exit=7/)
   })
 
   it('waits for termination publication after the worker and child are gone', () => {
@@ -168,6 +182,12 @@ describe('wt-lane-wait', () => {
     const result = run(f.root)
     expect(result.status, failureDiagnostic(f, result)).toBe(126)
     expect(result.stdout.trim()).toMatch(/^LANE DONE exit=126/)
+  })
+
+  it('waits for a terminal host publication briefly after a worker exits with a running record', () => {
+    const f = fixture("const fs = require('node:fs'); const cp = require('node:child_process'); const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); const record = '.lane/supervision/' + file; const code = `const fs=require('node:fs'); setTimeout(() => { const state=JSON.parse(fs.readFileSync(process.argv[1])); fs.writeFileSync(process.argv[1], JSON.stringify({...state,state:'exited',exit:7})) }, 100)`; const child=cp.spawn(process.execPath,['-e',code,record],{detached:true,stdio:'ignore'}); child.unref(); fs.appendFileSync('.lane/run.log','EXIT=7\\n'); /* 30_000: delay the fixture's automatic host publication */")
+    const result = run(f.root)
+    expect(result.status, failureDiagnostic(f, result)).toBe(7)
   })
 
   it('returns 124 when the lane does not finish before timeout', () => {
@@ -206,7 +226,7 @@ describe('wt-lane-wait', () => {
 
   it('rejects a log marker after its host supervision record disappears', () => {
     const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); fs.rmSync('.lane/supervision/current.json'); fs.rmSync('.lane/supervision/' + file); setTimeout(() => fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'), 60); setTimeout(() => {}, 80); }, 60)")
-    const result = run(f.root, '--timeout', '0.2')
+    const result = run(f.root, '--timeout', '3')
     expect(result.status, failureDiagnostic(f, result)).toBe(1)
     expect(result.stdout.trim()).toBe('LANE DIED exit=unknown')
   })
