@@ -25,6 +25,9 @@ const GUARD_JOURNAL_LIB = join(BIN_DIR, 'lib/guard-journal.mjs')
 // Both are `plugin/bin/*guard*.mjs` matches, so without this list the family scan below would
 // wrongly flag them.
 const JUSTIFIED_EXCLUSIONS: Record<string, string> = {
+  'wt-push-guard-install.mjs':
+    'Operator CLI for installing and checking a Git pre-push hook, not a Claude tool hook; ' +
+    'it has no PreToolUse/PostToolUse payload or guard-journal event to record.',
   'wt-outbound-guard-hook.mjs':
     'Its own durable registry already answers a DIFFERENT question (spawn accounting: who ' +
     'launched whom, closed via SubagentStop) via wt-spawn-registry-scan.mjs — it does not ' +

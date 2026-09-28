@@ -751,7 +751,8 @@ verbatim into five copies of a published surface, and nobody ever decided to pub
   push** (e.g. `HEAD`) — the same value you pass to the subsequent `git push` command,
   never re-derived or assumed, or a caller could check one ref and push a different one.
   A non-zero exit STOPS the push and names the offending commit(s) — that is an
-  escalation, never a silent skip. Pass this invariant down to every pilot you brief.
+  escalation, never a silent skip. Pass this invariant down to every pilot you brief. Pass `--new-branch` if the destination does not exist; an absent branch otherwise fails closed. The installed pre-push hook checks all refs in one invocation and consumes authorization for one approved attempt, including dry-run.
+  Install it with `node plugin/bin/wt-push-guard-install.mjs --install --repo <checkout> --guard-remote <name> --guard-path <owner/repo>`; verify the pinned files and executable shim with `--check --repo <checkout>`.
 
 ## Final report — how you ARBITRATED, then the memory harvest (both MANDATORY)
 

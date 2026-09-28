@@ -27,7 +27,7 @@ const GUARD = join(REPO_ROOT, 'plugin/bin/wt-push-scope-check.mjs')
 const ZERO = '0'.repeat(40)
 
 const SEAL_ROOT = mkdtempSync(join(tmpdir(), 'wt-push-scope-seal-'))
-const SEALED = sealedPluginCliEnv(SEAL_ROOT, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' })
+const SEALED = sealedPluginCliEnv(SEAL_ROOT, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_ALLOW_PROTOCOL: 'file' })
 afterAll(() => rmSync(SEAL_ROOT, { recursive: true, force: true }))
 
 const made: string[] = []
@@ -90,7 +90,7 @@ function run(f: { root: string; local: string }, scope: unknown, ref: string, o:
   const auth = join(f.root, `auth-${Math.random().toString(36).slice(2)}.json`)
   writeFileSync(auth, JSON.stringify(scope))
   const args = [GUARD, '--remote', o.remote ?? 'fake', '--ref', ref, '--authorized', auth]
-  if (o.branch !== undefined) args.push('--branch', o.branch)
+  if (o.branch !== undefined && o.remoteSha === undefined) args.push('--branch', o.branch)
   if (o.remoteSha !== undefined) args.push('--remote-sha', o.remoteSha)
   if (o.url !== undefined) args.push('--url', o.url)
   const res = spawnSync(process.execPath, args, { cwd: f.local, encoding: 'utf8', env: o.env ?? SEALED })

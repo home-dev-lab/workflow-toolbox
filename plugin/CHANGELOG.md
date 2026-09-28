@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Fixed
+- Push-scope checks now count the union of commits across destination refs while retaining per-destination ancestry rules; the pinned, installable pre-push hook verifies its installation and repository identity, consumes one authorization per approved hook attempt, and refuses unmeasured or unauthorized pushes. Manual checks require `--new-branch` for an absent destination.
+
 ## [0.189.0] - 2026-09-28
 
 ### Release notes

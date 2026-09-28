@@ -35,7 +35,7 @@
 // is being pushed; the script will not infer it for you.
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { handleHelpFlag } from './lib/cli-help.mjs';
+import { runPrePush } from './lib/host/push-guard-runtime.mjs';
 
 const HELP = `wt-push-scope-check — push-time guard: nothing lands in a publishable tree beyond
 what was actually authorized. Computes the commits the push puts on its destination ref and
@@ -43,11 +43,13 @@ checks every one against an authorized scope ({"commits":[...]} or {"maxCount":N
 
 Usage:
   wt-push-scope-check.mjs --remote <name> --ref <refspec> --authorized <path.json>
-                          (--remote-sha <sha> | --branch <branch>) [--url <push url>]
+                          (--remote-sha <sha> | --branch <branch> [--new-branch]) [--url <push url>]
+  wt-push-scope-check.mjs --pre-push --remote <name> --url <push url>
+                          --authorized <path.json> --install-dir <installed guard directory>
     --ref must be the EXACT ref about to be pushed (e.g. HEAD) — never omitted or assumed.
     --remote-sha is the destination ref's current tip as git hands it to a pre-push hook
       (all zeros for a new ref). Without it, --branch names the destination branch and its
-      tip is read from the remote.
+      tip is read from the remote. Use --new-branch when that branch does not yet exist.
     --url is the URL git pushes to (a pre-push hook's $2); default: the remote's push URL.
   Existing destination: counts the commits not reachable from its current tip.
   New destination: counts the commits not reachable from any branch or tag the remote advertises.
@@ -62,16 +64,20 @@ const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const ZERO_SHA = /^0+$/;
 
 function parseArgs(argv) {
-  handleHelpFlag(argv, HELP);
-  const out = { remote: null, branch: null, authorized: null, ref: null, remoteSha: null, url: null };
+  if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
+    console.log(HELP);
+    process.exit(0);
+  }
+  const out = { remote: null, branch: null, authorized: null, ref: null, remoteSha: null, url: null, newBranch: false, prePush: false, installDir: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--remote') out.remote = argv[++i];
-    else if (a === '--branch') out.branch = argv[++i];
-    else if (a === '--authorized') out.authorized = argv[++i];
-    else if (a === '--ref') out.ref = argv[++i];
-    else if (a === '--remote-sha') out.remoteSha = argv[++i];
-    else if (a === '--url') out.url = argv[++i];
+    if (a === '--new-branch') out.newBranch = true;
+    else if (a === '--pre-push') out.prePush = true;
+    else if (['--remote', '--branch', '--authorized', '--ref', '--remote-sha', '--url', '--install-dir'].includes(a)) {
+      const value = argv[++i];
+      if (value === undefined) fail(`${a} requires a value`);
+      out[{ '--remote': 'remote', '--branch': 'branch', '--authorized': 'authorized', '--ref': 'ref', '--remote-sha': 'remoteSha', '--url': 'url', '--install-dir': 'installDir' }[a]] = value;
+    } else fail(`unknown argument: ${a}`);
   }
   return out;
 }
@@ -92,7 +98,14 @@ function git(args, { input, ...opts } = {}) {
   });
 }
 
-const { remote, branch, authorized, ref, remoteSha, url } = parseArgs(process.argv.slice(2));
+const options = parseArgs(process.argv.slice(2));
+if (options.prePush) {
+  if (!options.remote || !options.url || !options.authorized || !options.installDir || options.ref || options.branch || options.remoteSha || options.newBranch) fail('usage: --pre-push --remote <name> --url <url> --authorized <path> --install-dir <dir>');
+  runPrePush(options);
+  process.exit(0);
+}
+const { remote, branch, authorized, ref, remoteSha, url, newBranch } = options;
+if (options.installDir || (newBranch && !branch) || (remoteSha && branch)) fail('usage: --remote-sha and --branch are mutually exclusive; --new-branch requires --branch');
 if (!remote || !authorized || !ref || (!remoteSha && !branch)) {
   fail(
     'usage: wt-push-scope-check.mjs --remote <name> --ref <refspec> --authorized <path.json> (--remote-sha <sha> | --branch <branch>) [--url <push url>]\n' +
@@ -182,6 +195,7 @@ if (remoteSha !== null) {
   const wanted = `refs/heads/${branch}`;
   const hit = advertisedListing.split('\n').find((l) => l.split('\t')[1]?.trim() === wanted);
   if (hit) destinationTip = hit.split('\t', 1)[0].trim();
+  else if (!newBranch) fail(`destination branch not found: ${branch}; pass --new-branch if the push creates it`);
 }
 
 let outgoing;
