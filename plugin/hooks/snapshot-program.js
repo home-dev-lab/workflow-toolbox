@@ -247,8 +247,10 @@ function slice(file, maxBytes, fromEnd = false, rejectOverflow = false) {
   try {
     const safeFile = safePath(file);
     if (!safeFile) return null;
-    if (process.platform === 'win32' || !fs.constants.O_NOFOLLOW || !fs.constants.O_NONBLOCK) return null;
-    handle = fs.openSync(safeFile, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW);
+    const protectedOpen = process.platform !== 'win32' && fs.constants.O_NOFOLLOW && fs.constants.O_NONBLOCK;
+    // Windows has no O_NOFOLLOW: safePath has already confined the canonical target to an
+    // admitted root. Keep bounded, regular-file reads available on that unsandboxed host.
+    handle = fs.openSync(safeFile, protectedOpen ? fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW : 'r');
     const stat = fs.fstatSync(handle);
     if (!stat.isFile()) return null;
     const size = stat.size;

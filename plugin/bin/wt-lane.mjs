@@ -18,6 +18,7 @@ import { hostAdapter } from './lib/host/adapter.mjs'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
 import { ensureLaneHostDir, laneHostDir, laneHostStateRoot, laneWritablePath, makeReadableLaneBrief, removeReadableLaneBrief } from './lib/host/lane-host-dir.mjs'
 import { readWorktreeRegular } from './lib/host/lane-host-dir.mjs'
+import { spawnWithLaneLogStderr } from './lib/host/lane-host-dir.mjs'
 import { laneUnsandboxedAtStart, laneWritableForLaunch } from './lib/host/lane-sandbox.mjs'
 
 const DEFAULT_TIMEOUT = 5400
@@ -86,6 +87,9 @@ export function parse(argv) {
   out.requestedDir = out.dir
   try { out.dir = realpathSync(out.dir) } catch { /* preserve the existing not-a-directory diagnostic */ }
   out.brief = path.resolve(out.brief)
+  for (const [flag, candidate] of [['--brief-cleanup-dir', out.briefCleanupDir], ['--log', out.log]]) {
+    if (candidate && (!path.isAbsolute(candidate) || candidate.split(/[\\/]/).includes('..'))) return { error: `${flag} must be absolute and contain no parent traversal` }
+  }
   if (out.briefCleanupDir) out.briefCleanupDir = path.resolve(out.briefCleanupDir)
   let writable
   try { writable = laneWritableForLaunch({ cwd: out.dir, args: ['--dir', out.dir], env: process.env, optionEnv: process.env }) } catch (error) { return { error: `cannot validate lane writable roots: ${error.message}` } }
@@ -381,7 +385,7 @@ function currentLaneLaunchRefusal(opts, modules, paths, current, inspect) {
     : verdict.status === 'unknown'
       ? `retry after the recorded hard bound${hardBound === null ? ' can be established from a readable record' : ` at ${new Date(hardBound).toISOString()}`}`
       : `wait until the lane reaches decision-needed, then abandon with ${control}`
-  process.stderr.write(`wt-lane: Refused: current lane ${current.runId} is ${verdict.status}; ${remedy}\n`)
+  process.stderr.write(`wt-lane: Refused: current lane ${current.runId} is ${verdict.status} (${verdict.reason}); ${remedy}\n`)
   return true
 }
 
@@ -637,7 +641,9 @@ async function main() {
       process.stdout.write(`${briefEvidenceLines(briefEvidence).join('\n')}\n`)
       writeLaneStage(opts.log, 'worker-spawn-start')
       const spawnedAt = Date.now()
-      const child = spawn(process.execPath, workerArgs, { detached: true, stdio: 'ignore' })
+      // The worker's stderr goes to the host-owned lane log: a worker that refuses or throws before
+      // its first stage would otherwise vanish with the launcher already reporting success.
+      const child = spawnWithLaneLogStderr(opts.log, (stdio) => spawn(process.execPath, workerArgs, { detached: true, stdio }))
       writeLaneStage(opts.log, 'worker-identity-capture-start')
       const captured = consentModules.inspectStartedProcess(consentModules.inspectProcess, child.pid, { expectedCommand: process.execPath, expectedArgv: child.spawnargs, spawnedAt })
       if (process.platform === 'win32' && !captured.identity) {
@@ -875,10 +881,13 @@ async function main() {
       const current = currentState
       if (['terminating', 'abandoned'].includes(current.state)) return
     } catch {}
+    // Signal the group before either terminal publication lets the next phase proceed.
+    // endGroup installs no-op handlers before signalling our own process group.
+    endGroup(exit, { writeReceipt: false })
     writeState({ state: 'exited', exit, ...(killedBy ? { killedBy } : {}), exitedAt: new Date().toISOString() })
     journal({ event: 'exited', pid: child.pid, argv: consentModules.argvSummary(['opencode', ...args]), worktree: opts.dir, owner: opts.owner, reason: killedBy ? `${killedBy.cause} ${signal}` : `exit ${exit}` })
     cleanupBrief()
-    endGroup(exit, { receiptLines: killedBy ? killedByLines(killedBy) : [] })
+    finish(exit, killedBy ? killedByLines(killedBy) : [])
   }
   child.on('close', onChildClose)
   if (earlyChildClose) onChildClose(...earlyChildClose)

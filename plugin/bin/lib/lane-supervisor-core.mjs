@@ -195,6 +195,7 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
   if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
   if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
   if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
+  if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
   if (worker === 'unknown' || child === 'unknown') {
     const unavailable = worker === 'unknown' && typeof record.workerIdentity === 'string'
       ? `worker identity ${record.workerIdentity}`
@@ -203,7 +204,6 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
         : null
     return { status: 'unknown', reason: unavailable ?? (platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`), worker, child }
   }
-  if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
   if (worker === 'running' && child === 'running' && ['running', 'decision-needed'].includes(record.state)) {
     return { status: record.state, reason: record.state, worker, child }
   }
@@ -492,10 +492,12 @@ export function legacySupervision(root) {
 
 export function readCurrentSupervision(root, requestedSlot = undefined) {
   try {
-    const paths = supervisionPaths(root, null, requestedSlot)
-    const pointer = JSON.parse(readFileSync(paths.pointer, 'utf8'))
+    const slot = requestedSlot === undefined ? process.env.WT_LANE_SUPERVISION_SLOT ?? null : requestedSlot
+    if (slot !== null && !/^[A-Za-z0-9._-]+$/.test(slot)) return null
+    const dir = path.join(laneHostDir(root), slot ? 'supervision-' + slot : 'supervision')
+    const pointer = JSON.parse(readFileSync(path.join(dir, 'current.json'), 'utf8'))
     if (typeof pointer.runId !== 'string' || !/^\d+-\d+$/.test(pointer.runId)) return null
-    return JSON.parse(readFileSync(supervisionPaths(root, pointer.runId, requestedSlot).record, 'utf8'))
+    return JSON.parse(readFileSync(path.join(dir, `${pointer.runId}.json`), 'utf8'))
   } catch { return null }
 }
 

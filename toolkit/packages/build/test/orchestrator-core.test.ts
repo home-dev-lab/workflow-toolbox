@@ -69,6 +69,8 @@ function receipts(cardDir: string, overrides: Record<string, number> = {}) {
 function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship\n' }]) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-orchestrator-'))); roots.push(root)
   spawnSync('git', ['init', '-q', '-b', 'develop'], { cwd: root }); spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root }); spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root })
+  // The fixture must never reach this machine's commit signing (an agent-backed signer fails under load).
+  spawnSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: root }); spawnSync('git', ['config', 'tag.gpgsign', 'false'], { cwd: root })
   writeFileSync(join(root, '.gitignore'), '.waves/\n.lane/\n'); writeFileSync(join(root, 'base.txt'), 'base\n'); spawnSync('git', ['add', '.'], { cwd: root }); spawnSync('git', ['commit', '-qm', 'base'], { cwd: root })
   const worktreesDir = join(root, '.waves'); const report = join(worktreesDir, 'report.md'); const moves: string[] = []; const comments: string[] = []; const gitCalls: string[][] = []; const launches: Array<{ card: string, hard?: boolean }> = []
   const byId = new Map(cards.map((card) => [String(card.id), card]))
@@ -628,6 +630,18 @@ describe('SDK orchestrator judge', () => {
     acceptedServer.setCardState('1', 'piloting'); acceptedServer.setCardState('1', 'judging')
     const accepted = createSdkJudge({ query: ({ options }: { options: { plugins: Array<{ path: string }> } }) => (async function* () { yield judgeInit([...options.plugins.slice(0, 2), { path: `${realpathSync(target)}/` }]); yield { type: 'result' }; yield { type: 'result' }; yield { type: 'result' } })(), models: { orchestrator: { value: 'test' } }, waveDir, waveServer: acceptedServer, contract: '# contract', pluginDirs: [linked] })
     await expect(accepted({ row: { id: '1' } })).resolves.toBe(false)
+  })
+
+  it('F11 emits accumulated judge warnings when the SDK iterator throws', async () => {
+    const f = repoFixture(); const waveDir = join(f.root, '.waves', 'warning-on-error'); mkdirSync(waveDir, { recursive: true })
+    const waveServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer
+    waveServer.setCardState('1', 'piloting'); waveServer.setCardState('1', 'judging')
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const judge = createSdkJudge({ query: () => (async function* () { yield judgeInit(); yield { type: 'assistant', message: { id: 'served', model: 'claude-haiku-4-5' } }; throw new Error('stream broke') })(), models: { orchestrator: { value: 'opus' } }, waveDir, waveServer, contract: '# contract' })
+      await expect(judge({ row: { id: '1' } })).rejects.toThrow('stream broke')
+      expect(stderr.mock.calls.map(([line]) => line).join('')).toContain('WARN model-fallback: judge requested opus served claude-haiku-4-5')
+    } finally { stderr.mockRestore() }
   })
 
   it('O1-2 lock: rejects absolute and traversal Glob/Grep inputs while allowing wildcard-first local patterns', () => {

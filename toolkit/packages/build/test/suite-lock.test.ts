@@ -63,6 +63,7 @@ describe('suite lock library', () => {
     const root = tempRoot('handoff')
     const first = await acquireSuiteLock({ root, argv: ['pnpm', 'test'] })
     expect(readSuiteLock({ root }).holder).toEqual({
+      leaseId: expect.any(String),
       pid: process.pid,
       argv: ['pnpm', 'test'],
       cwd: process.cwd(),
@@ -88,6 +89,67 @@ describe('suite lock library', () => {
     const replacement = await acquireSuiteLock({ root, waitS: 0.1, pollMs: 10 })
     expect(replacement.holder.pid).toBe(process.pid)
     expect(releaseSuiteLock(replacement)).toBe(true)
+  })
+
+  it('reclaims a lock.d whose holder was never published, after its grace', async () => {
+    const root = tempRoot('unpublished')
+    mkdirSync(join(root, 'lock.d'), { recursive: true })
+    const old = new Date(Date.now() - 61_000)
+    utimesSync(join(root, 'lock.d'), old, old)
+    const lease = await acquireSuiteLock({ root, waitS: 0.5, pollMs: 5 })
+    expect(lease.holder.pid).toBe(process.pid)
+    releaseSuiteLock(lease)
+  })
+
+  it('keeps a lock.d whose holder is still being published', async () => {
+    const root = tempRoot('publishing')
+    mkdirSync(join(root, 'lock.d'), { recursive: true })
+    await expect(acquireSuiteLock({ root, waitS: 0.2, pollMs: 5 })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    expect(existsSync(join(root, 'lock.d'))).toBe(true)
+  })
+
+  it('does not delete a replacement holder that wins the publication race', async () => {
+    const root = tempRoot('publish-replaced')
+    const lockDir = join(root, 'lock.d')
+    const replacement = { pid: process.pid, argv: ['replacement'], startedAt: new Date().toISOString() }
+    let replaced = false
+    await expect(acquireSuiteLock({ root, waitS: 0.2, pollMs: 10, beforePublish: () => {
+      if (replaced) return
+      replaced = true
+      rmSync(lockDir, { recursive: true })
+      mkdirSync(lockDir)
+      writeFileSync(join(lockDir, 'holder.json'), JSON.stringify(replacement))
+    } })).rejects.toMatchObject({ code: 'WT_SUITE_LOCK_TIMEOUT' })
+    expect(replaced).toBe(true)
+    expect(JSON.parse(readFileSync(join(lockDir, 'holder.json'), 'utf8'))).toEqual(replacement)
+  })
+
+  it('aborts before and immediately after publishing without leaving a lock', async () => {
+    for (const afterPublish of [false, true]) {
+      const root = tempRoot(`abort-${afterPublish}`)
+      let reads = 0
+      const signal = { get aborted() { reads += 1; return afterPublish ? reads >= 2 : true }, addEventListener() {}, removeEventListener() {} }
+      await expect(acquireSuiteLock({ root, signal })).rejects.toMatchObject({ code: 'ABORT_ERR' })
+      expect(existsSync(join(root, 'lock.d'))).toBe(false)
+    }
+  })
+
+  it('uses leaseId so a late release cannot remove a same-millisecond replacement', async () => {
+    const root = tempRoot('lease-id')
+    const startedAt = '2026-09-27T00:00:00.000Z'
+    const first = await acquireSuiteLock({ root, startedAt })
+    rmSync(first.lockDir, { recursive: true })
+    const second = await acquireSuiteLock({ root, startedAt })
+    expect(releaseSuiteLock(first)).toBe(false)
+    expect(readSuiteLock({ root }).holder?.leaseId).toBe(second.holder.leaseId)
+    releaseSuiteLock(second)
+  })
+
+  it('sanitises untrusted holder fields and caps argv elements', () => {
+    const output = formatSuiteLockHolder({ pid: '1\nX', argv: ['pnpm', `test\n\u001b[31mFAKE holder pid 1\u202e${'x'.repeat(100)}`], startedAt: 'bad' })
+    expect(output).toContain('holder pid unknown')
+    expect(output).not.toMatch(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/u)
+    expect(output).toContain('...)')
   })
 })
 

@@ -28,6 +28,38 @@ describe('lane supervisor safety core', () => {
     expect(classifyLane(record, { platform: 'linux', inspect: (pid: number) => pid === worker.pid ? { ...worker, startTime: 401 } : child })).toMatchObject({ status: 'worker-gone-child-alive' })
   })
 
+  it.each(['exited', 'abandoned'])('classifies a %s lane with a gone child as terminal despite an uncertain live worker', (state) => {
+    const record = { runId: '40-1', state, workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+    const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : null
+    expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => false })).toMatchObject({ status: 'terminal', reason: state, worker: 'unknown', child: 'gone' })
+    expect(classifyLane(record, { platform: 'darwin', inspect: () => null, processExists: () => false })).toMatchObject({ status: 'gone', reason: 'worker-and-child-gone' })
+  })
+
+  it.each(['exited', 'abandoned'])('keeps an %s lane uncertain when its child identity is unknown', (state) => {
+    const record = { runId: '40-1', state, workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+    const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : null
+    expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => null })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-ps', worker: 'unknown', child: 'unknown' })
+  })
+
+  // Only the exact pair "worker wrote exited/abandoned AND child gone" may bypass an uncertain worker.
+  it.each(['running', 'decision-needed', 'terminating', 'launching'])('keeps a %s lane with an uncertain worker and a gone child out of terminal', (state) => {
+    const record = { runId: '40-1', state, workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+    const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : null
+    expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => false }).status).toBe('unknown')
+  })
+
+  it.each(['exited', 'abandoned'])('keeps a %s lane whose child is still alive out of terminal while its worker is uncertain', (state) => {
+    const record = { runId: '40-1', state, workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+    const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : pid === 41 ? { pid, argv: ['opencode run'], startTime: 410 } : null
+    expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => true }).status).toBe('unknown')
+  })
+
+  it('keeps a running lane uncertain when its worker identity is unknown and its child is gone', () => {
+    const record = { runId: '40-1', state: 'running', workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+    const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : null
+    expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => false })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-ps', worker: 'unknown', child: 'gone' })
+  })
+
   it('classifies a gone worker that never spawned a child as gone', () => {
     const record = { runId: '40-1', state: 'launching', workerPid: 40, workerArgv: ['node'], workerStartTime: 400, childPid: null, childArgv: null, childStartTime: null, worktree: '/work' }
     expect(classifyLane(record, { platform: 'linux', inspect: () => null, processExists: () => false })).toMatchObject({ status: 'gone', reason: 'worker-gone-no-child' })

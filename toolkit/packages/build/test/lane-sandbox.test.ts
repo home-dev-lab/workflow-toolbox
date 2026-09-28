@@ -1,10 +1,11 @@
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { accessSync, chmodSync, constants, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
+import { EventEmitter } from 'node:events'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { initializePilotDecisionStore, registerPilotDecisionRequest } from '../../../../plugin/bin/lib/host/pilot-decision-store.mjs'
 
@@ -21,6 +22,7 @@ interface SandboxPlan { kind: 'bwrap' | 'none', line: string, readable?: string[
 interface FakeFs { exists: (f: string) => boolean, realpath: (f: string) => string | null, isFile: (f: string) => boolean, isExecutable: (f: string) => boolean, isDir: (f: string) => boolean, readText: (f: string) => string | null, ensureDir: (d: string) => void, ensureFile: (f: string) => void, copy: (a: string, b: string) => void }
 interface SandboxModule {
   resolveLaneSandbox: (request: Record<string, unknown>) => SandboxPlan
+  laneWritableForLaunch: (request: Record<string, unknown>) => (file: string) => boolean
   announceUnsandboxedLane: (plan: SandboxPlan, write: (text: string) => void) => void
   insideChildUserNamespace: (fs?: { readText: (f: string) => string | null }) => boolean | null
   LaneSandboxRefusal: new (message: string) => Error
@@ -87,6 +89,61 @@ function fakeFs(files: Record<string, string> = {}, dirs: string[] = [], realpat
 
 const HOME = '/home/lane-owner'
 const okProbe = () => ({ ok: true })
+
+describe('lane host output preflight — Windows paths', () => {
+  const home = 'C:\\Users\\RUNNER~1'
+  const worktree = 'C:\\Projects\\Lane\\tree'
+  const hostState = `${home}\\AppData\\Local\\Temp\\wt-lane-host-suite-x\\abc`
+  const env = { HOME: home, USERPROFILE: home, LOCALAPPDATA: `${home}\\AppData\\Local`, TEMP: `${home}\\AppData\\Local\\Temp` }
+  const fs = fakeFs({}, [home, worktree, hostState])
+
+  it('accepts an external host log and refuses worktree and extra writable paths case-insensitively', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, args: ['--dir', worktree], env, optionEnv: {}, platform: 'win32', paths: { writable: ['D:\\Shared\\lane-output'] }, fs })
+    expect(() => writable(`${hostState}\\run.log`)).not.toThrow()
+    expect(writable(`${hostState}\\run.log`)).toBe(false)
+    expect(writable(`${worktree}\\run.log`)).toBe(true)
+    expect(writable('c:\\PROJECTS\\lane\\TREE\\brief-cleanup')).toBe(true)
+    expect(writable('d:\\SHARED\\lane-output\\run.log')).toBe(true)
+  })
+
+  it('refuses relative paths and parent traversal even if the final location is outside a writable root', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env, optionEnv: {}, platform: 'win32', fs })
+    expect(() => writable('run.log')).toThrow(/non-absolute path or parent traversal/)
+    expect(() => writable(`${worktree}\\..\\run.log`)).toThrow(/non-absolute path or parent traversal/)
+  })
+
+  it('detects an aliased writable root before an as-yet-uncreated log file', () => {
+    const alias = 'D:\\Links\\lane-tree'
+    const linked = fakeFs({}, [home, worktree, alias], { [alias]: worktree })
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env, optionEnv: {}, platform: 'win32', fs: linked })
+    expect(writable(`${alias}\\run.log`)).toBe(true)
+  })
+
+  it('treats XDG_DATA_HOME as the Windows OpenCode share root, never XDG_SHARE_HOME', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env: { ...env, XDG_DATA_HOME: 'D:\\oc-data', XDG_SHARE_HOME: 'E:\\bogus-share' }, optionEnv: {}, platform: 'win32', fs })
+    expect(writable('D:\\oc-data\\opencode\\run.log')).toBe(true)
+    expect(writable('E:\\bogus-share\\opencode\\run.log')).toBe(false)
+  })
+
+  it('uses the default Windows OpenCode share root when XDG_DATA_HOME is unset, ignoring XDG_SHARE_HOME', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env: { ...env, XDG_SHARE_HOME: 'E:\\bogus-share' }, optionEnv: {}, platform: 'win32', fs })
+    expect(writable(`${home}\\.local\\share\\opencode\\run.log`)).toBe(true)
+    expect(writable('E:\\bogus-share\\opencode\\run.log')).toBe(false)
+  })
+})
+// The POSIX-planner cases build the Linux plan against the REAL filesystem (symlinks, realpaths) on
+// every POSIX host. The plan is constructed, never executed, so they pin the planner's platform to
+// linux and hand it a fixture bwrap answered by okProbe: a host without bubblewrap (CI ubuntu, macOS)
+// would otherwise get the `kind: 'none'` pass-through and the assertions would read nothing.
+function posixPlanner(root: string) {
+  const bwrap = join(root, 'bwrap-fixture'); writeFileSync(bwrap, '', { mode: 0o755 })
+  const spawnFn = (_command: string, args: string[]) => {
+    const socket = socketOf(args)
+    if (socket) writeFileSync(socket, '')
+    return { kill() {}, pid: 1 }
+  }
+  return { platform: 'linux', bwrap, probe: okProbe, spawnFn }
+}
 const flat = (args: string[], flag: string) => args.flatMap((v, i) => (v === flag ? [args[i + 1]!] : []))
 const everyBind = (args: string[]) => [...flat(args, '--ro-bind'), ...flat(args, '--ro-bind-try'), ...flat(args, '--bind'), ...flat(args, '--bind-try')]
 
@@ -165,7 +222,7 @@ describe('lane sandbox plan — availability and pass-through', () => {
 })
 
 describe('lane sandbox plan — filesystem allow-list', () => {
-  it.skipIf(process.platform !== 'linux')('masks sockets under aliased directory sources and single-socket binds', async () => {
+  it.skipIf(!BWRAP_WORKS)('masks sockets under aliased directory sources and single-socket binds (requires usable root-owned bwrap)', async () => {
     const root = tempRoot('socket-alias'); const home = join(root, 'home'); const work = join(root, 'work'); const source = join(root, 'source'); const alias = join(root, 'alias'); const run = join(root, 'run')
     for (const dir of [home, work, source, run]) mkdirSync(dir)
     symlinkSync(source, alias)
@@ -196,7 +253,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
       expect(spawnSync('/usr/bin/bwrap', args, { timeout: 10_000 }).status).toBe(0)
     } finally { p.dispose() }
   })
-  it.skipIf(process.platform !== 'linux')('rejects a real global-config symlink into the worktree and never binds its {file:} key', () => {
+  it.skipIf(process.platform === 'win32')('rejects a real global-config symlink into the worktree and never binds its {file:} key (POSIX planner)', () => {
     const root = tempRoot('config-target'); const home = join(root, 'home'); const work = join(root, 'work'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
     for (const dir of [home, work, run, config]) mkdirSync(dir, { recursive: true })
@@ -204,24 +261,20 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     const provider = join(work, 'provider.json')
     writeFileSync(provider, JSON.stringify({ provider: { p: { options: { baseURL: 'https://attacker.example/v1' } } }, key: `{file:${key}}` }))
     symlinkSync(provider, join(config, 'opencode.json'))
-    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m'], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', find: '/usr/bin/find', probe: okProbe, runtimeParent: run, spawnFn: (command: string, args: string[]) => {
-      const socket = socketOf(args)
-      if (socket) writeFileSync(socket, '')
-      return { kill() {}, pid: 1 }
-    } }) as SandboxPlan & { egressHosts: string[] }
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m'], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, socat: '/usr/bin/socat', find: '/usr/bin/find', runtimeParent: run, ...posixPlanner(root) }) as SandboxPlan & { egressHosts: string[] }
     try {
       expect(p.egressHosts).not.toContain('attacker.example')
       expect(p.readable).not.toContain(key)
     } finally { p.dispose() }
   })
-  it.skipIf(process.platform !== 'linux')('refuses egress from config beneath an additional writable --dir on the real filesystem', () => {
+  it.skipIf(process.platform === 'win32')('refuses egress from config beneath an additional writable --dir on the real filesystem (POSIX planner)', () => {
     const root = tempRoot('config-extra'); const home = join(root, 'home'); const work = join(root, 'work'); const extra = join(root, 'extra'); const run = join(root, 'run')
     const config = join(home, '.config', 'opencode')
     for (const dir of [work, extra, run, config]) mkdirSync(dir, { recursive: true })
     const provider = join(extra, 'provider.json')
     writeFileSync(provider, JSON.stringify({ provider: { p: { options: { baseURL: 'https://attacker.example/v1' } } } }))
     symlinkSync(provider, join(config, 'opencode.json'))
-    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m', '--dir', extra], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', find: '/usr/bin/find', probe: okProbe, runtimeParent: run }) as SandboxPlan & { egressHosts: string[] }
+    const p = sandbox.resolveLaneSandbox({ profile: 'opencode', bin: '/usr/bin/node', args: ['--model', 'p/m', '--dir', extra], cwd: work, env: { HOME: home, PATH: '/usr/bin' }, optionEnv: {}, socat: '/usr/bin/socat', find: '/usr/bin/find', runtimeParent: run, ...posixPlanner(root) }) as SandboxPlan & { egressHosts: string[] }
     try {
       expect(p.writable).toContain(extra)
       expect(p.egressHosts).not.toContain('attacker.example')
@@ -449,12 +502,23 @@ describe('lane sandbox plan — filesystem allow-list', () => {
 
   // Linux-only by nature: it compares the plan's POSIX bind with suite-lock.mjs's own resolution, which
   // uses the HOST's native path module (backslashes on Windows, where no plan is ever built).
-  it.skipIf(process.platform !== 'linux')('shares only the machine-wide suite lock directory that the suite lock itself resolves (Linux-only: compares with the host-native suite-lock path)', () => {
+  it.skipIf(process.platform !== 'linux')('routes suite locks through a host broker and masks the machine-wide lock root read-only', () => {
     const fs = fakeFs()
-    const [, args] = plan({ fs }).wrap('opencode', [])
+    const p = plan({ fs })
+    const [, args] = p.wrap('opencode', [])
     const lockRoot = suiteLock.readSuiteLock({ env: {}, home: HOME, platform: 'linux' }).root
-    expect(flat(args, '--bind-try')).toContain(lockRoot)
-    expect(fs.ensured).toContain(lockRoot)
+    expect(flat(args, '--bind-try')).not.toContain(lockRoot)
+    expect(args.slice(args.indexOf('WT_SUITE_LOCK_BROKER') - 1, args.indexOf('WT_SUITE_LOCK_BROKER') + 2)).toEqual(['--setenv', 'WT_SUITE_LOCK_BROKER', expect.stringMatching(/\/lock\/broker\.sock$/)])
+    const ro = args.flatMap((value, index) => value === '--ro-bind' ? [[args[index + 1], args[index + 2]]] : [])
+    expect(ro).toContainEqual([expect.stringMatching(/\/lock-empty$/), lockRoot])
+    expect(p.line).toContain('suite lock via host broker')
+    p.dispose()
+  })
+
+  it('refuses any writable bind overlapping the canonical suite-lock root', () => {
+    for (const lockRoot of ['/work/tree/locks', '/work/tree', '/work/tree/locks/child']) {
+      expect(() => plan({ env: { HOME, PATH: '/usr/bin', WT_SUITE_LOCK_DIR: lockRoot } })).toThrow(/overlaps .*suite lock/i)
+    }
   })
 
   it('resolves the suite-lock runner a lane runs to the plugin bin/ file that exists, and refuses when it is absent', () => {
@@ -503,7 +567,7 @@ describe('lane sandbox plan — filesystem allow-list', () => {
     expect(p.line).toContain(`refused WT_LANE_SANDBOX_READ/WT_LANE_SANDBOX_WRITE entries /, relative, ${HOME}`)
   })
 
-  it.skipIf(sandbox.insideChildUserNamespace() === true)('never binds the host-owned lane state root, an ancestor of it, or anything beneath it (override ignored in child user namespace)', () => {
+  it.skipIf(process.platform === 'win32' || sandbox.insideChildUserNamespace() === true)('never binds the host-owned lane state root, an ancestor of it, or anything beneath it (POSIX planner; override ignored in child user namespace)', () => {
     const stateRoot = '/state/wt-lane-host'
     const env = { HOME, PATH: '/usr/bin', WT_LANE_HOST_STATE: stateRoot }
     const extras = [`${stateRoot}/abc/supervision`, stateRoot, '/state', '/scratch']
@@ -568,7 +632,7 @@ describe('lane sandbox plan — read-only roles and working directory (H5)', () 
 })
 
 describe('lane sandbox plan — codex home (H3)', () => {
-  it.skipIf(process.platform !== 'linux')('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh', () => {
+  it.skipIf(process.platform === 'win32')('rejects symlinked private auth, injected API key and a foreign access-token subject, but merges a genuine refresh (POSIX planner)', () => {
     const root = tempRoot('auth-writeback')
     const home = join(root, 'home'); const work = join(root, 'work'); const binDir = join(root, 'bin'); const run = join(root, 'run')
     for (const dir of [home, work, binDir, run, join(home, '.codex')]) mkdirSync(dir)
@@ -577,7 +641,7 @@ describe('lane sandbox plan — codex home (H3)', () => {
     const auth = join(home, '.codex', 'auth.json')
     const original = { tokens: { id_token: jwt('owner'), access_token: jwt('owner'), refresh_token: 'old' }, last_refresh: 'before', OPENAI_API_KEY: 'host' }
     writeFileSync(auth, JSON.stringify(original))
-    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', cwd: work, env: { HOME: home, PATH: binDir }, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: null, find: '/usr/bin/find', probe: okProbe, runtimeParent: run }) as SandboxPlan & { authWriteback: { from: string, to: string }, writeBackAuth: () => void }
+    const p = sandbox.resolveLaneSandbox({ profile: 'codex', bin: '/usr/bin/node', cwd: work, env: { HOME: home, PATH: binDir }, optionEnv: {}, socat: null, find: '/usr/bin/find', runtimeParent: run, ...posixPlanner(root) }) as SandboxPlan & { authWriteback: { from: string, to: string }, writeBackAuth: () => void }
     const fresh = { ...original, tokens: { ...original.tokens, refresh_token: 'new' }, OPENAI_API_KEY: 'injected', last_refresh: 'after' }
     try {
       const secret = join(root, 'secret'); writeFileSync(secret, JSON.stringify(fresh))
@@ -675,8 +739,8 @@ describe.skipIf(process.platform === 'win32')('lane sandbox — refused plans le
   it('kills a bridge that fails to open its socket without copying the credential', () => {
     const { fs, relays, refuse } = fixture(false)
     refuse({}, /did not start within 3 s/)
-    expect(relays).toHaveLength(1)
-    expect(relays[0]!.alive).toBe(false)
+    expect(relays).toHaveLength(2)
+    expect(relays.every((relay) => !relay.alive)).toBe(true)
     expect(fs.copied).toEqual([])
   })
 })
@@ -765,6 +829,38 @@ describe('lane sandbox plan — network endpoints (H4)', () => {
     expect(args[args.indexOf('--') + 1]).toBe('/bin/sh')
   })
 
+  // Card 1872293505129252765 (L2b): the HOST half of an endpoint bridge is the Node relay mode of the
+  // egress proxy, under the parent watchdog, never a host socat whose forked children outlive it.
+  it('starts the host half of an endpoint bridge as a Node relay tied to this process', () => {
+    const config = `${HOME}/.config/opencode`
+    const fs = fakeFs({ [`${config}/opencode.jsonc`]: '{ "provider": { "x": { "options": { "baseURL": "http://127.0.0.1:8317/v1" } } } }' }, [config, HOME, '/work/tree'])
+    const spawned: Array<{ command: string, args: string[] }> = []
+    plan({ fs, args: ['run', 'x', '--model', 'x/m'], spawnFn: listening(fs, spawned) })
+    const relay = spawned.find((s) => s.args.includes('--relay'))
+    expect(relay, JSON.stringify(spawned)).toBeDefined()
+    expect(relay!.command).toBe('/usr/bin/node')
+    expect(relay!.args[0]!.endsWith('lane-egress-proxy.mjs')).toBe(true)
+    expect(relay!.args[relay!.args.indexOf('--relay') + 1]).toBe('127.0.0.1:8317')
+    expect(relay!.args[relay!.args.indexOf('--parent') + 1]).toBe(String(process.pid))
+    expect(relay!.args).not.toContain('--allow')
+    expect(spawned.some((s) => s.command === '/usr/bin/socat')).toBe(false)
+  })
+
+  it('names the suite-lock broker when its host bridge exits', () => {
+    const fs = fakeFs()
+    const broker = new EventEmitter() as EventEmitter & { kill: () => void }
+    broker.kill = () => {}
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const p = plan({ fs, spawnFn: (_command: string, args: string[]) => {
+      fs.ensureFile(socketOf(args)!)
+      return broker
+    } })
+    try {
+      broker.emit('exit', 7, null)
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('lane suite-lock broker exited (code 7, signal none)'))
+    } finally { p.dispose(); stderr.mockRestore() }
+  })
+
   it('states the isolation honestly when socat is absent (no bridge)', () => {
     const config = `${HOME}/.config/opencode`
     const fs = fakeFs({ [`${config}/opencode.jsonc`]: '{ "provider": { "x": { "options": { "baseURL": "http://127.0.0.1:8317/v1" } } } }' }, [config, HOME, '/work/tree'])
@@ -813,7 +909,9 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     const { p, spawned, args } = egressPlan('antigravity/some-model', {})
     expect(p.endpoints).toEqual([{ host: '127.0.0.1', port: 8317 }])
     expect(p.egressHosts).toEqual([])
-    expect(spawned.some((s) => s.args.some((a) => a.endsWith('lane-egress-proxy.mjs')))).toBe(false)
+    // The endpoint is relayed by the same module in --relay mode; no PROXY (--allow) is started.
+    expect(spawned.some((s) => s.args.includes('--allow'))).toBe(false)
+    expect(spawned.some((s) => s.args.includes('--relay'))).toBe(true)
     expect(setenv(args, 'HTTPS_PROXY')).toEqual([])
   })
 
@@ -823,7 +921,8 @@ describe('lane sandbox plan — per-model egress (round 3, defect 1)', () => {
     expect(unknown.p.line).toContain('no egress: provider mystery has no known hosts')
     const none = egressPlan(null, { openai: { type: 'oauth' } })
     expect(none.p.egressHosts).toEqual([])
-    expect(none.spawned).toEqual([])
+    expect(none.spawned.some((entry) => entry.args.some((arg) => arg.endsWith('lane-egress-proxy.mjs')))).toBe(false)
+    expect(none.spawned.some((entry) => entry.args.some((arg) => arg.endsWith('lane-suite-lock-broker.mjs')))).toBe(true)
   })
 
   it('a codex lane signed in with ChatGPT gets the OpenAI OAuth hosts', () => {
@@ -905,14 +1004,17 @@ describe('lane sandbox plan — egress log path and bridge start (round 4)', () 
   const share = `${HOME}/.local/share/opencode`
   const files = () => ({ [`${share}/auth.json`]: JSON.stringify({ openai: { type: 'oauth' } }) })
   it('refuses an egress log under a path the lane can write, and accepts one outside', () => {
-    for (const log of ['/work/tree/.lane/egress.jsonl', `${HOME}/.local/state/wt-suite-lock/egress.jsonl`]) {
-      expect(() => plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/run/lane']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: log } }), log).toThrow(/refusing WT_LANE_EGRESS_LOG/)
-    }
+    expect(() => plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/run/lane']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: '/work/tree/.lane/egress.jsonl' } })).toThrow(/refusing WT_LANE_EGRESS_LOG/)
+    expect(plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/run/lane']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: `${HOME}/.local/state/wt-suite-lock/egress.jsonl` } }).kind).toBe('bwrap')
     expect(plan({ fs: fakeFs(files(), [config, share, HOME, '/work/tree', '/var/log']), args: ['run', '--model', 'openai/m'], optionEnv: { WT_LANE_EGRESS_LOG: '/var/log/egress.jsonl' } }).kind).toBe('bwrap')
   })
   it('refuses the launch when the egress proxy never opens its socket, and never claims the route', () => {
     const fs = fakeFs(files(), [config, share, HOME, '/work/tree'])
-    expect(() => plan({ fs, args: ['run', '--model', 'openai/m'], spawnFn: () => ({ kill() {}, pid: 1 }) })).toThrow(/egress proxy did not start within 3 s/)
+    const spawnFn = (_command: string, args: string[]) => {
+      if (args.some((arg) => arg.endsWith('lane-suite-lock-broker.mjs'))) fs.ensureFile(socketOf(args)!)
+      return { kill() {}, pid: 1 }
+    }
+    expect(() => plan({ fs, args: ['run', '--model', 'openai/m'], spawnFn })).toThrow(/egress proxy did not start within 3 s/)
   })
 })
 
@@ -1187,7 +1289,6 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     // named. From inside the sandbox it must be UNREACHABLE (connection refused: empty loopback).
     let forbiddenPort = 0
     const srv = net.createServer((c) => c.end('FORBIDDEN\n')); servers.push(srv)
-    // eslint-disable-next-line no-async-promise-executor
     return new Promise<void>((resolve, reject) => {
       srv.listen(0, '127.0.0.1', () => {
         try {
@@ -1306,4 +1407,62 @@ describe('host-side git hardening (H1)', () => {
     expect(gitCalls.length).toBeGreaterThan(0)
     for (const call of gitCalls) expect(call.slice(1, 5)).toEqual(['-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null'])
   })
+})
+
+// Card 1872293505129252765 (L2b): a host socat relay ran `UNIX-LISTEN:...,fork`, and its forked
+// children outlived a SIGKILLed launcher (one orphan by 5 h 40 min). Invariant: once the launcher is
+// SIGKILLed, no host process tied to its runtime directory survives, and a connection the lane held
+// open through the relay is closed. Real processes, real unix sockets, a real TCP upstream; no bwrap
+// is needed because only the host half of the bridge is exercised (the probe is injected).
+describe('host relays die with their launcher (card 1872293505129252765)', () => {
+  const SOCAT = process.platform === 'linux' ? spawnSync('sh', ['-c', 'command -v socat'], { encoding: 'utf8' }).stdout.trim() : ''
+  const survivorsOf = (needle: string) => readdirSync('/proc').filter((pid) => /^\d+$/.test(pid)).flatMap((pid) => {
+    try { return readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes(needle) ? [Number(pid)] : [] } catch { return [] }
+  })
+
+  it.runIf(process.platform === 'linux')('SIGKILL of the launcher closes a held relayed connection and leaves no relay process (Linux-only: reads /proc)', async () => {
+    const root = tempRoot('relay-death')
+    const home = join(root, 'home'); const work = join(root, 'w'); const runtime = join(root, 'rt')
+    mkdirSync(join(home, '.config/opencode'), { recursive: true }); mkdirSync(work); mkdirSync(runtime)
+    let upstreamConnected = false
+    const upstream = net.createServer((c) => { upstreamConnected = true; c.on('error', () => {}) }) // answers "slowly": never within the test
+    servers.push(upstream)
+    await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r))
+    const port = (upstream.address() as net.AddressInfo).port
+    writeFileSync(join(home, '.config/opencode/opencode.jsonc'), JSON.stringify({ provider: { x: { options: { baseURL: `http://127.0.0.1:${port}/v1` } } } }))
+    const modulePath = sandboxLib ? join(sandboxLib, 'host/lane-sandbox.mjs') : join(LIB, 'host/lane-sandbox.mjs')
+    // The host relay needs no socat after the fix; a placeholder stands in where socat is absent, only
+    // to keep the plan's "inside half exists" branch (it is never executed here).
+    const request = { profile: 'opencode', bin: process.execPath, args: ['run', '--model', 'x/m'], cwd: work, env: { HOME: home, PATH: process.env.PATH }, optionEnv: { PATH: process.env.PATH }, platform: 'linux', bwrap: process.execPath, socat: SOCAT || '/bin/sh', find: '/usr/bin/find', runtimeParent: runtime }
+    const launcherScript = `const { resolveLaneSandbox } = await import(process.env.WT_TEST_SANDBOX_URL)
+      const plan = resolveLaneSandbox({ ...JSON.parse(process.env.WT_TEST_REQUEST), probe: () => ({ ok: true }) })
+      console.log('ready ' + plan.endpoints.length)
+      setInterval(() => {}, 1000)`
+    const launcher = spawn(process.execPath, ['--input-type=module', '-e', launcherScript], { stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, HOME: home, XDG_STATE_HOME: join(home, '.local/state'), CLAUDE_CONFIG_DIR: join(home, '.claude'), WT_TEST_SANDBOX_URL: pathToFileURL(modulePath).href, WT_TEST_REQUEST: JSON.stringify(request) } })
+    children.push(launcher)
+    const ready = await new Promise<string>((resolve) => launcher.stdout.once('data', (d) => resolve(String(d).trim())))
+    expect(ready).toBe('ready 1')
+    const [planDir] = readdirSync(runtime).filter((name) => name.startsWith('wt-lane-sandbox-'))
+    const sock = join(runtime, planDir!, 'net', 'ep-0.sock')
+    let clientClosed = false
+    const client = net.connect(sock, () => client.write('held request'))
+    client.on('error', () => {})
+    client.on('close', () => { clientClosed = true })
+    const connected = Date.now() + 15_000
+    while (!upstreamConnected && Date.now() < connected) await new Promise((r) => setTimeout(r, 50))
+    expect(upstreamConnected).toBe(true)
+    expect(survivorsOf(runtime).length).toBeGreaterThan(0) // control: the relay IS running before the kill
+    launcher.kill('SIGKILL')
+    const deadline = Date.now() + 15_000
+    let survivors = survivorsOf(runtime)
+    while ((survivors.length || !clientClosed) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100))
+      survivors = survivorsOf(runtime)
+    }
+    const closedInTime = clientClosed
+    for (const pid of survivors) { try { process.kill(pid, 'SIGKILL') } catch { /* gone */ } }
+    client.destroy()
+    expect(survivors).toEqual([])
+    expect(closedInTime).toBe(true)
+  }, 20_000)
 })

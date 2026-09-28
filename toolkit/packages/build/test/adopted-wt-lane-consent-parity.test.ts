@@ -33,9 +33,26 @@ const CONSENT_MATRIX_TIMEOUT_MS = CHILD_TIMEOUT_MS * CONSENT_ACCOUNTS.length * C
 // left for that many sequential child processes on that host.
 const SUITE_LOCK_CHILD_TIMEOUT_MS = CHILD_TIMEOUT_MS * 3 + 15_000
 
-afterEach(() => {
+// A started launcher returns while its detached worker is still recording the run in the host
+// directory; teardown waits for every started worker to exit so it never removes that directory
+// under a live writer (ENOTEMPTY on macOS, run 36341392712).
+const workers: number[] = []
+const WORKER_EXIT_PATIENCE_MS = 30_000
+const workerAlive = (pid: number) => { try { process.kill(pid, 0); return true } catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' } }
+async function waitForWorkerExit(pid: number) {
+  const deadline = Date.now() + WORKER_EXIT_PATIENCE_MS
+  while (workerAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25))
+  if (workerAlive(pid)) throw new Error(`timed out waiting for adopted lane worker pid=${pid} to exit before teardown`)
+}
+
+afterEach(async () => {
+  for (const pid of workers.splice(0)) await waitForWorkerExit(pid)
   for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'project')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }) }
-})
+}, WORKER_EXIT_PATIENCE_MS * 2)
+
+function laneLogTail(project: string, lines = 8) {
+  try { return readFileSync(join(laneHostDir(project), 'run.log'), 'utf8').trim().split(/\r?\n/).slice(-lines).join(' | ') || '<empty>' } catch { return '<unavailable>' }
+}
 
 function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = CHILD_TIMEOUT_MS) {
   const result = spawnSync(process.execPath, args, {
@@ -45,12 +62,14 @@ function runChild(name: string, args: string[], env: NodeJS.ProcessEnv, timeoutM
     timeout: timeoutMs,
     killSignal: 'SIGKILL',
   })
+  // Every door that starts a lane (launch() and the direct launcher calls alike) announces its
+  // detached worker as pid=<n>; teardown waits for each one (ENOTEMPTY on macOS, run 36345651918).
+  const worker = /^pid=(\d+)$/m.exec(result.stdout ?? '')?.[1]
+  if (result.status === 0 && worker) workers.push(Number(worker))
   if (result.error) {
     const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim().split(/\r?\n/).at(-1) || '<no output>'
     const dirIndex = args.indexOf('--dir')
-    const log = dirIndex >= 0 ? join(laneHostDir(args[dirIndex + 1]!), 'run.log') : null
-    let laneTail = '<unavailable>'
-    try { laneTail = readFileSync(log!, 'utf8').trim().split(/\r?\n/).slice(-8).join(' | ') || '<empty>' } catch {}
+    const laneTail = dirIndex >= 0 ? laneLogTail(args[dirIndex + 1]!) : '<unavailable>'
     throw new Error(`${name} failed after ${timeoutMs}ms: ${result.error.message}; last output: ${output}; lane log tail: ${laneTail}`)
   }
   return result
@@ -112,7 +131,7 @@ else if (process.env.WT_ADOPTED_SEEN_LOCK) fs.writeFileSync(process.env.WT_ADOPT
   // inherit a developer's config, home, or lane settings into the child process.
   // Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
   // the sandbox itself is locked in lane-sandbox.test.ts.
-  const env: NodeJS.ProcessEnv = { WT_LANE_SANDBOX: 'off', CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: join(root, 'state') }
+  const env: NodeJS.ProcessEnv = { WT_LANE_SANDBOX: 'off', CLAUDE_CONFIG_DIR: config, HOME: join(root, 'home'), PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`, XDG_STATE_HOME: join(root, 'state'), ...(process.env.WT_LANE_HOST_STATE ? { WT_LANE_HOST_STATE: process.env.WT_LANE_HOST_STATE } : {}) }
   if (install) {
     const result = runChild('adopt installer', [join(pluginRoot, 'skills', 'adopt', 'scripts', 'install.mjs'), '--set', 'scripts', '--install', '--dir', join(root, 'scripts')], env)
     expect(result.status, result.stderr).toBe(0)
@@ -127,6 +146,14 @@ function launch(f: ReturnType<typeof fixture>, model = 'openai/gpt-5.6-luna', ex
 }
 
 describe('adopted wt-lane consent resolver', () => {
+  it('derives the same protected state for the adopted child and its supervising test', () => {
+    const f = fixture()
+    const helper = new URL('../../../../plugin/bin/lib/host/lane-host-dir.mjs', import.meta.url).href
+    const child = runChild('adopted host-state reader', ['--input-type=module', '--eval', `import { laneHostDir } from ${JSON.stringify(helper)}; process.stdout.write(laneHostDir(process.argv[1], { insideSandbox: false }))`, f.project], f.env)
+    expect(child.status, child.stderr).toBe(0)
+    expect(child.stdout).toBe(laneHostDir(f.project, { insideSandbox: false }))
+  })
+
   it('names a timed-out child and includes its last output line', () => {
     expect(() => runChild(
       'fixture hanging child',
@@ -280,6 +307,18 @@ describe('adopted wt-lane consent resolver', () => {
     expect(actual.stdout).toContain('Usage: node wt-lane.mjs')
   })
 
+  it('records a detached worker that fails before its first stage in the lane log', async () => {
+    const f = fixture((source) => source.replace(
+      "  const worker = process.argv[2] === '--worker'\n",
+      "  const worker = process.argv[2] === '--worker'\n  if (worker) throw new Error('worker-early-failure-probe')\n",
+    ))
+    writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
+    const started = launch(f)
+    expect(started.status, started.stderr).toBe(0)
+    for (const pid of workers) await waitForWorkerExit(pid)
+    expect(laneLogTail(f.project, 40)).toContain('worker-early-failure-probe')
+  })
+
   it('forces the fence in an adopted launcher child', () => {
     const f = fixture()
     const bin = join(f.root, 'bin')
@@ -296,9 +335,11 @@ printf '%s\n' "$OPENCODE_DISABLE_CLAUDE_CODE_SKILLS" > ${JSON.stringify(seen)}
     f.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_ADOPTED_SEEN_FENCE'
     f.env.OPENCODE_DISABLE_CLAUDE_CODE_SKILLS = 'false'
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-    expect(launch(f).status).toBe(0)
-    const until = Date.now() + 3000
+    const started = launch(f)
+    expect(started.status, started.stderr).toBe(0)
+    const until = Date.now() + (process.platform === 'win32' ? 10_000 : 3000)
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    expect(existsSync(seen), `the lane child never wrote ${seen}; lane log tail: ${laneLogTail(f.project, 20)}`).toBe(true)
     expect(readFileSync(seen, 'utf8')).toBe('true\n')
   })
 
@@ -316,12 +357,14 @@ printf '%s' "\${WT_SUITE_LOCK_CMD-unset}" > ${JSON.stringify(seen)}
     f.env.WT_ADOPTED_SEEN_LOCK = seen
     f.env.WT_EXTERNAL_MODEL_ENV_ALLOW = 'WT_ADOPTED_SEEN_LOCK'
     writeFileSync(join(f.config, 'settings.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'true' } }))
-    expect(launch(f).status).toBe(0)
-    const until = Date.now() + 3000
+    const started = launch(f)
+    expect(started.status, started.stderr).toBe(0)
+    const until = Date.now() + (process.platform === 'win32' ? 10_000 : 3000)
     while (!existsSync(seen) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
     // Node resolves a module URL through symlinks, so the launcher reports the REAL path (macOS tmpdir is
     // /var -> /private/var); the expectation compares against the same real path.
     const cli = realpathSync(join(f.pluginRoot, 'bin', process.platform === 'win32' ? 'wt-suite-lock-run.cmd' : 'wt-suite-lock-run.mjs'))
+    expect(existsSync(seen), `the lane child never wrote ${seen}; lane log tail: ${laneLogTail(f.project, 20)}`).toBe(true)
     expect(readFileSync(seen, 'utf8')).toBe(cli)
     expect(existsSync(cli)).toBe(true)
   }, SUITE_LOCK_CHILD_TIMEOUT_MS)

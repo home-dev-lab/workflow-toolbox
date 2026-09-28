@@ -5,6 +5,7 @@ import { artifactStateDir, pidAlive } from './artifact-server.mjs'
 import { currentPidNamespace, pidNamespaceHasProcesses, processStartTime } from './host/pid-namespace.mjs'
 import { insideChildUserNamespace } from './host/lane-sandbox.mjs'
 import { discardDirectory, heartbeatTicket, putLockBack, queuedTickets, readHolderIn, readTicket, removeDirectoryOlderThan, removeTicket, setLockAside, takeTicket } from './host/suite-lock-queue.mjs'
+import { connectSuiteLockBroker, createSuiteLockLeaseId } from './host/suite-lock-host.mjs'
 
 export const DEFAULT_SUITE_LOCK_WAIT_S = 2700
 export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
@@ -13,8 +14,24 @@ export const DEFAULT_SUITE_LOCK_STALE_S = 10_800
 // same holder: a live process with that PID but a different start time is a DIFFERENT process, and
 // the lock is stale (M4 "dead locks kept", LOW 7).
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function abortError() {
+  const error = new Error('suite lock acquisition aborted')
+  error.code = 'ABORT_ERR'
+  return error
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError()
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(abortError()); return }
+    const timer = setTimeout(done, ms)
+    function done() { signal?.removeEventListener?.('abort', aborted); resolve() }
+    function aborted() { clearTimeout(timer); signal?.removeEventListener?.('abort', aborted); reject(abortError()) }
+    signal?.addEventListener?.('abort', aborted, { once: true })
+  })
 }
 
 function positiveSeconds(value, name) {
@@ -169,7 +186,7 @@ function queuePlace(queueDir, mine, options) {
   return { ahead, total: Math.max(total, ahead + 1) }
 }
 
-function tryTakeLock(lockDir, holder) {
+function tryTakeLock(lockDir, holder, beforePublish) {
   try {
     mkdirSync(lockDir)
   } catch (error) {
@@ -177,11 +194,12 @@ function tryTakeLock(lockDir, holder) {
     throw error
   }
   try {
+    beforePublish?.()
     writeFileSync(path.join(lockDir, 'holder.json'), `${JSON.stringify(holder, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
   } catch (error) {
     // Reclaimed as half-created while this acquirer was suspended: the lock is no longer mine, and the
     // lock.d now there may be someone else's.
-    if (error?.code === 'ENOENT') return false
+    if (error?.code === 'ENOENT' || error?.code === 'EEXIST') return false
     rmSync(lockDir, { recursive: true, force: true })
     throw error
   }
@@ -194,9 +212,12 @@ const RECLAIM_DIR_STALE_MS = 60_000
 
 // Returns true only when it removed the stale holder, so the caller retries at once; otherwise the
 // caller's timeout check and sleep run (no spin behind another reclaimer's, or an abandoned, reclaim.d).
-const sameInstance = (left, right) => (left === null || right === null)
-  ? left === right
-  : left?.pid === right?.pid && left?.startedAt === right?.startedAt
+// leaseId identifies ONE acquisition; pid + startedAt is the rule for holders written by older copies.
+const sameInstance = (left, right) => {
+  if (left === null || right === null) return left === right
+  if (left?.leaseId && right?.leaseId) return left.leaseId === right.leaseId
+  return left?.pid === right?.pid && left?.startedAt === right?.startedAt
+}
 
 // Removes the lock instance judged stale and nothing newer: lock.d is renamed aside, and deleted only
 // if the holder that moved is the one judged; a newer instance (a holder that acquired in between) is
@@ -274,8 +295,13 @@ function pollQueue(state, options) {
   heartbeatTicket(queueDir, ticket, record)
   const place = queuePlace(queueDir, ticket, options)
   if (place.ahead === 0) {
-    const holder = { ...record, startedAt: new Date().toISOString() }
-    if (tryTakeLock(lockDir, holder)) return { lease: { root, lockDir, holder } }
+    const holder = { ...record, leaseId: createSuiteLockLeaseId(), startedAt: options.startedAt ?? new Date().toISOString() }
+    if (tryTakeLock(lockDir, holder, options.beforePublish)) {
+      const lease = { root, lockDir, holder }
+      // An abort that lands during the publish never leaves a lock behind.
+      if (options.signal?.aborted) { releaseSuiteLock(lease); throw abortError() }
+      return { lease }
+    }
   }
   const current = readSuiteLock({ root })
   // First in line and the holder released between my attempt and this read: try again now.
@@ -288,6 +314,10 @@ function pollQueue(state, options) {
 
 export async function acquireSuiteLock(options = {}) {
   const env = options.env ?? process.env
+  // Inside a lane sandbox the host lock directory is not writable: the host-side broker takes the
+  // lock for this process and holds it while the connection stays open (host/lane-suite-lock-broker.mjs).
+  const broker = typeof env.WT_SUITE_LOCK_BROKER === 'string' ? env.WT_SUITE_LOCK_BROKER.trim() : ''
+  if (broker) return acquireBrokerSuiteLock(broker, options)
   const root = options.root ?? suiteLockDir(env, options.home, options.platform)
   const lockDir = path.join(root, 'lock.d')
   const queueDir = path.join(root, 'queue.d')
@@ -303,6 +333,7 @@ export async function acquireSuiteLock(options = {}) {
 
   try {
     while (true) {
+      throwIfAborted(options.signal)
       const step = await retryTransient(() => pollQueue(state, options), HEAD_OF_QUEUE_POLL_MS)
       if (step.lease) return step.lease
       if (step.again) continue
@@ -319,17 +350,71 @@ export async function acquireSuiteLock(options = {}) {
         nextNoticeAt = now + noticeMs
       }
       const delay = Math.min(place.ahead === 0 ? HEAD_OF_QUEUE_POLL_MS : TICKET_HEARTBEAT_MAX_MS, pollMs)
-      await sleep(Math.min(delay, Math.max(1, waitMs - (now - startedWaiting))))
+      await sleep(Math.min(delay, Math.max(1, waitMs - (now - startedWaiting))), options.signal)
     }
   } finally {
     removeTicket(queueDir, ticket)
   }
 }
 
+function acquireBrokerSuiteLock(socketPath, options) {
+  const waitS = positiveSeconds(options.waitS ?? DEFAULT_SUITE_LOCK_WAIT_S, '--wait-s')
+  throwIfAborted(options.signal)
+  return new Promise((resolve, reject) => {
+    const socket = connectSuiteLockBroker(socketPath)
+    let buffer = ''
+    let settled = false
+    let granted = false
+    let released = false
+    let resolveLost
+    const lost = new Promise((done) => { resolveLost = done })
+    const fail = (error) => {
+      socket.destroy()
+      if (settled) {
+        if (!released) resolveLost()
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      options.signal?.removeEventListener?.('abort', abort)
+      reject(error)
+    }
+    const timer = setTimeout(() => {
+      const timeout = new Error(`timed out waiting for suite lock broker ${socketPath}`)
+      timeout.code = 'WT_SUITE_LOCK_TIMEOUT'
+      fail(timeout)
+    }, waitS * 1000)
+    const abort = () => fail(abortError())
+    options.signal?.addEventListener?.('abort', abort, { once: true })
+    socket.once('connect', () => { if (!settled) socket.write(`${JSON.stringify({ argv: options.argv ?? process.argv, waitS })}\n`) })
+    socket.on('data', (chunk) => {
+      buffer += String(chunk)
+      while (buffer.includes('\n')) {
+        const end = buffer.indexOf('\n'); const line = buffer.slice(0, end); buffer = buffer.slice(end + 1)
+        if (settled && !granted) { socket.destroy(); return }
+        if (line.startsWith('wait ')) options.onWait?.(line.slice(5))
+        else if (line.startsWith('error ')) fail(new Error(`suite lock broker ${socketPath}: ${line.slice(6)}`))
+        else if (line.startsWith('granted ') && !settled) {
+          settled = true; granted = true; clearTimeout(timer); options.signal?.removeEventListener?.('abort', abort)
+          resolve({ broker: socketPath, socket, holder: { leaseId: line.slice(8) }, lost, markReleased: () => { released = true } })
+        }
+      }
+    })
+    socket.once('error', (error) => fail(new Error(`suite lock broker ${socketPath}: ${error.message}`)))
+    socket.once('close', () => { if (!settled) fail(new Error(`suite lock broker ${socketPath} closed before granting`)); else if (!released) resolveLost() })
+    if (options.signal?.aborted) fail(abortError())
+  })
+}
+
 export function releaseSuiteLock(lease) {
+  if (lease?.broker) {
+    lease.markReleased?.()
+    if (!lease.socket.destroyed) lease.socket.end()
+    return true
+  }
   const current = readSuiteLock({ root: lease.root })
   if (!current.held) return true
-  if (current.holder?.pid !== lease.holder.pid || current.holder?.startedAt !== lease.holder.startedAt) return false
+  if (!sameInstance(current.holder, lease.holder)) return false
   rmSync(lease.lockDir, REMOVE_WITH_RETRY)
   return true
 }
