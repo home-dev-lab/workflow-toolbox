@@ -2230,7 +2230,7 @@ ${request.renderClaim(request.claim)}`;
       docs: ["README.md", "docs/public/known-issues.md", "PRIVACY.md", "plugin/skills/external-lane/SKILL.md"]
     },
     {
-      sources: ["plugin/bin/wt-suite-lock.mjs", "plugin/bin/wt-suite-lock-run.mjs", "plugin/bin/lib/suite-lock.mjs"],
+      sources: ["plugin/bin/wt-suite-lock.mjs", "plugin/bin/wt-suite-lock-run.mjs", "plugin/bin/lib/suite-lock.mjs", "plugin/bin/lib/host/suite-lock-queue.mjs"],
       docs: ["docs/public/known-issues.md"]
     },
     {
@@ -2579,6 +2579,8 @@ ${request.renderClaim(request.claim)}`;
         "plugin/bin/wt-lesson-harvest-hook.mjs",
         "plugin/bin/wt-memory-index-check-hook.mjs",
         "plugin/bin/wt-outbound-guard-hook.mjs",
+        "plugin/bin/wt-model-fallback-check.mjs",
+        "plugin/bin/wt-model-fallback-hook.mjs",
         "plugin/bin/wt-probe-claim-guard-hook.mjs",
         "plugin/bin/wt-queue-not-empty-gate-hook.mjs",
         "plugin/bin/wt-observer-pairing-guard-hook.mjs",

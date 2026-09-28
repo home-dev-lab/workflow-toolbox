@@ -19,7 +19,7 @@ function fixture(name: string, tools?: string) {
   roots.push(root)
   const agents = join(root, '.claude', 'agents')
   mkdirSync(agents, { recursive: true })
-  writeFileSync(join(agents, `${name}.md`), `---\nname: ${name}${tools === undefined ? '' : `\ntools: ${tools}`}\n---\n`)
+  writeFileSync(join(agents, `${name}.md`), `---\nname: ${name}\ndescription: test agent${tools === undefined ? '' : `\ntools: ${tools}`}\n---\n`)
   return root
 }
 

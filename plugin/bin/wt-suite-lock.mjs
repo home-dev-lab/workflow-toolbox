@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { isInvokedDirectly } from './lib/host/entry-guard.mjs'
+import { stopChildForLostSuiteLock } from './lib/host/suite-lock-host.mjs'
 import {
   DEFAULT_SUITE_LOCK_STALE_S,
   DEFAULT_SUITE_LOCK_WAIT_S,
@@ -55,13 +56,13 @@ async function run(args) {
     throw error
   }
   try {
-    return await spawnCommand(command)
+    return await spawnCommand(command, lease.broker ? lease.lost : null)
   } finally {
     releaseSuiteLock(lease)
   }
 }
 
-function spawnCommand(command) {
+function spawnCommand(command, leaseLost = null) {
   return new Promise((resolve, reject) => {
     const refusal = windowsShimArgumentRefusal(command)
     if (refusal) { reject(new Error(refusal)); return }
@@ -72,6 +73,8 @@ function spawnCommand(command) {
       shell: spawnNeedsShell(command[0]),
     })
     let forwardedSignal = null
+    let lockLost = false
+    let cancelForcedStop = null
     const forward = (signal) => {
       forwardedSignal = signal
       child.kill(signal)
@@ -80,10 +83,18 @@ function spawnCommand(command) {
     const forwardTerminate = () => forward('SIGTERM')
     process.once('SIGINT', forwardInterrupt)
     process.once('SIGTERM', forwardTerminate)
+    leaseLost?.then(() => {
+      if (child.exitCode !== null || child.signalCode !== null) return
+      lockLost = true
+      process.stderr.write('wt-suite-lock: suite lock lost (broker gone); command stopped\n')
+      cancelForcedStop = stopChildForLostSuiteLock(child)
+    })
     child.once('error', reject)
     child.once('exit', (code, signal) => {
       process.removeListener('SIGINT', forwardInterrupt)
       process.removeListener('SIGTERM', forwardTerminate)
+      cancelForcedStop?.()
+      if (lockLost) { resolve(75); return }
       if (code !== null) resolve(code)
       else resolve((signal ?? forwardedSignal) === 'SIGINT' ? 130 : 143)
     })

@@ -5,13 +5,22 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { treeSignature } from './gate-evidence.mjs'
+import { gateEnvironment, treeSignature } from './gate-evidence.mjs'
 import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './lifecycle-receipts.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
 import { executorFamilyForModel } from './executor-defaults.mjs'
 import { classifyLane, shellQuote, supervisionPaths } from './lane-supervisor-core.mjs'
+import { ensureLaneHostDir, readLifecycleRegular } from './host/lane-host-dir.mjs'
 import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
 import { writeLaneRegularFile } from './host/lifecycle-file-write.mjs'
+
+// A launcher that prints no pid refused or crashed; its exit code and stderr are the only record of why.
+const LAUNCHER_STDERR_LIMIT = 500
+function launcherFailureDetail(launch) {
+  const stderr = String(launch?.stderr ?? '').replace(/\s+/g, ' ').trim()
+  const shown = stderr.length > LAUNCHER_STDERR_LIMIT ? `${stderr.slice(0, LAUNCHER_STDERR_LIMIT)}…` : stderr
+  return ` (launcher exit ${launch?.code ?? 'unknown'}${shown ? `: ${shown}` : ', no stderr'})`
+}
 
 export const sha256 = (content) => createHash('sha256').update(content).digest('hex')
 export const MAX_LANE_REPORT_BYTES = 256 * 1024
@@ -172,7 +181,7 @@ export function regularFile(file) {
 
 export function readRegularFile(file) {
   if (!regularFile(file)) return null
-  return fs.readFileSync(file, 'utf8')
+  return readLifecycleRegular(file)
 }
 
 export function writeRegularFile(file, content, options = {}) {
@@ -182,7 +191,8 @@ export function writeRegularFile(file, content, options = {}) {
 export function readAttestation(file) {
   const stat = regularFile(file)
   if (!stat) return null
-  const content = fs.readFileSync(file, 'utf8')
+  const content = readRegularFile(file)
+  if (content === null) return null
   return {
     path: file,
     size: Buffer.byteLength(content),
@@ -259,14 +269,14 @@ export function createLifecycleLaunch({
   }
 
   function invalidateLaneEvidence(phase) {
-    attestations.delete(path.join(laneDir, `${phase}-run.log`))
+    attestations.delete(path.join(ensureLaneHostDir(root), `${phase}-run.log`))
     attestations.delete(path.join(laneDir, `${phase}-report.md`))
     audit()
   }
 
   function laneEvidence(phase, allowFailed = false) {
     assertLaneDir()
-    const log = path.join(laneDir, `${phase}-run.log`)
+    const log = path.join(ensureLaneHostDir(root), `${phase}-run.log`)
     const report = path.join(laneDir, `${phase}-report.md`)
     const logEntry = verified(log)
     if (!logEntry) return refusal(`${phase}->next`, 'lane receipt unchanged', log)
@@ -344,7 +354,7 @@ export function createLifecycleLaunch({
   async function runParallelCritics(args) {
     const laneIds = ['A', 'B']
     const results = await Promise.all(laneIds.map((criticLane) => runSingle({ ...args, criticLane })))
-    const laneLogs = laneIds.map((criticLane) => path.join(laneDir, `critic-${criticLane}-run.log`))
+    const laneLogs = laneIds.map((criticLane) => path.join(ensureLaneHostDir(root), `critic-${criticLane}-run.log`))
     const laneReports = laneIds.map((criticLane) => path.join(laneDir, `critic-${criticLane}-report.md`))
     const receipts = laneLogs.map(readAttestation)
     if (receipts.some((receipt) => !receipt) || laneReports.some((report) => !regularFile(report))) {
@@ -352,7 +362,7 @@ export function createLifecycleLaunch({
     }
     const failed = receipts.find((receipt) => receipt.exit !== '0')
     const exit = failed?.exit ?? '0'
-    const canonicalLog = path.join(laneDir, 'critic-run.log')
+    const canonicalLog = path.join(ensureLaneHostDir(root), 'critic-run.log')
     const canonicalReport = path.join(laneDir, 'critic-report.md')
     const laneLogSections = laneIds.map((laneId, index) => `LANE=${laneId}\n${readRegularFile(laneLogs[index])}`)
     writeRegularFile(canonicalLog, `${laneLogSections.join('\n')}\nEXIT=${exit}\n`)
@@ -378,12 +388,12 @@ export function createLifecycleLaunch({
       if (!laneBriefContexts.has(phase)) {
         return refusal(`${state.phase}->next`, 'brief not written through write_artifact', brief)
       }
-      const canonicalLog = path.join(laneDir, `${phase}${identity.suffix}-run.log`)
+      const canonicalLog = path.join(ensureLaneHostDir(root), `${phase}${identity.suffix}-run.log`)
       const canonicalReport = path.join(laneDir, `${phase}${identity.suffix}-report.md`)
       const timeout = Math.min(args.timeout ?? 5400, 5400)
       const launchedAt = now()
       const nonce = randomUUID()
-      const log = path.join(laneDir, `${phase}-run${identity.noncePart}.${nonce}.log`)
+      const log = path.join(ensureLaneHostDir(root), `${phase}-run${identity.noncePart}.${nonce}.log`)
       const report = path.join(laneDir, `${phase}-report${identity.noncePart}.${nonce}.md`)
       if (fs.existsSync(canonicalLog) && !regularFile(canonicalLog)) {
         return refusal(`${state.phase}->next`, 'regular lane receipt', canonicalLog)
@@ -448,7 +458,7 @@ export function createLifecycleLaunch({
           return refusal(`${state.phase}->next`, `lane spawn (${error instanceof Error ? error.message : String(error)})`, log)
         }
         const workerPid = Number(/^pid=(\d+)$/m.exec(launch.stdout)?.[1])
-        if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return refusal(`${state.phase}->next`, 'launcher pid', log)
+        if (!Number.isSafeInteger(workerPid) || workerPid <= 1) return `${refusal(`${state.phase}->next`, 'launcher pid', log)}${launcherFailureDetail(launch)}`
         let logEntry = await waitForLaneReceipt({
           log,
           nonce,
@@ -592,7 +602,7 @@ export function createLifecycleLaunch({
           const out = fs.openSync(log, 'a')
           const err = fs.openSync(log, 'a')
           try {
-            code = await launchProcess('pnpm', [args.name], { cwd: path.join(root, 'toolkit'), stdio: ['ignore', out, err] })
+            code = await launchProcess('pnpm', [args.name], { cwd: path.join(root, 'toolkit'), env: gateEnvironment(process.env), stdio: ['ignore', out, err] })
           } finally {
             fs.closeSync(out)
             fs.closeSync(err)

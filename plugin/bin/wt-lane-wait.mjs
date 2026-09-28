@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // wt-lane-wait.mjs -- wait for one detached external lane without reading its log body.
 
-import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { classifyLane, laneHostPlatform, readCurrentSupervisions } from './lib/lane-supervisor-core.mjs'
+import { laneHostDir } from './lib/host/lane-host-dir.mjs'
+import { legacySupervision } from './lib/lane-supervisor-core.mjs'
 
 const DEFAULT_POLL = 30
 const DEFAULT_TIMEOUT = 5400
+const TERMINAL_PUBLICATION_MS = 1_000
 
 function usage() {
   return 'Usage: node wt-lane-wait.mjs --dir <worktree> [--pid <n>] [--poll 30] [--timeout <s>]'
@@ -40,53 +43,12 @@ function pidFromFile(file) {
   } catch { return null }
 }
 
-function readAt(fd, buffer, length, position) {
-  return readSync(fd, buffer, 0, length, position)
-}
-
-function logReceipt(file) {
-  let fd
-  try {
-    fd = openSync(file, 'r')
-    const size = statSync(file).size
-    if (size === 0) return { runId: null, marker: null }
-    const prefix = Buffer.alloc(Math.min(size, 2048))
-    readAt(fd, prefix, prefix.length, 0)
-    const runId = /(?:^|\n)LANE_RUN_ID=([^\r\n]+)(?:\r?\n|$)/.exec(prefix.toString('utf8'))?.[1] ?? null
-    const byte = Buffer.alloc(1)
-    const chars = []
-    let position = size - 1
-    while (position >= 0) {
-      readAt(fd, byte, 1, position)
-      position -= 1
-      if (byte[0] === 10) {
-        if (chars.length === 0) continue
-        break
-      }
-      if (byte[0] !== 13) chars.push(String.fromCharCode(byte[0]))
-    }
-    return { runId, marker: chars.reverse().join('') || null }
-  } catch { return { runId: null, marker: null } }
-  finally { if (fd !== undefined) closeSync(fd) }
-}
-
 function reportSize(file) {
   try { return `${statSync(file).size}` } catch { return 'none' }
 }
 
 function publicationPending(record) {
   return ['terminating', 'launch-failed', 'exited', 'abandoned'].includes(record?.state)
-}
-
-function publishedExit(file, record) {
-  const receipt = logReceipt(file)
-  if (!record?.runId || receipt.runId !== record.runId) return null
-  const marker = receipt.marker
-  const match = /^EXIT=(-?\d+)$/.exec(marker ?? '')
-  if (!match) return null
-  const value = BigInt(match[1])
-  if (Number.isInteger(record.exit) && value !== BigInt(record.exit)) return null
-  return { text: match[1], status: value >= 0n && value <= 255n ? Number(value) : 1 }
 }
 
 function printDone(exit, record, lane, log) {
@@ -106,19 +68,33 @@ function main() {
     return 1
   }
   const lane = path.join(opts.dir, '.lane')
-  const pid = opts.pid === null ? pidFromFile(path.join(lane, 'pid')) : Number(opts.pid)
-  if (!pid) { process.stderr.write('wt-lane-wait: no valid lane pid; pass --pid or provide .lane/pid\n'); return 2 }
-  const log = path.join(lane, 'run.log')
+  const hostDir = laneHostDir(opts.dir)
+  if (readCurrentSupervisions(opts.dir).length === 0 && legacySupervision(opts.dir).length) {
+    process.stderr.write(`wt-lane-wait: legacy lane supervision in ${opts.dir} ignored (written by a pre-upgrade launcher; it lives in lane-writable space)\n`)
+    return 2
+  }
+  const pid = opts.pid === null ? pidFromFile(path.join(hostDir, 'pid')) : Number(opts.pid)
+  if (!pid) {
+    process.stderr.write('wt-lane-wait: no valid lane pid; pass --pid or launch a lane\n')
+    return 2
+  }
+  const log = path.join(hostDir, 'run.log')
   const deadline = Date.now() + opts.timeout * 1000
-  const launchRunId = logReceipt(log).runId
-  let seenRecord = launchRunId ? { runId: launchRunId } : null
+  let seenRecord = null
+  let goneSince = null
   while (true) {
     const currentRecord = readCurrentSupervisions(opts.dir).map((item) => item.record).find((item) => item.workerPid === pid) ?? null
     if (currentRecord) seenRecord = currentRecord
     const record = currentRecord ?? seenRecord
+    if (['exited', 'abandoned', 'launch-failed'].includes(record?.state) && Number.isInteger(record.exit)) {
+      const value = record.exit
+      return printDone({ text: String(value), status: value >= 0 && value <= 255 ? value : 1 }, record, lane, record.log ?? log)
+    }
+    if (['exited', 'abandoned', 'launch-failed'].includes(record?.state) && record.exit !== undefined) {
+      process.stdout.write('LANE DIED exit=unknown\n')
+      return 1
+    }
     if (publicationPending(record) || (!currentRecord && seenRecord)) {
-      const exit = publishedExit(log, record)
-      if (exit !== null) return printDone(exit, record, lane, log)
       if (Date.now() >= deadline) {
         process.stdout.write('LANE DIED exit=unknown\n')
         return 1
@@ -126,12 +102,19 @@ function main() {
     } else {
       const verdict = classifyLane(record)
       if (verdict.status === 'gone') {
-        const exit = publishedExit(log, record)
-        if (exit !== null) return printDone(exit, record, lane, log)
-        process.stdout.write('LANE DIED exit=unknown\n')
-        return 1
+        // The worker may have exited after writing its log but before a detached publisher
+        // updates its host record. Only the host record can supply the exit; allow it a bounded
+        // window, never accepting a lane-written EXIT line as evidence by itself.
+        goneSince ??= Date.now()
+        if (!record || Date.now() >= Math.min(deadline, goneSince + TERMINAL_PUBLICATION_MS)) {
+          process.stdout.write('LANE DIED exit=unknown\n')
+          return 1
+        }
+      } else goneSince = null
+      if (Date.now() >= deadline) {
+        if (!record) { process.stdout.write('LANE DIED exit=unknown\n'); return 1 }
+        break
       }
-      if (Date.now() >= deadline) break
     }
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(opts.poll * 1000, Math.max(1, deadline - Date.now())))
   }

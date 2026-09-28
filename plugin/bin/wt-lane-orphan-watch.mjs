@@ -217,9 +217,11 @@ async function main() {
       tracePath = null
     }
     const liveChildren = []
+    const verifiedChildren = new Set()
     for (const record of known) {
       const verdict = classifyLane(record)
       if (isLiveSandboxedLane(record, verdict)) liveChildren.push(record.childPid)
+      if (verdict.child === 'running') verifiedChildren.add(record.childPid)
       const processRecord = verdict.child === 'running' ? inspectProcess(record.childPid) : null
       const ownsNotice = record.owner === 'session' && Boolean(record.ownerSessionId) && record.ownerSessionId === process.env.CLAUDE_CODE_SESSION_ID
       const decisionKey = `${record.runId}:${record.timeoutAt}`
@@ -291,7 +293,7 @@ async function main() {
     }
     // A LIVE SANDBOXED lane's opencode runs as a descendant of its recorded (bwrap) child: attributed
     // too. An unsandboxed lane's descendants are not: a nested `opencode run` there is still reported.
-    const attributed = new Set([...known.map((record) => record.childPid), ...(table.supported ? laneDescendantPids(liveChildren, table.processes) : [])])
+    const attributed = new Set([...verifiedChildren, ...(table.supported ? laneDescendantPids(liveChildren, table.processes) : [])])
     if (table.supported) for (const item of table.processes) {
       if (!isOpencodeCommand(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
       const unknown = inspectProcess(item.pid)

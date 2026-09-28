@@ -8,6 +8,7 @@ const qualityFiles = [
   'packages/*/src/**/*.ts',
   '../plugin/**/*.mjs',
   '../plugin/**/*.js',
+  'plugins/wt-rules-on-demand/**/*.{mjs,js}',
   'toolkit/packages/*/src/**/*.ts',
   'plugin/**/*.mjs',
   'plugin/**/*.js',
@@ -35,14 +36,18 @@ export default tseslint.config(
     ignores: [
       '!plugin/**/*.js',
       '!../plugin/**/*.js',
+       '!plugins/wt-rules-on-demand/**/*.js',
       'plugin/hooks/snapshot-program.js',
       '../plugin/hooks/snapshot-program.js',
       'plugin/**/fixtures/**',
       '../plugin/**/fixtures/**',
+      // Vendored, byte-identity-checked upstream artifact; lint its generator instead.
+       'plugin/bin/lib/vendor/yaml.mjs',
+       '../plugin/bin/lib/vendor/yaml.mjs',
     ],
   },
   {
-    files: ['../plugin/**/*.mjs', '../plugin/**/*.js', 'plugin/**/*.mjs', 'plugin/**/*.js'],
+    files: ['../plugin/**/*.mjs', '../plugin/**/*.js', 'plugins/wt-rules-on-demand/**/*.{mjs,js}', 'plugin/**/*.mjs', 'plugin/**/*.js'],
     ...js.configs.recommended,
     languageOptions: { globals: globals.node },
     rules: {

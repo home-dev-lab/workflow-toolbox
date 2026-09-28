@@ -1,11 +1,11 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { constants, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { constants, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import tls from 'node:tls'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Card 1871036638205838753, round 3, defect 1: the host-side egress proxy that is a sandboxed lane's
 // only route out. Portable: every test runs on loopback with an injected resolver/connector, so no
@@ -22,8 +22,19 @@ interface ProxyModule {
   loggableHost: (host: string | null) => string | null
   parentAlive: (pid: number, startTicks: number | null, deps?: Record<string, unknown>) => boolean
   processStartTicks: (pid: number) => number | null
+  createEndpointRelay: (options: { host: string, port: number, connections?: Set<net.Socket> }) => net.Server
 }
 const proxy = (await import(pathToFileURL(join(LIB, 'lane-egress-proxy.mjs')).href)) as ProxyModule
+it.skipIf(process.platform !== 'linux')('does not block opening an existing FIFO egress log', () => {
+  const root = mkdtempSync(join(tmpdir(), 'egress-fifo-'))
+  try {
+    const fifo = join(root, 'log')
+    expect(spawnSync('mkfifo', [fifo]).status).toBe(0)
+    const result = spawnSync(process.execPath, ['-e', `import(${JSON.stringify(pathToFileURL(join(LIB, 'lane-egress-proxy.mjs')).href)}).then(m => { m.egressLogWriter(${JSON.stringify(fifo)})({ host: 'example.com' }) })`], { timeout: 2000, encoding: 'utf8' })
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+  } finally { rmSync(root, { recursive: true, force: true }) }
+})
 const servers: net.Server[] = []
 afterEach(() => { for (const s of servers.splice(0)) s.close() })
 
@@ -240,6 +251,47 @@ describe('SNI must equal the CONNECT host (real TLS client, round 4 HIGH 1)', ()
 })
 
 describe('egress log hardening (round 4, MED 2)', () => {
+  it.skipIf(!constants.O_NOFOLLOW)('accepts a canonical parent reached through a directory alias without following a linked log leaf', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-egress-alias-'))
+    try {
+      const actual = join(root, 'actual'); mkdirSync(actual)
+      const alias = join(root, 'alias'); symlinkSync(actual, alias, 'dir')
+      // The launcher passes the canonical path established during validation, even when the
+      // operator supplied an alias such as macOS /var -> /private/var.
+      const file = join(realpathSync.native(alias), 'egress.jsonl')
+      proxy.egressLogWriter(file)({ host: 'alias.example', decision: 'denied' })
+      expect(readFileSync(join(actual, 'egress.jsonl'), 'utf8')).toContain('alias.example')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+  it.skipIf(!constants.O_NOFOLLOW)('refuses to append when a validated log parent is replaced before open', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-egress-before-open-'))
+    try {
+      const parent = join(root, 'validated'); const redirect = join(root, 'redirect')
+      mkdirSync(parent); mkdirSync(redirect)
+      const file = join(realpathSync.native(parent), 'egress.jsonl') // launch validation
+      renameSync(parent, join(root, 'moved'))
+      symlinkSync(redirect, parent, 'dir')
+      const target = join(redirect, 'egress.jsonl')
+      writeFileSync(target, 'fixture untouched\n') // only a disposable fixture can be reached
+      proxy.egressLogWriter(file)({ host: 'blocked.example', decision: 'denied' })
+      expect(readFileSync(target, 'utf8')).toBe('fixture untouched\n')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+  it.skipIf(!constants.O_NOFOLLOW)('keeps writing to its original inode after its parent is swapped', () => {
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-egress-parent-'))) // canonical, as the launcher passes it
+    try {
+      const original = join(root, 'original'); const replacement = join(root, 'replacement')
+      mkdirSync(original); mkdirSync(replacement)
+      const file = join(original, 'egress.jsonl')
+      const write = proxy.egressLogWriter(file)
+      write({ host: 'one.example', decision: 'denied' })
+      renameSync(original, join(root, 'moved'))
+      symlinkSync(replacement, original)
+      write({ host: 'two.example', decision: 'denied' })
+      expect(readFileSync(join(root, 'moved', 'egress.jsonl'), 'utf8')).toContain('two.example')
+      expect(existsSync(join(replacement, 'egress.jsonl'))).toBe(false)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
   // Runs on every host: the no-follow guarantee holds everywhere (Windows has no O_NOFOLLOW, so the
   // writer writes nothing there rather than following the link).
   it('never follows a symlink planted at the log path', () => {
@@ -259,7 +311,7 @@ describe('egress log hardening (round 4, MED 2)', () => {
   })
 
   it.skipIf(!constants.O_NOFOLLOW)('writes DNS names only and stops at its size cap (skipped where O_NOFOLLOW does not exist, e.g. Windows: the writer writes nothing there)', () => {
-    const root = mkdtempSync(join(tmpdir(), 'wt-egress-log-'))
+    const root = realpathSync.native(mkdtempSync(join(tmpdir(), 'wt-egress-log-'))) // canonical, as the launcher passes it
     try {
       const file = join(root, 'real.jsonl')
       const write = proxy.egressLogWriter(file, { limit: 400 })
@@ -284,6 +336,14 @@ describe('proxy lifecycle (round 4, LOW 5 and LOW 6)', () => {
     expect(proxy.parentAlive(123, 500, { kill: () => true, readStart: () => 500 })).toBe(true)
     expect(proxy.parentAlive(123, 500, { kill: () => true, readStart: () => 501 })).toBe(false)
     expect(proxy.parentAlive(123, 500, { kill: () => { throw new Error('ESRCH') }, readStart: () => 500 })).toBe(false)
+  })
+
+  // Card 1872293505129252765: a SIGKILLed launcher that its own parent has not reaped yet is a
+  // zombie; kill(pid, 0) still succeeds on it, so the watchdog must read the process state too.
+  it('treats a zombie parent (state Z) as dead, and an unreadable state as today', () => {
+    expect(proxy.parentAlive(123, 500, { kill: () => true, readStart: () => 500, readState: () => 'Z' })).toBe(false)
+    expect(proxy.parentAlive(123, 500, { kill: () => true, readStart: () => 500, readState: () => 'S' })).toBe(true)
+    expect(proxy.parentAlive(123, 500, { kill: () => true, readStart: () => 500, readState: () => null })).toBe(true)
   })
 
   it('exits non-zero and says so when it cannot listen', () => {
@@ -356,4 +416,91 @@ describe('proxy lifecycle (round 4, LOW 5 and LOW 6)', () => {
       expect(existsSync(sock)).toBe(false)
     } finally { rmSync(root, { recursive: true, force: true }) }
   }, 20_000)
+})
+
+// Card 1872293505129252765 (L2b): a loopback model endpoint is reached through a Node relay of this
+// module instead of a host socat, so the relay shares the parent watchdog and dies with its launcher.
+// Relay mode is launched only by the Linux lane sandbox plan: sandboxAvailability returns { none }
+// on every other platform (plugin/bin/lib/host/lane-sandbox.mjs:491). These tests relay through a
+// unix-socket path under tmpdir, which Windows runners do not serve (all three timed out there).
+describe.skipIf(process.platform === 'win32')('endpoint relay mode (card 1872293505129252765) [requires unix-domain sockets; relay is Linux-sandbox-only]', () => {
+  async function relayFixture(onUpstream: (socket: net.Socket) => void) {
+    const root = mkdtempSync(join(tmpdir(), 'wt-endpoint-relay-'))
+    const upstream = net.createServer({ allowHalfOpen: true }, onUpstream)
+    servers.push(upstream)
+    await new Promise<void>((r) => upstream.listen(0, '127.0.0.1', r))
+    const connections = new Set<net.Socket>()
+    const relay = proxy.createEndpointRelay({ host: '127.0.0.1', port: (upstream.address() as net.AddressInfo).port, connections })
+    servers.push(relay)
+    const sock = join(root, 'ep.sock')
+    await new Promise<void>((r) => relay.listen(sock, r))
+    return { root, sock, connections }
+  }
+
+  it('keeps the reply path open after the client half-closes (the upstream answers 200 ms later)', async () => {
+    const { root, sock } = await relayFixture((c) => {
+      let seen = ''
+      c.on('data', (d) => { seen += String(d) })
+      c.on('end', () => setTimeout(() => c.end(`reply:${seen}`), 200))
+    })
+    try {
+      const reply = await new Promise<string>((resolve) => {
+        const client = net.connect(sock, () => client.end('ping'))
+        let text = ''
+        client.on('data', (d) => { text += String(d) })
+        client.on('close', () => resolve(text))
+        client.on('error', () => resolve(`error:${text}`))
+      })
+      expect(reply).toBe('reply:ping')
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('tracks every live relayed connection, so destroying them closes a held client', async () => {
+    let upstreamReady!: () => void
+    const upstreamConnected = new Promise<void>((resolve) => { upstreamReady = resolve })
+    const { root, sock, connections } = await relayFixture((c) => { c.on('error', () => {}); upstreamReady() })
+    try {
+      let tracked = -1
+      await new Promise<void>((resolve) => {
+        const client = net.connect(sock, () => {
+          client.write('held')
+          void upstreamConnected.then(() => { tracked = connections.size; for (const s of connections) s.destroy() })
+        })
+        client.on('error', () => {})
+        client.on('close', () => resolve())
+      })
+      expect(tracked).toBe(2)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('closes the client, and forgets both sockets, when the upstream refuses the connection', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-endpoint-relay-'))
+    const probe = net.createServer(); servers.push(probe)
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r))
+    const deadPort = (probe.address() as net.AddressInfo).port
+    await new Promise<void>((r) => probe.close(() => r()))
+    const connections = new Set<net.Socket>()
+    const relay = proxy.createEndpointRelay({ host: '127.0.0.1', port: deadPort, connections }); servers.push(relay)
+    const sock = join(root, 'ep.sock')
+    try {
+      await new Promise<void>((r) => relay.listen(sock, r))
+      await new Promise<void>((resolve) => {
+        const client = net.connect(sock, () => client.write('x'))
+        client.on('error', () => {})
+        client.on('close', () => resolve())
+      })
+      await vi.waitFor(() => expect(connections.size).toBe(0), { timeout: 15_000 })
+      expect(connections.size).toBe(0)
+    } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it('refuses --relay together with --allow, and a relay target without a port', () => {
+    const PROXY = join(LIB, 'lane-egress-proxy.mjs')
+    const both = spawnSync(process.execPath, [PROXY, '--socket', '/nonexistent-dir-for-egress/r.sock', '--relay', '127.0.0.1:1', '--allow', 'chatgpt.com'], { encoding: 'utf8', timeout: 15_000 })
+    expect(both.status).toBe(3)
+    expect(both.stderr).toContain('--relay and --allow are mutually exclusive')
+    const bad = spawnSync(process.execPath, [PROXY, '--socket', '/nonexistent-dir-for-egress/r.sock', '--relay', '127.0.0.1'], { encoding: 'utf8', timeout: 15_000 })
+    expect(bad.status).toBe(3)
+    expect(bad.stderr).toContain('--relay needs <host>:<port>')
+  })
 })

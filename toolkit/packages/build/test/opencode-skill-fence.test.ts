@@ -16,7 +16,7 @@ const roots: string[] = []
 // Launcher mechanics are exercised with a fake opencode the lane sandbox cannot see (by design);
 // the sandbox itself is locked in lane-sandbox.test.ts.
 beforeEach(() => { vi.stubEnv('WT_LANE_SANDBOX', 'off') })
-afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function stub(mode: 'honor' | 'ignore' | 'invisible-allow') {
   const root = mkdtempSync(path.join(os.tmpdir(), 'wt-skill-fence-')); roots.push(root)
@@ -183,6 +183,49 @@ describe('OpenCode Claude-skill fence', () => {
     let observed: Record<string, string> | undefined
     spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env })
     expect(observed).toEqual({ PATH: '/bin' })
+  })
+
+  it('drops credential-bearing values through the real launcher path', () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const cases = [
+      {
+        env: {
+          OPENAI_API_KEY: 'selected',
+          GOOGLE_GENERATIVE_AI_API_KEY: 'unrelated',
+          OPENAI_BASE_URL: 'https://other:secret@api.example/v1',
+        },
+        expected: { OPENAI_API_KEY: 'selected' },
+      },
+      {
+        env: {
+          OPENAI_API_KEY: 'selected',
+          WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS',
+          OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=Bearer other-service-secret',
+        },
+        expected: { OPENAI_API_KEY: 'selected', WT_EXTERNAL_MODEL_ENV_ALLOW: 'OTEL_EXPORTER_OTLP_HEADERS' },
+      },
+      // Review round 2: a numeric Authorization value and a userinfo holding a space reached the child.
+      {
+        env: { OPENAI_API_KEY: 'selected', CODEX_EXTRA: 'Authorization: 123456' },
+        expected: { OPENAI_API_KEY: 'selected' },
+      },
+      {
+        env: { OPENAI_API_KEY: 'selected', OPENAI_BASE_URL: 'https://u:other spaced@example.test/v1' },
+        expected: { OPENAI_API_KEY: 'selected' },
+      },
+    ]
+
+    for (const { env, expected } of cases) {
+      let observed: Record<string, string> | undefined
+      spawnOpencode((_bin: string, _args: string[], options: { env: Record<string, string> }) => { observed = options.env }, 'opencode', [], { env }, 'linux', ['OPENAI_API_KEY'])
+      expect(observed).toEqual(expected)
+    }
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('OTEL_EXPORTER_OTLP_HEADERS'))
+    const printed = error.mock.calls.map((call) => String(call[0])).join('\n')
+    expect(printed).not.toContain('other-service-secret')
+    expect(printed).not.toContain('other:secret')
+    expect(printed).not.toContain('123456')
+    expect(printed).not.toContain('other spaced')
   })
 
   it('admits a configured harmless variable without admitting credentials or execution hooks', () => {

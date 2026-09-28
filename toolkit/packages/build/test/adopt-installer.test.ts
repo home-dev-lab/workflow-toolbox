@@ -932,6 +932,30 @@ describe('adopt installer — scripts set', () => {
     writeFileSync(installed, readFileSync(installed, 'utf8') + '\n// local edit\n')
     expect(run(['--set', 'scripts', '--check'], d)).toContain('wt-lane.mjs: EDITED')
   })
+
+  it('an adopted launcher against a plugin root without the lane host module still answers --help and refuses a launch by name, never with a module error', () => {
+    const d = mkDir()
+    run(['--set', 'scripts', '--install'], d)
+    // An installed plugin one release older: every runtime module except the lane host module.
+    const olderRoot = mkDir()
+    cpSync(join(REPO_ROOT, 'plugin', 'bin'), join(olderRoot, 'bin'), { recursive: true })
+    rmSync(join(olderRoot, 'bin', 'lib', 'host', 'lane-host-dir.mjs'))
+    // The older release's sandbox module predates the lane host module and does not import it.
+    const sandboxModule = join(olderRoot, 'bin', 'lib', 'host', 'lane-sandbox.mjs')
+    const importLine = "import { laneHostStateRoot } from './lane-host-dir.mjs'\n"
+    expect(readFileSync(sandboxModule, 'utf8')).toContain(importLine)
+    writeFileSync(sandboxModule, readFileSync(sandboxModule, 'utf8').replace(importLine, "const laneHostStateRoot = () => '/nonexistent/wt-lane-host'\n"))
+    const env = { ...process.env, CLAUDE_PLUGIN_ROOT: olderRoot, WT_PLUGIN_ROOT: '' }
+    const help = spawnSync(process.execPath, [join(d, 'wt-lane.mjs'), '--help'], { encoding: 'utf8', env })
+    expect(help.stderr).not.toContain('ERR_MODULE_NOT_FOUND')
+    expect(help.status, help.stderr).toBe(0)
+    const brief = join(d, 'brief.md')
+    writeFileSync(brief, '# brief\n')
+    const launch = spawnSync(process.execPath, [join(d, 'wt-lane.mjs'), '--dir', d, '--model', 'openai/gpt-5.6-luna', '--brief', brief, '--allow-no-git'], { encoding: 'utf8', env })
+    expect(launch.stderr).not.toContain('ERR_MODULE_NOT_FOUND')
+    expect(launch.status).not.toBe(0)
+    expect(launch.stderr).toMatch(/older or incompatible|unavailable/)
+  })
 })
 
 // --global: target the CONFIG dir without anyone having to construct its path.

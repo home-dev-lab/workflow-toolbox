@@ -247,8 +247,13 @@ function slice(file, maxBytes, fromEnd = false, rejectOverflow = false) {
   try {
     const safeFile = safePath(file);
     if (!safeFile) return null;
-    handle = fs.openSync(safeFile, 'r');
-    const size = fs.fstatSync(handle).size;
+    const protectedOpen = process.platform !== 'win32' && fs.constants.O_NOFOLLOW && fs.constants.O_NONBLOCK;
+    // Windows has no O_NOFOLLOW: safePath has already confined the canonical target to an
+    // admitted root. Keep bounded, regular-file reads available on that unsandboxed host.
+    handle = fs.openSync(safeFile, protectedOpen ? fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | fs.constants.O_NOFOLLOW : 'r');
+    const stat = fs.fstatSync(handle);
+    if (!stat.isFile()) return null;
+    const size = stat.size;
     if (rejectOverflow && size > maxBytes) return null;
     const length = size === 0 ? maxBytes : Math.min(size, maxBytes);
     const buffer = Buffer.alloc(length);
@@ -278,8 +283,9 @@ function lifecycleTimeline(worktree) {
 }
 function currentSupervisions(worktree) {
   const records = [];
-  for (const name of list(lanePath(worktree)).filter(item => /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(item))) {
-    const dir = lanePath(worktree, name);
+  const hostDir = laneHostDir(worktree);
+  for (const name of (info(hostDir)?.isDirectory() ? list(hostDir) : []).filter(item => /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(item))) {
+    const dir = path.join(hostDir, name);
     if (!info(dir)?.isDirectory()) continue;
     const pointer = json(path.join(dir, 'current.json'));
     if (typeof pointer?.runId !== 'string' || !/^\d+-\d+$/.test(pointer.runId)) continue;
@@ -424,7 +430,7 @@ function under(root, candidate) {
   return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
 }
 function renderArtifact(source) {
-  const stat = info(source); const lane = path.dirname(source); const target = source + '.html';
+  const stat = info(source); const lane = path.dirname(source); const target = path.join(laneHostDir(path.dirname(lane)), path.basename(source) + '.html');
   const truncated = Boolean(stat?.isFile() && stat.size > REPORT_TAIL_BYTES);
   if (config.readOnly) return { href: null, truncated };
   try {
@@ -432,8 +438,8 @@ function renderArtifact(source) {
     const suite = fs.realpathSync(config.suiteRoot);
     const realLane = fs.realpathSync(lane);
     const realSource = fs.realpathSync(source);
-    const realTarget = info(target) ? fs.realpathSync(target) : path.join(realLane, path.basename(target));
-    if (![realLane, realSource, realTarget].every(candidate => under(suite, candidate))) return { href: null, truncated };
+    const realTarget = info(target) ? fs.realpathSync(target) : target;
+    if (![realLane, realSource].every(candidate => under(suite, candidate)) || !under(path.dirname(target), realTarget)) return { href: null, truncated };
     const rendered = info(target);
     const prior = rendered ? /^<!-- wt-source (\{[^\n]+\}) -->/.exec(head(target, 1024) || '') : null;
     let metadata = null;
@@ -442,16 +448,20 @@ function renderArtifact(source) {
       const markdown = slice(source, REPORT_TAIL_BYTES); if (markdown === null) return { href: null, truncated };
       const title = path.basename(source);
       const marker = '<!-- wt-source ' + JSON.stringify({ mtimeMs: stat.mtimeMs, size: stat.size }) + ' -->\n';
+      ensureLaneHostDir(path.dirname(lane));
       fs.writeFileSync(target, marker + '<!doctype html><html><head><meta charset="utf-8"><title>' + title.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '</title></head><body>' + markdownToHtml(markdown) + '</body></html>');
     }
-    return { href: detectArtifactUrl(target, process.platform, process.env, config.linkBase || '', config.suiteRoot), truncated };
+    return { href: detectArtifactUrl(target, process.platform, process.env, config.linkBase || '', config.suiteRoot) || detectArtifactUrl(target, process.platform, process.env), truncated };
   } catch { return { href: null, truncated }; }
 }
 function inspectors(worktree, route, runnerLog) {
   if (!worktree) return {};
   const lane = lanePath(worktree);
   const files = list(lane).map(name => path.join(lane, name)).filter(file => info(file)?.isFile());
+  const host = laneHostDir(worktree);
+  const hostFiles = (info(host)?.isDirectory() ? list(host) : []).map(name => path.join(host, name)).filter(file => info(file)?.isFile());
   const matching = pattern => files.filter(file => pattern.test(path.basename(file))).sort((left, right) => (info(right)?.mtimeMs || 0) - (info(left)?.mtimeMs || 0) || right.localeCompare(left));
+  const hostMatching = pattern => hostFiles.filter(file => pattern.test(path.basename(file))).sort((left, right) => (info(right)?.mtimeMs || 0) - (info(left)?.mtimeMs || 0) || right.localeCompare(left));
   const first = (...candidates) => candidates.flat().find(file => file && info(file)?.isFile()) || null;
   const concise = selected => bounded(selected.flatMap(file => String(slice(file, REPORT_TAIL_BYTES) || '').split(/\r?\n/)));
   const laneEvidence = phase => matching(new RegExp('^' + phase + '-(?:brief\\.md|run(?:\\.[^.]+)?\\.log|report(?:\\.[^.]+)?\\.md)$', 'i'));
@@ -460,11 +470,11 @@ function inspectors(worktree, route, runnerLog) {
   const discoveryFile = path.join(lane, 'route.json');
   const critics = matching(/^critic-report(?:\.[^.]+)?\.md$/i);
   const tddBrief = first(path.join(lane, 'tdd-brief.md'));
-  const tddRun = first(path.join(lane, 'tdd-run.log'), matching(/^tdd-run\.[^.]+\.log$/i));
+  const tddRun = first(path.join(host, 'tdd-run.log'), hostMatching(/^tdd-run\.[^.]+\.log$/i), path.join(lane, 'tdd-run.log'), matching(/^tdd-run\.[^.]+\.log$/i));
   const tddReport = first(path.join(lane, 'tdd-report.md'), matching(/^tdd-report\.[^.]+\.md$/i));
   const phaseEvidence = phase => ({
     brief: first(path.join(lane, phase + '-brief.md'), matching(new RegExp('^' + phase + '-brief\\.[^.]+\\.md$', 'i'))),
-    run: first(path.join(lane, phase + '-run.log'), matching(new RegExp('^' + phase + '-run\\.[^.]+\\.log$', 'i'))),
+    run: first(path.join(host, phase + '-run.log'), hostMatching(new RegExp('^' + phase + '-run\\.[^.]+\\.log$', 'i')), path.join(lane, phase + '-run.log')),
     report: first(path.join(lane, phase + '-report.md'), matching(new RegExp('^' + phase + '-report\\.[^.]+\\.md$', 'i'))),
   });
   const gateFiles = ['typecheck', 'lint', 'test'].map(name => ({ name, file: path.join(lane, name + '.log') })).filter(item => info(item.file)?.isFile());
@@ -527,25 +537,25 @@ function toolActivity(value) {
   return lines.filter(line => /^(?:(?:→\s*)?(?:Read|Write|Edit|Patch)\b|\$\s+\S)/.test(line)).at(-1) || UNKNOWN;
 }
 function laneActivity(worktree, lastWrite = null) {
-  const current = toolActivity(tail(lanePath(worktree, 'run.log')));
+  const current = toolActivity(tail(path.join(laneHostDir(worktree), 'run.log')) ?? tail(lanePath(worktree, 'run.log')));
   return current !== UNKNOWN ? current : lastWrite === null ? UNKNOWN : 'last write ' + (approximateWalkRoots.has(worktree) ? 'at least ' : '') + Math.max(0, Math.round((now - lastWrite) / 60000)) + ' min ago';
 }
 function laneSessionId(worktree) {
-  const value = worktree ? envField(lanePath(worktree, 'env.log'), 'CLAUDE_CODE_SESSION_ID') : null;
+  const value = worktree ? envField(path.join(laneHostDir(worktree), 'env.log'), 'CLAUDE_CODE_SESSION_ID') ?? envField(lanePath(worktree, 'env.log'), 'CLAUDE_CODE_SESSION_ID') : null;
   return value && /^[A-Za-z0-9-]{4,128}$/.test(value) ? value : null;
 }
 function laneModel(worktree) {
   const live = processByWorktree.get(worktree)?.model;
   if (live && live !== UNKNOWN) return live;
-  const runLog = tail(lanePath(worktree, 'run.log')) || '';
-  const envLog = head(lanePath(worktree, 'env.log')) || '';
+  const runLog = tail(path.join(laneHostDir(worktree), 'run.log')) ?? tail(lanePath(worktree, 'run.log')) ?? '';
+  const envLog = head(path.join(laneHostDir(worktree), 'env.log')) ?? head(lanePath(worktree, 'env.log')) ?? '';
   const model = runLog.match(/^>\s+\S+\s+·\s+([^\s]+)\s*$/m)?.[1]
     || runLog.match(/^(?:model|requested_model|served_model)=([^\s]+)\s*$/m)?.[1]
     || envLog.match(/^(?:WT_LANE_MODEL|OPENCODE_MODEL|MODEL)=([^\s]+)\s*$/m)?.[1];
   return model && model !== UNKNOWN ? model : null;
 }
 function elapsedFromPidFile(worktree) {
-  const stat = worktree ? info(lanePath(worktree, 'pid')) : null;
+  const stat = worktree ? info(path.join(laneHostDir(worktree), 'pid')) ?? info(lanePath(worktree, 'pid')) : null;
   if (!stat) return UNKNOWN;
   const value = Math.max(0, Math.round((now - stat.mtimeMs) / 60000));
   return value < 60 ? value + ' min' : Math.floor(value / 60) + ' h ' + value % 60 + ' min';
@@ -980,7 +990,7 @@ function ancestryDistance(pid, ancestorPid) {
 function pidState(worktree) {
   if (runtimePlatform !== 'linux') return UNKNOWN;
   if (processByWorktree.has(worktree)) return 'alive';
-  const pidResult = slice(lanePath(worktree, 'pid'), 64);
+  const pidResult = slice(path.join(laneHostDir(worktree), 'pid'), 64);
   if (pidResult === null) return UNKNOWN;
   const pid = Number(String(pidResult).trim());
   if (!Number.isSafeInteger(pid) || pid <= 1) return 'dead';
@@ -1027,14 +1037,15 @@ function structuredLaneRole(worktree, launchedBrief = null) {
   const runnerLog = tail(sdkLogFile(worktree)) || '';
   const accepted = [...runnerLog.matchAll(/^lifecycle: accepted phase=([a-z_]+)/gm)].at(-1)?.[1];
   if (roleLabel(accepted)) return roleLabel(accepted);
-  const phaseRun = list(lanePath(worktree)).map(name => ({ name, stat: info(lanePath(worktree, name)) }))
+  const host = laneHostDir(worktree);
+  const phaseRun = [...(info(host)?.isDirectory() ? list(host) : []).map(name => ({ name, stat: info(path.join(host, name)) })), ...list(lanePath(worktree)).map(name => ({ name, stat: info(lanePath(worktree, name)) }))]
     .filter(item => item.stat?.isFile() && /^(?:discovery|plan|critic|tdd|verify|review|refutation|report|implementation|fix)-run\.[^.]+\.log$/i.test(item.name))
     .sort((left, right) => right.stat.mtimeMs - left.stat.mtimeMs || right.name.localeCompare(left.name))[0]?.name.match(/^([^-]+)/)?.[1];
   if (roleLabel(phaseRun)) return roleLabel(phaseRun);
   const launchedPhase = launchedBrief && path.basename(launchedBrief).match(/^(discovery|plan|critic|tdd|verify|review|refutation|report|implementation|fix)-brief(?:[.-]|$)/i)?.[1];
   if (roleLabel(launchedPhase)) return roleLabel(launchedPhase);
   for (const name of ['WT_LANE_ROLE', 'LANE_ROLE']) {
-    const label = roleLabel(envField(lanePath(worktree, 'env.log'), name)); if (label) return label;
+    const label = roleLabel(envField(path.join(laneHostDir(worktree), 'env.log'), name) ?? envField(lanePath(worktree, 'env.log'), name)); if (label) return label;
   }
   return null;
 }
@@ -1068,7 +1079,7 @@ for (const worktree of scannedWorktrees) {
   const runnerLogFile = sdkLogFile(worktree);
   const runnerLog = tail(runnerLogFile);
   const timeline = lifecycleTimeline(worktree);
-  const admission = json(lanePath(worktree, 'admission.json'));
+   const admission = json(path.join(laneHostDir(worktree), 'admission.json'));
   if (runnerLog !== null || timeline || ['queued', 'active'].includes(admission?.state)) {
     const route = json(lanePath(worktree, 'route.json'));
     const routeCardId = route?.cardId || admission?.cardId;
@@ -1101,7 +1112,7 @@ for (const worktree of scannedWorktrees) {
       continue;
     }
   }
-  const runLog = tail(lanePath(worktree, 'run.log'));
+  const runLog = tail(path.join(laneHostDir(worktree), 'run.log')) ?? tail(lanePath(worktree, 'run.log'));
   const brief = head(lanePath(worktree, 'brief.md'));
   if (runLog === null || brief === null) continue;
   const cardReceipt = laneCardReceipt(worktree);

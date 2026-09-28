@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { knowledgeBaseReadAllowed } from './knowledge-base-index.mjs'
+import { laneHostDir, laneWritablePath, readWorktreeRegular } from './host/lane-host-dir.mjs'
 
 const READ_TOOLS = ['Read', 'Glob', 'Grep']
 const WRITE_TOOLS = ['Edit', 'Write', 'Bash']
@@ -78,14 +79,17 @@ export function parseExecutorArgs(argv) {
   if (!['tdd', 'critic', 'review', 'refutation'].includes(options.role)) return { error: '--role must be tdd, critic, review, or refutation' }
   if (options.variantOrigin && !['role base', 'model cap', 'override'].includes(options.variantOrigin)) return { error: '--variant-origin is invalid' }
   options.dir = path.resolve(options.dir); options.brief = path.resolve(options.brief)
-  options.log = path.resolve(options.log ?? path.join(options.dir, '.lane', 'run.log'))
+  if (options.log && laneWritablePath(options.dir, options.log)) throw new Error('executor log must be outside the worktree')
+  options.log = path.resolve(options.log ?? path.join(laneHostDir(options.dir), 'run.log'))
   if (options.knowledgeBaseIndex) options.knowledgeBaseIndex = path.resolve(options.knowledgeBaseIndex)
   if (options.sdkPath) options.sdkPath = path.resolve(options.sdkPath)
   return options
 }
 
 export function executorBrief(options) {
-  const brief = fs.readFileSync(options.brief, 'utf8')
+  const protectedRead = (file) => laneWritablePath(options.dir, file) ? readWorktreeRegular(file, 'utf8', options.dir) : fs.readFileSync(file, 'utf8')
+  const brief = protectedRead(options.brief)
+  if (brief === null) throw new Error('brief is not a protected regular file')
   // The runner writes its report line after the untrusted pilot context, so the LAST one is authoritative.
   const match = [...brief.matchAll(/Write the report to `([^`]+)`/g)].at(-1)
   if (!match) throw new Error('brief does not name its report path')
@@ -104,7 +108,9 @@ export function executorBrief(options) {
     if (!entry.isFile() || file === options.brief) continue
     const stat = fs.statSync(file)
     if (stat.size > 1024 * 1024) throw new Error(`launch input exceeds 1 MiB: ${file}`)
-    embedded.push(`### ${file}\n\n\`\`\`text\n${fs.readFileSync(file, 'utf8')}\n\`\`\``)
+    const text = protectedRead(file)
+    if (text === null) throw new Error(`launch input is not a protected regular file: ${file}`)
+    embedded.push(`### ${file}\n\n\`\`\`text\n${text}\n\`\`\``)
   }
   const prompt = `${brief}${embedded.length ? `\n\n## Embedded launch inputs (runner-owned)\n\n${embedded.join('\n\n')}\n` : ''}`
   return { prompt, report, readOnly }
