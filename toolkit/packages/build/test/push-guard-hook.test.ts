@@ -178,6 +178,35 @@ describe('installed pinned pre-push guard (local bare remotes only)', () => {
     expect(matchesGuardPath('ssh://git@alias:443/a/home-dev-lab/workflow-toolbox-private.git', ['home-dev-lab/workflow-toolbox'])).toBe(false)
   })
 
+  it.each([
+    ['git@[0:0:0:0:0:ffff:140.82.112.3]:home-dev-lab/workflow-toolbox.git', 'home-dev-lab/workflow-toolbox'],
+    ['git@[2001:db8::1]:x/y.git', 'x/y'],
+    ['git@[2001:db8::1:22]:x/y.git', 'x/y'],
+    ['[example.com:2222]:x/y.git', 'x/y'],
+    ['ssh://git@[::1]:22/x/y.git', 'x/y'],
+  ])('normalizes the repository path after a bracketed host in %s', (url, path) => {
+    expect(normalizePushPath(url)).toBe(path)
+  })
+
+  it('fails closed on an unterminated bracketed scp-like host', () => {
+    const url = 'git@[0:0:0:0:0:ffff:140.82.112.3:x/y.git'
+    expect(() => normalizePushPath(url)).toThrow(`unmeasurable push URL: ${url}`)
+  })
+
+  it('refuses a bracketed IPv6 scp-like destination through the installed shim without connecting', () => {
+    const f = fixture()
+    const B = f.commit('B')
+    const localBare = join(f.local, 'home-dev-lab', 'workflow-toolbox.git')
+    mkdirSync(join(f.local, 'home-dev-lab'))
+    f.git(f.local, 'init', '-q', '--bare', localBare)
+    const url = 'git@[::1]:home-dev-lab/workflow-toolbox.git'
+    const refused = f.hook('other', url, `refs/heads/main ${B} refs/heads/main ${f.A}\n`)
+    expect(refused.status, refused.out).toBe(1)
+    expect(refused.out).toContain('wt-push-scope-check: single-use authorization missing')
+    expect(f.call(localBare, 'git', ['show-ref']).status).toBe(1)
+    expect(f.git(f.bare, 'rev-parse', 'main')).toBe(f.A)
+  })
+
   it('resolves dot segments and decoded spellings to one guarded repository path', () => {
     for (const url of ['https://github.com/home-dev-lab/workflow-toolbox.git/.', 'https://github.com/home-dev-lab/./workflow-toolbox.git', 'https://github.com/home-dev-lab/x/../workflow-toolbox.git', 'https://github.com/home-dev-lab/%2e/workflow-toolbox.git', 'https://github.com/home-dev-lab/x/%2e%2e/workflow-toolbox.git']) {
       expect(normalizePushPath(url)).toBe('home-dev-lab/workflow-toolbox')

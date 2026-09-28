@@ -6,9 +6,17 @@ export function normalizePushPath(value, baseDir) {
   const unmeasurable = () => { throw Error(`unmeasurable push URL: ${value}`); };
   if (typeof value !== 'string') return unmeasurable();
   const input = value.trim().replace(/\\/g, '/');
-  if (!input || /^[^/]+::/.test(input) || /[?#]/.test(input)) return unmeasurable();
+  const bracket = /^(?:[^/@:]+@)?\[/.exec(input);
+  let bracketEnd;
+  if (bracket) {
+    bracketEnd = input.indexOf(']', bracket[0].length);
+    if (bracketEnd < 0 || input[bracketEnd + 1] !== ':' || input.slice(0, bracketEnd).includes('/')) return unmeasurable();
+  }
+  if (!input || (bracketEnd === undefined && /^[^/]+::/.test(input)) || /[?#]/.test(input)) return unmeasurable();
   let path = input.replace(/^[a-z][\w+.-]*:\/\//i, '');
   if (path !== input && !/^file:/i.test(input)) path = path.replace(/^[^/]*\//, '');
+  // Git's scp-like syntax uses the colon after a bracketed host, not a colon inside it.
+  else if (bracketEnd !== undefined) path = path.slice(bracketEnd + 2);
   else if (!/^file:/i.test(input) && !/^[a-z]:\//i.test(path) && /^[^/]+:/.test(path)) path = path.slice(path.indexOf(':') + 1);
   try { path = decodeURIComponent(path); } catch { return unmeasurable(); }
   // Configured guard-path suffixes have no base; push URLs do. A relative local URL
