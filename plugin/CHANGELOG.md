@@ -5,6 +5,30 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+## [0.189.0] - 2026-09-28
+
+### Release notes
+- **Maturity.** `wt-rules-on-demand` is EXPERIMENTAL: opt-in, off unless enabled, and its delivery and migration evidence has been exercised on one machine only. Everything else in this release is approved for general use.
+- **Windows.** The suite-lock broker and endpoint-relay tests do not run on Windows: both mechanisms exist only inside the Linux lane sandbox, and the tests need unix-domain socket paths that Windows runners do not serve. No Windows code path changes because of this.
+- **Not verified in this release.** The Function Hooks host's own time limit on a rule's trigger pattern has not been measured; the shipped trigger patterns are written to run in linear time. The documentation and coverage audits and the marketplace install test were not run for this release.
+
+### Quality
+
+Minor release: measured on the release tree against the 0.188.2 baseline (`node scripts/quality.mjs delta` after a fresh `pnpm quality:coverage`). Duplication, Knip issues, ESLint warnings, longest function and cyclomatic complexity improved; cognitive complexity rose by 2. Coverage fell by about 3 points on every measure; the cause has not been analysed yet and is tracked for the next release.
+
+| Judge | Total before -> after | Delta |
+|---|---:|---:|
+| Cyclomatic complexity | 127 -> 126 | -1 |
+| Cognitive complexity | 266 -> 268 | +2 |
+| Longest function (lines) | 709 -> 700 | -9 |
+| ESLint warnings | 686 -> 684 | -2 |
+| Duplication % | 2.6416 -> 2.4324 | -0.21 |
+| Knip issues | 220 -> 196 | -24 |
+| Coverage lines % | 81.70 -> 78.61 | -3.09 |
+| Coverage branches % | 72.07 -> 69.76 | -2.31 |
+| Coverage functions % | 83.24 -> 80.86 | -2.38 |
+| Coverage statements % | 78.74 -> 76.50 | -2.24 |
+
 ### Added
 - The Agent spawn guard now warns when a spawn would inherit the session model without a model pin; built-in agents' own defaults and the environment's subagent default model count as pins. It never refuses a spawn for this reason. Forks are exempt, and agent definitions that cannot be resolved produce no warning.
 - Model-fallback observability: `wt-model-fallback-check.mjs` inspects Claude session and agent transcripts for served-model changes, classifier notices, refusals and fallback targets; PostToolUse and SubagentStop hooks warn the parent and user without blocking. SDK callers log the same warnings, and second-opinion outputs label classifier outcomes.

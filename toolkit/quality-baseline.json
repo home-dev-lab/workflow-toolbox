@@ -6,39 +6,32 @@
       "function": "runPilot",
       "offenders": [
         {
-          "exact": "plugin/bin/lib/pilot-runner-core.mjs:310 Refactor this function to reduce its Cognitive Complexity from 266 to the 0 allowed.",
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:386 Refactor this function to reduce its Cognitive Complexity from 268 to the 0 allowed.",
           "file": "plugin/bin/lib/pilot-runner-core.mjs",
           "function": "runPilot",
-          "line": 310,
-          "value": 266
+          "line": 386,
+          "value": 268
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-launch.mjs:356 Refactor this function to reduce its Cognitive Complexity from 194 to the 0 allowed.",
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:366 Refactor this function to reduce its Cognitive Complexity from 194 to the 0 allowed.",
           "file": "plugin/bin/lib/lifecycle-launch.mjs",
           "function": "runSingle",
-          "line": 356,
+          "line": 366,
           "value": 194
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:809 Refactor this function to reduce its Cognitive Complexity from 157 to the 0 allowed.",
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:848 Refactor this function to reduce its Cognitive Complexity from 162 to the 0 allowed.",
           "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
           "function": "transition",
-          "line": 809,
-          "value": 157
+          "line": 848,
+          "value": 162
         },
         {
-          "exact": "plugin/bin/wt-lane-orphan-watch.mjs:167 Refactor this function to reduce its Cognitive Complexity from 133 to the 0 allowed.",
+          "exact": "plugin/bin/wt-lane-orphan-watch.mjs:170 Refactor this function to reduce its Cognitive Complexity from 151 to the 0 allowed.",
           "file": "plugin/bin/wt-lane-orphan-watch.mjs",
           "function": "sweep",
-          "line": 167,
-          "value": 133
-        },
-        {
-          "exact": "plugin/bin/wt-lane.mjs:350 Refactor this function to reduce its Cognitive Complexity from 124 to the 0 allowed.",
-          "file": "plugin/bin/wt-lane.mjs",
-          "function": "main",
-          "line": 350,
-          "value": 124
+          "line": 170,
+          "value": 151
         },
         {
           "exact": "plugin/bin/lib/memory-index-check-core.mjs:127 Refactor this function to reduce its Cognitive Complexity from 103 to the 0 allowed.",
@@ -48,10 +41,10 @@
           "value": 103
         },
         {
-          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:201 Refactor this function to reduce its Cognitive Complexity from 99 to the 0 allowed.",
+          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:202 Refactor this function to reduce its Cognitive Complexity from 99 to the 0 allowed.",
           "file": "plugin/bin/lib/orchestrator-runner-core.mjs",
           "function": "runOrchestrator",
-          "line": 201,
+          "line": 202,
           "value": 99
         },
         {
@@ -60,6 +53,13 @@
           "function": "renderPane",
           "line": 234,
           "value": 97
+        },
+        {
+          "exact": "plugin/bin/wt-lane.mjs:392 Refactor this function to reduce its Cognitive Complexity from 93 to the 0 allowed.",
+          "file": "plugin/bin/wt-lane.mjs",
+          "function": "main",
+          "line": 392,
+          "value": 93
         },
         {
           "exact": "plugin/bin/wt-observe.mjs:1887 Refactor this function to reduce its Cognitive Complexity from 84 to the 0 allowed.",
@@ -97,10 +97,17 @@
           "value": 72
         },
         {
-          "exact": "plugin/bin/lib/wake-floor-in-flight.mjs:53 Refactor this function to reduce its Cognitive Complexity from 70 to the 0 allowed.",
+          "exact": "plugin/bin/lib/card-definition-of-done.mjs:10 Refactor this function to reduce its Cognitive Complexity from 70 to the 0 allowed.",
+          "file": "plugin/bin/lib/card-definition-of-done.mjs",
+          "function": "cardDefinitionOfDone",
+          "line": 10,
+          "value": 70
+        },
+        {
+          "exact": "plugin/bin/lib/wake-floor-in-flight.mjs:54 Refactor this function to reduce its Cognitive Complexity from 70 to the 0 allowed.",
           "file": "plugin/bin/lib/wake-floor-in-flight.mjs",
           "function": "sessionBackgroundTaskInFlight",
-          "line": 53,
+          "line": 54,
           "value": 70
         },
         {
@@ -137,16 +144,9 @@
           "function": "formatAuditReportMarkdown",
           "line": 852,
           "value": 61
-        },
-        {
-          "exact": "toolkit/packages/debugger/src/report-format.ts:36 Refactor this function to reduce its Cognitive Complexity from 61 to the 0 allowed.",
-          "file": "toolkit/packages/debugger/src/report-format.ts",
-          "function": "formatAuditReportMarkdown",
-          "line": 36,
-          "value": 61
         }
       ],
-      "value": 266
+      "value": 268
     },
     "coverageBranches": {
       "detail": "",
@@ -254,7 +254,7 @@
           "value": 31.57
         }
       ],
-      "value": 72.07
+      "value": 69.76
     },
     "coverageFunctions": {
       "detail": "",
@@ -362,7 +362,7 @@
           "value": 33.33
         }
       ],
-      "value": 83.24
+      "value": 80.86
     },
     "coverageLines": {
       "detail": "",
@@ -470,7 +470,7 @@
           "value": 30.5
         }
       ],
-      "value": 81.7
+      "value": 78.61
     },
     "coverageStatements": {
       "detail": "",
@@ -578,40 +578,40 @@
           "value": 27.69
         }
       ],
-      "value": 78.74
+      "value": 76.5
     },
     "cyclomaticComplexity": {
       "detail": "",
-      "file": "plugin/bin/wt-lane.mjs",
-      "function": "main",
+      "file": "plugin/bin/lib/pilot-runner-core.mjs",
+      "function": "runPilot",
       "offenders": [
         {
-          "exact": "plugin/bin/wt-lane.mjs:350 Async function 'main' has a complexity of 127. Maximum allowed is 0.",
-          "file": "plugin/bin/wt-lane.mjs",
-          "function": "main",
-          "line": 350,
-          "value": 127
-        },
-        {
-          "exact": "plugin/bin/lib/lifecycle-launch.mjs:356 Async function 'runSingle' has a complexity of 125. Maximum allowed is 0.",
-          "file": "plugin/bin/lib/lifecycle-launch.mjs",
-          "function": "runSingle",
-          "line": 356,
-          "value": 125
-        },
-        {
-          "exact": "plugin/bin/lib/pilot-runner-core.mjs:310 Async function 'runPilot' has a complexity of 125. Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:386 Async function 'runPilot' has a complexity of 126. Maximum allowed is 0.",
           "file": "plugin/bin/lib/pilot-runner-core.mjs",
           "function": "runPilot",
-          "line": 310,
+          "line": 386,
+          "value": 126
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:366 Async function 'runSingle' has a complexity of 125. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "function": "runSingle",
+          "line": 366,
           "value": 125
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:809 Function 'transition' has a complexity of 111. Maximum allowed is 0.",
+          "exact": "plugin/bin/wt-lane.mjs:392 Async function 'main' has a complexity of 114. Maximum allowed is 0.",
+          "file": "plugin/bin/wt-lane.mjs",
+          "function": "main",
+          "line": 392,
+          "value": 114
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:848 Function 'transition' has a complexity of 113. Maximum allowed is 0.",
           "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
           "function": "transition",
-          "line": 809,
-          "value": 111
+          "line": 848,
+          "value": 113
         },
         {
           "exact": "plugin/hooks/hooks.js:234 Function 'renderPane' has a complexity of 107. Maximum allowed is 0.",
@@ -621,17 +621,24 @@
           "value": 107
         },
         {
-          "exact": "plugin/bin/wt-lane-orphan-watch.mjs:167 Arrow function has a complexity of 86. Maximum allowed is 0.",
+          "exact": "plugin/bin/wt-lane-orphan-watch.mjs:170 Arrow function has a complexity of 106. Maximum allowed is 0.",
           "file": "plugin/bin/wt-lane-orphan-watch.mjs",
           "function": "sweep",
-          "line": 167,
-          "value": 86
+          "line": 170,
+          "value": 106
         },
         {
-          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:201 Async function 'runOrchestrator' has a complexity of 82. Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:852 Function 'resolveLaneSandbox' has a complexity of 88. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
+          "function": "resolveLaneSandbox",
+          "line": 852,
+          "value": 88
+        },
+        {
+          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:202 Async function 'runOrchestrator' has a complexity of 82. Maximum allowed is 0.",
           "file": "plugin/bin/lib/orchestrator-runner-core.mjs",
           "function": "runOrchestrator",
-          "line": 201,
+          "line": 202,
           "value": 82
         },
         {
@@ -642,10 +649,10 @@
           "value": 79
         },
         {
-          "exact": "plugin/bin/lib/lane-supervisor-core.mjs:212 Function 'terminateLane' has a complexity of 72. Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/lane-supervisor-core.mjs:213 Function 'terminateLane' has a complexity of 72. Maximum allowed is 0.",
           "file": "plugin/bin/lib/lane-supervisor-core.mjs",
           "function": "terminateLane",
-          "line": 212,
+          "line": 213,
           "value": 72
         },
         {
@@ -670,17 +677,17 @@
           "value": 60
         },
         {
-          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:562 Function 'resolveLaneSandbox' has a complexity of 59. Maximum allowed is 0.",
-          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
-          "function": "resolveLaneSandbox",
-          "line": 562,
-          "value": 59
+          "exact": "plugin/bin/lib/model-fallback-core.mjs:24 Function 'observe' has a complexity of 57. Maximum allowed is 0.",
+          "file": "plugin/bin/lib/model-fallback-core.mjs",
+          "function": "observe",
+          "line": 24,
+          "value": 57
         },
         {
-          "exact": "plugin/bin/lib/host/codex-broker-ownership.mjs:221 Function 'stop' has a complexity of 53. Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/host/codex-broker-ownership.mjs:264 Function 'stop' has a complexity of 53. Maximum allowed is 0.",
           "file": "plugin/bin/lib/host/codex-broker-ownership.mjs",
           "function": "stop",
-          "line": 221,
+          "line": 264,
           "value": 53
         },
         {
@@ -698,10 +705,10 @@
           "value": 51
         },
         {
-          "exact": "plugin/bin/lib/wake-floor-in-flight.mjs:53 Function 'sessionBackgroundTaskInFlight' has a complexity of 50. Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/wake-floor-in-flight.mjs:54 Function 'sessionBackgroundTaskInFlight' has a complexity of 50. Maximum allowed is 0.",
           "file": "plugin/bin/lib/wake-floor-in-flight.mjs",
           "function": "sessionBackgroundTaskInFlight",
-          "line": 53,
+          "line": 54,
           "value": 50
         },
         {
@@ -712,21 +719,14 @@
           "value": 50
         },
         {
-          "exact": "plugin/bin/wt-autonomy-watch.mjs:338 Function 'poll' has a complexity of 47. Maximum allowed is 0.",
-          "file": "plugin/bin/wt-autonomy-watch.mjs",
-          "function": "poll",
-          "line": 338,
-          "value": 47
-        },
-        {
-          "exact": "plugin/workflows/independent-analysis.js:910 Async function 'probeAgentType' has a complexity of 46. Maximum allowed is 0.",
-          "file": "plugin/workflows/independent-analysis.js",
-          "function": "probeAgentType",
-          "line": 910,
-          "value": 46
+          "exact": "plugin/bin/wt-observer-pairing-guard-hook.mjs:90 Function 'main' has a complexity of 49. Maximum allowed is 0.",
+          "file": "plugin/bin/wt-observer-pairing-guard-hook.mjs",
+          "function": "main",
+          "line": 90,
+          "value": 49
         }
       ],
-      "value": 127
+      "value": 126
     },
     "dependencyCycles": {
       "detail": "",
@@ -766,17 +766,24 @@
           "value": 7
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-launch.mjs:462 Blocks are nested too deeply (6). Maximum allowed is 0.",
-          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "exact": "plugin/bin/lib/lifecycle-dod-dispute.mjs:299 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lifecycle-dod-dispute.mjs",
           "function": "",
-          "line": 462,
+          "line": 299,
           "value": 6
         },
         {
-          "exact": "plugin/bin/lib/pilot-runner-core.mjs:502 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:472 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "function": "",
+          "line": 472,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:603 Blocks are nested too deeply (6). Maximum allowed is 0.",
           "file": "plugin/bin/lib/pilot-runner-core.mjs",
           "function": "",
-          "line": 502,
+          "line": 603,
           "value": 6
         },
         {
@@ -787,10 +794,10 @@
           "value": 6
         },
         {
-          "exact": "plugin/bin/wt-lane.mjs:485 Blocks are nested too deeply (6). Maximum allowed is 0.",
+          "exact": "plugin/bin/wt-lane.mjs:526 Blocks are nested too deeply (6). Maximum allowed is 0.",
           "file": "plugin/bin/wt-lane.mjs",
           "function": "",
-          "line": 485,
+          "line": 526,
           "value": 6
         },
         {
@@ -822,6 +829,13 @@
           "value": 6
         },
         {
+          "exact": "plugin/bin/lib/bounded-walk.mjs:39 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/bounded-walk.mjs",
+          "function": "",
+          "line": 39,
+          "value": 5
+        },
+        {
           "exact": "plugin/bin/lib/guard-journal-read.mjs:137 Blocks are nested too deeply (5). Maximum allowed is 0.",
           "file": "plugin/bin/lib/guard-journal-read.mjs",
           "function": "",
@@ -836,10 +850,10 @@
           "value": 5
         },
         {
-          "exact": "plugin/bin/lib/wake-floor-in-flight.mjs:127 Blocks are nested too deeply (5). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/wake-floor-in-flight.mjs:128 Blocks are nested too deeply (5). Maximum allowed is 0.",
           "file": "plugin/bin/lib/wake-floor-in-flight.mjs",
           "function": "",
-          "line": 127,
+          "line": 128,
           "value": 5
         },
         {
@@ -876,26 +890,12 @@
           "function": "",
           "line": 75,
           "value": 5
-        },
-        {
-          "exact": "toolkit/packages/build/src/lint.ts:96 Blocks are nested too deeply (5). Maximum allowed is 0.",
-          "file": "toolkit/packages/build/src/lint.ts",
-          "function": "",
-          "line": 96,
-          "value": 5
-        },
-        {
-          "exact": "toolkit/packages/debugger/src/tool-denial.ts:277 Blocks are nested too deeply (5). Maximum allowed is 0.",
-          "file": "toolkit/packages/debugger/src/tool-denial.ts",
-          "function": "",
-          "line": 277,
-          "value": 5
         }
       ],
       "value": 7
     },
     "duplication": {
-      "detail": "2695 duplicated lines",
+      "detail": "2720 duplicated lines",
       "file": "plugin/skills/workflow-composer/assets/examples/toolkit/dev-implement.workflow.ts",
       "function": "",
       "offenders": [
@@ -950,6 +950,11 @@
           "value": 125
         },
         {
+          "exact": "bin/lib/vendor/yaml.mjs: 124 duplicated line occurrences",
+          "file": "plugin/bin/lib/vendor/yaml.mjs",
+          "value": 124
+        },
+        {
           "exact": "skills/workflow-composer/assets/examples/toolkit/dev-plan.workflow.ts: 115 duplicated line occurrences",
           "file": "plugin/skills/workflow-composer/assets/examples/toolkit/dev-plan.workflow.ts",
           "value": 115
@@ -993,24 +998,19 @@
           "exact": "skills/workflow-composer/assets/examples/toolkit/dev-review-fix.workflow.ts: 79 duplicated line occurrences",
           "file": "plugin/skills/workflow-composer/assets/examples/toolkit/dev-review-fix.workflow.ts",
           "value": 79
-        },
-        {
-          "exact": "transcript-usage.ts: 77 duplicated line occurrences",
-          "file": "transcript-usage.ts",
-          "value": 77
         }
       ],
-      "value": 2.641638894334444
+      "value": 2.432415513803064
     },
     "eslintWarnings": {
-      "detail": "686 warnings",
+      "detail": "684 warnings",
       "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
       "function": "",
       "offenders": [
         {
-          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs: 39 warning(s)",
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs: 38 warning(s)",
           "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
-          "value": 39
+          "value": 38
         },
         {
           "exact": "plugin/bin/wt-observe.mjs: 36 warning(s)",
@@ -1033,9 +1033,9 @@
           "value": 19
         },
         {
-          "exact": "plugin/bin/wt-lane.mjs: 19 warning(s)",
+          "exact": "plugin/bin/wt-lane.mjs: 18 warning(s)",
           "file": "plugin/bin/wt-lane.mjs",
-          "value": 19
+          "value": 18
         },
         {
           "exact": "plugin/bin/wt-verifier-cli-guard-hook.mjs: 18 warning(s)",
@@ -1061,6 +1061,11 @@
           "exact": "plugin/skills/workflow-composer/assets/examples/verify-findings.js: 12 warning(s)",
           "file": "plugin/skills/workflow-composer/assets/examples/verify-findings.js",
           "value": 12
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs: 10 warning(s)",
+          "file": "plugin/bin/lib/lifecycle-launch.mjs",
+          "value": 10
         },
         {
           "exact": "plugin/bin/lib/stale-date-guard-core.mjs: 10 warning(s)",
@@ -1093,22 +1098,17 @@
           "value": 9
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-launch.mjs: 8 warning(s)",
-          "file": "plugin/bin/lib/lifecycle-launch.mjs",
-          "value": 8
+          "exact": "plugin/bin/lib/lane-supervisor-core.mjs: 7 warning(s)",
+          "file": "plugin/bin/lib/lane-supervisor-core.mjs",
+          "value": 7
         },
         {
-          "exact": "plugin/bin/lib/opencode-skill-fence.mjs: 8 warning(s)",
+          "exact": "plugin/bin/lib/opencode-skill-fence.mjs: 7 warning(s)",
           "file": "plugin/bin/lib/opencode-skill-fence.mjs",
-          "value": 8
-        },
-        {
-          "exact": "plugin/bin/lib/pilot-runner-core.mjs: 7 warning(s)",
-          "file": "plugin/bin/lib/pilot-runner-core.mjs",
           "value": 7
         }
       ],
-      "value": 686
+      "value": 684
     },
     "fileLines": {
       "detail": "",
@@ -1130,11 +1130,11 @@
           "value": 2234
         },
         {
-          "exact": "plugin/skills/adopt/scripts/install.mjs:67 File has too many lines (2084). Maximum allowed is 1.",
+          "exact": "plugin/skills/adopt/scripts/install.mjs:67 File has too many lines (2092). Maximum allowed is 1.",
           "file": "plugin/skills/adopt/scripts/install.mjs",
           "function": "",
           "line": 67,
-          "value": 2084
+          "value": 2092
         },
         {
           "exact": "plugin/bin/wt-stop-hook.mjs:5 File has too many lines (1433). Maximum allowed is 1.",
@@ -1144,18 +1144,18 @@
           "value": 1433
         },
         {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:3 File has too many lines (1298). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+          "function": "",
+          "line": 3,
+          "value": 1298
+        },
+        {
           "exact": "toolkit/packages/debugger/src/observe-cli.ts:47 File has too many lines (1254). Maximum allowed is 1.",
           "file": "toolkit/packages/debugger/src/observe-cli.ts",
           "function": "",
           "line": 47,
           "value": 1254
-        },
-        {
-          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:3 File has too many lines (1249). Maximum allowed is 1.",
-          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
-          "function": "",
-          "line": 3,
-          "value": 1249
         },
         {
           "exact": "plugin/hooks/hooks.js:2 File has too many lines (897). Maximum allowed is 1.",
@@ -1165,6 +1165,13 @@
           "value": 897
         },
         {
+          "exact": "plugin/bin/wt-lane.mjs:5 File has too many lines (836). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-lane.mjs",
+          "function": "",
+          "line": 5,
+          "value": 836
+        },
+        {
           "exact": "plugin/bin/wt-verifier-cli-guard-hook.mjs:50 File has too many lines (816). Maximum allowed is 1.",
           "file": "plugin/bin/wt-verifier-cli-guard-hook.mjs",
           "function": "",
@@ -1172,11 +1179,18 @@
           "value": 816
         },
         {
-          "exact": "plugin/bin/wt-lane.mjs:5 File has too many lines (813). Maximum allowed is 1.",
-          "file": "plugin/bin/wt-lane.mjs",
+          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:2 File has too many lines (789). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
           "function": "",
-          "line": 5,
-          "value": 813
+          "line": 2,
+          "value": 789
+        },
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:2 File has too many lines (622). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/pilot-runner-core.mjs",
+          "function": "",
+          "line": 2,
+          "value": 622
         },
         {
           "exact": "plugin/bin/wt-quota-watch.mjs:55 File has too many lines (622). Maximum allowed is 1.",
@@ -1186,11 +1200,11 @@
           "value": 622
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-launch.mjs:3 File has too many lines (601). Maximum allowed is 1.",
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:3 File has too many lines (609). Maximum allowed is 1.",
           "file": "plugin/bin/lib/lifecycle-launch.mjs",
           "function": "",
           "line": 3,
-          "value": 601
+          "value": 609
         },
         {
           "exact": "plugin/bin/wt-opencode-envelope.mjs:19 File has too many lines (567). Maximum allowed is 1.",
@@ -1207,25 +1221,11 @@
           "value": 542
         },
         {
-          "exact": "plugin/bin/lib/pilot-runner-core.mjs:2 File has too many lines (530). Maximum allowed is 1.",
-          "file": "plugin/bin/lib/pilot-runner-core.mjs",
-          "function": "",
-          "line": 2,
-          "value": 530
-        },
-        {
           "exact": "plugin/bin/wt-arc-watch.mjs:50 File has too many lines (496). Maximum allowed is 1.",
           "file": "plugin/bin/wt-arc-watch.mjs",
           "function": "",
           "line": 50,
           "value": 496
-        },
-        {
-          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:2 File has too many lines (491). Maximum allowed is 1.",
-          "file": "plugin/bin/lib/host/lane-sandbox.mjs",
-          "function": "",
-          "line": 2,
-          "value": 491
         },
         {
           "exact": "plugin/bin/wt-artifact-server-ensure.mjs:4 File has too many lines (491). Maximum allowed is 1.",
@@ -1242,18 +1242,18 @@
           "value": 485
         },
         {
+          "exact": "plugin/bin/lib/lane-supervisor-core.mjs:2 File has too many lines (475). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/lane-supervisor-core.mjs",
+          "function": "",
+          "line": 2,
+          "value": 475
+        },
+        {
           "exact": "plugin/bin/wt-autonomy-watch.mjs:14 File has too many lines (464). Maximum allowed is 1.",
           "file": "plugin/bin/wt-autonomy-watch.mjs",
           "function": "",
           "line": 14,
           "value": 464
-        },
-        {
-          "exact": "plugin/bin/lib/lane-supervisor-core.mjs:2 File has too many lines (451). Maximum allowed is 1.",
-          "file": "plugin/bin/lib/lane-supervisor-core.mjs",
-          "function": "",
-          "line": 2,
-          "value": 451
         }
       ],
       "value": 2719
@@ -1264,18 +1264,18 @@
       "function": "createLifecycleStateMachine",
       "offenders": [
         {
-          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:575 Function 'createLifecycleStateMachine' has too many lines (709). Maximum allowed is 1.",
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:638 Function 'createLifecycleStateMachine' has too many lines (700). Maximum allowed is 1.",
           "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
           "function": "createLifecycleStateMachine",
-          "line": 575,
-          "value": 709
+          "line": 638,
+          "value": 700
         },
         {
-          "exact": "plugin/bin/wt-lane.mjs:350 Async function 'main' has too many lines (495). Maximum allowed is 1.",
+          "exact": "plugin/bin/wt-lane.mjs:392 Async function 'main' has too many lines (477). Maximum allowed is 1.",
           "file": "plugin/bin/wt-lane.mjs",
           "function": "main",
-          "line": 350,
-          "value": 495
+          "line": 392,
+          "value": 477
         },
         {
           "exact": "plugin/hooks/hooks.js:234 Function 'renderPane' has too many lines (473). Maximum allowed is 1.",
@@ -1285,18 +1285,25 @@
           "value": 473
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-launch.mjs:183 Function 'createLifecycleLaunch' has too many lines (443). Maximum allowed is 1.",
+          "exact": "plugin/bin/lib/lifecycle-launch.mjs:193 Function 'createLifecycleLaunch' has too many lines (443). Maximum allowed is 1.",
           "file": "plugin/bin/lib/lifecycle-launch.mjs",
           "function": "createLifecycleLaunch",
-          "line": 183,
+          "line": 193,
           "value": 443
         },
         {
-          "exact": "plugin/bin/lib/memory-index-check-core.mjs:127 Function 'checkStore' has too many lines (326). Maximum allowed is 1.",
+          "exact": "plugin/bin/lib/memory-index-check-core.mjs:127 Function 'checkStore' has too many lines (324). Maximum allowed is 1.",
           "file": "plugin/bin/lib/memory-index-check-core.mjs",
           "function": "checkStore",
           "line": 127,
-          "value": 326
+          "value": 324
+        },
+        {
+          "exact": "plugin/bin/lib/pilot-runner-core.mjs:386 Async function 'runPilot' has too many lines (288). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/pilot-runner-core.mjs",
+          "function": "runPilot",
+          "line": 386,
+          "value": 288
         },
         {
           "exact": "toolkit/packages/patterns/src/tournament.ts:250 Async function 'tournament' has too many lines (284). Maximum allowed is 1.",
@@ -1304,13 +1311,6 @@
           "function": "tournament",
           "line": 250,
           "value": 284
-        },
-        {
-          "exact": "plugin/bin/lib/pilot-runner-core.mjs:310 Async function 'runPilot' has too many lines (262). Maximum allowed is 1.",
-          "file": "plugin/bin/lib/pilot-runner-core.mjs",
-          "function": "runPilot",
-          "line": 310,
-          "value": 262
         },
         {
           "exact": "plugin/bin/wt-artifact-server.mjs:235 Async function 'serve' has too many lines (238). Maximum allowed is 1.",
@@ -1327,11 +1327,18 @@
           "value": 232
         },
         {
-          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:201 Async function 'runOrchestrator' has too many lines (228). Maximum allowed is 1.",
+          "exact": "plugin/bin/lib/orchestrator-runner-core.mjs:202 Async function 'runOrchestrator' has too many lines (228). Maximum allowed is 1.",
           "file": "plugin/bin/lib/orchestrator-runner-core.mjs",
           "function": "runOrchestrator",
-          "line": 201,
+          "line": 202,
           "value": 228
+        },
+        {
+          "exact": "plugin/bin/lib/host/codex-broker-ownership.mjs:83 Function 'createCodexBrokerOwnership' has too many lines (218). Maximum allowed is 1.",
+          "file": "plugin/bin/lib/host/codex-broker-ownership.mjs",
+          "function": "createCodexBrokerOwnership",
+          "line": 83,
+          "value": 218
         },
         {
           "exact": "toolkit/packages/patterns/src/plan-and-execute.ts:177 Async function 'planAndExecute' has too many lines (218). Maximum allowed is 1.",
@@ -1348,11 +1355,11 @@
           "value": 207
         },
         {
-          "exact": "plugin/bin/lib/host/codex-broker-ownership.mjs:72 Function 'createCodexBrokerOwnership' has too many lines (197). Maximum allowed is 1.",
-          "file": "plugin/bin/lib/host/codex-broker-ownership.mjs",
-          "function": "createCodexBrokerOwnership",
-          "line": 72,
-          "value": 197
+          "exact": "plugin/bin/wt-lane-orphan-watch.mjs:124 Async function 'main' has too many lines (201). Maximum allowed is 1.",
+          "file": "plugin/bin/wt-lane-orphan-watch.mjs",
+          "function": "main",
+          "line": 124,
+          "value": 201
         },
         {
           "exact": "toolkit/packages/debugger/src/report-format.ts:36 Function 'formatAuditReportMarkdown' has too many lines (183). Maximum allowed is 1.",
@@ -1360,13 +1367,6 @@
           "function": "formatAuditReportMarkdown",
           "line": 36,
           "value": 183
-        },
-        {
-          "exact": "plugin/bin/wt-lane-orphan-watch.mjs:124 Async function 'main' has too many lines (179). Maximum allowed is 1.",
-          "file": "plugin/bin/wt-lane-orphan-watch.mjs",
-          "function": "main",
-          "line": 124,
-          "value": 179
         },
         {
           "exact": "toolkit/packages/patterns/src/score-and-rank.ts:179 Async function 'scoreAndRank' has too many lines (175). Maximum allowed is 1.",
@@ -1404,27 +1404,22 @@
           "value": 162
         }
       ],
-      "value": 709
+      "value": 700
     },
     "knipIssues": {
       "detail": "",
-      "file": "toolkit/packages/smoke/src/lib.ts",
+      "file": "toolkit/packages/debugger/src/source-resolve.ts",
       "function": "",
       "offenders": [
+        {
+          "exact": "toolkit/packages/debugger/src/source-resolve.ts: 8 issue(s)",
+          "file": "toolkit/packages/debugger/src/source-resolve.ts",
+          "value": 8
+        },
         {
           "exact": "toolkit/packages/smoke/src/lib.ts: 8 issue(s)",
           "file": "toolkit/packages/smoke/src/lib.ts",
           "value": 8
-        },
-        {
-          "exact": "plugin/bin/lib/artifact-server.mjs: 7 issue(s)",
-          "file": "plugin/bin/lib/artifact-server.mjs",
-          "value": 7
-        },
-        {
-          "exact": "plugin/bin/lib/wt-lane-saturation-core.mjs: 7 issue(s)",
-          "file": "plugin/bin/lib/wt-lane-saturation-core.mjs",
-          "value": 7
         },
         {
           "exact": "toolkit/packages/smoke/src/changelog.ts: 6 issue(s)",
@@ -1437,13 +1432,8 @@
           "value": 5
         },
         {
-          "exact": "plugin/bin/lib/pilot-runner-core.mjs: 5 issue(s)",
-          "file": "plugin/bin/lib/pilot-runner-core.mjs",
-          "value": 5
-        },
-        {
-          "exact": "toolkit/packages/build/package.json: 5 issue(s)",
-          "file": "toolkit/packages/build/package.json",
+          "exact": "plugin/bin/lib/wt-lane-saturation-core.mjs: 5 issue(s)",
+          "file": "plugin/bin/lib/wt-lane-saturation-core.mjs",
           "value": 5
         },
         {
@@ -1452,18 +1442,13 @@
           "value": 5
         },
         {
-          "exact": "plugin/bin/lib/intake-triage-core.mjs: 4 issue(s)",
-          "file": "plugin/bin/lib/intake-triage-core.mjs",
+          "exact": "plugin/bin/lib/artifact-server.mjs: 4 issue(s)",
+          "file": "plugin/bin/lib/artifact-server.mjs",
           "value": 4
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs: 4 issue(s)",
-          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
-          "value": 4
-        },
-        {
-          "exact": "plugin/bin/lib/rules-manifest.mjs: 4 issue(s)",
-          "file": "plugin/bin/lib/rules-manifest.mjs",
+          "exact": "plugin/bin/lib/spill-containment.mjs: 4 issue(s)",
+          "file": "plugin/bin/lib/spill-containment.mjs",
           "value": 4
         },
         {
@@ -1497,11 +1482,6 @@
           "value": 3
         },
         {
-          "exact": "plugin/bin/lib/command-repeat-core.mjs: 3 issue(s)",
-          "file": "plugin/bin/lib/command-repeat-core.mjs",
-          "value": 3
-        },
-        {
           "exact": "plugin/bin/lib/env-prerequisites.mjs: 3 issue(s)",
           "file": "plugin/bin/lib/env-prerequisites.mjs",
           "value": 3
@@ -1510,27 +1490,54 @@
           "exact": "plugin/bin/lib/label-intent-runner.mjs: 3 issue(s)",
           "file": "plugin/bin/lib/label-intent-runner.mjs",
           "value": 3
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs: 3 issue(s)",
+          "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
+          "value": 3
+        },
+        {
+          "exact": "plugin/bin/lib/queue-gate-marker-expiry.mjs: 3 issue(s)",
+          "file": "plugin/bin/lib/queue-gate-marker-expiry.mjs",
+          "value": 3
+        },
+        {
+          "exact": "plugin/bin/lib/transcript-delta.mjs: 3 issue(s)",
+          "file": "plugin/bin/lib/transcript-delta.mjs",
+          "value": 3
+        },
+        {
+          "exact": "toolkit/packages/comm/package.json: 3 issue(s)",
+          "file": "toolkit/packages/comm/package.json",
+          "value": 3
         }
       ],
-      "value": 220
+      "value": 196
     },
     "params": {
       "detail": "",
-      "file": "plugin/bin/lib/lifecycle-review-policy.mjs",
-      "function": "routedBecause",
+      "file": "plugin/bin/lib/agent-definitions.mjs",
+      "function": "pluginRoots",
       "offenders": [
         {
-          "exact": "plugin/bin/lib/lifecycle-review-policy.mjs:38 Function 'routedBecause' has too many parameters (7). Maximum allowed is 0.",
-          "file": "plugin/bin/lib/lifecycle-review-policy.mjs",
-          "function": "routedBecause",
-          "line": 38,
+          "exact": "plugin/bin/lib/agent-definitions.mjs:62 Function 'pluginRoots' has too many parameters (7). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/agent-definitions.mjs",
+          "function": "pluginRoots",
+          "line": 62,
           "value": 7
         },
         {
-          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:405 Function 'prepareReviewFix' has too many parameters (7). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/lifecycle-review-policy.mjs:40 Function 'routedBecause' has too many parameters (7). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/lifecycle-review-policy.mjs",
+          "function": "routedBecause",
+          "line": 40,
+          "value": 7
+        },
+        {
+          "exact": "plugin/bin/lib/lifecycle-state-machine.mjs:424 Function 'prepareReviewFix' has too many parameters (7). Maximum allowed is 0.",
           "file": "plugin/bin/lib/lifecycle-state-machine.mjs",
           "function": "prepareReviewFix",
-          "line": 405,
+          "line": 424,
           "value": 7
         },
         {
@@ -1562,10 +1569,10 @@
           "value": 7
         },
         {
-          "exact": "plugin/skills/adopt/scripts/install.mjs:1947 Function 'decideManagedItem' has too many parameters (7). Maximum allowed is 0.",
+          "exact": "plugin/skills/adopt/scripts/install.mjs:1959 Function 'decideManagedItem' has too many parameters (7). Maximum allowed is 0.",
           "file": "plugin/skills/adopt/scripts/install.mjs",
           "function": "decideManagedItem",
-          "line": 1947,
+          "line": 1959,
           "value": 7
         },
         {
@@ -1590,38 +1597,45 @@
           "value": 7
         },
         {
-          "exact": "plugin/bin/lib/claude-executor-core.mjs:33 Function 'executorCanUseTool' has too many parameters (6). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/claude-executor-core.mjs:34 Function 'executorCanUseTool' has too many parameters (6). Maximum allowed is 0.",
           "file": "plugin/bin/lib/claude-executor-core.mjs",
           "function": "executorCanUseTool",
+          "line": 34,
+          "value": 6
+        },
+        {
+          "exact": "plugin/bin/lib/host/pilot-decision-store.mjs:33 Function 'pilotDecisionCommand' has too many parameters (6). Maximum allowed is 0.",
+          "file": "plugin/bin/lib/host/pilot-decision-store.mjs",
+          "function": "pilotDecisionCommand",
           "line": 33,
           "value": 6
         },
         {
-          "exact": "plugin/bin/lib/lane-supervisor-core.mjs:303 Function 'inspectWindowsProcess' has too many parameters (6). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/lane-supervisor-core.mjs:304 Function 'inspectWindowsProcess' has too many parameters (6). Maximum allowed is 0.",
           "file": "plugin/bin/lib/lane-supervisor-core.mjs",
           "function": "inspectWindowsProcess",
-          "line": 303,
+          "line": 304,
           "value": 6
         },
         {
-          "exact": "plugin/bin/lib/memory-index-check-core.mjs:589 Function 'measureEntryMembers' has too many parameters (6). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/memory-index-check-core.mjs:587 Function 'measureEntryMembers' has too many parameters (6). Maximum allowed is 0.",
           "file": "plugin/bin/lib/memory-index-check-core.mjs",
           "function": "measureEntryMembers",
-          "line": 589,
+          "line": 587,
           "value": 6
         },
         {
-          "exact": "plugin/bin/lib/opencode-skill-fence.mjs:61 Function 'spawnOpencode' has too many parameters (6). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/opencode-skill-fence.mjs:62 Function 'spawnOpencode' has too many parameters (6). Maximum allowed is 0.",
           "file": "plugin/bin/lib/opencode-skill-fence.mjs",
           "function": "spawnOpencode",
-          "line": 61,
+          "line": 62,
           "value": 6
         },
         {
-          "exact": "plugin/bin/wt-adopt-check-hook.mjs:236 Function 'buildMessage' has too many parameters (6). Maximum allowed is 0.",
+          "exact": "plugin/bin/wt-adopt-check-hook.mjs:237 Function 'buildMessage' has too many parameters (6). Maximum allowed is 0.",
           "file": "plugin/bin/wt-adopt-check-hook.mjs",
           "function": "buildMessage",
-          "line": 236,
+          "line": 237,
           "value": 6
         },
         {
@@ -1639,29 +1653,15 @@
           "value": 6
         },
         {
-          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:450 Function 'safeLateOverlays' has too many parameters (5). Maximum allowed is 0.",
+          "exact": "plugin/bin/lib/host/lane-sandbox.mjs:425 Function 'socketMasks' has too many parameters (5). Maximum allowed is 0.",
           "file": "plugin/bin/lib/host/lane-sandbox.mjs",
-          "function": "safeLateOverlays",
-          "line": 450,
-          "value": 5
-        },
-        {
-          "exact": "plugin/bin/lib/lifecycle-brief.mjs:106 Function 'snapshotPatch' has too many parameters (5). Maximum allowed is 0.",
-          "file": "plugin/bin/lib/lifecycle-brief.mjs",
-          "function": "snapshotPatch",
-          "line": 106,
-          "value": 5
-        },
-        {
-          "exact": "plugin/bin/lib/pilot-model-config.mjs:67 Function 'resolveModelInput' has too many parameters (5). Maximum allowed is 0.",
-          "file": "plugin/bin/lib/pilot-model-config.mjs",
-          "function": "resolveModelInput",
-          "line": 67,
+          "function": "socketMasks",
+          "line": 425,
           "value": 5
         }
       ],
       "value": 7
     }
   },
-  "releaseTag": "workflow-toolbox--v0.188.1"
+  "releaseTag": "workflow-toolbox--v0.188.2"
 }
