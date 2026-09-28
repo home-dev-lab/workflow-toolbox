@@ -58,12 +58,14 @@ function fixture(tag: string, slugLabel: string) {
   const projectRoot = join(root, 'proj') // the session root — where .claude/agents lives
   const subDir = join(projectRoot, 'workflow-toolbox') // a subdirectory of the session root
   mkdirSync(subDir, { recursive: true })
+  // Give the ancestor agent definition the documented project boundary.
+  mkdirSync(join(projectRoot, '.git'))
 
   const agentsDir = join(projectRoot, '.claude', 'agents')
   mkdirSync(agentsDir, { recursive: true })
   writeFileSync(
     join(agentsDir, 'pilot-orchestrator.md'),
-    '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+    '---\nname: pilot-orchestrator\ndescription: orchestrates pilot work\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
   )
 
   const slugDir = join(cfg, 'projects', slugLabel)
@@ -177,7 +179,7 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     mkdirSync(agentsDir, { recursive: true })
     writeFileSync(
       join(agentsDir, 'pilot-orchestrator.md'),
-      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+      '---\nname: pilot-orchestrator\ndescription: orchestrates pilot work\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
     )
     // Deliberately do NOT create the subagents directory (or even the slug/session dir)
     // the transcript_path implies — the checker's own readdirSync must fail with ENOENT.
@@ -213,7 +215,7 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     mkdirSync(agentsDir, { recursive: true })
     writeFileSync(
       join(agentsDir, 'pilot-orchestrator.md'),
-      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+      '---\nname: pilot-orchestrator\ndescription: orchestrates pilot work\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
     )
     const slugDir = join(cfg, 'projects', `slug-${secret}`)
     const transcriptPath = join(slugDir, `${SESSION_ID}.jsonl`)
@@ -254,7 +256,7 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     mkdirSync(agentsDir, { recursive: true })
     writeFileSync(
       join(agentsDir, 'pilot-orchestrator.md'),
-      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+      '---\nname: pilot-orchestrator\ndescription: orchestrates pilot work\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
     )
     const slugDir = join(cfg, 'projects', 'slug-meta-unknown')
     const subagentsDir = join(slugDir, SESSION_ID, 'subagents')
@@ -293,7 +295,7 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     mkdirSync(agentsDir, { recursive: true })
     writeFileSync(
       join(agentsDir, 'pilot-orchestrator.md'),
-      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+      '---\nname: pilot-orchestrator\ndescription: orchestrates pilot work\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
     )
     const slugDir = join(cfg, 'projects', 'slug-x')
     const subagentsDir = join(slugDir, SESSION_ID, 'subagents')
@@ -353,7 +355,7 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     mkdirSync(agentsDir, { recursive: true })
     writeFileSync(
       join(agentsDir, 'pilot-orchestrator.md'),
-      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+      '---\nname: pilot-orchestrator\ndescription: orchestrates pilot work\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
     )
     const slugDir = join(cfg, 'projects', 'restart-absent-slug')
     const subagentsDir = join(slugDir, SESSION_ID, 'subagents')
@@ -395,7 +397,7 @@ describe('wt-observer-pairing-guard-hook.mjs', () => {
     mkdirSync(agentsDir, { recursive: true })
     writeFileSync(
       join(agentsDir, 'pilot-orchestrator.md'),
-      '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+      '---\nname: pilot-orchestrator\ndescription: orchestrates pilot work\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
     )
     const slugDir = join(cfg, 'projects', 'empty-session-id-slug')
     const subagentsDir = join(slugDir, SESSION_ID, 'subagents')

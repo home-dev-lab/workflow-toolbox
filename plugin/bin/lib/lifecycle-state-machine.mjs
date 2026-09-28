@@ -6,6 +6,7 @@ import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { treeSignature } from './gate-evidence.mjs'
+import { splitFrontmatter } from './frontmatter.mjs'
 import { independentBrief, prospectivePatch, snapshotPatch } from './lifecycle-brief.mjs'
 import { createLifecycleLaunch, MAX_LANE_REPORT_BYTES, readRegularFile, regularFile, sha256, writeRegularFile } from './lifecycle-launch.mjs'
 import { acceptanceSection, containsPlanShape, PLAN_SHAPE_DESCRIPTION } from './lifecycle-plan-shape.mjs'
@@ -295,9 +296,9 @@ function planCoverageCitationResult(content, root) {
 function changelogSkillBody(file) {
   let content
   try { content = fs.readFileSync(file, 'utf8') } catch (error) { throw new Error(`changelog skill unavailable at ${file}: ${error instanceof Error ? error.message : String(error)}`) }
-  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n([\s\S]*)$/.exec(content)
-  if (!match) throw new Error(`changelog skill unavailable at ${file}: YAML frontmatter is missing`)
-  return match[1].trim()
+  const split = splitFrontmatter(content)
+  if (!split.ok) throw new Error(`changelog skill unavailable at ${file}: YAML frontmatter is missing`)
+  return split.body.trim()
 }
 function tasksBlock(content) {
   return /(?:^|\n)## Tasks\b[\s\S]*?(?=\n## |$)/i.exec(content)?.[0] ?? null

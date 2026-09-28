@@ -13,6 +13,11 @@ function main() {
   const prompt = typeof input.tool_input?.prompt === 'string' ? textWithoutQuotes(input.tool_input.prompt) : ''
   if (!type || !/\b(read-only|do not modify|investigate only)\b/i.test(prompt)) return
   const resolved = resolveAgentTypeTools(type, input.cwd || '')
+  if (resolved.unresolved) {
+    recordGuardEvent({ guard: 'wt-spawn-readonly-guard-hook.mjs', decision: 'warned', class: 'unresolved', reason: resolved.unresolved, session: input.session_id, agent: input.agent_id })
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `[workflow-toolbox spawn-readonly] Definition unresolved for ${type}: ${resolved.unresolved}` } }))
+    return
+  }
   if (!resolved.resolved) return recordGuardEvent({ guard: 'wt-spawn-readonly-guard-hook.mjs', decision: 'silent', class: 'type-unresolved', reason: type, session: input.session_id, agent: input.agent_id })
   const cls = resolved.tools === null ? 'spawn-readonly-no-allowlist' : resolved.tools.includes('*') || resolved.tools.some((tool) => WRITERS.test(tool)) ? 'spawn-readonly-wide' : null
   if (!cls) return

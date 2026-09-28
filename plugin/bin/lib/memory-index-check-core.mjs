@@ -25,6 +25,7 @@
 // counted, on top of the brokenRetractions finding it already produces.
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, basename, isAbsolute, relative, resolve, sep } from 'node:path';
+import { parseFrontmatter, splitFrontmatter } from './frontmatter.mjs';
 
 // An index entry line, per the convention this project's own
 // wt-memory-hygiene.md documents: `- [Title](file.md) — one-phrase hook`.
@@ -61,7 +62,6 @@ const MEMBER_LINE_RE = /^-\s*\[\[([^[\]]+)\]\]/;
 // anchor never matched the nested shape, so every hub carrying it went
 // unchecked: the probe ran at every session start and never once fired on a
 // real hub using that shape (measured 2026-08-06).
-const DECLARED_MEMBER_COUNT_RE = /^[ \t]*member_count:\s*(\d+)\s*$/m;
 // A body counts as a hub only when member-shaped lines are a substantial
 // share of its non-blank lines — not merely present. Without this ratio, a
 // long narrative fiche that cross-references its neighbours in running
@@ -236,11 +236,9 @@ export function checkStore(storeDir, opts = {}) {
       } catch {
         continue; // unreadable is reported elsewhere; it must not break resolution
       }
-      const fm = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(body);
-      if (fm === null) continue;
-      const declared = /^[ \t]*name:[ \t]*(\S.*?)[ \t]*$/m.exec(fm[1]);
-      if (declared === null) continue;
-      if (!index.has(declared[1])) index.set(declared[1], file);
+      const fm = parseFrontmatter(body);
+      if (!fm.ok || typeof fm.data.name !== 'string') continue;
+      if (!index.has(fm.data.name)) index.set(fm.data.name, file);
     }
     return index;
   };
@@ -609,11 +607,10 @@ function measureEntryMembers(target, resolvedTarget, line, diskFiches, entryMemb
 }
 
 function readDeclaredMemberCount(body) {
-  const frontmatterMatch = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(body);
-  if (!frontmatterMatch) return null;
-  const declaredMatch = DECLARED_MEMBER_COUNT_RE.exec(frontmatterMatch[1]);
-  if (!declaredMatch) return null;
-  return Number(declaredMatch[1]);
+  const parsed = parseFrontmatter(body);
+  if (!parsed.ok) return null;
+  const count = parsed.data.member_count ?? parsed.data.metadata?.member_count;
+  return typeof count === 'string' && /^\d+$/.test(count) ? Number(count) : null;
 }
 
 function readRetractionForwardTarget(body) {
@@ -670,7 +667,6 @@ function retractionTargetResolves(storeDir, target) {
 }
 
 function stripFrontmatter(body) {
-  const frontmatterMatch = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(body);
-  if (!frontmatterMatch) return body;
-  return body.slice(frontmatterMatch[0].length);
+  const split = splitFrontmatter(body);
+  return split.ok ? split.body : body;
 }

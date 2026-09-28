@@ -30,6 +30,9 @@ const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const roles = ['pilot', 'judge', 'tdd', 'critic', 'review', 'refutation'] as const
+it('treats opaque skill visibility as unresolved instead of listed', () => {
+  expect(() => skillIsUnlistedByInit('---\nuser-invocable: {unknown: value}\n---\n')).toThrow(/unresolved/)
+})
 const processStartingContextTools = [CONTEXT_MODE_TOOLS.batchExecute, CONTEXT_MODE_TOOLS.execute, CONTEXT_MODE_TOOLS.executeFile]
 const roleContextTools = [CONTEXT_MODE_TOOLS.fetchAndIndex, CONTEXT_MODE_TOOLS.index, CONTEXT_MODE_TOOLS.search]
 const preparedRole = (role: string) => {

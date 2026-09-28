@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { emitGuardNotice, recordGuardEvent } from './lib/guard-journal.mjs'
+import { resolveAgentDefinition } from './lib/agent-definitions.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const CHECKER = path.join(HERE, 'wt-check-observer-pairing.mjs')
@@ -23,42 +24,6 @@ function readInput() {
   } catch {
     return {}
   }
-}
-
-function definitionDirs(cwd) {
-  const dirs = []
-  if (cwd) {
-    let current = path.resolve(cwd)
-    for (;;) {
-      dirs.push(path.join(current, '.claude', 'agents'))
-      const parent = path.dirname(current)
-      if (parent === current) break
-      current = parent
-    }
-  }
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude')
-  dirs.push(path.join(configDir, 'agents'))
-  return dirs
-}
-
-function findDefinition(type, cwd) {
-  const bare = type.includes(':') ? type.slice(type.lastIndexOf(':') + 1) : type
-  for (const dir of definitionDirs(cwd)) {
-    const file = path.join(dir, `${bare}.md`)
-    try {
-      if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8')
-    } catch {
-      // unreadable dir or file: keep looking, never block the spawn's report path
-    }
-  }
-  return null
-}
-
-function declaredObserver(source) {
-  const fm = source.match(/^---\r?\n([\s\S]*?)\r?\n---/)
-  if (!fm) return null
-  const m = fm[1].match(/^observer:\s*["']?([A-Za-z0-9_-]+)["']?/m)
-  return m ? m[1] : null
 }
 
 function projectSlug(cwd) {
@@ -146,9 +111,14 @@ function main() {
   // everything needed to answer. See subagentsDirFor()'s own comment (card 1837122444).
   if (!cwd || (!sessionId && !transcriptPath) || !type || (!agentId && !name)) return
 
-  const source = findDefinition(type, cwd)
-  if (!source) return
-  const observerName = declaredObserver(source)
+  const definition = resolveAgentDefinition(type, { cwd })
+  const unresolved = definition?.unresolved || (definition?.data?.observer !== undefined && typeof definition.data.observer !== 'string' ? 'invalid observer definition' : null)
+  if (unresolved) {
+    recordGuardEvent({ guard: 'wt-observer-pairing-guard-hook.mjs', decision: 'warned', class: 'unresolved', reason: unresolved, session: input.session_id, agent: agentId })
+    emitGuardNotice({ payload: input, stdoutJson: { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: `[workflow-toolbox observer-pairing] Definition unresolved for ${type}: ${unresolved}` } } })
+    return
+  }
+  const observerName = definition?.data?.observer
   if (!observerName) return
 
   const subagentsDir = subagentsDirFor(cwd, sessionId, transcriptPath)

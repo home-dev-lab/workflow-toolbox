@@ -8,7 +8,7 @@ import { assertSafeDataDir, qualityDataDir } from './rule-lifecycle-lib.mjs';
 import { readFile } from 'node:fs/promises';
 import { scanTranscripts, summarise } from './transcript-verdicts.mjs';
 
-export async function qualityCheck({ configDirs, projectsDirs, project, dataDir, days = 7 }) {
+export async function qualityCheck({ configDirs, projectsDirs, project, followedRoots = [], dataDir, days = 7, since, verdictPath: privateVerdictPath }) {
   const target = await assertSafeDataDir(dataDir ?? qualityDataDir(configDirs[0]));
   await mkdir(target, { recursive: true });
   const latest = join(target, 'latest.json');
@@ -31,14 +31,19 @@ export async function qualityCheck({ configDirs, projectsDirs, project, dataDir,
       if ((await readdir(resolved)).some((name) => name.endsWith('.md')))
         scopes.push({ scope: 'user', rulesDir: resolved, configDir: resolve(resolved, '..'), configDirs: [...new Set([configDir, resolve(resolved, '..')])], ledgerRoots: [resolve(resolved, '..')] });
     }
-    const candidate = ruleDirectories(project, configDirs[0]).project;
-    if ((await readdir(candidate).catch(() => [])).some((name) => name.endsWith('.md')) && !physical.has(await realpath(candidate)))
-      scopes.push({ scope: 'project', projectRoot: project, rulesDir: candidate, ledgerRoots: [project] });
-    const initial = await scanTranscripts({ projectsDirs, scopes, days, discoverProjects: true });
+    for (const root of new Set([project, ...followedRoots])) {
+      const candidate = ruleDirectories(root, configDirs[0]).project;
+      if ((await readdir(candidate).catch(() => [])).some((name) => name.endsWith('.md'))) {
+        const resolved = await realpath(candidate);
+        scopes.push({ scope: 'project', projectRoot: root, rulesDir: resolved, ledgerRoots: [root] });
+      }
+    }
+      const initial = await scanTranscripts({ projectsDirs, scopes, days, since, discoverProjects: true, nonProofNames: process.env.WT_ROD_NON_PROOF_NAMES?.split(',').filter(Boolean) ?? [] });
     if (!initial.stats.filesRead) throw new Error(`0 transcript files read; skipped ${initial.stats.skipped.length}: ${initial.stats.skipped.join('; ')}`);
     const rows = initial.rows;
     const date = new Date().toISOString().slice(0, 10);
-    const verdictPath = join(target, `verdicts-${date}.jsonl`);
+     const verdictPath = privateVerdictPath ?? join(target, `verdicts-${date}.jsonl`);
+     if (privateVerdictPath && (resolve(privateVerdictPath) !== resolve(target, 'daily', privateVerdictPath.split(/[\\/]/).at(-1)))) throw new Error('private verdict path must be inside the daily quality directory');
     await writeFile(verdictPath, rows.map((row) => JSON.stringify(row)).join('\n') + (rows.length ? '\n' : ''));
     const rollback = [], rollbackNotes = [];
     for (const scope of initial.scopes) {
@@ -50,12 +55,14 @@ export async function qualityCheck({ configDirs, projectsDirs, project, dataDir,
       rollback.push(...JSON.parse(run.stdout));
       rollbackNotes.push(...run.stderr.split('\n').filter((line) => line.startsWith('rollback-check:')));
     }
-     const latestMigration = new Map();
+      const latestMigration = new Map();
+      let malformedLedgerLines = 0;
      for (const scope of initial.scopes) for (const root of scope.ledgerRoots ?? [scope.scope === 'user' ? resolve(scope.rulesDir, '..') : scope.projectRoot]) {
        const file = join(root, scope.scope === 'user' ? 'rules-on-demand-ledger.jsonl' : '.claude/rules-on-demand-ledger.jsonl');
        const lines = (await readFile(file, 'utf8').catch((error) => error.code === 'ENOENT' ? '' : Promise.reject(error))).split('\n');
        for (const line of lines) if (line.trim()) {
-         const row = JSON.parse(line);
+          let row;
+          try { row = JSON.parse(line); } catch { malformedLedgerLines++; continue; }
          const key = `${scope.scope}:${row.rule}`;
          if (row.action === 'migrate') latestMigration.set(key, row);
          if (row.action === 'revert' || row.action === 'retire') latestMigration.delete(key);
@@ -63,7 +70,7 @@ export async function qualityCheck({ configDirs, projectsDirs, project, dataDir,
      }
      const unproven = [...latestMigration.entries()].filter(([, row]) => row.unproven).map(([key, row]) => ({ scope: key.split(':')[0], rule: row.rule, reason: row.noProofReason }));
      const applicableSamples = rows.filter((row) => ['followed', 'not followed'].includes(row.verdict)).length;
-     const report = { ok: true, complete: initial.complete && applicableSamples > 0, coverage: { ...initial.coverage, applicableSamples }, finishedAt: new Date().toISOString(), window: `${days}d`, unproven,
+       const report = { ok: true, complete: initial.complete && applicableSamples > 0 && !malformedLedgerLines, coverage: { ...initial.coverage, applicableSamples, malformedLedgerLines }, finishedAt: new Date().toISOString(), window: since ? `since ${since}` : `${days}d`, verdictPath, unproven,
        scopes: initial.scopes, table: summarise(rows), rollback, rollbackNotes, scan: initial.stats };
     await writeFile(join(target, `quality-${date}.json`), JSON.stringify(report, null, 2) + '\n');
      await atomicLatest(latest, report);
@@ -91,7 +98,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       else if (arg === '--projects-dir') options.projectsDirs.push(resolve(process.argv[++i]));
       else if (arg === '--project') options.project = resolve(process.argv[++i]);
       else if (arg === '--data-dir') options.dataDir = resolve(process.argv[++i]);
-      else if (arg === '--days') options.days = Number(process.argv[++i]);
+       else if (arg === '--days') options.days = Number(process.argv[++i]);
+       else if (arg === '--since') options.since = process.argv[++i];
       else throw new Error(`unknown option: ${arg}`);
     }
      if (!options.configDirs.length) options.configDirs = (process.env.WT_ROD_CONFIG_DIRS?.split(delimiter).filter(Boolean) ?? [configDirectory(process.env)]).map((dir) => {

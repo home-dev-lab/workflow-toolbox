@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { absentPluginPaths } from './plugin-receipt.mjs'
 import { hostAdapter } from './host/adapter.mjs'
+import { parseFrontmatter } from './frontmatter.mjs'
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url))
 const DEFAULT_PLUGIN_ROOT = path.resolve(MODULE_DIR, '../..')
@@ -235,8 +236,11 @@ export function prepareSdkRole(role, { worktree, env = process.env, pluginRoot =
 // `user-invocable: false` loads through the plugin manifest all the same, but the receipt cannot prove it, so
 // requiring it there refused every pilot run at initialization. Such a skill is recorded and logged instead.
 export function skillIsUnlistedByInit(skillMarkdown) {
-  const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(skillMarkdown)?.[1] ?? ''
-  return /^user-invocable:\s*false\s*$/m.test(frontmatter)
+  const parsed = parseFrontmatter(skillMarkdown)
+  // Init receipts omit unlisted skills; a failed parse cannot establish that it is listed.
+  if (!parsed.ok) return parsed.reason !== 'absent'
+  if (parsed.data['user-invocable'] !== undefined && typeof parsed.data['user-invocable'] !== 'string') throw new Error('skill user-invocable frontmatter unresolved')
+  return parsed.ok && parsed.data['user-invocable'] === 'false'
 }
 
 export function composeSdkRoleQueryOptions(base, prepared) {

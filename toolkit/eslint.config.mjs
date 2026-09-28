@@ -41,6 +41,9 @@ export default tseslint.config(
       '../plugin/hooks/snapshot-program.js',
       'plugin/**/fixtures/**',
       '../plugin/**/fixtures/**',
+      // Vendored, byte-identity-checked upstream artifact; lint its generator instead.
+       'plugin/bin/lib/vendor/yaml.mjs',
+       '../plugin/bin/lib/vendor/yaml.mjs',
     ],
   },
   {
