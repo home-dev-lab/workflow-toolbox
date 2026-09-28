@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { once } from 'node:events'
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
@@ -148,9 +149,63 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       await waitForConnections(server, 0, 1800)
       expect(await connectionCount(server)).toBe(0)
       const next = connect(address, { argv: ['next'], waitS: 1 })
-      await waitFor(() => next.text().includes('granted '))
+      await once(next.socket, 'data', { signal: AbortSignal.timeout(6_000) }).catch((cause) => {
+        throw new Error(`next client received ${JSON.stringify(next.text())} before reply: ${String(cause)}`)
+      })
+      expect(next.text()).toContain('granted ')
       next.socket.end()
     } finally { for (const client of rejected) client.socket.destroy(); server.close(); restore() }
+  }, 10_000)
+
+  it('admits a client after destroying a rejected socket before its close callback', async () => {
+    const { address, server, restore } = await localBroker()
+    const heldCloses: Array<() => void> = []
+    let accepted = 0
+    let next: ReturnType<typeof connect> | undefined
+    let startNext!: (client: ReturnType<typeof connect>) => void
+    const nextStarted = new Promise<ReturnType<typeof connect>>((resolve, reject) => {
+      AbortSignal.timeout(6_000).addEventListener('abort', () => {
+        reject(new Error(`next client received ${JSON.stringify(next?.text() ?? '')} before the broker destroyed a rejection`))
+      }, { once: true })
+      startNext = resolve
+    })
+    server.on('connection', (socket) => {
+      if (++accepted === 17) {
+        // The broker's admission callback runs first; only then deliver the deferred close events.
+        for (const close of heldCloses.splice(0)) close()
+        return
+      }
+      const emit = socket.emit.bind(socket)
+      socket.emit = ((event: string | symbol, ...args: unknown[]) => {
+        if (event === 'close') { heldCloses.push(() => { emit(event, ...args) }); return true }
+        return emit(event, ...args)
+      }) as typeof socket.emit
+      const destroy = socket.destroy.bind(socket)
+      socket.destroy = ((...args: Parameters<net.Socket['destroy']>) => {
+        const result = destroy(...args)
+        if (!next) { next = connect(address, { argv: ['next'], waitS: 1 }); startNext(next) }
+        return result
+      }) as typeof socket.destroy
+    })
+    const rejected = Array.from({ length: 16 }, () => connect(address, '{bad', true))
+    try {
+      await Promise.all(rejected.map(async (client) => {
+        await once(client.socket, 'data', { signal: AbortSignal.timeout(6_000) }).catch((cause) => {
+          throw new Error(`next client received ${JSON.stringify(next?.text() ?? '')} while awaiting a rejection: ${String(cause)}`)
+        })
+        expect(client.text()).toMatch(/^error /)
+      }))
+      const client = await nextStarted
+      await once(client.socket, 'data', { signal: AbortSignal.timeout(6_000) }).catch((cause) => {
+        throw new Error(`next client received ${JSON.stringify(client.text())} before reply: ${String(cause)}`)
+      })
+      expect(client.text()).toContain('granted ')
+    } finally {
+      for (const close of heldCloses.splice(0)) close()
+      next?.socket.destroy()
+      for (const client of rejected) client.socket.destroy()
+      server.close(); restore()
+    }
   }, 10_000)
 
   it('closes half-open busy requests within a bound', async () => {

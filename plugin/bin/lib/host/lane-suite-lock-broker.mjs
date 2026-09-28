@@ -9,10 +9,10 @@ const REQUEST_TIMEOUT_MS = 5000
 const MAX_CONNECTIONS = 16
 const REJECTION_CLOSE_MS = 1000
 
-function rejectConnection(socket, message) {
+function rejectConnection(socket, message, onDestroy) {
   if (socket.destroyed) return
   socket.end(`error ${String(message).replace(/[\r\n]/g, ' ')}\n`)
-  const timer = setTimeout(() => socket.destroy(), REJECTION_CLOSE_MS)
+  const timer = setTimeout(() => { onDestroy?.(); socket.destroy() }, REJECTION_CLOSE_MS)
   timer.unref?.()
   socket.once('close', () => clearTimeout(timer))
 }
@@ -50,7 +50,7 @@ export function createSuiteLockBroker({ label = '' } = {}) {
       if (closed) return
       closed = true; active -= 1; clearTimeout(timer); release()
     }
-    const error = (message) => { requested = true; clearTimeout(timer); rejectConnection(socket, message) }
+    const error = (message) => { requested = true; clearTimeout(timer); rejectConnection(socket, message, finish) }
     const timer = setTimeout(() => error('request timed out'), REQUEST_TIMEOUT_MS)
     socket.on('error', finish)
     socket.on('close', finish)
