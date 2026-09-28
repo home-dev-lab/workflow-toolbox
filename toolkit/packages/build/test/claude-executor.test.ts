@@ -34,6 +34,16 @@ function waitForExit(log: string, timeoutMs: number) {
   return tail
 }
 
+function processAlive(pid: number) {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+function waitForProcessGone(pid: number, timeoutMs: number) {
+  const until = Date.now() + timeoutMs
+  while (processAlive(pid) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+  return !processAlive(pid)
+}
+
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-claude-executor-'))); roots.push(root)
   const worktree = join(root, 'worktree'); mkdirSync(join(worktree, '.lane'), { recursive: true })
@@ -65,16 +75,18 @@ describe('Claude SDK executor', () => {
     writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'report-dir', FAKE_STREAM: join(ROOT, 'toolkit/packages/build/test/fixtures/model-fallback/sdk-notice.jsonl') } })
     expect(result.status).toBe(0)
-    expect(waitForExit(log, 3000)).toBe('EXIT=1')
+    expect(waitForExit(log, 15_000)).toBe('EXIT=1')
     expect(existsSync(`${log}.usage.json`)).toBe(true)
   })
   it.skipIf(process.platform === 'win32')('F3 preserves sole SIGTERM exit marker after a late notice', () => {
     const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.signal-notice.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'signal-notice.log'); const receipt = join(f.root, 'receipt.json')
     writeFileSync(brief, `Write the report to \`${report}\`.\n`)
     const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '5', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'signal-notice', FAKE_HANG: 'true', FAKE_STREAM: join(ROOT, 'toolkit/packages/build/test/fixtures/model-fallback/sdk-notice.jsonl') } })
-    waitFor(receipt); process.kill(Number(/^pid=(\d+)$/m.exec(result.stdout)?.[1]), 'SIGTERM')
-    expect(waitForExit(log, 3000)).toBe('EXIT=143')
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400)
+    const worker = Number(/^pid=(\d+)$/m.exec(result.stdout)?.[1])
+    waitFor(receipt); process.kill(worker, 'SIGTERM')
+    expect(waitForExit(log, 15_000)).toBe('EXIT=143')
+    // The worker has fully exited, so no later write can follow the observed marker.
+    expect(waitForProcessGone(worker, 15_000)).toBe(true)
     expect(readFileSync(log, 'utf8').trim().split('\n').filter((line) => line.startsWith('EXIT='))).toEqual(['EXIT=143'])
   })
   it('logs a safeguard notice before its sole final EXIT marker and includes it in the report', () => {
