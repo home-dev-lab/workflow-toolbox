@@ -43,6 +43,10 @@ function join(...parts: string[]): string {
 
 const liteReport = '# report\n\n## E2E\nProcedure: run the lifecycle fixture\nVerbatim output: lifecycle fixture passed\n'
 const FIXTURE_LANE_TIMEOUT_SECONDS = 10
+// Three real detached lanes (worker -> opencode stub) must each be waited on for their own 10 s timeout, never a
+// shorter fixed bound: under load a shorter wait expires while the worker is still recording its exit.
+const DESCENDANT_LANE_WAIT_MS: number | null = null
+const DESCENDANT_TEST_BUDGET_MS = 120_000
 const PLUGIN_ROOT = fileURLToPath(new URL('../../../../plugin', import.meta.url))
 const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: fixture claim\n  Source: fixture source\n  Fetched content: fixture evidence\n  Verdict: confirmed\n\nGrounding route: proceed\n'
 const DISCOVERY_REFUSAL_FORMAT = 'required format:\n## External-source ledger\n- Claim: <claim>\n  Source: <source>\n  Fetched content: <stored content, not a URL>\n  Verdict: confirmed|refuted|undecidable\nor use `Fetched SHA-256: <64 hex characters>`; when no claim can be recorded use `- Outcome: refused-by-classifier: <why>` or `- Outcome: unreachable-source: <why>`\nGrounding route: CANCEL|REFRAME|proceed'
@@ -1014,7 +1018,7 @@ printf 'report\n' > "$report"
       : args[0] === 'diff' && args.includes('--binary')
         ? 'diff --git a/changed.txt b/changed.txt\n--- a/changed.txt\n+++ b/changed.txt\n@@ -1 +1 @@\n-old\n+new\n'
         : ''
-    const lifecycle = testLifecycle('FULL', [], fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url)), 3000, {
+    const lifecycle = testLifecycle('FULL', [], fileURLToPath(new URL('../../../../plugin/bin/wt-lane.mjs', import.meta.url)), DESCENDANT_LANE_WAIT_MS, {
       git,
       lanePlatform: 'darwin',
       laneProcessReader: {
@@ -1057,7 +1061,7 @@ printf 'report\n' > "$report"
       const pgidFile = join(lifecycle.root, '.lane', 'survivor-pgid')
       if (fs.existsSync(pgidFile)) { try { process.kill(-Number(readFileSync(pgidFile, 'utf8')), 'SIGKILL') } catch {} }
     }
-  })
+  }, DESCENDANT_TEST_BUDGET_MS)
 
   it('refuses traversal and absolute inspect log names', async () => {
     const lifecycle = testLifecycle('LITE')
