@@ -20,6 +20,18 @@ back (two if needed), re-approach from another side: a detour is persistence, no
 Declare the goal out of reach only after every known route was tested and failed — name each route
 and its evidence. The drift this rule stops is the opposite case: the goal is already met and the
 same route keeps grinding rarer cases.
+Goal fixed, means free — by its names:
+- Monte Carlo tree search — cheap trial per branch, result propagated back up, budget shifted by
+  yield (UCB) while still revisiting little-tried branches; a branch whose yield keeps falling
+  loses the effort;
+- backtracking search — dead end → back one step, then two; "no solution" only once every branch
+  is explored;
+- spike / tracer bullet — a small throwaway test answers what docs and priors cannot;
+- conjecture and refutation (Popper) — a hypothesis is tested, never believed;
+- pivot or persevere (Ries) — persevere on the vision, pivot on the strategy;
+- commander's intent — the goal is imposed, the route is chosen on the ground;
+- tenacious pursuit, flexible adjustment (Brandtstädter) — hold the goal while means remain,
+  adjust it only once they are spent.
 
 Recognise the drift by its names:
 - escalation of commitment / sunk cost — continuing because of what is already spent;
