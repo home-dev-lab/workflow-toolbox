@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { cleanEnv } from './clean-env.mjs';
@@ -16,7 +16,7 @@ const json = async (path) => JSON.parse(await readFile(path, 'utf8'));
 const ok = (run) => assert.equal(run.status, 0, run.stderr || run.stdout);
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'rod-verdict-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'rod-verdict-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = join(root, 'project');
   const out = join(root, 'out');
