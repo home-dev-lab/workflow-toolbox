@@ -20,6 +20,11 @@ function signalExitCode(reason) {
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
 }
+// A path pasted into a suggested command: bare when it is shell-safe, single-quoted otherwise.
+function shellWord(value) {
+  if (/^[\w@%+=:,./-]+$/.test(value)) return value
+  return `'${value.replaceAll("'", () => "'\\''")}'`
+}
 // Every refusal has the same shape: the whole output is the REFUSED line, then its EXIT marker.
 function refuse(out, message, code) {
   writeFileSync(out, `REFUSED: ${message}\n`)
@@ -217,12 +222,27 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
   // picks a Claude model: without a consented external lane, the second opinion is the user.
   // Only an explicit `--route opus` runs the Claude consult.
   if (route === 'auto' && consent.outcome !== 'true') {
-    const reason = consent.outcome === 'unknown'
-      ? 'the consent setting could not be read (check executor_lane_consent in the plugin settings of this profile and project)'
-      : 'GPT lane consent is not active'
-    return refuse(options.out, `no consented external lane is available for an independent second opinion; ${reason}. `
-      + 'A same-family consult cannot counter this session\'s own biases, so ask the user for the second opinion instead. '
-      + 'To route it to GPT-6 Astra, run: wt-lane-consent --on', 1)
+    // The remedy names the level that refused: `wt-lane-consent --on` writes only the account
+    // setting, so a project that narrows consent needs its own `--project <repo> --on`.
+    const accountOff = consent.account.state !== 'true'
+    const projectNarrows = consent.project.state === 'not_true'
+    const reasons = []
+    const remedies = []
+    if (consent.outcome === 'unknown') {
+      reasons.push('the consent setting could not be read (check executor_lane_consent in the plugin settings of this profile and project)')
+    } else {
+      if (accountOff) {
+        reasons.push('GPT lane consent is off for this account')
+        remedies.push('wt-lane-consent --on')
+      }
+      if (projectNarrows) {
+        reasons.push('this project narrows GPT lane consent')
+        remedies.push(`wt-lane-consent --project ${shellWord(options.repo)} --on`)
+      }
+    }
+    return refuse(options.out, `no consented external lane is available for an independent second opinion; ${reasons.join(', and ')}. `
+      + 'A same-family consult cannot counter this session\'s own biases, so ask the user for the second opinion instead.'
+      + (remedies.length ? ` To route it to GPT-6 Astra, run: ${remedies.join(' && ')}` : ''), 1)
   }
 
   if (route === 'astra' || route === 'auto') {

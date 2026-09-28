@@ -189,11 +189,54 @@ describe('second-opinion advisor', () => {
     const out = readFileSync(f.out, 'utf8')
     expect(out).toMatch(/^REFUSED: no consented external lane/)
     expect(out).toContain('ask the user')
-    expect(out).toContain('wt-lane-consent --on')
+    expect(out).toContain('GPT lane consent is off for this account')
+    expect(out).toContain('run: wt-lane-consent --on\n')
+    expect(out).not.toContain('--project')
     expect(out).not.toContain('ROUTE=claude-opus')
     expect(lines(f.out).at(-1)).toBe('EXIT=1')
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
     expect(deps.runCodex).not.toHaveBeenCalled()
+  })
+
+  it('names the project-level remedy when the account consents but the project narrows consent', async () => {
+    const f = fixture(true)
+    mkdirSync(join(f.repo, '.claude'))
+    writeFileSync(join(f.repo, '.claude', 'settings.local.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'false' } }))
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, route: 'auto' }, deps, f.env)).toBe(1)
+
+    const out = readFileSync(f.out, 'utf8')
+    expect(out).toMatch(/^REFUSED: no consented external lane/)
+    expect(out).toContain('this project narrows GPT lane consent')
+    expect(out).toContain(`run: wt-lane-consent --project ${f.repo} --on\n`)
+    expect(out).not.toMatch(/run: wt-lane-consent --on\b/)
+    expect(lines(f.out).at(-1)).toBe('EXIT=1')
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
+    expect(deps.runCodex).not.toHaveBeenCalled()
+  })
+
+  it('single-quotes a project path that is not shell-safe in the suggested remedy', async () => {
+    const f = fixture(true)
+    const repo = join(f.repo, "it's a repo")
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    writeFileSync(join(repo, '.claude', 'settings.local.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'false' } }))
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, repo, route: 'auto' }, deps, f.env)).toBe(1)
+
+    // Written out by hand, not derived with the implementation's own escaping.
+    expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project '${f.repo}/it'\\''s a repo' --on\n`)
+  })
+
+  it('names both remedies when the account is off and the project also narrows consent', async () => {
+    const f = fixture(false)
+    mkdirSync(join(f.repo, '.claude'))
+    writeFileSync(join(f.repo, '.claude', 'settings.local.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'false' } }))
+    const deps = dependencies()
+    expect(await runSecondOpinion({ ...f.options, route: 'auto' }, deps, f.env)).toBe(1)
+
+    const out = readFileSync(f.out, 'utf8')
+    expect(out).toContain(`run: wt-lane-consent --on && wt-lane-consent --project ${f.repo} --on\n`)
+    expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
   })
 
   it('refuses automatic routing when the consent setting cannot be read, never Opus', async () => {
@@ -355,6 +398,12 @@ describe('second-opinion advisor', () => {
     expect(sdkEffort).toBe('xhigh')
     expect(lines(f.out)[0]).toBe('ROUTE=claude-opus')
     expect(deps.runCodex).not.toHaveBeenCalled()
+
+    // The same profile and the same SDK, with route auto: Opus must be reachable ONLY by the explicit route.
+    expect(await runSecondOpinion({ ...f.options, effort: 'low', route: 'auto' }, deps, f.env)).toBe(1)
+    expect(query).toHaveBeenCalledOnce()
+    expect(deps.resolveSdkQuery).toHaveBeenCalledOnce()
+    expect(lines(f.out)[0]).toMatch(/^REFUSED: /)
   })
 
   it('refuses rather than falling back to Opus when consent is given but Codex is missing', async () => {

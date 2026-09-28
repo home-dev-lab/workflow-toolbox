@@ -55,8 +55,9 @@ effort you pass.
 
 Choose `auto` by default: it runs GPT-6 Astra when GPT-lane consent and the
 Codex runtime are available. Without consent, `auto` refuses with `EXIT=1`,
-never falls back to a Claude model, and names the remedy
-(`wt-lane-consent --on`); ask the user for the second opinion instead. Choose `astra` to require
+never falls back to a Claude model, and names the remedy for the level that
+refused (`wt-lane-consent --on` for the account, `wt-lane-consent --project
+<repo> --on` for a project that narrows consent); ask the user for the second opinion instead. Choose `astra` to require
 Astra explicitly. Choose `opus` only when the user explicitly asks for a Claude
 Opus consult; the CLI starts a fresh SDK context for it, and it does not
 decorrelate the session's own model-family biases.
