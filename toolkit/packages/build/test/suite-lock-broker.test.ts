@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, watch } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, watch } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -69,7 +69,12 @@ async function waitForConnections(server: net.Server, count: number, timeoutMs =
   }
 }
 
-describe('lane suite-lock broker', () => {
+// The broker runs only inside the Linux lane sandbox: sandboxAvailability returns { none } on every
+// other platform (plugin/bin/lib/host/lane-sandbox.mjs:491), and only that plan sets
+// WT_SUITE_LOCK_BROKER (lane-sandbox.mjs:477), the one switch that routes a client to a broker
+// (plugin/bin/lib/suite-lock.mjs:319). These tests listen on a unix-socket path under tmpdir, which
+// Windows runners do not serve (every test timed out there), so they run on POSIX hosts only.
+describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires unix-domain sockets; broker is Linux-sandbox-only]', () => {
   it('does not open a broker connection for an already-aborted acquisition', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-lock-preabort-')); roots.push(root)
     const address = join(root, 'broker.sock')
@@ -171,8 +176,18 @@ describe('lane suite-lock broker', () => {
     const blocker = await acquireSuiteLock({ root, env: {} })
     const client = connect(address, undefined, true)
     const queue = join(root, 'queue.d')
+    // Every acquisition allocates a numbered <n>.ticket marker that outlives its wait
+    // (plugin/bin/lib/host/suite-lock-queue.mjs:5-8), so a late acquisition leaves a NEW number
+    // behind even if it is aborted at once. The watcher only counts numbers the blocker did not
+    // allocate: on macOS, fs.watch can deliver the blocker's own ticket removal, which happened
+    // before the watch started, after it (seen on the macos-latest runner).
+    const ticketNumbers = () => new Set(readdirSync(queue).flatMap((name) => /^(\d+)\.ticket$/.exec(name)?.[1] ?? []).map(Number))
+    const before = ticketNumbers()
     let startedLateAcquisition = false
-    const watcher = watch(queue, (_event, filename) => { if (String(filename).endsWith('.json')) startedLateAcquisition = true })
+    const watcher = watch(queue, (_event, filename) => {
+      const number = /^(\d+)\.(json|ticket)$/.exec(String(filename))?.[1]
+      if (number !== undefined && !before.has(Number(number))) startedLateAcquisition = true
+    })
     try {
       await waitFor(() => client.text().startsWith('error request timed out'))
       client.socket.write(`${JSON.stringify({ argv: ['late'], waitS: 1 })}\n`)
@@ -184,6 +199,7 @@ describe('lane suite-lock broker', () => {
       }
       await new Promise((resolve) => setImmediate(resolve))
       expect(startedLateAcquisition).toBe(false)
+      expect([...ticketNumbers()].filter((number) => !before.has(number))).toEqual([])
       expect(closed).toBe(true)
       expect(client.text()).not.toContain('granted ')
     } finally { watcher.close(); client.socket.destroy(); releaseSuiteLock(blocker); server.close(); restore() }

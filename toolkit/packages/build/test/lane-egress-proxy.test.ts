@@ -420,7 +420,10 @@ describe('proxy lifecycle (round 4, LOW 5 and LOW 6)', () => {
 
 // Card 1872293505129252765 (L2b): a loopback model endpoint is reached through a Node relay of this
 // module instead of a host socat, so the relay shares the parent watchdog and dies with its launcher.
-describe('endpoint relay mode (card 1872293505129252765)', () => {
+// Relay mode is launched only by the Linux lane sandbox plan: sandboxAvailability returns { none }
+// on every other platform (plugin/bin/lib/host/lane-sandbox.mjs:491). These tests relay through a
+// unix-socket path under tmpdir, which Windows runners do not serve (all three timed out there).
+describe.skipIf(process.platform === 'win32')('endpoint relay mode (card 1872293505129252765) [requires unix-domain sockets; relay is Linux-sandbox-only]', () => {
   async function relayFixture(onUpstream: (socket: net.Socket) => void) {
     const root = mkdtempSync(join(tmpdir(), 'wt-endpoint-relay-'))
     const upstream = net.createServer({ allowHalfOpen: true }, onUpstream)
