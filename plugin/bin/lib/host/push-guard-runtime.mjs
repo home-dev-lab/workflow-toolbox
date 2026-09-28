@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, renameSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, posix, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { matchesGuardPath, normalizePushPath, recognizedPushShape } from './push-guard-identity.mjs';
 
@@ -17,6 +17,11 @@ function git(args, options = {}) {
   }).trim();
 }
 
+export function isPinnedEngine(engine, canonicalInstallDir, platform = process.platform) {
+  const expected = (platform === 'win32' ? win32 : posix).join(canonicalInstallDir, 'bin/wt-push-scope-check.mjs');
+  return platform === 'win32' ? engine.toLowerCase() === expected.toLowerCase() : engine === expected;
+}
+
 function verifyInstall(dir) {
   let manifest;
   try { manifest = JSON.parse(readFileSync(join(dir, 'manifest.json'), 'utf8')); }
@@ -29,7 +34,7 @@ function verifyInstall(dir) {
     } catch { stop(2, `${name} missing or changed; run wt-push-guard-install.mjs --check / --install`); }
   }
   let pinned = false;
-  try { pinned = realpathSync(ENGINE) === join(realpathSync(dir), 'bin/wt-push-scope-check.mjs'); }
+  try { pinned = isPinnedEngine(ENGINE, realpathSync(dir)); }
   catch { /* An unresolved engine is not pinned. */ }
   if (!Object.keys(manifest.files).includes('bin/wt-push-scope-check.mjs') || !pinned) stop(2, 'engine not installed; run wt-push-guard-install.mjs --check / --install');
   try { return JSON.parse(readFileSync(join(dir, 'config.json'), 'utf8')); }

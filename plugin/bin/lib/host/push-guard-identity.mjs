@@ -77,7 +77,7 @@ export function normalizePushPath(value, baseDir) {
   for (const segment of path.split('/')) {
     if (!segment || segment === '.') continue;
     if (segment === '..') {
-      if (!segments.length) return unmeasurable();
+      if (!segments.length || (segments.length === 1 && /^[a-z]:$/i.test(segments[0]))) return unmeasurable();
       segments.pop();
     }
     else segments.push(segment);
