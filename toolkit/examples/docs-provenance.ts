@@ -465,6 +465,11 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'The Java pack README documents the launcher its .lsp.json runs: JVM choice order, WT_JDTLS_JDK_DIRS, the one-line refusal, and the per-platform discovery.',
   },
   {
+    script: 'plugin/bin/wt-tsls.mjs',
+    status: 'mapped',
+    reason: 'The TypeScript pack README documents the backend selection, extension mapping and protocol refusal of its shipped LSP launcher.',
+  },
+  {
     script: 'plugin/bin/wt-wake-channel.mjs',
     status: 'exempt',
     reason: 'Internal dependency-free MCP transport whose complete invocation contract is the adjacent plugin/.mcp.json registration.',
@@ -751,6 +756,10 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
   {
     sources: ['plugin/bin/wt-jdtls.mjs', 'plugin/bin/lib/host/jdtls-java.mjs', 'plugin/packs/java/.lsp.json'],
     docs: ['plugin/packs/java/README.md'],
+  },
+  {
+    sources: ['plugin/bin/wt-tsls.mjs', 'plugin/bin/lib/host/ts-language-server.mjs', 'plugin/packs/typescript/.lsp.json'],
+    docs: ['plugin/packs/typescript/README.md'],
   },
   {
     sources: [

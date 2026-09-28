@@ -37,6 +37,9 @@ const JUSTIFIED_EXCLUSIONS: Record<string, string> = {
   'wt-suite-lock-run.mjs':
     'Variable-facing runner, not an operator CLI: every argv word must name a command literally, so ' +
     'reserving --help or -h would violate its lock-and-run contract. Use wt-suite-lock.mjs for operator help.',
+  'wt-tsls.mjs':
+    'LSP stdio transport launched from the plugin declaration: stdout must contain protocol frames only; '
+    + 'there is no operator-facing argv contract or usage output.',
 }
 
 /**

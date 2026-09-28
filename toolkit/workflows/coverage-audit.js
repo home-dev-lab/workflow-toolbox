@@ -2257,6 +2257,10 @@ ${request.renderClaim(request.claim)}`;
       docs: ["plugin/packs/java/README.md"]
     },
     {
+      sources: ["plugin/bin/wt-tsls.mjs", "plugin/bin/lib/host/ts-language-server.mjs", "plugin/packs/typescript/.lsp.json"],
+      docs: ["plugin/packs/typescript/README.md"]
+    },
+    {
       sources: [
         "plugin/bin/wt-artifact-server.mjs",
         "plugin/bin/wt-artifact-server-ensure.mjs",

@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { planJdtlsLaunch } from '../../plugin/bin/lib/host/jdtls-java.mjs'
+import { planTsLaunch } from '../../plugin/bin/lib/host/ts-language-server.mjs'
 
 const TOOLKIT_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const REPO_ROOT = resolve(TOOLKIT_DIR, '..')
@@ -55,7 +56,11 @@ export function resolveCommand(command, pathValue) {
 
 // A declaration whose command is `node` runs a plugin launcher; the binary the arms must find or hide is the
 // language server that launcher starts.
-const LAUNCHED_SERVERS = { java: 'jdtls' }
+const LAUNCHED_SERVERS = { java: 'jdtls', typescript: 'typescript-language-server' }
+
+export function serverBinaries(pack, declaration) {
+  return pack === 'typescript' && declaration.command === 'node' ? ['typescript-language-server', 'tsc'] : [serverBinary(pack, declaration)]
+}
 
 export function serverBinary(pack, declaration) {
   if (declaration.command !== 'node') return declaration.command
@@ -64,9 +69,11 @@ export function serverBinary(pack, declaration) {
   return binary
 }
 
+/** @param {string | string[]} excludedCommand */
 export function buildShimDirectory(pathValue, excludedCommand, shimDirectory) {
   mkdirSync(shimDirectory, { recursive: true })
   const linked = new Set()
+  const excluded = new Set(Array.isArray(excludedCommand) ? excludedCommand : [excludedCommand])
   for (const directory of pathValue.split(delimiter).filter(Boolean)) {
     let entries
     try {
@@ -75,7 +82,7 @@ export function buildShimDirectory(pathValue, excludedCommand, shimDirectory) {
       continue
     }
     for (const entry of entries) {
-      if (entry === excludedCommand || linked.has(entry)) continue
+      if (excluded.has(entry) || linked.has(entry)) continue
       const source = join(directory, entry)
       try {
         if (lstatSync(source).isDirectory()) continue
@@ -232,7 +239,7 @@ function runtimeVersion(command, args, env) {
   return `${result.stdout ?? ''}${result.stderr ?? ''}` || `${args.join(' ')} exited ${result.status}\n`
 }
 
-function runtimeDetails(pack, env) {
+function runtimeDetails(pack, env, projectDir) {
   const pathValue = env.PATH ?? ''
   if (pack === 'java') {
     // The pack's launcher picks jdtls's JVM itself; record ITS choice, not whichever `java` is first on PATH.
@@ -240,6 +247,10 @@ function runtimeDetails(pack, env) {
     return plan.status === 'launch'
       ? `wt-jdtls java: ${plan.java.executable} (Java ${plan.java.major ?? 'unknown'}, from ${plan.java.source})\n${runtimeVersion(plan.java.executable, ['-version'], env)}`
       : `wt-jdtls refused: ${plan.message}\n`
+  }
+  if (pack === 'typescript') {
+    const plan = planTsLaunch({ rootPath: projectDir }, { env })
+    return plan.status === 'launch' ? `wt-tsls backend: ${plan.backend} (${plan.command})\n` : `wt-tsls refused: ${plan.message}\n`
   }
   if (pack === 'groovy') {
     const java = resolveCommand('java', pathValue)
@@ -327,8 +338,9 @@ export async function probePack(pack, options = {}) {
   const [, declaration] = declarationEntries[0]
   if (/[\\/]/.test(declaration.command)) throw new Error(`${pack}: command must be a bare executable name, not a path`)
   const server = serverBinary(pack, declaration)
+  const servers = serverBinaries(pack, declaration)
   const fixtureDir = join(packDir, 'probe')
-  if (capability !== 'diagnostics') return probeNavigation(pack, capability, { ...options, repoRoot, originalPath, packDir, server, fixtureDir })
+  if (capability !== 'diagnostics') return probeNavigation(pack, capability, { ...options, repoRoot, originalPath, packDir, server, servers, fixtureDir })
   const expectedSubstring = readFileSync(join(fixtureDir, 'expected-diagnostic.txt'), 'utf8').trim()
   if (!expectedSubstring) throw new Error(`${pack}: expected diagnostic substring is empty`)
 
@@ -349,8 +361,9 @@ export async function probePack(pack, options = {}) {
     mkdirSync(availableDir, { recursive: true })
     mkdirSync(missingDir, { recursive: true })
 
-    const availableResolution = resolveCommand(server, originalPath)
+    const availableResolution = servers.map((name) => resolveCommand(name, originalPath)).find(Boolean)
     const availableEnv = { ...process.env, PATH: originalPath }
+    const selectedBackend = pack === 'typescript' ? planTsLaunch({ rootPath: projectDir }, { env: availableEnv }) : undefined
     const availableRun = await runClaude(projectDir, pluginCopy, availableEnv, join(availableDir, 'debug.log'))
     availableRun.workspaceModules = workspaceModules
     const availableOutput = `${availableRun.stdout}\n${availableRun.stderr}`
@@ -366,16 +379,17 @@ export async function probePack(pack, options = {}) {
       availableDir,
       availableResolution,
       availableResolution ? commandVersion(availableResolution, availableEnv) : 'unavailable\n',
-      runtimeDetails(pack, availableEnv),
+       runtimeDetails(pack, availableEnv, projectDir),
       availableRun,
     )
+    if (selectedBackend) writeFileSync(join(availableDir, 'backend.txt'), `${selectedBackend.status === 'launch' ? `${selectedBackend.backend}: ${selectedBackend.command}` : selectedBackend.message}\n`)
     const availableServerFailure = serverStartFailure(readDebug(join(availableDir, 'debug.log')), pack)
     writeFileSync(join(availableDir, 'verdict.json'), `${JSON.stringify({ capability, verdict: available.pass ? 'parity' : availableRun.timedOut || availableRun.exitCode === null || !availableResolution || availableServerFailure ? 'unmeasured' : 'no parity', reason: availableServerFailure ? `server failed to start: ${availableServerFailure}` : available.reason }, null, 2)}\n`)
     console.log(`available: ${available.pass ? 'PASS' : 'FAIL'} - ${available.reason}`)
 
-    buildShimDirectory(originalPath, server, shimDir)
+    buildShimDirectory(originalPath, servers, shimDir)
     const missingEnv = { ...process.env, PATH: shimDir }
-    const missingResolution = resolveCommand(server, shimDir)
+    const missingResolution = servers.map((name) => resolveCommand(name, shimDir)).find(Boolean)
     const claudeResolution = resolveCommand('claude', shimDir)
     const nodeResolution = resolveCommand('node', shimDir)
     if (missingResolution || !claudeResolution || !nodeResolution) {
@@ -399,7 +413,7 @@ export async function probePack(pack, options = {}) {
       missingDir,
       missingResolution,
       'unavailable by design\n',
-      runtimeDetails(pack, missingEnv),
+       runtimeDetails(pack, missingEnv, projectDir),
       missingRun,
     )
     console.log(`missing: ${missing.pass ? 'PASS' : 'FAIL'} - ${missing.reason}`)
@@ -409,7 +423,7 @@ export async function probePack(pack, options = {}) {
   }
 }
 
-async function probeNavigation(pack, capability, { repoRoot, originalPath, server, fixtureDir, ...options }) {
+async function probeNavigation(pack, capability, { repoRoot, originalPath, servers, fixtureDir, ...options }) {
   const navigationDir = join(fixtureDir, 'nav')
   const expected = JSON.parse(readFileSync(join(navigationDir, 'expected-navigation.json'), 'utf8'))[capability]
   if (!expected?.prompt || !Array.isArray(expected.expectedSubstrings) || expected.expectedSubstrings.length === 0) {
@@ -426,14 +440,18 @@ async function probeNavigation(pack, capability, { repoRoot, originalPath, serve
     cpSync(navigationDir, projectDir, { recursive: true })
     rmSync(join(projectDir, 'expected-navigation.json'), { force: true })
     const workspaceModules = linkWorkspaceModules(projectDir, options.toolkitDir ?? TOOLKIT_DIR)
-    const resolution = resolveCommand(server, originalPath)
+    const resolution = servers.map((name) => resolveCommand(name, originalPath)).find(Boolean)
     const run = resolution
       ? await runClaude(projectDir, pluginCopy, { ...process.env, PATH: originalPath }, join(armDir, 'debug.log'), expected.prompt)
       : { stdout: '', stderr: '', exitCode: null, timedOut: false, elapsedMs: 0 }
     run.workspaceModules = workspaceModules
     const env = { ...process.env, PATH: originalPath }
     const verdict = navigationVerdict({ commandResolved: resolution, output: `${run.stdout}\n${run.stderr}`, debug: readDebug(join(armDir, 'debug.log')), expectedSubstrings: expected.expectedSubstrings, capability, exitCode: run.exitCode, timedOut: run.timedOut, language: pack })
-    archiveArm(armDir, resolution, resolution ? commandVersion(resolution, env) : 'unavailable\n', runtimeDetails(pack, env), run, expected.prompt)
+    archiveArm(armDir, resolution, resolution ? commandVersion(resolution, env) : 'unavailable\n', runtimeDetails(pack, env, projectDir), run, expected.prompt)
+    if (pack === 'typescript') {
+      const backend = planTsLaunch({ rootPath: projectDir }, { env })
+      writeFileSync(join(armDir, 'backend.txt'), `${backend.status === 'launch' ? `${backend.backend}: ${backend.command}` : backend.message}\n`)
+    }
     writeFileSync(join(armDir, 'verdict.json'), `${JSON.stringify({ capability, ...verdict }, null, 2)}\n`)
     console.log(`${capability}: ${verdict.verdict} - ${verdict.reason}`)
     return verdict.verdict === 'parity'
