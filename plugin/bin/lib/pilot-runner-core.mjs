@@ -21,6 +21,7 @@ import { bindPilotDecision, displayedDecisionStateRoot, initializePilotDecisionS
 import { laneUnsandboxedAtStart } from './host/lane-sandbox.mjs'
 import { sandboxWritablePaths } from './host/sandbox-extra-paths.mjs'
 import { pathWithin } from './host/path-within.mjs'
+import { createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 
 export const ROUTE_TIMEOUTS = Object.freeze({ LITE: 5_400, FULL: 21_600 })
 const ROUTE_EXPECTED_SECONDS = Object.freeze({ LITE: 5_400, FULL: 11_460 })
@@ -550,6 +551,7 @@ export async function runPilot(options, dependencies) {
     }
   }
 
+  const modelTracker = createModelTracker(model.value, effectiveEnv)
   try {
     const queryOptions = composeSdkRoleQueryOptions({
       model: model.value,
@@ -567,6 +569,7 @@ export async function runPilot(options, dependencies) {
     }, sdkRole)
     const stream = query({ prompt: prompt(), options: queryOptions })
     for await (const message of stream) {
+      modelTracker.observe(message)
       transcript.push(message)
       // An account-level rate-limit notice can precede init; it carries no model output and is not "another message first".
       if (!initReceiptSeen && message.type === 'rate_limit_event') continue
@@ -629,6 +632,7 @@ export async function runPilot(options, dependencies) {
       if (initReceiptSeen) incompleteReason = `sdk stream error: ${error instanceof Error ? error.message : String(error)}`
     }
   } finally {
+    for (const warning of modelWarnings(modelTracker.result(), { name: 'pilot' })) log(warning)
     clearTimer(timeoutTimer)
     if (timeoutGraceTimer !== null) clearTimer(timeoutGraceTimer)
   }

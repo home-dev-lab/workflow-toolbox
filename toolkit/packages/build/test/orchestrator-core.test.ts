@@ -632,6 +632,18 @@ describe('SDK orchestrator judge', () => {
     await expect(accepted({ row: { id: '1' } })).resolves.toBe(false)
   })
 
+  it('F11 emits accumulated judge warnings when the SDK iterator throws', async () => {
+    const f = repoFixture(); const waveDir = join(f.root, '.waves', 'warning-on-error'); mkdirSync(waveDir, { recursive: true })
+    const waveServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer
+    waveServer.setCardState('1', 'piloting'); waveServer.setCardState('1', 'judging')
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const judge = createSdkJudge({ query: () => (async function* () { yield judgeInit(); yield { type: 'assistant', message: { id: 'served', model: 'claude-haiku-4-5' } }; throw new Error('stream broke') })(), models: { orchestrator: { value: 'opus' } }, waveDir, waveServer, contract: '# contract' })
+      await expect(judge({ row: { id: '1' } })).rejects.toThrow('stream broke')
+      expect(stderr.mock.calls.map(([line]) => line).join('')).toContain('WARN model-fallback: judge requested opus served claude-haiku-4-5')
+    } finally { stderr.mockRestore() }
+  })
+
   it('O1-2 lock: rejects absolute and traversal Glob/Grep inputs while allowing wildcard-first local patterns', () => {
     const f = repoFixture(); const wave = join(f.root, '.waves'); mkdirSync(wave, { recursive: true })
     for (const name of ['wave_state', 'read_card', 'read_card_report', 'read_diff', 'decide', 'write_judgment']) {

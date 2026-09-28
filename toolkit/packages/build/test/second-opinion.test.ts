@@ -365,6 +365,24 @@ describe('second-opinion advisor', () => {
     ])
   })
 
+  it('labels a Codex classifier refusal just before EXIT without changing its code', async () => {
+    const f = fixture(true)
+    const deps = dependencies({ runCodex: vi.fn(() => ({ status: 1, stdout: '', stderr: '[codex] Codex error: This content was flagged for possible cybersecurity risk.\n' })) })
+    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
+    expect(lines(f.out).slice(-2)).toEqual(['OUTCOME=refused-by-classifier provider=openai category=cyber', 'EXIT=1'])
+  })
+
+  it('labels an SDK classifier notice even when the result exits successfully', async () => {
+    const f = fixture(false)
+    const deps = dependencies({ resolveSdkQuery: vi.fn(() => async function* () {
+      yield { type: 'system', subtype: 'informational', content: "Opus 5.5's safeguards stopped the response above" }
+      yield { type: 'result', result: 'declined', is_error: false }
+    }) })
+    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(0)
+    expect(lines(f.out).at(-2)).toContain('OUTCOME=classifier-notice provider=anthropic')
+    expect(lines(f.out).at(-1)).toBe('EXIT=0')
+  })
+
   it('writes unavailable cleanup diagnostics before the exit marker', async () => {
     const f = fixture(true)
     const deps = dependencies({

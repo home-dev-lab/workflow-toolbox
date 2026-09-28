@@ -5,6 +5,7 @@ import { resolveConsent, resolveConfigDir } from './lane-consent-check-core.mjs'
 import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { withRepositoryGuide } from './sdk-role-profile.mjs'
 import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
+import { classifyProviderRefusal, createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
@@ -239,6 +240,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     }
 
     const code = signalExitCode(result.interrupted) ?? result.status
+    if (classifyProviderRefusal(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) appendLine(options.out, 'OUTCOME=refused-by-classifier provider=openai category=cyber')
     appendLine(options.out, `EXIT=${code}`)
     return code
   }
@@ -256,6 +258,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
 
   let answer = ''
   let failed = false
+  const modelTracker = createModelTracker('opus', env)
   try {
     const stream = query({
       prompt: withRepositoryGuide(options.repo, request),
@@ -274,6 +277,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
       },
     })
     for await (const message of stream) {
+      modelTracker.observe(message)
       if (message.type === 'result') {
         if (message.is_error) failed = true
         if (typeof message.result === 'string') answer = message.result
@@ -288,6 +292,9 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
     answer = 'Claude Opus returned no answer.'
   }
   appendOutput(options.out, answer)
+  const observation = modelTracker.result()
+  if (observation.notices.length) appendLine(options.out, `OUTCOME=classifier-notice provider=anthropic ${modelWarnings(observation, { name: 'second-opinion' }).join(' ')}`)
+  else for (const warning of modelWarnings(observation, { name: 'second-opinion' })) appendLine(options.out, warning)
   const code = signalExitCode(options.signal?.aborted ? options.signal.reason : null) ?? (failed ? 1 : 0)
   appendLine(options.out, `EXIT=${code}`)
   return code

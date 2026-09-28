@@ -380,6 +380,16 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     reason: 'Known-issues documents this spawn-registry writer/nudge hook under Shipped Hooks, Guards & Monitors.',
   },
   {
+    script: 'plugin/bin/wt-model-fallback-check.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the transcript CLI and its exit contract.',
+  },
+  {
+    script: 'plugin/bin/wt-model-fallback-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the model-fallback PostToolUse and SubagentStop warning hooks.',
+  },
+  {
     script: 'plugin/bin/wt-probe-claim-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this SendMessage probe-claim guard under Shipped Hooks, Guards & Monitors.',
@@ -1065,6 +1075,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-lesson-harvest-hook.mjs',
       'plugin/bin/wt-memory-index-check-hook.mjs',
       'plugin/bin/wt-outbound-guard-hook.mjs',
+      'plugin/bin/wt-model-fallback-check.mjs',
+      'plugin/bin/wt-model-fallback-hook.mjs',
       'plugin/bin/wt-probe-claim-guard-hook.mjs',
       'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
       'plugin/bin/wt-observer-pairing-guard-hook.mjs',

@@ -4,6 +4,7 @@ import { confinedToWorktree } from './pilot-runner-core.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, repositoryGuidePaths, withRepositoryGuide } from './sdk-role-profile.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
+import { createModelTracker, modelWarnings } from './model-fallback-core.mjs'
 
 const MAX_UNPRODUCTIVE_TURNS = 3
 const WAVE_TOOLS = new Set([
@@ -113,9 +114,11 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
       env: { ...env, CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1' },
     }, sdkRole)
     const stream = query({ prompt: prompt(), options: queryOptions })
+    const modelTracker = createModelTracker(model.value, env)
     consumePromise = (async () => {
       try {
         for await (const message of stream) {
+          modelTracker.observe(message)
           if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) {
             throw new Error(`SDK judge initialization receipt never arrived: the first message was ${message.type}/${message.subtype ?? 'none'}`)
           }
@@ -146,6 +149,7 @@ export function createSdkJudge({ query, models, waveDir, waveServer, contract, e
         pending?.reject(error)
         queue.close()
       } finally {
+        for (const warning of modelWarnings(modelTracker.result(), { name: 'judge' })) process.stderr.write(`${warning}\n`)
         if (failure) return
         if (active) stopIncomplete()
         else if (!waveServer.state().judgmentWritten) {

@@ -26,7 +26,8 @@ describe('pid to parent-pid host perimeter', () => {
     // Shared executor defaults and the suite-lock runner add two modules, the pure DoD dispute module adds one,
     // and the cross-OS CLI, dispatcher and verdict module add three, and the shared frontmatter/definition helpers add three more;
     // the pure model-pin module adds one more, and the pure Claude-executor environment builder
-    // (claude-executor-env.mjs) one more; none of them adds a process-table primitive.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 232, violations: [] })
+    // (claude-executor-env.mjs) one more; the transcript checker, shared tracker and warning hook add three
+    // process-table-free modules (their filesystem access is contained in bin/lib/host); none of them adds a process-table primitive.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 235, violations: [] })
   })
 })
