@@ -13,6 +13,14 @@ root cause, a simpler reformulated problem, cost of the remaining cases against 
 write down the routes considered and the one kept, and why. Continuing is legitimate when the
 analysis confirms the route. Escalate only when no route is found.
 
+Persisting toward a GOAL ≠ persisting on a ROUTE. Worthwhile goal + feasibility unknown (undocumented
+platform, SDK or harness behaviour nobody has proven) → enumerate the routes and TRY each with a
+small test; never declare it impossible from documentation or priors alone. A route fails → one step
+back (two if needed), re-approach from another side: a detour is persistence, not surrender.
+Declare the goal out of reach only after every known route was tested and failed — name each route
+and its evidence. The drift this rule stops is the opposite case: the goal is already met and the
+same route keeps grinding rarer cases.
+
 Recognise the drift by its names:
 - escalation of commitment / sunk cost — continuing because of what is already spent;
 - degenerating programme (Lakatos) — each round patches a rarer anomaly, nothing new is gained;
