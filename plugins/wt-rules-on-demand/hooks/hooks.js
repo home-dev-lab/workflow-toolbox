@@ -239,6 +239,10 @@ const eligible = (ctx, rule) => {
   const minutes = Number((typeof process !== 'undefined' && process.env?.WT_ROD_RESERVE_MIN) || 30);
   return !state || (reserve && state.count < limit && Date.now() - state.at >= minutes * 60_000);
 };
+// The host types ui.log as returning void: a progress line never aborts serving, whether it returns, rejects or throws.
+async function progress($, message) {
+  try { await $.ui.log(message); } catch { /* A progress line is best effort. */ }
+}
 function claim(ctx, rules) {
   for (const rule of rules) { const state = ctx.served.get(rule.name); ctx.served.set(rule.name, { count: (state?.count ?? 0) + 1, at: Date.now() }); }
 }
@@ -302,7 +306,7 @@ export const register = (on, options) => {
        const ride = chosen.filter((rule) => currentPrompting.get(rule.name) === reservation && eligible(ctx, rule));
        if (!ride.length) return result;
        claim(ctx, ride); const injected = inject(ctx, ride, 'prompt.submit'); await journal($, ride, MAIN, [], ride, injected, 'prompt.submit');
-       for (const rule of ride) await $.ui.log(`wt-rules-on-demand: serving ${rule.name}`).catch(() => {});
+       for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
        return result;
       } finally {
         for (const rule of chosen) for (const state of new Set([prompting, ctx.prompting])) if (state.get(rule.name) === reservation) state.delete(rule.name);
@@ -363,7 +367,7 @@ export const register = (on, options) => {
            await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop,
              item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e));
        }
-      for (const rule of ride) await $.ui.log(`wt-rules-on-demand: serving ${rule.name}`).catch(() => {});
+      for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
     for (const rule of ride) if (rule.compliance?.kind === 'bash-command' && isGovernedAct(rule.compliance, e)) {
       ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
         await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, bashCommandVerdict(rule.compliance, bounded(e.command)), summary(e));
