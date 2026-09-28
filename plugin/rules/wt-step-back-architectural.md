@@ -7,16 +7,18 @@ finding. Right moment = FIRST sign, not five commits later.
 
 Same trigger when the acceptance criterion is already met and the next round only chases rare
 cases, or when two consecutive attempts on one route produced no new evidence. After each attempt:
-"what do I know now that I did not know before?" — nothing = stagnation. An edit is not an attempt
-unless it tests a different prediction. Route = causal hypothesis + intervention mechanism; three
+"what do I know now that I did not know before?" — nothing = stagnation. Read the result against
+the prediction written BEFORE the attempt: far from it, success or failure, is the information;
+matching it adds little. An edit is not an attempt unless it tests a different prediction. Route = causal hypothesis + intervention mechanism; three
 implementations of one hypothesis are ONE route, a new route changes at least one of the two.
 
 Step back ≠ stop, ≠ ask. Before touching the code again: restate facts / assumptions / unknowns;
-list 2–3 materially distinct routes, at least one aimed at a structural cause, each with its
-smallest discriminating test and what its result would teach; pick by information gained per cost,
-never by what is already spent, and credit an untried route for being untried (explore, not only
-exploit); write the chosen route's kill criterion BEFORE resuming. Record the
-routes and the choice. Escalate only when no route is left.
+list 2–3 materially distinct routes, at least one aimed at a structural cause, each with a prior
+(its stated chance of working, written before testing), its smallest discriminating test and what
+its result would teach; pick by information gained per cost, never by what is already spent, and
+credit an untried route for being untried (explore, not only exploit); write the chosen route's
+kill criterion BEFORE resuming; after each test, update every route's prior from what it taught.
+Record the routes, priors and choice. Escalate only when no route is left.
 
 Persist on the GOAL, not on the ROUTE. Worthwhile goal on an unproven platform (undocumented SDK or
 harness behaviour) → try routes by small tests, never "impossible" from docs or priors. Route fails
