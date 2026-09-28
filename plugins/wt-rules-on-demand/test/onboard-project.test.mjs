@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -12,7 +12,7 @@ import { addFollowed } from '../scripts/followed-projects.mjs';
 const script = resolve('scripts/onboard-project.mjs');
 const followed = resolve('scripts/followed-projects.mjs');
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'onboard-'));
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'onboard-')));
   t.after(() => rm(root, { recursive: true, force: true }));
   const project = join(root, 'project');
   const out = join(root, 'out');
