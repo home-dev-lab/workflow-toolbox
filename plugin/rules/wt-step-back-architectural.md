@@ -22,7 +22,8 @@ harness behaviour) → try routes by small tests, never "impossible" from docs o
 → back one step, two if needed, re-approach from another side. BLOCKED only when every materially
 distinct route from the step-back was tested or ruled out by evidence: report route → experiment →
 result → conclusion for each, AND the routes NOT tried and why. Before escalating a BLOCKED, get
-one decorrelated second opinion asked to reframe the problem, not to validate the route: another
+one decorrelated second opinion asked to reframe the problem and name routes left out by
+continuation bias, not to validate the route: another
 model family through a consented external lane; none consented → the user is the second opinion,
 never a same-family consult. Retries on a route are normal; they are never a reason to escalate.
 
