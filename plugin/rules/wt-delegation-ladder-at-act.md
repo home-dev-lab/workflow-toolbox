@@ -7,8 +7,8 @@ its watchdog, silently. A project that has not adopted them therefore has no `pi
 nothing in this ladder says so — the spawn fails AFTER the expensive part, with a complete brief
 already written. `install.mjs --set agents --install` adopts them with a version banner, so a later
 `--check` reports staleness; a hand copy works and loses that.
-⚠ Adoption is picked up within MINUTES, same session, no restart — measured. The "a new agent type
-needs ~90 minutes or a restart" caution applies to a hand-written definition, not to an adoption.
+⚠ Adopted and newly written agent types can appear in the same session, without a restart; allow
+for a short delay under load and re-probe if a newly added type does not resolve at first.
 
 ## Briefing an executor (the split that makes delegation safe)
 
@@ -116,15 +116,9 @@ agent's ACTUAL surface; a declaration is not a manifest.**
 it once is granting it for every later turn — the question at spawn is not "will it need this
 once?" but "is there any turn on which this is unsafe?".
 
-⚠ **A newly written agent type becomes spawnable only after a DELAY — measured at roughly ninety
-minutes, and the two earlier readings were taken too soon.** The spawn returned `Agent type not
-found` at both zero and sixty minutes, and the list it printed omitted a type added forty minutes
-earlier; the type then appeared on its own, unannounced, with no session restart. So the earlier
-conclusion — *"not spawnable in the session that wrote it"* — was wrong, and wrong in the
-expensive direction: it turns a wait into a supposed impossibility.
-**Do not plan around either extreme.** A new type is not immediately usable and is not permanently
-unavailable; **re-probe rather than concluding from one refusal**, and if an arc needs the type
-now, arrange for it to be verified later rather than declaring it impossible.
+⚠ **A newly written agent type may become spawnable in the same session**, immediately or after
+a few minutes under load, without a restart. **Re-probe after a refusal rather than declaring
+the type unavailable**; if needed now, arrange to verify it when it resolves.
 
 ⚠ Invisible from the spawner's side: a delegate reporting findings looks identical whether it READ
 them or produced them by ACTING. Only its transcript, or independent verification of its claims,
