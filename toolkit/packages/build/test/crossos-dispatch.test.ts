@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error JS quality scanner
 import { scanHostPrimitives } from '../../../scripts/host-primitive-census.mjs'
 // @ts-expect-error JS scheduling policy
@@ -17,7 +17,9 @@ import { ciBranchFor, matchesHostPath, verdictFromEvidence } from '../../../../p
 const root = resolve(import.meta.dirname, '../../../..')
 const fixtureDir = join(import.meta.dirname, 'fixtures/crossos-dispatch')
 const temporary: string[] = []
-const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+const sealedHome = mkdtempSync(join(tmpdir(), 'crossos-seal-'))
+const env = { ...process.env, HOME: sealedHome, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_ALLOW_PROTOCOL: 'file', GIT_TERMINAL_PROMPT: '0' }
+afterAll(() => rmSync(sealedHome, { recursive: true, force: true }))
 afterEach(() => { for (const path of temporary.splice(0)) rmSync(path, { recursive: true, force: true }) })
 function git(cwd: string, ...args: string[]) {
   const result = spawnSync('git', args, { cwd, env, encoding: 'utf8' })
@@ -67,12 +69,8 @@ function publicFixture() {
   git(f.dir, 'remote', 'add', 'public', bare)
   git(f.dir, 'push', 'public', `${f.base}:refs/heads/main`)
   git(f.dir, 'fetch', 'public', 'main')
-  copyFileSync(join(fixtureDir, 'pre-push'), join(f.dir, '.git/hooks/pre-push'))
-  chmodSync(join(f.dir, '.git/hooks/pre-push'), 0o755)
-  mkdirSync(join(f.dir, 'plugin/bin/lib'), { recursive: true })
-  copyFileSync(join(root, 'plugin/bin/wt-push-scope-check.mjs'), join(f.dir, 'plugin/bin/wt-push-scope-check.mjs'))
-  copyFileSync(join(root, 'plugin/bin/lib/cli-help.mjs'), join(f.dir, 'plugin/bin/lib/cli-help.mjs'))
-  writeFileSync(join(f.dir, 'plugin/bin/package.json'), '{"type":"module"}')
+  const installed = spawnSync(process.execPath, [join(root, 'plugin/bin/wt-push-guard-install.mjs'), '--install', '--repo', f.dir, '--guard-remote', 'public'], { cwd: f.dir, env, encoding: 'utf8' })
+  if (installed.status !== 0) throw Error(`fixture guard installation failed: ${installed.stderr}`)
   return f
 }
 function fakeGh(f: ReturnType<typeof fixture>, conclusion = 'success', status = 'completed') {
@@ -181,7 +179,7 @@ describe('cross-OS dispatch', () => {
     const f = publicFixture(); const auth = authPathOf(f.dir)
     writeFileSync(auth, JSON.stringify({ commits: [f.host] }))
     git(f.dir, 'push', 'public', `${f.host}:refs/heads/main`)
-    rmSync(auth)
+    rmSync(auth, { force: true })
     git(f.dir, 'fetch', 'public', 'main')
     const out = output()
     expect(await dispatch(['run', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io: fakeGh(f).io, print: out.print }), out.lines.join('\n')).toBe(0)
@@ -274,15 +272,10 @@ describe('cross-OS dispatch', () => {
     expect(existsSync(authPathOf(f.dir))).toBe(false)
   })
 
-  it('checks the checkout real hook when installed', async (context) => {
-    const hook = git(root, 'rev-parse', '--git-path', 'hooks/pre-push')
-    const path = resolve(root, hook)
-    if (!existsSync(path) || !readFileSync(path, 'utf8').includes('wt-push-scope-check')) {
-      context.skip(`checkout hook missing wt-push-scope-check: ${path}`)
-      return
-    }
-    const f = publicFixture(); const target = join(f.dir, '.git/hooks/pre-push')
-    copyFileSync(path, target); chmodSync(target, 0o755)
+  it('checks the pinned hook installed from this source tree', () => {
+    const f = publicFixture()
+    expect(readFileSync(join(f.dir, '.git/hooks/pre-push'), 'utf8')).toContain('wt-push-scope-check')
+    expect(existsSync(join(f.dir, '.git/hooks/wt-push-guard/manifest.json'))).toBe(true)
     const auth = authPathOf(f.dir)
     writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
     const push = spawnSync('git', ['push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`], { cwd: f.dir, env, encoding: 'utf8' })
@@ -290,7 +283,7 @@ describe('cross-OS dispatch', () => {
     rmSync(auth, { force: true })
     const refused = spawnSync('git', ['push', 'public', `${f.docs}:refs/heads/card/ci-${f.docs.slice(0, 12)}`], { cwd: f.dir, env, encoding: 'utf8' })
     expect(refused.status).not.toBe(0)
-    expect(refused.stderr).toMatch(/no authorized scope|no live authorization/)
+    expect(refused.stderr).toContain('single-use authorization missing')
   })
 
   it('runs the real public pre-push hook with exclusive authorization, then rejects a missing authorization', () => {
@@ -300,10 +293,10 @@ describe('cross-OS dispatch', () => {
     const push = spawnSync('git', ['push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`], { cwd: f.dir, env, encoding: 'utf8' })
     expect(push.status, push.stderr).toBe(0)
     expect(push.stderr + push.stdout).toMatch(/wt-push-scope-check: .*— OK/)
-    rmSync(auth)
+    rmSync(auth, { force: true })
     const refused = spawnSync('git', ['push', 'public', `${f.docs}:refs/heads/card/ci-${f.docs.slice(0, 12)}`], { cwd: f.dir, env, encoding: 'utf8' })
     expect(refused.status).not.toBe(0)
-    expect(refused.stderr).toContain('no authorized scope')
+    expect(refused.stderr).toContain('single-use authorization missing')
   })
 
   it('pushes with the real hook, pins the dispatch repository, collects a red job full log and deletes the branch', async () => {
@@ -422,7 +415,7 @@ describe('cross-OS dispatch', () => {
     expect(out.lines.join('\n')).toContain('MATRIX INCOMPLETE:')
     const auth = authPathOf(f.dir)
     writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
-    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth)
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth, { force: true })
     expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: output().print })).toBe(1)
   })
 
@@ -444,7 +437,7 @@ describe('cross-OS dispatch', () => {
     expect(out.lines.join('\n')).not.toContain('MATRIX INCOMPLETE')
     const auth = authPathOf(f.dir)
     writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
-    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth)
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth, { force: true })
     const out2 = output()
     expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out2.print })).toBe(1)
     expect(out2.lines.join('\n')).toContain('MATRIX COMPLETE: 1 of 3 jobs failed (matrix (windows-latest))')
@@ -476,7 +469,7 @@ describe('cross-OS dispatch', () => {
     } }
     // Start from a recorded run and a remotely existing branch.
     const auth = authPathOf(f.dir); writeFileSync(auth, JSON.stringify({ commits: git(f.dir, 'rev-list', `public/main..${f.host}`).split('\n') }))
-    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth)
+    git(f.dir, 'push', 'public', `${f.host}:refs/heads/card/ci-${f.host.slice(0, 12)}`); rmSync(auth, { force: true })
     const store = join(f.dir, '.git/wt-crossos'); mkdirSync(store)
     writeFileSync(join(store, `${f.host}.json`), JSON.stringify({ sha: f.host, runId: 23, branch: `card/ci-${f.host.slice(0, 12)}`, url: 'https://github.com/owner/repo/actions/runs/23' }))
     expect(await dispatch(['collect', '--merge', f.host, '--repo', f.dir, '--repo-slug', 'owner/repo'], { io, print: out.print })).toBe(2)
