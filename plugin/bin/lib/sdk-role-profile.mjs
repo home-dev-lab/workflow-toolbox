@@ -262,6 +262,10 @@ export function composeSdkRoleQueryOptions(base, prepared) {
   }
   return {
     ...base,
+    // The account's claude.ai connectors are loaded by default for claude.ai-authenticated users; they are
+    // outside every role's tool surface and would fail the init receipt. strictMcpConfig would also drop the
+    // plugin-provided servers a role may use, so only the connectors are switched off.
+    env: { ...(base.env ?? process.env), ENABLE_CLAUDEAI_MCP_SERVERS: 'false' },
     plugins: prepared.plugins ?? prepared.pluginPaths.map((pluginPath) => ({ type: 'local', path: pluginPath })),
     pluginDelivery: 'initialize',
     tools: [...prepared.profile.tools],

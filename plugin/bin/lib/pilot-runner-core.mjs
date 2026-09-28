@@ -9,7 +9,7 @@ import { deriveRoute } from './route-from-card.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { resolveExecutorProfile as defaultResolveExecutorProfile } from './pilot-model-config.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
-import { launchVariant } from './lifecycle-launch.mjs'
+import { phaseLaunchPlan } from './lifecycle-launch.mjs'
 import { knowledgeBasePromptLine, knowledgeBaseReadAllowed, resolveKnowledgeBaseIndex } from './knowledge-base-index.mjs'
 import { composeStandingPrompt, loadRules } from './rules-manifest.mjs'
 import { appendCostReport, computeRunCost, unknownRunCost } from './run-cost-core.mjs'
@@ -299,14 +299,14 @@ function lifecycleDelivery(summary, state) {
     deferred: summary.deferred ?? state.deferred ?? null,
   }
 }
-// Effective effort per executor role, resolved exactly as lifecycle-launch resolves it at launch time,
-// so the run summary states what each lane runs at. An override the launch would refuse is recorded
-// as unresolved rather than aborting the run here.
-function describeExecutorVariants(models, env) {
+// Effective effort and executor family per role, resolved exactly as lifecycle-launch resolves them at
+// launch time, so the run summary states what each lane runs at and on which family. An override the
+// launch would refuse is recorded as unresolved rather than aborting the run here.
+function describeExecutorVariants(models, env, defaultExecutor) {
   return Object.fromEntries(Object.entries(models ?? {}).map(([role, model]) => {
     try {
-      const { value, origin } = launchVariant(role, model, env)
-      return [role, { value, origin }]
+      const { executor, variant: { value, origin } } = phaseLaunchPlan(role, model, defaultExecutor, env)
+      return [role, { value, origin, executor }]
     } catch (error) {
       return [role, { value: null, origin: 'unresolved', error: error instanceof Error ? error.message : String(error) }]
     }
@@ -417,7 +417,7 @@ export async function runPilot(options, dependencies) {
   }
   options = { ...options, timeout: timeoutSeconds, timeoutExplicit }
   const executorProfile = (dependencies.resolveExecutorProfile ?? defaultResolveExecutorProfile)({ worktree: options.dir, route: routing.route, hard: options.hard, env, settingsEnv: profileEnv })
-  log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} variant=${modelVariant.value} variant_origin=${modelVariant.origin} executor=${executorProfile.executor}`)
+  log(`route=${routing.route} reasons=${routing.reasons.join(',')} model=${model.value} effective=${model.effective} variant=${modelVariant.value} variant_origin=${modelVariant.origin} executor=${executorProfile.executor}${executorProfile.executors ? ' executors=' + Object.entries(executorProfile.executors).map(([role, family]) => role + ':' + family).join(',') : ''}`)
   const report = join(options.dir, '.lane', 'pilot-report.md')
   const usagePath = join(options.dir, '.lane', 'usage.json')
   const summaryPath = join(options.dir, '.lane', 'summary.json')
@@ -650,7 +650,7 @@ export async function runPilot(options, dependencies) {
   const { partial, deferred } = lifecycleDelivery(lifecycleSummary, lifecycleServer.state())
   const servedModelAgreementValue = servedModelAgreement({ requestedModel: model.value, servedModel, servedModelFirstTurn, initReceiptSeen, firstAssistantSeen })
   const ended = now()
-  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
+  const summary = { ...lifecycleSummary, route: routing.route, runner_timeout_seconds: options.timeout, runner_timeout_explicit: options.timeoutExplicit, runner_started_at: new Date(started).toISOString(), runner_ended_at: new Date(ended).toISOString(), partial, deferred, fresh_tokens: freshTokens, turns: turns.length, injected_turns: injectedTurns, silence_injections: silenceInjections, minutes: (ended - started) / 60000, longest_tool_call_ms: longestToolCallMs, model: model.value, effective_model: model.effective, variant: modelVariant.value, variant_origin: modelVariant.origin, executor_variants: describeExecutorVariants(executorProfile.models, { ...env, ...profileEnv }, executorProfile.executor), dod_disputes: lifecycleServer.dodDisputes(), requested_model: model.value, requested_model_source: model.source, requested_model_effective: model.effective, requested_model_remapped_by: model.remappedBy, served_model: servedModel, served_model_first_turn: servedModelFirstTurn, served_model_agreement: servedModelAgreementValue, report_exists: exists(report), awaiting_fidelity_receipt: awaitingFidelityReceipt, completed: completedNormally, reason: completedNormally ? undefined : incompleteReason ?? 'stream ended without awaiting_fidelity lifecycle receipt' }
   atomicWrite(usagePath, `${JSON.stringify(usage, null, 2)}\n`, writeFile)
   writeFile(summaryPath, `${JSON.stringify(summary, null, 2)}\n`)
   writeFile(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`)

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { gateEnvironment, treeSignature } from './gate-evidence.mjs'
 import { launchProcess, launchProcessWithOutput, waitForLaneReceipt } from './lifecycle-receipts.mjs'
 import { resolveRoleVariant } from './lane-model-allowlist.mjs'
+import { executorFamilyForModel } from './executor-defaults.mjs'
 import { classifyLane, shellQuote, supervisionPaths } from './lane-supervisor-core.mjs'
 import { ensureLaneHostDir, readLifecycleRegular } from './host/lane-host-dir.mjs'
 import { hasPerSectionAttackAccount } from './lifecycle-review-policy.mjs'
@@ -27,7 +28,7 @@ const LANE_PREFLIGHT_BOUND_MS = 3_000 + 3 * 30_000 + 7_000
 const CONTROL = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'wt-lane-control.mjs')
 
 // The effort a lane is launched at; the pilot runner records the same resolution in its run summary.
-export function launchVariant(phase, model, env) {
+function launchVariant(phase, model, env) {
   const role = phase === 'tdd' ? 'code' : phase
   return { role, ...resolveRoleVariant(role, model, { env }) }
 }
@@ -36,6 +37,17 @@ function launchVariantArgs(executor, variant) {
   return executor === 'claude-sdk'
     ? ['--variant', variant.value, '--variant-origin', variant.origin]
     : ['--role', variant.role]
+}
+
+export function phaseLaunchPlan(phase, model, defaultExecutor, env = {}) {
+  const executor = executorFamilyForModel(model) ?? defaultExecutor
+  const variant = launchVariant(phase, model, env)
+  return {
+    executor,
+    variant,
+    script: executor === 'claude-sdk' ? 'wt-claude-executor.mjs' : 'wt-lane.mjs',
+    args: [...launchVariantArgs(executor, variant), ...(executor === 'claude-sdk' ? ['--role', phase] : [])],
+  }
 }
 
 function terminalExit(content) {
@@ -412,13 +424,13 @@ export function createLifecycleLaunch({
               : frozenModels.review
         let launch
         try {
-          const variant = launchVariant(phase, model, executorEnv)
+          const plan = phaseLaunchPlan(phase, model, executor, executorEnv)
           const launcher = laneLauncher ?? path.join(
             path.dirname(fileURLToPath(import.meta.url)),
             '..',
-            executor === 'claude-sdk' ? 'wt-claude-executor.mjs' : 'wt-lane.mjs',
+            plan.script,
           )
-          laneRecord = recordLaneStart({ phase, model, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
+          laneRecord = recordLaneStart({ phase, model, executor: plan.executor, startedAt: launchedAt, usageFile: `${path.basename(log)}.usage.json`, laneId: args.criticLane })
           launch = await launchProcessWithOutput(
             process.execPath,
             [
@@ -428,11 +440,10 @@ export function createLifecycleLaunch({
               '--brief', snapshotBrief,
               '--log', log,
               '--timeout', String(timeout),
-              ...launchVariantArgs(executor, variant),
-              ...(executor === 'claude-sdk' ? [] : ['--owner', 'pilot', '--owner-token', nonce, '--brief-cleanup-dir', snapshot]),
+              ...plan.args,
+              ...(plan.executor === 'claude-sdk' ? [] : ['--owner', 'pilot', '--owner-token', nonce, '--brief-cleanup-dir', snapshot]),
               // The lifecycle knows the phase; the Claude executor derives read-only from it, never from brief text.
-              ...(executor === 'claude-sdk' ? ['--role', phase] : []),
-              ...(executor === 'claude-sdk' && ['critic', 'review', 'refutation'].includes(phase) && knowledgeBaseIndex
+              ...(plan.executor === 'claude-sdk' && ['critic', 'review', 'refutation'].includes(phase) && knowledgeBaseIndex
                 ? ['--knowledge-base-index', knowledgeBaseIndex]
                 : []),
             ],

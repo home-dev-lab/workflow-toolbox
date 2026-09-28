@@ -90,11 +90,14 @@ export function executorBrief(options) {
   const protectedRead = (file) => laneWritablePath(options.dir, file) ? readWorktreeRegular(file, 'utf8', options.dir) : fs.readFileSync(file, 'utf8')
   const brief = protectedRead(options.brief)
   if (brief === null) throw new Error('brief is not a protected regular file')
-  const match = /Write the report to `([^`]+)`/.exec(brief)
+  // The runner writes its report line after the untrusted pilot context, so the LAST one is authoritative.
+  const match = [...brief.matchAll(/Write the report to `([^`]+)`/g)].at(-1)
   if (!match) throw new Error('brief does not name its report path')
   const report = path.resolve(match[1])
   const laneDir = path.join(fs.realpathSync(options.dir), '.lane')
-  if (path.dirname(report) !== laneDir || !new RegExp(`^${options.role}-report\\.[A-Za-z0-9-]+\\.md$`).test(path.basename(report))) {
+  // Only the first-round parallel critics carry a lane id (A or B) before the nonce.
+  const laneId = options.role === 'critic' ? '(?:\\.[AB])?' : ''
+  if (path.dirname(report) !== laneDir || !new RegExp(`^${options.role}-report${laneId}\\.[A-Za-z0-9-]+\\.md$`).test(path.basename(report))) {
     throw new Error(`brief report path is not a nonce lane report: ${report}`)
   }
   // Read-only is decided by the phase the lifecycle launched, never by text inside the brief.

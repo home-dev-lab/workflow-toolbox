@@ -1269,10 +1269,31 @@ describe('SDK pilot runner', () => {
     })
     expect(result.summary).toMatchObject({ variant: 'medium', variant_origin: 'role base' })
     expect(result.summary.executor_variants).toEqual({
-      critic: { value: 'xhigh', origin: 'role base' },
-      code: { value: 'medium', origin: 'role base' },
-      review: { value: 'xhigh', origin: 'override' },
-      refutation: { value: 'xhigh', origin: 'role base' },
+      critic: { value: 'xhigh', origin: 'role base', executor: 'claude-sdk' },
+      code: { value: 'medium', origin: 'role base', executor: 'claude-sdk' },
+      review: { value: 'xhigh', origin: 'override', executor: 'claude-sdk' },
+      refutation: { value: 'xhigh', origin: 'role base', executor: 'claude-sdk' },
+    })
+  })
+
+  it('records each executor role family in the run summary of a mixed-family profile', async () => {
+    const f = fixture()
+    const configDir = mkdtempSync(join(tmpdir(), 'wt-family-summary-'))
+    roots.push(configDir)
+    const env: Record<string, string> = { CLAUDE_CONFIG_DIR: configDir }
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && !/^WT_.*_(?:MODEL|VARIANT)$/.test(key) && key !== 'CLAUDE_CONFIG_DIR') env[key] = value
+    }
+    const query = () => (async function* () { yield initMessage() })()
+    const result = await runPilot({ card: '1', cardFile: f.cardFile, dir: f.dir, contract: f.contract, mailbox: join(f.root, 'none'), timeout: 1, hard: false }, {
+      query, env, resolvePilotModels: models, log: () => {},
+      resolveExecutorProfile: () => ({ executor: 'gpt-lane', models: { critic: 'openai/gpt-6-sol', code: 'openai/gpt-6-sol', review: 'openai/gpt-6-astra', refutation: 'opus' } }),
+    })
+    expect(result.summary.executor_variants).toEqual({
+      critic: { value: 'max', origin: 'role base', executor: 'gpt-lane' },
+      code: { value: 'high', origin: 'role base', executor: 'gpt-lane' },
+      review: { value: 'medium', origin: 'role base', executor: 'gpt-lane' },
+      refutation: { value: 'xhigh', origin: 'role base', executor: 'claude-sdk' },
     })
   })
 

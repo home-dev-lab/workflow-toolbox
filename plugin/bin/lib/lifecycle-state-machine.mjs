@@ -16,6 +16,7 @@ import { composeRules, loadRules } from './rules-manifest.mjs'
 import { cardDefinitionOfDone } from './card-definition-of-done.mjs'
 import { adaptiveRoundDecision, hasPerSectionAttackAccount, reviewConvergenceDecision, verdictFromReport } from './lifecycle-review-policy.mjs'
 import { detectFailedTestFramework } from './host/test-framework-detection.mjs'
+import { executorFamilyForModel } from './executor-defaults.mjs'
 import { bindingDecisionsSection, createDodEscalation, criticFindingAfterNoReblock, DOD_DECISION_REQUEST_FILE, normalizedTerm, planReadingOfTerm, withDisputedDodTermsSection } from './lifecycle-dod-dispute.mjs'
 import { pathWithin } from './host/path-within.mjs'
 
@@ -482,6 +483,14 @@ function initialLifecycleState() {
   }
 }
 
+function freezeLifecycleModels(models, executor) {
+  const frozenModels = Object.freeze(models.code
+    ? { critic: models.review, ...models }
+    : { critic: models.review, code: models.lane, review: models.review, refutation: models.refutation ?? models.review })
+  const executors = Object.freeze(Object.fromEntries(Object.entries(frozenModels).map(([role, model]) => [role, executorFamilyForModel(model) ?? executor])))
+  return { frozenModels, executors }
+}
+
 function defaultTimelineWriter(file, content) {
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`
   try { writeRegularFile(temporary, content, { flag: 'wx' }); fs.renameSync(temporary, file) } finally { removeFile(temporary) }
@@ -706,12 +715,11 @@ export function createLifecycleStateMachine({
     else if (existingCard !== cardText) throw new Error(`lifecycle card snapshot ${JSON.stringify(existingCard)} differs from runner card text ${JSON.stringify(cardText)}; remove ${cardPath} to restart the lifecycle on the new card`)
   }
   const frozenRoute = String(route)
-  const frozenModels = Object.freeze(models.code
-    ? { critic: models.review, ...models }
-    : { critic: models.review, code: models.lane, review: models.review, refutation: models.refutation ?? models.review })
+  const { frozenModels, executors } = freezeLifecycleModels(models, executor)
   const lifecycle = Object.freeze({
     route: frozenRoute,
     executor,
+    executors,
     models: frozenModels,
     cardId: String(cardId),
     sessionTag: String(sessionTag),
@@ -721,7 +729,7 @@ export function createLifecycleStateMachine({
   const { z } = createRequire(require.resolve('@anthropic-ai/claude-agent-sdk'))('zod')
   writeRegularFile(
     routePath,
-    `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, models: frozenModels, base: constructionBase, testFramework }, null, 2)}\n`,
+    `${JSON.stringify({ cardId, route: frozenRoute, reasons, executor, executors, models: frozenModels, base: constructionBase, testFramework }, null, 2)}\n`,
     { flag: 'wx' },
   )
   const state = initialLifecycleState()
@@ -789,7 +797,7 @@ export function createLifecycleStateMachine({
       artifacts.push(snapshotDir ? snapshotFile('discovery.md', discovery) : canonicalArtifacts.at(-1))
     }
     const knowledgeBaseLine = knowledgeBase.path
-      ? executor === 'claude-sdk'
+      ? executors[phase] === 'claude-sdk'
         ? `KNOWLEDGE_BASE_INDEX: ${knowledgeBase.path}`
         // OpenCode lanes run with --auto, which approves an external_directory read the user's opencode
         // config leaves on "ask" (measured 2026-09-14: a Luna run read this index). A config that DENIES it
@@ -828,8 +836,8 @@ export function createLifecycleStateMachine({
     laneProcessReader,
     gateRunner, testFramework,
     now,
-    recordLaneStart: ({ phase, model, startedAt, usageFile, laneId }) => {
-      const record = { phase, round: lifecycleRound(state, phase), ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile }
+    recordLaneStart: ({ phase, model, executor: laneExecutor, startedAt, usageFile, laneId }) => {
+      const record = { phase, round: lifecycleRound(state, phase), ...(laneId ? { lane_id: laneId } : {}), state: 'running', executor: laneExecutor, model, started_at: startedAt, ended_at: null, exit_code: null, usage_file: usageFile }
       timeline.lanes.push(record)
       persistTimeline()
       return record
