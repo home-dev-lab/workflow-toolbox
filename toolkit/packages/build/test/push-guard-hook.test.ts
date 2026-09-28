@@ -1,12 +1,14 @@
 import { spawnSync } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { dirname, join, win32 } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/host/ has no declaration
 import { matchesGuardPath, normalizePushPath, recognizedPushShape } from '../../../../plugin/bin/lib/host/push-guard-identity.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/host/ has no declaration
+import { isPinnedEngine } from '../../../../plugin/bin/lib/host/push-guard-runtime.mjs'
 
 const root = fileURLToPath(new URL('../../../..', import.meta.url))
 const installer = join(root, 'plugin/bin/wt-push-guard-install.mjs')
@@ -14,8 +16,8 @@ const engine = join(root, 'plugin/bin/wt-push-scope-check.mjs')
 const made: string[] = []
 afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }) })
 
-function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), 'wt-hook-'))
+function fixture(parent = tmpdir()) {
+  const dir = mkdtempSync(join(parent, 'wt-hook-'))
   made.push(dir)
   const local = join(dir, 'local')
   const bare = join(dir, 'home-dev-lab', 'workflow-toolbox.git')
@@ -59,9 +61,17 @@ function pinnedSnapshot(dir: string): string[] {
     .map((e) => `${e.parentPath}/${e.name}:${readFileSync(join(e.parentPath, e.name)).toString('hex')}`).sort()
 }
 
+function authorizationFileName(path: string) { return path.split(/[\\/]/).at(-1) }
+function sameGitDirectory(actual: string, expected: string, platform = process.platform) {
+  if (platform !== 'win32') return actual === expected
+  const aRoot = win32.parse(actual).root
+  const eRoot = win32.parse(expected).root
+  return aRoot.toLowerCase() === eRoot.toLowerCase() && actual.slice(aRoot.length) === expected.slice(eRoot.length)
+}
+
 // Each injected failure runs the actual installer with only its filesystem operations substituted.
 function faultInstall(f: ReturnType<typeof fixture>, fault: 'place' | 'discard') {
-  const script = `import { runInstaller } from ${JSON.stringify(join(root, 'plugin/bin/lib/host/push-guard-install.mjs'))};
+  const script = `import { runInstaller } from ${JSON.stringify(pathToFileURL(join(root, 'plugin/bin/lib/host/push-guard-install.mjs')).href)};
     import * as fs from 'node:fs';
     import { basename, join } from 'node:path';
     const ops = { ...fs,
@@ -81,6 +91,64 @@ function faultInstall(f: ReturnType<typeof fixture>, fault: 'place' | 'discard')
 }
 
 describe('installed pinned pre-push guard (local bare remotes only)', () => {
+  it('reads the authorization filename with either Git path separator', () => {
+    expect(authorizationFileName('C:/repo/.git/worktrees/linked/wt-push-authorized.json')).toBe('wt-push-authorized.json')
+    expect(authorizationFileName('C:\\repo\\.git\\worktrees\\linked\\wt-push-authorized.json')).toBe('wt-push-authorized.json')
+  })
+
+  it('compares canonical git directories without folding case on a case-sensitive filesystem', () => {
+    expect(sameGitDirectory('/repo/.git/worktrees/linked', '/repo/.git/worktrees/LINKED', 'linux')).toBe(false)
+    expect(sameGitDirectory('/repo/.git/worktrees/linked', '/repo/.git/worktrees/linked', 'linux')).toBe(true)
+    expect(sameGitDirectory('C:\\repo\\linked', 'c:\\repo\\linked', 'win32')).toBe(true)
+    expect(sameGitDirectory('C:\\repo\\linked', 'c:\\repo\\LINKED', 'win32')).toBe(false)
+    expect(sameGitDirectory('\\\\SERVER\\share\\linked', '\\\\server\\share\\linked', 'win32')).toBe(true)
+  })
+
+  it('pins the loaded engine, accepting Windows drive and UNC case but not a foreign tree', () => {
+    expect(isPinnedEngine('C:\\Repo\\bin\\wt-push-scope-check.mjs', 'c:\\Repo', 'win32')).toBe(true)
+    expect(isPinnedEngine('\\\\SERVER\\share\\guard\\bin\\wt-push-scope-check.mjs', '\\\\server\\share\\guard', 'win32')).toBe(true)
+    expect(isPinnedEngine('C:\\foreign\\bin\\wt-push-scope-check.mjs', 'C:\\Repo', 'win32')).toBe(false)
+    expect(isPinnedEngine('/repo/bin/wt-push-scope-check.mjs', '/Repo', 'linux')).toBe(false)
+    expect(isPinnedEngine('/repo/bin/wt-push-scope-check.mjs', '/repo', 'linux')).toBe(true)
+  })
+
+  it('refuses an engine loaded from a foreign tree even if that tree is swapped for an installed symlink', () => {
+    const f = fixture()
+    const B = f.commit('B')
+    const installed = join(f.local, '.git/hooks/wt-push-guard')
+    const foreign = join(f.dir, 'foreign')
+    cpSync(installed, foreign, { recursive: true })
+    const script = `import { renameSync, symlinkSync } from 'node:fs';
+      const { runPrePush } = await import(${JSON.stringify(pathToFileURL(join(foreign, 'bin/lib/host/push-guard-runtime.mjs')).href)});
+      renameSync(${JSON.stringify(foreign)}, ${JSON.stringify(`${foreign}-moved`)});
+      symlinkSync(${JSON.stringify(installed)}, ${JSON.stringify(foreign)}, ${JSON.stringify(process.platform === 'win32' ? 'junction' : 'dir')});
+      runPrePush({ installDir: ${JSON.stringify(installed)}, remote: 'public', url: ${JSON.stringify(f.bare)}, authorized: ${JSON.stringify(f.auth)} });`
+    const refused = f.call(f.local, process.execPath, ['--input-type=module', '-e', script], `refs/heads/main ${B} refs/heads/main ${f.A}\n`)
+    expect(refused.status, refused.out).toBe(2)
+    expect(refused.out).toContain('engine not installed')
+    expect(f.git(f.bare, 'rev-parse', 'main')).toBe(f.A)
+  })
+
+  it('uses the pinned engine across a symlinked repository parent but refuses a foreign engine', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wt-hook-link-'))
+    made.push(root)
+    const real = join(root, 'real')
+    mkdirSync(real)
+    const link = join(root, 'link')
+    symlinkSync(real, link, 'dir')
+    const f = fixture(link)
+    const B = f.commit('B')
+    const input = `refs/heads/main ${B} refs/heads/main ${f.A}\n`
+    const refused = f.hook('public', f.bare, input)
+    expect(refused.status, refused.out).toBe(1)
+    expect(refused.out).toContain('single-use authorization missing')
+    const installed = join(f.local, '.git/hooks/wt-push-guard')
+    const foreign = f.call(f.local, process.execPath, [engine, '--pre-push', '--remote', 'public', '--url', f.bare, '--authorized', f.auth, '--install-dir', installed], input)
+    expect(foreign.status, foreign.out).toBe(2)
+    expect(foreign.out).toContain('engine not installed')
+    expect(f.git(f.bare, 'rev-parse', 'main')).toBe(f.A)
+  })
+
   it('bounds the union once across two destination refs and consumes only after approval', () => {
     const f = fixture()
     f.git(f.local, 'checkout', '-qb', 'one')
@@ -277,6 +345,18 @@ describe('installed pinned pre-push guard (local bare remotes only)', () => {
     }
   })
 
+  it('rejects a climb above a deep Windows drive root without relying on temp-path depth', () => {
+    const bare = 'C:/Users/runneradmin/AppData/Local/Temp/wt-hook-x/home-dev-lab/workflow-toolbox.git'
+    const url = `${bare}/${'../'.repeat(bare.split('/').length + 2)}escape`
+    expect(() => normalizePushPath(url)).toThrow(`unmeasurable push URL: ${url}`)
+    // The old fixed six-parent case stayed inside this drive and could not exercise the refusal.
+    expect(normalizePushPath(`${bare}/../../../../../../escape`)).toBe('c:/users/runneradmin/escape')
+  })
+
+  it('refuses a Windows path that climbs across its drive root', () => {
+    expect(() => normalizePushPath('C:/repo/../../escape')).toThrow('unmeasurable push URL: C:/repo/../../escape')
+  })
+
   it('guards equivalent dot-segment paths through the installed hook', () => {
     const f = fixture()
     f.commit('B')
@@ -297,7 +377,8 @@ describe('installed pinned pre-push guard (local bare remotes only)', () => {
   it('fails closed on unmeasurable URLs, including all remote-helper prefixes', () => {
     const f = fixture()
     const B = f.commit('B')
-    for (const url of [`${f.bare}/../../../../../../escape`, `${f.bare}?query=1`, `${f.bare}#fragment`, 'ext::sh -c true', 'fd::7', 'x::anything']) {
+    const aboveRoot = `${f.bare}/${'../'.repeat(f.bare.split(/[\\/]+/).filter(Boolean).length + 2)}escape`
+    for (const url of [aboveRoot, `${f.bare}?query=1`, `${f.bare}#fragment`, 'ext::sh -c true', 'fd::7', 'x::anything']) {
       const refused = f.hook('other', url, `refs/heads/main ${B} refs/heads/main ${f.A}\n`)
       expect(refused.status, `${url}: ${refused.out}`).toBe(2)
       expect(refused.out).toContain(`unmeasurable push URL: ${url}`)
@@ -567,7 +648,7 @@ describe('installed pinned pre-push guard (local bare remotes only)', () => {
     const f = fixture()
     const B = f.commit('B')
     f.authorize({ commits: [B] })
-    const script = `import { runPrePush } from ${JSON.stringify(join(f.local, '.git/hooks/wt-push-guard/bin/lib/host/push-guard-runtime.mjs'))};
+    const script = `import { runPrePush } from ${JSON.stringify(pathToFileURL(join(f.local, '.git/hooks/wt-push-guard/bin/lib/host/push-guard-runtime.mjs')).href)};
       import { writeFileSync } from 'node:fs';
       runPrePush({ installDir: ${JSON.stringify(join(f.local, '.git/hooks/wt-push-guard'))}, remote: 'public',
         url: ${JSON.stringify(f.bare)}, authorized: ${JSON.stringify(f.auth)},
@@ -662,11 +743,38 @@ describe('installed pinned pre-push guard (local bare remotes only)', () => {
     const auth = join(gitDir, 'wt-push-authorized.json')
     const refused = f.call(linked, 'git', ['push', 'public', 'HEAD:refs/heads/linked'])
     expect(refused.status, refused.out).not.toBe(0)
-    expect(refused.out).toContain(auth)
-    writeFileSync(auth, JSON.stringify({ commits: [B] }))
+    const shown = /single-use authorization missing: ([^\r\n;]+)/.exec(refused.out)?.[1]
+    expect(shown).toBeDefined()
+    expect(sameGitDirectory(realpathSync.native(dirname(shown!)), realpathSync.native(gitDir))).toBe(true)
+    expect(authorizationFileName(shown!)).toBe('wt-push-authorized.json')
+    writeFileSync(shown!, JSON.stringify({ commits: [B] }))
     const approved = f.call(linked, 'git', ['push', 'public', 'HEAD:refs/heads/linked'])
     expect(approved.status, approved.out).toBe(0)
     expect(existsSync(auth)).toBe(false)
+  })
+
+  it('refuses an installed new-ref push when advertised cat-file cannot measure objects', () => {
+    const f = fixture()
+    f.commit('B')
+    // Server-side seal independent of the hook: even a mutated allow cannot publish this ref.
+    f.git(f.bare, 'config', 'receive.hideRefs', 'refs/heads/new')
+    const shim = join(f.dir, 'refuse-cat-file.cjs')
+    writeFileSync(shim, `const child = require('node:child_process');
+      const original = child.execFileSync;
+      child.execFileSync = function (command, args, options) {
+        if (command === 'git' && args.includes('cat-file')) throw Error('shim: cat-file refused');
+        return original.call(this, command, args, options);
+      };\n`)
+    f.authorize({ maxCount: 100 })
+    // The preload is unconditional: it also seals cat-file if the guard regresses.
+    const env = { ...f.env, NODE_OPTIONS: `${f.env.NODE_OPTIONS ?? ''} --require="${shim.replaceAll('\\', '/')}"` }
+    const refused = spawnSync('git', ['push', 'public', 'HEAD:refs/heads/new'], { cwd: f.local, env, encoding: 'utf8' })
+    const out = `${refused.stdout ?? ''}${refused.stderr ?? ''}`
+    expect(refused.status, out).not.toBe(0)
+    expect(out).toContain('could not measure outgoing commits: shim: cat-file refused')
+    expect(existsSync(f.auth)).toBe(true)
+    expect(f.call(f.bare, 'git', ['show-ref', '--verify', 'refs/heads/new']).status).not.toBe(0)
+    expect(f.git(f.bare, 'rev-parse', 'main')).toBe(f.A)
   })
 
   it('refuses a second insteadOf rewrite before listing any new destination', () => {
