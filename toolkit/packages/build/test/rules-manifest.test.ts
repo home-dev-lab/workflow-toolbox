@@ -20,7 +20,9 @@ const DISCOVERY_RECORD = 'test discovery\n\n## External-source ledger\n- Claim: 
 const PRE_SPLIT_ROLE_FIXTURE = {
   pilot: { count: 56, union: '49e9f1769b5b246fdb5c702233ae0e41651bef31c028819111475ad582b0c33a' },
   critic: { count: 14, union: '5141f35652e4cf9f8a5227535941e5fb63f4346eb8ecea0edd133c935eecd036' },
-  tdd: { count: 35, union: '7b6ed8c25ce97d99902b19bb7e012685062bde50f6c126b18b7de85c038903a4' },
+  // Card 1874298674087986849: step-back rewrite adds 4 paragraphs (route priors, persist-on-goal
+  // wording, bounded BLOCKED, the recognise-it names line) to the pre-split baseline below.
+  tdd: { count: 39, union: '89853e745ff8a29528ec59368b8b0300caa78ed5e6a2ba8924a05623b71d2b4d' },
   review: { count: 27, union: 'eefd26e5ff6e36452a8c4df8864440c6b517181172659ce91562ec4a983cec82' },
   refutation: { count: 27, union: 'eefd26e5ff6e36452a8c4df8864440c6b517181172659ce91562ec4a983cec82' },
 } as const
