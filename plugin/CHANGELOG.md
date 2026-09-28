@@ -9,6 +9,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Executor roles now choose their launcher from each phase's model, so a consented GPT implementation can use a Claude refuter (and Claude code can use GPT review); GPT models still require lane consent.
 
 ### Fixed
+- SDK runner, Claude executor and orchestrator judge: an account with a claude.ai connector (for example Claude Docs) no longer kills every SDK role at its initialization receipt. Connectors load by default for claude.ai-authenticated users and fall outside every role's tool surface; each role's query now runs with `ENABLE_CLAUDEAI_MCP_SERVERS=false`. Plugin-provided MCP servers are unaffected.
 - SDK runner: a Claude critic launched in the first, two-lane plan round is no longer refused for its report name (`critic-report.A.<nonce>.md` / `.B.`). Only critics accept a lane id, and the Claude executor takes the runner's report line rather than one quoted in the pilot's context. The run summary's `executor_variants` now names each role's executor family.
 
 ## [0.189.0] - 2026-09-28
