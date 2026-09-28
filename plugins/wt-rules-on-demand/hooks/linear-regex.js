@@ -444,8 +444,7 @@ function result(thread, ctx) {
   return value;
 }
 
-function prepare(subject, flags, programs, budget) {
-  const ctx = context(subject, flags, programs);
+function prepare(ctx, programs, budget) {
   ctx.budget = budget;
   // Compilation inserts children before their parent. Reverse scans compute
   // all lookahead starts; forward scans compute all lookbehind endpoints.
@@ -488,8 +487,11 @@ export function linearRegex(source, flags = '', { capture = false } = {}) {
     if (!capture) throw new Error(`${operation} requires capture mode; compile with { capture: true }`);
   }
   function* iterate(subject) {
-      const text = String(subject);
-      const ctx = prepare(text, flags, programs);
+    matcher.steps = 0;
+    const text = String(subject);
+    const ctx = context(text, flags, programs);
+    try {
+      prepare(ctx, programs);
       ctx.iterating = true;
       const offsets = ctx.offsets;
       const positions = new Uint32Array(text.length + 1);
@@ -511,8 +513,10 @@ export function linearRegex(source, flags = '', { capture = false } = {}) {
           at += flags.includes('u') && /[\uD800-\uDBFF]/.test(text[at] ?? '') && /[\uDC00-\uDFFF]/.test(text[at + 1] ?? '') ? 2 : 1;
         }
       }
+    } finally { matcher.steps = ctx.steps; }
   }
   function execute(subject, withCaptures, budget) {
+    matcher.steps = 0;
     budget?.check();
     const text = String(subject);
     const stateful = flags.includes('g') || flags.includes('y');
@@ -526,15 +530,17 @@ export function linearRegex(source, flags = '', { capture = false } = {}) {
       if (stateful) lastIndex = 0;
       return null;
     }
-    const ctx = prepare(text, flags, programs, budget);
-    const index = ctx.offsets.indexOf(at);
-    let start = index < 0 ? ctx.offsets.findIndex((offset) => offset > at) - 1 : index;
-    if (flags.includes('u') && start > 0 && /[\uDC00-\uDFFF]/.test(text[start] ?? '') && /[\uD800-\uDBFF]/.test(text[start - 1])) start--;
-    let value = null;
-    if (start >= 0) value = withCaptures ? scan(main, ctx, start, true, null, Infinity, flags.includes('y')) : scanTest(main, ctx, start);
-    matcher.steps = ctx.steps;
-    if (stateful) lastIndex = value ? value.index + value[0].length : 0;
-    return value === false ? null : value;
+    const ctx = context(text, flags, programs);
+    try {
+      prepare(ctx, programs, budget);
+      const index = ctx.offsets.indexOf(at);
+      let start = index < 0 ? ctx.offsets.findIndex((offset) => offset > at) - 1 : index;
+      if (flags.includes('u') && start > 0 && /[\uDC00-\uDFFF]/.test(text[start] ?? '') && /[\uD800-\uDBFF]/.test(text[start - 1])) start--;
+      let value = null;
+      if (start >= 0) value = withCaptures ? scan(main, ctx, start, true, null, Infinity, flags.includes('y')) : scanTest(main, ctx, start);
+      if (stateful) lastIndex = value ? value.index + value[0].length : 0;
+      return value === false ? null : value;
+    } finally { matcher.steps = ctx.steps; }
   }
   return matcher;
 }
