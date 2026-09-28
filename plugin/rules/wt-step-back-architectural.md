@@ -14,7 +14,8 @@ implementations of one hypothesis are ONE route, a new route changes at least on
 Step back ≠ stop, ≠ ask. Before touching the code again: restate facts / assumptions / unknowns;
 list 2–3 materially distinct routes, at least one aimed at a structural cause, each with its
 smallest discriminating test and what its result would teach; pick by information gained per cost,
-never by what is already spent; write the chosen route's kill criterion BEFORE resuming. Record the
+never by what is already spent, and credit an untried route for being untried (explore, not only
+exploit); write the chosen route's kill criterion BEFORE resuming. Record the
 routes and the choice. Escalate only when no route is left.
 
 Persist on the GOAL, not on the ROUTE. Worthwhile goal on an unproven platform (undocumented SDK or
