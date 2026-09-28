@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -67,14 +67,12 @@ describe('model fallback observations', () => {
     expect(interrupted.result().refusals).toHaveLength(2)
   })
 
-  it('F8 keeps exactly one classifier stop in each evidence parent', () => {
-    const evidence = join(root, '../../../../../../.lane/evidence/transcripts')
-    for (const name of readdirSync(evidence)) {
-      const directory = join(evidence, name, readdirSync(join(evidence, name))[0]!)
-      const file = readdirSync(directory).find((entry) => entry.endsWith('.jsonl'))!
-      expect(analyseTranscript(join(directory, file)).refusals, name).toHaveLength(1)
-      if (name.startsWith('i-default')) expect(analyseTranscript(join(directory, file)).fallbacks, name).toHaveLength(1)
-    }
+  it('F8 keeps exactly one classifier stop in each committed evidence-derived parent', () => {
+    // parent.jsonl: refusal + notice + both fallback representations; notice.jsonl: notice-only stop.
+    const parent = analyseTranscript(join(root, 'parent.jsonl'))
+    expect(parent.refusals).toHaveLength(1)
+    expect(parent.fallbacks).toHaveLength(1)
+    expect(analyseTranscript(join(root, 'notice.jsonl')).refusals).toHaveLength(1)
   })
 
   it('F9 scopes parent targets to agent start time and never shares a sibling fallback', () => temporary((dir) => {
