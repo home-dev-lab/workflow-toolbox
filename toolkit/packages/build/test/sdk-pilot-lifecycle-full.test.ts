@@ -383,7 +383,9 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
   it('H6-1 lock: refuses independent briefs when prospective review input is unavailable', async () => {
     const realGit = (program: string, args: string[], options: Record<string, unknown>) => execFileSync(program, args, options as Parameters<typeof execFileSync>[2])
     const cases = [
-      { reason: 'controlled git failure', options: { git: () => { throw new Error('controlled git failure') } } },
+      // The construction-time artefact snapshot (ls-files) fails closed on its own; this lock is
+      // about prospective review input, so only the review-input git calls fail here.
+      { reason: 'controlled git failure', options: { git: (_program: string, args: string[]) => { if (args[0] === 'ls-files') return ''; throw new Error('controlled git failure') } } },
       { reason: /ENOBUFS|maxBuffer|stdout/i, options: { git: realGit, prospectivePatchMaxBuffer: 1 } },
       ...['M  staged.txt', ' M unstaged.txt', '?? untracked.txt', ' D deleted.txt'].map((status) => ({
         reason: 'dirty tree produced no substantive patch',
