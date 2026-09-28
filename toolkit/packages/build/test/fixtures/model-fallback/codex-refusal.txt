@@ -1,0 +1,3 @@
+[codex] Codex error: This content was flagged for possible cybersecurity risk.
+[codex] Turn failed.
+EXIT=1

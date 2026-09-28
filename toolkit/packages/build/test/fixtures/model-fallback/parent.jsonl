@@ -1,0 +1,4 @@
+{"type":"assistant","uuid":"refused","timestamp":"2026-09-27T20:02:55.003Z","message":{"id":"msg_1","model":"claude-opus-5-5","stop_reason":"refusal","content":[]}}
+{"type":"system","subtype":"informational","parentUuid":"refused","timestamp":"2026-09-27T20:02:56.619Z","content":"Opus 5.5's safeguards stopped the response above · continuing once with that noted"}
+{"type":"assistant","requestId":"req_2","timestamp":"2026-09-27T20:02:58.533Z","message":{"id":"msg_2","model":"claude-opus-4-8","content":[{"type":"fallback","from":{"model":"claude-opus-5-5"},"to":{"model":"claude-opus-4-8"}}]}}
+{"type":"system","subtype":"model_refusal_fallback","requestId":"req_2","timestamp":"2026-09-27T20:03:01.552Z","originalModel":"claude-opus-5-5","fallbackModel":"claude-opus-4-8","scope":"session","trigger":"refusal","apiRefusalCategory":"cyber"}

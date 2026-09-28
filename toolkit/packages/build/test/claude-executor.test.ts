@@ -52,14 +52,40 @@ const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
   fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,sandbox:options.sandbox,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE}),unsandboxed:await options.canUseTool('Bash',{command:'true',dangerouslyDisableSandbox:true})}));
   const mode=process.env.FAKE_MODE;
-  if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
+   if(process.env.FAKE_HANG==='true') { await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true})); if(mode==='signal-notice') { yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:[]}; for(const line of fs.readFileSync(process.env.FAKE_STREAM,'utf8').trim().split('\\n')) yield JSON.parse(line); } }
   else if(mode==='first-result') yield {type:'result',subtype:'success',is_error:false,result:'too early'};
-  else if(mode!=='empty') { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; if(mode!=='no-write') fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; if(mode==='multiple') { yield {type:'result',is_error:false,usage:{input_tokens:2,cache_creation_input_tokens:3,cache_read_input_tokens:5,output_tokens:7}}; yield {type:'result',is_error:false,usage:{input_tokens:11,cache_creation_input_tokens:13,cache_read_input_tokens:17,output_tokens:19}}; } else yield {type:'result',subtype:'success',is_error:mode==='error',usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:mode==='no-write'?' generated review ': 'executor report'}; }
+   else if(mode!=='empty') { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; if(mode!=='no-write') fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; if(mode==='notice'||mode==='report-dir'||mode==='signal-notice') for(const line of fs.readFileSync(process.env.FAKE_STREAM,'utf8').trim().split('\\n')) yield JSON.parse(line); if(mode==='report-dir') { fs.rmSync(report); fs.mkdirSync(report); } if(mode==='multiple') { yield {type:'result',is_error:false,usage:{input_tokens:2,cache_creation_input_tokens:3,cache_read_input_tokens:5,output_tokens:7}}; yield {type:'result',is_error:false,usage:{input_tokens:11,cache_creation_input_tokens:13,cache_read_input_tokens:17,output_tokens:19}}; } else yield {type:'result',subtype:'success',is_error:mode==='error',usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:mode==='no-write'?' generated review ': 'executor report'}; }
 })()`)
   return { root, worktree, cli: join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: pluginData, WT_AGENT_SDK_PATH: join(sdk, 'index.cjs'), XDG_STATE_HOME: state } }
 }
 
 describe('Claude SDK executor', () => {
+  it('F2 finishes and writes usage even if warning append to report fails', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.directory.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'directory.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'report-dir', FAKE_STREAM: join(ROOT, 'toolkit/packages/build/test/fixtures/model-fallback/sdk-notice.jsonl') } })
+    expect(result.status).toBe(0)
+    expect(waitForExit(log, 3000)).toBe('EXIT=1')
+    expect(existsSync(`${log}.usage.json`)).toBe(true)
+  })
+  it.skipIf(process.platform === 'win32')('F3 preserves sole SIGTERM exit marker after a late notice', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.signal-notice.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'signal-notice.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '5', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'signal-notice', FAKE_HANG: 'true', FAKE_STREAM: join(ROOT, 'toolkit/packages/build/test/fixtures/model-fallback/sdk-notice.jsonl') } })
+    waitFor(receipt); process.kill(Number(/^pid=(\d+)$/m.exec(result.stdout)?.[1]), 'SIGTERM')
+    expect(waitForExit(log, 3000)).toBe('EXIT=143')
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 400)
+    expect(readFileSync(log, 'utf8').trim().split('\n').filter((line) => line.startsWith('EXIT='))).toEqual(['EXIT=143'])
+  })
+  it('logs a safeguard notice before its sole final EXIT marker and includes it in the report', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.notice.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'notice.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'notice', FAKE_STREAM: join(ROOT, 'toolkit/packages/build/test/fixtures/model-fallback/sdk-notice.jsonl') } })
+    expect(result.status).toBe(0); expect(waitForExit(log, 12000)).toBe('EXIT=0')
+    expect(readFileSync(log, 'utf8').trim().split('\n').filter((line) => line.startsWith('EXIT='))).toEqual(['EXIT=0'])
+    expect(readFileSync(log, 'utf8')).toContain('WARN model-fallback: executor classifier notice')
+    expect(readFileSync(report, 'utf8')).toContain('WARN model-fallback: executor classifier notice')
+  })
   it('item 1: rejects a missing --dir before spawning a worker', () => {
     const f = fixture(); const missing = join(f.root, 'missing'); const brief = join(f.root, 'brief.md'); writeFileSync(brief, 'unused\n')
     const result = spawnSync(process.execPath, [f.cli, '--dir', missing, '--model', 'sonnet', '--brief', brief, '--role', 'tdd'], { encoding: 'utf8', env: f.env })
@@ -181,7 +207,7 @@ describe('Claude SDK executor', () => {
     expect(waitForExit(log, 3000)).toBe('EXIT=0')
     expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=medium origin=role base forced=false\n')
     waitFor(`${log}.usage.json`)
-    expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
+    expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 }, served_models: [], fallbacks: [], safeguard_notices: [] })
     expect(existsSync(outside)).toBe(false)
     const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
     expect(sdkReceipt).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })

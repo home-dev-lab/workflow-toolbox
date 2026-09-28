@@ -7,6 +7,8 @@ import { executorBrief, executorCanUseTool, parseExecutorArgs } from './lib/clau
 import { ensureLaneHostDir } from './lib/host/lane-host-dir.mjs'
 import { resolveRoleVariant, variantRefusal } from './lib/lane-model-allowlist.mjs'
 import { assertHarnessAlias } from './lib/pilot-model-config.mjs'
+import { createModelTracker, modelWarnings } from './lib/model-fallback-core.mjs'
+import { appendWarnings } from './lib/host/model-fallback-files.mjs'
 import { resolveAgentSdk, resolvedAgentSdkCodePaths } from './lib/sdk-resolution.mjs'
 import { assertSdkRoleReceipt, composeSdkRoleQueryOptions, prepareSdkRole, withRepositoryGuide } from './lib/sdk-role-profile.mjs'
 
@@ -29,17 +31,19 @@ async function worker(options) {
   const { query } = resolution.require(resolution.entryPath)
   const abortController = new AbortController()
   let timedOut = false
+  let terminalCode = null
   const timer = setTimeout(() => {
     timedOut = true; abortController.abort()
     setTimeout(() => { finish(options.log, 124); process.exit(124) }, 250).unref()
   }, options.timeout * 1000)
-  const stop = (code) => { clearTimeout(timer); abortController.abort(); finish(options.log, code); process.exitCode = code }
+  const stop = (code) => { terminalCode = code; clearTimeout(timer); abortController.abort(); finish(options.log, code); process.exitCode = code }
   // Windows has no POSIX SIGTERM/SIGINT exit-status contract; forced termination cannot promise 143/130 markers.
   process.once('SIGTERM', () => stop(143)); process.once('SIGINT', () => stop(130))
   let failed = false
   let initReceiptSeen = false
   let readOnlyReport = ''
   let servedModel = options.model
+  const modelTracker = createModelTracker(options.model)
   const effort = options.variant
     ? { value: options.variant, origin: options.variantOrigin ?? 'override' }
     : resolveRoleVariant(options.role === 'tdd' ? 'code' : options.role, options.model)
@@ -60,6 +64,7 @@ async function worker(options) {
     }, sdkRole)
     const stream = query({ prompt: withRepositoryGuide(options.dir, launch.prompt), options: queryOptions })
     for await (const message of stream) {
+      modelTracker.observe(message)
       if (!initReceiptSeen && !(message.type === 'system' && (message.subtype === 'init' || message.subtype?.startsWith('hook_')))) throw new Error(`SDK executor initialization receipt never arrived: the first message was ${message.type}/${message.subtype ?? 'none'}`)
       if (message.type === 'system' && message.subtype === 'init') {
         initReceiptSeen = true
@@ -80,14 +85,20 @@ async function worker(options) {
     if (launch.readOnly && !existsSync(launch.report) && readOnlyReport) writeFileSync(launch.report, `${readOnlyReport.trim()}\n`)
     if (existsSync(launch.report)) appendFileSync(launch.report, `\nvariant=${effort.value} origin=${effort.origin} forced=false\n`)
   } catch (error) {
-    if (!timedOut) { failed = true; appendFileSync(options.log, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`) }
+    if (!timedOut && terminalCode === null) { failed = true; appendFileSync(options.log, `${error instanceof Error ? error.stack ?? error.message : String(error)}\n`) }
   } finally {
     clearTimeout(timer)
   }
   const code = timedOut ? 124 : failed || !existsSync(launch.report) || statSync(launch.report).size === 0 ? 1 : 0
-  writeFileSync(`${options.log}.usage.json`, `${JSON.stringify({ model: servedModel, totals }, null, 2)}\n`)
-  finish(options.log, code)
-  return code
+  const observed = modelTracker.result()
+  const warnings = modelWarnings(observed, { name: 'executor' })
+  if (warnings.length && terminalCode === null) {
+    const text = `${warnings.join('\n')}\n`
+    try { appendWarnings(options.log, launch.report, text) } catch { /* diagnostic writes must not lose usage or EXIT */ }
+  }
+  writeFileSync(`${options.log}.usage.json`, `${JSON.stringify({ model: servedModel, totals, served_models: observed.runs.map((run) => run.model), fallbacks: observed.fallbacks, safeguard_notices: observed.notices }, null, 2)}\n`)
+  if (terminalCode === null) finish(options.log, code)
+  return terminalCode ?? code
 }
 
 async function main() {

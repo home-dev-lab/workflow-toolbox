@@ -191,6 +191,8 @@ function payloadFor(hookPath: string, sandbox: Sandbox): unknown {
         hook_event_name: 'Stop',
         session_id: 'selftest-session',
       }
+    case 'wt-model-fallback-hook.mjs':
+      return { hook_event_name: 'SubagentStop', agent_id: 'agent-test', agent_transcript_path: 'missing.jsonl' }
     case 'wt-pilot-guard-hook.mjs':
       return {
         hook_event_name: 'PreToolUse',
