@@ -590,9 +590,14 @@ function windowsWritableRoots({ cwd, args, profile, env, optionEnv, paths, reado
   }
   const dirArgs = args.flatMap((value, index) => args[index - 1] === '--dir' ? [win32.resolve(base, value)] : [])
   const codexHome = win32.join(homeDir, '.codex')
+  const opencodeXdgHomes = {
+    share: { name: 'XDG_DATA_HOME', fallback: '.local/share' },
+    cache: { name: 'XDG_CACHE_HOME', fallback: '.cache' },
+    state: { name: 'XDG_STATE_HOME', fallback: '.local/state' },
+  }
   const selected = profile === 'codex'
     ? { writable: [env.CLAUDE_PLUGIN_DATA].filter((item) => win32.isAbsolute(item ?? '')), writableRemap: [{ inside: codexHome }] }
-    : { writable: readonlyCwd ? [] : dirArgs, writableRemap: ['share', 'cache', 'state'].map((kind) => ({ inside: win32.join(xdgDir(`XDG_${kind.toUpperCase()}_HOME`, kind === 'cache' ? '.cache' : '.local/' + kind), 'opencode') })) }
+    : { writable: readonlyCwd ? [] : dirArgs, writableRemap: Object.values(opencodeXdgHomes).map(({ name, fallback }) => ({ inside: win32.join(xdgDir(name, fallback), 'opencode') })) }
   const dotGit = fs.readText(win32.join(base, '.git'))?.split('\n').find((line) => line.startsWith('gitdir:'))
   const git = { writable: dotGit ? [win32.resolve(base, dotGit.slice('gitdir:'.length).trim())] : [] }
   const extras = { writable: String(optionEnv[LANE_SANDBOX_WRITE_ENV] ?? '').split(win32.delimiter).filter(Boolean).map((item) => item.startsWith('~/') ? win32.join(homeDir, item.slice(2)) : item).filter((item) => win32.isAbsolute(item)) }

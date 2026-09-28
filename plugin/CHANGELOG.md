@@ -19,6 +19,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 - Slimmed the always-loaded plugin rules by moving memory maintenance, delegation routing and addressing, board sweeps, distributed-twin checks, monitoring, Workflow fan-out, review/refutation, and gate-log guidance into pre-act companions. Split the oversized delegation and memory companions to fit the fallback delivery limit. The rules' operative-order inventory and static private-rule anchors remain checked; adoption registry now includes the new companions.
 
 ### Fixed
+- Windows lane launches now protect host logs and brief-cleanup directories beneath OpenCode's `XDG_DATA_HOME` (or its default share directory) and no longer treat `XDG_SHARE_HOME` as an OpenCode writable root.
 - Lanes: an exited or abandoned lane whose child is gone no longer blocks the next launch while its worker identity is uncertain; refusals for lanes that may still be live now include the classification reason.
 - Windows lane launches now accept absolute host-owned logs and brief-cleanup directories while still refusing paths inside the worktree or other lane-writable roots, including case variants and aliases.
 - Lanes: when the lane CLI exits, the worker now sends SIGTERM to its whole process group (and waits its grace period) before it publishes the exited state or the EXIT receipt, so the next phase no longer starts while the finished lane's descendants are still unsignalled.

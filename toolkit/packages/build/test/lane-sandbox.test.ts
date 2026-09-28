@@ -117,6 +117,18 @@ describe('lane host output preflight — Windows paths', () => {
     const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env, optionEnv: {}, platform: 'win32', fs: linked })
     expect(writable(`${alias}\\run.log`)).toBe(true)
   })
+
+  it('treats XDG_DATA_HOME as the Windows OpenCode share root, never XDG_SHARE_HOME', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env: { ...env, XDG_DATA_HOME: 'D:\\oc-data', XDG_SHARE_HOME: 'E:\\bogus-share' }, optionEnv: {}, platform: 'win32', fs })
+    expect(writable('D:\\oc-data\\opencode\\run.log')).toBe(true)
+    expect(writable('E:\\bogus-share\\opencode\\run.log')).toBe(false)
+  })
+
+  it('uses the default Windows OpenCode share root when XDG_DATA_HOME is unset, ignoring XDG_SHARE_HOME', () => {
+    const writable = sandbox.laneWritableForLaunch({ cwd: worktree, env: { ...env, XDG_SHARE_HOME: 'E:\\bogus-share' }, optionEnv: {}, platform: 'win32', fs })
+    expect(writable(`${home}\\.local\\share\\opencode\\run.log`)).toBe(true)
+    expect(writable('E:\\bogus-share\\opencode\\run.log')).toBe(false)
+  })
 })
 // The POSIX-planner cases build the Linux plan against the REAL filesystem (symlinks, realpaths) on
 // every POSIX host. The plan is constructed, never executed, so they pin the planner's platform to

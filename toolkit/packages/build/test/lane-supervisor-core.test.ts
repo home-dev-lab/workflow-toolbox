@@ -35,8 +35,8 @@ describe('lane supervisor safety core', () => {
     expect(classifyLane(record, { platform: 'darwin', inspect: () => null, processExists: () => false })).toMatchObject({ status: 'gone', reason: 'worker-and-child-gone' })
   })
 
-  it('keeps an exited lane uncertain when its child identity is unknown', () => {
-    const record = { runId: '40-1', state: 'exited', workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
+  it.each(['exited', 'abandoned'])('keeps an %s lane uncertain when its child identity is unknown', (state) => {
+    const record = { runId: '40-1', state, workerPid: 40, workerArgv: ['node worker.mjs'], workerStartTime: 400, childPid: 41, childArgv: ['opencode run'], childStartTime: 410 }
     const inspect = (pid: number) => pid === 40 ? { pid, argv: ['(bash)'], startTime: 400 } : null
     expect(classifyLane(record, { platform: 'darwin', inspect, processExists: () => null })).toMatchObject({ status: 'unknown', reason: 'identity-unreadable-ps', worker: 'unknown', child: 'unknown' })
   })
