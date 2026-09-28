@@ -151,14 +151,16 @@ describe('wt-lane-wait', () => {
     const record = join(f.host, 'supervision', readFileSync(join(f.host, 'supervision', 'current.json'), 'utf8').match(/"runId":"([^"]+)"/)![1] + '.json')
     const state = JSON.parse(readFileSync(record, 'utf8'))
     writeFileSync(record, JSON.stringify({ ...state, state: 'exited', exit: 137 }))
-    const result = run(f.root, '--timeout', '0.12')
+    // Seconds, not milliseconds: a loaded CI runner can take longer than a sub-second bound to start
+    // the fixture worker. A waiter that needs a log marker still fails here, at this timeout.
+    const result = run(f.root, '--timeout', '5')
     expect(result.status).toBe(137)
     expect(result.stdout.trim()).toMatch(/^LANE DONE exit=137/)
   })
 
   it('accepts a terminal host record even without a log marker after worker exit', () => {
     const f = fixture(`const fs = require('node:fs'); setTimeout(() => { ${terminalUpdate} }, 40)`)
-    const result = run(f.root, '--timeout', '0.12')
+    const result = run(f.root, '--timeout', '5')
     expect(result.status).toBe(137)
     expect(result.stdout.trim()).toMatch(/^LANE DONE exit=137/)
   })
@@ -224,7 +226,7 @@ describe('wt-lane-wait', () => {
 
   it('rejects a log marker after its host supervision record disappears', () => {
     const f = fixture("const fs = require('node:fs'); setTimeout(() => { const file = fs.readdirSync('.lane/supervision').find((name) => /^\\d+-\\d+\\.json$/.test(name)); fs.rmSync('.lane/supervision/current.json'); fs.rmSync('.lane/supervision/' + file); setTimeout(() => fs.appendFileSync('.lane/run.log', 'EXIT=7\\n'), 60); setTimeout(() => {}, 80); }, 60)")
-    const result = run(f.root, '--timeout', '0.2')
+    const result = run(f.root, '--timeout', '3')
     expect(result.status, failureDiagnostic(f, result)).toBe(1)
     expect(result.stdout.trim()).toBe('LANE DIED exit=unknown')
   })

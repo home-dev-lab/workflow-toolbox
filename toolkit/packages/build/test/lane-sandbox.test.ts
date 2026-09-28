@@ -1239,7 +1239,6 @@ describe.skipIf(!BWRAP_WORKS)('real bubblewrap children (skips on a host without
     // named. From inside the sandbox it must be UNREACHABLE (connection refused: empty loopback).
     let forbiddenPort = 0
     const srv = net.createServer((c) => c.end('FORBIDDEN\n')); servers.push(srv)
-    // eslint-disable-next-line no-async-promise-executor
     return new Promise<void>((resolve, reject) => {
       srv.listen(0, '127.0.0.1', () => {
         try {
