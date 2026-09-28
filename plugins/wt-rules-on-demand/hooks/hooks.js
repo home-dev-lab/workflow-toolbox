@@ -196,14 +196,20 @@ async function safeVerdict($, pending, loop, value, evidence, reason) {
   try { await verdict($, pending, loop, value, evidence, reason); }
   catch (error) { await notice($, `verdict write failed: ${error.message}`).catch(() => {}); }
 }
-async function evaluate($, ctx, e, loop) {
+async function evaluate($, ctx, e, loop, measured) {
   const remaining = [];
   for (const pending of ctx.pending) {
     const c = pending.rule.compliance;
     pending.remaining--;
       pending.calls.push({ detail: `${e.tool}: ${bounded(textOf(e) ?? '')}`, summary: summary(e) });
-      if (c.kind === 'bash-command' && isGovernedAct(c, e)) await safeVerdict($, pending, loop, bashCommandVerdict(c, e.command ?? ''), summary(e));
-      else if (c.kind === 'tool-input' && toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }) !== null) await safeVerdict($, pending, loop, toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }), summary(e));
+      if (c.kind === 'bash-command' && isGovernedAct(c, e)) {
+        if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, bashCommandVerdict(c, e.command ?? ''), summary(e));
+        measured.add(pending.rule.name);
+      }
+      else if (c.kind === 'tool-input' && toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }) !== null) {
+        if (!measured.has(pending.rule.name)) await safeVerdict($, pending, loop, toolInputVerdict(c, { tool: e.tool, input: e.input ?? e }), summary(e));
+        measured.add(pending.rule.name);
+      }
      else if (c.kind === 'test-before-edit' && e.tool === 'Bash' && c.test.test(bounded(e.command))) { pending.testSeen = true; if (pending.remaining <= 0) await close($, pending, loop); else remaining.push(pending); }
       else if (c.kind === 'test-before-edit' && isGovernedAct(c, e)) await safeVerdict($, pending, loop, pending.testSeen ? 'followed' : 'not followed', summary(e));
     else if (pending.remaining <= 0) await close($, pending, loop);
@@ -220,15 +226,22 @@ async function close($, pending, loop, reason = 'window closed') {
       } catch (error) { await safeVerdict($, pending, loop, 'unknown', '', error.message); }
     } else await safeVerdict($, pending, loop, c.onClose, pending.calls.at(-1)?.summary ?? 'no governed act', reason);
 }
-function inject(ctx, rules, trigger) {
+// A served declarative rule judges every act it governs, like a named check does while served.
+function servedVerdict(c, e) {
+  if (c?.kind === 'bash-command') return isGovernedAct(c, e) ? bashCommandVerdict(c, bounded(e.command ?? '')) : null;
+  if (c?.kind === 'tool-input') return toolInputVerdict(c, { tool: e.tool, input: e.input ?? e });
+  return null;
+}
+function inject(ctx, rules, trigger, event = null) {
    const injectedAt = new Date().toISOString();
    const injected = rules.filter((rule) => rule.compliance && !['check', 'unregistered', 'turn-correlation'].includes(rule.compliance.kind));
-   for (const rule of injected) ctx.pending.push({ rule, trigger, injectedAt, remaining: rule.compliance.window, calls: [], testSeen: false });
+    for (const rule of injected) ctx.pending.push({ rule, trigger, injectedAt, remaining: rule.compliance.window,
+      calls: event && rule.compliance.kind === 'model' ? [{ detail: `${event.tool}: ${bounded(textOf(event) ?? '')}`, summary: summary(event) }] : [], testSeen: false });
    return injected;
 }
 async function closeCorrelation($, ctx, loop) {
   const events = [...ctx.correlation, { kind: 'turn' }];
-   for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation') {
+    for (const rule of ctx.rules ?? []) if (rule.compliance?.kind === 'turn-correlation' && ctx.served.has(rule.name)) {
      try { for (const item of correlateTurn(rule.compliance, events)) await safeVerdict($, { rule, trigger: 'turn.complete', injectedAt: new Date().toISOString() }, loop, item.verdict, item.id, item.detail); }
      catch (error) { await notice($, `${rule.name}: correlation failed: ${error.message}`).catch(() => {}); }
    }
@@ -329,7 +342,8 @@ export const register = (on, options) => {
     const loop = agentLoop(e.agentId);
     const ctx = await context($, loop);
      await rulesFor($, ctx, e.cwd ?? '.');
-    await evaluate($, ctx, e, loop);
+     const measured = new Set();
+     await evaluate($, ctx, e, loop, measured);
     if (textOf(e) === null) for (const rule of ctx.rules) {
        if (rule.triggers.some((trigger) => trigger.kind === 'tool' && trigger.tool.test(bounded(e.tool)) && trigger.input))
         await notice($, `${rule.name}: input-regex trigger not fired, the ${e.tool} call carried no input`);
@@ -341,7 +355,8 @@ export const register = (on, options) => {
        for (const rule of before) ctx.refusing.set(rule.name, (ctx.refusing.get(rule.name) ?? 0) + 1);
       try {
         await $.ui.log(`wt-rules-on-demand: before-act refusal serving ${before.map((r) => r.name).join(', ')}`);
-         const injected = inject(ctx, before, `tool.call:${e.tool}`);
+          // A refused call never runs: its retry, seen by evaluate(), is the classifier's evidence.
+          const injected = inject(ctx, before, `tool.call:${e.tool}`);
          await journal($, before, loop, [], [], injected);
          for (const rule of before) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason);
          const result = { deny: ['wt-rules-on-demand: read the rule below before this action, then retry the same call unchanged or corrected by the rule; this refusal happens once per rule per context.', ...before.map(block)].join('\n\n') };
@@ -359,7 +374,7 @@ export const register = (on, options) => {
     const acts = ctx.rules.filter((rule) => rule.compliance && !['model', 'check'].includes(rule.compliance.kind) ? isGovernedAct(rule.compliance, e) : chosen.includes(rule));
      const ride = chosen.filter((rule) => !ctx.refusing.has(rule.name) && eligible(ctx, rule));
       if (ride.length) claim(ctx, ride);
-      const injected = inject(ctx, ride, `tool.call:${e.tool}`);
+      const injected = inject(ctx, ride, `tool.call:${e.tool}`, e);
        await journal($, ride, loop, chosen.filter((rule) => !ride.includes(rule)), acts, injected);
        const classified = classify(e.tool, e.input ?? e);
        for (const rule of ctx.rules) if (rule.compliance?.kind === 'check' && ctx.served.has(rule.name)) {
@@ -368,14 +383,13 @@ export const register = (on, options) => {
              item.verdict === 'FOLLOWED' ? 'followed' : 'not followed', summary(e));
        }
       for (const rule of ride) await progress($, `wt-rules-on-demand: serving ${rule.name}`);
-    for (const rule of ride) if (rule.compliance?.kind === 'bash-command' && isGovernedAct(rule.compliance, e)) {
-      ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
-        await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, bashCommandVerdict(rule.compliance, bounded(e.command)), summary(e));
-    }
-    for (const rule of ride) if (rule.compliance?.kind === 'tool-input') {
-      const value = toolInputVerdict(rule.compliance, { tool: e.tool, input: e.input ?? e });
-      if (value) { ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule); await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e)); }
-    }
+     // This call is the act a served declarative rule judges: drop any window left for it, even one re-served just now.
+     for (const rule of ctx.rules) if (ctx.served.has(rule.name)) {
+       const value = servedVerdict(rule.compliance, e);
+       if (value === null) continue;
+       ctx.pending = ctx.pending.filter((pending) => pending.rule !== rule);
+       if (!measured.has(rule.name)) await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, value, summary(e));
+     }
     for (const rule of ride) if (rule.compliance?.kind === 'unregistered') await safeVerdict($, { rule, trigger: `tool.call:${e.tool}`, injectedAt: new Date().toISOString() }, loop, 'unregistered check', summary(e), rule.compliance.reason);
     return ride.length ? { ...result, context: [...(result.context ?? []), ...ride.map(block)] } : result;
   });

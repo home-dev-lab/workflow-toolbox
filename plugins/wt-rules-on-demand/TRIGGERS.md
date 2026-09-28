@@ -48,7 +48,8 @@ the JSON boolean is canonical in migration specs; strings `"true"` and `"false"`
 `input-regex` narrows a tool trigger to its argument JSON; `mentions: true`
 includes read-only Bash mentions; `before-first-act: true` refuses a matching
 tool call once, delivering the rule text for a retry. Otherwise the rule rides
-along on the result (and cannot govern the call it rode on).
+along on the result: the call is already complete, though declarative checks
+measure it and model classification includes its arguments.
 `command-head: true` on a Bash trigger matches `regex` at each executable
 segment head, after assignments and wrappers (`env`, `timeout`, `setsid`,
 `nohup`, `nice`, `exec`, `command`, `stdbuf`) and inside `sh -c`/`bash -c`.
@@ -123,5 +124,8 @@ A rule is served once per main or subagent context, with independent counters;
 compaction resets that loop. `time_reserve` explicitly opts into re-serving.
 Pending compliance windows close with a compaction reason before the reset.
 Verdicts retain the injection time and the delivery channel; model classification
-uses bounded call arguments, while persisted verdict evidence keeps only a
-command head or file basename.
+uses bounded call arguments (including the triggering tool call for tool-delivered
+model rules), while persisted verdict evidence keeps only a command head or file
+basename. Served `bash-command` and `tool-input` rules judge each matching act
+once through compaction, even after their initial window expires; turn-correlation
+records only when its rule was served in that context.

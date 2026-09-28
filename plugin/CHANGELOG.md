@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Changed
+- `wt-rules-on-demand` verdicts: a served `bash-command` or `tool-input` rule now records a verdict on every act it governs until compaction, as a named check does, instead of only on the call it rode or within its window; a `model` rule's classifier now sees the tool call that served it; turn-correlation verdicts are recorded only for rules served in that context.
+
 ### Fixed
 - `wt-rules-on-demand` transcript scan: a rule delivered past the first 16 KiB of a refusal that serves several rules at once is now counted as delivered, and the refused call is no longer judged as an executed act. Before, every act that rule governed read as a trigger miss, the evidence the daily rollback acts on.
 - `wt-rules-on-demand` serving: a rule triggered by a tool call, or by a prompt, no longer aborts the hook after it is claimed. The host's `ui.log` returns nothing, so the progress line threw and the host skipped the hook: a tool-triggered rule was marked served but its text never reached the model.

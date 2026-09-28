@@ -31,10 +31,12 @@ only `-at-act` halves belong here. A duplicate static/on-demand basename is
 reported as loaded twice and the on-demand copy is not served only when their normalised bodies match. Different bodies with the same basename are reported and served.
 
 `before-first-act: true` refuses the first matching call with the rule text;
-retrying passes. Ride-along rules accompany the result and cannot govern their
-triggering call. A model compliance classifier is measurement-only and often
-answers “not applicable”. The `agent-model` check counts a spawn without a
-`model` argument as not followed even when an agent definition pins it.
+retrying passes. Ride-along rules accompany the result; declarative Bash-command
+and tool-input checks measure that call, and model classification includes it.
+The rule cannot guide that call's already-completed action. A model compliance
+classifier is measurement-only and often answers “not applicable”. The
+`agent-model` check counts a spawn without a `model` argument as not followed
+even when an agent definition pins it.
 `gate-background` recognises a fixed build-command vocabulary. A refusal on an
 Agent spawn inside a subagent was missed in one real session (under investigation).
 Store writes serialize within one process; concurrent sessions sharing a store
