@@ -498,20 +498,43 @@ printf 'report\n' > "$report"
     expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'old' }))).toMatch(/^edge refused: verify->next; missing unchanged gate receipt: /)
   })
 
-  it('refuses verify when every gate mtime equals the lane receipt mtime', async () => {
+  it('accepts gates run after the lane even when a backward clock step dates them before its receipt', async () => {
     const lifecycle = await lifecycleAtVerify(equalMtimeLauncher())
     const nonceLog = readdirSync(laneHostDir(lifecycle.root)).find((name) => /^tdd-run\..+\.log$/.test(name))!
     const laneMtime = fs.statSync(join(lifecycle.root, '.lane', nonceLog)).mtimeMs
+    const steppedBack = laneMtime - 60_000
     const append = fs.appendFileSync.bind(fs)
     const spy = vi.spyOn(fs, 'appendFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, data: string | Uint8Array, options?: fs.WriteFileOptions) => {
       append(file, data, options)
-      if (typeof file === 'string' && /[\\/](?:typecheck|lint|test)\.log$/.test(file)) utimesSync(file, laneMtime / 1000, laneMtime / 1000)
+      if (typeof file === 'string' && /[\\/](?:typecheck|lint|test)\.log$/.test(file)) utimesSync(file, steppedBack / 1000, steppedBack / 1000)
     }) as typeof fs.appendFileSync)
     syncBuiltinESMExports()
     try { await writeGates(lifecycle) } finally { spy.mockRestore(); syncBuiltinESMExports() }
-    const equalEvidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
-    expect(['typecheck', 'lint', 'test'].map((name) => equalEvidence.entries[join(lifecycle.root, '.lane', `${name}.log`)].mtime)).toEqual([laneMtime, laneMtime, laneMtime])
-    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'equal' }))).toMatch(/^edge refused: verify->next; missing gate newer than lane receipt: /)
+    const steppedEvidence = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'evidence.json'), 'utf8'))
+    expect(['typecheck', 'lint', 'test'].map((name) => steppedEvidence.entries[join(lifecycle.root, '.lane', `${name}.log`)].mtime)).toEqual([steppedBack, steppedBack, steppedBack])
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'stepped' }))).toBe('accepted phase=report')
+  })
+
+  it('refuses verify with gates run before the latest lane receipt, whatever their mtimes say', async () => {
+    const lifecycle = testLifecycle('LITE', [], successLauncher(), FIXTURE_LANE_TIMEOUT_SECONDS * 1_000)
+    expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))).toBe('accepted phase=tdd')
+    expect(await text(lifecycle.artifact({ kind: 'brief', content: 'brief\n' }))).toBe('wrote brief')
+    for (const name of ['typecheck', 'lint']) expect(await text(lifecycle.run({ kind: 'gate', name }))).toBe(`gate ${name} EXIT=0`)
+    const future = Date.now() + 3_600_000
+    for (const name of ['typecheck', 'lint']) utimesSync(join(lifecycle.root, '.lane', `${name}.log`), future / 1000, future / 1000)
+    for (const name of ['typecheck', 'lint']) expect(await text(lifecycle.run({ kind: 'gate', name }))).toBe(`gate ${name} EXIT=0`)
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: FIXTURE_LANE_TIMEOUT_SECONDS }))).toBe('lane tdd EXIT=0')
+    expect(await text(lifecycle.transition({ phase: 'tdd', tool_use_id: 'verify' }))).toBe('accepted phase=verify')
+    expect(await text(lifecycle.run({ kind: 'gate', name: 'test' }))).toBe('gate test EXIT=0')
+    expect(await text(lifecycle.transition({ phase: 'verify', outcome: 'passed', tool_use_id: 'stale' }))).toMatch(/^edge refused: verify->next; missing gate newer than lane receipt: /)
+  })
+
+  it('attests a nonce-bound lane receipt that a backward clock step dated before the launch', async () => {
+    const steppedLauncher = launcher("import { appendFileSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'; const log=process.argv[process.argv.indexOf('--log')+1]; const brief=process.argv[process.argv.indexOf('--brief')+1]; const report=/Write the report to `([^`]+)`/.exec(readFileSync(brief,'utf8'))[1]; writeFileSync(report,'report\\n'); appendFileSync(log,'done\\nEXIT=0\\n'); const past=Date.now()/1000-60; utimesSync(log,past,past)")
+    const lifecycle = testLifecycle('LITE', [], steppedLauncher, 2_000)
+    expect(await text(lifecycle.transition({ phase: 'discovery', tool_use_id: 'start' }))).toBe('accepted phase=tdd')
+    expect(await text(lifecycle.artifact({ kind: 'brief', content: 'brief\n' }))).toBe('wrote brief')
+    expect(await text(lifecycle.run({ kind: 'lane', phase: 'tdd', timeout: 2 }))).toBe('lane tdd EXIT=0')
   })
 
   it('refuses verify after the working tree signature changes', async () => {
