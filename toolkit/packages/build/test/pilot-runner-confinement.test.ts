@@ -1,11 +1,33 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
-import { confinedToWorktree, loadBoardContract } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+import { confinedToWorktree, lifecycleCanUseTool, loadBoardContract } from '../../../../plugin/bin/lib/pilot-runner-core.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { pathWithin } from '../../../../plugin/bin/lib/host/path-within.mjs'
+// @ts-expect-error runtime .mjs helper under plugin/bin/lib/
+import { sandboxWritablePaths } from '../../../../plugin/bin/lib/host/sandbox-extra-paths.mjs'
 
 const roots: string[] = []
+
+it('does not parse Windows drive letters as Linux bwrap writable paths', () => {
+  expect(sandboxWritablePaths('/state:C:\\work', 'win32')).toBeNull()
+  expect(sandboxWritablePaths('/state:/more', 'linux')).toEqual(['/state', '/more'])
+})
+
+it('refuses a cross-drive Windows path for both direct reads and wildcard prefix containment', () => {
+  expect(confinedToWorktree('D:\\repo', 'C:\\Users\\u\\state', win32)).toBe(false)
+  expect(confinedToWorktree('D:\\repo', 'D:\\repo\\src', win32)).toBe(true)
+  expect(lifecycleCanUseTool('D:\\repo', 'Read', { file_path: 'C:\\Users\\u\\state' }, { pathOps: win32 }).behavior).toBe('deny')
+  expect(lifecycleCanUseTool('D:\\repo', 'Glob', { path: 'C:\\Users\\u', pattern: 'state\\*.json' }, { pathOps: win32 }).behavior).toBe('deny')
+})
+
+it('uses one cross-drive-aware containment predicate for lifecycle directories and citations', () => {
+  expect(pathWithin('D:\\repo', 'C:\\escape', win32)).toBe(false)
+  expect(pathWithin('D:\\repo', 'D:\\repo\\.lane', win32)).toBe(true)
+  expect(pathWithin('D:\\repo', 'D:\\repo', win32)).toBe(true)
+})
 
 function fixture() {
   const parent = mkdtempSync(join(tmpdir(), 'wt-pilot-confinement-'))

@@ -5,6 +5,10 @@ import { externalModelEnv } from '../external-model-env.mjs'
 
 const BROKER_PATTERN = /openai-codex[\\/]codex.*scripts[\\/]app-server-broker/i
 const START_TIME_TOLERANCE_MS = 1_500
+// A process-table start can read up to ~2 s BEFORE the Date.now() instant it happened at: `ps` lstart
+// and etime are whole seconds, and Linux procps derives lstart from an integer-second boot time
+// (measured −940 to −1887 ms here). Applied only when no table-clock reference exists.
+const TABLE_CLOCK_SKEW_MS = 2_000
 
 function brokerFromState(root) {
   let entries
@@ -36,6 +40,13 @@ function descendants(processes, rootPid) {
 
 function processStart(item, observedAt) {
   if (Number.isFinite(item?.startIdentity)) return item.startIdentity
+  if (Number.isFinite(item?.startTime)) return item.startTime
+  return Number.isFinite(item?.elapsedMs) ? observedAt - item.elapsedMs : null
+}
+
+// Wall-clock start in epoch ms, comparable with Date.now() on every adapter: Linux's startIdentity is
+// clock ticks since boot, so it is never used for an ordering against a wall-clock time.
+function wallClockStart(item, observedAt) {
   if (Number.isFinite(item?.startTime)) return item.startTime
   return Number.isFinite(item?.elapsedMs) ? observedAt - item.elapsedMs : null
 }
@@ -78,6 +89,8 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
   const stopTimeoutMs = options.stopTimeoutMs ?? (adapter.platform === 'win32' ? 3_000 : 750)
   const pollMs = options.pollMs ?? 25
   let identity = null
+  // The companion's start as read from a process table: the same clock as its broker's table start.
+  let companionTableStart = null
   const capturedDescendants = new Map()
   let claimedPid = null
   let discoveryFailure = null
@@ -106,6 +119,17 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     return null
   }
 
+  // A broker started before `notBefore` cannot be ours; one started after it may lag by seconds under load.
+  function claim(candidate, notBefore, observedAt) {
+    if (!candidate || !BROKER_PATTERN.test(String(candidate.command ?? ''))) return false
+    const captured = processIdentity(candidate, observedAt)
+    const candidateStartedAt = wallClockStart(candidate, observedAt)
+    if (!captured || candidateStartedAt === null || candidateStartedAt < notBefore - START_TIME_TOLERANCE_MS) return false
+    claimedPid = candidate.pid
+    identity = captured
+    return true
+  }
+
   // This is called only while the spawned companion is known to be alive.
   function capture(companionPid) {
     if (!companionPid) return identity?.pid ?? null
@@ -116,31 +140,50 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     const { processes } = result
     if (!identity) {
       const companion = processes.find((item) => item.pid === companionPid)
-      const companionStartedAt = processStart(companion, observedAt) ?? ownershipStartedAt
+      companionTableStart ??= wallClockStart(companion, observedAt)
+      const companionStartedAt = companionTableStart ?? ownershipStartedAt
       const statePid = brokerPidIsNamespaced ? null : brokerFromState(root)
       if (statePid) claimedPid = statePid
       const family = descendants(processes, companionPid)
       const candidate = statePid
         ? processes.find((item) => item.pid === statePid)
         : processes.find((item) => item.pid !== companionPid && family.has(item.pid) && BROKER_PATTERN.test(String(item.command ?? '')))
-      if (!candidate || !BROKER_PATTERN.test(String(candidate.command ?? ''))) return null
-      const captured = processIdentity(candidate, observedAt)
-      // A broker started before this companion cannot be ours; one started after it may lag by seconds under load.
-      const candidateStartedAt = captured?.startIdentity ?? captured?.startedAt
-      if (!captured || candidateStartedAt < companionStartedAt - START_TIME_TOLERANCE_MS) return null
-      claimedPid = candidate.pid
-      identity = captured
+      if (!claim(candidate, companionStartedAt, observedAt)) return null
     }
-    if (adapter.platform !== 'win32') return identity.pid
+    captureWindowsDescendants(processes, observedAt)
+    return identity.pid
+  }
+
+  // The broker this call started is named by the broker.json in this call's PRIVATE CLAUDE_PLUGIN_DATA
+  // root: the companion writes it once its broker is ready and never removes it, so it identifies the
+  // broker without the companion being alive — a companion that exits before any process snapshot saw
+  // its broker still leaves it here. A broker started before this call is refused: ordered against the
+  // companion's start from a process table when one saw it, else against the wall clock with the
+  // table-clock allowance. Skipped when the broker runs in the sandbox's PID namespace: that file then
+  // holds a namespace pid.
+  function captureRecorded() {
+    if (identity || brokerPidIsNamespaced) return
+    const statePid = brokerFromState(root)
+    if (!statePid) return
+    const observedAt = now()
+    const result = snapshot()
+    // Unreadable process table: stop() names the discovery failure rather than an identity change.
+    if (!result) return
+    claimedPid = statePid
+    const notBefore = companionTableStart ?? ownershipStartedAt - TABLE_CLOCK_SKEW_MS
+    if (claim(result.processes.find((item) => item.pid === statePid), notBefore, observedAt)) captureWindowsDescendants(result.processes, observedAt)
+  }
+
+  function captureWindowsDescendants(processes, observedAt) {
+    if (adapter.platform !== 'win32') return
     const currentBroker = processes.find((item) => item.pid === identity.pid)
-    if (!sameIdentity(currentBroker, identity, observedAt)) return identity.pid
+    if (!sameIdentity(currentBroker, identity, observedAt)) return
     const family = descendants(processes, identity.pid)
     for (const item of processes) {
       if (item.pid === identity.pid || !family.has(item.pid) || capturedDescendants.has(item.pid)) continue
       const captured = processIdentity(item, observedAt)
       if (captured) capturedDescendants.set(item.pid, captured)
     }
-    return identity.pid
   }
 
   function currentOwnedProcess() {
@@ -222,6 +265,7 @@ export function createCodexBrokerOwnership(adapter, env, options = {}) {
     if (stopped) return []
     stopped = true
     try {
+      captureRecorded()
       if (!identity) {
         if (claimedPid) return [`app-server cleanup unavailable for owned broker pid ${claimedPid}: broker identity changed before cleanup`]
         const reason = discoveryFailure ? `broker not captured; ${discoveryFailure}` : 'broker not captured before companion exit'

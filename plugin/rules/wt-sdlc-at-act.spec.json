@@ -1,0 +1,22 @@
+{
+  "on-demand": {
+    "triggers": [
+      {
+        "kind": "tool",
+        "tool": "^(?:Agent|Task|Workflow)$",
+        "unconditional": true,
+        "before-first-act": true
+      },
+      {
+        "kind": "path",
+        "tool": "^(?:Write|Edit|MultiEdit)$",
+        "regex": "(?:^|/)(?:review|refut|critic)[^/]*\\.md$",
+        "before-first-act": true
+      }
+    ]
+  },
+  "compliance": {
+    "kind": "none",
+    "reason": "Adoption checks, executor briefing, and delegate addressing govern delegation and pilot-wave acts."
+  }
+}

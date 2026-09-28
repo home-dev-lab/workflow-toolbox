@@ -120,11 +120,13 @@ function runWatch(
   projectDir: string,
   env: NodeJS.ProcessEnv,
   extraArgs: string[] = [],
+  cwd?: string,
 ): { status: number | null; stdout: string; stderr: string; armed: string } {
   const res = spawnSync(process.execPath, [WATCH, '--once', '--project', projectDir, ...extraArgs], {
     encoding: 'utf8',
     env,
     timeout: 10_000,
+    cwd,
   })
   // The watcher now writes ONE unconditional banner at arming, on the same stream as its wakes.
   // It is split out here rather than folded into `stdout` so that every silence assertion below
@@ -466,6 +468,125 @@ describe('wt-autonomy-watch', () => {
 
     expect(beforeRearmWarning.stdout).toBe('')
     expect(rearmWarning.stdout).toBe('AUTONOMY MANDATE CLOSING: 1 min left of the 0.05 min freshness window; re-arm with `wt-autonomy-arm.mjs` before it expires or nothing will be watching this session.')
+  })
+
+  // Card 1871343677188605554: the closing warning repeated at every one-minute poll while other
+  // sessions, in OTHER projects, ran the same watcher against the same machine-global state dir.
+  // Their poll judged this session's per-session records by looking for this session's transcript
+  // under THEIR project directory, found nothing, and deleted them — so the "already warned" flag
+  // never survived to the next poll.
+  it('a watcher of another project sharing the state dir does not reset the closing warning', () => {
+    const a = scaffold('closing-owner')
+    const b = scaffold('closing-neighbour')
+    const now = Date.now()
+    touch(a.transcriptPath, now - 20 * 60_000)
+    writeMandate(a.mandatePath, a.sessionId, now)
+    const common = {
+      ...process.env,
+      XDG_STATE_HOME: a.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+      WT_AUTONOMY_WATCH_MANDATE_FRESHNESS_MINUTES: '0.05',
+    }
+    const envA = { ...common, CLAUDE_CONFIG_DIR: a.configDir, CLAUDE_CODE_SESSION_ID: a.sessionId }
+    const envB = { ...common, CLAUDE_CONFIG_DIR: b.configDir, CLAUDE_CODE_SESSION_ID: 'neighbour-session' }
+    touch(transcriptPathFor(b.configDir, b.projectDir, 'neighbour-session'), now - 20 * 60_000)
+
+    const at = (ms: number) => String(now + ms)
+    runWatch(a.projectDir, { ...envA, WT_AUTONOMY_WATCH_TEST_NOW_MS: at(0) })
+    const emitted: string[] = []
+    for (const offset of [2_600, 2_700, 2_800, 2_900]) {
+      runWatch(b.projectDir, { ...envB, WT_AUTONOMY_WATCH_TEST_NOW_MS: at(offset) })
+      const poll = runWatch(a.projectDir, { ...envA, WT_AUTONOMY_WATCH_TEST_NOW_MS: at(offset) })
+      if (poll.stdout) emitted.push(poll.stdout)
+    }
+
+    expect(emitted.filter((line) => line.startsWith('AUTONOMY MANDATE CLOSING:'))).toHaveLength(1)
+  })
+
+  it('a watcher of another project sharing the state dir does not reset the wake de-duplication', () => {
+    const a = scaffold('wake-owner')
+    const b = scaffold('wake-neighbour')
+    const now = Date.now()
+    touch(a.transcriptPath, now - 20 * 60_000)
+    writeMandate(a.mandatePath, a.sessionId, now - 5 * 60_000)
+    writeQueue(a.queuePath, { at: now, open: 4, next: 'CARD-9 emit once' })
+    const common = { ...process.env, XDG_STATE_HOME: a.stateHome, WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match' }
+    const envA = { ...common, CLAUDE_CONFIG_DIR: a.configDir, CLAUDE_CODE_SESSION_ID: a.sessionId }
+    const envB = { ...common, CLAUDE_CONFIG_DIR: b.configDir, CLAUDE_CODE_SESSION_ID: 'neighbour-session' }
+    touch(transcriptPathFor(b.configDir, b.projectDir, 'neighbour-session'), now - 20 * 60_000)
+
+    const first = runWatch(a.projectDir, envA)
+    runWatch(b.projectDir, envB)
+    const second = runWatch(a.projectDir, envA)
+
+    expect(first.stdout).toContain('AUTONOMY WAKE:')
+    expect(existsSync(a.markerPath)).toBe(true)
+    expect(second.stdout).toBe('')
+  })
+
+  it('a record naming ANOTHER session\'s transcript is judged by the fallback rule, not kept alive by that file', () => {
+    const b = scaffold('foreign-sweeper')
+    const now = Date.now()
+    const foreign = transcriptPathFor(b.configDir, b.projectDir, 'neighbour-session')
+    touch(foreign, now - 20 * 60_000)
+    const statePath = join(b.stateDir, 'autonomy-watch-mandate-ghost-session.json')
+    const emissionPath = join(b.stateDir, 'autonomy-watch-ghost-session.json')
+    writeFileSync(statePath, `${JSON.stringify({ observedAt: new Date(now).toISOString(), lastMandateKind: 'live', lastMandateDeclaredAtMs: now, transcriptPath: foreign })}\n`)
+    writeFileSync(emissionPath, `${JSON.stringify({ emittedAt: new Date(now).toISOString(), transcriptMtimeMs: now, mandateDeclaredAtMs: now, transcriptPath: foreign })}\n`)
+
+    runWatch(b.projectDir, {
+      ...process.env,
+      CLAUDE_CONFIG_DIR: b.configDir,
+      CLAUDE_CODE_SESSION_ID: 'neighbour-session',
+      XDG_STATE_HOME: b.stateHome,
+      WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match',
+    })
+
+    expect(existsSync(foreign)).toBe(true)
+    expect(existsSync(statePath)).toBe(false)
+    expect(existsSync(emissionPath)).toBe(false)
+  })
+
+  it('a relative CLAUDE_CONFIG_DIR still records an absolute owner path a neighbour honours', () => {
+    const a = scaffold('relative-owner')
+    const b = scaffold('relative-neighbour')
+    const now = Date.now()
+    touch(a.transcriptPath, now - 20 * 60_000)
+    writeMandate(a.mandatePath, a.sessionId, now - 5 * 60_000)
+    writeQueue(a.queuePath, { at: now, open: 4, next: 'CARD-11 relative config' })
+    const common = { ...process.env, XDG_STATE_HOME: a.stateHome, WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match' }
+    touch(transcriptPathFor(b.configDir, b.projectDir, 'neighbour-session'), now - 20 * 60_000)
+
+    const first = runWatch(a.projectDir, { ...common, CLAUDE_CONFIG_DIR: 'config', CLAUDE_CODE_SESSION_ID: a.sessionId }, [], a.root)
+    const mandateStatePath = join(a.stateDir, `autonomy-watch-mandate-${a.sessionId}.json`)
+    expect(first.stdout).toContain('AUTONOMY WAKE:')
+    runWatch(b.projectDir, { ...common, CLAUDE_CONFIG_DIR: b.configDir, CLAUDE_CODE_SESSION_ID: 'neighbour-session' })
+
+    expect(existsSync(a.markerPath)).toBe(true)
+    expect(existsSync(mandateStatePath)).toBe(true)
+    expect(JSON.parse(readFileSync(a.markerPath, 'utf8')).transcriptPath).toBe(a.transcriptPath)
+    expect(JSON.parse(readFileSync(mandateStatePath, 'utf8')).transcriptPath).toBe(a.transcriptPath)
+  })
+
+  it('a session record whose own transcript is gone is still expired, by any watcher', () => {
+    const a = scaffold('gone-owner')
+    const b = scaffold('gone-neighbour')
+    const now = Date.now()
+    touch(a.transcriptPath, now - 20 * 60_000)
+    writeMandate(a.mandatePath, a.sessionId, now - 5 * 60_000)
+    writeQueue(a.queuePath, { at: now, open: 4, next: 'CARD-10 then vanish' })
+    const common = { ...process.env, XDG_STATE_HOME: a.stateHome, WT_AUTONOMY_WATCH_LANE_PATTERNS: 'definitely-no-match' }
+    runWatch(a.projectDir, { ...common, CLAUDE_CONFIG_DIR: a.configDir, CLAUDE_CODE_SESSION_ID: a.sessionId })
+    const mandateStatePath = join(a.stateDir, `autonomy-watch-mandate-${a.sessionId}.json`)
+    expect(existsSync(a.markerPath)).toBe(true)
+    expect(existsSync(mandateStatePath)).toBe(true)
+
+    rmSync(a.transcriptPath)
+    touch(transcriptPathFor(b.configDir, b.projectDir, 'neighbour-session'), now - 20 * 60_000)
+    runWatch(b.projectDir, { ...common, CLAUDE_CONFIG_DIR: b.configDir, CLAUDE_CODE_SESSION_ID: 'neighbour-session' })
+
+    expect(existsSync(a.markerPath)).toBe(false)
+    expect(existsSync(mandateStatePath)).toBe(false)
   })
 
   it('an unreadable marker is reported as unknown, never absent', () => {

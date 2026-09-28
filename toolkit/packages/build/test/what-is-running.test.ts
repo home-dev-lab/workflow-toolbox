@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
+import * as fs from 'node:fs'
 import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +9,8 @@ import { describe, expect, it } from 'vitest'
 
 // @ts-expect-error Function-hook modules ship as host-loaded JavaScript.
 import { COLLECTOR_TIMEOUT_MS, fileUrlPath, readSnapshot, register, RENDER_JOURNAL_MAX_BYTES, renderPane } from '../../../../plugin/hooks/hooks.js'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const SELFTEST = join(REPO_ROOT, 'toolkit', 'packages', 'build', 'test', 'fixtures', 'what-is-running', 'hooks.selftest.mjs')
@@ -261,6 +264,30 @@ describe('What is running collector seam', () => {
       .toBe('C:\\workflow-toolbox\\plugin\\pricing\\model-prices.json')
   })
 
+  it.skipIf(process.platform === 'win32')('reads bounded regular files on simulated Windows without following a redirected leaf', () => {
+    // realpath: a symlinked temp dir (macOS /var -> /private/var) must not read as outside the root.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-wir-win-read-')))
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'wt-wir-outside-'))
+    try {
+      const file = join(root, 'brief.md')
+      const redirected = join(root, 'redirected.md')
+      const outside = join(outsideRoot, 'private.md')
+      writeFileSync(file, 'card heading')
+      writeFileSync(outside, 'private')
+      symlinkSync(outside, redirected)
+      const program = readFileSync(new URL('../../../../plugin/hooks/snapshot-program.js', import.meta.url), 'utf8')
+      const sliceBody = program.match(/function slice\(file, maxBytes, fromEnd = false, rejectOverflow = false\) \{[\s\S]*?\n\}/)?.[0]
+      expect(sliceBody).toBeTruthy()
+      const safePath = (candidate: string) => {
+        const real = realpathSync(candidate)
+        return real.startsWith(`${root}/`) ? real : null
+      }
+      const slice = vm.runInNewContext(`${sliceBody}; slice`, { fs, process: { platform: 'win32' }, safePath, Buffer }) as (file: string, maxBytes: number) => string | null
+      expect(slice(file, 4)).toBe('card')
+      expect(slice(redirected, 64)).toBeNull()
+    } finally { rmSync(root, { recursive: true, force: true }); rmSync(outsideRoot, { recursive: true, force: true }) }
+  })
+
   it('resolves the price table URL inside a hooks sandbox that has no process global', async () => {
     // The hooks module runs in an environment without Node globals: a `process` reference at module
     // scope makes every collection fail with "process is not defined" on the real host.
@@ -441,33 +468,39 @@ describe('What is running collector seam', () => {
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 
-  it('ignores a 5000-file child coverage directory and keeps ordinary walk exhaustion row-local', async () => {
+  it('ignores a child coverage directory larger than the scan cap and keeps ordinary walk exhaustion row-local', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-child-coverage-'))
     try {
-      const paths = collector(root)
+      // The collector's per-directory scan cap (default 1000) is injected small through its existing
+      // `scanEntryCap` option, so the fixture crosses the cap with a few files instead of thousands:
+      // the test's cost no longer scales with the runner's disk speed (card 1872480817763059704).
+      const scanEntryCap = 5
+      const paths = collector(root, { scanEntryCap })
       const cardId = '1867480027738670232'
       const lane = join(paths.suiteRoot, 'worktrees', 'coverage-load', '.lane')
       const coverage = join(lane, 'child-coverage-fixture')
       mkdirSync(coverage, { recursive: true })
       writeFileSync(join(lane, 'brief.md'), `# Brief: card ${cardId}: Coverage load\n`)
       writeFileSync(join(lane, 'run.log'), 'working\n')
-      for (let index = 0; index < 5000; index += 1) writeFileSync(join(coverage, `${index}.json`), '{}')
+      for (let index = 0; index < scanEntryCap * 4; index += 1) writeFileSync(join(coverage, `${index}.json`), '{}')
 
       const snapshot = await readSnapshot({ process: processCapability() }, paths)
+      const exact = snapshot.rows.find((row: { cardId?: string }) => row.cardId === cardId)
       expect(snapshot.discovery).toBe('available')
       expect(snapshot.cappedScans).toEqual([])
-      expect(snapshot.rows.find((row: { cardId?: string }) => row.cardId === cardId)).toBeTruthy()
+      // Walking into the coverage directory would exhaust the cap and mark the row approximate.
+      expect(exact.activity).toMatch(/^last write \d+ min ago$/)
 
       const ordinary = join(paths.suiteRoot, 'worktrees', 'coverage-load', 'ordinary-volume')
       mkdirSync(ordinary)
-      for (let index = 0; index < 1001; index += 1) writeFileSync(join(ordinary, `${index}.txt`), 'evidence')
+      for (let index = 0; index < scanEntryCap + 1; index += 1) writeFileSync(join(ordinary, `${index}.txt`), 'evidence')
       const approximate = await readSnapshot({ process: processCapability() }, paths)
       const row = approximate.rows.find((item: { cardId?: string }) => item.cardId === cardId)
       expect(approximate.discovery).toBe('available')
       expect(approximate.cappedScans).toEqual([])
       expect(row.activity).toMatch(/^last write at least /)
     } finally { rmSync(root, { recursive: true, force: true }) }
-  }, process.platform === 'win32' ? 30_000 : 20_000) // Hosted Windows measured 22.628 s for 6,001 volume files.
+  })
 
   it('uses the card file title when the lane brief starts with the standard preamble', async () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-wir-preamble-title-'))
@@ -510,7 +543,9 @@ describe('What is running collector seam', () => {
       const lane = join(paths.suiteRoot, 'worktrees', 'queued-pilot', '.lane')
       mkdirSync(lane, { recursive: true })
       writeFileSync(join(lane, `card-${cardId}.md`), '# Queued SDK pilot\n')
-      writeFileSync(join(lane, 'admission.json'), JSON.stringify({
+      const host = laneHostDir(join(paths.suiteRoot, 'worktrees', 'queued-pilot'))
+      mkdirSync(host, { recursive: true })
+      writeFileSync(join(host, 'admission.json'), JSON.stringify({
         state: 'queued', cardId, position: 2, waiting: { kind: 'load', load: 14.5, cores: 12 },
       }))
 

@@ -1,0 +1,20 @@
+#!/bin/sh
+set -eu
+[ "$1" = public ] || exit 0
+REPO_ROOT=$(git rev-parse --show-toplevel)
+GIT_DIR=$(git rev-parse --absolute-git-dir)
+AUTH="$GIT_DIR/wt-push-authorized.json"
+if [ ! -f "$AUTH" ]; then
+  echo 'no authorized scope' >&2
+  exit 1
+fi
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$local_sha" in
+    0000000000000000000000000000000000000000) continue ;;
+  esac
+  case "$remote_sha" in
+    0000000000000000000000000000000000000000) branch=main ;;
+    *) branch=${remote_ref#refs/heads/} ;;
+  esac
+  node "$REPO_ROOT/plugin/bin/wt-push-scope-check.mjs" --remote "$1" --branch "$branch" --ref "$local_sha" --authorized "$AUTH" || exit $?
+done

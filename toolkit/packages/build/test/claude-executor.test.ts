@@ -8,12 +8,14 @@ import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
 // @ts-expect-error runtime .mjs helper under plugin/bin/lib/
 import { executorBrief, executorCanUseTool, parseExecutorArgs } from '../../../../plugin/bin/lib/claude-executor-core.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 prepareContextModeFixture()
 
 const ROOT = fileURLToPath(new URL('../../../..', import.meta.url))
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { for (const root of roots.splice(0)) { rmSync(laneHostDir(join(root, 'worktree')), { recursive: true, force: true }); rmSync(root, { recursive: true, force: true }) } })
 
 function waitFor(file: string, timeoutMs = 3000) {
   const until = Date.now() + timeoutMs
@@ -32,6 +34,16 @@ function waitForExit(log: string, timeoutMs: number) {
   return tail
 }
 
+function processAlive(pid: number) {
+  try { process.kill(pid, 0); return true } catch { return false }
+}
+
+function waitForProcessGone(pid: number, timeoutMs: number) {
+  const until = Date.now() + timeoutMs
+  while (processAlive(pid) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+  return !processAlive(pid)
+}
+
 function fixture() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-claude-executor-'))); roots.push(root)
   const worktree = join(root, 'worktree'); mkdirSync(join(worktree, '.lane'), { recursive: true })
@@ -48,16 +60,44 @@ function fixture() {
   writeFileSync(join(sdk, 'index.cjs'), `
 const fs=require('node:fs');
 exports.query=({prompt,options})=>(async function*(){
-  fs.writeFileSync(process.env.FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,sandbox:options.sandbox,outside:await options.canUseTool('Write',{file_path:process.env.FAKE_OUTSIDE}),unsandboxed:await options.canUseTool('Bash',{command:'true',dangerouslyDisableSandbox:true})}));
-  const mode=process.env.FAKE_MODE;
-  if(process.env.FAKE_HANG==='true') await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true}));
+  fs.writeFileSync(process.env.WT_FAKE_RECEIPT,JSON.stringify({prompt,tools:options.tools,settingSources:options.settingSources,plugins:options.plugins,model:options.model,sandbox:options.sandbox,envKeys:Object.keys(options.env??{}),workerEnvKeys:Object.keys(process.env),scrub:options.env?.CLAUDE_CODE_SUBPROCESS_ENV_SCRUB,outside:await options.canUseTool('Write',{file_path:process.env.WT_FAKE_OUTSIDE}),unsandboxed:await options.canUseTool('Bash',{command:'true',dangerouslyDisableSandbox:true})}));
+  const mode=process.env.WT_FAKE_MODE;
+   if(process.env.WT_FAKE_HANG==='true') { await new Promise((resolve)=>options.abortController.signal.addEventListener('abort',resolve,{once:true})); if(mode==='signal-notice') { yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:[]}; for(const line of fs.readFileSync(process.env.WT_FAKE_STREAM,'utf8').trim().split('\\n')) yield JSON.parse(line); } }
   else if(mode==='first-result') yield {type:'result',subtype:'success',is_error:false,result:'too early'};
-  else if(mode!=='empty') { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; if(mode!=='no-write') fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; if(mode==='multiple') { yield {type:'result',is_error:false,usage:{input_tokens:2,cache_creation_input_tokens:3,cache_read_input_tokens:5,output_tokens:7}}; yield {type:'result',is_error:false,usage:{input_tokens:11,cache_creation_input_tokens:13,cache_read_input_tokens:17,output_tokens:19}}; } else yield {type:'result',subtype:'success',is_error:mode==='error',usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:mode==='no-write'?' generated review ': 'executor report'}; }
+   else if(mode!=='empty') { const report=new RegExp('Write the report to \\x60([^\\x60]+)\\x60').exec(prompt)[1]; if(mode!=='no-write') fs.writeFileSync(report,'executor report\\n'); yield {type:'system',subtype:'init',model:'claude-sonnet-test',tools:options.tools,plugins:options.plugins.map((plugin)=>({path:plugin.path,name:plugin.path.endsWith('/tdd')?'wt-sdk-tdd':undefined})),skills:options.tools.includes('Bash')?['wt-sdk-tdd:changelog']:[]}; if(mode==='notice'||mode==='report-dir'||mode==='signal-notice') for(const line of fs.readFileSync(process.env.WT_FAKE_STREAM,'utf8').trim().split('\\n')) yield JSON.parse(line); if(mode==='report-dir') { fs.rmSync(report); fs.mkdirSync(report); } if(mode==='multiple') { yield {type:'result',is_error:false,usage:{input_tokens:2,cache_creation_input_tokens:3,cache_read_input_tokens:5,output_tokens:7}}; yield {type:'result',is_error:false,usage:{input_tokens:11,cache_creation_input_tokens:13,cache_read_input_tokens:17,output_tokens:19}}; } else yield {type:'result',subtype:'success',is_error:mode==='error',usage:{input_tokens:3,cache_creation_input_tokens:5,cache_read_input_tokens:7,output_tokens:11},result:mode==='no-write'?' generated review ': 'executor report'}; }
 })()`)
   return { root, worktree, cli: join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, CLAUDE_PLUGIN_DATA: pluginData, WT_AGENT_SDK_PATH: join(sdk, 'index.cjs'), XDG_STATE_HOME: state } }
 }
 
 describe('Claude SDK executor', () => {
+  it('F2 finishes and writes usage even if warning append to report fails', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.directory.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'directory.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'report-dir', WT_FAKE_STREAM: join(ROOT, 'toolkit/packages/build/test/fixtures/model-fallback/sdk-notice.jsonl') } })
+    expect(result.status).toBe(0)
+    expect(waitForExit(log, 15_000)).toBe('EXIT=1')
+    expect(existsSync(`${log}.usage.json`)).toBe(true)
+  })
+  it.skipIf(process.platform === 'win32')('F3 preserves sole SIGTERM exit marker after a late notice', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.signal-notice.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'signal-notice.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '5', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'signal-notice', WT_FAKE_HANG: 'true', WT_FAKE_STREAM: join(ROOT, 'toolkit/packages/build/test/fixtures/model-fallback/sdk-notice.jsonl') } })
+    const worker = Number(/^pid=(\d+)$/m.exec(result.stdout)?.[1])
+    waitFor(receipt); process.kill(worker, 'SIGTERM')
+    expect(waitForExit(log, 15_000)).toBe('EXIT=143')
+    // The worker has fully exited, so no later write can follow the observed marker.
+    expect(waitForProcessGone(worker, 15_000)).toBe(true)
+    expect(readFileSync(log, 'utf8').trim().split('\n').filter((line) => line.startsWith('EXIT='))).toEqual(['EXIT=143'])
+  })
+  it('logs a safeguard notice before its sole final EXIT marker and includes it in the report', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.notice.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'notice.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'notice', WT_FAKE_STREAM: join(ROOT, 'toolkit/packages/build/test/fixtures/model-fallback/sdk-notice.jsonl') } })
+    expect(result.status).toBe(0); expect(waitForExit(log, 12000)).toBe('EXIT=0')
+    expect(readFileSync(log, 'utf8').trim().split('\n').filter((line) => line.startsWith('EXIT='))).toEqual(['EXIT=0'])
+    expect(readFileSync(log, 'utf8')).toContain('WARN model-fallback: executor classifier notice')
+    expect(readFileSync(report, 'utf8')).toContain('WARN model-fallback: executor classifier notice')
+  })
   it('item 1: rejects a missing --dir before spawning a worker', () => {
     const f = fixture(); const missing = join(f.root, 'missing'); const brief = join(f.root, 'brief.md'); writeFileSync(brief, 'unused\n')
     const result = spawnSync(process.execPath, [f.cli, '--dir', missing, '--model', 'sonnet', '--brief', brief, '--role', 'tdd'], { encoding: 'utf8', env: f.env })
@@ -124,9 +164,9 @@ describe('Claude SDK executor', () => {
   })
 
   it('launches the writer with mandatory sandboxing and denies per-command escape', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.sandbox.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'sandbox.log'); const receipt = join(f.root, 'receipt.json')
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.sandbox.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'sandbox.log'); const receipt = join(f.root, 'receipt.json')
     writeFileSync(brief, `Write the report to \`${report}\`.\n`)
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside') } })
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside') } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0')
     expect(JSON.parse(readFileSync(receipt, 'utf8'))).toMatchObject({
       sandbox: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false, failIfUnavailable: true },
@@ -134,12 +174,37 @@ describe('Claude SDK executor', () => {
     })
   })
 
+  it('hands neither the worker nor the SDK an unrelated owner credential, and denies the SDK credentials to sandboxed commands', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.env.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'env.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`); mkdirSync(laneHostDir(f.worktree), { recursive: true })
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, GITHUB_TOKEN: 'CANARY_GH', CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '0', WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside') } })
+    expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0')
+    const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
+    expect(sdkReceipt.envKeys).not.toContain('GITHUB_TOKEN')
+    expect(sdkReceipt.workerEnvKeys).not.toContain('GITHUB_TOKEN')
+    expect(sdkReceipt.scrub).toBeUndefined()
+    expect(sdkReceipt.sandbox.credentials).toEqual({ envVars: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'].map((name) => ({ name, mode: 'deny' })) })
+    expect(readFileSync(log, 'utf8')).not.toContain('CANARY')
+  })
+
+  it('filters the SDK query environment even when the worker itself was launched with the full owner environment', () => {
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.worker-env.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'worker-env.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`); mkdirSync(laneHostDir(f.worktree), { recursive: true })
+    const result = spawnSync(process.execPath, [f.cli, '--worker', '--sdk-path', f.env.WT_AGENT_SDK_PATH, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, GITHUB_TOKEN: 'CANARY_GH', WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside') } })
+    expect(result.status).toBe(0)
+    const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
+    expect(sdkReceipt.workerEnvKeys).toContain('GITHUB_TOKEN')
+    expect(sdkReceipt.envKeys).not.toContain('GITHUB_TOKEN')
+    expect(sdkReceipt.scrub).toBeUndefined()
+    expect(sdkReceipt.sandbox.credentials).toEqual({ envVars: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'].map((name) => ({ name, mode: 'deny' })) })
+  })
+
   it.runIf(process.env.WT_CLAUDE_EXECUTOR_REAL_E2E === 'true')('keeps real SDK Bash writes inside the worktree', () => {
     const root = mkdtempSync(join(tmpdir(), 'wt-executor-real-')); roots.push(root)
     const worktree = join(root, 'worktree'); mkdirSync(join(worktree, '.lane'), { recursive: true }); spawnSync('git', ['init', '-q'], { cwd: worktree })
     const marker = `cd-escape-${process.pid}`; const computedMarker = `computed-escape-${process.pid}`; const nodeSandboxMarker = `node-sandbox-escape-${process.pid}`; const sandboxMarker = `sandbox-escape-${process.pid}`
     const encodedSandboxPath = Buffer.from(`../${nodeSandboxMarker}`).toString('hex')
-    const report = join(worktree, '.lane', 'tdd-report.confinement.md'); const brief = join(worktree, '.lane', 'brief.md'); const log = join(worktree, '.lane', 'real-sdk.log')
+    const report = join(worktree, '.lane', 'tdd-report.confinement.md'); const brief = join(worktree, '.lane', 'brief.md'); const log = join(laneHostDir(worktree), 'real-sdk.log')
     writeFileSync(brief, `This is a confinement regression fixture. Use Bash to run each command exactly once and record each tool result verbatim in the report. Do not try alternative commands.\n\n1. \`cd .. && touch ${marker}\`\n2. \`node -e "require('fs').writeFileSync(require('path').resolve('..','${computedMarker}'),'x')"\`\n3. \`node -e "require('fs').writeFileSync(Buffer.from('${encodedSandboxPath}','hex').toString(),'x')"\`\n4. \`p=$(printf '\\056\\056\\057${sandboxMarker}'); : > "$p"\`\n\nWrite the report to \`${report}\`.\n`)
     const home = join(root, 'home'); const config = join(root, 'config'); const state = join(root, 'state'); mkdirSync(home); mkdirSync(config); mkdirSync(state)
     const result = spawnSync(process.execPath, [join(ROOT, 'plugin', 'bin', 'wt-claude-executor.mjs'), '--dir', worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '120', '--role', 'tdd'], { encoding: 'utf8', env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: config, XDG_STATE_HOME: state } })
@@ -169,17 +234,17 @@ describe('Claude SDK executor', () => {
   })
 
   it('prints a detached pid, loads the guard, writes only the named report, and ends its log with EXIT=0', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.nonce.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'run.log'); const receipt = join(f.root, 'receipt.json'); const outside = join(f.root, 'outside.txt')
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.nonce.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'run.log'); const receipt = join(f.root, 'receipt.json'); const outside = join(f.root, 'outside.txt')
     writeFileSync(brief, `Implement the task.\n\nWrite the report to \`${report}\`.\n`)
     writeFileSync(join(f.worktree, 'AGENTS.md'), '# Guide\n')
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: outside } })
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: outside } })
     expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+\nlog=.+\n$/); expect(result.stderr).toBe('')
     waitFor(report); waitFor(receipt)
     // The executor appends its variant line to the report after the SDK wrote it, before EXIT: read after EXIT.
     expect(waitForExit(log, 3000)).toBe('EXIT=0')
     expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=medium origin=role base forced=false\n')
     waitFor(`${log}.usage.json`)
-    expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 } })
+    expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8'))).toEqual({ model: 'claude-sonnet-test', totals: { input: 3, cache_creation: 5, cache_read: 7, output: 11 }, served_models: [], fallbacks: [], safeguard_notices: [] })
     expect(existsSync(outside)).toBe(false)
     const sdkReceipt = JSON.parse(readFileSync(receipt, 'utf8'))
     expect(sdkReceipt).toMatchObject({ tools: expect.arrayContaining(['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']), settingSources: [], model: 'sonnet', outside: { behavior: 'deny' } })
@@ -189,9 +254,9 @@ describe('Claude SDK executor', () => {
   })
 
   it('ends a timed-out detached worker log with EXIT=124', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.timeout.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'timeout.log'); const receipt = join(f.root, 'receipt.json')
+    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.timeout.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'timeout.log'); const receipt = join(f.root, 'receipt.json')
     writeFileSync(brief, `You are the independent reviewer.\nWrite the report to \`${report}\` with exactly one verdict block.\n`)
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '0.05', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_HANG: 'true' } })
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '0.05', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_HANG: 'true' } })
     expect(result.status).toBe(0); expect(result.stdout).toMatch(/^pid=\d+/)
     waitFor(log); const until = Date.now() + 3000
     while (readFileSync(log, 'utf8').trim().split(/\r?\n/).at(-1) !== 'EXIT=124' && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
@@ -200,9 +265,9 @@ describe('Claude SDK executor', () => {
   })
 
   it('item 7: the log always ENDS with an exit marker, even when an earlier marker is followed by later lines', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.idempotent.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'idempotent.log'); const receipt = join(f.root, 'receipt.json')
-    writeFileSync(brief, `Write the report to \`${report}\`.\n`); writeFileSync(log, 'EXIT=0\n')
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '0.05', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_HANG: 'true' } })
+    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.idempotent.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'idempotent.log'); const receipt = join(f.root, 'receipt.json')
+    writeFileSync(brief, `Write the report to \`${report}\`.\n`); mkdirSync(laneHostDir(f.worktree), { recursive: true }); writeFileSync(log, 'EXIT=0\n')
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '0.05', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_HANG: 'true' } })
     expect(result.status).toBe(0); waitFor(receipt); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
     // A waiter reads the LAST line. Diagnostics written after a pre-seeded marker must not leave the log without a final one.
     expect(readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean).at(-1)).toMatch(/^EXIT=\d+$/)
@@ -211,9 +276,9 @@ describe('Claude SDK executor', () => {
   // wt-claude-executor states that Windows forced termination has no POSIX 143/130 marker contract.
   it.skipIf(process.platform === 'win32')('item 8: SIGTERM and SIGINT sent to the pid the launcher prints write exit markers 143 and 130', () => {
     for (const [signal, exit] of [['SIGTERM', 143], ['SIGINT', 130]] as const) {
-      const f = fixture(); const report = join(f.worktree, '.lane', `review-report.${signal.toLowerCase()}.md`); const brief = join(f.root, `${signal}.md`); const log = join(f.worktree, '.lane', `${signal}.log`); const receipt = join(f.root, `${signal}.json`)
+      const f = fixture(); const report = join(f.worktree, '.lane', `review-report.${signal.toLowerCase()}.md`); const brief = join(f.root, `${signal}.md`); const log = join(laneHostDir(f.worktree), `${signal}.log`); const receipt = join(f.root, `${signal}.json`)
       writeFileSync(brief, `Write the report to \`${report}\`.\n`)
-      const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '5', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_HANG: 'true' } })
+      const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '5', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_HANG: 'true' } })
       expect(result.status).toBe(0); waitFor(receipt); const workerPid = Number(/^pid=(\d+)$/m.exec(result.stdout)?.[1]); expect(workerPid).toBeGreaterThan(0)
       process.kill(workerPid, signal); const until = Date.now() + 3000
       while (!readFileSync(log, 'utf8').split(/\r?\n/).includes(`EXIT=${exit}`) && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
@@ -222,32 +287,32 @@ describe('Claude SDK executor', () => {
   })
 
   it('item 9: rejects a stream whose first message is not an initialization receipt', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.first.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'first.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'first-result' } })
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.first.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'first.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'first-result' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(log, 'utf8')).toContain('SDK executor initialization receipt never arrived: the first message was result/success')
   })
 
   it('item 10: rejects a stream that ends without an initialization receipt', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.empty.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'empty.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'empty' } })
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.empty.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'empty.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'empty' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(log, 'utf8')).toContain('SDK executor run ended without an initialization receipt')
   })
 
   it('item 11: writes a read-only report from terminal result text when absent', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.generated.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'generated.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'no-write' } })
+    const f = fixture(); const report = join(f.worktree, '.lane', 'review-report.generated.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'generated.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'opus', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'review'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'no-write' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); expect(readFileSync(report, 'utf8')).toBe('generated review\n\nvariant=xhigh origin=role base forced=false\n')
   })
 
   it('item 12: exits 1 when the terminal result is_error despite a written report', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.error.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'error.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'error' } })
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.error.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'error.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'error' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=1'); expect(readFileSync(report, 'utf8')).toBe('executor report\n\nvariant=medium origin=role base forced=false\n')
   })
 
   it('item 13: accumulates usage across multiple result messages', () => {
-    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.multiple.md'); const brief = join(f.root, 'brief.md'); const log = join(f.worktree, '.lane', 'multiple.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
-    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, FAKE_RECEIPT: receipt, FAKE_OUTSIDE: join(f.root, 'outside'), FAKE_MODE: 'multiple' } })
+    const f = fixture(); const report = join(f.worktree, '.lane', 'tdd-report.multiple.md'); const brief = join(f.root, 'brief.md'); const log = join(laneHostDir(f.worktree), 'multiple.log'); const receipt = join(f.root, 'receipt.json'); writeFileSync(brief, `Write the report to \`${report}\`.\n`)
+    const result = spawnSync(process.execPath, [f.cli, '--dir', f.worktree, '--model', 'sonnet', '--brief', brief, '--log', log, '--timeout', '2', '--role', 'tdd'], { encoding: 'utf8', env: { ...f.env, WT_FAKE_RECEIPT: receipt, WT_FAKE_OUTSIDE: join(f.root, 'outside'), WT_FAKE_MODE: 'multiple' } })
     expect(result.status).toBe(0); expect(waitForExit(log, 3000)).toBe('EXIT=0'); waitFor(`${log}.usage.json`)
     expect(JSON.parse(readFileSync(`${log}.usage.json`, 'utf8')).totals).toEqual({ input: 13, cache_creation: 16, cache_read: 22, output: 26 })
   })

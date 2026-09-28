@@ -561,9 +561,8 @@ describe.sequential('real SDK lifecycle server FULL sequence', { timeout: FIXTUR
       expect(await lifecycle.artifact({ kind: 'critic-brief', content: `critic ${round}` })).toBe('wrote critic-brief')
       expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toBe('lane critic EXIT=0')
       const result = await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
-      expect(result).toBe(round < criticRounds
-        ? 'accepted phase=plan'
-        : `accepted phase=report (round bound reached: partial run, ${reason})`)
+      if (round < criticRounds) expect(result).toMatch(/^accepted phase=plan/)
+      else expect(result).toBe(`accepted phase=report (round bound reached: partial run, ${reason})`)
     }
     const timeline = JSON.parse(readFileSync(join(lifecycle.root, '.lane', 'lifecycle.json'), 'utf8'))
     expect(timeline.phases.filter((item: { phase: string }) => ['plan', 'critic'].includes(item.phase)).map((item: { phase: string; round: number }) => [item.phase, item.round])).toEqual([
@@ -900,7 +899,7 @@ function laneLauncher() {
     .replaceAll('process.env.WT_FULL_CALLS', "join('.lane', 'calls.jsonl')")
     .replace("process.env.WT_EDGE_CONFIG || '{}'", "readFileSync(join('.lane', 'edge-config.json'), 'utf8')")
     .replace("const defaults =", "if (phase === 'tdd' && counts[key] > 1 && !configured.noTreeChange) appendFileSync('tracked.txt', 'modified by tdd fix\\n'); if (phase === 'tdd' && counts[key] > 1 && configured.untrackedChange) appendFileSync('created.txt', 'modified untracked by tdd fix\\n'); const defaults =")
-    .replace("const findings = configured.findings ?? defaults.findings ?? [];", "const findings = (configured.findings ?? (configured.verdict ? [] : defaults.findings) ?? []).map((finding) => /^\\[/.test(finding) ? finding : phase === 'critic' ? '[blocking][anchor: DoD 1][location: plan.md:1] '+finding : '[HIGH][anchor: DoD 1][location: tracked.txt:1] '+finding);")
+    .replace("const findings = configured.findings ?? defaults.findings ?? [];", "const findings = (configured.findings ?? (configured.verdict ? [] : defaults.findings) ?? []).map((finding) => /^\\[/.test(finding) ? finding : phase === 'critic' ? '[blocking][anchor: plan task A0][location: plan.md:1] '+finding : '[HIGH][anchor: DoD 1][location: tracked.txt:1] '+finding);")
     .replace(/writeFileSync\(report,\s*reportText\)/, "if (phase === 'critic' && verdict === 'approved' && !configured.noAttackAccount && !(configured.missingAccountLane && report.includes('.'+configured.missingAccountLane+'.'))) reportText += configured.attackAccount ? '\\n'+configured.attackAccount+'\\n' : '\\n## No-finding attack account\\n- ADR: attacked every decision; no defect held.\\n- Tasks: attacked every task; no defect held.\\n- Gates: attacked every gate; no defect held.\\n'; writeFileSync(report, reportText)")
   writeFileSync(file, source)
   return file
@@ -979,7 +978,7 @@ async function criticBound() {
     expect(await lifecycle.run({ kind: 'lane', phase: 'critic', timeout: 1 })).toBe('lane critic EXIT=0')
     const result = await lifecycle.transition({ phase: 'critic', outcome: 'changes-requested', findings: ['tighten the proof'], tool_use_id: `critic-${round}` })
     if (round === FIXED_CRITIC_ROUNDS) return result
-    expect(result).toBe('accepted phase=plan')
+    expect(result).toMatch(/^accepted phase=plan/)
   }
   throw new Error('unreachable')
 }

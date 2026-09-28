@@ -1,6 +1,6 @@
 // Bounded, opportunistic expiry for records sharing wt-queue-gate.
 import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
 
 export const MARKER_SCAN_LIMIT = 100
 
@@ -41,6 +41,15 @@ export function readMarker(file) {
   return { kind: 'unknown', name }
 }
 
+// The owner's own transcript path, when the record carries one that really names the owning
+// session's file. A record written before this field existed (or naming another session's file)
+// returns null and falls back to the sweeping watcher's directory.
+function ownerTranscriptPath(marker) {
+  const recorded = marker.record?.transcriptPath
+  if (typeof recorded !== 'string' || !isAbsolute(recorded)) return null
+  return basename(recorded) === `${marker.sessionId}.jsonl` ? recorded : null
+}
+
 // `file` is deliberately reread here: callers use this as the single expiry verdict.
 export function expired(kind, file, now, options = {}) {
   const marker = readMarker(file)
@@ -49,7 +58,15 @@ export function expired(kind, file, now, options = {}) {
   if (kind === 'mandate') return now - marker.record.declaredAtMs > (options.mandateFreshnessMs ?? 480 * 60_000)
   if (kind === 'cooldown') return now - marker.record.lastBlockedAt > (options.cooldownMs ?? 45 * 60_000)
   if (kind === 'watch-emission' || kind === 'watch-mandate-state') {
-    return !options.sessionTranscriptDir || !existsSync(join(options.sessionTranscriptDir, `${marker.sessionId}.jsonl`))
+    // ⚠ The state dir is shared by every session on the machine, whatever its project or config
+    // dir, and each session's watcher sweeps it. "Is the owning session gone?" must therefore be
+    // answered from the transcript path the OWNER recorded, never from the sweeping watcher's own
+    // project directory: a neighbour in another project finds nothing under its own directory and
+    // used to delete a live session's records at every poll, so the closing warning and the wake
+    // de-duplication both reset every minute.
+    const transcript = ownerTranscriptPath(marker)
+      ?? (options.sessionTranscriptDir ? join(options.sessionTranscriptDir, `${marker.sessionId}.jsonl`) : null)
+    return !transcript || !existsSync(transcript)
   }
   return false
 }

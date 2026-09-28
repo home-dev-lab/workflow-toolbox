@@ -5,9 +5,11 @@ import { spawnSync } from 'node:child_process'
 import { afterEach, expect, it } from 'vitest'
 // @ts-expect-error plugin runtime helper
 import { freezeFidelityBundle, verifyFidelityBundle } from '../../../../plugin/bin/lib/frozen-fidelity-bundle.mjs'
+// @ts-expect-error ESM runtime module
+import { laneHostDir } from '../../../../plugin/bin/lib/host/lane-host-dir.mjs'
 
 const roots: string[] = []
-afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })))
+afterEach(() => roots.splice(0).forEach((root) => { try { rmSync(laneHostDir(root), { recursive: true, force: true }) } catch {} rmSync(root, { recursive: true, force: true }) }))
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
@@ -30,7 +32,7 @@ function fixture() {
   const git = (...args: string[]) => spawnSync('git', ['-c', 'commit.gpgsign=false', ...args], { cwd: root, encoding: 'utf8', env: gitEnv })
   mkdirSync(join(root, '.lane'), { recursive: true })
   writeFileSync(join(root, '.lane', 'typecheck.log'), 'typecheck\nEXIT=0\n')
-  writeFileSync(join(root, '.lane', 'tdd-run.log'), 'lane\nEXIT=0\n')
+  mkdirSync(laneHostDir(root), { recursive: true }); writeFileSync(join(laneHostDir(root), 'tdd-run.log'), 'lane\nEXIT=0\n')
   writeFileSync(join(root, '.lane', 'tdd-report.md'), '## Implemented\n- lock\n')
   writeFileSync(join(root, '.lane', 'pilot-report.md'), '## Implemented\n- final\n')
   git('init', '-q'); git('add', '.'); git('commit', '-qm', 'base')

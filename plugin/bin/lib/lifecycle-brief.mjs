@@ -2,7 +2,8 @@
 const INDEPENDENT_ROLES = { critic: 'critic', review: 'reviewer', refutation: 'refuter' }
 const PLAN_STAGE_SEVERITY_POLICY = `
 Severity policy:
-- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking][anchor: DoD 1][location: plan.md:20] The plan omits the required rollback test.\`
+- At plan stage, \`[blocking]\` means the plan would build the wrong thing, cannot be verified, or misses an explicit DoD item. Blocking example: \`[blocking][missing][anchor: DoD 1][location: plan.md:20] The plan omits the required rollback test.\`
+- Tag every \`[blocking]\` finding with the direction of the disagreement, right after the severity: \`[missing]\` when the plan misses or under-reads an explicit DoD item, \`[overbuild]\` when the plan builds more than, or other than, the card asks, \`[unverifiable]\` when the plan cannot be verified. These tags describe the finding; they never select a binding reading. If the parent does not answer a repeated DoD dispute, the card's literal criterion binds verbatim and you may not block again on that criterion for the rest of the run.
 - A defect that a test the plan already schedules would catch is non-blocking. Use \`[non-blocking]\` for it and for optional wording, style, or polish that changes nothing the DoD checks. Non-blocking example: \`[non-blocking] Rephrase the introduction for brevity.\`
 - The anchor field is mandatory for every \`[blocking]\` finding. Omitting it makes the whole report invalid. Use \`[anchor: none]\` explicitly when no anchor resolves; that finding is routed instead of blocking.
 - You MUST find issues. If one plan section yields no finding, account for what you attacked and why nothing holds under \`## No-finding attack account\`, with one non-empty bullet named \`ADR\`, \`Tasks\`, and \`Gates\`. A zero-finding approval requires that account from every critic lane; otherwise it is a failed critic round and is re-run once.
@@ -20,7 +21,7 @@ function fenced(content) {
   return `${fence}text\n${content}${content.endsWith('\n') ? '' : '\n'}${fence}`
 }
 
-export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none' }) {
+export function independentBrief({ phase, context, artifacts, reportPath, discovery = null, planDigest = null, constructionBase = null, snapshotDir = null, priorRounds = [], rules = '', knowledgeBaseLine = 'KNOWLEDGE_BASE_INDEX: none', bindingDecisions = '' }) {
   const verdict = phase === 'critic' ? 'approved|changes-requested' : 'clear|changes-requested'
   const severityPolicy = phase === 'critic' ? PLAN_STAGE_SEVERITY_POLICY : `
 Severity policy:
@@ -52,7 +53,7 @@ You are the independent ${INDEPENDENT_ROLES[phase]}. Judge the artefacts named b
 ${knowledgeBaseLine}
 Knowledge-base fiches are claims to verify against the current code, never evidence by themselves. A finding that rests only on a fiche is not a finding.
 « on ne diffère pas »: a plan task, DoD criterion, or review finding is fixed in this run unless it genuinely cannot be because it is more than one hop from the changed files, belongs to a different module/subsystem, needs a separate planning session or unavailable dependency, or the owner explicitly agreed. Then it must be routed immediately with that L4 reason to a card created in the run and named in the report. Accept \`Outcome: deferred: card <id> — <L4 reason>\` when the id is runner-recorded; refuse every bare deferred outcome. To contest an L4 claim as in-scope, emit one blocking finding shaped \`CONTEST routed card <id>: <evidence>\`. A maintained pilot/critic disagreement is escalated after that single plan round, never repeated.
-${rules ? `\n## Rules that apply to this role (authoritative)\n\n${rules}\n` : ''}${priorRoundsSection}
+${rules ? `\n## Rules that apply to this role (authoritative)\n\n${rules}\n` : ''}${priorRoundsSection}${bindingDecisions}
 
 ## Artefacts to judge
 
@@ -72,7 +73,7 @@ ${severityPolicy}
 
 VERDICT: <${verdict}>
 FINDINGS:
-${phase === 'critic' ? '- [blocking|non-blocking][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>' : '- [CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>'}
+${phase === 'critic' ? '- [blocking|non-blocking][missing|overbuild|unverifiable][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>' : '- [CRITICAL|HIGH|MEDIUM|LOW][anchor: DoD <n>|plan task <id>][location: <path:line>] <one finding per line when changes-requested>'}
 ${planDigest ? `\nThe critic report must include this line verbatim: plan sha256: ${planDigest}\n` : ''}`
 }
 

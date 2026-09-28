@@ -285,7 +285,7 @@ describe('wt-observer-pairing-guard-hook — delegate to the shipped checker', (
     const subagentsDir = join(config, 'projects', slug, sessionId, 'subagents')
     mkdirSync(join(project, '.claude', 'agents'), { recursive: true })
     mkdirSync(subagentsDir, { recursive: true })
-    writeFileSync(join(project, '.claude', 'agents', 'pilot.md'), '---\nobserver: pilot-watchdog\n---\n# pilot\n')
+    writeFileSync(join(project, '.claude', 'agents', 'pilot.md'), '---\nname: pilot\ndescription: pilot work\nobserver: pilot-watchdog\n---\n# pilot\n')
     return {
       project,
       sessionId,
@@ -352,7 +352,7 @@ describe('wt-observer-pairing-guard-hook — delegate to the shipped checker', (
     const project = join(root, 'project')
     const config = join(root, 'config')
     mkdirSync(join(project, '.claude', 'agents'), { recursive: true })
-    writeFileSync(join(project, '.claude', 'agents', 'leaf.md'), '---\n---\n# leaf\n')
+    writeFileSync(join(project, '.claude', 'agents', 'leaf.md'), '---\nname: leaf\ndescription: leaf work\n---\n# leaf\n')
 
     const r = runHook(
       OBSERVER_PAIRING_HOOK,

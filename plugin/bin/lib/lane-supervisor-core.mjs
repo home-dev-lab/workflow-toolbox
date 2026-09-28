@@ -1,6 +1,7 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import path from 'node:path'
+import { ensureLaneHostDir, laneHostDir, readWorktreeRegular } from './host/lane-host-dir.mjs'
 
 const JOURNAL_MAX_BYTES = 10 * 1024 * 1024
 const DARWIN_PROCESS_TABLE_TTL_MS = 500
@@ -194,6 +195,7 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
   if (worker === 'running' && child === 'not-spawned' && record.state === 'launching') return { status: 'launching', reason: 'worker-launching-child', worker, child: 'not-spawned' }
   if (worker === 'gone' && child === 'gone') return { status: 'gone', reason: 'worker-and-child-gone', worker, child }
   if (worker === 'gone' && child === 'running') return { status: 'worker-gone-child-alive', reason: 'worker-gone-child-alive', worker, child }
+  if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
   if (worker === 'unknown' || child === 'unknown') {
     const unavailable = worker === 'unknown' && typeof record.workerIdentity === 'string'
       ? `worker identity ${record.workerIdentity}`
@@ -202,7 +204,6 @@ export function classifyLane(record, { inspect = inspectProcess, platform = proc
         : null
     return { status: 'unknown', reason: unavailable ?? (platform === 'linux' ? 'identity-unreadable' : `identity-unreadable-${evidenceSource(platform)}`), worker, child }
   }
-  if (['exited', 'abandoned'].includes(record.state) && child === 'gone') return { status: 'terminal', reason: record.state, worker, child }
   if (worker === 'running' && child === 'running' && ['running', 'decision-needed'].includes(record.state)) {
     return { status: record.state, reason: record.state, worker, child }
   }
@@ -369,12 +370,15 @@ export const shellQuote = (value) => `'${String(value).replaceAll("'", `'"'"'`)}
 
 export function readLogTail(file, maxBytes = 2048) {
   try {
+    const fd = openSync(file, 'r')
+    try {
+    if (!statSync(file).isFile()) return ''
     const size = statSync(file).size
     const length = Math.min(size, maxBytes)
     const buffer = Buffer.alloc(length)
-    const fd = openSync(file, 'r')
-    try { readSync(fd, buffer, 0, length, size - length) } finally { closeSync(fd) }
+    readSync(fd, buffer, 0, length, size - length)
     return buffer.toString('utf8')
+    } finally { closeSync(fd) }
   } catch { return '' }
 }
 
@@ -392,6 +396,7 @@ export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
   const skipped = new Set(['.git', 'node_modules', '.pnpm', 'dist', 'build', 'coverage', '.next'])
   const stack = [root]
   let latest = 0
+  let latestPath = null
   let visited = 0
   while (stack.length) {
     const dir = stack.pop()
@@ -403,12 +408,12 @@ export function latestWorktreeWrite(root, { maxEntries = 4000 } = {}) {
       const full = path.join(dir, entry.name)
       try {
         const stat = statSync(full)
-        latest = Math.max(latest, stat.mtimeMs)
+        if (stat.mtimeMs > latest) { latest = stat.mtimeMs; latestPath = full }
         if (entry.isDirectory()) stack.push(full)
       } catch {}
     }
   }
-  return { at: latest || null, bounded: false, status: 'known' }
+  return { at: latest || null, path: latestPath, bounded: false, status: 'known' }
 }
 
 export function appendSupervisorJournal(dataDir, event) {
@@ -444,7 +449,7 @@ export function claimCurrentSupervision(paths, runId, { writePointer = writeJson
 export function supervisionPaths(root, runId = null, requestedSlot = undefined) {
   const slot = requestedSlot === undefined ? process.env.WT_LANE_SUPERVISION_SLOT ?? null : requestedSlot
   if (slot !== null && !/^[A-Za-z0-9._-]+$/.test(slot)) throw new Error(`invalid supervision slot: ${slot}`)
-  const dir = path.join(root, '.lane', slot ? 'supervision-' + slot : 'supervision')
+  const dir = path.join(ensureLaneHostDir(root), slot ? 'supervision-' + slot : 'supervision')
   return {
     dir,
     pointer: path.join(dir, 'current.json'),
@@ -455,7 +460,7 @@ export function supervisionPaths(root, runId = null, requestedSlot = undefined) 
 
 export function supervisionSlots(root) {
   let names
-  names = directoryEntries(path.join(root, '.lane'))
+  try { names = directoryEntries(laneHostDir(root)) } catch { return [] }
   if (names === null) return []
   return names
     .filter((entry) => entry.isDirectory() && /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))
@@ -467,12 +472,32 @@ export function supervisionSlots(root) {
     })
 }
 
+export function legacySupervision(root) {
+  try { if (lstatSync(path.join(root, '.lane')).isSymbolicLink()) return [{ slot: null, record: null }] } catch { return [] }
+  const entries = directoryEntries(path.join(root, '.lane')) ?? []
+  return entries.filter((entry) => /^supervision(?:-[A-Za-z0-9._-]+)?$/.test(entry.name))
+    .map((entry) => {
+      if (!entry.isDirectory()) return { slot: null, record: null }
+      const slot = entry.name === 'supervision' ? null : entry.name.slice('supervision-'.length)
+      const dir = path.join(root, '.lane', entry.name)
+      const pointer = readWorktreeRegular(path.join(dir, 'current.json'))
+      let record = null
+      try {
+        const id = JSON.parse(pointer).runId
+        if (/^\d+-\d+$/.test(id)) record = JSON.parse(readWorktreeRegular(path.join(dir, `${id}.json`)))
+      } catch {}
+      return { slot, record }
+    })
+}
+
 export function readCurrentSupervision(root, requestedSlot = undefined) {
   try {
-    const paths = supervisionPaths(root, null, requestedSlot)
-    const pointer = JSON.parse(readFileSync(paths.pointer, 'utf8'))
+    const slot = requestedSlot === undefined ? process.env.WT_LANE_SUPERVISION_SLOT ?? null : requestedSlot
+    if (slot !== null && !/^[A-Za-z0-9._-]+$/.test(slot)) return null
+    const dir = path.join(laneHostDir(root), slot ? 'supervision-' + slot : 'supervision')
+    const pointer = JSON.parse(readFileSync(path.join(dir, 'current.json'), 'utf8'))
     if (typeof pointer.runId !== 'string' || !/^\d+-\d+$/.test(pointer.runId)) return null
-    return JSON.parse(readFileSync(supervisionPaths(root, pointer.runId, requestedSlot).record, 'utf8'))
+    return JSON.parse(readFileSync(path.join(dir, `${pointer.runId}.json`), 'utf8'))
   } catch { return null }
 }
 

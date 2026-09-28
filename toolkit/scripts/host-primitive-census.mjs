@@ -9,13 +9,18 @@ const OS_MODULES = new Set(['os', 'node:os'])
 const HOST_MODULES = new Set([...CHILD_PROCESS_MODULES, ...FILESYSTEM_MODULES, ...OS_MODULES])
 const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 
-// Lowered to 1924 when the one-off rules-rationale split script was deleted (card 1871370375661618822).
+// Lowered by independent reductions: the suite lock's reclaim moved its file operations into
+// host/suite-lock-queue.mjs, the main-guard allow-once reads were consolidated into one helper, and
+// lane brief and lifecycle reads moved into the host lane directory helper; the launcher
+// also moved its host file-descriptor operations behind that helper.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1924
+export const HOST_PRIMITIVE_CEILING = 1903
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
-  const generated = new Set([join(root, 'bin', 'wt-observe.mjs')])
+  // Generated third-party YAML grammar literals are not host access (same exemption
+  // as the generated observatory launcher); their source is byte-identity checked.
+  const generated = new Set([join(root, 'bin', 'wt-observe.mjs'), join(root, 'bin', 'lib', 'vendor', 'yaml.mjs')])
   function walk(directory) {
     return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
       const path = join(directory, entry.name)

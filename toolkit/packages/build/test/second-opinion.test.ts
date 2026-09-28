@@ -44,10 +44,32 @@ function fixture(consented: boolean) {
   }
 }
 
+const BROKER_SEEN_MARKER = 'broker-seen-by-parent'
+
 // The ownership tests below read broker PIDs the fake companion writes from inside its process, so
 // they run the UNSANDBOXED path (macOS, Windows, no bwrap); inside the sandbox those would be
 // namespace PIDs. The sandboxed end of the family is locked by the namespace test further down.
-function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang', sandbox = 'off') {
+// 'fast' is a companion that records its broker in broker.json (as the real one does once the broker is
+// ready) and exits at once, before any parent snapshot has had a chance to see the broker.
+function companionEnd(mode: 'hang' | 'normal' | 'error' | 'fast') {
+  if (mode === 'fast') {
+    return [
+      "writeFileSync(join(process.cwd(), 'companion.pid'), String(process.pid))",
+      "const ready = setInterval(() => { if (!existsSync(join(process.cwd(), 'app-server.pid'))) return; clearInterval(ready); mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })); process.exit(0) }, 5)",
+    ]
+  }
+  return [
+    `setTimeout(() => { mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })) }, 1500)`,
+    // A finishing companion ends only once the parent's process snapshot has SEEN the broker and its
+    // app-server (the harness below drops BROKER_SEEN_MARKER): ownership captures the broker only
+    // while the companion lives, so a fixed 100 ms lifetime raced a slow `ps` on loaded macOS runners.
+    mode === 'hang'
+      ? 'setInterval(() => {}, 1000)'
+      : `const until = Date.now() + 10_000; const tick = setInterval(() => { if (existsSync(join(process.cwd(), ${JSON.stringify(BROKER_SEEN_MARKER)})) || Date.now() > until) { clearInterval(tick); process.exit(${mode === 'normal' ? 0 : 7}) } }, 10)`,
+  ]
+}
+
+function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' | 'fast' = 'hang', sandbox = 'off') {
   const fixtureBase = fixture(true)
   const f = { ...fixtureBase, env: { ...fixtureBase.env, WT_LANE_SANDBOX: sandbox } }
   const companionDir = join(f.env.CLAUDE_CONFIG_DIR, 'plugins', 'cache', 'openai-codex', 'codex', '1.0.0', 'scripts')
@@ -65,14 +87,13 @@ function detachedBrokerFixture(mode: 'hang' | 'normal' | 'error' = 'hang', sandb
   ].join('\n'))
   writeFileSync(join(companionDir, 'codex-companion.mjs'), [
     "import { spawn } from 'node:child_process'",
-    "import { mkdirSync, writeFileSync } from 'node:fs'",
+    "import { existsSync, mkdirSync, writeFileSync } from 'node:fs'",
     "import { join } from 'node:path'",
     "const child = spawn(process.execPath, [join(import.meta.dirname, 'app-server-broker.mjs')], { detached: true, stdio: 'ignore' })",
     'child.unref()',
     "writeFileSync(join(process.cwd(), 'broker.pid'), String(child.pid))",
     "const stateDir = join(process.env.CLAUDE_PLUGIN_DATA, 'state', 'fixture')",
-    "setTimeout(() => { mkdirSync(stateDir, { recursive: true }); writeFileSync(join(stateDir, 'broker.json'), JSON.stringify({ pid: child.pid })) }, 1500)",
-    mode === 'hang' ? 'setInterval(() => {}, 1000)' : `setTimeout(() => process.exit(${mode === 'normal' ? 0 : 7}), 100)`,
+    ...companionEnd(mode),
   ].join('\n'))
   return { ...f, companionDir, appPidFile, brokerPidFile }
 }
@@ -344,6 +365,24 @@ describe('second-opinion advisor', () => {
     ])
   })
 
+  it('labels a Codex classifier refusal just before EXIT without changing its code', async () => {
+    const f = fixture(true)
+    const deps = dependencies({ runCodex: vi.fn(() => ({ status: 1, stdout: '', stderr: '[codex] Codex error: This content was flagged for possible cybersecurity risk.\n' })) })
+    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(1)
+    expect(lines(f.out).slice(-2)).toEqual(['OUTCOME=refused-by-classifier provider=openai category=cyber', 'EXIT=1'])
+  })
+
+  it('labels an SDK classifier notice even when the result exits successfully', async () => {
+    const f = fixture(false)
+    const deps = dependencies({ resolveSdkQuery: vi.fn(() => async function* () {
+      yield { type: 'system', subtype: 'informational', content: "Opus 5.5's safeguards stopped the response above" }
+      yield { type: 'result', result: 'declined', is_error: false }
+    }) })
+    expect(await runSecondOpinion(f.options, deps, f.env)).toBe(0)
+    expect(lines(f.out).at(-2)).toContain('OUTCOME=classifier-notice provider=anthropic')
+    expect(lines(f.out).at(-1)).toBe('EXIT=0')
+  })
+
   it('writes unavailable cleanup diagnostics before the exit marker', async () => {
     const f = fixture(true)
     const deps = dependencies({
@@ -454,18 +493,51 @@ describe('second-opinion advisor', () => {
     },
   )
 
-  it.each([['normal', 0], ['error', 7]] as const)('stops the detached broker app-server after a %s companion end', (mode, expectedStatus) => {
-    const f = detachedBrokerFixture(mode)
-    const result = spawnSync(process.execPath, [CLI, '--request', f.request, '--out', f.out, '--repo', f.repo, '--route', 'astra'], {
+  // Runs the core in a child process with the REAL host adapter of `adapterPlatform` (on a POSIX
+  // host the darwin adapter's `ps -axo lstart` path runs as-is, with the pass-through plan a non-Linux
+  // host gets), each snapshot slowed until the broker is seen, as on a loaded macOS runner.
+  const finishingCompanionCases = [...new Map([
+    [process.platform, 'normal', 0], [process.platform, 'error', 7],
+    ...(process.platform === 'win32' ? [] : [['darwin', 'normal', 0], ['darwin', 'error', 7]]),
+  ].map((entry) => [entry.join(':'), entry as [string, 'normal' | 'error', number]])).values()]
+  it.each(finishingCompanionCases)('stops the detached broker app-server after a companion end (%s host adapter, %s end, slow process snapshot)', (adapterPlatform, mode, expectedStatus) => {
+    const passThrough = adapterPlatform !== 'linux'
+    const f = detachedBrokerFixture(mode, passThrough ? '' : 'off')
+    const harness = join(f.repo, 'finish-harness.mjs')
+    const coreUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/second-opinion-core.mjs')).href
+    const adapterUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/adapter.mjs')).href
+    writeFileSync(harness, [
+      "import { existsSync, readFileSync, writeFileSync } from 'node:fs'",
+      "import { join } from 'node:path'",
+      `import { createSecondOpinionDependencies, runSecondOpinion } from ${JSON.stringify(coreUrl)}`,
+      `import { createHostAdapter } from ${JSON.stringify(adapterUrl)}`,
+      `const repo = ${JSON.stringify(f.repo)}`,
+      `const marker = join(repo, ${JSON.stringify(BROKER_SEEN_MARKER)})`,
+      "const pidIn = (name) => { try { return Number(readFileSync(join(repo, name), 'utf8')) } catch { return 0 } }",
+      `const adapter = createHostAdapter({ platform: ${JSON.stringify(adapterPlatform)} })`,
+      'const readSnapshot = adapter.readProcessSnapshot',
+      'adapter.readProcessSnapshot = () => {',
+      '  const seen = existsSync(marker)',
+      '  if (!seen) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150)',
+      '  const table = readSnapshot()',
+      "  const family = [pidIn('broker.pid'), pidIn('app-server.pid')]",
+      "  if (!seen && table.supported && family.every((pid) => pid && table.processes.some((item) => item.pid === pid))) writeFileSync(marker, '')",
+      '  return table',
+      '}',
+      `process.exitCode = await runSecondOpinion(${JSON.stringify({ ...f.options, route: 'astra' })}, createSecondOpinionDependencies(adapter), process.env)`,
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [harness], {
       env: { ...process.env, ...f.env, HOME: f.home },
       encoding: 'utf8',
-      timeout: process.platform === 'win32' ? 15_000 : 5_000,
+      timeout: 20_000,
     })
     expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
     const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
     const brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
     try {
-      expect(result.status).toBe(expectedStatus)
+      expect(result.status, result.stderr).toBe(expectedStatus)
+      if (passThrough) expect(lines(f.out)).toContain(`lane sandbox: none (bubblewrap sandbox is Linux-only; this host is ${adapterPlatform}); running with the environment allow-list only`)
+      expect(lines(f.out).join('\n')).toMatch(/stopped broker\/app-server process family pid \d+ started by this call/)
       expect(waitFor(() => !processExists(appPid))).toBe(true)
       expect(waitFor(() => !processExists(brokerPid))).toBe(true)
     } finally {
@@ -475,7 +547,58 @@ describe('second-opinion advisor', () => {
       }
       if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
     }
-  }, process.platform === 'win32' ? 30_000 : 10_000)
+  }, 30_000)
+
+  // The companion records its broker in broker.json and exits at once; every process snapshot taken while
+  // it lives misses the broker (a `ps` too slow to list it yet). Ownership must still find the broker this
+  // call started — from the broker.json in its private CLAUDE_PLUGIN_DATA root — and stop it.
+  const fastCompanionAdapters = [...new Set([process.platform, ...(process.platform === 'win32' ? [] : ['darwin'])])]
+  it.each(fastCompanionAdapters)('stops the broker a companion recorded when it exits before any snapshot saw that broker (%s host adapter)', (adapterPlatform) => {
+    const passThrough = adapterPlatform !== 'linux'
+    const f = detachedBrokerFixture('fast', passThrough ? '' : 'off')
+    const harness = join(f.repo, 'fast-harness.mjs')
+    const coreUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/second-opinion-core.mjs')).href
+    const adapterUrl = pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/adapter.mjs')).href
+    writeFileSync(harness, [
+      "import { readFileSync } from 'node:fs'",
+      "import { join } from 'node:path'",
+      `import { createSecondOpinionDependencies, runSecondOpinion } from ${JSON.stringify(coreUrl)}`,
+      `import { createHostAdapter } from ${JSON.stringify(adapterUrl)}`,
+      `const repo = ${JSON.stringify(f.repo)}`,
+      "const pidIn = (name) => { try { return Number(readFileSync(join(repo, name), 'utf8')) } catch { return 0 } }",
+      // Alive or not yet reaped by this process: kill(pid, 0) fails only once the companion has been reaped.
+      "const companionUnreaped = () => { const pid = pidIn('companion.pid'); if (!pid) return true; try { process.kill(pid, 0); return true } catch { return false } }",
+      `const adapter = createHostAdapter({ platform: ${JSON.stringify(adapterPlatform)} })`,
+      'const readSnapshot = adapter.readProcessSnapshot',
+      'adapter.readProcessSnapshot = () => {',
+      '  const hide = companionUnreaped()',
+      '  const table = readSnapshot()',
+      "  const broker = pidIn('broker.pid')",
+      '  return hide && table.supported ? { ...table, processes: table.processes.filter((item) => item.pid !== broker) } : table',
+      '}',
+      `process.exitCode = await runSecondOpinion(${JSON.stringify({ ...f.options, route: 'astra' })}, createSecondOpinionDependencies(adapter), process.env)`,
+    ].join('\n'))
+    const result = spawnSync(process.execPath, [harness], {
+      env: { ...process.env, ...f.env, HOME: f.home },
+      encoding: 'utf8',
+      timeout: 20_000,
+    })
+    expect(waitFor(() => existsSync(f.appPidFile))).toBe(true)
+    const appPid = Number(readFileSync(f.appPidFile, 'utf8'))
+    const brokerPid = Number(readFileSync(f.brokerPidFile, 'utf8'))
+    try {
+      expect(result.status, result.stderr).toBe(0)
+      expect(lines(f.out).join('\n')).toContain(`stopped broker/app-server process family pid ${brokerPid} started by this call`)
+      expect(waitFor(() => !processExists(appPid))).toBe(true)
+      expect(waitFor(() => !processExists(brokerPid))).toBe(true)
+    } finally {
+      if (brokerPid && processExists(brokerPid)) {
+        if (process.platform === 'win32') spawnSync('taskkill.exe', ['/pid', String(brokerPid), '/t', '/f'])
+        else process.kill(-brokerPid, 'SIGKILL')
+      }
+      if (appPid && processExists(appPid)) process.kill(appPid, 'SIGKILL')
+    }
+  }, 30_000)
 
   it('stops the detached broker app-server from the process exit hook', () => {
     const f = detachedBrokerFixture()
@@ -576,5 +699,93 @@ describe('second-opinion advisor', () => {
     expect(await runSecondOpinion({ ...f.options, route: 'astra', signal }, deps, f.env)).toBe(1)
     expect(process.listenerCount('exit')).toBe(baselineExitListeners)
     expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
+  })
+
+  it('removes abort and exit listeners when spawn reports an error after sandbox planning', async () => {
+    const f = fixture(true)
+    const baselineExitListeners = process.listenerCount('exit')
+    const signal = { aborted: false, reason: undefined, addEventListener: vi.fn(), removeEventListener: vi.fn() }
+    const adapter = {
+      platform: process.platform,
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env, capture: vi.fn(), stop: () => [] }),
+    }
+    const deps = createSecondOpinionDependencies(adapter, {
+      resolveSandbox: () => ({ kind: 'bwrap', line: 'lane sandbox: bwrap (test)', wrap: () => [join(f.repo, 'missing-executable'), []] }),
+    })
+    deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra', signal }, deps, f.env)).toBe(1)
+    expect(signal.addEventListener).toHaveBeenCalledWith('abort', expect.any(Function), { once: true })
+    expect(signal.removeEventListener).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(process.listenerCount('exit')).toBe(baselineExitListeners)
+  })
+
+  // The real bwrap planner takes POSIX paths; a Windows os.tmpdir() fixture cannot exercise
+  // its refusal reasons. The win32 pass-through and ownership cleanup are checked below.
+  it.skipIf(process.platform === 'win32')('stops broker ownership and removes its temp root when sandbox planning refuses (Linux planner paths)', async () => {
+    const core = process.env.WT_LANE_SECOND_OPINION_TEST_LIB
+      ? await import(pathToFileURL(join(process.env.WT_LANE_SECOND_OPINION_TEST_LIB, 'second-opinion-core.mjs')).href)
+      : { createSecondOpinionDependencies, runSecondOpinion }
+    const sandbox = await import(pathToFileURL(join(process.env.WT_LANE_SANDBOX_TEST_LIB ?? resolve(__dirname, '../../../../plugin/bin/lib'), 'host/lane-sandbox.mjs')).href)
+    for (const reason of ['no executable selected', 'parent traversal in a readable bind', 'codex realpath is covered'] as const) {
+      const f = fixture(true)
+      const ownershipRoot = mkdtempSync(join(f.repo, 'broker-ownership-'))
+      const stop = vi.fn(() => { rmSync(ownershipRoot, { recursive: true, force: true }); return [] })
+      const baseline = process.listenerCount('exit')
+      const codex = '/opt/good/bin/codex'
+      const env = { ...f.env, HOME: f.home, XDG_STATE_HOME: join(f.home, 'state'), PATH: reason === 'no executable selected' ? '' : '/opt/good/bin' }
+      const adapter = {
+        platform: 'linux',
+        createCodexBrokerOwnership: () => ({ env, capture: vi.fn(), stop }),
+      }
+      const fs = {
+        exists: () => true,
+        realpath: (file: string) => file,
+        isFile: (file: string) => file === codex,
+        isExecutable: (file: string) => file === codex,
+        isDir: (file: string) => reason !== 'codex realpath is covered' || !['/opt/good/bin', '/opt/good', '/opt', '/usr', '/usr/bin', '/usr/local/bin'].includes(file),
+        readText: (file: string) => file === join(f.home, '.codex', 'auth.json') ? '{"tokens":{}}' : null,
+        ensureDir: () => {}, ensureFile: () => {}, copy: () => {},
+      }
+      const resolveSandbox = vi.fn((request: Record<string, unknown>) => sandbox.resolveLaneSandbox({
+        ...request,
+        paths: { readable: [...(request.paths as { readable: string[] }).readable, ...(reason === 'parent traversal in a readable bind' ? ['/data/a/../b'] : [])] },
+        fs, optionEnv: {}, bwrap: '/usr/bin/bwrap', socat: '/usr/bin/socat', probe: () => ({ ok: true }),
+        runtimeParent: f.home, spawnFn: () => { throw new Error('bridge started before refusal') },
+      }))
+      const deps = core.createSecondOpinionDependencies(adapter, { resolveSandbox })
+      deps.resolveCodexCompanion = () => join(f.repo, 'scripts', 'codex-companion.mjs')
+      expect(await core.runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+      expect(resolveSandbox).toHaveBeenCalledOnce()
+      expect(lines(f.out).join('\n')).toMatch(reason === 'no executable selected' ? /no executable selected/ : reason === 'parent traversal in a readable bind' ? /parent traversal in a bind/ : /realpath is covered/)
+      expect(stop).toHaveBeenCalledOnce()
+      expect(existsSync(ownershipRoot)).toBe(false)
+      expect(process.listenerCount('exit')).toBe(baseline)
+    }
+  })
+
+  it('stops broker ownership and removes its temp root after a win32 pass-through plan', async () => {
+    const f = fixture(true)
+    const ownershipRoot = mkdtempSync(join(f.repo, 'broker-ownership-'))
+    const stop = vi.fn(() => { rmSync(ownershipRoot, { recursive: true, force: true }); return [] })
+    const baseline = process.listenerCount('exit')
+    // Exercise the Windows spelling even when this test runs on a POSIX CI worker.
+    const windowsHome = process.platform === 'win32' ? f.home : 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\home'
+    const adapter = {
+      platform: 'win32',
+      createCodexBrokerOwnership: (env: Record<string, string>) => ({ env: { ...env, HOME: windowsHome }, capture: vi.fn(), stop }),
+    }
+    const sandbox = await import(pathToFileURL(resolve(__dirname, '../../../../plugin/bin/lib/host/lane-sandbox.mjs')).href)
+    const resolveSandbox = vi.fn((request: Record<string, unknown>) => sandbox.resolveLaneSandbox(request))
+    const deps = createSecondOpinionDependencies(adapter, { resolveSandbox })
+    deps.resolveCodexCompanion = () => join(f.repo, 'missing-companion.mjs')
+
+    expect(await runSecondOpinion({ ...f.options, route: 'astra' }, deps, f.env)).toBe(1)
+    expect(resolveSandbox).toHaveBeenCalledOnce()
+    expect((resolveSandbox.mock.calls[0]![0].env as Record<string, string>).HOME).toBe(windowsHome)
+    expect(lines(f.out)).toContain('lane sandbox: none (bubblewrap sandbox is Linux-only; this host is win32); running with the environment allow-list only')
+    expect(stop).toHaveBeenCalledOnce()
+    expect(existsSync(ownershipRoot)).toBe(false)
+    expect(process.listenerCount('exit')).toBe(baseline)
   })
 })

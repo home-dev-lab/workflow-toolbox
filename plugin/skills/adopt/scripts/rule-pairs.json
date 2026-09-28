@@ -4,6 +4,7 @@
     "shipped": "wt-step-back-architectural.md",
     "partial": false
   },
+  { "user": "step-back-architectural.md", "shipped": "wt-distributed-twins-at-act.md", "partial": true },
   {
     "user": "concurrent-sessions-worktree.md",
     "shipped": "wt-concurrent-sessions-worktree.md",
@@ -19,6 +20,7 @@
     "shipped": "wt-workflows-as-reasoning.md",
     "partial": false
   },
+  { "user": "workflows-as-reasoning.md", "shipped": "wt-workflows-as-reasoning-at-act.md", "partial": true },
   {
     "user": "proportionate-verification.md",
     "shipped": "wt-proportionate-verification.md",
@@ -29,6 +31,7 @@
     "shipped": "wt-sdlc.md",
     "partial": false
   },
+  { "user": "sdlc-interim.md", "shipped": "wt-sdlc-at-act.md", "partial": true },
   {
     "user": "proactive-decision-making.md",
     "shipped": "wt-proactive-decision-making.md",
@@ -54,6 +57,8 @@
     "shipped": "wt-delegation-ladder-at-act.md",
     "partial": true
   },
+  { "user": "delegation-lanes.md", "shipped": "wt-delegation-addressing-at-act.md", "partial": true },
+  { "user": "delegation-lanes.md", "shipped": "wt-delegation-routing-at-act.md", "partial": true },
   {
     "user": "outbound-propose-dont-affirm.md",
     "shipped": "wt-propose-dont-affirm.md",
@@ -74,6 +79,8 @@
     "shipped": "wt-memory-hygiene.md",
     "partial": true
   },
+  { "user": "memory-hygiene.md", "shipped": "wt-memory-hygiene-at-act.md", "partial": true },
+  { "user": "memory-hygiene.md", "shipped": "wt-memory-maintenance-at-act.md", "partial": true },
   {
     "user": "task-tracking.md",
     "shipped": "wt-task-tracking.md",
@@ -94,6 +101,7 @@
     "shipped": "wt-answer-first-reporting.md",
     "partial": true
   },
+  { "user": "communication-refresher-progressive-disclosure.md", "shipped": "wt-reporting-monitor-at-act.md", "partial": true },
   {
     "user": "high-impact-three-questions.md",
     "shipped": "wt-verify-by-ground-truth.md",

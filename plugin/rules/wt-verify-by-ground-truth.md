@@ -30,6 +30,8 @@ taking the margin.
 
 ## Verify claims against their actual evidence
 
+**ANY surprise — good, bad, novel, first occurrence, mid-flow, off-task, harmless-looking — is an anomaly to EXPLAIN before labelling it.**
+
 **UI claim = RENDERED PIXELS.** Not API payload. Field can sit in JSON and be dropped before DOM.
 Drive real browser.
 
@@ -72,27 +74,6 @@ construction.
 Relayed claim later shown hollow → correction go back to SAME recipients. Not absorbed into
 report nobody re-read.
 
-## Delegate green report is input, not proof
-
-**Delegate green report = input. Not proof of work. Not proof of WHERE it ran.** Re-run gates
-yourself. Verify provenance from execution traces.
-
-**A gate log at a FIXED path is evidence for nobody — the brief is where the collision is
-authored.** A brief that names a fixed log path hands that same path to every delegate who ever
-reads it, across sessions and across time; two runs write it, two readers read it, and neither can
-prove whose green they saw. A brief names a STAMPED path (`<what>-<timestamp>.log`) or names none
-and lets the delegate choose its own. Reusing a path also makes a completion marker meaningless — a
-dead run's marker lands mid-file in a live run's output, present and greppable and false — so
-completion is decided from the LAST line of the file, never from a match anywhere in it.
-⚠ Tell, readable without knowing the other writer exists: a gate log whose green CONTRADICTS the
-failures someone is discussing. Two readers who both find failures, or both find green, agree by
-construction and the collision stays invisible.
-
-**ANY surprise — good, bad, novel — is anomaly to EXPLAIN before you label it.** Favorable
-surprise is the one that silently skip verification. Include FIRST occurrence of class never
-observed before. Even mid-flow, off-task, harmless-looking. Skip-tell: you are BUSY and event is
-peripheral.
-
 ## Symptom vanishing after a change is correlation
 
 **Symptom vanish right after your change = CORRELATION.** Name other variables that could move in
@@ -120,19 +101,13 @@ archaeology is the fallback, never the opening move.
 same defect. It READS as progress, because each version fits more evidence than the last. Two wrong
 explanations in a row is the signature — stop building the third from the same material.
 
-## Shipping requires an explicit cross-platform verdict
-
-**Ship anything → explicit CROSS-PLATFORM verdict.** Name system dependencies. Per dependency say:
-throw, degrade to named `unknown`, or silently return plausible value.
-Third case is the dangerous one. Monitor reporting reassuring number on platform where it cannot
-measure is WORSE than no monitor — broken state look healthy.
-Linux-only is legitimate conclusion. Letting reader assume portability is not.
-
 **After claiming mechanism, grep for code that must exist for claim to be FALSE.** Report what you
 found. Fastest guard against explanation built from quote that say opposite of conclusion drawn
 from it.
 
 ## High-impact mechanisms require three answers
+
+**Shipping anything requires an explicit CROSS-PLATFORM verdict:** classify each dependency as throwing, degrading to a named `unknown`, or silently returning a plausible value.
 
 **High impact or high risk — guard, safety mechanism, money, security, data loss, availability,
 published surface — answer all three:**

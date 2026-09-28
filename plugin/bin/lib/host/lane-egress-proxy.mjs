@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { lookup } from 'node:dns'
-import { closeSync, constants, fstatSync, openSync, readFileSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, constants, fstatSync, openSync, realpathSync, statSync, writeSync } from 'node:fs'
 import net from 'node:net'
 import { isInvokedDirectly } from './entry-guard.mjs'
+import { parseHelperArguments, runLaneHelper } from './lane-helper-process.mjs'
 
 // Host-side egress proxy for a sandboxed lane (lane-sandbox.mjs). The lane runs in its own network
 // namespace with nothing but loopback; this proxy, reached over a unix socket bridged into that
@@ -266,80 +267,92 @@ export function createEgressProxy({ allow, log = () => {}, resolve = lookup, con
  */
 export function egressLogWriter(file, { limit = EGRESS_LOG_LIMIT_BYTES, now = () => new Date() } = {}) {
   let capped = false
-  return (record) => {
-    if (!file || capped || !constants.O_NOFOLLOW) return
-    let fd
+  let fd
+  if (file && constants.O_NOFOLLOW) {
     try {
-      fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+      fd = openSync(file, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW, 0o600)
+      // The launcher hands us the canonical path established at validation, including when the
+      // operator used an OS alias (/var -> /private/var on macOS). Refuse a parent redirected
+      // between validation and open; O_NOFOLLOW only protects the leaf.
+      if (realpathSync.native(file) !== file) throw new Error('log path is not canonical')
+      const opened = fstatSync(fd); const named = statSync(file)
+      if (!opened.isFile() || opened.dev !== named.dev || opened.ino !== named.ino) throw new Error('log inode changed')
+    } catch {
+      if (fd !== undefined) closeSync(fd)
+      fd = undefined
+    }
+  }
+  return (record) => {
+    if (fd === undefined || capped) return
+    try {
       const line = `${JSON.stringify({ at: now().toISOString(), ...record, host: loggableHost(record.host) })}\n`
       if (fstatSync(fd).size + line.length > limit) {
         capped = true
         const reason = `egress log reached ${limit} bytes; later requests are not logged`
         writeSync(fd, `${JSON.stringify({ at: now().toISOString(), decision: 'log-capped', reason })}\n`)
       } else writeSync(fd, line)
-    } catch { /* the log is diagnostic only: a refused open (symlink, permissions) writes nothing */ } finally {
-      if (fd !== undefined) closeSync(fd)
+    } catch { /* the log is diagnostic only */ }
+  }
+}
+
+/**
+ * Relay mode: the host half of a sandboxed lane's bridge to ONE loopback model endpoint. Each
+ * connection accepted on the unix socket is piped to TCP `host:port`, half-close carried in both
+ * directions (a client that ends its write side right after the request still gets the answer), and
+ * both sides destroyed on any error. Every live socket is kept in `connections`, so the parent
+ * watchdog can destroy them all before exiting: nothing relayed outlives the lane's launcher, unlike
+ * a host `socat ... fork`, whose forked children survived it.
+ */
+export function createEndpointRelay({ host, port, connect = net.connect, connections = new Set() } = {}) {
+  return net.createServer({ allowHalfOpen: true }, (client) => {
+    const upstream = connect({ host, port, allowHalfOpen: true })
+    const destroyBoth = () => { client.destroy(); upstream.destroy() }
+    for (const socket of [client, upstream]) {
+      connections.add(socket)
+      socket.on('error', destroyBoth)
+      // A clean close means both FINs were exchanged on that side; the pipe has already ended the
+      // other side, which may still be flushing, so it is left to finish rather than destroyed.
+      socket.on('close', () => connections.delete(socket))
     }
-  }
+    client.pipe(upstream)
+    upstream.pipe(client)
+  })
 }
 
-// /proc/<pid>/stat field 22: a pid whose start time changed is a DIFFERENT process (pid reuse).
-export function processStartTicks(pid, readFile = (file) => readFileSync(file, 'utf8')) {
-  try {
-    const stat = readFile(`/proc/${pid}/stat`)
-    const start = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19])
-    return Number.isFinite(start) ? start : null
-  } catch { return null }
+// `<host>:<port>`, the host possibly an IPv6 literal (bare or bracketed); null when malformed.
+function relayTarget(value) {
+  const text = String(value ?? '')
+  const colon = text.lastIndexOf(':')
+  const host = text.slice(0, colon).replace(/^\[(.*)\]$/, '$1')
+  const port = Number(text.slice(colon + 1))
+  return colon > 0 && host && Number.isInteger(port) && port > 0 && port < 65_536 ? { host, port } : null
 }
 
-export function parentAlive(pid, startTicks, { kill = process.kill, readStart = processStartTicks } = {}) {
-  try { kill(pid, 0) } catch { return false }
-  return startTicks === null || readStart(pid) === startTicks
-}
+export { parentAlive, processStartTicks } from './lane-helper-process.mjs'
 
-function parseArguments(argv) {
-  const options = { allow: new Set(), socket: null, log: null, parent: null, parentStart: null }
-  for (let index = 0; index < argv.length; index += 2) {
-    const value = argv[index + 1]
-    if (argv[index] === '--socket') options.socket = value
-    else if (argv[index] === '--allow') for (const host of String(value ?? '').split(',')) { if (host.trim()) options.allow.add(normalizeEgressHost(host)) }
-    else if (argv[index] === '--log') options.log = value
-    else if (argv[index] === '--parent') options.parent = Number(value)
-    else if (argv[index] === '--parent-start') options.parentStart = Number.isFinite(Number(value)) ? Number(value) : null
-  }
-  return options
+function refuseArguments(message) {
+  process.stderr.write(`workflow-toolbox: lane endpoint relay stopped: ${message}\n`)
+  process.exit(3)
 }
 
 function main() {
-  const options = parseArguments(process.argv.slice(2))
-  const fatal = (message) => {
-    process.stderr.write(`workflow-toolbox: lane egress proxy stopped: ${message}; the sandboxed lane has no egress\n`)
-    try { rmSync(options.socket, { force: true }) } catch { /* nothing to remove */ }
-    process.exit(3)
-  }
-  if (!options.socket) fatal('--socket is required')
-  process.on('uncaughtException', (error) => fatal(error?.message ?? String(error)))
-  const server = createEgressProxy({ allow: options.allow, log: egressLogWriter(options.log) })
-  // A listen failure is fatal (the launch then refuses: its socket never appears). An accept error
-  // (EMFILE) is transient: the proxy keeps serving and says so once.
-  let listening = false
-  let acceptErrorReported = false
-  server.on('error', (error) => {
-    if (!listening) fatal(`cannot listen on its socket (${error.code ?? error.message})`)
-    if (!acceptErrorReported) process.stderr.write(`workflow-toolbox: lane egress proxy accept error (${error.code ?? error.message}); still serving\n`)
-    acceptErrorReported = true
+  const options = { allow: new Set(), allowGiven: false, relay: null, socket: null, log: null, parent: null, parentStart: null }
+  parseHelperArguments(process.argv.slice(2), options, {
+    '--allow': (value) => { options.allowGiven = true; for (const host of String(value ?? '').split(',')) { if (host.trim()) options.allow.add(normalizeEgressHost(host)) } },
+    '--log': (value) => { options.log = value },
+    '--relay': (value) => { options.relay = value ?? '' },
   })
-  server.listen(options.socket, () => { listening = true })
-  // The proxy exits within one poll (2 s) of its parent's death, SIGKILL included: the parent pid
-  // AND its start time are checked, so a reused pid does not keep it alive.
-  if (Number.isSafeInteger(options.parent) && options.parent > 1) {
-    setInterval(() => {
-      if (parentAlive(options.parent, options.parentStart)) return
-      server.close()
-      try { rmSync(options.socket, { force: true }) } catch { /* already gone */ }
-      process.exit(0)
-    }, 2_000)
+  if (options.relay === null) {
+    const server = createEgressProxy({ allow: options.allow, log: egressLogWriter(options.log) })
+    runLaneHelper({ server, options, name: 'egress proxy', stoppedSuffix: '; the sandboxed lane has no egress' })
+    return
   }
+  if (options.allowGiven) refuseArguments('--relay and --allow are mutually exclusive')
+  const target = relayTarget(options.relay)
+  if (!target) refuseArguments('--relay needs <host>:<port>')
+  const connections = new Set()
+  const server = createEndpointRelay({ ...target, connections })
+  runLaneHelper({ server, options, name: 'endpoint relay', stoppedSuffix: `; the sandboxed lane has lost its route to ${target.host}:${target.port}`, beforeExit: () => { for (const socket of connections) socket.destroy() } })
 }
 
 if (isInvokedDirectly(import.meta.url)) main()

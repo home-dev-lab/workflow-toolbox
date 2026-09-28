@@ -111,7 +111,7 @@ function observerPairingFixture() {
   mkdirSync(agentsDir, { recursive: true })
   writeFileSync(
     join(agentsDir, 'pilot-orchestrator.md'),
-    '---\nname: pilot-orchestrator\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
+    '---\nname: pilot-orchestrator\ndescription: orchestrates pilot work\nobserver: pilot-orchestrator-watchdog\n---\nbody\n',
   )
   const slugDir = join(cfg, 'projects', 'slug-observer-pairing')
   const sessionId = '11111111-2222-3333-4444-555555555555'

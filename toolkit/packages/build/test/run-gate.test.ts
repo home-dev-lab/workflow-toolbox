@@ -56,6 +56,8 @@ function gateRepo() {
   mkdirSync(join(root, 'plugin'), { recursive: true })
   writeFileSync(join(root, 'plugin', 'thing.mjs'), '// base\n')
   git('init', '-q')
+  // Later fixture commits run without the isolated env; the repository itself must refuse signing.
+  git('config', 'commit.gpgsign', 'false')
   git('add', '.')
   git('-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'base')
   return { root, env: { ...process.env, WT_GUARD_JOURNAL_DIR: state } }

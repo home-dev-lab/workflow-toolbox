@@ -3,13 +3,13 @@
   "ignoreWorkspaces": ["toolkit/examples"],
   "workspaces": {
     ".": {
-      "entry": ["plugin/bin/*.mjs", "plugin/hooks/hooks.js", "plugin/monitors/*.mjs"],
+      "entry": ["plugin/bin/*.mjs", "plugin/hooks/hooks.js", "plugin/monitors/*.mjs", "toolkit/scripts/frontmatter-corpus-diff.mjs"],
       "project": ["plugin/**/*.{mjs,js}"],
       "ignore": ["plugin/hooks/snapshot-program.js", "plugin/**/fixtures/**"]
     },
     "toolkit/packages/runtime": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
     "toolkit/packages/patterns": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
-    "toolkit/packages/build": { "entry": ["src/{index,define-workflow,define-pipeline,cli}.ts"], "project": ["src/**/*.ts"] },
+    "toolkit/packages/build": { "entry": ["src/{index,define-workflow,define-pipeline,cli}.ts", "test/frontmatter*.test.ts"], "project": ["src/**/*.ts"] },
     "toolkit/packages/std": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
     "toolkit/packages/pipeline-spec": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },
     "toolkit/packages/comm": { "entry": ["src/index.ts"], "project": ["src/**/*.ts"] },

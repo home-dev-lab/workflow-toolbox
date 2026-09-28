@@ -51,6 +51,11 @@ export interface PluginBinCoverageAudit {
 
 export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
   {
+    script: 'plugin/bin/wt-crossos-dispatch.mjs',
+    status: 'missing-doc-surface',
+    reason: 'The internal merge/release operator runbook is maintained by the integrating session outside this worktree; CLI --help describes its interim invocation contract.',
+  },
+  {
     script: 'plugin/bin/wt-grounding-sources.mjs',
     status: 'mapped',
     reason: 'The deep-grounding source-registry reference documents list, init, layering, and missing dependency reporting.',
@@ -373,6 +378,16 @@ export const PLUGIN_BIN_DOC_DECISIONS: readonly PluginBinDocDecision[] = [
     script: 'plugin/bin/wt-outbound-guard-hook.mjs',
     status: 'mapped',
     reason: 'Known-issues documents this spawn-registry writer/nudge hook under Shipped Hooks, Guards & Monitors.',
+  },
+  {
+    script: 'plugin/bin/wt-model-fallback-check.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the transcript CLI and its exit contract.',
+  },
+  {
+    script: 'plugin/bin/wt-model-fallback-hook.mjs',
+    status: 'mapped',
+    reason: 'Known-issues documents the model-fallback PostToolUse and SubagentStop warning hooks.',
   },
   {
     script: 'plugin/bin/wt-probe-claim-guard-hook.mjs',
@@ -711,7 +726,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['README.md', 'docs/public/known-issues.md', 'PRIVACY.md', 'plugin/skills/external-lane/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/wt-suite-lock-run.mjs', 'plugin/bin/lib/suite-lock.mjs'],
+    sources: ['plugin/bin/wt-suite-lock.mjs', 'plugin/bin/wt-suite-lock-run.mjs', 'plugin/bin/lib/suite-lock.mjs', 'plugin/bin/lib/host/suite-lock-queue.mjs'],
     docs: ['docs/public/known-issues.md'],
   },
   {
@@ -759,7 +774,7 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
     docs: ['plugin/autonomy/AUTHORIZATIONS.md', 'plugin/autonomy/PERMISSIONS.md', 'plugin/skills/adopt/SKILL.md'],
   },
   {
-    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/wt-worktree-remove.mjs', 'plugin/bin/wt-run-cost.mjs', 'plugin/bin/wt-claude-executor.mjs', 'plugin/bin/wt-lane.mjs', 'plugin/bin/lib/pilot-runner-core.mjs', 'plugin/bin/lib/run-cost-core.mjs', 'plugin/bin/lib/knowledge-base-index.mjs', 'plugin/bin/lib/claude-executor-core.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/lifecycle-brief.mjs', 'plugin/bin/lib/lifecycle-launch.mjs', 'plugin/bin/lib/lifecycle-report-edge.mjs', 'plugin/bin/lib/lifecycle-state-machine.mjs', 'plugin/bin/lib/rules-manifest.mjs', 'plugin/rules-manifest.json', 'plugin/rules-manifest.schema.json', 'plugin/bin/lib/orchestrator-judge.mjs', 'plugin/bin/lib/orchestrator-runner-core.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/', 'plugin/skills/sdk-pilot/'],
+    sources: ['plugin/bin/wt-pilot-runner.mjs', 'plugin/bin/wt-pilot-fidelity.mjs', 'plugin/bin/wt-worktree-remove.mjs', 'plugin/bin/wt-run-cost.mjs', 'plugin/bin/wt-claude-executor.mjs', 'plugin/bin/wt-lane.mjs', 'plugin/bin/lib/pilot-runner-core.mjs', 'plugin/bin/lib/run-cost-core.mjs', 'plugin/bin/lib/knowledge-base-index.mjs', 'plugin/bin/lib/claude-executor-core.mjs', 'plugin/bin/lib/sdk-pilot-lifecycle-server.mjs', 'plugin/bin/lib/lifecycle-brief.mjs', 'plugin/bin/lib/lifecycle-launch.mjs', 'plugin/bin/lib/lifecycle-report-edge.mjs', 'plugin/bin/lib/lifecycle-state-machine.mjs', 'plugin/bin/lib/lifecycle-dod-dispute.mjs', 'plugin/bin/lib/rules-manifest.mjs', 'plugin/rules-manifest.json', 'plugin/rules-manifest.schema.json', 'plugin/bin/lib/orchestrator-judge.mjs', 'plugin/bin/lib/orchestrator-runner-core.mjs', 'plugin/bin/lib/route-from-card.mjs', 'plugin/autonomy/PILOT-CONTRACT.md', 'plugin/hooks-modules/pilot-guard/', 'plugin/skills/sdk-pilot/'],
     docs: ['plugin/autonomy/PILOT-RUNNER.md', 'plugin/skills/sdk-pilot/SKILL.md'],
   },
   {
@@ -1060,6 +1075,8 @@ export const DOCS_PROVENANCE: readonly ProvenanceEntry[] = [
       'plugin/bin/wt-lesson-harvest-hook.mjs',
       'plugin/bin/wt-memory-index-check-hook.mjs',
       'plugin/bin/wt-outbound-guard-hook.mjs',
+      'plugin/bin/wt-model-fallback-check.mjs',
+      'plugin/bin/wt-model-fallback-hook.mjs',
       'plugin/bin/wt-probe-claim-guard-hook.mjs',
       'plugin/bin/wt-queue-not-empty-gate-hook.mjs',
       'plugin/bin/wt-observer-pairing-guard-hook.mjs',

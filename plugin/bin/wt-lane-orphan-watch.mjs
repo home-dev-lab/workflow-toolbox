@@ -133,15 +133,18 @@ async function main() {
   const notified = new Set()
   const journaled = new Set()
   const episodeStarts = new Map()
-  const testSweepLog = (line) => {
-    if (!process.env.WT_LANE_WATCH_TEST_SWEEP_LOG) return
+  let tracePath = process.env.WT_LANE_WATCH_TRACE
+  const appendDiagnostic = (file, line, label) => {
+    if (!file) return
     try {
-      appendFileSync(process.env.WT_LANE_WATCH_TEST_SWEEP_LOG, `${line}\n`)
+      appendFileSync(file, `${line}\n`)
     } catch (error) {
-      // Test receipt logging must never throw past safeSweep or mask the real sweep error.
-      process.stderr.write(`wt-lane-orphan-watch: test sweep log write failed; watcher behavior unchanged: ${error instanceof Error ? error.message : String(error)}\n`)
+      // Diagnostic logging must never mask the real sweep error.
+      process.stderr.write(`wt-lane-orphan-watch: ${label} write failed; watcher behavior unchanged: ${error instanceof Error ? error.message : String(error)}\n`)
     }
   }
+  const trace = (entry) => { if (tracePath) appendDiagnostic(tracePath, JSON.stringify(entry), 'trace') }
+  const testSweepLog = (line) => appendDiagnostic(process.env.WT_LANE_WATCH_TEST_SWEEP_LOG, line, 'test sweep log')
   const notice = (key, message) => {
     process.stdout.write(`${message}\n`)
     notified.add(key)
@@ -194,10 +197,12 @@ async function main() {
       ? listProcessTable(hostAdapter)
       : {
           supported: true,
-          processes: helperFixture.map((item) => ({
-            ...item,
-            command: typeof item.command === 'string' ? item.command : Array.isArray(item.argv) ? item.argv.join(' ') : '',
-          })),
+          processes: helperFixture.map((item) => {
+            let command = ''
+            if (typeof item.command === 'string') command = item.command
+            else if (Array.isArray(item.argv)) command = item.argv.join(' ')
+            return { ...item, command }
+          }),
         }
     let helperRows = table.supported ? table.processes : []
     let helperAges = new Map()
@@ -207,10 +212,16 @@ async function main() {
     }
     for (const event of idleHelperEvents(helperRows, { ageByPid: helperAges, inspect: inspectProcess })) if (!notified.has(event.key)) notice(event.key, event.message)
     const known = records(options.project, [...staging, ...processRecordDirs(options.project, table)])
+    if (tracePath && [options.project, ...known.flatMap((record) => [record.__recordWorktree, record.worktree].filter(Boolean))].some((root) => containsPath(root, tracePath))) {
+      process.stderr.write(`wt-lane-orphan-watch: trace destination is inside a watched worktree; disabling trace: ${tracePath}\n`)
+      tracePath = null
+    }
     const liveChildren = []
+    const verifiedChildren = new Set()
     for (const record of known) {
       const verdict = classifyLane(record)
       if (isLiveSandboxedLane(record, verdict)) liveChildren.push(record.childPid)
+      if (verdict.child === 'running') verifiedChildren.add(record.childPid)
       const processRecord = verdict.child === 'running' ? inspectProcess(record.childPid) : null
       const ownsNotice = record.owner === 'session' && Boolean(record.ownerSessionId) && record.ownerSessionId === process.env.CLAUDE_CODE_SESSION_ID
       const decisionKey = `${record.runId}:${record.timeoutAt}`
@@ -226,9 +237,16 @@ async function main() {
         notice(decisionKey, `LANE ${record.state}: owner=${record.owner} worktree=${record.worktree} pid=${record.childPid} last-write=${e.lastWriteAt ?? 'unknown'} process=${e.process ?? 'unknown'} log-tail=${JSON.stringify(e.logTail ?? '')}; extend with ${control} --decision extend, or abandon with ${control} --decision abandon before ${record.decisionDueAt}${restart}; default=${record.defaultDecision}`)
       }
       const stalledKey = `${record.runId}:stalled`
+      const running = verdict.status === 'running'
+      const inspectable = Boolean(processRecord)
+      // On non-running records, only trace mode needs the activity census.
+      const activity = (running && inspectable) || tracePath ? latestWorktreeWrite(record.worktree) : null
+      const ageMs = activity?.at ? Date.now() - activity.at : null
+      const predicates = { running, inspectable, knownWrite: activity?.status === 'known', hasWrite: Boolean(activity?.at), oldEnough: ageMs !== null && ageMs >= stallMinutes * 60_000 }
+      const stalled = predicates.running && predicates.inspectable && predicates.knownWrite && predicates.hasWrite && predicates.oldEnough
+      const wasJournaled = journaled.has(stalledKey)
       if (verdict.status === 'running' && processRecord) {
-        const activity = latestWorktreeWrite(record.worktree)
-        if (activity.status === 'known' && activity.at && Date.now() - activity.at >= stallMinutes * 60_000) {
+        if (stalled) {
           const evidence = { lastWriteAt: new Date(activity.at).toISOString(), activityBounded: activity.bounded, logTail: readLogTail(record.log), process: 'running' }
           const episodeStartedAt = episodeStarts.get(stalledKey) ?? new Date().toISOString(); episodeStarts.set(stalledKey, episodeStartedAt)
           if (!journaled.has(stalledKey) && journal({ event: 'stalled', runId: record.runId, episodeStartedAt, pid: record.childPid, argv: argvSummary(processRecord.argv), worktree: record.worktree, owner: record.owner, reason: `no worktree write for ${stallMinutes} minutes`, evidence })) journaled.add(stalledKey)
@@ -244,6 +262,11 @@ async function main() {
         notified.delete(stalledKey)
         episodeStarts.delete(stalledKey)
       }
+      let decision = 'clear'
+      if (stalled && wasJournaled) decision = 'already-journaled'
+      else if (stalled && journaled.has(stalledKey)) decision = 'journaled'
+      else if (stalled) decision = 'journal-failed'
+      trace({ time: new Date().toISOString(), runId: record.runId, verdict: verdict.status, childInspectable: inspectable, latestWorktreeWrite: activity ? { path: activity.path ?? null, mtimeMs: activity.at, status: activity.status, bounded: activity.bounded } : null, ageMs, stallThresholdMs: stallMinutes * 60_000, predicates, decision })
       const cleanKey = `${record.runId}:would-clean`
       const cleanupCandidate = verdict.status === 'worker-gone-child-alive' && ['exited', 'abandoned'].includes(record.state) && processRecord
       if (!cleanupCandidate) {
@@ -270,7 +293,7 @@ async function main() {
     }
     // A LIVE SANDBOXED lane's opencode runs as a descendant of its recorded (bwrap) child: attributed
     // too. An unsandboxed lane's descendants are not: a nested `opencode run` there is still reported.
-    const attributed = new Set([...known.map((record) => record.childPid), ...(table.supported ? laneDescendantPids(liveChildren, table.processes) : [])])
+    const attributed = new Set([...verifiedChildren, ...(table.supported ? laneDescendantPids(liveChildren, table.processes) : [])])
     if (table.supported) for (const item of table.processes) {
       if (!isOpencodeCommand(item.command) || attributed.has(item.pid) || notified.has(`unknown:${item.pid}`)) continue
       const unknown = inspectProcess(item.pid)

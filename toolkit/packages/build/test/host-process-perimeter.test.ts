@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 
 const ROOT = resolve(import.meta.dirname, '../../../../plugin')
 const HOST_ROOT = join(ROOT, 'bin', 'lib', 'host')
-const GENERATED = new Set([join(ROOT, 'bin', 'wt-observe.mjs')])
+const GENERATED = new Set([join(ROOT, 'bin', 'wt-observe.mjs'), join(ROOT, 'bin', 'lib', 'vendor', 'yaml.mjs')])
 const RAW_PARENT_TABLE = /(?:\[['"]-eo['"],\s*['"]pid=,ppid=['"]\]|Get-CimInstance\s+Win32_Process[^\n]*ParentProcessId)/
 
 function sourceFiles(directory: string): string[] {
@@ -23,7 +23,11 @@ describe('pid to parent-pid host perimeter', () => {
     // The grounding CLI, two hooks, and pure public re-export add four perimeter files;
     // their process access stays behind HOST_ROOT. The Java pack's `wt-jdtls.mjs` launcher adds one more
     // (its JVM discovery and spawn live in host/jdtls-java.mjs).
-    // Shared executor defaults add one pure module without adding a process-table primitive.
-    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 223, violations: [] })
+    // Shared executor defaults and the suite-lock runner add two modules, the pure DoD dispute module adds one,
+    // and the cross-OS CLI, dispatcher and verdict module add three, and the shared frontmatter/definition helpers add three more;
+    // the pure model-pin module adds one more, and the pure Claude-executor environment builder
+    // (claude-executor-env.mjs) one more; the transcript checker, shared tracker and warning hook add three
+    // process-table-free modules (their filesystem access is contained in bin/lib/host); none of them adds a process-table primitive.
+    expect({ perimeterFiles: perimeter.length, violations }).toEqual({ perimeterFiles: 235, violations: [] })
   })
 })

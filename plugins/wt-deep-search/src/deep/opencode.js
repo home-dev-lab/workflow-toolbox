@@ -30,24 +30,35 @@ function knownCredentialOwner(name) {
   return null;
 }
 
-function providerEnvironmentNames(model, source, warn) {
+function installedDefinitions(source) {
+  const roots = [source.XDG_CACHE_HOME, source.HOME && `${source.HOME}/.cache`, source.LOCALAPPDATA].filter(Boolean);
+  for (const root of roots) {
+    try {
+      const definitions = JSON.parse(readFileSync(`${root}/opencode/models.json`, 'utf8'));
+      if (definitions && typeof definitions === 'object') return definitions;
+    } catch {}
+  }
+  return null;
+}
+
+export function providerEnvironmentNames(model, source, warn) {
   const provider = String(model ?? '').split('/', 1)[0].toLowerCase();
   if (!provider || !String(model).includes('/')) return [];
   // Case-insensitive: a registry (or fallback) name that matches a deny-listed credential by
   // letter case alone must never reach the child, on any platform.
   const withoutCredentials = (names) => names.filter((name) => !NEVER_PASS_CREDENTIALS.has(name.toUpperCase()));
   if (Object.hasOwn(PROVIDER_CREDENTIALS, provider)) return withoutCredentials(PROVIDER_CREDENTIALS[provider]);
-  const roots = [source.XDG_CACHE_HOME, source.HOME && `${source.HOME}/.cache`, source.LOCALAPPDATA].filter(Boolean);
-  for (const root of roots) {
-    try {
-      const names = JSON.parse(readFileSync(`${root}/opencode/models.json`, 'utf8'))?.[provider]?.env;
-      if (Array.isArray(names)) {
-        return withoutCredentials(names.filter((name) => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))
-          .filter((name) => { const owner = knownCredentialOwner(name); return owner === null || owner === provider; });
-      }
-    } catch {}
+  const ownedByProvider = (name) => { const owner = knownCredentialOwner(name); return owner === null || owner === provider; };
+  // Same lookup as the plugin's installedOpenCodeProviderDefinitions: the FIRST parseable models.json
+  // decides; a registry without this provider falls through to the fallback, never to a later root.
+  const installed = installedDefinitions(source)?.[provider]?.env;
+  if (Array.isArray(installed)) {
+    // Deduplicated in first-occurrence order, like the plugin's providerCredentialNames.
+    return withoutCredentials([...new Set(installed.filter((name) => typeof name === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name)))])
+      .filter(ownedByProvider);
   }
-  const names = withoutCredentials([`${provider.toUpperCase().replaceAll(/[^A-Z0-9]+/g, '_')}_API_KEY`, ...(PROVIDER_EXTRAS[provider] ?? [])]);
+  const names = withoutCredentials([`${provider.toUpperCase().replaceAll(/[^A-Z0-9]+/g, '_')}_API_KEY`, ...(PROVIDER_EXTRAS[provider] ?? [])])
+    .filter(ownedByProvider);
   if (!warnedProviders.has(provider)) {
     warnedProviders.add(provider);
     warn(`wt-deep-search: OpenCode provider definitions unavailable for ${provider}; using fallback environment names ${names.join(', ')}`);

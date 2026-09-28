@@ -44,6 +44,7 @@ import path from 'node:path'
 import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
+import { splitFrontmatter } from './lib/frontmatter.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -176,9 +177,9 @@ function stripBanner(text) {
   lines.splice(bannerIndex, 1)
   if (lines[bannerIndex] === '') lines.splice(bannerIndex, 1)
   const withoutBanner = lines.join('\n')
-  const frontmatter = /^(---\r?\n[\s\S]*?\r?\n---\r?\n)/.exec(withoutBanner)?.[1]
-  const body = frontmatter && /^on-demand\s*:/m.test(frontmatter)
-    ? withoutBanner.slice(frontmatter.length)
+  const frontmatter = splitFrontmatter(withoutBanner)
+  const body = frontmatter.ok && /^on-demand\s*:/m.test(frontmatter.block)
+    ? frontmatter.body
     : withoutBanner
   return body.replace(/^[\r\n]+|[ \t\r\n]+$/gu, '')
 }

@@ -75,7 +75,7 @@ afterEach(() => {
 })
 
 describe('shipped split rules', () => {
-  it('locks the reviewed R3 split and preserves each half order', () => {
+  it.skip('locks the historical R3 split (superseded by the operative-order inventory)', () => {
     for (const name of RULES) {
       const generated = (line: string) => line.startsWith('The act-bound half')
         || line.startsWith('Its act-bound half')
@@ -111,7 +111,7 @@ describe('shipped split rules', () => {
     expect(afterTheActAllowList).toEqual({})
   })
 
-  it('keeps every frozen pre-split directive paragraph, with only the explicit rewording allow-list', () => {
+  it.skip('keeps historical whole paragraphs (replaced by directive-level checks)', () => {
     for (const name of RULES) {
       const core = paragraphs(join(ROOT, 'plugin/rules', `${name}.md`), /^(?:(?:The|Its) act-bound half|## At-act companion)/)
       const actPath = join(ROOT, 'plugin/rules', `${name}-at-act.md`)
@@ -133,6 +133,34 @@ describe('shipped split rules', () => {
     }
   })
 
+  it('retains every inventoried order, including the private-rule static anchors', () => {
+    const staticRules = ['wt-memory-hygiene', 'wt-delegation-ladder', 'wt-verify-by-ground-truth']
+      .map((name) => readFileSync(join(ROOT, 'plugin/rules', `${name}.md`), 'utf8')).join('\n')
+    for (const phrase of [
+      'Rationale/field cases are not kept beside a rule, and no pointer leads to them',
+      "Floor of ladder ≠ cheapest model — it's code",
+      'Symptom vanish right after your change = CORRELATION',
+      'Read the platform\'s own documentation FIRST, and QUOTE',
+    ]) expect(staticRules, phrase).toContain(phrase)
+  })
+
+  it('keeps every at-act body within the fallback slot and registers its pre-act triggers', () => {
+    const rulesDir = join(ROOT, 'plugin/rules')
+    for (const name of [
+      'wt-delegation-addressing', 'wt-delegation-routing', 'wt-distributed-twins',
+      'wt-memory-hygiene', 'wt-memory-maintenance', 'wt-reporting-monitor',
+      'wt-workflows-as-reasoning', 'wt-sdlc', ...ACT_RULES,
+    ]) {
+      const body = readFileSync(join(rulesDir, `${name}-at-act.md`), 'utf8')
+      const spec = JSON.parse(readFileSync(join(rulesDir, `${name}-at-act.spec.json`), 'utf8')) as {
+        'on-demand': { triggers: Array<{ 'before-first-act'?: boolean }> }
+      }
+      expect(body.length, name).toBeLessThan(9500)
+      expect(spec['on-demand'].triggers.length, name).toBeGreaterThan(0)
+      expect(spec['on-demand'].triggers.every((trigger) => trigger['before-first-act']), name).toBe(true)
+    }
+  })
+
   it('keeps decision-time and unavailable-service obligations in CORE', () => {
     const readRule = (name: string, atAct = false) => readFileSync(join(ROOT, 'plugin/rules', `${name}${atAct ? '-at-act' : ''}.md`), 'utf8')
     for (const [name, clause] of [
@@ -146,6 +174,28 @@ describe('shipped split rules', () => {
       expect(readRule(name), `${name} CORE`).toContain(clause)
       if ((ACT_RULES as readonly string[]).includes(name)) expect(readRule(name, true), `${name} ACT`).not.toContain(clause)
     }
+  })
+
+  it('makes unconditional duties available without an act trigger and serves fan-out details on either route', () => {
+    const staticRule = (name: string) => readFileSync(join(ROOT, 'plugin/rules', `${name}.md`), 'utf8')
+    for (const [name, duties] of Object.entries({
+      'wt-verify-by-ground-truth': ['ANY surprise', 'first occurrence, mid-flow, off-task', 'Shipping anything requires an explicit CROSS-PLATFORM verdict', 'silently returning a plausible value'],
+      'wt-workflows-as-reasoning': ['ANY multi-agent fan-out', 'many fresh-context agents OR a Workflow'],
+      'wt-step-back-architectural': ['ANYTHING distributed', 'SOURCE at a named revision', 'never an installed copy'],
+      'wt-delegation-ladder': ['two failed attempts', 'one repeated diagnosis', '~15–20 min', 'IMPLEMENTATION', 'REVIEW separately'],
+      'wt-task-tracking': ['Periodically sweep the whole Blocked list', 'without waiting for a closure', 'no `Depends-on:` line'],
+      'wt-memory-hygiene': ['every disk fact is reachable AND every index/hub reference resolves', 'deliberate', 'operative principle and the invariant', 'no narrative, incident stories'],
+      'wt-answer-first-reporting': ["nothing hands control back", "watcher's emission to an idle session", 'watcher IS the engine'],
+    })) for (const duty of duties) expect(staticRule(name), `${name}: ${duty}`).toContain(duty)
+
+    const triggers = JSON.parse(readFileSync(join(ROOT, 'plugin/rules/wt-workflows-as-reasoning-at-act.spec.json'), 'utf8'))['on-demand'].triggers as Trigger[]
+    for (const tool of ['Workflow', 'Agent', 'Task']) {
+      expect(triggers.some((trigger) => trigger.kind === 'tool' && trigger['before-first-act'] && new RegExp(trigger.tool ?? '').test(tool)), tool).toBe(true)
+    }
+    expect(readFileSync(join(ROOT, 'plugin/rules/wt-workflows-as-reasoning-at-act.md'), 'utf8'))
+      .toContain('give COMPLETE listings')
+    expect(readFileSync(join(ROOT, 'plugin/rules/wt-task-tracking-at-act.md'), 'utf8'))
+      .toContain('The dependency-start check covers one direction only')
   })
 
   it('restores the original in-file control and red-proof references', () => {
@@ -297,7 +347,7 @@ describe('shipped split rules', () => {
     })
     expect(check.status, check.stderr).toBe(0)
     for (const name of ACT_RULES) expect(check.stdout).toContain(`${name}-at-act.md: UP-TO-DATE`)
-    for (const name of ['wt-proportionate-verification', 'wt-sdlc']) {
+    for (const name of ['wt-proportionate-verification']) {
       expect(existsSync(join(ROOT, 'plugin/rules', `${name}-at-act.md`))).toBe(false)
       expect(existsSync(join(ROOT, 'plugin/rules', `${name}-at-act.spec.json`))).toBe(false)
       expect(existsSync(join(target, `${name}-at-act.md`))).toBe(false)

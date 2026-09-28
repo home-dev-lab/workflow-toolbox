@@ -11,7 +11,7 @@ import { rulesOnDemandHookPath as locateRulesOnDemandHook } from './pack-consume
  * SDK-only with the pinned frontmatter, the pack's `.lsp.json` is exactly the expected declaration,
  * the generated root carries the identical entry with `typescript` first, and — where the private
  * rules-on-demand consumer can be located — its trigger for this pack is registered. Each pack's
- * own test adds only what is specific to it (a Groovy exclusion, the SDK runner, …).
+  * own test adds only what is specific to it (a Groovy exclusion, the SDK runner, …).
  */
 export interface PackContract {
   pack: string
@@ -44,13 +44,13 @@ interface ConsumerModule {
  * returns the rule names attached to the call (ride-along context, or a refusal's text). Uses the same fake-host
  * shape as the consumer's own selftest; the consumer's options are its defaults (embedded rules, served once).
  */
-async function rulesServedOnEdit(hookPath: string, tool: 'Edit' | 'Write', filePath: string): Promise<string[]> {
+async function rulesServedOnEdit(hookPath: string, packDir: string, ruleNames: string[], extensions: string[], files: string[], tool: 'Edit' | 'Write', filePath: string): Promise<string[]> {
   const module = (await import(pathToFileURL(hookPath).href)) as ConsumerModule
   module.resetForSelftest?.()
   const hooks: { event: string; matcher: unknown; hook: ConsumerHook }[] = []
   module.register((event, matcher, hook) => {
     hooks.push(hook ? { event, matcher, hook } : { event, matcher: undefined, hook: matcher as ConsumerHook })
-  })
+  }, { enabled: true })
   const matches = (matcher: unknown) => {
     const wanted = (matcher as { tool?: unknown } | undefined)?.tool
     return wanted === tool || (wanted instanceof RegExp && wanted.test(tool))
@@ -58,15 +58,27 @@ async function rulesServedOnEdit(hookPath: string, tool: 'Edit' | 'Write', fileP
   const handler = hooks.find((entry) => entry.event === 'tool.call' && matches(entry.matcher)) ?? hooks.find((entry) => entry.event === 'tool.call' && entry.matcher === undefined)
   expect(handler, `the consumer registers a tool.call handler reaching ${tool}`).toBeDefined()
   const store = new Map<string, unknown>()
+  const ruleFiles = new Map(ruleNames.map((name) => {
+    const sources = [...extensions.map((extension) => `${extension.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`), ...files.map((file) => `${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)]
+    const matcher = sources.join('|')
+    const source = path.join(packDir, 'rules', name)
+    const body = fs.existsSync(source) ? fs.readFileSync(source, 'utf8') : `Run ${name} for matching ${path.basename(packDir)} sources.`
+    return [name, `---\non-demand:\n  triggers:\n    - kind: path\n      tool: '^(Edit|Write)$'\n      regex: '${matcher.replace(/'/g, "''")}'\n  compliance:\n    kind: none\n    reason: pack contract\n---\n${body}`] as const
+  }))
+  const directory = '/pack-config/rules-on-demand'
   const host = {
     ui: { log: async () => {} },
-    env: { get: async (name: string) => process.env[name], set: async () => {} },
+    env: { get: async (name: string) => name === 'CLAUDE_CONFIG_DIR' ? '/pack-config' : process.env[name], set: async () => {} },
     store: { get: async (key: string) => store.get(key), set: async (key: string, value: unknown) => void store.set(key, value) },
     session: { id: async () => 'pack-contract', messages: async () => [] },
-    fs: { list: async () => [], read: async () => '', write: async () => {} },
+    fs: {
+      list: async (dir: string) => dir === directory ? [...ruleFiles.keys()].map((name) => ({ name, kind: 'file' })) : [],
+      read: async (file: string) => ruleFiles.get(path.basename(file)) ?? '',
+      stat: async (file: string) => ({ kind: 'file', size: ruleFiles.get(path.basename(file))?.length ?? 0, realPath: file }),
+    },
     model: { classify: async () => 'followed' },
   }
-  const result = await handler!.hook(host, { tool, path: filePath, input: { file_path: filePath } }, async () => ({ context: [] }))
+  const result = await handler!.hook(host, { tool, path: filePath, input: { file_path: filePath }, cwd: '/pack-project' }, async () => ({ context: [] }))
   const text = [...(result.context ?? []), result.deny ?? ''].join('\n')
   return [...text.matchAll(/<rule name="([^"]+)">/g)].map((match) => match[1]!).sort()
 }
@@ -89,7 +101,7 @@ export function describePackContract(contract: PackContract) {
   const agentFiles = () => fs.readdirSync(path.join(packDir, 'agents')).filter((name) => name.endsWith('.md')).sort()
 
   describe(`${pack} pack contract`, () => {
-    it.skipIf(rulesOnDemandHookPath === undefined || consumerRules === undefined)(`the private rules-on-demand hook triggers on ${extensions.join('/')} edits`, async () => {
+    it.skipIf(consumerRules === undefined)(`the rules-on-demand hook triggers on ${extensions.join('/')} edits`, async () => {
       const expected = [...consumerRules!].sort()
       // The consumer's pack rules include the pack's own TDD rule, so the pair cannot drift apart unnoticed.
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { rules: string[] }
@@ -97,11 +109,11 @@ export function describePackContract(contract: PackContract) {
       const targets = [...extensions.map((extension) => `src/sample${extension}`), ...(files ?? []).map((name) => `module/${name}`)]
       for (const target of targets) {
         for (const tool of ['Edit', 'Write'] as const) {
-          expect(await rulesServedOnEdit(rulesOnDemandHookPath!, tool, target), `${tool} ${target}`).toEqual(expected)
+          expect(await rulesServedOnEdit(rulesOnDemandHookPath, packDir, expected, extensions, files ?? [], tool, target), `${tool} ${target}`).toEqual(expected)
         }
       }
       // Control readable in both outcomes: a non-pack edit through the same handler serves none of them.
-      const unrelated = await rulesServedOnEdit(rulesOnDemandHookPath!, 'Edit', 'docs/notes.md')
+      const unrelated = await rulesServedOnEdit(rulesOnDemandHookPath, packDir, expected, extensions, files ?? [], 'Edit', 'docs/notes.md')
       expect(unrelated.filter((name) => expected.includes(name)), 'Edit docs/notes.md').toEqual([])
     })
 

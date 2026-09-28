@@ -1,10 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { cpSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk'
 import { canonicalPath } from './helpers/canonical-path.js'
 import { prepareContextModeFixture } from './helpers/context-mode-fixture.js'
@@ -44,6 +45,13 @@ function fakeSdk(root: string) {
   writeFileSync(join(packageDir, 'index.cjs'), 'module.exports = { query() {} }\n')
 }
 
+function gateLogs(dir: string): string[] {
+  return readdirSync(dir, { recursive: true, encoding: 'utf8' })
+    // The wave's own card directory, not the copy the report emit makes under <report-dir>/cards/.
+    .filter((name) => /^[^/]+\/cards\/[^/]+\/(typecheck|lint|test)\.log$/.test(name))
+    .map((name) => join(dir, name))
+}
+
 function waveFixture(bullets = 1) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-wave-'))); roots.push(root)
   const cardDir = join(root, 'cards', '1'); mkdirSync(cardDir, { recursive: true })
@@ -61,6 +69,8 @@ function receipts(cardDir: string, overrides: Record<string, number> = {}) {
 function repoFixture(cards = [{ id: '1', listName: 'Next', description: 'Route: LITE\n## Definition of done\n- ship\n' }]) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'wt-orchestrator-'))); roots.push(root)
   spawnSync('git', ['init', '-q', '-b', 'develop'], { cwd: root }); spawnSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root }); spawnSync('git', ['config', 'user.name', 'Test'], { cwd: root })
+  // The fixture must never reach this machine's commit signing (an agent-backed signer fails under load).
+  spawnSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: root }); spawnSync('git', ['config', 'tag.gpgsign', 'false'], { cwd: root })
   writeFileSync(join(root, '.gitignore'), '.waves/\n.lane/\n'); writeFileSync(join(root, 'base.txt'), 'base\n'); spawnSync('git', ['add', '.'], { cwd: root }); spawnSync('git', ['commit', '-qm', 'base'], { cwd: root })
   const worktreesDir = join(root, '.waves'); const report = join(worktreesDir, 'report.md'); const moves: string[] = []; const comments: string[] = []; const gitCalls: string[][] = []; const launches: Array<{ card: string, hard?: boolean }> = []
   const byId = new Map(cards.map((card) => [String(card.id), card]))
@@ -256,6 +266,36 @@ describe('orchestrator driver', () => {
 
   it('refuses a slash in an explicit card id at parse time', () => {
     expect(parseOrchestratorArgs(['--cards', '1/2', '--worktrees-dir', '/tmp/w', '--report', '/tmp/r'])).toEqual({ error: 'invalid card id' })
+  })
+
+  // Card 1873173639063406158: the host gates the orchestrator runs over a delivery must not see a
+  // variable the operator set for the runner. The default gate path (no injected gates) runs a fake
+  // `pnpm` that prints the environment it received into each gate log.
+  it.skipIf(process.platform === 'win32')('runs the default host gates without the runner-only WT_* variables and keeps what a gate needs', async () => {
+    const f = repoFixture()
+    const bin = join(f.root, 'fake-bin'); mkdirSync(bin)
+    writeFileSync(join(bin, 'pnpm'), `#!/bin/sh\n${JSON.stringify(process.execPath)} -e 'for (const [k, v] of Object.entries(process.env)) console.log(k + "=" + v)'\n`)
+    chmodSync(join(bin, 'pnpm'), 0o755)
+    const gatePath = `${bin}:${process.env.PATH}`
+    vi.stubEnv('PATH', gatePath)
+    vi.stubEnv('WT_AGENT_SDK_PATH', createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'))
+    vi.stubEnv('WT_EXECUTOR_CODE_MODEL', 'runner-only-model')
+    vi.stubEnv('WT_PLANKA_MCP_URL', 'http://runner-only.invalid/mcp')
+    vi.stubEnv('WT_SUITE_LOCK_DIR', '/tmp/wt-gate-env-lock')
+    try {
+      const runPilot: typeof f.runPilot = async (options, dependencies) => { mkdirSync(join(options.dir, 'toolkit'), { recursive: true }); return f.runPilot(options, dependencies) }
+      const result = await runOrchestrator(f.options, { ...f, runPilot, gates: undefined })
+      expect(result.rows[0], `stopReason=${result.stopReason}`).toMatchObject({ gates: '0/0/0' })
+      const logs = gateLogs(f.worktreesDir)
+      expect(logs.map((file) => file.split('/').pop()).sort()).toEqual(['lint.log', 'test.log', 'typecheck.log'])
+      for (const file of logs) {
+        const seen = readFileSync(file, 'utf8').split('\n')
+        expect(seen.filter((line) => /^WT_(AGENT_SDK_PATH|EXECUTOR_CODE_MODEL|PLANKA_MCP_URL)=/.test(line))).toEqual([])
+        expect(seen).toEqual(expect.arrayContaining([`PATH=${gatePath}`, 'WT_SUITE_LOCK_DIR=/tmp/wt-gate-env-lock']))
+      }
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it('runs the complete happy path, writes receipts, moves only to In Progress, and never invokes forbidden git operations', async () => {
@@ -590,6 +630,18 @@ describe('SDK orchestrator judge', () => {
     acceptedServer.setCardState('1', 'piloting'); acceptedServer.setCardState('1', 'judging')
     const accepted = createSdkJudge({ query: ({ options }: { options: { plugins: Array<{ path: string }> } }) => (async function* () { yield judgeInit([...options.plugins.slice(0, 2), { path: `${realpathSync(target)}/` }]); yield { type: 'result' }; yield { type: 'result' }; yield { type: 'result' } })(), models: { orchestrator: { value: 'test' } }, waveDir, waveServer: acceptedServer, contract: '# contract', pluginDirs: [linked] })
     await expect(accepted({ row: { id: '1' } })).resolves.toBe(false)
+  })
+
+  it('F11 emits accumulated judge warnings when the SDK iterator throws', async () => {
+    const f = repoFixture(); const waveDir = join(f.root, '.waves', 'warning-on-error'); mkdirSync(waveDir, { recursive: true })
+    const waveServer = createWaveServer({ waveDir, cards: [{ id: '1' }] }) as RegisteredServer
+    waveServer.setCardState('1', 'piloting'); waveServer.setCardState('1', 'judging')
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      const judge = createSdkJudge({ query: () => (async function* () { yield judgeInit(); yield { type: 'assistant', message: { id: 'served', model: 'claude-haiku-4-5' } }; throw new Error('stream broke') })(), models: { orchestrator: { value: 'opus' } }, waveDir, waveServer, contract: '# contract' })
+      await expect(judge({ row: { id: '1' } })).rejects.toThrow('stream broke')
+      expect(stderr.mock.calls.map(([line]) => line).join('')).toContain('WARN model-fallback: judge requested opus served claude-haiku-4-5')
+    } finally { stderr.mockRestore() }
   })
 
   it('O1-2 lock: rejects absolute and traversal Glob/Grep inputs while allowing wildcard-first local patterns', () => {
