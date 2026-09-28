@@ -477,7 +477,7 @@ function initialLifecycleState() {
     phase: 'discovery', partial: null, deferred: null, pilotReportDigest: null,
     planRound: 0, priorCriticRounds: [], criticPlateauUsed: false, nonBlockingFindings: [],
     reviewRound: 0, priorReviewRounds: [], priorReviewReports: [], reviewBase: null, pendingReviewBase: null, findingsToRoute: [], reviewWarnings: [], unresolvedFindings: [], criticEmptyRetries: 0,
-    handled: new Map(), lastLaneMtime: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
+    handled: new Map(), laneReceiptSeq: 0, verifySnapshot: null, pendingControl: null, reportParseRetries: {},
     resolvedRoutedCards: new Set(), report: { stage: 'idle', base: null, head: null, tree: null, delivery: null },
     pendingStop: null, stopped: false, dodDisputes: [],
   }

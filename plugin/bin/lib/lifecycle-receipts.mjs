@@ -42,12 +42,15 @@ export function launchProcessWithOutput(program, args, options) {
     })
   })
 }
-export async function waitForLaneReceipt({ log, nonce, timeoutMs, launchedAt, pollMs, readAttestation, readRegularFile }) {
+// Freshness comes from the nonce: the log is created exclusively under a per-launch random name and
+// must start with that nonce. Its mtime is never compared with the launch time, because the wall
+// clock can step backwards between the two (measured: WSL2 steps it back every 30-60 s under load).
+export async function waitForLaneReceipt({ log, nonce, timeoutMs, pollMs, readAttestation, readRegularFile }) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() <= deadline) {
     const entry = readAttestation(log)
     const content = readRegularFile(log)
-    if (entry?.exit && entry.mtime >= launchedAt && content?.startsWith(`LANE_NONCE=${nonce}\n`)) return entry
+    if (entry?.exit && content?.startsWith(`LANE_NONCE=${nonce}\n`)) return entry
     await new Promise((resolve) => setTimeout(resolve, pollMs))
   }
   return null

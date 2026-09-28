@@ -300,7 +300,9 @@ export function createLifecycleLaunch({
       const acceptedExit = failedTest && name === 'test' ? item.exit !== '0' && item.exit !== null : item.exit === '0'
       if (!acceptedExit) return refusal(edge, `gate receipt EXIT=${item.exit ?? 'missing'}`, file)
       if (item.tree !== currentTree) return refusal(edge, 'current tree signature', file)
-      if (item.mtime <= state.lastLaneMtime) return refusal(edge, 'gate newer than lane receipt', file)
+      // Ordered by the server's own receipt count, never by mtime: a backward clock step can date a
+      // later gate before the lane receipt, or an earlier one after it.
+      if (item.laneReceiptSeq !== state.laneReceiptSeq) return refusal(edge, 'gate newer than lane receipt', file)
     }
     return null
   }
@@ -371,7 +373,7 @@ export function createLifecycleLaunch({
     writeRegularFile(canonicalReport, combinedReport)
     attest(canonicalReport)
     attest(canonicalLog, { group: 'worker-owned' })
-    state.lastLaneMtime = Math.max(...receipts.map((receipt) => receipt.mtime))
+    state.laneReceiptSeq += 1
     return `lane critic EXIT=${exit}`
   }
 
@@ -463,7 +465,6 @@ export function createLifecycleLaunch({
           log,
           nonce,
           timeoutMs: laneWaitMs ?? timeout * 1000,
-          launchedAt,
           pollMs: lanePollMs,
           readAttestation,
           readRegularFile,
@@ -495,7 +496,6 @@ export function createLifecycleLaunch({
                   log,
                   nonce,
                   timeoutMs: Math.min(25, Math.max(0, transitionDueAt - Date.now())),
-                  launchedAt,
                   pollMs: lanePollMs,
                   readAttestation,
                   readRegularFile,
@@ -575,7 +575,7 @@ export function createLifecycleLaunch({
         }
         attest(canonicalReport)
         attest(canonicalLog, { group })
-        state.lastLaneMtime = logEntry.mtime
+        state.laneReceiptSeq += 1
         return `lane ${phase} EXIT=${logEntry.exit}`
       } catch (error) {
         fs.rmSync(path.join(laneDir, `${phase}-input.diff`), { force: true })
@@ -612,7 +612,7 @@ export function createLifecycleLaunch({
         return refusal(`${state.phase}->next`, `gate spawn (${error instanceof Error ? error.message : String(error)})`, log)
       }
       fs.appendFileSync(log, `\nEXIT=${code}\n`)
-      attest(log, { tree: treeSignature(root) })
+      attest(log, { tree: treeSignature(root), laneReceiptSeq: state.laneReceiptSeq })
       return `gate ${args.name} EXIT=${code}`
     }
     if (args.kind === 'control') {
