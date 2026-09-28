@@ -90,7 +90,14 @@ export function diffTreeEntryDigests(before, after) {
 }
 
 export function recordPath(root, name) {
-  const repoId = createHash('sha256').update(root).digest('hex')
+  let canonicalRoot
+  try {
+    canonicalRoot = (fs.realpathSync.native ?? fs.realpathSync)(root)
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
+    canonicalRoot = root
+  }
+  const repoId = createHash('sha256').update(canonicalRoot).digest('hex')
   return path.join(defaultGuardJournalDir(), 'wt-gate-records', repoId, `${name}.json`)
 }
 

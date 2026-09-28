@@ -1,7 +1,7 @@
 // Hermetic real-git selftests: the guard's evidence is the index and tree, not a mocked diff.
 import { spawnSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -29,6 +29,16 @@ function git(cwd: string, ...args: string[]) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, ...HERMETIC } })
   if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`)
   return result.stdout
+}
+
+// Writes a blob without touching the worktree: the bytes go through a scratch file inside .git,
+// so the index can carry a spelling the filesystem cannot hold (case-insensitive macOS/Windows).
+function gitBlob(root: string, body: string) {
+  const scratch = join(root, '.git', 'wt-fixture-blob')
+  writeFileSync(scratch, body)
+  const id = git(root, 'hash-object', '-w', '--', scratch).trim()
+  rmSync(scratch, { force: true })
+  return id
 }
 
 function write(root: string, file: string, body: string) {
@@ -72,7 +82,7 @@ function run(root: string, command = 'git commit -m x', extraEnv: NodeJS.Process
     env: { ...env(root), ...extraEnv },
     input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_use_id: `release-push-${++toolUseSequence}`, cwd: root, tool_input: { command } }),
   })
-  return { stdout: result.stdout, status: result.status }
+  return { stdout: result.stdout, stderr: result.stderr, status: result.status }
 }
 
 function runReleasePush(root: string, command = 'git push public HEAD:main', extraEnv: NodeJS.ProcessEnv = {}) {
@@ -164,16 +174,24 @@ describe('wt-gate-evidence-guard-hook', () => {
       .toContain('test: STALE (signature differs or staged file changed after gate)')
   })
 
-  it.skipIf(process.platform === 'win32')('limits comparison to the exact staged spelling under inherited GIT_ICASE_PATHSPECS=1', () => {
+  it('limits comparison to the exact staged spelling under inherited GIT_ICASE_PATHSPECS=1', () => {
     const root = repo()
-    write(root, 'plugin/THING.mjs', '// indexed upper\n')
-    git(root, 'add', 'plugin/THING.mjs')
+    git(root, 'config', 'core.ignorecase', 'true')
+    const upper = gitBlob(root, '// indexed upper\n')
+    git(root, 'update-index', '--add', '--cacheinfo', `100644,${upper},plugin/THING.mjs`)
     git(root, '-c', 'user.email=t@t', '-c', 'user.name=t', '-c', 'commit.gpgSign=false', 'commit', '-qm', 'upper')
-    write(root, 'plugin/THING.mjs', '// unstaged upper\n')
-    write(root, 'plugin/thing.mjs', '// gated lower\n')
-    git(root, 'add', 'plugin/thing.mjs')
+    const lowerBytes = '// gated lower\n'
+    write(root, 'plugin/thing.mjs', lowerBytes)
+    const lower = gitBlob(root, lowerBytes)
+    git(root, 'update-index', '--add', '--cacheinfo', `100644,${lower},plugin/thing.mjs`)
+    expect(git(root, 'ls-files', '-s', '--', 'plugin/')).toContain(`100644 ${upper} 0\tplugin/THING.mjs`)
+    expect(git(root, 'ls-files', '-s', '--', 'plugin/')).toContain(`100644 ${lower} 0\tplugin/thing.mjs`)
+    expect(git(root, 'diff', '--cached', '--name-only').trim()).toBe('plugin/thing.mjs')
     record(root)
-    expect(run(root, 'git commit -m x', { GIT_ICASE_PATHSPECS: '1' }).stdout).toBe('')
+    const result = run(root, 'git commit -m x', { GIT_ICASE_PATHSPECS: '1' })
+    expect(result.status).toBe(0)
+    expect(result.stderr).toBe('')
+    expect(result.stdout).toBe('')
   })
 
   it('accepts unchanged staged bytes after a forward-dated touch', () => {
@@ -231,6 +249,24 @@ describe('wt-gate-evidence-guard-hook', () => {
     expect(problems).toEqual([])
     expect(calls.length).toBeGreaterThan(1)
     expect(calls.every((args) => args.slice(args.indexOf('--') + 1).length <= 100)).toBe(true)
+  })
+
+  it('finds a gate record through a junction alias of the repository root', () => {
+    const root = repo()
+    record(root)
+    const signature = JSON.parse(readFileSync(recordFile(root), 'utf8')).tree
+    const aliasDir = mkdtempSync(join(tmpdir(), 'wt-gate-alias-'))
+    made.push(aliasDir)
+    const alias = join(aliasDir, 'repo-link')
+    symlinkSync(root, alias, 'junction')
+    try {
+      expect(states.get(alias)).toBeUndefined()
+      vi.stubEnv('WT_GUARD_JOURNAL_DIR', states.get(root)!)
+      expect(requiredGateProblems(alias, { gates: [{ name: 'test' }] }, { signature })).toEqual([])
+    } finally {
+      rmSync(alias, { recursive: true, force: true })
+      expect(existsSync(root)).toBe(true)
+    }
   })
 
   it.skipIf(process.platform === 'win32')('refuses an index-only mode change after the gate', () => {
