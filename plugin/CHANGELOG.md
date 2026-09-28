@@ -6,6 +6,7 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 ## [Unreleased]
 
 ### Fixed
+- `wt-second-opinion --route auto` no longer falls back to a Claude Opus consult when GPT-lane consent is off or unreadable. A second opinion is meant to come from another model family, so `auto` now refuses with `EXIT=1`, says the second opinion should be asked of the user, and names the remedy for the level that refused: `wt-lane-consent --on` when the account setting is off, `wt-lane-consent --project <repo> --on` when the project narrows consent. `--route opus` still runs the Claude consult when requested explicitly. The `second-opinion` skill now states this purpose and the fallback to the user.
 - Gate evidence now recognizes the same repository through linked or alternate paths, and staged-file checks stay exact on case-insensitive filesystems.
 - The suite-lock broker no longer answers a lane's suite "busy" while capacity is free: a slot is freed as soon as a request is refused, not when the refused client disconnects. Open sockets, rejected ones included, are now capped at twice the served limit, and connections past that cap are dropped.
 - After a clock change, the commit guard no longer accepts staged content the gate never saw or refuses an untouched file, and lifecycle reports no longer refuse a delivered file written during the run.

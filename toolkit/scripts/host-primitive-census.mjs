@@ -15,7 +15,7 @@ const EXECUTABLE_EXTENSIONS = new Set(['.cjs', '.js', '.mjs'])
 // also moved its host file-descriptor operations behind that helper. The clock-independent
 // gate-evidence check replaced its per-path stat calls with a git comparison.
 // It may only decrease as calls move behind the adapter.
-export const HOST_PRIMITIVE_CEILING = 1901
+export const HOST_PRIMITIVE_CEILING = 1899
 
 function sourceFiles(root) {
   const hostRoot = join(root, 'bin', 'lib', 'host')
