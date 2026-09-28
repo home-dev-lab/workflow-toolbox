@@ -5,6 +5,9 @@ file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/
 
 ## [Unreleased]
 
+### Added
+- The shipped TypeScript language server now selects a workspace TypeScript server or a host TypeScript 7 native server and provides navigation and diagnostics for `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` files.
+
 ### Changed
 - `wt-rules-on-demand` verdicts: a served `bash-command` or `tool-input` rule now records a verdict on every act it governs until compaction, as a named check does, instead of only on the call it rode or within its window; a `model` rule's classifier now sees the tool call that served it; turn-correlation verdicts are recorded only for rules served in that context.
 - Executor roles now choose their launcher from each phase's model, so a consented GPT implementation can use a Claude refuter (and Claude code can use GPT review); GPT models still require lane consent.

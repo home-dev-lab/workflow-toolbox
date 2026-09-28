@@ -1,9 +1,16 @@
 {
   "typescript": {
-    "command": "typescript-language-server",
-    "args": ["--stdio"],
+    "command": "node",
+    "args": ["${CLAUDE_PLUGIN_ROOT}/bin/wt-tsls.mjs"],
     "extensionToLanguage": {
-      ".ts": "typescript"
+      ".ts": "typescript",
+      ".tsx": "typescriptreact",
+      ".mts": "typescript",
+      ".cts": "typescript",
+      ".js": "javascript",
+      ".jsx": "javascriptreact",
+      ".mjs": "javascript",
+      ".cjs": "javascript"
     },
     "diagnostics": true,
     "startupTimeout": 10000
