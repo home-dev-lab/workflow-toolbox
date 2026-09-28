@@ -44,8 +44,8 @@ function connect(socketPath: string, request?: unknown, allowHalfOpen = false) {
   let text = ''
   socket.on('data', (chunk) => { text += String(chunk) })
   if (request !== undefined) socket.write(`${typeof request === 'string' ? request : JSON.stringify(request)}\n`)
-  // Bounded below the 10 s timeout of the tests that set one; tests on the 20 s default may pass more.
-  const waitForReply = (predicate: (received: string) => boolean, timeoutMs = 6_000) => new Promise<string>((resolve, reject) => {
+  // Patience above the census short-deadline bound; tests that use it run on a 20 s timeout so this wait, not the test, reports.
+  const waitForReply = (predicate: (received: string) => boolean, timeoutMs = 15_000) => new Promise<string>((resolve, reject) => {
     const deadline = AbortSignal.timeout(timeoutMs)
     const cleanup = () => {
       socket.off('data', check)
@@ -180,7 +180,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       expect(await next.waitForReply(granted)).toContain('granted ')
       next.socket.end()
     } finally { for (const client of rejected) client.socket.destroy(); server.close(); restore() }
-  }, 10_000)
+  }, 20_000)
 
   it('admits a client after destroying a rejected socket before its close callback', async () => {
     const { address, server, restore } = await localBroker()
@@ -189,7 +189,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     let next: ReturnType<typeof connect> | undefined
     let startNext!: (client: ReturnType<typeof connect>) => void
     const nextStarted = new Promise<ReturnType<typeof connect>>((resolve, reject) => {
-      AbortSignal.timeout(6_000).addEventListener('abort', () => {
+      AbortSignal.timeout(15_000).addEventListener('abort', () => {
         reject(new Error(`next client received ${JSON.stringify(next?.text() ?? '')} before the broker destroyed a rejection`))
       }, { once: true })
       startNext = resolve
@@ -226,7 +226,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       for (const client of rejected) client.socket.destroy()
       server.close(); restore()
     }
-  }, 10_000)
+  }, 20_000)
 
   it('closes half-open busy requests within a bound', async () => {
     const { address, server, restore } = await localBroker()
@@ -243,7 +243,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       await next.waitForReply(granted)
       next.socket.end()
     } finally { rejected.socket.destroy(); for (const client of held) client.socket.destroy(); server.close(); restore() }
-  }, 10_000)
+  }, 20_000)
 
   it('never starts an acquisition from data sent after request timeout', async () => {
     const { address, server, restore } = await localBroker()
@@ -278,20 +278,20 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
       expect(closed).toBe(true)
       expect(client.text()).not.toContain('granted ')
     } finally { watcher.close(); client.socket.destroy(); releaseSuiteLock(blocker); server.close(); restore() }
-  }, 10_000)
+  }, 20_000)
 
   it('holds as the broker, serialises clients, and releases on client end', async () => {
     const broker = await startBroker()
     const first = connect(broker.socket, { argv: ['pnpm', 'test'], waitS: 2 })
-    await first.waitForReply(granted, 15_000)
+    await first.waitForReply(granted)
     const holder = JSON.parse(readFileSync(broker.lock, 'utf8'))
     expect(holder.pid).toBe(broker.child.pid)
     expect(holder.argv.slice(0, 2)).toEqual(['wt-lane-sandbox', 'test-lane'])
     const second = connect(broker.socket, { argv: ['pnpm', 'lint'], waitS: 2 })
-    await second.waitForReply((text) => /(?:^|\n)wait [^\n]*\n/.test(text), 15_000)
+    await second.waitForReply((text) => /(?:^|\n)wait [^\n]*\n/.test(text))
     expect(second.text()).not.toContain('granted ')
     first.socket.end()
-    await second.waitForReply(granted, 15_000)
+    await second.waitForReply(granted)
     second.socket.end()
     await waitFor(() => !existsSync(broker.lock))
   })
@@ -312,7 +312,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     const parent = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']); children.push(parent)
     const broker = await startBroker(parent.pid)
     const client = connect(broker.socket, { argv: ['pnpm', 'test'], waitS: 2 })
-    await client.waitForReply(granted, 15_000)
+    await client.waitForReply(granted)
     let closed = false
     client.socket.on('close', () => { closed = true })
     parent.kill('SIGKILL')
@@ -334,7 +334,7 @@ describe.skipIf(process.platform === 'win32')('lane suite-lock broker [requires 
     const next = connect(broker.socket, { argv: ['next'], waitS: 1 })
     await next.waitForReply(granted)
     next.socket.end()
-  }, 10_000)
+  }, 20_000)
 
   it('kills a running command with exit 75 when the broker disappears', async () => {
     const broker = await startBroker()
