@@ -57,6 +57,7 @@ export const spawningTestFiles = [
   'packages/build/test/frozen-fidelity-bundle.test.ts',
   'packages/build/test/gate-evidence-guard.test.ts',
   'packages/build/test/git-commit-backtick-guard-hook.test.ts',
+  'packages/build/test/git-config-isolation.test.ts',
   'packages/build/test/guard-journal-family.test.ts',
   'packages/build/test/guard-journal-test-isolation.test.ts',
   'packages/build/test/guard-journal.test.ts',

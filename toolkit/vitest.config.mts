@@ -48,6 +48,9 @@ const commonTestConfig = {
     './test-support/guard-journal-isolation.setup.ts',
     './test-support/lane-host-state-isolation.setup.ts',
     './test-support/child-process-coverage.setup.ts',
+    // Every git child reads a suite-owned global config, never the machine's, and cannot reach
+    // the machine's SSH agent (card 1838017282 — see the file's own header).
+    './test-support/git-config-isolation.setup.ts',
   ],
   globalSetup: ['./test-support/guard-journal-isolation.global-setup.ts'],
 }
