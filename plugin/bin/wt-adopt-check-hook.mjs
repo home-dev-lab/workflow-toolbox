@@ -45,6 +45,7 @@ import { runFailOpenHook } from './lib/fail-open-trace.mjs'
 import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
+import { quoteRemedyWord } from './lib/remedy-quote.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -229,10 +230,7 @@ function contentDirection(file, finding, set) {
   return `differs from v${currentVersion} (direction unknown: content-only comparison)`
 }
 
-function shellQuote(value) {
-  if (path.sep === String.fromCharCode(92)) return `"${value.replaceAll('"', () => String.fromCharCode(92) + '"')}"`
-  return "'" + value.replaceAll("'", "'\\''") + "'"
-}
+const shellQuote = (value) => quoteRemedyWord(value, undefined, true)
 
 function installRemedy(installCmd, set, dir) {
   return `node ${shellQuote(installCmd)} --set ${set} --install --dir ${shellQuote(dir)}`

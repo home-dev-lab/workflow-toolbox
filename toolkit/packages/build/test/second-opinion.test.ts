@@ -12,6 +12,9 @@ import { createHostAdapter } from '../../../../plugin/bin/lib/host/adapter.mjs'
 
 const CLI = resolve(__dirname, '../../../../plugin/bin/wt-second-opinion.mjs')
 const roots: string[] = []
+const remedyWord = (value: string) => process.platform === 'win32'
+  ? (/^[\w@%+=:,./\\-]+$/.test(value) ? value : `"${value.replaceAll('"', '\\"')}"`)
+  : (/^[\w@%+=,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'"'"'`)}'`)
 afterEach(() => {
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
@@ -208,14 +211,14 @@ describe('second-opinion advisor', () => {
     const out = readFileSync(f.out, 'utf8')
     expect(out).toMatch(/^REFUSED: no consented external lane/)
     expect(out).toContain('this project narrows GPT lane consent')
-    expect(out).toContain(`run: wt-lane-consent --project ${f.repo} --on\n`)
+    expect(out).toContain(`run: wt-lane-consent --project ${remedyWord(f.repo)} --on\n`)
     expect(out).not.toMatch(/run: wt-lane-consent --on\b/)
     expect(lines(f.out).at(-1)).toBe('EXIT=1')
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
     expect(deps.runCodex).not.toHaveBeenCalled()
   })
 
-  it('single-quotes a project path that is not shell-safe in the suggested remedy', async () => {
+  it('quotes a project path that is not shell-safe in the suggested remedy', async () => {
     const f = fixture(true)
     const repo = join(f.repo, "it's a repo")
     mkdirSync(join(repo, '.claude'), { recursive: true })
@@ -224,7 +227,22 @@ describe('second-opinion advisor', () => {
     expect(await runSecondOpinion({ ...f.options, repo, route: 'auto' }, deps, f.env)).toBe(1)
 
     // Written out by hand, not derived with the implementation's own escaping.
-    expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project '${f.repo}/it'\\''s a repo' --on\n`)
+    expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project ${remedyWord(repo)} --on\n`)
+  })
+
+  it.each([
+    ['win32', "it's a repo"], ['linux', "it's a repo"],
+    ['win32', 'a "quoted" repo'], ['linux', 'a "quoted" repo'],
+  ])('quotes a project remedy for injected %s with %s', async (platform, basename) => {
+    const f = fixture(true)
+    const repo = join(f.repo, basename)
+    mkdirSync(join(repo, '.claude'), { recursive: true })
+    writeFileSync(join(repo, '.claude', 'settings.local.json'), JSON.stringify({ env: { WT_EXECUTOR_LANE_CONSENT: 'false' } }))
+    expect(await runSecondOpinion({ ...f.options, repo, route: 'auto', platform }, dependencies(), f.env)).toBe(1)
+    const quoted = platform === 'win32'
+      ? `"${repo.replaceAll('"', '\\"')}"`
+      : `'${repo.replaceAll("'", `'"'"'`)}'`
+    expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project ${quoted} --on\n`)
   })
 
   it('names both remedies when the account is off and the project also narrows consent', async () => {
@@ -235,7 +253,7 @@ describe('second-opinion advisor', () => {
     expect(await runSecondOpinion({ ...f.options, route: 'auto' }, deps, f.env)).toBe(1)
 
     const out = readFileSync(f.out, 'utf8')
-    expect(out).toContain(`run: wt-lane-consent --on && wt-lane-consent --project ${f.repo} --on\n`)
+    expect(out).toContain(`run: wt-lane-consent --on && wt-lane-consent --project ${remedyWord(f.repo)} --on\n`)
     expect(deps.resolveSdkQuery).not.toHaveBeenCalled()
   })
 

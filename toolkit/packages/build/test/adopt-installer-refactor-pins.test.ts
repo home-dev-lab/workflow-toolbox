@@ -53,13 +53,18 @@ function fixturePlugin(): { root: string; script: string } {
   writeFileSync(join(root, '.claude-plugin/plugin.json'), '{"version":"1.2.3"}\n')
   const script = join(root, 'skills/adopt/scripts/install.mjs')
   mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
+  mkdirSync(join(root, 'bin/lib'), { recursive: true })
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
   cpSync(SCRIPT, script)
   return { root, script }
 }
 
 function mutateScript(replacements: Array<[string, string]>): string {
   const root = tempDir('wt-adopt-refactor-mutant-')
-  const script = join(root, 'install.mjs')
+  const script = join(root, 'skills/adopt/scripts/install.mjs')
+  mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
+  mkdirSync(join(root, 'bin/lib'), { recursive: true })
+  cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
   let source = readFileSync(SCRIPT, 'utf8')
   for (const [from, to] of replacements) {
     expect(source).toContain(from)
@@ -345,7 +350,11 @@ describe('adopt installer refactor pins', () => {
   })
 
   it('loads the manifest before refusing multi-set target flags', () => {
-    const script = join(tempDir(), 'install.mjs')
+    const root = tempDir()
+    const script = join(root, 'skills/adopt/scripts/install.mjs')
+    mkdirSync(join(root, 'skills/adopt/scripts'), { recursive: true })
+    mkdirSync(join(root, 'bin/lib'), { recursive: true })
+    cpSync(join(REPO_ROOT, 'plugin/bin/lib/remedy-quote.mjs'), join(root, 'bin/lib/remedy-quote.mjs'))
     cpSync(SCRIPT, script)
     const result = run(['--set', 'all', '--check', '--dir', tempDir()], { script })
     expect(result.status).toBe(1)

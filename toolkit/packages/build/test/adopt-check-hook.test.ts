@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto'
 import { cpSync, mkdtempSync, mkdirSync, realpathSync, rmSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, it, expect } from 'vitest'
 import { sealedPluginCliEnv } from './helpers/sealed-plugin-cli-env.js'
 // @ts-expect-error read-only JS plugin renderer has no TypeScript declaration
@@ -23,6 +23,10 @@ const RULE = 'wt-delegation-ladder.md'
 const ON_DEMAND_FRONTMATTER = '---\non-demand:\n  triggers:\n    - tool: Edit\n---\n'
 const ACT = 'wt-task-tracking-at-act.md'
 const TRIGGER_MARKER = 'on-demand triggers behind the shipped spec'
+// Historic POSIX remedies quote every word; Windows leaves safe words bare.
+const remedyWord = (value: string) => process.platform === 'win32'
+  ? (/^[\w@%+=:,./\\-]+$/.test(value) ? value : `"${value.replaceAll('"', '\\"')}"`)
+  : `'${value.replaceAll("'", `'"'"'`)}'`
 function specHead() {
   const spec = JSON.parse(readFileSync(join(REPO_ROOT, 'plugin/rules/wt-task-tracking-at-act.spec.json'), 'utf8'))
   return frontmatter({ ...spec, triggers: spec['on-demand'].triggers })
@@ -158,6 +162,21 @@ function runPostToolUsePushHook(
 }
 
 describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () => {
+  it.each(['win32', 'linux'])('quotes printed remedies for injected %s', (platform) => {
+    const f = fixture('platform remedy')
+    const dir = join(f.cfg, 'rules-on-demand')
+    specCopy(dir)
+    writeFileSync(join(dir, ACT), readFileSync(join(dir, ACT), 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
+    const source = `Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} }); const { main } = await import(${JSON.stringify(pathToFileURL(HOOK).href)}); main()`
+    const result = spawnSync(process.execPath, ['--input-type=module', '--eval', source], {
+      input: JSON.stringify({ hook_event_name: 'SessionStart', cwd: f.proj }), encoding: 'utf8', env: f.env,
+    })
+    expect(result.status, result.stderr).toBe(0)
+    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext as string
+    const file = platform === 'win32' ? ACT : `'${ACT}'`
+    const location = platform === 'win32' ? `"${dir}"` : `'${dir}'`
+    expect(context).toContain(`--refresh-triggers --file ${file} --dir ${location}`)
+  })
   it.each(['stale', 'edited', 'ahead'])('reports stale trigger-head remedy under a %s body bucket, including PostToolUse', (bucket) => {
     const f = fixture(`head-${bucket}`)
     const plugin = makeHookCopy()
@@ -179,7 +198,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(checked).toContain('on-demand triggers behind the shipped spec')
     const context = runHook(f.proj, f.env, plugin.hook).context
     expect(context).toContain('on-demand triggers behind the shipped spec')
-    expect(context).toContain(`--set rules --install --refresh-triggers --file '${ACT}' --dir '${dir}'`)
+    expect(context).toContain(`--set rules --install --refresh-triggers --file ${remedyWord(ACT)} --dir ${remedyWord(dir)}`)
     if (bucket !== 'stale') expect(context).toContain('keeping the body as it is')
     if (bucket === 'edited') expect(context).toContain('body edit is left untouched')
     // The hook remains actionable after a push even when body EDITED is suppressed.
@@ -206,7 +225,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     const context = runHook(f.proj, f.env, plugin.hook).context
     expect(context).toContain(TRIGGER_MARKER)
     expect(context).not.toContain('keeping the body as it is')
-    expect(context).toContain(`--set rules --install --dir '${dir}'`)
+    expect(context).toContain(`--set rules --install --dir ${remedyWord(dir)}`)
   })
 
   it('reports unresolved heads with both remedies, suppressing persistent trigger findings on PostToolUse', () => {
@@ -217,7 +236,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(file, readFileSync(file, 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
     const context = runHook(f.proj, f.env).context
     for (const flag of ['refresh', 'keep']) {
-      expect(context).toContain(`--set rules --install --${flag}-triggers --file '${ACT}' --dir '${dir}'`)
+      expect(context).toContain(`--set rules --install --${flag}-triggers --file ${remedyWord(ACT)} --dir ${remedyWord(dir)}`)
     }
     expect(runPostToolUsePushHook(f.proj, f.env).context).not.toContain('--refresh-triggers')
   })
@@ -231,8 +250,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(join(project, ACT), readFileSync(join(project, ACT), 'utf8').replace('  triggers:', '  triggers: # LOCAL'))
     const context = runHook(f.proj, f.env).context
     expect(context).toContain(`${ACT}: DOUBLE-LOAD`)
-    expect(context).toContain(`--refresh-triggers --file '${ACT}' --dir '${project}'`)
-    expect(context).not.toContain(`--refresh-triggers --file '${ACT}' --dir '${global}'`)
+    expect(context).toContain(`--refresh-triggers --file ${remedyWord(ACT)} --dir ${remedyWord(project)}`)
+    expect(context).not.toContain(`--refresh-triggers --file ${remedyWord(ACT)} --dir ${remedyWord(global)}`)
   })
 
   it('does not mask a trigger finding when the flat and nested static rule locations duplicate', () => {
@@ -246,7 +265,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     cpSync(file, join(nested, ACT))
     const context = runHook(f.proj, f.env).context
     expect(context).toContain(`${ACT}: DOUBLE-LOAD`)
-    expect(context).toContain(`--refresh-triggers --file '${ACT}' --dir '${flat}'`)
+    expect(context).toContain(`--refresh-triggers --file ${remedyWord(ACT)} --dir ${remedyWord(flat)}`)
   })
   it('offers a runnable per-file stale-head remedy beside flat/nested duplicates', () => {
     const f = fixture('stale-head-static-duplicate')
@@ -261,12 +280,14 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     spec['on-demand'].triggers.push({ kind: 'tool', tool: '^NewTool$' })
     writeFileSync(specFile, JSON.stringify(spec))
     const context = runHook(f.proj, f.env, plugin.hook).context
-    const command = `node '${plugin.installer}' --set rules --install --refresh-triggers --file '${ACT}' --dir '${flat}'`
+    const command = `node ${remedyWord(plugin.installer)} --set rules --install --refresh-triggers --file ${remedyWord(ACT)} --dir ${remedyWord(flat)}`
     expect(context).toContain(`${ACT}: DOUBLE-LOAD`)
     expect(context).toContain(command)
-    const result = spawnSync('sh', ['-c', command], { encoding: 'utf8', env: f.env })
-    expect(result.status, result.stdout + result.stderr).toBe(0)
-    expect(result.stdout).toContain('TRIGGERS REFRESHED')
+    if (process.platform !== 'win32') {
+      const result = spawnSync('sh', ['-c', command], { encoding: 'utf8', env: f.env })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(result.stdout).toContain('TRIGGERS REFRESHED')
+    }
   })
   it('describes body refresh separately when a duplicate has both stale body and stale head', () => {
     const f = fixture('stale-body-static-duplicate')
@@ -286,7 +307,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(file, readFileSync(file, 'utf8').replace(/content sha256:[0-9a-f]{12}/, `content sha256:${hash}`)
       .replace(/v\d+\.\d+\.\d+/, 'v0.0.1').replace(readFileSync(join(plugin.rulesDir, ACT), 'utf8'), body))
     const context = runHook(f.proj, f.env, plugin.hook).context
-    expect(context).toContain(`--refresh-triggers --file '${ACT}' --dir '${flat}'`)
+    expect(context).toContain(`--refresh-triggers --file ${remedyWord(ACT)} --dir ${remedyWord(flat)}`)
     expect(context).toContain('leaving body refresh for a separate normal install if needed')
     expect(context).not.toContain('also applying the normal body refresh')
   })
@@ -301,7 +322,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(r.context).toContain('workflow-toolbox:adopt')
     // names at least the anchor rule file, so the reader knows WHICH are missing
     expect(r.context).toContain(RULE)
-    expect(r.context).toContain(`--set rules --install --dir '${join(f.proj, '.claude', 'rules', 'wt')}'`)
+    expect(r.context).toContain(`--set rules --install --dir ${remedyWord(join(f.proj, '.claude', 'rules', 'wt'))}`)
   })
 
   it('is SILENT when every rule is installed and current in the project dir', () => {
@@ -337,7 +358,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
 
     const result = runHook(f.proj, f.env)
     expect(result.context).toContain(`${RULE} (${dir})`)
-    expect(result.context).toContain(`--set rules --install --dir '${dir}'`)
+    expect(result.context).toContain(`--set rules --install --dir ${remedyWord(dir)}`)
     expect(result.context).not.toContain('NOT installed')
   })
 
@@ -544,7 +565,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     ageManagedRule(join(dir, RULE))
 
     const r = runHook(f.proj, f.env)
-    expect(r.context).toContain(`--set rules --install --dir '${dir}'`)
+    expect(r.context).toContain(`--set rules --install --dir ${remedyWord(dir)}`)
   })
 
   it('orders the session to refresh an unedited stale copy, re-check it, and report one line', () => {
@@ -555,8 +576,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
 
     const r = runHook(f.proj, f.env)
     expect(r.context).toContain('SESSION ACTION: run')
-    expect(r.context).toContain(`--set rules --install --dir '${dir}'`)
-    expect(r.context).toContain(`--set rules --check --dir '${dir}'`)
+    expect(r.context).toContain(`--set rules --install --dir ${remedyWord(dir)}`)
+    expect(r.context).toContain(`--set rules --check --dir ${remedyWord(dir)}`)
     expect(r.context).toContain('report one line')
     expect(r.context).not.toContain('TELL THE USER')
 
@@ -579,7 +600,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
 
     const r = runHook(f.proj, env)
     expect(r.context).toContain('NOTICE ONLY: hand this to the session that owns this directory')
-    expect(r.context).toContain(`--set rules --install --dir '${dir}'`)
+    expect(r.context).toContain(`--set rules --install --dir ${remedyWord(dir)}`)
     expect(r.context).not.toContain('SESSION ACTION: run')
   })
 
@@ -650,7 +671,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
 
     const r = runHook(f.proj, f.env)
     expect(r.context).toContain('SESSION ACTION: arbitrate the local edit')
-    expect(r.context).toContain(`--set rules --diff '${RULE}' --dir '${dir}'`)
+    expect(r.context).toContain(`--set rules --diff ${remedyWord(RULE)} --dir ${remedyWord(dir)}`)
     expect(r.context).toContain('keep the edit and open a card against the shipped rule')
     expect(r.context).not.toContain('let them decide')
   })

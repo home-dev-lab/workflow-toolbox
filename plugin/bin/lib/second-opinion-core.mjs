@@ -6,6 +6,7 @@ import { resolveAgentSdkRequire } from './sdk-resolution.mjs'
 import { withRepositoryGuide } from './sdk-role-profile.mjs'
 import { announceUnsandboxedLane, resolveLaneSandbox } from './host/lane-sandbox.mjs'
 import { classifyProviderRefusal, createModelTracker, modelWarnings } from './model-fallback-core.mjs'
+import { quoteRemedyWord } from './remedy-quote.mjs'
 
 const TOOL_NOTE = 'Tool note: MCP tools (including context-mode) are NOT available in this read-only run; read files with your native shell (cat, sed -n, rg, ls). This overrides any routing rule that says to use context-mode.'
 const CODEX_OUTPUT_LIMIT_BYTES = 64 * 1024 * 1024
@@ -19,11 +20,6 @@ function signalExitCode(reason) {
 }
 function appendLine(out, line) {
   appendFileSync(out, `${String(line).replace(/\r?\n/g, ' ').trim()}\n`)
-}
-// A path pasted into a suggested command: bare when it is shell-safe, single-quoted otherwise.
-function shellWord(value) {
-  if (/^[\w@%+=:,./-]+$/.test(value)) return value
-  return `'${value.replaceAll("'", () => "'\\''")}'`
 }
 // Every refusal has the same shape: the whole output is the REFUSED line, then its EXIT marker.
 function refuse(out, message, code) {
@@ -237,7 +233,7 @@ export async function runSecondOpinion(options, dependencies, env = process.env)
       }
       if (projectNarrows) {
         reasons.push('this project narrows GPT lane consent')
-        remedies.push(`wt-lane-consent --project ${shellWord(options.repo)} --on`)
+        remedies.push(`wt-lane-consent --project ${quoteRemedyWord(options.repo, options.platform)} --on`)
       }
     }
     return refuse(options.out, `no consented external lane is available for an independent second opinion; ${reasons.join(', and ')}. `
