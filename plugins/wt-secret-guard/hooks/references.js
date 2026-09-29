@@ -513,6 +513,9 @@ const PLAIN_DELIMITER = /^(?:[A-Za-z0-9_.-]+|'[A-Za-z0-9_.-]+'|"[A-Za-z0-9_.-]+"
 
 // The kind of one word: 'literal' (its text is exact), 'field' (one field whose text the guard does
 // not know: a double-quoted `$NAME`, an accepted `op read` substitution), or a refusal.
+const TILDE_REFUSAL = 'an unquoted tilde (write the path out)';
+const NOT_WHOLE_WORD = 'a reference that is not the whole quoted word';
+
 function wordKind(command, context, from, to, tildeTarget = false) {
   let kind = 'literal';
   let bracket = false; let brace = false;
@@ -529,8 +532,10 @@ function wordKind(command, context, from, to, tildeTarget = false) {
       if (character === '{') brace = true;
       if (brace && (character === ',' || (character === '.' && command[at + 1] === '.'))) return { refuse: 'a brace expansion' };
       // Bash expands a tilde at a word's start and after `=` or `:` - positions that differ between an
-      // argument and an assignment. Beside our forms no unquoted tilde is accepted: write the path out.
-      if (character === '~' && !(tildeTarget && at === from)) return { refuse: 'an unquoted tilde (write the path out)' };
+      // argument and an assignment. Beside our forms no unquoted tilde is accepted (write the path out),
+      // except at the start of a redirection target, which planReferences then allows only when that
+      // redirection writes an echo/printf reference to a file (writtenReferences).
+      if (character === '~' && !(tildeTarget && at === from)) return { refuse: TILDE_REFUSAL };
       continue;
     }
     if (where === 'double') {
@@ -706,6 +711,8 @@ function allowList(command, lexed, tokens, referenceStarts) {
   }
   const carriesReference = (from, to) => referenceStarts.some((at) => at >= from && at < to);
   const positions = new Map();
+  // Redirection targets accepted only because they start with an unquoted tilde.
+  const tildeTargets = [];
   const simple = [[]];
   let heredocs = 0;
   let target = null;
@@ -747,7 +754,11 @@ function allowList(command, lexed, tokens, referenceStarts) {
     let to = token.end;
     let checked;
     if (opener < 0) {
-      checked = wordKind(command, context, from, to, target === 'file');
+      checked = wordKind(command, context, from, to);
+      if (checked.refuse === TILDE_REFUSAL && target === 'file') {
+        const retried = wordKind(command, context, from, to, true);
+        if (!retried.refuse) { checked = retried; tildeTargets.push(from); }
+      }
     } else {
       // The only substitution accepted: the documented literal `op read` form, double-quoted or as an
       // assignment value - where its output is one field.
@@ -795,7 +806,7 @@ function allowList(command, lexed, tokens, referenceStarts) {
     const refusal = commandHead(words, 0, positions, 'command', null);
     if (refusal) return { refuse: refusal };
   }
-  return { positions };
+  return { positions, tildeTargets };
 }
 
 // A reference is written only by a plain echo/printf command with one file output redirection,
@@ -886,6 +897,8 @@ function teeFileOperand(stage) {
 function writtenReferences(tokens, matches) {
   const stages = simpleStages(tokens);
   const written = new Set();
+  // Redirection targets that receive a written reference: the only ones allowed a leading tilde.
+  const targets = new Set();
   for (let index = 0; index < stages.length; index += 1) {
     const stage = stages[index];
     if (!plainStage(stage)) continue;
@@ -901,10 +914,12 @@ function writtenReferences(tokens, matches) {
     if (!file && !throughTee) continue;
     for (const match of matches) {
       if (!match[0].startsWith('op://')) continue;
-      if (words.slice(operand).some((word) => match.index >= word.start && match.index < word.end)) written.add(match.index);
+      if (!words.slice(operand).some((word) => match.index >= word.start && match.index < word.end)) continue;
+      written.add(match.index);
+      if (file) targets.add(redirects[0].target.start);
     }
   }
-  return written;
+  return { written, targets };
 }
 
 function extent(command, lexed, match) {
@@ -917,7 +932,7 @@ function extent(command, lexed, match) {
   if (where !== 'bare' && where !== 'single' && where !== 'double') return { refuse: 'an unsupported quoting context' };
   const quoted = where === 'single' || where === 'double';
   const wrapper = quoted ? bounds[start] : null;
-  if (quoted && (!wrapper || wrapper[0] + 1 !== start)) return { refuse: 'a reference that is not the whole quoted word' };
+  if (quoted && (!wrapper || wrapper[0] + 1 !== start)) return { refuse: NOT_WHOLE_WORD };
   const limit = quoted ? wrapper[1] : command.length;
   const body = command.slice(start, limit);
   const same = (end) => {
@@ -929,7 +944,7 @@ function extent(command, lexed, match) {
   };
   const finish = (end, value) => {
     if (!same(end)) return { refuse: 'a reference broken by quoting' };
-    if (quoted && end !== limit) return { refuse: 'a reference that is not the whole quoted word' };
+    if (quoted && end !== limit) return { refuse: NOT_WHOLE_WORD };
     if (!quoted && !(end >= command.length || SEPARATOR.test(command[end]))) return { refuse: 'a reference that does not end the shell word' };
     return { ...value, start, end, context: where, replaceStart: quoted ? wrapper[0] : start, replaceEnd: quoted ? wrapper[1] + 1 : end };
   };
@@ -1048,12 +1063,27 @@ export function planReferences(command, options = {}) {
       }
     }
   }
-  const written = refusals.length ? new Set() : writtenReferences(tokens, matches);
+  const { written, targets } = refusals.length ? { written: new Set(), targets: new Set() } : writtenReferences(tokens, matches);
+  if ((allowed.tildeTargets ?? []).some((at) => !targets.has(at))) {
+    refusals.push(`${TILDE_REFUSAL} - beside a secret reference this guard accepts only simple commands with literal command names, joined by ; && || | & or a newline`);
+  }
+  // The whole command is the writer: one stage, or `emitter | tee FILE`, with no other operator and no
+  // substitution or parentheses. Nothing else in the command can then run what it writes.
+  const operators = tokens.filter((token) => token.type === 'op');
+  const soleWriter = !tokens.some((token) => token.type === 'open' || token.type === '(' || token.type === ')')
+    && (operators.length === 0 || (operators.length === 1 && operators[0].op === '|'));
   for (const match of matches) {
     if (consumed.some(([from, to]) => match.index >= from && match.index < to)) continue;
-    if (written.has(match.index)) continue;
     const resolved = extent(command, lexed, match);
-    if (resolved.refuse) { refusals.push(resolved.refuse); continue; }
+    if (resolved.refuse) {
+      // A written reference embedded in a larger quoted string (the `export K="op://…"` template line)
+      // stays literal only when the command is nothing but that write. Beside anything else the
+      // refusal stands: that part could run the file, outside the guard and unmasked.
+      if (written.has(match.index) && soleWriter && resolved.refuse === NOT_WHOLE_WORD) continue;
+      refusals.push(resolved.refuse);
+      continue;
+    }
+    if (written.has(match.index)) continue;
     occurrences.push(resolved);
     if (resolved.form === 'token' && !known.has(resolved.label)) refusals.push('a redaction token this session does not know');
   }

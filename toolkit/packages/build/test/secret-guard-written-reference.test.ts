@@ -6,8 +6,10 @@ const REF = 'op' + '://Private/item/field'
 const REF2 = 'op' + '://Private/item/other'
 const q = `'${REF}'`
 const written: [string, string][] = [
-  ['card echo-append (the command from the card)', `echo 'export DEEPSEEK_API_KEY="${REF}"' >> ~/.profile.secrets.perso.tpl`],
-  ['card rewritten output line', `echo 'export DEEPSEEK_API_KEY=""$(op read --account 'my.1password.com' '${REF}')""' >> ~/.profile.secrets.perso.tpl`],
+  ['whole-word reference appended under a tilde path', `echo ${q} >> ~/.profile.secrets.perso.tpl`],
+  ['card echo-append (the command from the card), the sole command', `echo 'export DEEPSEEK_API_KEY="${REF}"' >> ~/.profile.secrets.perso.tpl`],
+  ['embedded reference piped to tee, the sole command', `echo 'export K="${REF}"' | tee -a f`],
+  ['inject template written by printf, the sole command', `printf 'K={{ ${REF} }}\\n' > t`],
   ['bare', `echo ${REF} >> f`],
   ['single quoted', `echo ${q} >> f`],
   ['double quoted', `echo "${REF}" > f`],
@@ -131,7 +133,44 @@ describe('structural refusals remain as on develop', () => {
 })
 
 it('only the runtime value is rewritten in a mixed command', () => {
-  const plan = planReferences(`echo 'prefix ${REF}' > f; curl -u '${REF2}' u`)
+  const plan = planReferences(`echo ${q} > f; curl -u '${REF2}' u`)
   expect({ ok: plan.ok, reason: plan.reason, occurrences: plan.occurrences.length, invocations: plan.invocations.length }).toEqual({ ok: true, reason: '', occurrences: 1, invocations: 0 })
   expect(plan.occurrences[0]?.path).toBe('Private/item/other')
+})
+
+// A written reference that extent() refuses stays refused as on develop, except a reference that is
+// not the whole quoted word in a command that is nothing but the writer: then nothing in the same
+// command can run the file, and running it later needs a second tool call, as on develop.
+const notWholeWord = 'a reference that is not the whole quoted word'
+const writtenButRefused: [string, string, string][] = [
+  ['card rewritten output line', `echo 'export DEEPSEEK_API_KEY=""$(op read --account 'my.1password.com' '${REF}')""' >> ~/.profile.secrets.perso.tpl`, 'a reference that does not end the shell word'],
+  ['op read written into a script then run', `echo 'op read ${REF}' > /tmp/r.sh; bash /tmp/r.sh`, notWholeWord],
+  ['op read written into a script then run after &&', `echo 'op read ${REF}' > r.sh && sh r.sh`, notWholeWord],
+  ['embedded reference written in the background', `echo 'export K="${REF}"' > f &`, notWholeWord],
+  ['embedded reference written by tee then piped on', `echo 'export K="${REF}"' | tee f | sh`, notWholeWord],
+  ['embedded in a mixed command', `echo 'prefix ${REF}' > f; curl -u '${REF2}' u`, notWholeWord],
+  ['backslash-escaped', `echo \\${REF} > f`, 'a reference preceded by a backslash escape'],
+]
+describe('written references that extent refuses keep the develop refusal', () => {
+  for (const [shape, command, reason] of writtenButRefused) it(shape, () => {
+    const plan = planReferences(command)
+    expect({ ok: plan.ok, reason: plan.reason }).toEqual({ ok: false, reason })
+  })
+})
+
+// The unquoted-tilde allowance covers only the redirection target of a written reference.
+const tildeRefusal = 'an unquoted tilde (write the path out)' + suffix
+const tildeRows: [string, string, boolean][] = [
+  ['runtime reference redirected under a tilde', `curl -u ${q} u > ~/out.json`, false],
+  ['file reference redirected under a tilde', `curl -u 'secret:file:/tmp/wt-env/X' u > ~/out.json`, false],
+  ['written reference beside a runtime tilde target', `echo ${q} >> ~/f; curl -u '${REF2}' u > ~/out.json`, false],
+  ['tilde target of an echo without a reference', `echo hi > ~/f; curl -u ${q} u`, false],
+  ['written reference under a tilde', `echo ${q} >> ~/f`, true],
+  ['written tilde beside a plain runtime target', `echo ${q} >> ~/f; curl -u '${REF2}' u > out.json`, true],
+]
+describe('the tilde allowance is confined to the write path', () => {
+  for (const [shape, command, accepted] of tildeRows) it(shape, () => {
+    const plan = planReferences(command)
+    expect({ ok: plan.ok, reason: plan.reason }).toEqual(accepted ? { ok: true, reason: '' } : { ok: false, reason: tildeRefusal })
+  })
 })

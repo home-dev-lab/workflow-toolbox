@@ -307,7 +307,15 @@ const prefetchArgv = async (command) => {
   const result = await bash(runtime, { tool: 'Bash', command }, async (event) => { received = event.command; return { text: 'ok' }; });
   return { received, argvs, result };
 };
-await test('echo-append of a 1Password reference runs unchanged without a vault read', async () => {
+await test('echo-append of a whole-word 1Password reference runs unchanged without a vault read', async () => {
+  const reference = 'op' + '://Private/item/credential';
+  const command = `echo '${reference}' >> ~/.profile.secrets.perso.tpl`;
+  const { received, argvs, result } = await prefetchArgv(command);
+  assert.equal(result?.deny, undefined);
+  assert.equal(received, command);
+  assert.deepEqual(argvs, []);
+});
+await test('echo-append of the card command runs unchanged without a vault read when it is the sole command', async () => {
   const reference = 'op' + '://Private/item/credential';
   const command = `echo 'export DEEPSEEK_API_KEY="${reference}"' >> ~/.profile.secrets.perso.tpl`;
   const { received, argvs, result } = await prefetchArgv(command);
@@ -315,14 +323,19 @@ await test('echo-append of a 1Password reference runs unchanged without a vault 
   assert.equal(received, command);
   assert.deepEqual(argvs, []);
 });
-await test('echo-append of the literal op-read template runs byte-identical without a vault read', async () => {
-  const reference = 'op' + '://Private/item/credential';
-  const command = `echo 'export DEEPSEEK_API_KEY=""$(op read --account 'my.1password.com' '${reference}')""' >> ~/.profile.secrets.perso.tpl`;
-  const { received, argvs, result } = await prefetchArgv(command);
-  assert.equal(result?.deny, undefined);
-  assert.equal(received, command);
-  assert.deepEqual(argvs, []);
-});
+// A reference that is not the whole quoted word keeps develop's refusal as soon as anything else
+// shares the command: that part could run the file, which would resolve it with no mask.
+for (const [shape, template] of [
+  ['echo-append of the literal op-read template', (reference) => `echo 'export DEEPSEEK_API_KEY=""$(op read --account 'my.1password.com' '${reference}')""' >> ~/.profile.secrets.perso.tpl`],
+  ['an op read line written into a script that is then run', (reference) => `echo 'op read ${reference}' > /tmp/r.sh; bash /tmp/r.sh`],
+  ['an op read line written into a script that is then run after &&', (reference) => `echo 'op read ${reference}' > /tmp/r.sh && sh /tmp/r.sh`],
+]) {
+  await test(`${shape} is refused without a vault read, as on develop`, async () => {
+    const { argvs, result } = await prefetchArgv(template('op' + '://Private/item/credential'));
+    assert.ok(result?.deny, 'the command was not refused');
+    assert.deepEqual(argvs, []);
+  });
+}
 await test('op reference rewrite with shell quoting', async () => { const { received, argvs, result } = await prefetchArgv('echo "op://Private/O\'Brien/token"'); assert.equal(commandPart(received), 'echo "${__wt_secret_0}"'); assert.deepEqual(argvs.at(-1), ['op', 'read', "op://Private/O'Brien/token"], 'the quote in the reference did not reach the prefetch argv intact'); assert.equal(spawnSync('bash', ['-c', received], { encoding: 'utf8' }).stdout, 'op-fake-value\n'); assert.equal((result.text.match(/wt-secret-guard: rewrote/g) ?? []).length, 1); });
 await test('op reference rewrite carries --account when the opAccount option is set', async () => { const { configure } = await import('./hooks.js'); configure({ opAccount: "my.1password.com" }); const withAccount = await prefetchArgv('echo op://Private/item/field-account'); configure({}); assert.deepEqual(withAccount.argvs.at(-1), ['op', 'read', '--account', 'my.1password.com', 'op://Private/item/field-account']); assert.equal(commandPart(withAccount.received), 'echo "${__wt_secret_0}"'); const plain = await prefetchArgv('echo op://Private/item/field-plain'); assert.deepEqual(plain.argvs.at(-1), ['op', 'read', 'op://Private/item/field-plain']); });
 await test('a value resolved through op:// is scrubbed from the result even when it matches no pattern', async () => { const result = await bash($, { tool: 'Bash', command: 'echo op://Private/item/pw' }, async () => ({ result: { stdout: 'op-fake-value\n', stderr: '' }, text: 'op-fake-value\n' })); assert(!JSON.stringify(result).includes('op-fake-value')); assert(/secret:onepassword#/.test(result.text)); assert(calls.some((call) => call.capability === 'process.run' && call.argv[0] === 'op' && call.argv[1] === 'read')); });
