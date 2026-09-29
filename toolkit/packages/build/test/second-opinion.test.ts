@@ -228,7 +228,7 @@ describe('second-opinion advisor', () => {
     expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project ${quoteRemedyWord(repo)} --on\n`)
   })
 
-  it.each(["it's a repo", 'a "quoted" repo'])('quotes a project remedy containing %s', async (basename) => {
+  async function expectProjectRemedyFor(basename: string) {
     const f = fixture(true)
     const repo = join(f.repo, basename)
     mkdirSync(join(repo, '.claude'), { recursive: true })
@@ -236,7 +236,11 @@ describe('second-opinion advisor', () => {
     expect(await runSecondOpinion({ ...f.options, repo, route: 'auto' }, dependencies(), f.env)).toBe(1)
     const quoted = quoteRemedyWord(repo)
     expect(readFileSync(f.out, 'utf8')).toContain(`run: wt-lane-consent --project ${quoted} --on\n`)
-  })
+  }
+
+  it.each(["it's a repo"])('quotes a project remedy containing %s', expectProjectRemedyFor)
+  it.skipIf(process.platform === 'win32')('quotes a project remedy containing a "quoted" repo (Windows skipped: double quotes are invalid in paths)',
+    () => expectProjectRemedyFor('a "quoted" repo'))
 
   it('names both remedies when the account is off and the project also narrows consent', async () => {
     const f = fixture(false)
