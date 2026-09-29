@@ -393,6 +393,9 @@ describe('adopt installer — rules-on-demand copies', () => {
     expect(result.out).toContain(`[rules] target=${target}`)
     expect(result.out).toContain(`${ACT}: REFRESHED`)
     expect(existsSync(join(config, 'rules', 'wt', RULE))).toBe(false)
+    // Static rules missing everywhere go to the project's static default, never the on-demand dir.
+    expect(existsSync(join(target, RULE))).toBe(false)
+    expect(existsSync(join(project, '.claude', 'rules', 'wt', RULE))).toBe(true)
   })
 
   it('reports copies present in both rules/wt and rules-on-demand instead of choosing one', () => {

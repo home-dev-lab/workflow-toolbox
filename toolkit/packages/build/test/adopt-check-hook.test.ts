@@ -79,6 +79,8 @@ function installOnDemand(dir: string, script = INSTALL_RULES): void {
   }
 }
 
+const DESTRUCTIVE_REMEDY = /\brm\s+(?:-\S+\s+)*--?\s|\bremove (?:one|the misplaced) copy|\bremoving the misplaced/i
+
 function runHook(cwd: string, env: NodeJS.ProcessEnv, hook = HOOK): { stdout: string; context: string } {
   const res = spawnSync(process.execPath, [hook], {
     input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', cwd }),
@@ -86,6 +88,8 @@ function runHook(cwd: string, env: NodeJS.ProcessEnv, hook = HOOK): { stdout: st
     env,
   })
   const stdout = (res.stdout ?? '').trim()
+  // Invariant over EVERY hook run: a partial scan cannot prove a delete safe, so no remedy deletes.
+  expect(stdout).not.toMatch(DESTRUCTIVE_REMEDY)
   let context = ''
   try {
     const parsed = stdout ? (JSON.parse(stdout) as Record<string, unknown>) : null
@@ -161,7 +165,7 @@ function runPostToolUsePushHook(
 }
 
 describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () => {
-  it('reports an old static copy in the on-demand directory with an exact removal remedy', () => {
+  it('reports an old static copy in the on-demand directory as a placement conflict, never a removal', () => {
     const f = fixture('misplaced-static')
     const staticDir = join(f.cfg, 'rules', 'wt')
     const demandDir = join(f.cfg, 'rules-on-demand')
@@ -171,7 +175,8 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     const context = runHook(f.proj, f.env).context
     expect(context).toContain(`${RULE}: MISPLACED`)
     expect(context).toContain('DOUBLE-LOAD')
-    expect(context).toContain(`rm -- ${remedyWord(join(demandDir, RULE))}`)
+    expect(context).toContain('Placement conflict')
+    expect(context).not.toContain(`rm -- ${remedyWord(join(demandDir, RULE))}`)
     expect(context).not.toContain(`--install --dir ${remedyWord(demandDir)}`)
   })
 
@@ -199,7 +204,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     symlinkSync(join(staticDir, RULE), join(demandDir, RULE))
     const context = runHook(f.proj, f.env).context
     expect(context).toContain(`${RULE}: MISPLACED`)
-    expect(context).toContain('Inspect')
+    expect(context).toContain('Placement conflict')
     expect(context).not.toContain(`rm -- ${remedyWord(join(demandDir, RULE))}`)
   })
 
@@ -215,7 +220,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     symlinkSync(misplaced, join(staticDir, RULE))
     const context = runHook(f.proj, f.env).context
     expect(context).toContain(`${RULE}: MISPLACED`)
-    expect(context).toContain('Inspect')
+    expect(context).toContain('Placement conflict')
     expect(context).not.toContain(`rm -- ${remedyWord(misplaced)}`)
   })
 
@@ -228,7 +233,7 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     writeFileSync(join(demandDir, RULE), readFileSync(join(staticDir, RULE), 'utf8') + '\nMY LOCAL EDIT\n')
     const context = runHook(f.proj, f.env).context
     expect(context).toContain(`${RULE}: MISPLACED`)
-    expect(context).toMatch(/carry .*edits.*static copy.*before.*remov/i)
+    expect(context).toMatch(/preserve any local edits/i)
   })
 
   it('never suggests installing static rules through a directory alias to on-demand', () => {
@@ -242,6 +247,20 @@ describe('wt-adopt-check-hook — SessionStart rule-adoption truth check', () =>
     expect(context).toContain('NOT installed')
     expect(context).not.toContain(`--install --dir ${remedyWord(staticAlias)}`)
     expect(context).toContain(`--install --dir ${remedyWord(join(f.proj, '.claude', 'rules'))}`)
+  })
+
+  it('withholds a static-kind install remedy for a stale copy reached through an alias to on-demand', () => {
+    const f = fixture('stale-through-alias')
+    const demandDir = join(f.cfg, 'rules-on-demand')
+    installOnDemand(demandDir)
+    const older = readFileSync(join(REPO_ROOT, 'plugin/rules', ACT), 'utf8') + '\nOLDER SHIPPED BODY\n'
+    writeManagedRule(join(demandDir, ACT), older, '0.0.1')
+    const staticAlias = join(f.proj, '.claude', 'rules', 'wt')
+    mkdirSync(join(f.proj, '.claude', 'rules'), { recursive: true })
+    symlinkSync(demandDir, staticAlias, 'dir')
+    const context = runHook(f.proj, f.env).context
+    expect(context).toContain(ACT)
+    expect(context).not.toContain(`--install --dir ${remedyWord(staticAlias)}`)
   })
 
   it('suggests only location-correct installs for stale static and on-demand copies', () => {

@@ -13,15 +13,3 @@ export function isOnDemandDir(dir) {
     ? name.toLowerCase() === 'rules-on-demand'
     : name === 'rules-on-demand'
 }
-
-export function isIndependentRuleFile(target, checkedStaticPaths) {
-  try {
-    if (fs.lstatSync(target).isSymbolicLink()) return false
-    const realTarget = fs.realpathSync(target)
-    return !checkedStaticPaths.some((file) => {
-      try { return fs.realpathSync(file) === realTarget } catch { return false }
-    })
-  } catch {
-    return false
-  }
-}

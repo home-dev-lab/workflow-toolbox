@@ -46,7 +46,7 @@ import { invokes } from './lib/command-invocation.mjs'
 import { resolveWorkflowToolboxOption } from './lib/plugin-options.mjs'
 import { splitFrontmatter } from './lib/frontmatter.mjs'
 import { quoteRemedyWord } from './lib/remedy-quote.mjs'
-import { isOnDemandDir, isIndependentRuleFile } from './lib/host/adopt-placement.mjs'
+import { isOnDemandDir } from './lib/host/adopt-placement.mjs'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -140,7 +140,7 @@ function mergeAll(maps, file) {
     !present.some((other) => other.locationKind === 'static' && other.realLocation === finding.realLocation))
   if (misplaced.length) {
     return { bucket: 'misplaced', status: 'MISPLACED', location: misplaced[0].location,
-      locations: [...new Set(present.map((finding) => finding.location))].sort(), findings: misplaced, allFindings: present,
+      locations: [...new Set(present.map((finding) => finding.location))].sort(), findings: misplaced,
       staticFinding: present.find((finding) => finding.locationKind === 'static' && bucket(finding.status) === 'stale') }
   }
   const correctlyPlaced = present.filter((finding) => bucket(finding.status) !== 'misplaced')
@@ -248,13 +248,11 @@ function installRemedy(installCmd, set, dir, locationKind = 'static') {
   return `node ${shellQuote(installCmd)} --set ${set} --install --dir ${shellQuote(dir)}`
 }
 
-function removableMisplaced(file, finding) {
-  const target = path.join(finding.location, file)
-  const staticPaths = finding.allFindings
-    .filter((other) => other.locationKind === 'static')
-    .map((other) => path.join(other.location, file))
-  return isIndependentRuleFile(target, staticPaths)
-}
+// A hook sees only the directories it scans: it cannot prove any copy disposable
+// (a symlink elsewhere may point at it, it may hold the only local edits), so
+// every conflict remedy is reconciliation guidance and never a deletion.
+const PLACEMENT_CONFLICT = 'Placement conflict: compare the copies, preserve any local edits, ' +
+  'confirm whether this rule should load statically or on demand, then reconcile by hand.'
 
 function checkRemedy(installCmd, set, dir) {
   return `node ${shellQuote(installCmd)} --set ${set} --check --dir ${shellQuote(dir)}`
@@ -304,12 +302,8 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
 
   const lines = []
   for (const finding of buckets.misplaced.sort((a, b) => a.file.localeCompare(b.file))) {
-    const filePath = path.join(finding.location, finding.file)
     const duplicate = finding.locations.length > 1 ? ` DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}.` : ''
-    const remedy = removableMisplaced(finding.file, finding)
-      ? `Carry any local edits into the static copy before removing the misplaced copy with \`rm -- ${shellQuote(filePath)}\`; adopt it into a static rules directory if absent there.`
-      : 'Inspect the file and its symlink targets; reconcile the static copy before changing either path.'
-    lines.push(`${finding.file}: MISPLACED static rule in ${finding.location}.${duplicate} Inspect local edits. ${remedy}`)
+    lines.push(`${finding.file}: MISPLACED static rule in ${finding.location}.${duplicate} ${PLACEMENT_CONFLICT} This hook proposes no deletion.`)
     if (finding.staticFinding) {
       const install = installRemedy(installCmd, set, finding.staticFinding.location)
       const action = install
@@ -319,7 +313,7 @@ function buildMessage(perFile, installCmd, remedyDir, set = 'rules', event = 'Se
     }
   }
   for (const finding of buckets.duplicate.sort((a, b) => a.file.localeCompare(b.file))) {
-    lines.push(`${finding.file}: DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}. Remove one copy; this hook will not choose silently.`)
+    lines.push(`${finding.file}: DOUBLE-LOAD from BOTH ${finding.locations.join(' and ')}. ${PLACEMENT_CONFLICT} This hook will not choose silently.`)
     for (const locationFinding of finding.findings) lines.push(...triggerLines(finding.file, locationFinding, installCmd, event))
   }
   if (buckets.absent.length) {
